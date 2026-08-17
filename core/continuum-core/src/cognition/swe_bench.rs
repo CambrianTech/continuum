@@ -208,6 +208,29 @@ pub fn reap_orphaned_solve_runs() -> Vec<String> {
 
 /// Where cached datasets and per-instance environments live. A governed cache class, not a
 /// scratch dir — see the disk-eviction contract.
+///
+/// # THIS IS THE ONLY SWE ENV ROOT. `swe_cache_dir()/envs`, nowhere else.
+///
+/// A second root used to exist — `~/.continuum/cache/swe-envs`, the default of the retired
+/// `legacy/benchmarks/swe/grade_local.py`. Both directories held real venvs. Neither named
+/// the other. Nothing failed loudly, because each was internally consistent.
+///
+/// On 2026-08-17 that cost a full misdiagnosis with a decision attached: `ls` on the retired
+/// root showed 14 envs across 3 repos, which became the reported finding *"77% of staged
+/// instances have no environment — the env builder only works for sympy/flask/requests"*.
+/// A design was approved on it. The live root held **46 envs across 8 repos** — 95% coverage,
+/// every repo present. Same question, two directories, opposite answers. The retired root is
+/// now deleted and the legacy script's default points here.
+///
+/// The general defect, worth recognising before it regrows elsewhere: a cache with two roots
+/// cannot report its own coverage, because every reader picks one and gets a self-consistent
+/// lie. If you add a second location for anything cached here — a mirror, a per-node copy, a
+/// migration staging dir — it needs to be derived from THIS function, not spelled out again.
+/// A path literal repeated in a second file is the whole failure mode
+/// ([[the-same-bug-at-two-sites-is-a-missing-constraint-not-two-bugs]]).
+///
+/// Corollary for anyone measuring env coverage: read the root from here, never from a path
+/// you remember or a directory you found by name.
 pub fn swe_cache_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     PathBuf::from(home)
@@ -1522,6 +1545,68 @@ pub async fn grade(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: a SECOND swe env root. On 2026-08-17 two roots existed —
+    // `swe_cache_dir()/envs` (live, 46 envs / 8 repos) and `~/.continuum/cache/swe-envs`
+    // (retired, 14 envs / 3 repos, the legacy python default). Nothing failed: each root was
+    // internally consistent, so whichever you `ls`ed answered confidently. Reading the retired
+    // one produced "77% of staged instances have no environment", which was reported as the
+    // benchmark's root cause and had a design approved on it. Truth was 95% coverage.
+    //
+    // A cache with two roots cannot report its own coverage. So: the env root is derived from
+    // swe_cache_dir() and appears as a path literal NOWHERE else in the crate. If you need the
+    // envs dir, call the function. See swe_cache_dir's doc for the full incident.
+    #[test]
+    fn the_swe_env_root_has_exactly_one_spelling() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    if let Ok(t) = std::fs::read_to_string(&p) {
+                        out.push((p.to_string_lossy().to_string(), t));
+                    }
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        walk(&root, &mut files);
+
+        // The retired root, and any hand-spelled sibling of the live one. ASSEMBLED at
+        // runtime, never written whole: a literal needle would match its own declaration and
+        // the guard would fail on itself (it did, first run). Comments are stripped too, so
+        // this test's prose and swe_cache_dir's doc can name the paths freely.
+        let retired = format!("cache/{}-envs", "swe");
+        let live_spelled_out = format!("benchmarks/{}/envs", "swe");
+        let banned = [retired.as_str(), live_spelled_out.as_str()];
+        let mut hits = Vec::new();
+        for (path, text) in &files {
+            for (n, raw) in text.lines().enumerate() {
+                let code = match raw.find("//") {
+                    Some(i) => &raw[..i],
+                    None => raw,
+                };
+                for b in banned {
+                    if code.contains(b) {
+                        hits.push(format!("{path}:{} → {}", n + 1, code.trim()));
+                    }
+                }
+            }
+        }
+        assert!(
+            hits.is_empty(),
+            "a SECOND spelling of the swe env root appeared — this is exactly how the \
+             2026-08-17 coverage misdiagnosis happened (two roots, both real, neither naming \
+             the other, opposite answers to the same question). Derive it from \
+             `swe_cache_dir()` instead of writing the path:\n  {}",
+            hits.join("\n  ")
+        );
+    }
 
     // what this catches: the false-env-void misgrade (pytest-11143 attempt 3, live
     // 2026-08-12) — a candidate patch that CREATED a file survived `git checkout .`, the

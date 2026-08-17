@@ -199,8 +199,21 @@ def main():
                     help="build the environment instead: a venv from BASE_PYTHON with "
                          "pytest + the repo installed editable. Cached per instance under "
                          "--env-root, so a re-grade is instant.")
-    ap.add_argument("--env-root", default=os.path.expanduser("~/.continuum/cache/swe-envs"),
-                    help="where --auto-venv caches per-instance environments")
+    # THE CANONICAL ENV ROOT, and the ONLY one. This default used to be
+    # `~/.continuum/cache/swe-envs` — a SECOND cache that the Rust core never reads and
+    # never writes. Both roots existed, both held real venvs, and neither named the other.
+    # On 2026-08-17 that cost a full misdiagnosis: `ls`ing the retired root showed 14 envs
+    # across 3 repos and produced the headline "77% of staged instances have no
+    # environment", reported and acted on. The live root held 46 envs across 8 repos —
+    # 95% coverage. Same question, two directories, opposite answers.
+    # Keep this pointed at `swe_bench::swe_cache_dir()/envs`. One root or the confusion
+    # regrows. ([[the-same-bug-at-two-sites-is-a-missing-constraint-not-two-bugs]])
+    ap.add_argument("--env-root",
+                    default=os.path.expanduser("~/.continuum/benchmarks/swe/envs"),
+                    help="where --auto-venv caches per-instance environments. THE canonical "
+                         "root, shared with the Rust core (cognition::swe_bench::ensure_env) "
+                         "— do not point this somewhere else, a second cache is how the "
+                         "2026-08-17 misdiagnosis happened.")
     ap.add_argument("--pytest", default="pytest<7",
                     help="pytest pin — repos older than pytest 7 need <7 (conftest using "
                          "`monkeypatch.notset`, removed in 7). The gold gate catches a wrong pin.")
