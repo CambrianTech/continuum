@@ -1236,10 +1236,79 @@ impl AgentSolve {
                     f
                 }
             };
-            let mut settled = crate::cognition::act_observe::drive_to_settle(
-                &cycle, burst, room, max_acts, framing,
-            )
-            .await;
+            // THE RUN PULSES WHILE IT RUNS (#371 law 2: liveness is a pulse, never a
+            // terminal artifact).
+            //
+            // The ledger used to be written ONCE per attempt, at settlement. So for the
+            // entire attempt — legitimately HOURS on a full SWE budget — `benchmark/runs`
+            // read `acts: 0` and a `last_activity` frozen at run start. Against a 20-minute
+            // stall window that means a HEALTHY first attempt is guaranteed to read `quiet`,
+            // every time, and the projection whose stated purpose is "silence must never be
+            // ambiguous with progress" was structurally unable to tell them apart. Measured
+            // 2026-08-16: two dispatched solves read `acts=0, stalled=false` for ten straight
+            // minutes, and the driver watching them could not distinguish working from wedged
+            // — which is exactly how a vacuous "no faults" gets reported as a green.
+            //
+            // `select!` over the drive future and an interval: no spawn, so the cycle stays
+            // BORROWED (no 'static bound, no Arc juggling, no parallel allocator). Each tick
+            // reads the persona's own monotonic act counter — a wait-free atomic load — and
+            // rewrites the running marker, which moves BOTH `acts` and the file mtime that
+            // `last_activity_ms` folds from. The counter is the same one perception renders,
+            // so the board and her own proprioception can never disagree.
+            //
+            // Cadence: well under RUN_STALL_WINDOW_SECS so a live run can never age into
+            // `quiet`, and far above act cadence (~2-6 min) so it costs a tiny JSON write
+            // per tick and nothing else.
+            const RUN_PULSE: std::time::Duration = std::time::Duration::from_secs(60);
+            // Same ledger the detached wrapper journals `state: running` into, and the
+            // SAME derivation of every field, so a pulse can never contradict the marker
+            // it refreshes. `None` run_id (an attached call) → no ledger → no pulse, which
+            // is correct: nothing is polling a run that returns inline.
+            let pulse_run_id = p.run_id.clone().unwrap_or_default();
+            let pulse_path = p
+                .run_id
+                .as_deref()
+                .and_then(agent_solve_ledger_path);
+            let pulse_persona = p.persona_id.clone();
+            let pulse_instance: Option<String> = workspace
+                .contains("/workspace/swe/")
+                .then(|| {
+                    std::path::Path::new(&workspace)
+                        .file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                })
+                .flatten();
+            let mut settled = {
+                let drive = crate::cognition::act_observe::drive_to_settle(
+                    &cycle, burst, room, max_acts, framing,
+                );
+                tokio::pin!(drive);
+                let mut ticker = tokio::time::interval(RUN_PULSE);
+                ticker.tick().await; // interval fires immediately; consume that tick
+                loop {
+                    tokio::select! {
+                        outcome = &mut drive => break outcome,
+                        _ = ticker.tick() => {
+                            // Best-effort by construction: a failed pulse must never
+                            // disturb the work it is only reporting on.
+                            if let (Some(p), Some(acts)) =
+                                (pulse_path.as_ref(), cycle.actions_taken())
+                            {
+                                let _ = std::fs::write(p, serde_json::json!({
+                                    "state": "running",
+                                    "run_id": pulse_run_id,
+                                    "persona_id": pulse_persona,
+                                    "workspace": workspace,
+                                    "instance": pulse_instance,
+                                    // Acts SHE has executed, live — not a count that
+                                    // materializes only once the work is already over.
+                                    "acts": acts,
+                                }).to_string());
+                            }
+                        }
+                    }
+                }
+            };
 
             // 4) Collect the HANDS artifact: everything she changed in the workspace as a unified diff
             //    (new files included), plus the touched paths. This is what SWE/Terminal-Bench apply.
