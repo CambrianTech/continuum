@@ -1157,7 +1157,115 @@ pub fn runner_for_repo(repo: &str) -> TestRunner {
 
 /// The exact argv (after the venv's `python`) that runs an instance's test scope.
 /// Pure so the per-repo command shape is table-testable without a venv.
+/// The module name of the JSON runner dropped into django's `tests/` directory.
+/// `tests/` is on `sys.path` when runtests.py runs, so a bare module name resolves.
+const DJANGO_JSON_RUNNER_MODULE: &str = "continuum_json_runner";
+
+/// A `DiscoverRunner` that reports each test by its CANONICAL id instead of by prose.
+///
+/// WHY THIS EXISTS RATHER THAN A BETTER REGEX. unittest's verbose output is a rendering,
+/// not a data format: the outcome sits on the id line when a test has no docstring and on
+/// the DOCSTRING line when it does, django ≥4.1 changed the class-path shape, and a
+/// docstring can contain any characters including " ... " and " (". Every one of those is a
+/// way for a line-shaped parser to mis-attribute silently — and mis-attribution here does
+/// not look like a bug, it looks like a citizen who failed. `test.id()` is the id unittest
+/// itself uses; asking the runner for it removes the entire class of guess.
+///
+/// Skips and expected failures count as PASSES, unexpected successes as FAILURES — the same
+/// rule [`django_outcome`] applies, kept identical on purpose.
+const DJANGO_JSON_RUNNER_SRC: &str = r#"# Written by continuum's SWE-bench grader. Not part of django.
+import json, sys, unittest
+from django.test.runner import DiscoverRunner
+
+class _ContinuumResult(unittest.TextTestResult):
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.continuum_rows = {}
+    def addSuccess(self, test):
+        super().addSuccess(test); self.continuum_rows[test.id()] = True
+    def addError(self, test, err):
+        super().addError(test, err); self.continuum_rows[test.id()] = False
+    def addFailure(self, test, err):
+        super().addFailure(test, err); self.continuum_rows[test.id()] = False
+    def addSkip(self, test, reason):
+        super().addSkip(test, reason); self.continuum_rows[test.id()] = True
+    def addExpectedFailure(self, test, err):
+        super().addExpectedFailure(test, err); self.continuum_rows[test.id()] = True
+    def addUnexpectedSuccess(self, test):
+        super().addUnexpectedSuccess(test); self.continuum_rows[test.id()] = False
+
+class JsonRunner(DiscoverRunner):
+    def get_resultclass(self):
+        return _ContinuumResult
+    def run_suite(self, suite, **kwargs):
+        result = super().run_suite(suite, **kwargs)
+        for tid, ok in getattr(result, "continuum_rows", {}).items():
+            sys.stderr.write("CONTINUUM_TEST " + json.dumps({"id": tid, "ok": ok}) + "\n")
+        sys.stderr.flush()
+        return result
+"#;
+
+/// Drop the JSON runner into the clone's `tests/` dir. Returns whether it is usable.
+/// Idempotent — grading re-runs over the same clone just overwrite it.
+async fn install_django_json_runner(repo_dir: &Path) -> bool {
+    let dir = repo_dir.join("tests");
+    if !dir.is_dir() {
+        return false;
+    }
+    let path = dir.join(format!("{DJANGO_JSON_RUNNER_MODULE}.py"));
+    match std::fs::write(&path, DJANGO_JSON_RUNNER_SRC) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "could not install the django JSON test runner — falling back to parsing the \
+                 verbose report, which mis-attributes docstringed tests (#383)"
+            );
+            false
+        }
+    }
+}
+
+/// One machine-readable row per test: `CONTINUUM_TEST {"id": "...", "ok": true}`.
+///
+/// `test.id()` is `module.Class.method`. The dataset's django ids are the unittest RENDERING
+/// of that, `method (module.Class)`, so both spellings are registered for the same outcome —
+/// deterministic surgery on a canonical id, not a guess about output shape.
+pub fn parse_django_json(report: &str) -> (HashMap<String, bool>, HashMap<String, bool>) {
+    let mut by_node = HashMap::new();
+    let mut by_func: HashMap<String, bool> = HashMap::new();
+    for line in report.lines() {
+        let Some(payload) = line.trim().strip_prefix("CONTINUUM_TEST ") else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(payload) else {
+            continue;
+        };
+        let (Some(id), Some(ok)) = (v.get("id").and_then(|x| x.as_str()), v.get("ok").and_then(|x| x.as_bool()))
+        else {
+            continue;
+        };
+        by_node.insert(id.to_string(), ok);
+        if let Some((class_path, method)) = id.rsplit_once('.') {
+            by_node.insert(format!("{method} ({class_path})"), ok);
+            let entry = by_func.entry(method.to_string()).or_insert(true);
+            *entry = *entry && ok;
+        }
+    }
+    (by_node, by_func)
+}
+
 pub fn test_invocation(runner: TestRunner, test_files: &[String]) -> Vec<String> {
+    test_invocation_with(runner, test_files, false)
+}
+
+/// [`test_invocation`], plus whether django should be told to use the JSON runner.
+pub fn test_invocation_with(
+    runner: TestRunner,
+    test_files: &[String],
+    django_json: bool,
+) -> Vec<String> {
     match runner {
         TestRunner::Pytest => {
             let mut args: Vec<String> = vec!["-m".into(), "pytest".into()];
@@ -1179,6 +1287,10 @@ pub fn test_invocation(runner: TestRunner, test_files: &[String]) -> Vec<String>
                 "--parallel".into(),
                 "1".into(),
             ];
+            if django_json {
+                // `tests/` is on sys.path under runtests.py, so the bare module resolves.
+                args.push(format!("--testrunner={DJANGO_JSON_RUNNER_MODULE}.JsonRunner"));
+            }
             args.extend(test_files.iter().map(|f| django_directive(f)));
             args
         }
@@ -1201,32 +1313,115 @@ fn django_directive(file: &str) -> String {
 /// The report line is `test_combine (expressions.tests.CombinedExprTests) ... ok` on
 /// django ≤4.0, and on ≥4.1 the class path grows a trailing method repeat
 /// (`...CombinedExprTests.test_combine) ... ok`) — normalized back so dataset ids hit.
+/// unittest's outcome vocabulary → pass/fail, or `None` for a line that is not an outcome.
+///
+/// ONE place, because the report has TWO line shapes (id-and-outcome on one line, or
+/// id-then-docstring-and-outcome across two) and both must classify identically. Two copies
+/// of this match is how a `skipped` counts as a pass in one shape and a non-outcome in the
+/// other — silent, and invisible in aggregate scores.
+///
+/// `skipped` and `expected failure` are PASSES: SWE-bench's own harness treats a test that
+/// declines to run as satisfied, and a test the suite knows is broken as behaving correctly.
+/// `unexpected success` is a FAILURE for the same reason — the suite's expectation was wrong.
+fn django_outcome(outcome: &str) -> Option<bool> {
+    if outcome.starts_with("ok")
+        || outcome.starts_with("skipped")
+        || outcome.starts_with("expected failure")
+    {
+        Some(true)
+    } else if outcome.starts_with("FAIL")
+        || outcome.starts_with("ERROR")
+        || outcome.starts_with("unexpected success")
+    {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// THE TWO-LINE DOCSTRING FORM (fixed 2026-08-17, found by the gold gate).
+///
+/// unittest's verbose output puts the outcome on the test-id line ONLY when the test has no
+/// docstring. With a docstring it prints TWO lines and the `... ok` lands on the SECOND:
+///
+/// ```text
+/// test_skip_if_db_feature (test_utils.tests.SkippingTestCase)
+/// Testing the django.test.skipIfDBFeature decorator. ... ok
+/// ```
+///
+/// This parser required `" ... "` AND `" ("` on ONE line, so BOTH lines fell through the
+/// `continue`s: the id line has no `" ... "`, the docstring line has no `" ("`. Every
+/// docstringed django test was therefore recorded NOWHERE, and absent-from-map reads
+/// downstream as not-passed.
+///
+/// Measured consequence, which is why this is not a cosmetic parse bug: django-10914's own
+/// GOLD patch graded `FAIL_TO_PASS 0/1, PASS_TO_PASS 35/40` and was reported as a
+/// "REGRESSION — your changes BROKE 5 test(s)", while the very output being quoted showed
+/// all five passing `... ok`. The 5 broken were the 5 docstringed ones. So django scores
+/// were never measuring django — and django is 114/300 of Lite (#383). Every django zero we
+/// have recorded is retro-actively uninterpretable.
+///
+/// Dataset ids for these tests may be EITHER spelling — SWE-bench's own id lists were
+/// harvested from this same verbose output, so some entries are the docstring text rather
+/// than the node id (e.g. "An exception is setUp() is reraised after disable() is called.").
+/// Both are therefore registered as keys for the same outcome; whichever spelling the
+/// dataset carries resolves. Registering both is not a fallback — it is the honest statement
+/// that one test has two names in this format.
 pub fn parse_django_report(report: &str) -> (HashMap<String, bool>, HashMap<String, bool>) {
     let mut by_node = HashMap::new();
     let mut by_func: HashMap<String, bool> = HashMap::new();
+    // A test-id line awaiting its outcome on a following docstring line: (func, class_norm).
+    let mut pending: Option<(String, String)> = None;
     for line in report.lines() {
         let line = line.trim();
         let Some((head, tail)) = line.split_once(" ... ") else {
+            // No outcome here. A bare `func (class.path)` line is the FIRST half of the
+            // two-line form — remember it. Anything else clears the pending slot so an
+            // outcome can never be attributed across unrelated output.
+            pending = match line
+                .split_once(" (")
+                .and_then(|(f, c)| c.strip_suffix(')').map(|c| (f, c)))
+            {
+                Some((func, class_path)) if !func.is_empty() && !class_path.is_empty() => {
+                    let class_norm = class_path
+                        .strip_suffix(&format!(".{func}"))
+                        .unwrap_or(class_path);
+                    Some((func.to_string(), class_norm.to_string()))
+                }
+                _ => None,
+            };
             continue;
         };
+        // An outcome line WITHOUT `" ("` is the docstring half. Attribute it to the id we
+        // remembered, and register the docstring text as a second key for the same test.
+        if !head.contains(" (") {
+            let outcome = tail.trim();
+            let ok = match django_outcome(outcome) {
+                Some(ok) => ok,
+                None => {
+                    pending = None;
+                    continue;
+                }
+            };
+            if let Some((func, class_norm)) = pending.take() {
+                by_node.insert(format!("{func} ({class_norm})"), ok);
+                let doc = head.trim();
+                if !doc.is_empty() {
+                    by_node.insert(doc.to_string(), ok);
+                }
+                let entry = by_func.entry(func).or_insert(true);
+                *entry = *entry && ok;
+            }
+            continue;
+        }
+        pending = None;
         let Some((func, class_part)) = head.split_once(" (") else {
             continue;
         };
         let Some(class_path) = class_part.strip_suffix(')') else {
             continue;
         };
-        let outcome = tail.trim();
-        let ok = if outcome.starts_with("ok")
-            || outcome.starts_with("skipped")
-            || outcome.starts_with("expected failure")
-        {
-            true
-        } else if outcome.starts_with("FAIL")
-            || outcome.starts_with("ERROR")
-            || outcome.starts_with("unexpected success")
-        {
-            false
-        } else {
+        let Some(ok) = django_outcome(tail.trim()) else {
             continue;
         };
         // django ≥4.1 prints `module.Class.test_name`; the dataset uses `module.Class`.
@@ -1338,7 +1533,16 @@ pub async fn run_tests(
     // arguments" before running a single test — every id read as failed, and the whole
     // 2019-pytest class graded p2p 0/N (live: pytest-5221 retry, 2026-08-12). Cosmetic
     // flags are not worth a version gate; `-v` and no:cacheprovider go back to 2.x.
-    let owned_args = test_invocation(runner, test_files);
+    // django is graded from CANONICAL ids, not from prose. `install_django_json_runner`
+    // drops a DiscoverRunner subclass into the clone that emits one machine-readable row
+    // per test keyed by `test.id()`; `test_invocation` then asks runtests.py to use it.
+    // If the drop fails we fall back to the verbose-report parser — reported, never silent,
+    // because a fallback that scores is indistinguishable from a fallback that lies.
+    let django_json = match runner {
+        TestRunner::DjangoRuntests => install_django_json_runner(repo_dir).await,
+        TestRunner::Pytest => false,
+    };
+    let owned_args = test_invocation_with(runner, test_files, django_json);
     let args: Vec<&str> = owned_args.iter().map(String::as_str).collect();
     let Ok(out) = run(&venv_py.to_string_lossy(), &args, Some(repo_dir)).await else {
         return (
@@ -1353,6 +1557,22 @@ pub async fn run_tests(
     );
     let (by_node, by_func) = match runner {
         TestRunner::Pytest => parse_pytest_report(&report),
+        // Machine-readable rows when the JSON runner is installed. If it emitted NOTHING
+        // (django too old for `--testrunner`, an import error in the runner, a crash before
+        // any test ran) fall back to the verbose report rather than scoring every id as
+        // failed — and say so, because a silent fallback here reads as a citizen's zero.
+        TestRunner::DjangoRuntests if django_json => {
+            let (by_node, by_func) = parse_django_json(&report);
+            if by_node.is_empty() {
+                tracing::warn!(
+                    "the django JSON runner emitted no rows — falling back to the verbose \
+                     report. Grades from this run are less trustworthy (#383)."
+                );
+                parse_django_report(&report)
+            } else {
+                (by_node, by_func)
+            }
+        }
         TestRunner::DjangoRuntests => parse_django_report(&report),
     };
     let verdicts = ids
