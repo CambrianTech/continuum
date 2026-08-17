@@ -1053,6 +1053,28 @@ impl ActionCommand for BenchmarkDispatch {
                     .to_string(),
             ));
         }
+        // #442 (roster half) + #412: a dispatch fired inside the post-boot resume window
+        // used to find an EMPTY roster and refuse instantly — so the operator hand-rolled
+        // a sleep-loop around dispatch (run by hand twice on 2026-08-17; a runbook line
+        // is a design defect). The serving half of #442 already parks
+        // (`await_ready_serving` below); the roster half now parks the same way: wait
+        // ONLY while the roster is EMPTY (citizens are still being re-hosted), bounded.
+        // An unknown NAME against a LIVE roster still fails fast — that error means a
+        // typo, never a resume in progress.
+        const ROSTER_RESUME_WAIT: std::time::Duration = std::time::Duration::from_secs(180);
+        const ROSTER_RESUME_POLL: std::time::Duration = std::time::Duration::from_secs(5);
+        let wait_started = std::time::Instant::now();
+        while self.registry.roster_snapshot().is_empty()
+            && wait_started.elapsed() < ROSTER_RESUME_WAIT
+        {
+            tracing::info!(
+                waited_s = wait_started.elapsed().as_secs(),
+                "dispatch: roster is empty (post-boot resume window, #412) — waiting for \
+                 citizens to be hosted rather than refusing"
+            );
+            tokio::time::sleep(ROSTER_RESUME_POLL).await;
+        }
+
         // Resolve the dispatch roster against THIS machine's live citizens (never our
         // names): empty request → the whole live roster; explicit names → validated or
         // fail-loud. This is the generalization for all repo users — dispatch targets the
