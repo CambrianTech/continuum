@@ -1161,6 +1161,27 @@ pub fn runner_for_repo(repo: &str) -> TestRunner {
 /// `tests/` is on `sys.path` when runtests.py runs, so a bare module name resolves.
 const DJANGO_JSON_RUNNER_MODULE: &str = "continuum_json_runner";
 
+/// The settings module that SELECTS the JSON runner — the only seam django offers.
+///
+/// `runtests.py` has **no `--testrunner` flag in any era**; it reads
+/// `settings.TEST_RUNNER` and defaults it only when unset (verified in-tree at 1.11,
+/// 2.2, 3.2, 4.2, 5.2 and main — same three lines throughout). Passing a flag it does
+/// not know is not a no-op: argparse rejects the whole invocation before a single test
+/// runs, which is exactly what happened live on django-10914 (`unrecognized arguments:
+/// --testrunner=…`, suite 0/40 in 4s). So the runner is selected by a settings module
+/// that re-exports django's own `test_sqlite` and overrides that one key.
+const DJANGO_JSON_SETTINGS_MODULE: &str = "continuum_json_settings";
+
+/// Settings for [`DJANGO_JSON_SETTINGS_MODULE`]. A pure ADDITION to the clone: django's
+/// own `test_sqlite` stays untouched and supplies every database/hasher setting, so this
+/// shim cannot drift from whatever the era's suite settings happen to be.
+const DJANGO_JSON_SETTINGS_SRC: &str = r#"# Written by continuum's SWE-bench grader. Not part of django.
+# runtests.py honours settings.TEST_RUNNER; it has no --testrunner flag. Inherit
+# django's own suite settings verbatim and override only the runner.
+from test_sqlite import *  # noqa: F401,F403
+TEST_RUNNER = "continuum_json_runner.JsonRunner"
+"#;
+
 /// A `DiscoverRunner` that reports each test by its CANONICAL id instead of by prose.
 ///
 /// WHY THIS EXISTS RATHER THAN A BETTER REGEX. unittest's verbose output is a rendering,
@@ -1205,26 +1226,30 @@ class JsonRunner(DiscoverRunner):
         return result
 "#;
 
-/// Drop the JSON runner into the clone's `tests/` dir. Returns whether it is usable.
-/// Idempotent — grading re-runs over the same clone just overwrite it.
+/// Drop the JSON runner AND the settings module that selects it into the clone's `tests/`
+/// dir. Returns whether both are usable — either alone does nothing, so this is one unit.
+/// Idempotent — grading re-runs over the same clone just overwrite them.
 async fn install_django_json_runner(repo_dir: &Path) -> bool {
     let dir = repo_dir.join("tests");
     if !dir.is_dir() {
         return false;
     }
-    let path = dir.join(format!("{DJANGO_JSON_RUNNER_MODULE}.py"));
-    match std::fs::write(&path, DJANGO_JSON_RUNNER_SRC) {
-        Ok(()) => true,
-        Err(e) => {
+    for (module, src) in [
+        (DJANGO_JSON_RUNNER_MODULE, DJANGO_JSON_RUNNER_SRC),
+        (DJANGO_JSON_SETTINGS_MODULE, DJANGO_JSON_SETTINGS_SRC),
+    ] {
+        let path = dir.join(format!("{module}.py"));
+        if let Err(e) = std::fs::write(&path, src) {
             tracing::warn!(
                 path = %path.display(),
                 error = %e,
                 "could not install the django JSON test runner — falling back to parsing the \
                  verbose report, which mis-attributes docstringed tests (#383)"
             );
-            false
+            return false;
         }
     }
+    true
 }
 
 /// One machine-readable row per test: `CONTINUUM_TEST {"id": "...", "ok": true}`.
@@ -1276,21 +1301,26 @@ pub fn test_invocation_with(
         }
         TestRunner::DjangoRuntests => {
             // Mirrors the official harness: verbosity 2 prints one line per test (the
-            // report we parse), test_sqlite is the settings module django's own suite
-            // ships for exactly this, and --parallel 1 keeps the per-test lines from
-            // interleaving across workers.
+            // report we parse when there are no JSON rows), test_sqlite is the settings
+            // module django's own suite ships for exactly this, and --parallel 1 keeps the
+            // per-test lines from interleaving across workers.
+            //
+            // The JSON runner is selected THROUGH settings (`TEST_RUNNER`), because that is
+            // the seam runtests.py actually reads — see [`DJANGO_JSON_SETTINGS_MODULE`]. Our
+            // shim re-exports test_sqlite, so this stays one settings argument either way.
+            let settings = if django_json {
+                DJANGO_JSON_SETTINGS_MODULE
+            } else {
+                "test_sqlite"
+            };
             let mut args: Vec<String> = vec![
                 "tests/runtests.py".into(),
                 "--verbosity".into(),
                 "2".into(),
-                "--settings=test_sqlite".into(),
+                format!("--settings={settings}"),
                 "--parallel".into(),
                 "1".into(),
             ];
-            if django_json {
-                // `tests/` is on sys.path under runtests.py, so the bare module resolves.
-                args.push(format!("--testrunner={DJANGO_JSON_RUNNER_MODULE}.JsonRunner"));
-            }
             args.extend(test_files.iter().map(|f| django_directive(f)));
             args
         }
@@ -1558,9 +1588,11 @@ pub async fn run_tests(
     let (by_node, by_func) = match runner {
         TestRunner::Pytest => parse_pytest_report(&report),
         // Machine-readable rows when the JSON runner is installed. If it emitted NOTHING
-        // (django too old for `--testrunner`, an import error in the runner, a crash before
-        // any test ran) fall back to the verbose report rather than scoring every id as
-        // failed — and say so, because a silent fallback here reads as a citizen's zero.
+        // (an import error in the runner or settings shim, a runtests.py that rejected the
+        // invocation, a crash before any test ran) fall back to the verbose report rather
+        // than scoring every id as failed — and say so, because a silent fallback here
+        // reads as a citizen's zero. This fallback is what kept django-10914's broken
+        // `--testrunner` invocation from grading as 40 capability failures.
         TestRunner::DjangoRuntests if django_json => {
             let (by_node, by_func) = parse_django_json(&report);
             if by_node.is_empty() {
@@ -2297,6 +2329,40 @@ diff --git a/sympy/solvers/tests/test_other.py b/sympy/solvers/tests/test_other.
             ],
             "the pytest argv is byte-identical to the pre-seam grader"
         );
+    }
+
+    // what this catches: selecting the JSON runner through a flag runtests.py does not have.
+    // Shipped once as `--testrunner=continuum_json_runner.JsonRunner` — argparse rejected the
+    // WHOLE invocation ("unrecognized arguments"), so django-10914's own GOLD patch graded
+    // 0/40 in 4 seconds. runtests.py has no such flag in ANY era; it reads settings.TEST_RUNNER
+    // and defaults it only when unset (verified in-tree at 1.11/2.2/3.2/4.2/5.2/main). So the
+    // runner is selected by a settings MODULE, and the invocation must differ from the plain
+    // one in exactly one argument — the settings value — and in nothing else.
+    #[test]
+    fn the_json_runner_is_selected_through_settings_never_a_flag() {
+        let files = vec!["tests/expressions/tests.py".to_string()];
+        let plain = test_invocation_with(TestRunner::DjangoRuntests, &files, false);
+        let json = test_invocation_with(TestRunner::DjangoRuntests, &files, true);
+
+        assert_eq!(plain.len(), json.len(), "the JSON path adds no argument");
+        let differences: Vec<_> = plain.iter().zip(&json).filter(|(a, b)| a != b).collect();
+        assert_eq!(
+            differences,
+            vec![(
+                &"--settings=test_sqlite".to_string(),
+                &format!("--settings={DJANGO_JSON_SETTINGS_MODULE}")
+            )],
+            "settings is the ONLY difference: {plain:?} vs {json:?}"
+        );
+        assert!(
+            !json.iter().any(|a| a.contains("--testrunner")),
+            "runtests.py has no --testrunner flag; passing one aborts the run before any test"
+        );
+        // The shim must inherit django's own suite settings rather than restate them, or it
+        // drifts from whatever the era's test_sqlite happens to configure.
+        assert!(DJANGO_JSON_SETTINGS_SRC.contains("from test_sqlite import *"));
+        assert!(DJANGO_JSON_SETTINGS_SRC
+            .contains(&format!("TEST_RUNNER = \"{DJANGO_JSON_RUNNER_MODULE}.JsonRunner\"")));
     }
 
     // what this catches: django report ids never resolving. The dataset's FAIL_TO_PASS
