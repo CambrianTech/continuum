@@ -1901,6 +1901,73 @@ impl Faculty for LlmDeliberationFaculty {
             }
         }
 
+        // AN EMPTY COMPLETION IS NOT A CHOSEN SILENCE (the `Err` arm's missing twin).
+        //
+        // The `Err` arm above refuses to let a FAILED model collapse into a serene
+        // `Pass` — [[fallbacks-are-illegal-fail-loud]]. But a lane can also answer
+        // `Ok` with NOTHING, and that walked straight past the guard and settled as
+        // an ordinary non-Act. Two live shapes, both measured 2026-08-16:
+        //
+        //  * the server generated tokens that never reached `content` — Qwen3.8 under
+        //    `--jinja` opens `<think>`, and an unclosed block leaves `extract_reasoning`
+        //    branch (3) with empty text and the whole tail as reasoning (#181). Direct
+        //    probe against the live lane: 70-token prompt, `finish_reason: length`,
+        //    `completion_tokens: 16`, `content: ""`.
+        //  * the lane returned 0 tokens in AND out in 28ms (`finish_reason: stop`) —
+        //    Solenne's capture on the turn her benchmark run died.
+        //
+        // Cost of laundering it: `agent/solve` reads "she chose not to act" → acts=0,
+        // empty patch → the whole run voids as an INFRA VOID after three attempts; a
+        // LIVE citizen reads it as a silent turn, which is indistinguishable from
+        // withdrawal. Measured across every capture on disk: 47 of 862 responses
+        // (5.5%) are empty-text, spread over ~19 citizens — and the all-empty column
+        // is exactly the citizens whose "I've been repetitive, I'll remain silent"
+        // turns are the standing round-killer (#390/#414). They were not withdrawing.
+        // Nothing came back, and the substrate wrote it down as a choice.
+        //
+        // SCOPE: a native tool turn legitimately carries empty content, so ToolUse and
+        // any present tool_calls are excluded — this fires only when the turn yields
+        // no text, no tool call, and therefore nothing to act or speak with. The
+        // reasoning tail rides on the fault so the receipt says WHICH shape it was:
+        // thought-but-committed-nothing, or the lane returned void.
+        if resp.text.trim().is_empty()
+            && !matches!(resp.finish_reason, FinishReason::ToolUse)
+            && resp.tool_calls.as_ref().is_none_or(|c| c.is_empty())
+        {
+            let reasoning_tokens = resp.reasoning.as_ref().map_or(0, |r| r.len());
+            let why = if reasoning_tokens > 0 {
+                format!(
+                    "the model produced {reasoning_tokens} chars of REASONING and committed \
+                     no answer (finish_reason {:?}) — an unclosed think-block or a budget \
+                     exhausted mid-thought, never a decision to stay silent",
+                    resp.finish_reason
+                )
+            } else {
+                format!(
+                    "the lane returned an EMPTY completion with no reasoning and no tool call \
+                     (finish_reason {:?}) — nothing was generated, never a decision to stay \
+                     silent",
+                    resp.finish_reason
+                )
+            };
+            tracing::warn!(
+                persona = %self.persona_name,
+                finish_reason = ?resp.finish_reason,
+                reasoning_chars = reasoning_tokens,
+                gen_await_ms,
+                "empty completion surfaced as a FAULT (not a silent Pass)"
+            );
+            crate::probe!(
+                class = "delib.empty_completion",
+                persona = %self.persona_name,
+                reasoning_chars = reasoning_tokens,
+                gen_await_ms,
+                "the lane answered with nothing — surfacing a fault so it can never be \
+                 read as chosen silence"
+            );
+            return Some(Contribution::deliberation_fault(why));
+        }
+
         // Did she choose to act? Two shapes, both → `Decision::Act`:
         //  (a) the adapter returned a native tool-use turn (FinishReason::ToolUse);
         //  (b) the model emitted a tool call as JSON in its prose (small models that
