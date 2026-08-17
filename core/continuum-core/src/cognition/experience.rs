@@ -492,10 +492,20 @@ pub fn append_experience(
 /// Storage is keyed by [`crate::identity::citizen_peer_dir`] — one spelling of the
 /// citizen-layout decision, so this producer cannot drift from the consumer that
 /// drains the same stream.
+///
+/// ## Why there is no `stimulus` parameter
+///
+/// The stimulus is not passed in: it is READ OFF the outcome
+/// (`SettleOutcome.world_state`, set on every return path of the settle driver to
+/// the burst it actually deliberated over). A `stimulus: &str` argument would be a
+/// second, independent expression of "what she was responding to" — free to
+/// disagree with what the turn genuinely perceived, and it already did: the first
+/// call site passed only the inbound message text while the mind had settled over
+/// the whole rendered burst. Deriving it from the required argument makes the
+/// disagreement unrepresentable instead of merely discouraged.
 pub fn record_lived_turn(
     root: &std::path::Path,
     peer: crate::identity::PeerId,
-    stimulus: &str,
     settled: &crate::cognition::act_observe::SettleOutcome,
 ) {
     let peer_dir = crate::identity::citizen_peer_dir(root, peer);
@@ -509,7 +519,7 @@ pub fn record_lived_turn(
         );
         return;
     }
-    let record = ExperienceRecord::from_lived_turn(stimulus, settled);
+    let record = ExperienceRecord::from_lived_turn(&settled.world_state, settled);
     if let Err(e) = append_experience(&peer_dir, &record) {
         tracing::warn!(
             peer = %peer,
@@ -789,11 +799,19 @@ mod tests {
             "a fresh citizen's stream starts empty"
         );
 
-        record_lived_turn(root.path(), peer, "what did we decide about the grader?", &settled);
+        record_lived_turn(root.path(), peer, &settled);
 
         let stream = load_experiences(&crate::identity::citizen_peer_dir(root.path(), peer));
         assert_eq!(stream.len(), 1, "the lived turn reached her stream");
-        assert_eq!(stream[0].task.prompt, "what did we decide about the grader?");
+        // The stimulus is the outcome's OWN world_state, never a separately-passed
+        // string: the record therefore cannot describe a stimulus the turn did not
+        // actually perceive. (The first wiring passed only the inbound message text
+        // while the mind had settled over the whole rendered burst — the two could
+        // disagree, and did.)
+        assert_eq!(
+            stream[0].task.prompt, settled.world_state,
+            "the recorded stimulus IS what she deliberated over"
+        );
         assert!(
             stream[0].task.test.is_none(),
             "still no objective grader — the append must not invent one"
@@ -805,7 +823,7 @@ mod tests {
         );
 
         // Two turns append, never overwrite — a stream, not a slot.
-        record_lived_turn(root.path(), peer, "and the docstring ids?", &settled);
+        record_lived_turn(root.path(), peer, &settled);
         assert_eq!(
             load_experiences(&crate::identity::citizen_peer_dir(root.path(), peer)).len(),
             2
@@ -1204,6 +1222,88 @@ mod tests {
             let dir = std::env::temp_dir().join(format!("exp-none-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             assert!(load_experiences(&dir).is_empty());
+        }
+
+        // what this catches: the lived-turn producer wired per-CALL-SITE again.
+        //
+        // The regression this pins is not hypothetical — it is what shipped. The
+        // producer was first called from ONE of the three `drive_to_settle` sites in
+        // `service_loop`, so the self-tick and held-work paths settled turns that no
+        // record ever described, and zero `LivedTurn` records existed on disk while
+        // citizens were demonstrably deliberating. The fix moved the call INTO the
+        // settle driver, the one place a `SettleOutcome` is born.
+        //
+        // So the invariant is a COUNT, not a location-check: exactly one production
+        // caller, and it is the driver. A second caller is either a double-record or
+        // a path that opted itself out of learning; both are the same defect class
+        // ([[the-same-bug-at-two-sites-is-a-missing-constraint]]).
+        #[test]
+        fn the_lived_turn_producer_has_exactly_one_production_caller_the_settle_driver() {
+            // `//`-prefixed content is dropped so prose naming the function — this
+            // very comment, and the doc on `record_lived_turn` — can never read as a
+            // call. Crude on purpose: a `//` inside a string literal could only ever
+            // HIDE a call from us, and a hidden call still trips the count if real.
+            fn code_only(src: &str) -> String {
+                src.lines()
+                    .map(|l| match l.find("//") {
+                        Some(i) => &l[..i],
+                        None => l,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+            fn walk(dir: &std::path::Path, out: &mut Vec<(std::path::PathBuf, String)>) {
+                let Ok(entries) = std::fs::read_dir(dir) else {
+                    return;
+                };
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        walk(&path, out);
+                    } else if path.extension().is_some_and(|e| e == "rs") {
+                        if let Ok(text) = std::fs::read_to_string(&path) {
+                            out.push((path, text));
+                        }
+                    }
+                }
+            }
+            let mut files = Vec::new();
+            walk(
+                &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+                &mut files,
+            );
+            assert!(!files.is_empty(), "the source walk found nothing — the guard \
+                would be vacuously green, which is worse than red");
+
+            let mut callers: Vec<String> = Vec::new();
+            for (path, src) in &files {
+                // This file DEFINES it and its own tests exercise it — neither is a
+                // production call site.
+                if path.ends_with("cognition/experience.rs") {
+                    continue;
+                }
+                if code_only(src).contains("record_lived_turn(") {
+                    callers.push(path.display().to_string());
+                }
+            }
+
+            assert_eq!(
+                callers.len(),
+                1,
+                "expected exactly ONE production caller of record_lived_turn (the \
+                 settle driver); found {}: {callers:?}. If you are adding a call at a \
+                 turn call site, don't — `drive_to_settle` already records every \
+                 outcome it produces, so a second call double-writes her stream. If \
+                 you are adding a NEW way to settle a turn that bypasses the driver, \
+                 that is the thing to reconsider.",
+                callers.len()
+            );
+            assert!(
+                callers[0].ends_with("cognition/act_observe/settle.rs"),
+                "the one caller must be the settle driver — the only place a \
+                 SettleOutcome is born; found {}",
+                callers[0]
+            );
         }
     }
 }

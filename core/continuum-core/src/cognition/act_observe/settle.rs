@@ -34,7 +34,48 @@ use super::types::{SettleOutcome, SettleStep};
 /// forever" persona is a fitness gap to train away, never a substrate ceiling —
 /// §4). When the budget runs out mid-action, the final un-driven `Act` is
 /// returned and the grader scores it as unfinished — never a fabricated answer.
+///
+/// ## Why the lived-experience write lives HERE and not at the call sites
+///
+/// This function is the ONE place a `SettleOutcome` is produced, so it is the one
+/// place "a turn was lived" can be recorded without the fact being re-derived per
+/// caller. It was not always: the #319 producer was first wired into a SINGLE
+/// service_loop call site (the directed-message path), which left the self-tick
+/// path and the held-work path settling turns that no experience record ever
+/// described. Three callers, one of them remembering — the missing-constraint
+/// shape ([[the-same-bug-at-two-sites-is-a-missing-constraint]]), and the reason
+/// zero `LivedTurn` records existed on disk while citizens were demonstrably
+/// deliberating.
+///
+/// Recording once around the driver — rather than at each of its four return
+/// paths — is deliberate for the same reason: a fifth return path added later
+/// inherits the record instead of silently opting out of learning.
+///
+/// The write is gated on [`WorkspaceCycle::acting`] because that is where a
+/// citizen's identity lives. A cycle with no `ActingBody` is pure cognition (a
+/// faculty test, a replay) — it is nobody's lived experience, so there is no
+/// stream it belongs in. That is a structural absence, not a skipped write.
 pub async fn drive_to_settle(
+    cycle: &WorkspaceCycle,
+    burst: impl Into<Burst>,
+    room_id: Uuid,
+    max_acts: usize,
+    framing: TurnFraming,
+) -> SettleOutcome {
+    let settled = settle_to_outcome(cycle, burst, room_id, max_acts, framing).await;
+    if let Some(body) = cycle.acting() {
+        crate::cognition::experience::record_lived_turn(
+            &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            crate::identity::PeerId::from_uuid(body.persona_id),
+            &settled,
+        );
+    }
+    settled
+}
+
+/// The settle loop itself. Private so that [`drive_to_settle`] is the only way to
+/// reach it — every produced outcome therefore passes the lived-experience seam.
+async fn settle_to_outcome(
     cycle: &WorkspaceCycle,
     burst: impl Into<Burst>,
     room_id: Uuid,
