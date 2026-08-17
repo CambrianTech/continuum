@@ -105,7 +105,7 @@ async fn run() -> Result<(), String> {
         }
         // Standalone #194 check: prove the RUNNING core is built from current HEAD,
         // without a full reboot. Prints "✅ deploy verified" or fails loud on mismatch.
-        "deploy-verify" | "verify" => verify_deployed_build().await,
+        "deploy-verify" | "verify" => verify_deployed_build(false).await,
         // Anything else is a command name. `--help`/`-h` renders the manual in the
         // CLI's paradigm (bash flags), adapted from the SAME schema the AI gets as
         // a tool spec. Otherwise dispatch, params adapted procedurally.
@@ -711,7 +711,15 @@ async fn reboot(force: bool) -> Result<(), String> {
     println!(
         "core answering (socket={socket}) after ~{secs}s — verifying deploy provenance (#194)"
     );
-    verify_deployed_build().await
+    // Did THIS reboot replace the installed CLI? Only when it went through the build script
+    // (a source tree exists — the same condition `plan_launch` uses to pick `Script` for a
+    // FromSource launch) AND the platform allows a self-build. Both terms matter: on an
+    // installed node with no checkout nothing was rebuilt, and on Windows `cli_self_build`
+    // deliberately skips. Getting this wrong in either direction re-creates the noise this
+    // flag exists to remove, or hides a genuinely stale CLI behind a reassuring handoff line.
+    let rebuilt_cli = locate_start_script().is_ok()
+        && matches!(cli_self_build(std::env::consts::OS), CliSelfBuild::Rebuild);
+    verify_deployed_build(rebuilt_cli).await
 }
 
 /// Prove the running core is built from the source this deploy shipped — the honest half of
@@ -737,7 +745,12 @@ async fn reboot(force: bool) -> Result<(), String> {
 /// describing the binary you are RUNNING rather than one found on disk.
 const CLI_BUILD_SHA: &str = env!("CONTINUUM_BUILD_GIT_SHA");
 
-async fn verify_deployed_build() -> Result<(), String> {
+/// `rebuilt_cli` says whether THIS invocation replaced the installed CLI — true from
+/// `reboot` (start-server.sh rebuilds + reinstalls it unless `cli_self_build` skips the
+/// platform), false from a bare `deploy-verify`. It is what lets the CLI-provenance note
+/// tell a HANDOFF ("the next run gets the new CLI") apart from real STALENESS, instead of
+/// warning on every successful deploy.
+async fn verify_deployed_build(rebuilt_cli: bool) -> Result<(), String> {
     let socket = socket_path();
     // The RUNNING core's provenance, from the process itself.
     let reply = connection()
@@ -763,7 +776,7 @@ async fn verify_deployed_build() -> Result<(), String> {
     let running_desc = describe_running_core(&socket);
     // The CLI's own provenance rides alongside the core's, on BOTH outcomes: a stale CLI
     // is relevant whether or not the core swap took.
-    let cli_note = cli_staleness_note(CLI_BUILD_SHA, &expected, &expected_source);
+    let cli_note = cli_staleness_note(CLI_BUILD_SHA, &expected, &expected_source, rebuilt_cli);
     match deploy_verdict(
         actual.as_deref(),
         &expected,
