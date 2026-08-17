@@ -406,25 +406,56 @@ pub fn plan_serving(
         return None;
     }
 
-    // GPU-viable = weights + at least one lane's KV fit the honest budget.
-    // "At least one lane" is the floor: a model we can't run even single-laned
-    // on the GPU is not a serving option on this host.
-    let fits_one_lane = |m: &ModelFootprint| {
-        m.weights_bytes.saturating_add(m.kv_at(MIN_SERVE_CTX)) <= host.usable_bytes
+    // GPU-viable = weights + at least one lane's KV fit the honest budget AT a
+    // given per-slot window. WHICH window is the whole question (#438-class):
+    //
+    // This filter used to be hardcoded to `MIN_SERVE_CTX` (2048) — bare survival.
+    // That made "viable" mean "can technically hold a 2k window", so selection
+    // always crowned the most capable model that cleared a trivial bar and then
+    // let the window collapse to it. Glass-boxed live 2026-08-17 on this box:
+    // a 27B chosen at `usable_gb=5`, `served_window=2048` against a MEASURED
+    // `demand_window=63817` — a mind handed 3% of the context its own turn needs.
+    // Every act it took was against a window too small to hold the task statement.
+    //
+    // The inconsistency was INTERNAL to this function: the lane-count loop below
+    // already refuses to add a slot that can't clear `BOOTSTRAP_WORKING_SET`
+    // ("one full turn"), because 1 lane @ 30k beats 2 lanes @ 2k. But when even
+    // ONE lane couldn't clear that floor it fell back to `.unwrap_or(1)` and
+    // called the result "honest starvation, surfaced downstream" — while the
+    // MODEL was never reconsidered. Shedding a lane and shedding capability are
+    // the same move for the same reason; only the first was implemented. The
+    // correct response to "one lane can't hold a turn" is a SMALLER MODEL that
+    // can, not the bigger model blinded. A model that fits only at 2048 is not
+    // more capable on this host — it is unusable on this host.
+    //
+    // So viability is now tested at the SAME "one full turn" standard the lane
+    // floor uses, with a documented degrade: if NO candidate clears it, fall back
+    // to the old `MIN_SERVE_CTX` bar so a genuinely tiny host still serves
+    // something rather than nothing (honest starvation is then real, not a
+    // selection artifact). Deliberately the STABLE bootstrap constant and NOT the
+    // moving measured p95 — coupling model CHOICE to a jittering demand signal is
+    // the 718-replan flap that wedged three benchmark runs (see the lane floor's
+    // own note). The served window still refines with measurement below.
+    let fits_one_lane_at = |m: &ModelFootprint, ctx: u32| {
+        m.weights_bytes.saturating_add(m.kv_at(ctx)) <= host.usable_bytes
     };
 
     // Prefer the MOST CAPABLE model that fits a lane. Ties broken toward the
     // larger model (more headroom spent = the more capable variant), then by
     // id descending for deterministic selection.
-    let best = candidates
-        .iter()
-        .filter(|m| fits_one_lane(m))
-        .max_by(|a, b| {
-            a.capability_rank
-                .cmp(&b.capability_rank)
-                .then(a.weights_bytes.cmp(&b.weights_bytes))
-                .then(b.model_id.cmp(&a.model_id))
-        });
+    let most_capable_fitting = |ctx: u32| {
+        candidates
+            .iter()
+            .filter(|m| fits_one_lane_at(m, ctx))
+            .max_by(|a, b| {
+                a.capability_rank
+                    .cmp(&b.capability_rank)
+                    .then(a.weights_bytes.cmp(&b.weights_bytes))
+                    .then(b.model_id.cmp(&a.model_id))
+            })
+    };
+    let best = most_capable_fitting(BOOTSTRAP_WORKING_SET)
+        .or_else(|| most_capable_fitting(MIN_SERVE_CTX));
 
     let Some(model) = best else {
         // Nothing fits a lane on the GPU budget. Degrade honestly: name the
@@ -825,6 +856,69 @@ mod tests {
             f.compute_buffer_per_lane(),
             "zero window + zero lanes → one lane's compute floor, never zero"
         );
+    }
+
+    // what this catches: the governor serving a mind a window too small to think in
+    // because MODEL CHOICE was floored at bare survival while LANE COUNT was floored at
+    // a full turn. Glass-boxed live 2026-08-17: a 27B picked at usable_gb=5 →
+    // served_window=2048 against a measured demand_window=63817, and every SWE act ran
+    // against a context that could not hold the task statement. The pre-fix filter asked
+    // "can this model hold MIN_SERVE_CTX (2048)?", so the biggest model always won and
+    // then starved the window to that trivial bar. Shedding a lane and shedding
+    // capability are the same move for the same reason (1 lane @ 30k beats 2 lanes @ 2k;
+    // a 14B @ 30k beats a 27B @ 2k) — only the first had been implemented.
+    #[test]
+    fn model_choice_sheds_capability_rather_than_starve_the_window() {
+        // Big model clears 2048 but NOT a full turn; small model clears a full turn.
+        let big = fp("big-27b", 28, 256 * 1024, 131_072, 5);
+        let small = fp("small-14b", 10, 64 * 1024, 131_072, 3);
+        let candidates = [big.clone(), small.clone()];
+        let demand = ServingDemand::new(1, None);
+
+        // 30GB: big fits ONLY at the survival floor (28 + 0.5 ≤ 30, but 28 + 4.3 > 30).
+        // Pre-fix this crowned `big` and served 2048. It must now pick `small`.
+        let plan = plan_serving(
+            HostBudget { usable_bytes: 30 * GB, perf_cores: 10 },
+            &candidates,
+            demand,
+        )
+        .expect("a model fits");
+        assert_eq!(
+            plan.base_model.model_id, "small-14b",
+            "a model that fits only at the 2048 survival floor is not a serving option \
+             on this host — shed capability, never starve the window"
+        );
+        assert!(
+            plan.served_context_window >= BOOTSTRAP_WORKING_SET,
+            "the served window must clear one full turn ({BOOTSTRAP_WORKING_SET}), got {}",
+            plan.served_context_window
+        );
+
+        // NEGATIVE CONTROL — the floor must not cost capability when the host can afford
+        // it. On a roomy host the 27B clears a full turn and must still win, otherwise
+        // this fix would have silently downgraded every capable box.
+        let roomy = plan_serving(
+            HostBudget { usable_bytes: 64 * GB, perf_cores: 10 },
+            &candidates,
+            demand,
+        )
+        .expect("a model fits");
+        assert_eq!(
+            roomy.base_model.model_id, "big-27b",
+            "when the budget clears a full turn, the MOST capable model still wins"
+        );
+
+        // DEGRADE PATH — when NO candidate clears a full turn, fall back to the old
+        // survival bar so a genuinely tiny host serves something rather than nothing.
+        // Honest starvation is then real, not an artifact of the selection rule.
+        let tiny = plan_serving(
+            HostBudget { usable_bytes: 11 * GB, perf_cores: 4 },
+            &candidates,
+            demand,
+        )
+        .expect("the survival fallback still yields a model");
+        assert_eq!(tiny.base_model.model_id, "small-14b");
+        assert!(tiny.fits_on_gpu, "the fallback still serves on GPU, just narrowly");
     }
 
     // what this catches: the "alive" OOM (2026-07-16). The served window's FULL live
@@ -1479,13 +1573,27 @@ mod tests {
     // rather than flap the served model on a transient budget bump.
     #[test]
     fn stable_keeps_incumbent_when_upgrade_lacks_headroom() {
-        // 10GB: big (9.7GB) fits a lane but exceeds the 0.9*10=9GB headroom bar.
+        // LOCAL fixture, not `pair()`. This test needs `big` to be a LEGITIMATE upgrade
+        // target (clears the full-turn window floor, so selection would really pick it)
+        // that nonetheless fails the switch-UP headroom bar. With the shared `pair()` at
+        // 10GB those two are unsatisfiable together: big (9GB + 90k/tok) needs 10.47GB to
+        // clear one full turn, so at any budget where it lacks 0.9x headroom it also
+        // isn't full-turn viable — and a model that can only be served blind is not an
+        // upgrade worth flapping for. Before the model-choice floor landed, the old
+        // MIN_SERVE_CTX bar admitted big here on 184MB of KV and this fixture read as
+        // "fresh would pick big" when what fresh actually had was a 2048-token 9GB model.
+        // Sized instead so big genuinely clears a full turn (18 + 1.47 = 19.5 <= 20) yet
+        // still exceeds the headroom bar (18.18 > 0.9 * 20 = 18).
         let host = HostBudget {
-            usable_bytes: 10 * GB,
+            usable_bytes: 20 * GB,
             perf_cores: 6,
         };
+        let models = vec![
+            fp("small", 1, 4_000, 32_768, 1),
+            fp("big", 18, 90_000, 262_144, 3),
+        ];
         assert_eq!(
-            plan_serving(host, &pair(), ServingDemand::new(MAX_LANES, None))
+            plan_serving(host, &models, ServingDemand::new(MAX_LANES, None))
                 .unwrap()
                 .base_model
                 .model_id,
@@ -1494,7 +1602,7 @@ mod tests {
         );
         let stable = plan_serving_stable(
             host,
-            &pair(),
+            &models,
             Some("small"),
             ServingDemand::new(MAX_LANES, None),
         )
