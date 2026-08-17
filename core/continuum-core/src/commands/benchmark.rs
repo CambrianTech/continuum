@@ -1442,8 +1442,18 @@ impl ActionCommand for BenchmarkDispatch {
             // STAGED SWE card has a solve to fire here (a gym card self-grades differently).
             if staged_ok && solves_fired < solve_cap {
                 if let CardWork::Swe { .. } = &pc.work {
-                    crate::modules::work::dispatch_staged_swe_solve(ctx, &airc, *who_peer, card_id)
-                        .await;
+                    // The run room goes WITH the solve: her acts radiate receipts
+                    // into the room this dispatch just spawned, so the round's work
+                    // is visible where the round lives (#243/#329) instead of only
+                    // in a ledger file that lands when it is already over.
+                    crate::modules::work::dispatch_staged_swe_solve(
+                        ctx,
+                        &airc,
+                        *who_peer,
+                        card_id,
+                        Some(room.room_id.as_uuid()),
+                    )
+                    .await;
                     solves_fired += 1;
                 }
             }
@@ -1929,7 +1939,18 @@ pub(crate) async fn grade_swe(p: SweGradeParams) -> Result<SweGradeResult, Comma
             patch_bytes,
         )));
     }
-    let verdict = swe_bench::grade(&instance, &repo, candidate.as_deref()).await;
+    // THE SPINE CHECK IS NOW ENFORCED, not just run. `gold` graded through the plain
+    // `grade` path returned a bare `resolved: false`, which is byte-identical downstream to
+    // a citizen's capability zero — so the `gold` doc's own demand ("if it does not, the
+    // environment is wrong and no other number from it means anything") was a sentence
+    // addressed to a human and enforced by nobody. `gold_gate` stamps the verdict's `error`
+    // with WHY, and an `error` is contractually an ABSENCE, never a tallied failure
+    // (see `SweVerdict::error`). One path, so every caller inherits the labelling.
+    let verdict = if p.gold.unwrap_or(false) {
+        swe_bench::gold_gate(&instance, &repo).await
+    } else {
+        swe_bench::grade(&instance, &repo, candidate.as_deref()).await
+    };
 
     // #319: a WORKSPACE grade is a citizen's lived, objectively judged work —
     // append it to her experience stream. Only her: the gold/raw-patch arms are

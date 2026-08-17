@@ -1601,6 +1601,24 @@ impl WorkspaceCycle {
         }
     }
 
+    /// How many acts these hands have executed, EVER — the monotonic counter, not
+    /// the capacity-bounded receipt ring ([`super::working_memory::WorkingMemory::actions_taken`]).
+    /// `None` for a pure-cognition cycle (no hands, so the question has no answer —
+    /// distinct from `Some(0)`, which is hands that have not acted yet).
+    ///
+    /// Exists so a LONG-RUNNING drive can report its own liveness WHILE it runs.
+    /// `drive_to_settle` returns its act count only at settlement, and a benchmark
+    /// attempt legitimately runs for hours — so every liveness surface downstream
+    /// (`benchmark/runs`, the bench board, the run-room panel) was reading a number
+    /// that could not move until the work was already over. Measured 2026-08-16:
+    /// two dispatched solves read `acts=0, stalled=false` for ten straight minutes
+    /// while their citizens were mid-turn, and the projection whose stated purpose
+    /// is "silence must never be ambiguous with progress" could not tell the two
+    /// apart. A wait-free atomic load, safe to poll on a heartbeat.
+    pub fn actions_taken(&self) -> Option<u64> {
+        self.acting.as_ref().map(|a| a.working_memory.actions_taken())
+    }
+
     /// Begin a memory-isolated measurement window over this cycle's hippocampus.
     ///
     /// `cognition/eval` drives the persona's REAL admission as it grades her, so

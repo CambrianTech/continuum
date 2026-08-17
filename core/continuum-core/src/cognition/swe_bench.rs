@@ -572,8 +572,39 @@ fn build_requires(repo_dir: &Path) -> Vec<String> {
 /// on this machine), the C is SUBJECT: demote exactly those three diagnostics back to the
 /// warnings they were. distutils APPENDS `CFLAGS` to its sysconfig baseline, so nothing else
 /// about the build changes, and modern code that doesn't trip them is untouched.
+///
+/// The FOURTH head (#383, measured live 2026-08-17 on astropy__astropy-14182, and the
+/// reason two dispatched rounds died at env-build after the jinja2 + build-requires fixes
+/// both landed): astropy vendors cfitsio, which vendors a 1990s zlib, whose
+/// `cextern/cfitsio/zlib/zutil.h:140` reads
+///
+/// ```c
+/// #if defined(MACOS) || defined(TARGET_OS_MAC)
+/// #  define OS_CODE  7
+/// #    ifndef fdopen
+/// #      define fdopen(fd,mode) NULL /* No fdopen() */
+/// ```
+///
+/// `TARGET_OS_MAC` is 1 on EVERY modern Apple SDK — it means "some Apple platform", not
+/// "classic Mac OS" as it did when this zlib was written. So the branch fires, `fdopen` is
+/// macro-replaced by `NULL`, and the system header's own declaration
+/// `FILE *fdopen(int, const char *)` becomes `FILE *NULL(int, const char *)` →
+/// `error: expected identifier or '('` in `<stdio.h>`, thousands of lines from anything
+/// astropy wrote. (The adjacent `'OS_CODE' macro redefined` warning is the same branch.)
+///
+/// The guard is `#ifndef fdopen`, so pre-defining it is the whole fix: `-Dfdopen=fdopen`
+/// makes the guard FALSE — the NULL stub is never emitted — and the macro itself is the
+/// identity, so every real `fdopen` call compiles to `fdopen`. Nothing is stubbed, nothing
+/// is renamed, no source is patched, and a repo that does not vendor this zlib never
+/// notices the flag.
+///
+/// It lives here rather than in a per-repo table because it is not an astropy fact — it is
+/// an ERA fact (old vendored zlib vs a modern Apple SDK), identical in shape to the three
+/// above: the compiler is HARNESS, the C is SUBJECT, and the subject built fine on the
+/// compilers of its own day.
 const ERA_CFLAGS: &str = "-Wno-error=incompatible-function-pointer-types \
-     -Wno-error=implicit-function-declaration -Wno-error=int-conversion";
+     -Wno-error=implicit-function-declaration -Wno-error=int-conversion \
+     -Dfdopen=fdopen";
 
 /// Build deps that a repo's DEPENDENCY sdists import at build time but that nothing installs
 /// under `--no-build-isolation` (we honor the top repo's `[build-system].requires`; a
@@ -1126,7 +1157,181 @@ pub fn runner_for_repo(repo: &str) -> TestRunner {
 
 /// The exact argv (after the venv's `python`) that runs an instance's test scope.
 /// Pure so the per-repo command shape is table-testable without a venv.
+/// The module name of the JSON runner dropped into django's `tests/` directory.
+/// `tests/` is on `sys.path` when runtests.py runs, so a bare module name resolves.
+const DJANGO_JSON_RUNNER_MODULE: &str = "continuum_json_runner";
+
+/// The settings module that SELECTS the JSON runner — the only seam django offers.
+///
+/// `runtests.py` has **no `--testrunner` flag in any era**; it reads
+/// `settings.TEST_RUNNER` and defaults it only when unset (verified in-tree at 1.11,
+/// 2.2, 3.2, 4.2, 5.2 and main — same three lines throughout). Passing a flag it does
+/// not know is not a no-op: argparse rejects the whole invocation before a single test
+/// runs, which is exactly what happened live on django-10914 (`unrecognized arguments:
+/// --testrunner=…`, suite 0/40 in 4s). So the runner is selected by a settings module
+/// that re-exports django's own `test_sqlite` and overrides that one key.
+const DJANGO_JSON_SETTINGS_MODULE: &str = "continuum_json_settings";
+
+/// Settings for [`DJANGO_JSON_SETTINGS_MODULE`]. A pure ADDITION to the clone: django's
+/// own `test_sqlite` stays untouched and supplies every database/hasher setting, so this
+/// shim cannot drift from whatever the era's suite settings happen to be.
+const DJANGO_JSON_SETTINGS_SRC: &str = r#"# Written by continuum's SWE-bench grader. Not part of django.
+# runtests.py honours settings.TEST_RUNNER; it has no --testrunner flag. Inherit
+# django's own suite settings verbatim and override only the runner.
+from test_sqlite import *  # noqa: F401,F403
+TEST_RUNNER = "continuum_json_runner.JsonRunner"
+"#;
+
+/// A `DiscoverRunner` that reports each test by its CANONICAL id instead of by prose.
+///
+/// WHY THIS EXISTS RATHER THAN A BETTER REGEX. unittest's verbose output is a rendering,
+/// not a data format: the outcome sits on the id line when a test has no docstring and on
+/// the DOCSTRING line when it does, django ≥4.1 changed the class-path shape, and a
+/// docstring can contain any characters including " ... " and " (". Every one of those is a
+/// way for a line-shaped parser to mis-attribute silently — and mis-attribution here does
+/// not look like a bug, it looks like a citizen who failed. `test.id()` is the id unittest
+/// itself uses; asking the runner for it removes the entire class of guess.
+///
+/// Skips and expected failures count as PASSES, unexpected successes as FAILURES — the same
+/// rule [`django_outcome`] applies, kept identical on purpose.
+const DJANGO_JSON_RUNNER_SRC: &str = r#"# Written by continuum's SWE-bench grader. Not part of django.
+import json, sys, unittest
+from django.test.runner import DiscoverRunner
+
+class _ContinuumResult(unittest.TextTestResult):
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.continuum_rows = {}
+    def _record(self, test, ok):
+        # shortDescription() is the docstring's first line — the SAME string unittest
+        # renders on its own output line, and therefore the id SWE-bench's own log parser
+        # captured for docstringed tests. Emitting it is not redundant: the dataset spells
+        # those tests BY THE DOCSTRING and by nothing else.
+        try:
+            desc = test.shortDescription() or ""
+        except Exception:
+            desc = ""
+        self.continuum_rows[test.id()] = (ok, desc)
+    def addSuccess(self, test):
+        super().addSuccess(test); self._record(test, True)
+    def addError(self, test, err):
+        super().addError(test, err); self._record(test, False)
+    def addFailure(self, test, err):
+        super().addFailure(test, err); self._record(test, False)
+    def addSkip(self, test, reason):
+        super().addSkip(test, reason); self._record(test, True)
+    def addExpectedFailure(self, test, err):
+        super().addExpectedFailure(test, err); self._record(test, True)
+    def addUnexpectedSuccess(self, test):
+        super().addUnexpectedSuccess(test); self._record(test, False)
+
+class JsonRunner(DiscoverRunner):
+    def get_resultclass(self):
+        return _ContinuumResult
+    def run_suite(self, suite, **kwargs):
+        result = super().run_suite(suite, **kwargs)
+        for tid, (ok, desc) in getattr(result, "continuum_rows", {}).items():
+            row = {"id": tid, "ok": ok}
+            if desc:
+                row["desc"] = desc
+            sys.stderr.write("CONTINUUM_TEST " + json.dumps(row) + "\n")
+        sys.stderr.flush()
+        return result
+"#;
+
+/// Drop the JSON runner AND the settings module that selects it into the clone's `tests/`
+/// dir. Returns whether both are usable — either alone does nothing, so this is one unit.
+/// Idempotent — grading re-runs over the same clone just overwrite them.
+async fn install_django_json_runner(repo_dir: &Path) -> bool {
+    let dir = repo_dir.join("tests");
+    if !dir.is_dir() {
+        return false;
+    }
+    for (module, src) in [
+        (DJANGO_JSON_RUNNER_MODULE, DJANGO_JSON_RUNNER_SRC),
+        (DJANGO_JSON_SETTINGS_MODULE, DJANGO_JSON_SETTINGS_SRC),
+    ] {
+        let path = dir.join(format!("{module}.py"));
+        if let Err(e) = std::fs::write(&path, src) {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "could not install the django JSON test runner — falling back to parsing the \
+                 verbose report, which mis-attributes docstringed tests (#383)"
+            );
+            return false;
+        }
+    }
+    true
+}
+
+/// One machine-readable row per test: `CONTINUUM_TEST {"id": …, "ok": …, "desc": …}`.
+///
+/// THREE spellings are registered for one outcome, because the dataset uses all three and a
+/// canonical id ALONE cannot resolve a django instance (measured on django-10914, gold gate):
+///
+/// | spelling | where it comes from | example |
+/// |---|---|---|
+/// | canonical id | `test.id()` | `test_utils.tests.AssertRaisesMsgTest.test_special_re_chars` |
+/// | unittest rendering | id, re-spelled | `test_special_re_chars (test_utils.tests.AssertRaisesMsgTest)` |
+/// | **docstring** | `test.shortDescription()` | `assertRaisesMessage shouldn't interpret RE special chars.` |
+///
+/// The third row is the one that is easy to miss and impossible to work around downstream.
+/// SWE-bench's own django ids were harvested from unittest's verbose log, and unittest prints
+/// the DOCSTRING in place of the id when a test has one — so for those tests the dataset's
+/// PASS_TO_PASS entry *is* the docstring, with no id anywhere in it. Verified in the dataset:
+/// 2 of django-10914's 98 p2p ids are docstring prose. Only the test itself knows its own
+/// docstring, which is why the runner emits it rather than the grader guessing.
+///
+/// Ids and renderings are unique, so they are inserted directly. Docstrings are NOT unique —
+/// two tests may share one — so they are AND-folded (pass only if every test carrying that
+/// docstring passed) and they never overwrite a real id.
+pub fn parse_django_json(report: &str) -> (HashMap<String, bool>, HashMap<String, bool>) {
+    let mut by_node = HashMap::new();
+    let mut by_func: HashMap<String, bool> = HashMap::new();
+    let mut by_desc: HashMap<String, bool> = HashMap::new();
+    for line in report.lines() {
+        let Some(payload) = line.trim().strip_prefix("CONTINUUM_TEST ") else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(payload) else {
+            continue;
+        };
+        let (Some(id), Some(ok)) = (v.get("id").and_then(|x| x.as_str()), v.get("ok").and_then(|x| x.as_bool()))
+        else {
+            continue;
+        };
+        by_node.insert(id.to_string(), ok);
+        if let Some((class_path, method)) = id.rsplit_once('.') {
+            by_node.insert(format!("{method} ({class_path})"), ok);
+            let entry = by_func.entry(method.to_string()).or_insert(true);
+            *entry = *entry && ok;
+        }
+        if let Some(desc) = v.get("desc").and_then(|x| x.as_str()) {
+            let desc = desc.trim();
+            if !desc.is_empty() {
+                let entry = by_desc.entry(desc.to_string()).or_insert(true);
+                *entry = *entry && ok;
+            }
+        }
+    }
+    // Docstrings fill gaps; they never shadow a canonical id or its rendering.
+    for (desc, ok) in by_desc {
+        by_node.entry(desc).or_insert(ok);
+    }
+    (by_node, by_func)
+}
+
 pub fn test_invocation(runner: TestRunner, test_files: &[String]) -> Vec<String> {
+    test_invocation_with(runner, test_files, false)
+}
+
+/// [`test_invocation`], plus whether django should be told to use the JSON runner.
+pub fn test_invocation_with(
+    runner: TestRunner,
+    test_files: &[String],
+    django_json: bool,
+) -> Vec<String> {
     match runner {
         TestRunner::Pytest => {
             let mut args: Vec<String> = vec!["-m".into(), "pytest".into()];
@@ -1137,14 +1342,23 @@ pub fn test_invocation(runner: TestRunner, test_files: &[String]) -> Vec<String>
         }
         TestRunner::DjangoRuntests => {
             // Mirrors the official harness: verbosity 2 prints one line per test (the
-            // report we parse), test_sqlite is the settings module django's own suite
-            // ships for exactly this, and --parallel 1 keeps the per-test lines from
-            // interleaving across workers.
+            // report we parse when there are no JSON rows), test_sqlite is the settings
+            // module django's own suite ships for exactly this, and --parallel 1 keeps the
+            // per-test lines from interleaving across workers.
+            //
+            // The JSON runner is selected THROUGH settings (`TEST_RUNNER`), because that is
+            // the seam runtests.py actually reads — see [`DJANGO_JSON_SETTINGS_MODULE`]. Our
+            // shim re-exports test_sqlite, so this stays one settings argument either way.
+            let settings = if django_json {
+                DJANGO_JSON_SETTINGS_MODULE
+            } else {
+                "test_sqlite"
+            };
             let mut args: Vec<String> = vec![
                 "tests/runtests.py".into(),
                 "--verbosity".into(),
                 "2".into(),
-                "--settings=test_sqlite".into(),
+                format!("--settings={settings}"),
                 "--parallel".into(),
                 "1".into(),
             ];
@@ -1170,32 +1384,115 @@ fn django_directive(file: &str) -> String {
 /// The report line is `test_combine (expressions.tests.CombinedExprTests) ... ok` on
 /// django ≤4.0, and on ≥4.1 the class path grows a trailing method repeat
 /// (`...CombinedExprTests.test_combine) ... ok`) — normalized back so dataset ids hit.
+/// unittest's outcome vocabulary → pass/fail, or `None` for a line that is not an outcome.
+///
+/// ONE place, because the report has TWO line shapes (id-and-outcome on one line, or
+/// id-then-docstring-and-outcome across two) and both must classify identically. Two copies
+/// of this match is how a `skipped` counts as a pass in one shape and a non-outcome in the
+/// other — silent, and invisible in aggregate scores.
+///
+/// `skipped` and `expected failure` are PASSES: SWE-bench's own harness treats a test that
+/// declines to run as satisfied, and a test the suite knows is broken as behaving correctly.
+/// `unexpected success` is a FAILURE for the same reason — the suite's expectation was wrong.
+fn django_outcome(outcome: &str) -> Option<bool> {
+    if outcome.starts_with("ok")
+        || outcome.starts_with("skipped")
+        || outcome.starts_with("expected failure")
+    {
+        Some(true)
+    } else if outcome.starts_with("FAIL")
+        || outcome.starts_with("ERROR")
+        || outcome.starts_with("unexpected success")
+    {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// THE TWO-LINE DOCSTRING FORM (fixed 2026-08-17, found by the gold gate).
+///
+/// unittest's verbose output puts the outcome on the test-id line ONLY when the test has no
+/// docstring. With a docstring it prints TWO lines and the `... ok` lands on the SECOND:
+///
+/// ```text
+/// test_skip_if_db_feature (test_utils.tests.SkippingTestCase)
+/// Testing the django.test.skipIfDBFeature decorator. ... ok
+/// ```
+///
+/// This parser required `" ... "` AND `" ("` on ONE line, so BOTH lines fell through the
+/// `continue`s: the id line has no `" ... "`, the docstring line has no `" ("`. Every
+/// docstringed django test was therefore recorded NOWHERE, and absent-from-map reads
+/// downstream as not-passed.
+///
+/// Measured consequence, which is why this is not a cosmetic parse bug: django-10914's own
+/// GOLD patch graded `FAIL_TO_PASS 0/1, PASS_TO_PASS 35/40` and was reported as a
+/// "REGRESSION — your changes BROKE 5 test(s)", while the very output being quoted showed
+/// all five passing `... ok`. The 5 broken were the 5 docstringed ones. So django scores
+/// were never measuring django — and django is 114/300 of Lite (#383). Every django zero we
+/// have recorded is retro-actively uninterpretable.
+///
+/// Dataset ids for these tests may be EITHER spelling — SWE-bench's own id lists were
+/// harvested from this same verbose output, so some entries are the docstring text rather
+/// than the node id (e.g. "An exception is setUp() is reraised after disable() is called.").
+/// Both are therefore registered as keys for the same outcome; whichever spelling the
+/// dataset carries resolves. Registering both is not a fallback — it is the honest statement
+/// that one test has two names in this format.
 pub fn parse_django_report(report: &str) -> (HashMap<String, bool>, HashMap<String, bool>) {
     let mut by_node = HashMap::new();
     let mut by_func: HashMap<String, bool> = HashMap::new();
+    // A test-id line awaiting its outcome on a following docstring line: (func, class_norm).
+    let mut pending: Option<(String, String)> = None;
     for line in report.lines() {
         let line = line.trim();
         let Some((head, tail)) = line.split_once(" ... ") else {
+            // No outcome here. A bare `func (class.path)` line is the FIRST half of the
+            // two-line form — remember it. Anything else clears the pending slot so an
+            // outcome can never be attributed across unrelated output.
+            pending = match line
+                .split_once(" (")
+                .and_then(|(f, c)| c.strip_suffix(')').map(|c| (f, c)))
+            {
+                Some((func, class_path)) if !func.is_empty() && !class_path.is_empty() => {
+                    let class_norm = class_path
+                        .strip_suffix(&format!(".{func}"))
+                        .unwrap_or(class_path);
+                    Some((func.to_string(), class_norm.to_string()))
+                }
+                _ => None,
+            };
             continue;
         };
+        // An outcome line WITHOUT `" ("` is the docstring half. Attribute it to the id we
+        // remembered, and register the docstring text as a second key for the same test.
+        if !head.contains(" (") {
+            let outcome = tail.trim();
+            let ok = match django_outcome(outcome) {
+                Some(ok) => ok,
+                None => {
+                    pending = None;
+                    continue;
+                }
+            };
+            if let Some((func, class_norm)) = pending.take() {
+                by_node.insert(format!("{func} ({class_norm})"), ok);
+                let doc = head.trim();
+                if !doc.is_empty() {
+                    by_node.insert(doc.to_string(), ok);
+                }
+                let entry = by_func.entry(func).or_insert(true);
+                *entry = *entry && ok;
+            }
+            continue;
+        }
+        pending = None;
         let Some((func, class_part)) = head.split_once(" (") else {
             continue;
         };
         let Some(class_path) = class_part.strip_suffix(')') else {
             continue;
         };
-        let outcome = tail.trim();
-        let ok = if outcome.starts_with("ok")
-            || outcome.starts_with("skipped")
-            || outcome.starts_with("expected failure")
-        {
-            true
-        } else if outcome.starts_with("FAIL")
-            || outcome.starts_with("ERROR")
-            || outcome.starts_with("unexpected success")
-        {
-            false
-        } else {
+        let Some(ok) = django_outcome(tail.trim()) else {
             continue;
         };
         // django ≥4.1 prints `module.Class.test_name`; the dataset uses `module.Class`.
@@ -1307,7 +1604,16 @@ pub async fn run_tests(
     // arguments" before running a single test — every id read as failed, and the whole
     // 2019-pytest class graded p2p 0/N (live: pytest-5221 retry, 2026-08-12). Cosmetic
     // flags are not worth a version gate; `-v` and no:cacheprovider go back to 2.x.
-    let owned_args = test_invocation(runner, test_files);
+    // django is graded from CANONICAL ids, not from prose. `install_django_json_runner`
+    // drops a DiscoverRunner subclass into the clone that emits one machine-readable row
+    // per test keyed by `test.id()`; `test_invocation` then asks runtests.py to use it.
+    // If the drop fails we fall back to the verbose-report parser — reported, never silent,
+    // because a fallback that scores is indistinguishable from a fallback that lies.
+    let django_json = match runner {
+        TestRunner::DjangoRuntests => install_django_json_runner(repo_dir).await,
+        TestRunner::Pytest => false,
+    };
+    let owned_args = test_invocation_with(runner, test_files, django_json);
     let args: Vec<&str> = owned_args.iter().map(String::as_str).collect();
     let Ok(out) = run(&venv_py.to_string_lossy(), &args, Some(repo_dir)).await else {
         return (
@@ -1322,6 +1628,24 @@ pub async fn run_tests(
     );
     let (by_node, by_func) = match runner {
         TestRunner::Pytest => parse_pytest_report(&report),
+        // Machine-readable rows when the JSON runner is installed. If it emitted NOTHING
+        // (an import error in the runner or settings shim, a runtests.py that rejected the
+        // invocation, a crash before any test ran) fall back to the verbose report rather
+        // than scoring every id as failed — and say so, because a silent fallback here
+        // reads as a citizen's zero. This fallback is what kept django-10914's broken
+        // `--testrunner` invocation from grading as 40 capability failures.
+        TestRunner::DjangoRuntests if django_json => {
+            let (by_node, by_func) = parse_django_json(&report);
+            if by_node.is_empty() {
+                tracing::warn!(
+                    "the django JSON runner emitted no rows — falling back to the verbose \
+                     report. Grades from this run are less trustworthy (#383)."
+                );
+                parse_django_report(&report)
+            } else {
+                (by_node, by_func)
+            }
+        }
         TestRunner::DjangoRuntests => parse_django_report(&report),
     };
     let verdicts = ids
@@ -1422,6 +1746,60 @@ fn compose_failure_excerpt(
     } else {
         Some(sections.join("\n\n"))
     }
+}
+
+/// THE GOLD GATE: grade the instance's OWN gold patch and require it to resolve.
+///
+/// This is the spine check [`SweInstance::patch`]'s own doc has promised since that field
+/// was written — "the spine check grades THIS; it must resolve or the environment is
+/// wrong" — and which did not exist. `grade(.., None)` means "grade the tree as the solver
+/// left it", not "grade gold", so nothing in the tree ever validated an env against a
+/// known-correct patch.
+///
+/// WHY THIS IS THE KEYSTONE FOR EVERY NUMBER WE REPORT. Without it a `resolved: false` has
+/// two indistinguishable causes: the citizen's patch was wrong, or the environment cannot
+/// score a correct patch at all. Measured 2026-08-17 on this box, the second is live and
+/// unquantified: a 2019-era django env carries pytest 8.4.2, and the module's own notes
+/// record era suites importing pytest internals that modern pytest deleted (flask 2.2's
+/// `from _pytest.monkeypatch import notset`). So today an unknown fraction of our zeros are
+/// harness artifacts being tallied as capability. That is not a measurement — it is noise
+/// with a number attached, and it is why 114/300 (#383) and #380 cannot be told apart from
+/// model failure by looking at scores.
+///
+/// The gate makes the distinction mechanical: gold resolves → the env can score, so a
+/// citizen's zero is HERS. Gold fails → the env is disqualified and no result from it may
+/// be reported as capability ([[an-absence-is-an-unfinished-measurement]]).
+///
+/// Deliberately a thin caller over [`grade`], not a parallel scorer: it must exercise the
+/// EXACT clone → apply → test path a real attempt takes, or it proves nothing about that
+/// path. A second implementation that agreed with itself would be the classic dead
+/// instrument.
+///
+/// `gate_ok == false` in the returned verdict is a DIFFERENT fact and is not a gate
+/// failure: it means FAIL_TO_PASS already passed on the pristine tree, so the instance
+/// carries no bug here. Callers must not conflate "this task cannot distinguish a fix"
+/// with "this environment is broken".
+pub async fn gold_gate(instance: &SweInstance, repo_dir: &Path) -> SweVerdict {
+    let mut verdict = grade(instance, repo_dir, Some(&instance.patch)).await;
+    // An env that cannot score its own gold patch is disqualified, and the reason has to
+    // survive into the receipt — a bare `resolved: false` here would read downstream as a
+    // capability zero, which is the exact confusion this gate exists to end.
+    if verdict.error.is_none() && !verdict.resolved {
+        verdict.error = Some(format!(
+            "GOLD GATE FAILED for {}: the instance's own gold patch did not resolve \
+             (FAIL_TO_PASS {}/{}, PASS_TO_PASS {}/{}). The environment cannot score a \
+             known-correct patch, so NO result from it is a capability measurement — \
+             not a zero, an absence. Era deps are the leading suspect (#380): check the \
+             interpreter rung against `interpreter_for_year` and the harness pytest \
+             version against what this era's suite can import.",
+            instance.instance_id,
+            verdict.f2p_passed,
+            verdict.f2p_total,
+            verdict.p2p_passed,
+            verdict.p2p_total,
+        ));
+    }
+    verdict
 }
 
 pub async fn grade(
@@ -1991,6 +2369,89 @@ diff --git a/sympy/solvers/tests/test_other.py b/sympy/solvers/tests/test_other.
                 "no:cacheprovider",
             ],
             "the pytest argv is byte-identical to the pre-seam grader"
+        );
+    }
+
+    // what this catches: selecting the JSON runner through a flag runtests.py does not have.
+    // Shipped once as `--testrunner=continuum_json_runner.JsonRunner` — argparse rejected the
+    // WHOLE invocation ("unrecognized arguments"), so django-10914's own GOLD patch graded
+    // 0/40 in 4 seconds. runtests.py has no such flag in ANY era; it reads settings.TEST_RUNNER
+    // and defaults it only when unset (verified in-tree at 1.11/2.2/3.2/4.2/5.2/main). So the
+    // runner is selected by a settings MODULE, and the invocation must differ from the plain
+    // one in exactly one argument — the settings value — and in nothing else.
+    #[test]
+    fn the_json_runner_is_selected_through_settings_never_a_flag() {
+        let files = vec!["tests/expressions/tests.py".to_string()];
+        let plain = test_invocation_with(TestRunner::DjangoRuntests, &files, false);
+        let json = test_invocation_with(TestRunner::DjangoRuntests, &files, true);
+
+        assert_eq!(plain.len(), json.len(), "the JSON path adds no argument");
+        let differences: Vec<_> = plain.iter().zip(&json).filter(|(a, b)| a != b).collect();
+        assert_eq!(
+            differences,
+            vec![(
+                &"--settings=test_sqlite".to_string(),
+                &format!("--settings={DJANGO_JSON_SETTINGS_MODULE}")
+            )],
+            "settings is the ONLY difference: {plain:?} vs {json:?}"
+        );
+        assert!(
+            !json.iter().any(|a| a.contains("--testrunner")),
+            "runtests.py has no --testrunner flag; passing one aborts the run before any test"
+        );
+        // The shim must inherit django's own suite settings rather than restate them, or it
+        // drifts from whatever the era's test_sqlite happens to configure.
+        assert!(DJANGO_JSON_SETTINGS_SRC.contains("from test_sqlite import *"));
+        assert!(DJANGO_JSON_SETTINGS_SRC
+            .contains(&format!("TEST_RUNNER = \"{DJANGO_JSON_RUNNER_MODULE}.JsonRunner\"")));
+    }
+
+    // what this catches: a canonical id alone cannot grade django. SWE-bench harvested its
+    // django ids from unittest's verbose log, and unittest prints a test's DOCSTRING instead
+    // of its id when it has one — so for those tests the dataset's PASS_TO_PASS entry is
+    // docstring prose with no id in it at all. Measured on django-10914's gold gate: with
+    // ids + renderings only, p2p capped at 38/40 and the two misses were exactly its two
+    // docstring-spelled ids. All three spellings must resolve to the same outcome, and a
+    // docstring shared by two tests must fold conservatively rather than let a pass mask
+    // a fail.
+    #[test]
+    fn a_docstringed_django_test_resolves_by_its_docstring_too() {
+        let report = "\
+CONTINUUM_TEST {\"id\": \"test_utils.tests.AssertRaisesMsgTest.test_special_re_chars\", \"ok\": true, \"desc\": \"assertRaisesMessage shouldn't interpret RE special chars.\"}
+CONTINUUM_TEST {\"id\": \"test_utils.tests.Plain.test_plain\", \"ok\": true}
+CONTINUUM_TEST {\"id\": \"a.B.test_shared_one\", \"ok\": true, \"desc\": \"A shared docstring.\"}
+CONTINUUM_TEST {\"id\": \"a.B.test_shared_two\", \"ok\": false, \"desc\": \"A shared docstring.\"}
+noise that is not a row
+CONTINUUM_TEST not json at all";
+        let (by_node, by_func) = parse_django_json(report);
+
+        // The dataset's spelling for a docstringed test IS the docstring.
+        assert_eq!(
+            verdict_for(
+                "assertRaisesMessage shouldn't interpret RE special chars.",
+                &by_node,
+                &by_func
+            ),
+            Some(true),
+            "a docstring-spelled dataset id must resolve"
+        );
+        // …and the canonical + rendered spellings of that same test still resolve.
+        for spelling in [
+            "test_utils.tests.AssertRaisesMsgTest.test_special_re_chars",
+            "test_special_re_chars (test_utils.tests.AssertRaisesMsgTest)",
+        ] {
+            assert_eq!(verdict_for(spelling, &by_node, &by_func), Some(true), "{spelling}");
+        }
+        // A docstring on two tests, one failing, must NOT read as a pass.
+        assert_eq!(
+            verdict_for("A shared docstring.", &by_node, &by_func),
+            Some(false),
+            "a shared docstring folds conservatively"
+        );
+        // A test with no docstring is unaffected, and unparseable lines are skipped.
+        assert_eq!(
+            verdict_for("test_utils.tests.Plain.test_plain", &by_node, &by_func),
+            Some(true)
         );
     }
 
