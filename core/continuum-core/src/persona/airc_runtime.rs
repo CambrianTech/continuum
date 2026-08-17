@@ -1126,8 +1126,15 @@ impl crate::persona::room_roster_source::AircRosterReader for PersonaAircRuntime
         &self,
         within: std::time::Duration,
         window: usize,
+        room: Option<uuid::Uuid>,
     ) -> Result<Vec<airc_lib::RoomMember>, AircError> {
-        self.airc.room_roster(within, window).await
+        crate::persona::room_roster_source::AircRosterReader::room_roster(
+            self.airc.as_ref(),
+            within,
+            window,
+            room,
+        )
+        .await
     }
 }
 
@@ -1135,8 +1142,13 @@ impl crate::persona::room_roster_source::AircRosterReader for PersonaAircRuntime
 impl crate::persona::room_doctrine_source::AircDoctrineReader for PersonaAircRuntime {
     async fn room_doctrine(
         &self,
+        room: Option<uuid::Uuid>,
     ) -> Result<Option<airc_core::doctrine::RoomDoctrinePublished>, AircError> {
-        self.airc.room_doctrine().await
+        crate::persona::room_doctrine_source::AircDoctrineReader::room_doctrine(
+            self.airc.as_ref(),
+            room,
+        )
+        .await
     }
 }
 
