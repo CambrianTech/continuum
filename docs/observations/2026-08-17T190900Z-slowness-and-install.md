@@ -67,3 +67,45 @@ it accumulates.
 - Citizens are served by `qwen2.5-coder-14b` while `Qwen3.8-27B` — #1 on the Artificial
   Analysis Agentic Index at 51, above Opus 4.8's 49 — is already loaded and ready on the
   vision sidecar (:58091). That is task #440 and it is on the critical path, not a side lane.
+
+---
+
+## CORRECTION, 19:15Z — two claims I made an hour earlier are now wrong
+
+Both came from reading the 18:07 `serving/status` snapshot and not re-reading it after the
+reboots. Re-measured directly:
+
+```
+active_model: ggml-org/Qwen3.8-27B-GGUF     lanes: 1     served_context_window: 26368
+serving.plan: decision=warm-slot-oversubscribed  per_slot_floor=16384
+              resident_personas=4  warm_slots=1  without_warm_slot=3
+```
+
+**1. The 27B swap already happened.** The PERSONA lane is serving `Qwen3.8-27B` right now —
+`base_url` and `vision_base_url` are the same `:58057`. My statement that "citizens are
+served by qwen2.5-coder-14b while the 27B sits on the vision sidecar" was true at 18:07 and
+is false now. #440's bring-up has landed. Nothing to swap.
+
+**2. The ambient-pool fix (`6229b3762`) is INERT in this configuration.** The pool derives
+from `nondirected_budget() = lanes−1, floored at 1`. At `lanes: 1` that is **1** — exactly
+the hardcoded constant it replaced. So it buys nothing while the 27B is resident. The fix is
+still correct (it removes a constant that contradicted its own doc, and it will pay out the
+moment the box runs >1 lane), but it did NOT relieve the current starvation and I should not
+have implied it would.
+
+**What the remaining ceiling actually is:** the LANE count, and the planner states the
+reason plainly — a 27B at a 16,384 per-slot floor fits ONE warm slot on this box.
+4 resident personas, 1 warm slot, 3 without. Ambient concurrency is therefore structurally 1
+regardless of the permit, and that is a resource fact, not a bug.
+
+The ratchet fix (`a87f7c871`) is unaffected by this and still load-bearing: it stops a
+citizen who loses that single slot from being permanently punished for losing it. At
+lanes=1, with 24 citizens contending, it is the ONLY thing standing between transient
+contention and the whole roster pinned at the 240s cap.
+
+**The real open question is now sharper:** frontier model + 1 warm slot + N citizens is a
+genuine allocation problem, not a starvation bug. Either the roster shrinks to what one slot
+can serve, or citizens time-share the slot deliberately (a queue with fairness, not a
+permit with a yield), or the box serves a smaller model for ambient work and reserves the
+27B for directed/benchmark turns. That is Joel's call, not mine — it is a policy choice
+about what the machine is FOR.
