@@ -85,6 +85,28 @@ use uuid::Uuid;
 /// generated TS shape is unchanged.
 pub use airc_core::PeerId;
 
+/// The durable on-disk home of one citizen: `<root>/citizens/peers/<peer_id>`.
+///
+/// THE ONE SPELLING of that layout. It was being rebuilt by hand at each use, in
+/// two different shapes — `home.join("citizens/peers")` (`modules/work.rs`) and
+/// `home.join("citizens").join("peers")` (`commands/benchmark.rs`) — plus prose
+/// copies in `persona_workspace.rs` and `persona_roster.rs`. Four expressions of
+/// one decision is exactly the drift the compression principle forbids, and the
+/// next writer (the lived-turn experience stream) would have made a fifth.
+///
+/// Keyed by [`PeerId`], never a `String`: the citizen's identity IS the directory
+/// name, so a caller that has not resolved a name to an identity cannot address
+/// her storage by accident ([[uuids-are-not-strings-and-never-hand-drawn]]).
+///
+/// Pure path arithmetic — creates nothing, checks nothing. Callers that need the
+/// directory to exist say so themselves, so a read-only caller never has the side
+/// effect of minting an empty citizen dir.
+pub fn citizen_peer_dir(root: &std::path::Path, peer: PeerId) -> std::path::PathBuf {
+    root.join("citizens")
+        .join("peers")
+        .join(peer.as_uuid().to_string())
+}
+
 /// What a CALLER writes when it means "that persona" — a full UUID, an 8-char
 /// short-id, or a name (`"Asha"`). Deliberately NOT an identity.
 ///
@@ -815,5 +837,34 @@ mod tests {
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].1.agent_name, "claude-session-X");
         assert_eq!(agents[0].1.agent_provider.as_deref(), Some("claude"));
+    }
+
+    // what this catches: a FIFTH hand-rolled spelling of the citizen storage layout.
+    // It was already written four ways — `join("citizens/peers")` in modules/work.rs,
+    // `join("citizens").join("peers")` in commands/benchmark.rs, and prose copies in
+    // persona_workspace.rs + persona_roster.rs. The two path spellings produce the SAME
+    // path today, which is exactly why the drift is invisible until one of them changes.
+    // Pins the shape AND that it is pure arithmetic: a read-only caller must never have
+    // the side effect of minting an empty citizen dir.
+    #[test]
+    fn the_citizen_peer_dir_has_exactly_one_spelling_and_creates_nothing() {
+        let peer = PeerId::from_u128(0xfe4dac17_0000_4000_8000_000000000001);
+        let root = std::path::Path::new("/x/.continuum");
+        let dir = citizen_peer_dir(root, peer);
+
+        assert_eq!(
+            dir,
+            root.join("citizens").join("peers").join(peer.to_string()),
+            "the layout is <root>/citizens/peers/<peer_id>"
+        );
+        // Identity, not a formatted string: the directory name IS the peer id.
+        assert!(dir.ends_with(peer.as_uuid().to_string()));
+        // Pure: nothing was created under a temp root either.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let under_tmp = citizen_peer_dir(tmp.path(), peer);
+        assert!(
+            !under_tmp.exists(),
+            "resolving a path must not create it — a read-only caller mints nothing"
+        );
     }
 }

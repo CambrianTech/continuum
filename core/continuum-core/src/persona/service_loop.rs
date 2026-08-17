@@ -1092,6 +1092,19 @@ async fn serve_persona_loop_inner(
                         framing,
                     )
                     .await;
+                    // THE LIVED-TURN PRODUCER (#319). Her own experience stream is fed
+                    // here — before `from_settled` consumes the outcome — because this is
+                    // the only place a lived turn's settle verdict exists. Until now the
+                    // stream was fed ONLY by graded bench cards, so a citizen's real
+                    // conversations could never become curriculum. Best-effort by design:
+                    // see `record_lived_turn` for why learning must not be able to mute
+                    // her. Driver stays a driver — one call, no policy here.
+                    crate::cognition::experience::record_lived_turn(
+                        &crate::modules::persona_instance_manager::resolve_continuum_root(),
+                        ctx.identity.peer_id,
+                        &msg.text,
+                        &outcome,
+                    );
                     crate::cognition::act_observe::SettleStep::from_settled(outcome)
                 };
                 // Turn done: drop the cycle's sink so the forwarder's channel closes,

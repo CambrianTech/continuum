@@ -466,6 +466,61 @@ pub fn append_experience(
     writeln!(f, "{line}")
 }
 
+/// Record ONE lived room turn into the citizen's own experience stream — the
+/// producer this module's doc has named since #319 and that nothing ever called.
+///
+/// ## Why this exists (measured 2026-08-17)
+///
+/// [`ExperienceRecord::from_lived_turn`] had **zero production callers** tree-wide.
+/// The only live producer was [`ExperienceRecord::from_kanban_grade`], so the
+/// experience stream — "the SPINE the salience→curriculum seam was missing" per
+/// [`experience_stream_path`]'s own doc — was fed exclusively by GRADES. A citizen
+/// could hold a thousand real conversations and her stream stayed empty, which
+/// means the curriculum could only ever learn from work someone had scored. The
+/// machinery, the salience detector and the doc were all correct and in place; the
+/// call was missing. (Same shape as #341 and #362: a built component with a dead
+/// wire — [[an-absence-is-an-unfinished-measurement]].)
+///
+/// ## Why the write is best-effort, and what that is NOT
+///
+/// A failed append is WARNED and the turn proceeds. This is not a silent fallback
+/// ([[no-fallbacks-ever]] still holds): nothing is substituted and no result is
+/// fabricated. Learning is a SIDE channel to being — a full disk must not make a
+/// citizen mute mid-sentence. The failure is visible in the log with the path, and
+/// the honest consequence (this episode never becomes curriculum) is stated there.
+///
+/// Storage is keyed by [`crate::identity::citizen_peer_dir`] — one spelling of the
+/// citizen-layout decision, so this producer cannot drift from the consumer that
+/// drains the same stream.
+pub fn record_lived_turn(
+    root: &std::path::Path,
+    peer: crate::identity::PeerId,
+    stimulus: &str,
+    settled: &crate::cognition::act_observe::SettleOutcome,
+) {
+    let peer_dir = crate::identity::citizen_peer_dir(root, peer);
+    if let Err(e) = std::fs::create_dir_all(&peer_dir) {
+        tracing::warn!(
+            peer = %peer,
+            dir = %peer_dir.display(),
+            error = %e,
+            "could not create the citizen dir for her experience stream — this lived \
+             turn will not become curriculum (#319 producer)"
+        );
+        return;
+    }
+    let record = ExperienceRecord::from_lived_turn(stimulus, settled);
+    if let Err(e) = append_experience(&peer_dir, &record) {
+        tracing::warn!(
+            peer = %peer,
+            path = %experience_stream_path(&peer_dir).display(),
+            error = %e,
+            "could not append a lived turn to the experience stream — this episode \
+             will not become curriculum (#319 producer)"
+        );
+    }
+}
+
 /// Load the persona's experience stream. A missing file is an empty stream (a
 /// fresh mind has no history — not an error). Unparseable lines are counted and
 /// WARNED, never silently dropped: one corrupt line must not brick learning
@@ -719,6 +774,41 @@ mod tests {
         assert!(
             lived.task.test.is_none(),
             "a lived turn has no objective grader"
+        );
+
+        // ── The PRODUCER, which is the half that was dead ────────────────────────
+        // `from_lived_turn` had zero production callers, so the experience stream was
+        // fed ONLY by graded bench cards: a citizen could hold a thousand real
+        // conversations and her stream stayed empty. This asserts the append actually
+        // reaches HER OWN stream at the canonical citizen path — the wire, not just
+        // the record's shape (the shape was always fine; nothing called it).
+        let root = tempfile::tempdir().expect("tempdir");
+        let peer = crate::identity::PeerId::from_u128(0x90e758b2_0000_4000_8000_000000000002);
+        assert!(
+            load_experiences(&crate::identity::citizen_peer_dir(root.path(), peer)).is_empty(),
+            "a fresh citizen's stream starts empty"
+        );
+
+        record_lived_turn(root.path(), peer, "what did we decide about the grader?", &settled);
+
+        let stream = load_experiences(&crate::identity::citizen_peer_dir(root.path(), peer));
+        assert_eq!(stream.len(), 1, "the lived turn reached her stream");
+        assert_eq!(stream[0].task.prompt, "what did we decide about the grader?");
+        assert!(
+            stream[0].task.test.is_none(),
+            "still no objective grader — the append must not invent one"
+        );
+        // It lands where the DRAIN reads, keyed by her identity — producer and consumer
+        // cannot disagree about the path because both go through `citizen_peer_dir`.
+        assert!(
+            experience_stream_path(&crate::identity::citizen_peer_dir(root.path(), peer)).exists()
+        );
+
+        // Two turns append, never overwrite — a stream, not a slot.
+        record_lived_turn(root.path(), peer, "and the docstring ids?", &settled);
+        assert_eq!(
+            load_experiences(&crate::identity::citizen_peer_dir(root.path(), peer)).len(),
+            2
         );
 
         // A lived turn that died on a serving fault: ok=false, honest grade — but STILL untestable.
