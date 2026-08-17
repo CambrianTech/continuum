@@ -572,8 +572,39 @@ fn build_requires(repo_dir: &Path) -> Vec<String> {
 /// on this machine), the C is SUBJECT: demote exactly those three diagnostics back to the
 /// warnings they were. distutils APPENDS `CFLAGS` to its sysconfig baseline, so nothing else
 /// about the build changes, and modern code that doesn't trip them is untouched.
+///
+/// The FOURTH head (#383, measured live 2026-08-17 on astropy__astropy-14182, and the
+/// reason two dispatched rounds died at env-build after the jinja2 + build-requires fixes
+/// both landed): astropy vendors cfitsio, which vendors a 1990s zlib, whose
+/// `cextern/cfitsio/zlib/zutil.h:140` reads
+///
+/// ```c
+/// #if defined(MACOS) || defined(TARGET_OS_MAC)
+/// #  define OS_CODE  7
+/// #    ifndef fdopen
+/// #      define fdopen(fd,mode) NULL /* No fdopen() */
+/// ```
+///
+/// `TARGET_OS_MAC` is 1 on EVERY modern Apple SDK — it means "some Apple platform", not
+/// "classic Mac OS" as it did when this zlib was written. So the branch fires, `fdopen` is
+/// macro-replaced by `NULL`, and the system header's own declaration
+/// `FILE *fdopen(int, const char *)` becomes `FILE *NULL(int, const char *)` →
+/// `error: expected identifier or '('` in `<stdio.h>`, thousands of lines from anything
+/// astropy wrote. (The adjacent `'OS_CODE' macro redefined` warning is the same branch.)
+///
+/// The guard is `#ifndef fdopen`, so pre-defining it is the whole fix: `-Dfdopen=fdopen`
+/// makes the guard FALSE — the NULL stub is never emitted — and the macro itself is the
+/// identity, so every real `fdopen` call compiles to `fdopen`. Nothing is stubbed, nothing
+/// is renamed, no source is patched, and a repo that does not vendor this zlib never
+/// notices the flag.
+///
+/// It lives here rather than in a per-repo table because it is not an astropy fact — it is
+/// an ERA fact (old vendored zlib vs a modern Apple SDK), identical in shape to the three
+/// above: the compiler is HARNESS, the C is SUBJECT, and the subject built fine on the
+/// compilers of its own day.
 const ERA_CFLAGS: &str = "-Wno-error=incompatible-function-pointer-types \
-     -Wno-error=implicit-function-declaration -Wno-error=int-conversion";
+     -Wno-error=implicit-function-declaration -Wno-error=int-conversion \
+     -Dfdopen=fdopen";
 
 /// Build deps that a repo's DEPENDENCY sdists import at build time but that nothing installs
 /// under `--no-build-isolation` (we honor the top repo's `[build-system].requires`; a
