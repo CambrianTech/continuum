@@ -195,12 +195,18 @@ impl ActionCommand for ActivitySpawn {
     // touching this file. Naming members here re-hardcodes what the recipe loader
     // exists to keep dynamic.
     //
-    // So this points at the live catalogue instead of enumerating it. The real
-    // fix is one layer deeper and is NOT done: spawn does not VALIDATE that the
-    // recipe resolves, so any typo still mints a chat room silently — a fallback,
-    // in a subsystem whose own loader cites [[fallbacks-are-illegal-fail-loud]].
-    // That needs the experience source threaded to this command so it can refuse
-    // with the live `purposes()` list. Tracked on #274.
+    // So this points at the live catalogue instead of enumerating it. The layer
+    // below it — VALIDATION — shipped with #431: `validate_recipe` (below) resolves
+    // the string against the live overlaid catalogue and REFUSES an unknown purpose,
+    // naming the known recipes. A typo can no longer silently mint a chat room, which
+    // is what [[fallbacks-are-illegal-fail-loud]] demands of a subsystem whose own
+    // loader cites it. #433 added the same treatment to caller-supplied params.
+    //
+    // (This paragraph said "is NOT done" for some time after it WAS done. Cost: a
+    // later reader trusted the comment over the function 40 lines below it and went
+    // looking for a gate that already existed. A comment describing absent code is a
+    // lying receipt of the #151/#357 class — it just lies to engineers instead of to
+    // citizens. If you change this behaviour, change this paragraph in the same edit.)
     const DESCRIPTION: &'static str =
         "Create a new room from a recipe. `name` is what people call this instance; \
          `recipe` is the `purpose` of an authored recipe — use the exact purpose \
@@ -561,6 +567,19 @@ impl ActionCommand for ActivityProtect {
         })
     }
 }
+
+// Descriptors for the three verbs above. Their CONSTRUCTORS come from
+// `ActivityModule::commands()` (they hold the airc registry, so they are not
+// `Default`-constructible and cannot use `register_stateless_command!`); the
+// descriptor is type-only, so it is declared here at the same site the command is.
+// Both halves are required — a constructor without a descriptor routes but is
+// INVISIBLE to `commands/list`, the persona tool surface, the ACL and codegen, which
+// is exactly how `activity/spawn` — the verb that mints every room, benchmark rooms
+// included — became undiscoverable while the catalog promised "Listed == callable".
+// `ModuleRegistry::register` now refuses to boot on the omission.
+crate::register_command!(ActivitySpawn);
+crate::register_command!(ActivityArchive);
+crate::register_command!(ActivityProtect);
 
 // ─────────────────────────── module ───────────────────────────
 

@@ -3090,7 +3090,37 @@ mod tests {
             // to the point where more cutting would recreate #358 — a citizen who cannot
             // find the verb reaches for the wrong one and reads her own looping as having
             // nothing to contribute.
-            const AGENTIC_SURFACE_BOUND_CEILING: u32 = 10350;
+            // 10350 → 11300, stated plainly as the ratchet demands, and SHRUNK FIRST
+            // as its own first branch requires — this is the first re-pin where the
+            // shrink was MEASURED rather than eyeballed.
+            //
+            // WHAT GREW: three NATIVE activity verbs — `activity/spawn`, `activity/archive`,
+            // `activity/protect` (+1,273 gross). They are not new commands; they routed
+            // all along and had simply never shipped a DESCRIPTOR, so `activity/spawn` —
+            // the verb that mints every room, benchmark rooms included — was absent from
+            // `commands/list`, the ACL, codegen and every citizen's tool surface. Same
+            // defect class as #339, now impossible: `ModuleRegistry::register` panics on
+            // a constructor with no descriptor.
+            //
+            // WHAT SHRANK: 728 tokens, from making the schema projection stop shipping
+            // MAINTAINER RATIONALE to citizens. schemars lifts `///` verbatim, so one
+            // doc comment served two readers with opposite needs — a citizen deciding
+            // whether to spawn a room was billed for `schemars(with = "String") describes
+            // the WIRE (a uuid string, per #[serde(transparent)])…`. The projection now
+            // keeps the LEAD PARAGRAPH (see `persona_tools::lead_paragraph_descriptions`);
+            // rationale stays in the file where it belongs. Not a length cap — truncating
+            // the ANSWER is #358's shape.
+            //
+            // NET 11,972 → 11,244. Design + full measurement:
+            // docs/cognition/TOOL-DISCLOSURE-LADDER.md. That doc also retracts the
+            // "the schemas are 3-5x bloated" reading this ceiling invited: measured, the
+            // 26-verb surface is 6,935 tokens, mean 266/verb — leaner per verb than the
+            // frontier agent runtimes it was being unfavourably compared to. The surface
+            // is not obese; it is paid TWICE (#333) and it is charged against a 16k lane.
+            // The next real shrink is structural — rung 2 of the ladder becoming the
+            // TURN's working set instead of a static list — after which this ceiling
+            // guards the SPINE and stops taxing capability.
+            const AGENTIC_SURFACE_BOUND_CEILING: u32 = 11300;
             assert!(
                 needed <= AGENTIC_SURFACE_BOUND_CEILING,
                 "the agentic surface now needs {needed} tokens (was 8040, ceiling \

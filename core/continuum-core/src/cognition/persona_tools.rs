@@ -536,7 +536,7 @@ fn tool_input_schema_from(schema: &serde_json::Value) -> ToolInputSchema {
             .to_string(),
         properties: schema
             .get("properties")
-            .cloned()
+            .map(|p| lead_paragraph_descriptions(p.clone()))
             .unwrap_or_else(|| json!({})),
         required: schema.get("required").and_then(|v| v.as_array()).map(|a| {
             a.iter()
@@ -548,7 +548,60 @@ fn tool_input_schema_from(schema: &serde_json::Value) -> ToolInputSchema {
         definitions: schema
             .get("definitions")
             .or_else(|| schema.get("$defs"))
-            .cloned(),
+            .map(|d| lead_paragraph_descriptions(d.clone())),
+    }
+}
+
+/// Keep only the LEADING PARAGRAPH of every `description` in a schema subtree.
+///
+/// # Why the schema and the source comment are not the same text
+///
+/// `schemars` lifts a field's `///` doc comment verbatim into the JSON Schema, so
+/// one piece of prose is asked to serve two readers with opposite needs. The
+/// maintainer needs the WHY — why the Rust type is what it is, what the doc used to
+/// claim, why a list is deliberately not enumerated. The caller deciding whether to
+/// invoke the verb needs only WHAT the field is and what a valid value looks like,
+/// and pays for every token of the rest on every turn it is offered.
+///
+/// Measured on the 26-verb native surface (build 4743): 550 tokens of the 6,935
+/// were maintainer rationale, 310 of them on `activity/spawn` alone — where a
+/// citizen was billed for `schemars(with = "String") describes the WIRE (a uuid
+/// string, per #[serde(transparent)]) to the tool schema while Rust keeps the type`
+/// on the way to deciding whether to spawn a room.
+///
+/// The split is CONVENTIONAL rather than declared — a blank line — because that is
+/// how these docs are already written (lead sentence, then rationale), so it needs
+/// no per-command annotation and cannot drift from a second source. A single-
+/// paragraph doc is unchanged, which is the common case: only 2 of 26 verbs carry
+/// a second paragraph today.
+///
+/// Deliberately NOT a length cap. A long first paragraph is a long ANSWER to
+/// "what is this field", and truncating that is how a verb becomes unusable —
+/// #358's shape, where a citizen who cannot find the verb reaches for the wrong one.
+/// Contentless length is the defect; length is not.
+fn lead_paragraph_descriptions(node: serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match node {
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .map(|(k, v)| {
+                    // Only a `description` STRING is prose. A key called
+                    // `description` whose value is a schema (a param actually named
+                    // `description`, e.g. code/edit's) recurses like any other.
+                    match (k.as_str(), &v) {
+                        ("description", Value::String(text)) => {
+                            let lead = text.split("\n\n").next().unwrap_or(text).trim_end();
+                            (k, Value::String(lead.to_string()))
+                        }
+                        _ => (k, lead_paragraph_descriptions(v)),
+                    }
+                })
+                .collect(),
+        ),
+        Value::Array(items) => {
+            Value::Array(items.into_iter().map(lead_paragraph_descriptions).collect())
+        }
+        other => other,
     }
 }
 
@@ -763,6 +816,62 @@ mod tests {
             "native set stayed bounded ({} tools); a full dump would re-mute personas",
             names.len()
         );
+    }
+
+    // what this catches: the schema is a TEACHING surface, not a copy of the source
+    // comment. schemars lifts `///` verbatim, so maintainer rationale (why the Rust
+    // type is what it is, what the doc used to say) rode into every offered tool on
+    // every turn — 550 tokens of the 26-verb native surface, measured. The lead
+    // paragraph survives intact (truncating the ANSWER is #358's shape); everything
+    // after the blank line is for whoever opens the file. Regression here = the
+    // rationale coming back, or — worse — the lead sentence getting clipped.
+    #[test]
+    fn schema_descriptions_carry_the_lead_paragraph_not_the_rationale() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "recipe": {
+                    "type": "string",
+                    "description": "Which recipe to build from — the EXACT `purpose` key.\n\nNot enumerated here on purpose: recipes are DATA, so any list in this comment is stale the moment someone authors a new one."
+                },
+                // A param literally NAMED `description` must recurse, not be treated
+                // as prose — the code/edit shape that a naive key-match would corrupt.
+                "description": {
+                    "type": "string",
+                    "description": "Optional note describing the change.\n\nRecorded in the change history."
+                }
+            },
+            "definitions": {
+                "EditMode": {
+                    "description": "How to edit.\n\nHistorical note nobody calling this needs."
+                }
+            }
+        });
+
+        let out = tool_input_schema_from(&schema);
+        let recipe = out.properties["recipe"]["description"].as_str().unwrap();
+        assert_eq!(
+            recipe, "Which recipe to build from — the EXACT `purpose` key.",
+            "lead paragraph must survive VERBATIM — clipping the answer makes the verb unusable"
+        );
+        assert!(
+            !recipe.contains("stale the moment"),
+            "maintainer rationale must not reach the offered schema: {recipe}"
+        );
+
+        // The param named `description` is a SCHEMA, so it keeps its own shape and
+        // its nested prose is trimmed like any other field's.
+        let named = &out.properties["description"];
+        assert_eq!(named["type"], "string", "a param named `description` is not prose");
+        assert_eq!(
+            named["description"].as_str().unwrap(),
+            "Optional note describing the change."
+        );
+
+        // definitions travel with the schema (llama.cpp resolves $refs against them)
+        // and get the same treatment — they are offered prose too.
+        let defs = out.definitions.expect("definitions must still ship");
+        assert_eq!(defs["EditMode"]["description"].as_str().unwrap(), "How to edit.");
     }
 
     fn spec(name: &str) -> NativeToolSpec {
