@@ -526,6 +526,32 @@ async fn serve_persona_loop_inner(
                                 engaged_beat,
                                 rest_cap,
                             );
+                            // Make the yield VISIBLE, at ≤1 row/min for the whole process.
+                            // Without this the yield path emits nothing, so a window with
+                            // zero `persona.selftick.*` reads identically whether one citizen
+                            // is mid-turn holding the only lane or the roster is dead —
+                            // resolving that took a manual /slots curl on 2026-08-17. Per-yield
+                            // rows would be ~92/min at this roster size and would drown the
+                            // stream (#399), so the admission gate rate-limits and only the
+                            // winner of its compare-exchange reports.
+                            if let Some(yields) =
+                                crate::cognition::resource_admission::take_ambient_yield_report(
+                                    std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|d| d.as_millis() as u64)
+                                        .unwrap_or(0),
+                                )
+                            {
+                                crate::probe!(
+                                    class = "persona.selftick.starved",
+                                    yields_since_last_report = yields,
+                                    total_yields =
+                                        crate::cognition::resource_admission::ambient_yields(),
+                                    "ambient turns yielded — the pool was full. NOT a fault: \
+                                     this is what contention looks like when citizens outnumber \
+                                     non-directed lanes. Rate-limited to ≤1 row/min."
+                                );
+                            }
                             continue;
                         }
                     };

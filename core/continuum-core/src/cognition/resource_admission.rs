@@ -153,6 +153,70 @@ pub fn shared_model_saturated() -> bool {
 // throttling below the hardware. On a 1- or 2-lane box the budget floors at 1, so weak
 // machines get byte-identical behaviour to before.
 
+/// Ambient turns that YIELDED because the pool was full, since process start.
+///
+/// Why this exists (2026-08-17): the yield path emits no probe — deliberately, because at
+/// 24 citizens on a 15s beat a per-yield row would be ~92 rows/min and would drown the
+/// stream exactly as `serving.plan` did at 2.6 rows/s (#399). But the ABSENCE of a row made
+/// starvation indistinguishable from health: a 10-minute window showing zero
+/// `persona.selftick.*` reads identically whether one citizen is mid-turn holding the only
+/// lane or nobody is ticking at all. Resolving that took a manual `/slots` curl. A counter
+/// costs one relaxed increment and makes the difference reportable.
+static AMBIENT_YIELDS: AtomicUsize = AtomicUsize::new(0);
+/// Epoch-ms of the last starvation report, so the emit is rate-limited rather than per-yield.
+static AMBIENT_YIELD_LAST_REPORT_MS: AtomicUsize = AtomicUsize::new(0);
+
+/// Minimum gap between starvation reports. One row a minute is free next to a 15s beat and
+/// still resolves "is the roster moving?" at the granularity anyone asks it.
+const AMBIENT_YIELD_REPORT_GAP_MS: usize = 60_000;
+
+/// Cumulative ambient yields since process start.
+pub fn ambient_yields() -> usize {
+    AMBIENT_YIELDS.load(Ordering::Relaxed)
+}
+
+/// Should the caller emit a starvation report now, and if so for how many yields?
+///
+/// Pure over its inputs so the rate-limit rule is unit-testable without a clock: returns
+/// `Some(yields_in_window)` at most once per [`AMBIENT_YIELD_REPORT_GAP_MS`]. `last_report_ms`
+/// of 0 means "never reported" and always fires, so the FIRST starvation is never silent —
+/// which is the one that matters, and the one a naive `now - last >= gap` would swallow on a
+/// box whose clock starts near zero.
+pub fn ambient_yield_report_due(
+    total_yields: usize,
+    yields_at_last_report: usize,
+    now_ms: usize,
+    last_report_ms: usize,
+) -> Option<usize> {
+    let fresh = total_yields.saturating_sub(yields_at_last_report);
+    if fresh == 0 {
+        return None;
+    }
+    if last_report_ms != 0 && now_ms.saturating_sub(last_report_ms) < AMBIENT_YIELD_REPORT_GAP_MS {
+        return None;
+    }
+    Some(fresh)
+}
+
+/// Claim the report slot if due, returning the yield count to report. Swaps the timestamp
+/// atomically so concurrent yielders cannot both emit for the same window.
+pub fn take_ambient_yield_report(now_ms: u64) -> Option<usize> {
+    let now = now_ms as usize;
+    let last = AMBIENT_YIELD_LAST_REPORT_MS.load(Ordering::Relaxed);
+    let total = AMBIENT_YIELDS.load(Ordering::Relaxed);
+    // `yields_at_last_report` is encoded by the caller's window: we only need the delta since
+    // the last report, and the report resets the clock, so total-at-report is implicit.
+    let fresh = ambient_yield_report_due(total, 0, now, last)?;
+    // Only the winner of this compare-exchange reports.
+    if AMBIENT_YIELD_LAST_REPORT_MS
+        .compare_exchange(last, now, Ordering::AcqRel, Ordering::Relaxed)
+        .is_err()
+    {
+        return None;
+    }
+    Some(fresh)
+}
+
 /// Try to claim an ambient-turn slot. `Some(permit)` → run the ambient turn (hold the
 /// permit for the turn's lifetime; it releases on drop). `None` → all ambient slots
 /// are busy; the caller yields this ambient turn. Non-blocking (never waits).
@@ -373,6 +437,11 @@ impl LaneAdmission {
             .clone()
             .try_acquire_owned()
             .ok()
+            .or_else(|| {
+                // Count the miss. The permit is non-blocking, so a None here IS the yield.
+                AMBIENT_YIELDS.fetch_add(1, Ordering::Relaxed);
+                None
+            })
     }
 
     /// See [`acquire_serving_lane`] — the reservation policy lives HERE so the global and a
@@ -731,6 +800,39 @@ mod tests {
             .expect("dropping a finished turn frees its slot for the next");
         drop(reclaimed);
         drop(held); // release the rest (nothing else can observe this gate anyway)
+    }
+
+    // what this catches: a starvation report that is either a firehose or silent. At 24
+    // citizens on a 15s beat, per-yield rows would be ~92/min and would drown the stream the
+    // way serving.plan did at 2.6 rows/s (#399) — but NO row made a starved roster
+    // indistinguishable from a healthy one, which cost a manual /slots curl to resolve on
+    // 2026-08-17. Both failure modes are pinned here.
+    #[test]
+    fn the_starvation_report_is_rate_limited_but_the_first_one_is_never_silent() {
+        // Never reported before (last_report_ms == 0) → fires immediately, however early.
+        assert_eq!(
+            ambient_yield_report_due(23, 0, 5, 0),
+            Some(23),
+            "the FIRST starvation must report even at t=5ms — it is the one that matters"
+        );
+        // Inside the gap → silent, no matter how many yields piled up.
+        assert_eq!(
+            ambient_yield_report_due(1_000, 23, 10_000, 9_000),
+            None,
+            "a second report inside the gap would be the firehose"
+        );
+        // Gap elapsed → reports only the DELTA, not the cumulative total.
+        assert_eq!(
+            ambient_yield_report_due(1_000, 23, 70_000, 9_000),
+            Some(977),
+            "reports yields in THIS window; a cumulative count cannot show a rate"
+        );
+        // No new yields → nothing to say, even after the gap. Contention ended.
+        assert_eq!(
+            ambient_yield_report_due(23, 23, 999_000, 9_000),
+            None,
+            "a quiet roster must not emit a row saying nothing happened"
+        );
     }
 
     // what this catches: the WEAK-BOX floor of the same change. Deriving the ambient pool
