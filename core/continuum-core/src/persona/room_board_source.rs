@@ -68,6 +68,22 @@ use crate::persona::rag_budget::{
 /// `active-work` (own claims) and `room-board` (the wall).
 const SOURCE_ID: &str = "room-kanban";
 
+/// Most cards this source will render in full, per turn.
+///
+/// NOT a token budget — a RELEVANCE bound. The per-card loop below used to be limited only
+/// by whatever budget remained, so the board grew to fill the prompt: measured 2026-08-17,
+/// 38 cards / 9,284 chars / 49.7% of an 18,697-char system prompt on a routine ambient turn.
+/// That makes every citizen think slower as the backlog grows, which is exactly backwards
+/// for a work board.
+///
+/// Sized from what it MUST cover, not picked: the `[your work]` and `[available work]` leads
+/// each name up to 5 cards, so the detailed render must be able to carry both (10) or the
+/// summaries would promise cards the detail then omits — a citizen seeing "you hold 5" above
+/// a list of 3 would reasonably read the substrate as inconsistent. Two spare keeps a
+/// just-created card visible in the same turn it arrives. Ten is the floor this cannot go
+/// below without re-deriving the lead caps with it.
+const MAX_RENDERED_CARDS: usize = 12;
+
 /// Token estimate — the ONE canonical chars/4 estimator
 /// (`cognition::token_budget`), shared by every RAG source so the replay
 /// ledger's numbers match.
@@ -578,8 +594,39 @@ impl RagSource for RoomBoardSource {
         }
         let names = self.reader.peer_names(&owner_peers).await;
 
+        // RELEVANCE ORDER + A HARD CAP, not "however many the budget happens to fit".
+        //
+        // Measured 2026-08-17 on a live ambient turn (capture 762a806b): this loop rendered
+        // 38 distinct cards into 9,284 chars — 49.7% of an 18,697-char system prompt, ~3,100
+        // of the turn's ~12,286 prefill tokens. Every citizen paid it on every self-tick.
+        //
+        // Two things make that wrong rather than merely expensive:
+        //
+        // 1. IT IS REDUNDANT. The `[board]` headline and the `[your work]` / `[available
+        //    work]` leads above already carry the counts and the top titles — and they were
+        //    ADDED because this dump is unreliable under budget (see the Asha 2026-08-06
+        //    note above). Rendering the summary AND the exhaustive list means the same facts
+        //    are paid for twice, and the expensive copy is the one that gets truncated.
+        // 2. IT SCALES THE WRONG WAY. Bounded only by remaining budget, the board grows to
+        //    fill the prompt, so every citizen thinks SLOWER as the backlog grows. A team
+        //    that accumulates work gets progressively less able to do it — the opposite of
+        //    what a work board is for.
+        //
+        // So: order by what she can act on (her own holds first, then newest claimable —
+        // the same recency argument the available-work lead already makes), take at most
+        // `MAX_RENDERED_CARDS`, and let the leads plus `work/list` carry the tail. Counts in
+        // the headline stay the TRUE totals; nothing here makes the board smaller than it is,
+        // only shorter than it was.
+        let mut ordered: Vec<&airc_work::WorkCard> = board.cards.iter().collect();
+        ordered.sort_by_key(|c| {
+            let mine_first = !(c.owner.map(|o| o.as_uuid()) == Some(self.persona_id));
+            // Negate for newest-first without needing a reversed comparator.
+            (mine_first, std::cmp::Reverse(c.created_at_ms))
+        });
+        let render_budget_cards = MAX_RENDERED_CARDS.min(ordered.len());
+
         let mut cards_delivered = 0usize;
-        for card in &board.cards {
+        for card in ordered.into_iter().take(render_budget_cards) {
             let content = Self::render(card, self.persona_id, now_ms, &names);
             let tokens = estimate_tokens(&content);
             if tokens_used.saturating_add(tokens) > budget {
@@ -589,6 +636,9 @@ impl RagSource for RoomBoardSource {
                 // Counted over CARDS, excluding the available-work lead item.
                 dropped = board.cards.len() - cards_delivered;
                 break;
+                // (unchanged: `dropped` is measured against the TRUE board size, so a
+                // budget-truncated render and a cap-truncated one report the same honest
+                // "how many did she not see".)
             }
             tokens_used += tokens;
             cards_delivered += 1;
@@ -625,6 +675,13 @@ impl RagSource for RoomBoardSource {
                     "lane_id": card.lane_id.map(|l| l.as_uuid().to_string()),
                 }),
             });
+        }
+
+        // Cap-truncation counts as dropped just like budget-truncation. Without this the
+        // debug line would report dropped=0 on a capped board and the shortening would be
+        // invisible in the one place an operator looks for it.
+        if dropped == 0 && cards_delivered < board.cards.len() {
+            dropped = board.cards.len() - cards_delivered;
         }
 
         // Budget too small to carry even one card → no block.
@@ -831,6 +888,74 @@ mod tests {
     // renders into the [room-kanban] grounding block — every card with its
     // column, title, priority, and owner. This is the Observer perceiving the
     // board (task #117 O6), distinct from active-work's own-claims-only view.
+    // what this catches: THE BOARD EATING THE PROMPT. The per-card loop used to be bounded
+    // only by remaining budget, so it grew with the backlog — measured live 2026-08-17 at 38
+    // cards / 9,284 chars / 49.7% of an 18,697-char system prompt on a routine ambient turn,
+    // ~3,100 of ~12,286 prefill tokens, paid by every citizen on every self-tick. The
+    // property that makes it a defect and not just a cost: a team accumulating work gets
+    // progressively SLOWER at doing it.
+    //
+    // Pins all three halves of the fix — the cap holds, her OWN card survives the cut even
+    // when it is the oldest on the board (relevance order, not board order), and the headline
+    // still reports the TRUE totals so nothing is hidden, only shortened.
+    #[tokio::test]
+    async fn a_large_board_is_capped_and_keeps_her_own_card_first() {
+        let mut cards: Vec<WorkCard> = Vec::new();
+        // Hers, and DELIBERATELY the oldest — under the old board-order loop with a cap this
+        // would be the first thing cut, which is the worst possible card to lose.
+        let mut mine = card("MY held card", CardState::InProgress, Some(
+            airc_core::PeerId::from_uuid(persona()),
+        ));
+        mine.created_at_ms = 1; // oldest on the board
+        cards.push(mine);
+        for i in 0..40 {
+            let mut c = card(&format!("filler card {i}"), CardState::Open, None);
+            c.created_at_ms = 1_000_000 + i as u64; // all newer than hers
+            cards.push(c);
+        }
+        let total = cards.len();
+
+        let reader = Arc::new(StubReader::new(snapshot(cards)));
+        let source = RoomBoardSource::new(persona(), reader);
+        // A budget large enough that the CAP, not the budget, is what binds — otherwise this
+        // would pass for the old reason and prove nothing.
+        let delivery = source
+            .deliver(&ctx(), 100_000, ResolutionPreference::Raw)
+            .await;
+
+        let rendered: Vec<&RagItem> = delivery
+            .items
+            .iter()
+            .filter(|i| i.metadata.get("card_id").is_some())
+            .collect();
+        assert!(
+            rendered.len() <= MAX_RENDERED_CARDS,
+            "board must be capped at {MAX_RENDERED_CARDS}, rendered {} of {total} — \
+             an uncapped board grows into the prompt as the backlog grows",
+            rendered.len()
+        );
+        assert!(
+            rendered.len() >= 10,
+            "the cap must still cover both 5-card leads, got {}",
+            rendered.len()
+        );
+        assert!(
+            rendered[0].content.contains("MY held card"),
+            "her OWN card must survive the cut and lead, even as the oldest on the board: {}",
+            rendered[0].content
+        );
+        // Counts stay TRUE — shortening the render must never shrink the reported board.
+        let headline = &delivery.items[0];
+        assert_eq!(headline.metadata["kind"], "board-headline");
+        assert_eq!(headline.metadata["held_count"], 1);
+        assert_eq!(headline.metadata["open_count"], 40);
+        assert!(
+            headline.content.contains("40 claimable"),
+            "headline reports the real total, not the rendered slice: {}",
+            headline.content
+        );
+    }
+
     #[tokio::test]
     async fn whole_board_surfaces_with_owner_and_state() {
         let holder = airc_core::PeerId::new();
