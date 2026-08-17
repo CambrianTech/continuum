@@ -302,49 +302,66 @@ fn parse_state(s: &str) -> Result<CardState, CommandError> {
 
 // ─────────────────────────── work/claim ──────────────────────────
 
-/// Locate `card_id` on the board of one of the caller's OTHER subscribed rooms,
-/// switch her current room there, and retry the claim once.
+/// The room whose board holds `card_id` — the ONE place that answers *which
+/// activity does this card belong to*.
 ///
-/// Returns `None` when no subscribed room holds the card (the original
-/// wrong-room refusal stands, verbatim), `Some(result)` when the card was found
-/// and a room-switched claim was attempted — that result REPLACES the refusal,
+/// A card carries no room of its own (airc's `WorkCard` has no such field);
+/// boards are PER-ROOM, so a card's activity IS the room whose board it appears
+/// on. Two callers need that fact and used to derive it separately — badly: the
+/// wrong-room claim retry inlined the scan, and the claim-fired solve dispatch
+/// did not derive it at all and went roomless instead (#425, measured: 13,209
+/// roomless turns, 35% of one citizen's cognition, invisible to every room).
+///
+/// Rooms are tried in subscription order and a card exists on exactly one board,
+/// so the first hit is the only hit. A caller can only read boards of rooms it is
+/// SUBSCRIBED to, so this widens no visibility — it only stops discarding what
+/// the caller can already see.
+async fn room_holding_card(airc: &Arc<Airc>, card_id: WorkCardId) -> Option<airc_lib::Room> {
+    let set = airc.subscription_set().await.ok()?;
+    for sub in set.all() {
+        let room = sub.as_room();
+        let Ok(board) = airc.work_board_in(&room).await else {
+            continue;
+        };
+        if board.snapshot().cards.iter().any(|c| c.card_id == card_id) {
+            return Some(room);
+        }
+    }
+    None
+}
+
+/// Locate `card_id`'s room, switch the caller's current room there, and retry the
+/// claim once.
+///
+/// Returns `None` when no subscribed room holds the card, or when the card's room
+/// IS the current one (the room that already refused has nothing to follow) — in
+/// both cases the original wrong-room refusal stands, verbatim. `Some(result)`
+/// means a room-switched claim was attempted and that result REPLACES the refusal,
 /// so a genuine contention in the card's room still reports as contention.
-/// Rooms are tried in subscription order; a card exists on exactly one board
-/// (boards are per-room), so the first hit is the only hit.
 async fn claim_following_card_room(
     airc: &Arc<Airc>,
     card_id: WorkCardId,
     ttl_ms: u64,
 ) -> Option<Result<ClaimId, airc_lib::AircError>> {
-    let set = airc.subscription_set().await.ok()?;
+    let room = room_holding_card(airc, card_id).await?;
     let current = airc.current_room().await.ok();
-    for sub in set.all() {
-        let room = sub.as_room();
-        if current.as_ref().is_some_and(|c| c.channel == room.channel) {
-            continue; // the room that already refused
-        }
-        let Ok(board) = airc.work_board_in(&room).await else {
-            continue;
-        };
-        if board.snapshot().cards.iter().all(|c| c.card_id != card_id) {
-            continue;
-        }
-        if airc.join(&room.name).await.is_err() {
-            continue;
-        }
-        crate::probe!(
-            class = "work.claim.followed_card_room",
-            card_id = %short8(card_id.as_uuid()),
-            room = %room.name,
-            "claim-by-id targeted a card outside the current room — switched to \
-             the card's room and retried (accept-or-redirect, never refuse-and-instruct)"
-        );
-        return Some(
-            airc.claim_work_card(ClaimWorkCard { card_id, ttl_ms })
-                .await,
-        );
+    if current.as_ref().is_some_and(|c| c.channel == room.channel) {
+        return None;
     }
-    None
+    if airc.join(&room.name).await.is_err() {
+        return None;
+    }
+    crate::probe!(
+        class = "work.claim.followed_card_room",
+        card_id = %short8(card_id.as_uuid()),
+        room = %room.name,
+        "claim-by-id targeted a card outside the current room — switched to \
+         the card's room and retried (accept-or-redirect, never refuse-and-instruct)"
+    );
+    Some(
+        airc.claim_work_card(ClaimWorkCard { card_id, ttl_ms })
+            .await,
+    )
 }
 
 /// Claim a work card for this persona (as its own airc key).
@@ -549,14 +566,41 @@ impl ActionCommand for WorkClaim {
         // nobody in the loop. Best-effort: a dispatch failure never voids the
         // claim — the claim is hers either way, and the probe says what happened.
         if let Some(caller) = ctx.caller.as_ref() {
-            // ROOMLESS, and named as such rather than papered over: the claim verb
-            // carries no activity — a citizen can claim from anywhere, and the card
-            // does not remember which room staged it. So a claim-fired solve still
-            // works invisibly. That is #425's whole subject (a bench claim must lead
-            // to IN-ROOM work, not a detached nil-room solve); the dispatch path
-            // below already has a room and passes it, so the two paths now differ
-            // exactly at the gap #425 exists to close.
-            dispatch_staged_swe_solve(ctx, &airc, caller.peer_id.as_uuid(), card_id, None).await;
+            // IN THE CARD'S OWN ROOM (#425). This used to pass `None` and say so — the
+            // claim verb carries no activity, so a claim-fired solve ran where nobody
+            // could see it: no act receipts (`apply_act` skips a nil room by design), no
+            // peer, no human, no ViewState. Measured before this fix: 13,209 roomless
+            // turns across the 25 newest trace files, 35% of one citizen's cognition.
+            //
+            // The room was never actually unknown — boards are PER-ROOM, so the card's
+            // activity is the room whose board holds it, and the wrong-room claim retry
+            // right above already resolves exactly that. It is now ONE resolver
+            // ([`room_holding_card`]) with two consumers instead of a scan here and a
+            // shrug there. A card we cannot place gets NO detached fallback: it says so
+            // on the probe and the claim still stands, because inventing invisible work
+            // is what this fix removes.
+            match room_holding_card(&airc, card_id).await {
+                Some(room) => {
+                    dispatch_staged_swe_solve(
+                        ctx,
+                        &airc,
+                        StagedSolveDispatch {
+                            claimer: caller.peer_id,
+                            card: card_id,
+                            room: room.channel,
+                        },
+                    )
+                    .await;
+                }
+                None => crate::probe!(
+                    class = "work.claim.unplaceable_card",
+                    card_id = %short8(card_id.as_uuid()),
+                    claimer = %short8(caller.peer_id.as_uuid()),
+                    "claimed a card no subscribed room's board holds — the claim STANDS, \
+                     but no solve fires: work whose activity we cannot name is work no \
+                     room can see (#425)"
+                ),
+            }
         }
         Ok(WorkClaimResult {
             card_id: p.card_id,
@@ -568,6 +612,37 @@ impl ActionCommand for WorkClaim {
 /// How many graded chances a claim-dispatched SWE run gets (`AgentSolveParams::attempts`).
 /// This is the SWE adapter's N, not a global — each benchmark adapter owns its own.
 const SWE_CLAIM_ATTEMPTS: u32 = 3;
+
+/// WHO works, WHICH card, WHERE the work is visible — the three facts that define one
+/// staged-SWE dispatch, as a value object rather than a positional argument list.
+///
+/// WHY A STRUCT (Joel, 2026-08-17: *"make sure params are well formed structs and
+/// constants, good OOP, not random parameter lists"*). The previous signature was
+/// `(ctx, airc, Uuid, WorkCardId, Option<Uuid>)`: two BARE UUIDs distinguished only by
+/// argument POSITION, so transposing claimer and room compiled cleanly and dispatched a
+/// citizen's solve under a room's id. Typed fields make that a compile error, and the next
+/// fact this dispatch needs becomes a FIELD instead of a sixth argument. `ctx` and `airc`
+/// stay separate parameters on purpose — they are ambient services, not facts about the
+/// dispatch, and folding them in would turn the value object into a context bag.
+///
+/// WHY `room` IS NOT `Option` (Joel, same day: *"if something is required, remove the
+/// option… a required param is caught at compile time not runtime"*). It used to be
+/// `Option<Uuid>`, and `work/claim` passed `None` — which is #425: the solve ran, her acts
+/// radiated no receipts (`apply_act` skips a nil room by design), and no room, peer or human
+/// ever saw the work. Making the field required moves that from a runtime shrug to an
+/// unrepresentable state: a caller that cannot name the activity cannot build the struct,
+/// so it must resolve one ([`room_holding_card`]) or report why it could not.
+pub(crate) struct StagedSolveDispatch {
+    /// The citizen who does the work — her own airc identity.
+    pub claimer: crate::identity::PeerId,
+    /// The card she is working.
+    pub card: airc_work::WorkCardId,
+    /// The activity the run BELONGS to: `benchmark/dispatch` passes the per-run room it
+    /// just spawned (#329), `work/claim` resolves the card's own room. Every act the
+    /// solver executes radiates a receipt into it (#243), which is what makes the work
+    /// visible where the work lives.
+    pub room: airc_core::RoomId,
+}
 
 /// The #346 claim→solve dispatch. Fires a detached [`crate::commands::agent::solve::AgentSolve`]
 /// for the claimer when the claimed card matches a checkout `benchmark/swe-setup` staged
@@ -584,17 +659,16 @@ const SWE_CLAIM_ATTEMPTS: u32 = 3;
 /// 2026-08-11: cards staged + assigned, zero claims, zero solves). The solve is her WHOLE
 /// cognition with an exclusive warm slot (`quiesce_others`), so nothing about "she does the
 /// work herself" changes — only the trigger moves off the chat turn.
-/// `room` is the activity the run BELONGS to — `benchmark/dispatch` passes the
-/// per-run room it just spawned (#329), and every act the solver executes then
-/// radiates a receipt into it (#243). `None` is the roomless shape: her work
-/// happens, and no room ever sees it.
 pub(crate) async fn dispatch_staged_swe_solve(
     ctx: &Ctx,
     airc: &std::sync::Arc<airc_lib::Airc>,
-    claimer: uuid::Uuid,
-    card_id: airc_work::WorkCardId,
-    room: Option<uuid::Uuid>,
+    dispatch: StagedSolveDispatch,
 ) {
+    let StagedSolveDispatch {
+        claimer,
+        card: card_id,
+        room,
+    } = dispatch;
     let Ok(board) = airc
         .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
         .await
@@ -679,7 +753,11 @@ pub(crate) async fn dispatch_staged_swe_solve(
         capture_dir: None,
         learn: crate::cognition::learning_policy::LearningPolicy::LearnFromThisWork,
         max_acts: None,
-        room,
+        // `AgentSolveParams::room` is still `Option` because `agent/solve` is also an
+        // operator-invocable command; THIS caller always has one, which is the point of
+        // [`StagedSolveDispatch::room`]. Narrowing the command's own param is the next
+        // slice, not a silent widening here.
+        room: Some(room.as_uuid()),
         path_prepend: Some(vec![venv_bin]),
         suppress_recall: None,
         prev_failed_patch_sha: None,
