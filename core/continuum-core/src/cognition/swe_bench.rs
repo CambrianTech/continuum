@@ -792,7 +792,7 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
         // and that asymmetry is what made every astropy instance ungradeable: the pin caps
         // setuptools at the 2017 cutoff while markupsafe's build requires >=40.8.0, and the
         // heal that reads uv's own `exclude-newer-package` hint lived only at the other site.
-        let out = era_pinned_uv_install(
+        let mut out = era_pinned_uv_install(
             &uv,
             &py_s,
             as_of.as_deref(),
@@ -801,6 +801,31 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
             &[("CFLAGS", ERA_CFLAGS)],
         )
         .await?;
+        // BUILD TOOLS ARE NOT SUBJECT CODE — reproduced in isolation 2026-08-17: the era
+        // pin on this pre-install is UNSATISFIABLE BY CONSTRUCTION on a modern box, at
+        // every rung the heal can reach. Era markupsafe 1.0 (no wheel for this
+        // interpreter/arch, sdist build mandatory) needs setuptools>=40.8.0 which the pin
+        // excludes; LIFT setuptools (the heal's correct first move, verified firing) and
+        // the 2017 sdist dies on `ImportError: cannot import name 'Feature'` (removed in
+        // setuptools 46); lift markupsafe instead and era jinja2 2.10 dies at import on
+        // `soft_unicode` (removed in markupsafe 2.1). The only installable combination is
+        // MODERN jinja2 + MODERN markupsafe — verified importing clean.
+        //
+        // So when the healed era-pinned install still fails, retry ONCE unpinned, loudly.
+        // Scope-safe by construction: this table lists BUILD TOOLS for dependency-sdist
+        // code generators (astropy→pyerfa→jinja2), never subject requirements — a repo
+        // where the package IS subject code (flask) has no entry here, and the subject
+        // graph is resolved by the still-date-pinned `-e .` step below.
+        if !out.status.success() && as_of.is_some() {
+            tracing::warn!(
+                instance = %instance.instance_id,
+                deps = ?sdist_deps,
+                "era-pinned sdist build-dep install unsatisfiable at every heal rung — \
+                 retrying UNPINNED (build tools only; the subject graph stays date-pinned)"
+            );
+            out = era_pinned_uv_install(&uv, &py_s, None, sdist_deps, None, &[("CFLAGS", ERA_CFLAGS)])
+                .await?;
+        }
         if !out.status.success() {
             // Fail LOUD and leave no half-built env behind — same doctrine as the `-e .` gate.
             let _ = std::fs::remove_dir_all(&env_dir);
