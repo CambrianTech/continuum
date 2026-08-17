@@ -1202,26 +1202,39 @@ class _ContinuumResult(unittest.TextTestResult):
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
         self.continuum_rows = {}
+    def _record(self, test, ok):
+        # shortDescription() is the docstring's first line — the SAME string unittest
+        # renders on its own output line, and therefore the id SWE-bench's own log parser
+        # captured for docstringed tests. Emitting it is not redundant: the dataset spells
+        # those tests BY THE DOCSTRING and by nothing else.
+        try:
+            desc = test.shortDescription() or ""
+        except Exception:
+            desc = ""
+        self.continuum_rows[test.id()] = (ok, desc)
     def addSuccess(self, test):
-        super().addSuccess(test); self.continuum_rows[test.id()] = True
+        super().addSuccess(test); self._record(test, True)
     def addError(self, test, err):
-        super().addError(test, err); self.continuum_rows[test.id()] = False
+        super().addError(test, err); self._record(test, False)
     def addFailure(self, test, err):
-        super().addFailure(test, err); self.continuum_rows[test.id()] = False
+        super().addFailure(test, err); self._record(test, False)
     def addSkip(self, test, reason):
-        super().addSkip(test, reason); self.continuum_rows[test.id()] = True
+        super().addSkip(test, reason); self._record(test, True)
     def addExpectedFailure(self, test, err):
-        super().addExpectedFailure(test, err); self.continuum_rows[test.id()] = True
+        super().addExpectedFailure(test, err); self._record(test, True)
     def addUnexpectedSuccess(self, test):
-        super().addUnexpectedSuccess(test); self.continuum_rows[test.id()] = False
+        super().addUnexpectedSuccess(test); self._record(test, False)
 
 class JsonRunner(DiscoverRunner):
     def get_resultclass(self):
         return _ContinuumResult
     def run_suite(self, suite, **kwargs):
         result = super().run_suite(suite, **kwargs)
-        for tid, ok in getattr(result, "continuum_rows", {}).items():
-            sys.stderr.write("CONTINUUM_TEST " + json.dumps({"id": tid, "ok": ok}) + "\n")
+        for tid, (ok, desc) in getattr(result, "continuum_rows", {}).items():
+            row = {"id": tid, "ok": ok}
+            if desc:
+                row["desc"] = desc
+            sys.stderr.write("CONTINUUM_TEST " + json.dumps(row) + "\n")
         sys.stderr.flush()
         return result
 "#;
@@ -1252,14 +1265,31 @@ async fn install_django_json_runner(repo_dir: &Path) -> bool {
     true
 }
 
-/// One machine-readable row per test: `CONTINUUM_TEST {"id": "...", "ok": true}`.
+/// One machine-readable row per test: `CONTINUUM_TEST {"id": …, "ok": …, "desc": …}`.
 ///
-/// `test.id()` is `module.Class.method`. The dataset's django ids are the unittest RENDERING
-/// of that, `method (module.Class)`, so both spellings are registered for the same outcome —
-/// deterministic surgery on a canonical id, not a guess about output shape.
+/// THREE spellings are registered for one outcome, because the dataset uses all three and a
+/// canonical id ALONE cannot resolve a django instance (measured on django-10914, gold gate):
+///
+/// | spelling | where it comes from | example |
+/// |---|---|---|
+/// | canonical id | `test.id()` | `test_utils.tests.AssertRaisesMsgTest.test_special_re_chars` |
+/// | unittest rendering | id, re-spelled | `test_special_re_chars (test_utils.tests.AssertRaisesMsgTest)` |
+/// | **docstring** | `test.shortDescription()` | `assertRaisesMessage shouldn't interpret RE special chars.` |
+///
+/// The third row is the one that is easy to miss and impossible to work around downstream.
+/// SWE-bench's own django ids were harvested from unittest's verbose log, and unittest prints
+/// the DOCSTRING in place of the id when a test has one — so for those tests the dataset's
+/// PASS_TO_PASS entry *is* the docstring, with no id anywhere in it. Verified in the dataset:
+/// 2 of django-10914's 98 p2p ids are docstring prose. Only the test itself knows its own
+/// docstring, which is why the runner emits it rather than the grader guessing.
+///
+/// Ids and renderings are unique, so they are inserted directly. Docstrings are NOT unique —
+/// two tests may share one — so they are AND-folded (pass only if every test carrying that
+/// docstring passed) and they never overwrite a real id.
 pub fn parse_django_json(report: &str) -> (HashMap<String, bool>, HashMap<String, bool>) {
     let mut by_node = HashMap::new();
     let mut by_func: HashMap<String, bool> = HashMap::new();
+    let mut by_desc: HashMap<String, bool> = HashMap::new();
     for line in report.lines() {
         let Some(payload) = line.trim().strip_prefix("CONTINUUM_TEST ") else {
             continue;
@@ -1277,6 +1307,17 @@ pub fn parse_django_json(report: &str) -> (HashMap<String, bool>, HashMap<String
             let entry = by_func.entry(method.to_string()).or_insert(true);
             *entry = *entry && ok;
         }
+        if let Some(desc) = v.get("desc").and_then(|x| x.as_str()) {
+            let desc = desc.trim();
+            if !desc.is_empty() {
+                let entry = by_desc.entry(desc.to_string()).or_insert(true);
+                *entry = *entry && ok;
+            }
+        }
+    }
+    // Docstrings fill gaps; they never shadow a canonical id or its rendering.
+    for (desc, ok) in by_desc {
+        by_node.entry(desc).or_insert(ok);
     }
     (by_node, by_func)
 }
@@ -2363,6 +2404,55 @@ diff --git a/sympy/solvers/tests/test_other.py b/sympy/solvers/tests/test_other.
         assert!(DJANGO_JSON_SETTINGS_SRC.contains("from test_sqlite import *"));
         assert!(DJANGO_JSON_SETTINGS_SRC
             .contains(&format!("TEST_RUNNER = \"{DJANGO_JSON_RUNNER_MODULE}.JsonRunner\"")));
+    }
+
+    // what this catches: a canonical id alone cannot grade django. SWE-bench harvested its
+    // django ids from unittest's verbose log, and unittest prints a test's DOCSTRING instead
+    // of its id when it has one — so for those tests the dataset's PASS_TO_PASS entry is
+    // docstring prose with no id in it at all. Measured on django-10914's gold gate: with
+    // ids + renderings only, p2p capped at 38/40 and the two misses were exactly its two
+    // docstring-spelled ids. All three spellings must resolve to the same outcome, and a
+    // docstring shared by two tests must fold conservatively rather than let a pass mask
+    // a fail.
+    #[test]
+    fn a_docstringed_django_test_resolves_by_its_docstring_too() {
+        let report = "\
+CONTINUUM_TEST {\"id\": \"test_utils.tests.AssertRaisesMsgTest.test_special_re_chars\", \"ok\": true, \"desc\": \"assertRaisesMessage shouldn't interpret RE special chars.\"}
+CONTINUUM_TEST {\"id\": \"test_utils.tests.Plain.test_plain\", \"ok\": true}
+CONTINUUM_TEST {\"id\": \"a.B.test_shared_one\", \"ok\": true, \"desc\": \"A shared docstring.\"}
+CONTINUUM_TEST {\"id\": \"a.B.test_shared_two\", \"ok\": false, \"desc\": \"A shared docstring.\"}
+noise that is not a row
+CONTINUUM_TEST not json at all";
+        let (by_node, by_func) = parse_django_json(report);
+
+        // The dataset's spelling for a docstringed test IS the docstring.
+        assert_eq!(
+            verdict_for(
+                "assertRaisesMessage shouldn't interpret RE special chars.",
+                &by_node,
+                &by_func
+            ),
+            Some(true),
+            "a docstring-spelled dataset id must resolve"
+        );
+        // …and the canonical + rendered spellings of that same test still resolve.
+        for spelling in [
+            "test_utils.tests.AssertRaisesMsgTest.test_special_re_chars",
+            "test_special_re_chars (test_utils.tests.AssertRaisesMsgTest)",
+        ] {
+            assert_eq!(verdict_for(spelling, &by_node, &by_func), Some(true), "{spelling}");
+        }
+        // A docstring on two tests, one failing, must NOT read as a pass.
+        assert_eq!(
+            verdict_for("A shared docstring.", &by_node, &by_func),
+            Some(false),
+            "a shared docstring folds conservatively"
+        );
+        // A test with no docstring is unaffected, and unparseable lines are skipped.
+        assert_eq!(
+            verdict_for("test_utils.tests.Plain.test_plain", &by_node, &by_func),
+            Some(true)
+        );
     }
 
     // what this catches: django report ids never resolving. The dataset's FAIL_TO_PASS
