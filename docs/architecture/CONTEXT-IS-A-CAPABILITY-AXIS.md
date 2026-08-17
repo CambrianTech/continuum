@@ -114,3 +114,50 @@ per-generation latency and tok/s. Its absence is why every throughput question i
 has to be answered by black-box sampling over 20-minute windows instead of read off the
 stream. Fix that before trying to tune anything by measurement — an unmeasurable governor
 cannot be a learning one.
+
+---
+
+## The blocker on raising the generation reserve (measured 2026-08-17)
+
+`completion_budget_for(window) = window / 4`. On a 16,384 window that caps generation
+at 4,096 — and a reasoning model spends output tokens THINKING before it answers, so it
+exhausts the cap inside `<think>` and never reaches the tool call. Measured: 7 of 20
+captured turns came back `finish_reason: length` with `output_tokens: 4096` EXACTLY,
+~15k chars of reasoning, empty text, ZERO tool calls, 4–5 minutes of GPU each.
+
+**Do NOT "fix" this by bounding the reasoning channel.** llama-server offers
+`--reasoning-budget N`; using it makes the model smaller to fit a fraction we invented.
+Their ability to think is the product (Joel, 2026-08-17: *"So blown away their ability
+to think with more capping. Lame."*).
+
+**And do NOT just raise the fraction.** Tried `window/2`; it breaks
+`prompt_plus_completion_cap_never_exceeds_the_served_window` — the invariant that keeps
+`prompt + completion` under `n_ctx` (llama-server runs with context-shift off, so
+crossing it is a 500 on every turn, i.e. every citizen muted).
+
+**The real defect, from reading the sizer.** `prompt_view_within` derives
+`budget = context_window − completion_reserve − describe_tool_tokens()`, which is
+correct. But three sibling tests name content that must survive budget pressure
+unconditionally — the held work card, the most recent burst, the newest message. Those
+are INCOMPRESSIBLE FLOORS. When the reserve grows, the budget shrinks below the floor,
+and the packer admits the mandatory content anyway. Observed at window=1024:
+prompt 525 + completion 512 > 1024. The overshoot IS the floor refusing to compress,
+which is correct behaviour — the reserve is what's wrong to hold fixed.
+
+**The fix shape:** the reserve must YIELD to the floor —
+`reserve = min(desired_share, window − mandatory_floor)`. Then the invariant holds at
+every window (including synthetic sub-`MIN_SERVE_CTX` ones the tests use and production
+never serves), and the share can be generous at real 16k+ windows where the floor is a
+few hundred tokens against thousands.
+
+**Why it isn't a one-liner:** this is circular — reserve → budget → packing → floor →
+reserve. The floor must be computable BEFORE the reserve is chosen, which means hoisting
+the mandatory-section measurement ahead of budgeting (or a two-pass size-then-resize).
+That is a real refactor of `prompt_view_within`, not a constant change, and it must not
+weaken any of the four tests: they are the only thing standing between a generous
+reserve and a 500 on every turn.
+
+**Sequence for whoever picks this up:** hoist the floor → make the reserve yield to it →
+THEN raise the share → re-run all four `prompt_shaping` tests at both a synthetic small
+window and a realistic 16k one. The share becoming a policy knob (and eventually
+learned, per this document) only makes sense after the floor is load-bearing.
