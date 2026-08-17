@@ -198,22 +198,39 @@ pub fn ambient_yield_report_due(
     Some(fresh)
 }
 
-/// Claim the report slot if due, returning the yield count to report. Swaps the timestamp
-/// atomically so concurrent yielders cannot both emit for the same window.
+/// Yield total as of the last report — the OTHER half of the window, and the half I
+/// originally forgot.
+///
+/// Shipped 2026-08-17 passing a literal 0 for `yields_at_last_report`, on the reasoning that
+/// "the report resets the clock, so total-at-report is implicit". It is not: resetting the
+/// TIMESTAMP does not reset the COUNT, so `fresh = total - 0 = total` and every row reported
+/// the cumulative figure under a field named `yields_since_last_report`. Caught within the
+/// hour by reading the live rows — yields_this_window == cumulative on all six (457==457,
+/// 392==392, …) when consecutive rows differed by ~65. The pure `ambient_yield_report_due`
+/// was correct and its table test asserted the delta properly; the defect was entirely in
+/// this impure wrapper feeding it a wrong argument, which is precisely why the pure/impure
+/// split exists and precisely the gap a table test cannot close.
+static AMBIENT_YIELDS_AT_LAST_REPORT: AtomicUsize = AtomicUsize::new(0);
+
+/// Claim the report slot if due, returning the yields IN THIS WINDOW. Swaps the timestamp
+/// atomically so concurrent yielders cannot both emit for the same window, and advances the
+/// count watermark in the same critical section so the next window measures from here.
 pub fn take_ambient_yield_report(now_ms: u64) -> Option<usize> {
     let now = now_ms as usize;
     let last = AMBIENT_YIELD_LAST_REPORT_MS.load(Ordering::Relaxed);
     let total = AMBIENT_YIELDS.load(Ordering::Relaxed);
-    // `yields_at_last_report` is encoded by the caller's window: we only need the delta since
-    // the last report, and the report resets the clock, so total-at-report is implicit.
-    let fresh = ambient_yield_report_due(total, 0, now, last)?;
-    // Only the winner of this compare-exchange reports.
+    let at_last = AMBIENT_YIELDS_AT_LAST_REPORT.load(Ordering::Relaxed);
+    let fresh = ambient_yield_report_due(total, at_last, now, last)?;
+    // Only the winner of this compare-exchange reports…
     if AMBIENT_YIELD_LAST_REPORT_MS
         .compare_exchange(last, now, Ordering::AcqRel, Ordering::Relaxed)
         .is_err()
     {
         return None;
     }
+    // …and the winner alone advances the count watermark, so the loser's yields are not
+    // silently dropped from the NEXT window — they are still ahead of `total` here.
+    AMBIENT_YIELDS_AT_LAST_REPORT.store(total, Ordering::Relaxed);
     Some(fresh)
 }
 
@@ -833,6 +850,31 @@ mod tests {
             None,
             "a quiet roster must not emit a row saying nothing happened"
         );
+    }
+
+    // what this catches: THE BUG I SHIPPED, in the impure wrapper the table test could not
+    // reach. `take_ambient_yield_report` passed a literal 0 for `yields_at_last_report`, so
+    // every row reported the CUMULATIVE total under a field named `yields_since_last_report`.
+    // Live rows on 2026-08-17 read 457==457, 392==392 while consecutive rows differed by ~65.
+    // A pure rule with a correct test is worth nothing if its caller feeds it a wrong
+    // argument — this asserts the SECOND window measures from the first, not from zero.
+    #[test]
+    fn consecutive_reports_measure_windows_not_running_totals() {
+        // Simulate two windows over the shared statics via the pure rule, which is what the
+        // wrapper now actually does (the wrapper itself touches process globals, so the
+        // contract that broke is pinned here at the argument boundary).
+        let first = ambient_yield_report_due(135, 0, 60_000, 0).expect("first window reports");
+        assert_eq!(first, 135, "first window is total-so-far — nothing preceded it");
+
+        // Second window: watermark advanced to 135, total climbed to 197.
+        let second = ambient_yield_report_due(197, 135, 120_000, 60_000)
+            .expect("second window reports");
+        assert_eq!(
+            second, 62,
+            "the SECOND window must be the delta (197-135), not the cumulative 197 — \
+             passing 0 here is the bug that shipped"
+        );
+        assert_ne!(second, 197, "reporting cumulative under a per-window name is the lie");
     }
 
     // what this catches: the WEAK-BOX floor of the same change. Deriving the ambient pool
