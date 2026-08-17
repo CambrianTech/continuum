@@ -549,7 +549,14 @@ impl ActionCommand for WorkClaim {
         // nobody in the loop. Best-effort: a dispatch failure never voids the
         // claim — the claim is hers either way, and the probe says what happened.
         if let Some(caller) = ctx.caller.as_ref() {
-            dispatch_staged_swe_solve(ctx, &airc, caller.peer_id.as_uuid(), card_id).await;
+            // ROOMLESS, and named as such rather than papered over: the claim verb
+            // carries no activity — a citizen can claim from anywhere, and the card
+            // does not remember which room staged it. So a claim-fired solve still
+            // works invisibly. That is #425's whole subject (a bench claim must lead
+            // to IN-ROOM work, not a detached nil-room solve); the dispatch path
+            // below already has a room and passes it, so the two paths now differ
+            // exactly at the gap #425 exists to close.
+            dispatch_staged_swe_solve(ctx, &airc, caller.peer_id.as_uuid(), card_id, None).await;
         }
         Ok(WorkClaimResult {
             card_id: p.card_id,
@@ -577,11 +584,16 @@ const SWE_CLAIM_ATTEMPTS: u32 = 3;
 /// 2026-08-11: cards staged + assigned, zero claims, zero solves). The solve is her WHOLE
 /// cognition with an exclusive warm slot (`quiesce_others`), so nothing about "she does the
 /// work herself" changes — only the trigger moves off the chat turn.
+/// `room` is the activity the run BELONGS to — `benchmark/dispatch` passes the
+/// per-run room it just spawned (#329), and every act the solver executes then
+/// radiates a receipt into it (#243). `None` is the roomless shape: her work
+/// happens, and no room ever sees it.
 pub(crate) async fn dispatch_staged_swe_solve(
     ctx: &Ctx,
     airc: &std::sync::Arc<airc_lib::Airc>,
     claimer: uuid::Uuid,
     card_id: airc_work::WorkCardId,
+    room: Option<uuid::Uuid>,
 ) {
     let Ok(board) = airc
         .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
@@ -667,6 +679,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
         capture_dir: None,
         learn: crate::cognition::learning_policy::LearningPolicy::LearnFromThisWork,
         max_acts: None,
+        room,
         path_prepend: Some(vec![venv_bin]),
         suppress_recall: None,
         prev_failed_patch_sha: None,

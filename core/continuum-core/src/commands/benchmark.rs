@@ -1442,8 +1442,18 @@ impl ActionCommand for BenchmarkDispatch {
             // STAGED SWE card has a solve to fire here (a gym card self-grades differently).
             if staged_ok && solves_fired < solve_cap {
                 if let CardWork::Swe { .. } = &pc.work {
-                    crate::modules::work::dispatch_staged_swe_solve(ctx, &airc, *who_peer, card_id)
-                        .await;
+                    // The run room goes WITH the solve: her acts radiate receipts
+                    // into the room this dispatch just spawned, so the round's work
+                    // is visible where the round lives (#243/#329) instead of only
+                    // in a ledger file that lands when it is already over.
+                    crate::modules::work::dispatch_staged_swe_solve(
+                        ctx,
+                        &airc,
+                        *who_peer,
+                        card_id,
+                        Some(room.room_id.as_uuid()),
+                    )
+                    .await;
                     solves_fired += 1;
                 }
             }

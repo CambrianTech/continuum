@@ -58,6 +58,22 @@ pub struct AgentSolveParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "number")]
     pub max_acts: Option<u32>,
+    /// The ROOM this run happens in — `benchmark/dispatch`'s per-run activity room
+    /// (#329). Every act she executes radiates a `persona:act` receipt into it, so
+    /// the run's work lands in the room's transcript as collapsed receipts (#243)
+    /// and anyone standing there — human screen or citizen mind — perceives it
+    /// through the ONE ViewState pipe.
+    ///
+    /// Omitted → `Uuid::nil()`, which is the ROOMLESS shape: `apply_act` skips
+    /// receipt radiation entirely for a nil room (radiating them stole the
+    /// single-room chat projection onto a phantom, live-proven 2026-08-12), so a
+    /// roomless solve does its work invisibly. That was every dispatched benchmark
+    /// run until this param existed — the exact disconnection
+    /// BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md names as the failure mode, and the
+    /// reason the flywheel saw no turns from a full graded attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "string")]
+    pub room: Option<Uuid>,
     /// Fire-and-poll (#86): when true, the solve is spawned DETACHED — `run` returns a job
     /// handle NOW (arms empty, `detached: true`) and the REAL result (patch + acts) lands in
     /// `~/.continuum/progress/agent-solve-<run_id>.json`. A real agentic drive (N full-generation
@@ -1152,7 +1168,11 @@ impl AgentSolve {
             //    ergonomic/adapter fix ([[use-adapters-dont-dumb-it-down]]), not a capability demand —
             //    and honest (it states the real I/O contract; it does not hand her the answer). Then
             //    DRIVE her to settlement (read → edit → run → fix, her real act→observe loop).
-            let room = Uuid::nil();
+            // The run's ROOM (see `AgentSolveParams::room`). `Uuid::nil()` is the
+            // honest roomless fallback for a bare `agent/solve` with no activity
+            // behind it; a DISPATCHED run always carries one, and that is what
+            // turns her acts into room receipts instead of invisible work.
+            let room = p.room.unwrap_or_else(Uuid::nil);
             // The workspace-grounding sentence counters the observed "new project ritual"
             // (glass-boxed 2026-07-22 via turn capture: her first act on a seeded task was
             // code/create-workspace("my_stack_project") + a Rust hello-world + git/commit —
