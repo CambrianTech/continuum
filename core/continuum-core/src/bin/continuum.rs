@@ -508,6 +508,10 @@ async fn ensure_core_running(command: &str) -> Result<(), String> {
         }
         BindDecision::Free => {}
     }
+    // A deploy in flight is the one state the bind guard above cannot see: mid-build no
+    // core answers and no core pid exists, which reads as "safe to start" and is exactly
+    // when starting is wrong.
+    deploy_gate(command)?;
     if std::env::var("CONTINUUM_NO_AUTOSTART").is_ok_and(|v| v != "0") {
         return Err(format!(
             "no core is answering on {} and CONTINUUM_NO_AUTOSTART is set, so `{command}` \
@@ -551,7 +555,15 @@ async fn start(force: bool) -> Result<(), String> {
             println!("core already running (socket={socket})");
             return Ok(());
         }
-        BindDecision::Free => {}
+        // Only the path that actually LAUNCHES consults the deploy claim. An already-serving
+        // core is a no-op and must stay one — gating a no-op would turn a mid-deploy
+        // `continuum start` into a spurious error about a core that is already fine.
+        // `--force` is the documented override, consistent with the Occupied arm below.
+        BindDecision::Free => {
+            if !force {
+                deploy_gate("start")?;
+            }
+        }
         BindDecision::Occupied { pids } => {
             let list = pids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",");
             if !force {
@@ -683,6 +695,12 @@ async fn reboot(force: bool) -> Result<(), String> {
     // script, and one decision belongs in exactly one place. `launch_core`'s
     // `wait_for_death` on `old` is then trivially satisfied on Windows and
     // still does the real work on Unix, where the overlapping build stands.
+    // Publish the claim for the WHOLE build+swap. Held until this function returns, so a
+    // concurrent `continuum <verb>` refuses instead of autostarting the pre-swap installed
+    // image and stealing the socket (the DEPLOY MISMATCH measured 2026-08-17).
+    let _deploy_claim = DeployClaimGuard::take(
+        git_head_short_sha().as_deref().unwrap_or("unknown"),
+    );
     let secs = launch_core(&old, LaunchSource::FromSource).await?;
     // Deploy-verification (#194): a new core is up — but is it the FRESHLY-BUILT one? If
     // start-server.sh's build was a stale cache no-op or silently failed, an OLD binary would
@@ -842,6 +860,95 @@ fn core_artifact_candidates(home: &str, cargo_target_dir: Option<&str>) -> Vec<P
     out.push(PathBuf::from(&target).join("release").join(exe));
     out.push(PathBuf::from(&target).join("debug").join(exe));
     out
+}
+
+/// The continuum root (`~/.continuum`) — where the deploy claim lives.
+fn continuum_root() -> Result<PathBuf, String> {
+    Ok(PathBuf::from(home_dir()?).join(".continuum"))
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Consult the deploy claim before minting a core, and REPORT what it found.
+///
+/// Returns `Err` only while a deploy is genuinely in flight. See
+/// [`continuum_core::runtime::deploy_claim`] for the incident: mid-build there is no core
+/// answering AND the installed image is still the PREVIOUS build, so any autostart in that
+/// window launches stale code, wins the socket, and defeats the deploy.
+///
+/// A claim whose owner is gone or that has aged out is swept and announced rather than
+/// silently obeyed — a claim must never be able to wedge the machine (#355's failure mode).
+fn deploy_gate(verb: &str) -> Result<(), String> {
+    use continuum_core::runtime::deploy_claim::{self, DeployGate};
+    let Ok(root) = continuum_root() else {
+        return Ok(()); // no HOME → no claim file → nothing to honour
+    };
+    let claim = deploy_claim::read(&root);
+    let alive = claim.as_ref().is_some_and(|c| pid_alive(c.pid));
+    match deploy_claim::decide(claim.as_ref(), alive, now_ms()) {
+        DeployGate::Clear => Ok(()),
+        DeployGate::Abandoned { pid, age_ms, why } => {
+            eprintln!(
+                "⚠ sweeping an abandoned deploy claim (pid {pid}, {}s old, {why:?}) — \
+                 proceeding with `{verb}`",
+                age_ms / 1000
+            );
+            let _ = deploy_claim::clear(&root);
+            Ok(())
+        }
+        DeployGate::InProgress { pid, age_ms, target_sha } => Err(format!(
+            "a deploy is in flight (pid {pid} shipping build {target_sha}, {}s in) and no core \
+             is answering yet. Starting one now would launch the PRE-SWAP installed binary, \
+             which would then hold the socket and make the deploy report the OLD build — \
+             measured 2026-08-17. Wait for the deploy to finish; `{verb}` works the moment it \
+             does. (If that deploy is dead, its claim is swept automatically once its process \
+             exits.)",
+            age_ms / 1000
+        )),
+    }
+}
+
+/// RAII deploy claim: published for the length of a swap, released on EVERY exit path
+/// (Ok, Err, `?`, panic-unwind). A claim that leaked past its deploy would block autostarts
+/// until its owner died, so the release cannot be a line at the end of the happy path.
+struct DeployClaimGuard {
+    root: PathBuf,
+}
+
+impl DeployClaimGuard {
+    /// Best-effort by design: if the claim cannot be written the deploy still proceeds —
+    /// losing the guard degrades to the old behaviour (which `deploy-verify` still catches),
+    /// whereas refusing to deploy over an unwritable advisory file turns a hint into an outage.
+    fn take(target_sha: &str) -> Option<Self> {
+        use continuum_core::runtime::deploy_claim::{self, DeployClaim};
+        let root = continuum_root().ok()?;
+        let claim = DeployClaim {
+            pid: std::process::id() as i32,
+            started_ms: now_ms(),
+            target_sha: target_sha.to_string(),
+        };
+        match deploy_claim::write(&root, &claim) {
+            Ok(()) => Some(Self { root }),
+            Err(e) => {
+                eprintln!(
+                    "⚠ could not publish a deploy claim ({e}) — a concurrent command could \
+                     autostart a stale core during this build; deploy-verify still catches it"
+                );
+                None
+            }
+        }
+    }
+}
+
+impl Drop for DeployClaimGuard {
+    fn drop(&mut self) {
+        let _ = continuum_core::runtime::deploy_claim::clear(&self.root);
+    }
 }
 
 /// The user's home dir — `HOME` (unix) or `USERPROFILE` (Windows). Loud when absent: the
