@@ -1939,7 +1939,18 @@ pub(crate) async fn grade_swe(p: SweGradeParams) -> Result<SweGradeResult, Comma
             patch_bytes,
         )));
     }
-    let verdict = swe_bench::grade(&instance, &repo, candidate.as_deref()).await;
+    // THE SPINE CHECK IS NOW ENFORCED, not just run. `gold` graded through the plain
+    // `grade` path returned a bare `resolved: false`, which is byte-identical downstream to
+    // a citizen's capability zero — so the `gold` doc's own demand ("if it does not, the
+    // environment is wrong and no other number from it means anything") was a sentence
+    // addressed to a human and enforced by nobody. `gold_gate` stamps the verdict's `error`
+    // with WHY, and an `error` is contractually an ABSENCE, never a tallied failure
+    // (see `SweVerdict::error`). One path, so every caller inherits the labelling.
+    let verdict = if p.gold.unwrap_or(false) {
+        swe_bench::gold_gate(&instance, &repo).await
+    } else {
+        swe_bench::grade(&instance, &repo, candidate.as_deref()).await
+    };
 
     // #319: a WORKSPACE grade is a citizen's lived, objectively judged work —
     // append it to her experience stream. Only her: the gold/raw-patch arms are

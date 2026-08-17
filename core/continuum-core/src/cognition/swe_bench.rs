@@ -1455,6 +1455,60 @@ fn compose_failure_excerpt(
     }
 }
 
+/// THE GOLD GATE: grade the instance's OWN gold patch and require it to resolve.
+///
+/// This is the spine check [`SweInstance::patch`]'s own doc has promised since that field
+/// was written — "the spine check grades THIS; it must resolve or the environment is
+/// wrong" — and which did not exist. `grade(.., None)` means "grade the tree as the solver
+/// left it", not "grade gold", so nothing in the tree ever validated an env against a
+/// known-correct patch.
+///
+/// WHY THIS IS THE KEYSTONE FOR EVERY NUMBER WE REPORT. Without it a `resolved: false` has
+/// two indistinguishable causes: the citizen's patch was wrong, or the environment cannot
+/// score a correct patch at all. Measured 2026-08-17 on this box, the second is live and
+/// unquantified: a 2019-era django env carries pytest 8.4.2, and the module's own notes
+/// record era suites importing pytest internals that modern pytest deleted (flask 2.2's
+/// `from _pytest.monkeypatch import notset`). So today an unknown fraction of our zeros are
+/// harness artifacts being tallied as capability. That is not a measurement — it is noise
+/// with a number attached, and it is why 114/300 (#383) and #380 cannot be told apart from
+/// model failure by looking at scores.
+///
+/// The gate makes the distinction mechanical: gold resolves → the env can score, so a
+/// citizen's zero is HERS. Gold fails → the env is disqualified and no result from it may
+/// be reported as capability ([[an-absence-is-an-unfinished-measurement]]).
+///
+/// Deliberately a thin caller over [`grade`], not a parallel scorer: it must exercise the
+/// EXACT clone → apply → test path a real attempt takes, or it proves nothing about that
+/// path. A second implementation that agreed with itself would be the classic dead
+/// instrument.
+///
+/// `gate_ok == false` in the returned verdict is a DIFFERENT fact and is not a gate
+/// failure: it means FAIL_TO_PASS already passed on the pristine tree, so the instance
+/// carries no bug here. Callers must not conflate "this task cannot distinguish a fix"
+/// with "this environment is broken".
+pub async fn gold_gate(instance: &SweInstance, repo_dir: &Path) -> SweVerdict {
+    let mut verdict = grade(instance, repo_dir, Some(&instance.patch)).await;
+    // An env that cannot score its own gold patch is disqualified, and the reason has to
+    // survive into the receipt — a bare `resolved: false` here would read downstream as a
+    // capability zero, which is the exact confusion this gate exists to end.
+    if verdict.error.is_none() && !verdict.resolved {
+        verdict.error = Some(format!(
+            "GOLD GATE FAILED for {}: the instance's own gold patch did not resolve \
+             (FAIL_TO_PASS {}/{}, PASS_TO_PASS {}/{}). The environment cannot score a \
+             known-correct patch, so NO result from it is a capability measurement — \
+             not a zero, an absence. Era deps are the leading suspect (#380): check the \
+             interpreter rung against `interpreter_for_year` and the harness pytest \
+             version against what this era's suite can import.",
+            instance.instance_id,
+            verdict.f2p_passed,
+            verdict.f2p_total,
+            verdict.p2p_passed,
+            verdict.p2p_total,
+        ));
+    }
+    verdict
+}
+
 pub async fn grade(
     instance: &SweInstance,
     repo_dir: &Path,
