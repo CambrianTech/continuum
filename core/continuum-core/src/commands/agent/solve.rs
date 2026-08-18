@@ -1771,22 +1771,11 @@ fn transfer_solve_experience(
     }
 }
 
-/// Git pathspecs excluding the universal never-a-solution byproducts a verification run leaves
-/// behind — Python bytecode/caches, tool caches, JS deps, OS cruft. Glass-boxed 2026-07-22: a
-/// `python3 -c "from calc import ..."` verify step left `__pycache__/calc.cpython-314.pyc` in the
-/// patch, polluting the graded artifact — real SWE-bench/aider patches are SOURCE-only. These are
-/// never a solution, so they're excluded from both the diff and files_changed; anything a task
-/// might legitimately produce (incl. `build`/`dist`/`target`) is kept.
-const PATCH_EXCLUDES: &[&str] = &[
-    ":(exclude,glob)**/__pycache__/**",
-    ":(exclude,glob)**/*.pyc",
-    ":(exclude,glob)**/*.pyo",
-    ":(exclude,glob)**/.pytest_cache/**",
-    ":(exclude,glob)**/.mypy_cache/**",
-    ":(exclude,glob)**/.ruff_cache/**",
-    ":(exclude,glob)**/node_modules/**",
-    ":(exclude,glob)**/.DS_Store",
-];
+/// What is NOT part of a solution lives in ONE place, beside the other reading of her work:
+/// [`crate::commands::benchmark::SOLUTION_PATH_EXCLUDES`]. This file used to carry its own
+/// near-copy that omitted `.airc`, which is precisely the drift `workspace_candidate_diff`'s
+/// doc warned about — see the shared constant for the two incidents.
+use crate::commands::benchmark::SOLUTION_PATH_EXCLUDES as PATCH_EXCLUDES;
 
 /// Unified diff of the SOLUTION changes in the workspace (tracked edits + new files), and the
 /// touched paths — build/cache byproducts ([`PATCH_EXCLUDES`]) filtered out so the graded artifact
@@ -2121,6 +2110,48 @@ mod tests {
         assert!(files.iter().any(|f| f == "brand_new.rs"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // what this catches: a CREDENTIAL reaching a graded patch, files_changed, or the curriculum.
+    // Live 2026-08-18: sympy-22714's tree held `.airc/identity.key` (a private keypair) at git
+    // status `A` — already intent-added, because this path's exclude list omitted `.airc` while
+    // the grader's inline list had it. airc creates its scope at the enclosing git root, so a
+    // citizen working inside a cloned bench repo gets one written under the repo she is graded
+    // on. files_changed feeds format_solve_lesson, so an unexcluded key becomes the training
+    // sentence "I changed: .airc/identity.key". Also the b34f7eb5 shape: 91KB of staged .airc
+    // blobs once voided a REAL fix because the fresh clone refused the whole candidate.
+    #[tokio::test]
+    async fn workspace_patch_never_carries_agent_scope_state_or_credentials() {
+        let dir = std::env::temp_dir().join(format!("cu-agent-solve-airc-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join(".airc/work-board-cache")).unwrap();
+        git(&dir, &["init", "-q"]).await;
+        git(&dir, &["config", "user.email", "t@t"]).await;
+        git(&dir, &["config", "user.name", "t"]).await;
+        // her actual solution
+        std::fs::write(dir.join("point.py"), "def dot(a, b):\n    return a * b\n").unwrap();
+        // what the SUBSTRATE wrote into her tree — never authored by the solver
+        std::fs::write(dir.join(".airc/identity.key"), "SUPERSECRETKEYMATERIAL").unwrap();
+        std::fs::write(dir.join(".airc/events.sqlite"), b"SQLite format 3\x00").unwrap();
+        std::fs::write(dir.join(".airc/work-board-cache/x.json"), "{}").unwrap();
+
+        let (patch, files) = workspace_patch(dir.to_str().unwrap()).await;
+        assert!(
+            patch.contains("point.py"),
+            "her solution must still be in the patch:\n{patch}"
+        );
+        assert!(
+            !patch.contains("SUPERSECRETKEYMATERIAL"),
+            "KEY MATERIAL must never reach a patch:\n{patch}"
+        );
+        assert!(
+            !patch.contains(".airc"),
+            "no agent-scope path may appear in the patch:\n{patch}"
+        );
+        assert_eq!(
+            files,
+            vec!["point.py".to_string()],
+            "files_changed feeds the curriculum lesson — it must name only her work"
+        );
     }
 
     // what this catches: verification byproducts (Python bytecode, __pycache__) must NOT pollute
