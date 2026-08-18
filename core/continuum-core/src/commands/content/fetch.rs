@@ -4,9 +4,22 @@
 //! whole, its producer parks it and returns a header plus a handle; this is how a citizen
 //! then reads it, at whatever pace her window allows.
 //!
-//! `NATIVE` because it is useless otherwise: a handle she cannot call is the same as
-//! content she never received. It joins the bounded native tool surface for the same
-//! reason `code/read` does — it is a core act, not a catalog curiosity.
+//! ## Why this is NOT on the native surface
+//!
+//! It looked like a core act, so it shipped `NATIVE` — and the agentic-surface ratchet
+//! immediately caught it: 8,040 → 11,608 tokens against an 11,300 ceiling. Paying for a
+//! full schema in EVERY prompt is the #333 defect, and this verb is the wrong place to
+//! spend it, because it is only meaningful on the turns where she actually holds a handle.
+//!
+//! It does not need to be resident, because [`ContentHeader::fetch_with`] names the exact
+//! call AT THE MOMENT a handle is issued — the producer tells her the call form precisely
+//! when it becomes relevant. She is aware of the verb regardless: the compact catalog
+//! lists every authorized command by name, and `commands/help` expands this one on demand.
+//!
+//! Which is the same principle the module itself is built on, applied one level up: do not
+//! hold the detail resident, carry the pointer and drill in when something warrants it.
+//!
+//! [`ContentHeader::fetch_with`]: crate::content::ContentHeader::fetch_with
 //!
 //! This command decides NOTHING about the content. It looks the source up and calls its
 //! method; whether a span means lines, entries, or "the whole thing or nothing" is the
@@ -75,7 +88,6 @@ crate::action_command! {
     pub struct ContentFetch { registry: Arc<ContentRegistry> }
     name: "content/fetch",
     access: AiSafe,
-    native: true,
     params: ContentFetchParams,
     output: ContentFetchResult,
     run(this, _ctx, p) => {
@@ -104,17 +116,19 @@ mod tests {
     use crate::content::ListingContent;
     use crate::sdk_codegen::{AccessLevel, ActionCommand};
 
-    // what this catches: the verb falling off the NATIVE surface. A handle a citizen
-    // cannot call is identical to content she never received — this command is the ONLY
-    // way to dereference, so catalog-only registration would silently make every handle
-    // a dead end.
+    // what this catches: this verb creeping onto the NATIVE surface. It shipped native
+    // once and blew the agentic-surface ceiling by 308 tokens (8,040 → 11,608 / 11,300) —
+    // a full schema in every prompt for a verb that only matters on turns where she holds
+    // a handle. The header's `fetch_with` names the call when it becomes relevant, and the
+    // catalog keeps her aware of it meanwhile; AiSafe is what actually makes it callable.
     #[test]
-    fn it_is_native_and_ai_safe_because_a_handle_she_cannot_call_is_useless() {
+    fn it_is_ai_safe_but_not_resident_because_the_header_names_the_call_when_it_matters() {
         assert_eq!(ContentFetch::NAME, "content/fetch");
         assert_eq!(ContentFetch::ACCESS, AccessLevel::AiSafe);
         assert!(
-            ContentFetch::NATIVE,
-            "must be on the native surface — it is the only way to read a handle"
+            !ContentFetch::NATIVE,
+            "must stay OFF the native surface — every prompt would pay for a schema that \
+             is relevant only when a handle is in hand (#333)"
         );
     }
 
