@@ -618,16 +618,61 @@ fn era_cutoff(instance: &SweInstance) -> Option<String> {
 
 fn test_extra_name(repo_dir: &Path) -> Option<String> {
     const PREFERRED: [&str; 4] = ["test", "tests", "testing", "dev"];
-    let text = std::fs::read_to_string(repo_dir.join("pyproject.toml")).ok()?;
-    let parsed: toml::Value = toml::from_str(&text).ok()?;
-    let groups = parsed
-        .get("project")?
-        .get("optional-dependencies")?
-        .as_table()?;
+    let declared = declared_extras(repo_dir);
     PREFERRED
         .iter()
-        .find(|name| groups.contains_key(**name))
+        .find(|name| declared.iter().any(|d| d == *name))
         .map(|name| (*name).to_string())
+}
+
+/// Every extra group the repo declares, from BOTH places Python puts them.
+///
+/// The first version of this read `pyproject.toml` only and shipped believing it worked —
+/// the live run said otherwise (2026-08-17): astropy 5.3 declares its suite deps in
+/// `setup.cfg` under `[options.extras_require]`, has no `[project.optional-dependencies]`
+/// at all, and the pyproject-only parser returned None for the exact repo the fix was
+/// written for. Both files are ordinary in the ecosystem; reading one is reading half.
+fn declared_extras(repo_dir: &Path) -> Vec<String> {
+    let mut found = Vec::new();
+
+    // PEP 621.
+    if let Ok(text) = std::fs::read_to_string(repo_dir.join("pyproject.toml")) {
+        if let Ok(parsed) = toml::from_str::<toml::Value>(&text) {
+            if let Some(table) = parsed
+                .get("project")
+                .and_then(|p| p.get("optional-dependencies"))
+                .and_then(|o| o.as_table())
+            {
+                found.extend(table.keys().cloned());
+            }
+        }
+    }
+
+    // setuptools' declarative config. Hand-scanned rather than pulled in as a dependency:
+    // we need section keys, not values, and an INI parser for that is more surface than
+    // the six lines below.
+    if let Ok(text) = std::fs::read_to_string(repo_dir.join("setup.cfg")) {
+        let mut in_extras = false;
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with('[') {
+                in_extras = trimmed == "[options.extras_require]";
+                continue;
+            }
+            // A key is flush-left; anything indented is a continuation of the previous
+            // key's requirement list (`test =\n    pytest>=7.0`), never a group name.
+            if !in_extras || line.starts_with([' ', '\t']) {
+                continue;
+            }
+            if let Some((key, _)) = trimmed.split_once('=') {
+                let key = key.trim();
+                if !key.is_empty() {
+                    found.push(key.to_string());
+                }
+            }
+        }
+    }
+    found
 }
 
 /// Install the repo's test extra into an existing env, once. Non-fatal BY DESIGN: a repo
@@ -643,13 +688,23 @@ async fn ensure_test_extra(
     as_of: Option<&str>,
 ) {
     let marker = env_dir.join(".test-extra");
-    if marker.exists() {
+    // A marker is authoritative only when it NAMES the extra it installed. Markers written
+    // by the first version recorded "none-declared" from a half-blind parser; treating
+    // those as settled would make this fix unreachable on exactly the envs that need it,
+    // and would need a human to know which files to delete. They self-heal instead.
+    if std::fs::read_to_string(&marker)
+        .map(|m| !m.trim().is_empty() && m.trim() != "none-declared")
+        .unwrap_or(false)
+    {
         return;
     }
     let Some(extra) = test_extra_name(repo_dir) else {
-        // Nothing to install is a settled answer, not an unfinished one — record it so we
-        // do not re-parse the same pyproject on every grade.
-        let _ = std::fs::write(&marker, "none-declared\n");
+        // NO NEGATIVE MARKER. The first version wrote "none-declared" here to avoid
+        // re-parsing, and then a parser that read only pyproject.toml recorded that answer
+        // PERMANENTLY for astropy — whose extras live in setup.cfg — so the heal could
+        // never run again even after the parser was fixed. Caching a negative is caching
+        // the limits of today's code. Re-reading two small files per grade costs nothing
+        // measurable next to cloning a repo and running its suite.
         return;
     };
     let spec = format!(".[{extra}]");
@@ -2174,6 +2229,25 @@ mod tests {
         // that grades fine today.
         write("[project.optional-dependencies]\ndocs = []\n");
         assert_eq!(test_extra_name(&dir), None, "docs-only declares no suite deps");
+
+        // THE CASE THAT SHIPPED BROKEN (2026-08-17): astropy 5.3 has no
+        // [project.optional-dependencies] at all — its suite deps are setuptools
+        // declarative config. A pyproject-only parser returns None for the exact repo this
+        // fix exists for, which is what the live gold gate caught after I had already
+        // claimed the fix worked.
+        std::fs::remove_file(dir.join("pyproject.toml")).unwrap();
+        std::fs::write(
+            dir.join("setup.cfg"),
+            "[options]\npackages = find:\n\n[options.extras_require]\ntest =  # Required to run the suite.\n    pytest>=7.0\n    pytest-astropy>=0.10\ntest_all =\n    objgraph\n[options.package_data]\n* = data/*\n",
+        )
+        .unwrap();
+        assert_eq!(
+            test_extra_name(&dir).as_deref(),
+            Some("test"),
+            "setup.cfg extras are declarations too — and `test_all`, which sorts first \
+             alphabetically and is a superset, must NOT win over `test`"
+        );
+        let _ = std::fs::remove_file(dir.join("setup.cfg"));
         write("[project]\nname = \"x\"\n");
         assert_eq!(test_extra_name(&dir), None, "no optional-dependencies table");
         std::fs::remove_file(dir.join("pyproject.toml")).unwrap();
