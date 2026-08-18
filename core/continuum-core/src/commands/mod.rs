@@ -21,6 +21,7 @@ pub mod capacity;
 pub mod catalog;
 pub mod chat;
 pub mod code;
+pub mod content;
 pub mod cognition;
 pub mod command;
 pub mod data;

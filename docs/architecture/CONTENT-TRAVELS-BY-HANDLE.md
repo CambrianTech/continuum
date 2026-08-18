@@ -100,6 +100,35 @@ The better move is upstream of that: the caller **asks for less**. `code/read` t
 line range, `code/list` a path, `code/search` a pattern. Planning the ask in advance beats
 repairing the answer afterwards — and a handle makes asking again cheap.
 
+## The positron convergence — two ways to the same truth
+
+`ContentSource` and a positron `ViewState` are the same shape wearing different names:
+one truth at the source, N projections, the consumer reading at its own rate. They must
+not stay two mechanisms.
+
+What that gives a citizen is a choice she makes for herself, per situation:
+
+- **Observe the layer.** The positronic projection is the ambient, condensed view — the
+  board, the room, the run. She sees the shape of things without asking for anything, the
+  same way a person glances at a screen.
+- **Reach for the handle.** When something in that view warrants it, she dereferences and
+  reads the detail at whatever depth the question needs.
+
+That is how a person actually works: you do not read every line of every file in a repo,
+you carry a summary and drill in when something looks wrong. The condensing is not a
+budget mechanism we impose — it falls out of the citizen choosing her own resolution, and
+it is *correct* rather than lossy, because the detail is always one call away and she knows
+it. Minutia is skipped, never destroyed.
+
+This also settles what "too big to send" means. Nothing is too big. There is a view, and
+there is a way in. The window sizes her ATTENTION, not the truth available to her.
+
+Practically: a positron projection should be able to hand out handles into what it
+summarizes (a board row → the card's full content; a run tile → the transcript), and a
+`ContentSource` header is already the smallest possible projection. Converging them is the
+next design step after the build order below — the same `(header, handle)` pair, whether
+it arrives through a tool result or a rendered view.
+
 ## Build order
 
 1. **Reconcile the two handle models** (task #17) — `runtime::cell_shapes::HandleRef` and

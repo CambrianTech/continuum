@@ -114,54 +114,67 @@ pub trait ContentSource: Send + Sync {
     fn fetch(&self, span: Span) -> Result<Slice, String>;
 }
 
-/// Live content sources, keyed by the UUID inside their [`HandleRef`].
+/// The live content sources, keyed by the UUID inside their [`HandleRef`].
 ///
-/// Process-global because a handle minted during one command must be dereferenceable by a
-/// later, unrelated command — that is the whole point of a handle. Lifetime is the
-/// producer's per the `HandleRef` contract; a dropped entry yields a typed "handle not
-/// found" rather than a panic.
-static REGISTRY: OnceLock<Mutex<HashMap<Uuid, Arc<dyn ContentSource>>>> = OnceLock::new();
-
-fn registry() -> &'static Mutex<HashMap<Uuid, Arc<dyn ContentSource>>> {
-    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+/// An OBJECT, not a bag of free functions over a static: the command that dereferences a
+/// handle holds an `Arc<ContentRegistry>` like every other command holds its dependency,
+/// so the seam is injectable and testable. [`global`] exists because producers scattered
+/// across the tree need somewhere to publish INTO — but nothing is forced to reach for it.
+///
+/// Lifetime is the producer's, per the [`HandleRef`] contract: a dropped entry yields a
+/// typed "handle not found" rather than a panic.
+#[derive(Default)]
+pub struct ContentRegistry {
+    sources: Mutex<HashMap<Uuid, Arc<dyn ContentSource>>>,
 }
 
-/// Park a source and mint the handle that reaches it. The header is returned with the
-/// handle because a consumer needs both in the same breath: what this is, and how to get
-/// more of it.
-pub fn publish(source: Arc<dyn ContentSource>) -> (HandleRef, ContentHeader) {
-    let header = source.header();
-    let id = Uuid::new_v4();
-    registry().lock().expect("content registry").insert(id, source);
-    (
-        HandleRef::with_id(CONTENT_OWNER, id, "content::ContentSource"),
-        header,
-    )
-}
+impl ContentRegistry {
+    /// Park a source and mint the handle that reaches it. The header comes back with the
+    /// handle because a consumer needs both in one breath: what this is, and how to get
+    /// more of it.
+    pub fn publish(&self, source: Arc<dyn ContentSource>) -> (HandleRef, ContentHeader) {
+        let header = source.header();
+        let id = Uuid::new_v4();
+        self.sources.lock().expect("content registry").insert(id, source);
+        (
+            HandleRef::with_id(CONTENT_OWNER, id, "content::ContentSource"),
+            header,
+        )
+    }
 
-/// Dereference a handle. `Err` when the producer has released it — the honest answer, and
-/// the one the `HandleRef` contract specifies.
-pub fn fetch(id: Uuid, span: Span) -> Result<Slice, String> {
-    let source = {
-        let reg = registry().lock().expect("content registry");
-        reg.get(&id).cloned()
-    };
-    match source {
-        Some(s) => s.fetch(span),
-        None => Err(format!(
-            "handle not found: {id} — its producer has released it. Re-run the call that \
-             produced it to get a fresh handle."
-        )),
+    /// Dereference. `Err` when the producer has released it — the honest answer the
+    /// `HandleRef` contract specifies, naming the recovery.
+    pub fn fetch(&self, id: Uuid, span: Span) -> Result<Slice, String> {
+        let source = {
+            let reg = self.sources.lock().expect("content registry");
+            reg.get(&id).cloned()
+        };
+        match source {
+            Some(s) => s.fetch(span),
+            None => Err(format!(
+                "handle not found: {id} — its producer has released it. Re-run the call \
+                 that produced it to get a fresh handle."
+            )),
+        }
+    }
+
+    /// Release a source. Producers call this when their state goes away.
+    pub fn release(&self, id: Uuid) -> bool {
+        self.sources
+            .lock()
+            .expect("content registry")
+            .remove(&id)
+            .is_some()
     }
 }
 
-/// Release a source. Producers call this when their state goes away.
-pub fn release(id: Uuid) -> bool {
-    registry()
-        .lock()
-        .expect("content registry")
-        .remove(&id)
-        .is_some()
+/// The process-wide registry producers publish into. Consumers should take an
+/// `Arc<ContentRegistry>` dependency instead of calling this.
+pub fn global() -> Arc<ContentRegistry> {
+    static REGISTRY: OnceLock<Arc<ContentRegistry>> = OnceLock::new();
+    REGISTRY
+        .get_or_init(|| Arc::new(ContentRegistry::default()))
+        .clone()
 }
 
 // ---------------------------------------------------------------------------
@@ -436,7 +449,8 @@ mod tests {
     // produced it, which is the entire difference between a handle and a return value.
     #[test]
     fn a_published_source_is_reachable_by_its_handle_and_gone_after_release() {
-        let (handle, header) = publish(Arc::new(ListingContent::new(
+        let reg = ContentRegistry::default();
+        let (handle, header) = reg.publish(Arc::new(ListingContent::new(
             "listing",
             "2 files",
             vec!["one".into(), "two".into()],
@@ -445,11 +459,11 @@ mod tests {
         assert_eq!(header.extent, Extent::Entries { total: 2 });
 
         let id: uuid::Uuid = handle.id.into();
-        let slice = fetch(id, Span { from: 1, count: 1 }).expect("reachable by handle");
+        let slice = reg.fetch(id, Span { from: 1, count: 1 }).expect("reachable by handle");
         assert_eq!(slice.body, "one");
 
-        assert!(release(id));
-        let err = fetch(id, Span { from: 1, count: 1 }).expect_err("gone after release");
+        assert!(reg.release(id));
+        let err = reg.fetch(id, Span { from: 1, count: 1 }).expect_err("gone after release");
         assert!(
             err.contains("handle not found") && err.contains("Re-run"),
             "a released handle explains itself and names the recovery: {err}"
