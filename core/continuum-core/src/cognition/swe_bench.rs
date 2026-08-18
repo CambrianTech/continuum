@@ -265,7 +265,14 @@ pub fn reap_orphaned_solve_runs_in(dir: &Path) -> Vec<String> {
         // `state` is what `in_flight_solve_runs_in` keys on. Clearing it off `running` is
         // what makes the reap idempotent — a second boot must not re-reap.
         obj.insert("state".into(), serde_json::Value::String("failed".into()));
-        obj.insert("runId".into(), serde_json::Value::String(run_id.clone()));
+        // `run_id`, NOT `runId`: this ledger family is written by `agent/solve`, which spells
+        // it snake_case throughout. The first cut of this reap inserted `runId` and shipped
+        // records carrying BOTH — two names for one field, in the same change that collapsed
+        // two names for one file. Caught on the live reap of 19 orphans. `entry` so a record
+        // that already carries its id keeps it untouched. (`cognition/eval` uses `runId` for
+        // its OWN ledger family; that is a different family and stays as it is.)
+        obj.entry("run_id")
+            .or_insert_with(|| serde_json::Value::String(run_id.clone()));
         obj.insert("instance".into(), serde_json::Value::String(instance));
         obj.insert(
             "error".into(),
