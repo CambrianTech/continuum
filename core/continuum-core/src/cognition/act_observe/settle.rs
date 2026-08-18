@@ -90,7 +90,19 @@ async fn settle_to_outcome(
     // ROOTED in what caused this turn, so the first act chains to its trigger rather
     // than starting mid-air — the link that makes "which acts were done for this card"
     // a graph query instead of an inference.
-    let chain = super::apply::ActChain::rooted_in(burst.trigger_engram);
+    let chain = super::apply::ActChain::rooted_in(&burst.cause);
+    // How many turns actually run with a head on their thread — the measurement that
+    // tells us whether the causal graph is CONNECTED in the live system, rather than
+    // connected in the one path I happened to wire by hand
+    // ([[an-absence-is-an-unfinished-measurement]]). An `ambient` row is not a fault;
+    // it is an idle tick whose stimulus the projection layer discarded.
+    crate::probe!(
+        class = "engram.chain.rooted",
+        cause = burst.cause.as_str(),
+        room = %room_id,
+        rooted = burst.cause.root().is_some(),
+        "turn's causal thread begins here"
+    );
     // The turn's investigation trail (see `SettleOutcome::touched_paths`).
     let mut touched: Vec<String> = Vec::new();
     // Fold each tick's deliberation cost in, so the settled outcome reports the

@@ -976,8 +976,18 @@ async fn serve_persona_loop_inner(
         // chain back to what triggered them (CAUSAL-MEMORY-GRAPH.md §3a). `None` when
         // the message was deduped/quarantined — an honest gap, never a made-up link.
         let workspace_burst =
-            crate::cognition::workspace::Burst::from_turns_at(turn_room, ws_turns, Some(now_ms))
-                .caused_by(wake_engram);
+            crate::cognition::workspace::Burst::from_turns_at(
+                turn_room,
+                ws_turns,
+                Some(now_ms),
+                // The arrival that woke this turn IS its cause. A dedup Drop or a
+                // Quarantine put nothing in the store, so those fall back to Ambient
+                // rather than pointing an edge at an engram that does not exist.
+                match wake_engram {
+                    Some(id) => crate::cognition::workspace::Cause::Stimulus(id),
+                    None => crate::cognition::workspace::Cause::Ambient,
+                },
+            );
         // Mark this world-state as just-deliberated so the next heartbeat tick doesn't
         // re-run the same burst (the message path and the self-tick share the gate;
         // own chat is excluded so this reply can't re-trigger a self-tick, while her
@@ -2500,6 +2510,14 @@ async fn run_self_cycle(
         ctx.identity.default_room,
         selftick_turns,
         Some(now_ms),
+        // Ambient, and honestly so. The self-tick wakes on a CHANGE to a re-read
+        // projection (`burst_fingerprint` over composed deliveries), not on an
+        // arrival — the RAG sources hand back rendered text with the identity of the
+        // items that produced it already discarded, so there is no engram to point at.
+        // Something DID cause this turn; the projection layer is where its name was
+        // lost. Handles are what would make it nameable
+        // (docs/architecture/CONTENT-TRAVELS-BY-HANDLE.md).
+        crate::cognition::workspace::Cause::Ambient,
     );
     let Some(cycle) =
         crate::cognition::persona_workspace::global().get(&ctx.identity.peer_id.as_uuid())

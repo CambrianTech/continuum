@@ -388,7 +388,8 @@ mod tests {
 
         // The kickoff / inbound message that caused this turn to happen at all.
         let trigger = Uuid::new_v4();
-        let chain = ActChain::rooted_in(Some(trigger));
+        let chain =
+            ActChain::rooted_in(&crate::cognition::workspace::Cause::Stimulus(trigger));
 
         acts_of(apply_act(&cycle, &[tool_call()], "start", room, &chain).await);
         let first = chain.prior().expect("first act admitted onto the chain");
@@ -405,9 +406,10 @@ mod tests {
     }
 
     // what this catches: an unrooted chain silently gaining a phantom antecedent. A
-    // burst with no admitted trigger (a raw-string stimulus, an eval fixture) must
-    // produce a first act with NO edge rather than one pointing at something invented
-    // — honest absence over a fabricated link.
+    // burst with no admitted trigger — an idle tick (`Ambient`), an eval fixture
+    // (`Synthetic`) — must produce a first act with NO edge rather than one pointing
+    // at something invented. Honest absence over a fabricated link, which is also what
+    // makes the `engram.chain.rooted` probe's ambient rows mean something.
     #[tokio::test]
     async fn an_unrooted_chain_leaves_its_first_act_honestly_unlinked() {
         let exec = Arc::new(RecordingExecutor {
@@ -417,7 +419,7 @@ mod tests {
         let adm = admission();
         let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
             .with_acting(body(exec.clone(), adm.clone()));
-        let chain = ActChain::rooted_in(None);
+        let chain = ActChain::rooted_in(&crate::cognition::workspace::Cause::Ambient);
 
         acts_of(apply_act(&cycle, &[tool_call()], "start", Uuid::new_v4(), &chain).await);
         let first = chain.prior().expect("first act admitted");

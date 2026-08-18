@@ -90,15 +90,19 @@ impl ActChain {
         Self::default()
     }
 
-    /// A chain ROOTED in the engram that caused the turn — the inbound message or the
-    /// work-card kickoff (CAUSAL-MEMORY-GRAPH.md §3a).
+    /// A chain rooted in whatever CAUSED the turn (CAUSAL-MEMORY-GRAPH.md §3a) — the
+    /// stimulus engram for a real arrival, nothing for an ambient or synthetic burst.
     ///
     /// Seeding rather than special-casing is the whole trick: the write site already
     /// links each act to `prior()`, so rooting the chain makes the FIRST act link to
     /// its trigger through the same line of code. No new branch, no second rule, and
     /// the thread has a head instead of starting mid-air.
-    pub fn rooted_in(trigger: Option<Uuid>) -> Self {
-        Self(std::sync::Mutex::new(trigger))
+    ///
+    /// Takes the whole [`Cause`] rather than a pre-extracted id so the decision about
+    /// what counts as a root lives in ONE place (`Cause::root`) instead of at every
+    /// driver that builds a chain.
+    pub fn rooted_in(cause: &crate::cognition::workspace::Cause) -> Self {
+        Self(std::sync::Mutex::new(cause.root()))
     }
 
     /// The CAUSE of whatever act comes next in this chain: the latest admitted act
