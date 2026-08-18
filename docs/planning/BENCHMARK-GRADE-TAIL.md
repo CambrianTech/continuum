@@ -8,9 +8,9 @@ in the loop. Today the first half works and the second does not.
 
 ---
 
-## ⚠ THE MOVE THAT LOOKS RIGHT AND IS FORBIDDEN
+## ⚠ THE MOVE THAT LOOKS RIGHT AND IS FORBIDDEN — with the line the doctrine actually draws
 
-**Do not add a periodic sweep that scans for ungraded artifacts on a clock.**
+**Do not add a periodic sweep that POLLS FOR A CONDITION.**
 
 `modules/benchmark_grade.rs` opens with the law:
 
@@ -18,12 +18,51 @@ in the loop. Today the first half works and the second does not.
 > ([[the-whole-system-is-event-based-not-polling]]): nothing scans the board on a clock —
 > the transition event fires the grade.
 
-I proposed exactly that sweep during the session before reading the module. It is the
-shortest path to "grades appear", it would work, and it would quietly convert an
-event-driven substrate into a polling one. The module's own doc is what caught it.
+I proposed exactly that sweep before reading the module, and it would have quietly
+converted an event-driven substrate into a polling one.
 
-**The correct question is never "when do we scan?" — it is "which EVENT did we fail to
-emit?"** Both answers are below, and both are events that already have a home.
+**CORRECTION (2026-08-18), and it matters because I wrote the rule too broadly the first
+time.** The same module already runs a 180s `tick`, and its own comment draws the real
+distinction:
+
+> The one periodic ACTUATOR (doctrine: actuators may tick; condition-polls may not): lease
+> expiry is a TIME fact with no wire event…
+
+So a tick is permitted when it ACTUATES a time fact the wire cannot carry. What is
+forbidden is ticking to ask "has anything become gradeable yet" — a condition poll that
+duplicates an event. My original ⚠ conflated the two and would have blocked a correct
+build.
+
+**The correct question is still "which EVENT did we fail to emit?" — but ask it second.**
+Ask first: *does the mechanism already exist and is it simply not reaching production?*
+Both times I skipped that question today, the answer was yes.
+
+### The axis is DETERMINISM, not tick-vs-event (Joel, 2026-08-18)
+
+> "if it's deterministic and not scan it or polling it's reliable"
+
+That is the rule this doc should have led with, because it explains WHY the doctrine
+exists rather than restating it as a taboo:
+
+- **A scan is unreliable by construction.** Whether it catches a thing depends on when it
+  ran, what happened to be on disk at that instant, how the results sorted, and whether a
+  cap truncated them. Every one of those is real here: the board's artifact scan is capped
+  at 200 trees and lost 12 of 13 artifacts to a recency sort against chatty run files.
+  Same input, different answer depending on timing — that is the definition of unreliable.
+- **A deterministic actuator is reliable even though it ticks.** Boot enumerates the run
+  ledger, every record marked `running` becomes `failed`, and re-running changes nothing.
+  No ordering, no sampling, no cap. It answers the same way every time.
+
+So the test to apply to any mechanism in this tail is not "does it have a timer" but
+**"given the same state, does it always produce the same outcome?"** The lease sweep passes
+(a pure truth table over state + artifact presence). A "look around for work that seems
+ungraded" pass fails, and would fail with or without a clock.
+
+**And determinism is worth nothing if it is deterministic about the wrong thing.** The
+reaper fixed in `f3cb3a65c` was perfectly deterministic — over a filename no writer had
+ever produced. It answered the same way every time: nothing here. Reliable and blind are
+not the same property; the guard has to be pointed at what production actually writes,
+which is why the naming now lives in exactly one place.
 
 ---
 
@@ -69,24 +108,30 @@ Constraints:
   background work with the standard bounded-run discipline, not inline in the boot path.
 - Idempotent: a run that already has a `.grade.json` is skipped.
 
-## Seam 2 — a lapsed lease is a state change, so emit it
+## ~~Seam 2 — a lapsed lease is a state change, so emit it~~ — RETRACTED, IT IS ALREADY BUILT
 
-`grep` for a lease-expiry event in `modules/work.rs` returns **nothing**. Expiry today is
-*passive*: `work/list` computes "is this hold still live?" at read time. So a claim can
-lapse with a finished patch under it and the board experiences no transition — which is
-why #451 ("lapsed claim + artifact → auto-close → the one grade tail") does not fire in
-practice despite being marked complete.
+**This section's premise was wrong and is withdrawn (2026-08-18).** I wrote it after
+grepping `modules/work.rs` for a lease-expiry event, finding nothing, and concluding #451
+"does not fire in practice despite being marked complete."
 
-**Change:** make expiry emit `work.card.state_changed` like every other transition, so the
-EXISTING grade-on-done subscriber picks it up with no new grading path. One emitter
-([[the-same-bug-at-two-sites-is-a-missing-constraint]]) — `work/state` already owns that
-event (`WORK_CARD_STATE_CHANGED`); expiry must go through it rather than growing a parallel
-notification.
+#451 is complete, correct, and lives in `modules/benchmark_grade.rs` — the same file I had
+open. `sweep_lapsed_bench_cards` runs on a 180s tick, and it is thorough: a pure
+`sweep_ready` truth table (claimed/in-progress **and** lease lapsed **and** artifact on
+disk), `bench_artifact_present` checking a dirty tree for SWE and a non-empty solution file
+for gym, room-SCOPED close (the #345 write-half trap), a provenance note posted into the
+room, a per-tick close cap, and an error probe on refusal. A live claim is never preempted.
 
-Open question for Joel, deliberately not decided here: does a lapsed claim with an artifact
-auto-CLOSE the card, or move it to a `needs-verdict` state that a citizen can re-claim?
-Auto-close is simpler; re-claimable is truer to #419 (recover a claim whose work session
-died). This is a recipe/lifecycle policy call, not a plumbing detail.
+I grepped for my own concept — an event in the file I expected it in — instead of for the
+job's name. [[read-the-code-you-intend-to-replace-before-designing-its-replacement]]
+
+**Why the 13 artifacts sat ungraded anyway, measured rather than inferred:** all 13 carry
+`card: None, owner: None`. They have **no cards at all** — they are detached `agent/solve`
+run artifacts (#425). The sweep operates on board cards, so it can never see them, and that
+is correct behaviour, not a gap in the sweep.
+
+The open policy question survives on its own merits and is still Joel's: does a lapsed
+claim with an artifact auto-CLOSE (what the sweep does today) or move to a `needs-verdict`
+state a citizen can re-claim (truer to #419)? Not a plumbing detail.
 
 ---
 
