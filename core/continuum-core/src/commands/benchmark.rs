@@ -2830,7 +2830,10 @@ pub struct BenchRunCard {
     /// `resolved` | `failed` (loud infra marker, incl. #2180 stalls the
     /// deadline caught) | `active` (artifact activity within the stall
     /// window) | `quiet` (non-terminal AND silent past the window — the
-    /// shape the projection exists to make visible).
+    /// shape the projection exists to make visible) | `ungraded` (a staged
+    /// workspace holds a real diff that no grade has ever seen — durable
+    /// work awaiting a verdict, NOT a stall; see
+    /// [`scan_workspace_artifact_cards`]).
     pub phase: String,
     /// True exactly when `phase == "quiet"`.
     pub stalled: bool,
@@ -3015,6 +3018,117 @@ impl ActionCommand for BenchmarkRuns {
 /// command AND the positron `kind="bench"` board emitter (#329) fold THIS —
 /// never a parallel file scrape ([[the-compression-principle]]). Synchronous
 /// fs I/O: async callers wrap it in `spawn_blocking`.
+/// Cards for staged workspaces that hold REAL WORK no grade has ever seen.
+///
+/// Why this source exists (glass-boxed 2026-08-18, and it is the acceptance test from
+/// docs/architecture/BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md failing): the board read ONLY
+/// `progress/agent-solve-*.json`. Those files are written by a solve PROCESS. A process that
+/// froze mid-flight never writes `files_changed`, and work done another way never writes a
+/// file at all — so the board showed 20 runs with `files_changed: []` and phase `quiet`,
+/// while three staged trees on the same disk held real in-place source edits. Two of them
+/// were PASSES (astropy-14995, pytest-11143, both `resolved=true` once the grader could read
+/// its own output). They were found by hand with `git -C … diff`, which is precisely the
+/// "if answering needs a file read, it is disconnected and it failed" the doc names.
+///
+/// The workspace is DURABLE truth; a run file is an ephemeral progress marker. So the board
+/// projects both, and an artifact nobody graded is a first-class row rather than an absence.
+/// Instances already carrying a grade are skipped — a graded run is the authoritative card.
+///
+/// Bounded on purpose: at most [`WORKSPACE_ARTIFACT_SCAN_CAP`] trees per call, and the count
+/// dropped is logged rather than silently truncated (no-silent-caps).
+fn scan_workspace_artifact_cards(graded: &std::collections::HashSet<String>, now_ms: u64) -> Vec<BenchRunCard> {
+    let Ok(home) = continuum_home() else {
+        return Vec::new();
+    };
+    let peers = home.join("citizens").join("peers");
+    let Ok(peer_entries) = std::fs::read_dir(&peers) else {
+        return Vec::new();
+    };
+    let mut cards = Vec::new();
+    let mut scanned = 0usize;
+    let mut skipped_over_cap = 0usize;
+    for peer in peer_entries.flatten() {
+        let peer_id = peer.file_name().to_string_lossy().to_string();
+        let swe = peer.path().join("workspace").join("swe");
+        let Ok(instances) = std::fs::read_dir(&swe) else {
+            continue;
+        };
+        for inst in instances.flatten() {
+            if !inst.path().is_dir() {
+                continue;
+            }
+            let instance = inst.file_name().to_string_lossy().to_string();
+            if graded.contains(&instance) {
+                continue;
+            }
+            if scanned >= WORKSPACE_ARTIFACT_SCAN_CAP {
+                skipped_over_cap += 1;
+                continue;
+            }
+            scanned += 1;
+            let Some(ws) = inst.path().to_str().map(String::from) else {
+                continue;
+            };
+            // The SAME reading of "her work" the grader uses — never a second inline diff.
+            let Ok(diff) = workspace_candidate_diff(&ws) else {
+                continue;
+            };
+            if diff.trim().is_empty() {
+                continue;
+            }
+            // Touched paths straight off the diff header — no extra process spawn.
+            let files_changed: Vec<String> = diff
+                .lines()
+                .filter_map(|l| l.strip_prefix("+++ b/"))
+                .map(|p| p.to_string())
+                .collect();
+            let last_activity_ms = std::fs::metadata(inst.path())
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            cards.push(BenchRunCard {
+                run_id: format!("workspace:{}:{instance}", &peer_id[..8.min(peer_id.len())]),
+                instance: Some(instance),
+                attempt: None,
+                max_attempts: None,
+                solver: Some(peer_id.clone()),
+                // NOT "quiet": nothing is stalled here — a finished artifact is waiting for a
+                // verdict. Conflating the two is what hid two passes for ~22 hours.
+                phase: "ungraded".to_string(),
+                stalled: false,
+                last_activity_ms,
+                age_secs: now_ms.saturating_sub(last_activity_ms) / 1000,
+                acts: None,
+                files_changed,
+                files_examined: Vec::new(),
+                resolved: None,
+                fail_to_pass: None,
+                pass_to_pass: None,
+                patch_bytes: Some(diff.len() as u32),
+                failed_tests: Vec::new(),
+                infra_error: None,
+            });
+        }
+    }
+    if skipped_over_cap > 0 {
+        tracing::warn!(
+            scanned,
+            skipped_over_cap,
+            cap = WORKSPACE_ARTIFACT_SCAN_CAP,
+            "benchmark/runs: workspace-artifact scan hit its cap — some trees were NOT examined \
+             for ungraded work (raise the cap or narrow the query; this is not 'nothing found')"
+        );
+    }
+    cards
+}
+
+/// How many staged trees one `benchmark/runs` call will diff. A `git diff` per tree is a
+/// process spawn, and the board is polled; this bounds the cost. Over-cap trees are WARNED
+/// about, never silently dropped.
+const WORKSPACE_ARTIFACT_SCAN_CAP: usize = 200;
+
 pub(crate) fn scan_run_cards(
     run_id_filter: Option<&str>,
     limit: usize,
@@ -3079,6 +3193,18 @@ pub(crate) fn scan_run_cards(
             last_activity_ms,
             now_ms,
         ));
+    }
+    // Second source: staged trees holding work no grade has seen. Only when the caller is
+    // asking for the BOARD — a run-id query is asking about one run's ledger, and a workspace
+    // artifact has no run id to match. See `scan_workspace_artifact_cards` for why the board
+    // cannot be run-files-only.
+    if run_id_filter.is_none() {
+        let graded: std::collections::HashSet<String> = cards
+            .iter()
+            .filter(|c| c.resolved.is_some())
+            .filter_map(|c| c.instance.clone())
+            .collect();
+        cards.extend(scan_workspace_artifact_cards(&graded, now_ms));
     }
     cards.sort_by(|a, b| b.last_activity_ms.cmp(&a.last_activity_ms));
     cards.truncate(limit);
