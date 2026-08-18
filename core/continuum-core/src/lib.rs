@@ -29,6 +29,7 @@ pub mod airc;
 pub mod audio_constants;
 pub mod capacity;
 pub mod code;
+pub mod content;
 pub mod cognition;
 pub mod commands;
 pub mod comms;
