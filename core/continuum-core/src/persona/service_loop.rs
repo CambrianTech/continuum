@@ -1227,279 +1227,19 @@ async fn serve_persona_loop_inner(
                             reason = "workspace-pass",
                             "persona chose silence"
                         );
-                        // THE SECOND QUESTION (BigMama's gate-conflation diagnosis,
-                        // verified in-file 2026-08-08; the root under Joel's "missing
-                        // something"): speak and act shared ONE terminal gate, so
-                        // "nothing to say" — the CORRECT answer on a quiet room —
-                        // also silently answered "nothing to do" for a citizen
-                        // holding claimed work. The ledger's falsifiable signature:
-                        // every completion followed a direct address; zero happened
-                        // ambiently. Working is not speaking. A Pass settles the
-                        // speak-question; when she holds an in-progress claim, the
-                        // ACT-question is asked as its OWN turn — a separate
-                        // drive_to_settle whose burst IS her card, under the
-                        // workspace-deliverable contract. Her answer stays hers:
-                        // Pass here too and the turn simply ends. This adds a
-                        // question, never an instruction — the card is not made
-                        // louder and nothing nags inside the speak turn
-                        // ([[no-hardcoded-heuristics-to-steer-cognition]]).
-                        //
-                        // GLASS BOX (2026-08-18). This gate has FIVE conditions and used to
-                        // emit NOTHING when any of them declined, so "she holds a card and
-                        // never worked it" looked identical whether the citizen was absent,
-                        // the claims call failed, the states didn't match, or the set was
-                        // empty. One evening of live bisection produced five hypotheses that
-                        // the probe stream could not tell apart — because the branch was
-                        // silent on every path but the taken one. It now reports the DECISION
-                        // and every input to it, always. A gate whose refusal is invisible is
-                        // a gate nobody can debug ([[a-perception-fact-is-honesty]]).
-                        //
-                        // WHY `directed` NO LONGER BLOCKS. The act-question used to be asked
-                        // only on an UNDIRECTED turn — which made it unreachable on the one
-                        // path benchmarks actually use: `benchmark/dispatch` actuates with an
-                        // ADDRESSED imperative ("an addressed imperative in its OWN message
-                        // block actuates; a card sitting silently on the board does not"), so
-                        // every kickoff drives a DIRECTED turn and every directed turn skipped
-                        // the work question. The actuation path and the work gate were
-                        // mutually exclusive by construction. The `directed` flag was never
-                        // load-bearing for correctness here: this whole branch already sits
-                        // behind her PASS on the speak-question, so she has declined to talk
-                        // either way, and the act-question stays hers to pass again.
-                        //
-                        // WHY `Claimed` COUNTS AS HELD. The filter took `InProgress` only,
-                        // but claiming a card — `work/claim`, or dispatch's pre-claim — leaves
-                        // it `Claimed`; `InProgress` requires an explicit `work/state` call.
-                        // So the gate demanded a state that starting work is what produces:
-                        // she could never begin, because beginning was the precondition. Both
-                        // states mean "this card is in her hands", which is the only question
-                        // this gate is asking.
-                        {
-                            if let Some(citizen) = conversation.stream_citizen() {
-                                let claims_result = citizen.active_claims().await;
-                                let claims_err =
-                                    claims_result.as_ref().err().map(|e| e.to_string());
-                                let claims = claims_result.unwrap_or_default();
-                                let held: Vec<&airc_lib::WorkCard> = claims
-                                    .iter()
-                                    .filter(|c| {
-                                        matches!(
-                                            c.state,
-                                            airc_work::CardState::InProgress
-                                                | airc_work::CardState::Claimed
-                                        )
-                                    })
-                                    .collect();
-                                crate::probe!(
-                                    class = "persona.work.gate",
-                                    persona = %ctx.identity.agent_name,
-                                    directed = directed,
-                                    active_claims = claims.len(),
-                                    held = held.len(),
-                                    claims_error = claims_err.as_deref().unwrap_or(""),
-                                    states = claims
-                                        .iter()
-                                        .map(|c| format!("{:?}", c.state))
-                                        .collect::<Vec<_>>()
-                                        .join(","),
-                                    decision = if held.is_empty() { "no_held_work" } else { "work_turn" },
-                                    "held-work gate evaluated after a speak-pass — this row is \
-                                     the ONLY place the act-question's inputs are visible"
-                                );
-                                {
-                                    if !held.is_empty() {
-                                        let burst = held_work_burst(&held);
-                                        // The producer's CONTEXT half, kept before the burst is
-                                        // moved into the driver — one construction, so the
-                                        // training example records the prompt she was actually
-                                        // handed rather than a re-derived approximation of it.
-                                        let work_context = burst.clone();
-                                        let work_framing =
-                                            crate::cognition::workspace::TurnFraming::self_thread(
-                                                false,
-                                            )
-                                            .on_workspace();
-                                        // HANDS FOLLOW THE CARD (#456). Her held card may be a
-                                        // staged benchmark checkout — a real git repo under
-                                        // `workspace/swe/<instance>`. Without rooting her hands
-                                        // there she works the card by writing into her OWN
-                                        // workspace, and the grader's `git diff` on the sandbox
-                                        // scores a false ZERO: the same defect glass-boxed on
-                                        // agent/solve 2026-07-22 (2 real acts, correct file
-                                        // written, empty patch).
-                                        //
-                                        // This is the live sibling of agent/solve's re-root, and
-                                        // it is what lets a citizen work a bench card IN HER OWN
-                                        // LOOP — which is the only path where the L2 training
-                                        // producer fires, so it is also what puts benchmark
-                                        // experience into her genome instead of only her memory.
-                                        //
-                                        // The re-root is PROCESS-GLOBAL (the file engine keys on
-                                        // caller identity), so the restore below is mandatory on
-                                        // EVERY exit — #312: after a flask solve, Anwen's live
-                                        // self was still reading the exam repo hours later.
-                                        // Non-bench cards resolve to None and nothing moves.
-                                        let card_workspace =
-                                            crate::persona::staged_workspace::workspace_for_held_cards(
-                                                &ctx.identity.peer_id.as_uuid(),
-                                                held.iter().map(|c| c.title.as_str()),
-                                            );
-                                        let work_hands = match &card_workspace {
-                                            Some(ws) => {
-                                                let hands =
-                                                    crate::cognition::persona_workspace::ActingHands::of(
-                                                        &cycle,
-                                                    );
-                                                match crate::cognition::persona_workspace::root_acting_workspace(
-                                                    &cycle,
-                                                    &ws.to_string_lossy(),
-                                                    &[],
-                                                    false,
-                                                )
-                                                .await
-                                                {
-                                                    Ok(()) => {
-                                                        crate::probe!(
-                                                            class = "persona.work.hands_rooted",
-                                                            persona = %ctx.identity.agent_name,
-                                                            workspace = %ws.display(),
-                                                            cards = held.len(),
-                                                            "hands rooted at her claimed card's \
-                                                             staged workspace for this work turn"
-                                                        );
-                                                        hands
-                                                    }
-                                                    Err(e) => {
-                                                        // Fail LOUD, work anyway in her own
-                                                        // workspace: a citizen who cannot reach
-                                                        // the repo still gets her turn, and the
-                                                        // empty patch is then explained on the
-                                                        // probe stream instead of being a mystery
-                                                        // zero. No silent re-root.
-                                                        tracing::error!(
-                                                            persona = %ctx.identity.agent_name,
-                                                            workspace = %ws.display(),
-                                                            error = %e,
-                                                            "could NOT root hands at the claimed \
-                                                             card's workspace — she will work in \
-                                                             her own dir and any graded diff will \
-                                                             read EMPTY"
-                                                        );
-                                                        None
-                                                    }
-                                                }
-                                            }
-                                            None => None,
-                                        };
-                                        let work = crate::cognition::act_observe::drive_to_settle(
-                                            &cycle,
-                                            burst,
-                                            turn_room,
-                                            LIVE_MAX_ACTS,
-                                            work_framing,
-                                        )
-                                        .await;
-                                        // Give her back her own hands BEFORE anything else can
-                                        // observe them — every exit path from here (Spoke, Passed,
-                                        // Acted) must leave her rooted at home (#312).
-                                        if let Some(hands) = &work_hands {
-                                            if let Err(e) =
-                                                crate::cognition::persona_workspace::restore_acting_workspace(
-                                                    hands,
-                                                )
-                                                .await
-                                            {
-                                                tracing::error!(
-                                                    persona = %ctx.identity.agent_name,
-                                                    error = %e,
-                                                    "work turn could NOT return her hands to her \
-                                                     own workspace — she is still rooted at the \
-                                                     card's repo and her live turns will act there"
-                                                );
-                                            }
-                                        }
-                                        let (work_step, _) =
-                                            crate::cognition::act_observe::SettleStep::from_settled(
-                                                work,
-                                            );
-                                        match work_step {
-                                            crate::cognition::act_observe::SettleStep::Spoke(
-                                                text,
-                                            ) => {
-                                                // She worked and has something to report —
-                                                // that report earned its send.
-                                                crate::probe!(
-                                                    class = "persona.turn.work",
-                                                    persona = %ctx.identity.agent_name,
-                                                    lamport = msg.lamport,
-                                                    decision = "spoke",
-                                                    "work-turn settled with a report"
-                                                );
-                                                // Answer where she was asked — `turn_room`
-                                                // is the A.6 arrival room already resolved
-                                                // for this turn, so the report lands in the
-                                                // room whose work it reports on.
-                                                if let Err(e) =
-                                                    conversation.say_in(turn_room, &text).await
-                                                {
-                                                    tracing::warn!(
-                                                        error = %e,
-                                                        "work-turn report failed to send"
-                                                    );
-                                                }
-                                                // L2 producer on the WORK turn (#456). This was
-                                                // missing, and it is the highest-value training
-                                                // signal the substrate produces: the reply turn
-                                                // below already feeds the producer, but the turn
-                                                // where she actually WORKS HER CLAIMED CARD did
-                                                // not — so every act of real work was invisible
-                                                // to the genome while chat was not.
-                                                //
-                                                // The (context, completion) pair here is honest:
-                                                // context = the card burst she was handed,
-                                                // completion = the report she wrote after doing
-                                                // the work. Same shape as the reply path, same
-                                                // best-effort spawn, same quality bar applied
-                                                // inside the producer.
-                                                //
-                                                // Still the LIVE path — an eval fork never
-                                                // reaches here (`drive_to_settle` is called from
-                                                // the fork, this call site is not), so the
-                                                // measurement-contamination guard the reply path
-                                                // relies on is unchanged.
-                                                crate::persona::training_producer::produce(
-                                                    ctx.identity.peer_id.as_uuid(),
-                                                    ctx.identity.agent_name.clone(),
-                                                    ctx.profile.model_id.clone(),
-                                                    work_context.clone(),
-                                                    text.clone(),
-                                                );
-                                            }
-                                            crate::cognition::act_observe::SettleStep::Passed => {
-                                                crate::probe!(
-                                                    class = "persona.turn.work",
-                                                    persona = %ctx.identity.agent_name,
-                                                    lamport = msg.lamport,
-                                                    decision = "passed",
-                                                    "work-turn passed — her choice, honored"
-                                                );
-                                            }
-                                            other => {
-                                                // Acted (results already in her working
-                                                // memory) or an inference failure — either
-                                                // way the receipt says which.
-                                                crate::probe!(
-                                                    class = "persona.turn.work",
-                                                    persona = %ctx.identity.agent_name,
-                                                    lamport = msg.lamport,
-                                                    decision = ?std::mem::discriminant(&other),
-                                                    "work-turn settled without a spoken report"
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        // THE ACT-QUESTION. Asked here on the PASS path and again after a spoken reply,
+                        // so holding work is what makes it fire — not declining to speak.
+                        // `directed` is recomputed here rather than threaded: it is a pure function of
+        // (identity, msg.text) and the binding above lives inside the cycle branch.
+        let spoke_directed = ctx.identity.persona_identity().mentions(&msg.text);
+        crate::persona::act_question::ask_the_act_question(
+            ctx,
+            conversation,
+            msg.lamport,
+            turn_room,
+            spoke_directed,
+        )
+        .await;
                         outcome.turns_skipped += 1;
                         continue;
                     }
@@ -1596,6 +1336,26 @@ async fn serve_persona_loop_inner(
             outcome.turns_errored += 1;
             continue;
         }
+        // SHE SPOKE — and she may ALSO hold work. Ask the act-question here too.
+        //
+        // The question used to live only on the PASS arm, which made answering someone
+        // mutually exclusive with working your own card: a citizen who replied in the room
+        // was never asked whether to act on the claim she was holding. That is backwards
+        // for a colleague — talking about the work and doing the work are not alternatives.
+        // Asked AFTER the reply is sent, so the room hears her answer at the same latency
+        // as before and the act-question can never delay a conversation.
+        // `directed` is recomputed here rather than threaded: it is a pure function of
+        // (identity, msg.text) and the binding above lives inside the cycle branch.
+        let spoke_directed = ctx.identity.persona_identity().mentions(&msg.text);
+        crate::persona::act_question::ask_the_act_question(
+            ctx,
+            conversation,
+            msg.lamport,
+            turn_room,
+            spoke_directed,
+        )
+        .await;
+
         let turn_duration_ms = turn_started.elapsed().as_millis() as u64;
         outcome.turn_latency.record(turn_duration_ms);
 
@@ -1747,7 +1507,7 @@ const SELF_TICK_REST_CAP_MS: u64 = 240_000;
 /// repeat-guard fact) is how a looping mind notices itself; the ONLY external
 /// stopwatch that remains is the eval grader's `max_acts` — a proctored exam's
 /// clock, held by the observer, never wired into life.
-const LIVE_MAX_ACTS: usize = usize::MAX;
+pub(crate) const LIVE_MAX_ACTS: usize = usize::MAX;
 
 /// What woke the service loop this cycle. A message from the wire, the never-stop
 /// heartbeat, or the end of the stream. Returned by the `select!` so the borrow of
@@ -2007,21 +1767,6 @@ fn push_work_board_anchor(
     turns.push(crate::cognition::workspace::BurstTurn::perception(anchor));
 }
 
-/// Build the `[anchor]` escalation line — the perception-side FACT that gives a
-/// repeating mind somewhere concrete to go (work card d6f010c8, live
-/// 2026-07-23: the `[pattern]` description fired and did NOT break the greeting
-/// loop; a concrete work anchor posted in-room broke it instantly, room-wide).
-/// A description competes with an empty-looking room; an anchor gives the next
-/// token somewhere real to go.
-///
-/// Mechanical and data-driven: built from the `room-kanban` delivery ALREADY in
-/// this burst's slice ([`super::room_board_source::RoomBoardSource`] — the one
-/// airc board read, never a second fetcher), quoting the top unclaimed and
-/// in-progress card lines verbatim as the board source rendered them (one
-/// render, one truth). An empty or unreadable board is stated honestly — never
-/// a fabricated card ([[fallbacks-are-illegal-fail-loud]]). Perception, not
-/// steering: it names what exists NOW; she still chooses
-/// ([[no-hardcoded-heuristics-to-steer-cognition]]).
 
 /// The WORK-question burst — the input of the second gate a claim-holder's
 /// quiet turn asks (see the `SettleStep::Passed` arm). The burst IS the
@@ -2029,7 +1774,7 @@ fn push_work_board_anchor(
 /// passing remains hers. Deliberately NOT the room transcript — the subject of
 /// this turn is the work, and the card details/workspace root arrive through
 /// her own grounding exactly as on any turn.
-fn held_work_burst(held: &[&airc_lib::WorkCard]) -> String {
+pub(crate) fn held_work_burst(held: &[&airc_lib::WorkCard]) -> String {
     use std::fmt::Write as _;
     let mut s = String::from(
         "[work turn] The room is quiet and your speak-turn is settled. This \
