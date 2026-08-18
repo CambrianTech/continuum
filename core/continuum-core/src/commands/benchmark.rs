@@ -2329,18 +2329,6 @@ mod swe_grade_tests {
     }
 }
 
-/// The task text handed to her. Deliberately says WHERE she is and what "done" means — the
-/// glass-boxed failure it prevents is her creating a new project beside the repo, or leaving
-/// the fix in a message instead of the files.
-fn swe_task_prompt(problem_statement: &str) -> String {
-    format!(
-        "You are ALREADY in the task's workspace: a real git repository with a real bug. Do not \
-         create a new workspace and do not add new top-level files — find the existing source \
-         with code/search and code/read, and fix it IN PLACE with code/edit. Run checks with \
-         code/shell if useful. The fix must land in the existing files.\n\nISSUE:\n{problem_statement}"
-    )
-}
-
 /// The continuum home dir (`$CONTINUUM_HOME` else `~/.continuum`) — the same
 /// resolution the dispatch workspace + progress ledger use. `pub(crate)` so the
 /// curriculum drain (`genome/teach --from-experience`) resolves the SAME citizen

@@ -1263,9 +1263,10 @@ impl AgentSolve {
             //
             // The old text said "writing files with code/write" and "graded on the files your tools
             // WRITE". That was written for from-scratch build gyms, where new files ARE the
-            // deliverable. Nested beneath it, `swe_task_prompt` says the opposite: "do not add new
-            // top-level files — fix it IN PLACE with code/edit. The fix must land in the existing
-            // files."
+            // deliverable. Nested beneath it, the SWE task text says the opposite: "do not add new
+            // top-level files … find the existing source of the fault and edit it in place." That
+            // text is the dispatch CARD BODY (`benchmark::BenchmarkSweSetup`) — the card IS the
+            // task, so the card owns the deliverable shape.
             //
             // Outer contract first, inner constraint buried under "Task:" — and she obeyed the
             // outer one. Three consecutive sympy-21379 runs, all full-effort, all writing NEW files
@@ -1943,9 +1944,11 @@ crate::register_stateless_command!(AgentSolve);
 /// deliverable looks like — the task owns that, and the two used to contradict each other.
 ///
 /// The old text said "writing files with code/write" and "graded on the files your tools WRITE",
-/// which is right for a from-scratch build gym. Nested beneath it, `swe_task_prompt` says the
-/// opposite: "do not add new top-level files — fix it IN PLACE with code/edit. The fix must land
-/// in the existing files." Outer contract first, inner constraint under "Task:" — and she obeyed
+/// which is right for a from-scratch build gym. Nested beneath it, the SWE task text says the
+/// opposite: "do not add new top-level files … find the existing source of the fault and edit it
+/// in place" — that text is the dispatch CARD BODY (`benchmark::BenchmarkSweSetup`), which owns
+/// the deliverable shape because the card IS the task.
+/// Outer contract first, inner constraint under "Task:" — and she obeyed
 /// the outer one. Three consecutive full-effort sympy-21379 runs wrote NEW repro scripts and never
 /// edited the library (v3: 1 file, v4: 3 files, v5: 2 files; 0 edits every time). That read as a
 /// judgement gap for a whole session; it was two halves of one framing disagreeing.
@@ -2027,8 +2030,9 @@ mod tests {
 
     // what this catches: the wrapper asserting a DELIVERABLE SHAPE that the task contradicts.
     // The generic framing exists to kill narration ("only tool calls take effect"). It must not
-    // also claim the grade is about "files your tools WRITE" — `swe_task_prompt` says the
-    // opposite ("do not add new top-level files … fix it IN PLACE with code/edit"), and the
+    // also claim the grade is about "files your tools WRITE" — the SWE dispatch card body
+    // (`benchmark::BenchmarkSweSetup`) says the opposite ("do not add new top-level files …
+    // edit it in place"), and the
     // wrapper comes FIRST. Three consecutive sympy-21379 runs obeyed the wrapper and wrote new
     // repro scripts instead of editing the library. The contract may describe HOW acts take
     // effect; only the task may describe WHAT to change.
