@@ -931,15 +931,32 @@ fn agent_solve_ledger_path(run_id: &str) -> Option<std::path::PathBuf> {
 /// and the one artifact that could say whether that was a surgical edit or a clobber
 /// was gone before anyone could read it.
 ///
-/// So custody stops being a parameter. Absent an explicit dir, it is derived from the
-/// run's own ledger — the same `progress/` root the state file already uses, which
-/// exists for every run by construction.
+/// So custody stops being a parameter. Absent an explicit dir, it derives from
+/// [`swe_cache_dir`] — the benchmarks root, whose own doc says to read it from there and
+/// never from a remembered path.
+///
+/// It lands in `benchmarks/swe/captures/run-<id>/`, which is EXACTLY where the 25
+/// hand-launched patches already live. That is deliberate on two counts, and my first cut
+/// got both wrong by inventing `progress/run-<id>/` instead (caught by Joel the same
+/// hour):
+///
+/// 1. **One home per artifact class.** A second location for "her patch" is the parallel
+///    allocator this codebase keeps paying for — the exact sin I had written down that
+///    morning and then committed.
+/// 2. **It must be a GOVERNED directory.** `benchmarks` is a registered `TrackedDir` with
+///    a decided eviction story; `progress` is neither tracked nor decided, so patches
+///    there would have been unbounded growth in an unmanaged dir — precisely what
+///    CLAUDE.md's "no new cache dir without an eviction decision" rule exists to stop
+///    (the 460 GB incident).
 fn run_artifact_dir(run_id: &str, capture_dir: Option<&str>) -> Option<std::path::PathBuf> {
     if let Some(d) = capture_dir {
         return Some(std::path::PathBuf::from(d));
     }
-    agent_solve_ledger_path(run_id)
-        .and_then(|p| p.parent().map(|d| d.join(format!("run-{run_id}"))))
+    Some(
+        crate::cognition::swe_bench::swe_cache_dir()
+            .join("captures")
+            .join(format!("run-{run_id}")),
+    )
 }
 
 /// Global admission gate for scored solve DRIVES — the fix for the lane-thrash death
@@ -1977,18 +1994,23 @@ mod tests {
                 .expect("a run always resolves an artifact dir");
             assert!(
                 derived.ends_with("run-claim-abc123"),
-                "custody must be derived from the run itself, not left to the caller: \
-                 {}",
+                "custody must be derived from the run itself, not left to the caller: {}",
                 derived.display()
             );
-            // And it lands beside the run's own state file — one place per run, so the
-            // verdict and the evidence for it are never in different worlds.
-            let ledger = super::super::agent_solve_ledger_path("claim-abc123")
-                .expect("ledger path resolves in the same environment");
+            // It lands under the GOVERNED benchmarks root, in the same `captures/` folder
+            // the 25 hand-launched patches already occupy. Two invariants in one
+            // assertion, both of which my first cut broke by inventing `progress/`:
+            // one home per artifact class, and that home is a registered TrackedDir with
+            // a decided eviction story (an unmanaged dir growing patches forever is the
+            // 460 GB shape).
+            let expected =
+                crate::cognition::swe_bench::swe_cache_dir().join("captures");
             assert_eq!(
                 derived.parent(),
-                ledger.parent(),
-                "the patch belongs beside the ledger that reports on it"
+                Some(expected.as_path()),
+                "patches belong where patches already live, under the tracked benchmarks \
+                 root — never a second location: {}",
+                derived.display()
             );
         }
 

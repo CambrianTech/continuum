@@ -681,7 +681,14 @@ mod tests {
             (
                 "benchmarks",
                 "#155: LRU over per-instance dirs, skipping the in-flight set — clones/venvs \
-                 are re-creatable from git+uv, so only an active grade is at risk",
+                 are re-creatable from git+uv, so only an active grade is at risk. NOT \
+                 everything under it is re-creatable: `swe/captures/run-*/attempt-N.patch` \
+                 is a citizen's actual diff, deleted from her workspace the moment the next \
+                 attempt resets it (#379). An eviction pool here must treat captures as \
+                 EVIDENCE — small, and the only thing that can answer what she wrote — and \
+                 reclaim the bulky re-creatable clones/venvs instead. Corrected 2026-08-18: \
+                 this entry read \"everything under it is re-creatable\", which the 25 \
+                 patches already sitting there had falsified since before it was written",
             ),
         ];
         use super::super::disk_pressure::DiskReporter as _;
