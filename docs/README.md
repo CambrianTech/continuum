@@ -24,7 +24,7 @@ stale, because a stale map is why people rebuild what already exists.
 
 > **How this index went wrong, so it doesn't again** (2026-08-18): the previous version
 > was last touched 2026-03-04, listed 13 of 28 directories, and omitted **`architecture/`
-> entirely** — the largest directory (120 docs) and the one CLAIMED.md sends you to FIRST
+> entirely** — the largest directory (120 docs) and the one CLAUDE.md sends you to FIRST
 > for every precedence-winning canonical doc. An index that omits the canonical directory
 > is worse than no index: it looks authoritative and quietly hides the thing you need.
 
@@ -77,52 +77,13 @@ link-check, not a drive-by. Until then: **the root is not a category, it is a ba
 
 ---
 
-## Chapters
-
-### [positron/](positron/) — UI Framework & Widgets
-Positron architecture, reactive widgets, scoped state, HUD design, tabbed browser, widget consolidation.
-
-### [activities/](activities/) — Activities & Collaboration
-Activity architecture, rooms, walls, threading, collaborative editing.
-- `activities/recipes/` — Recipe system for AI learning
-- `activities/collaboration/` — Pin and task harmony
-
-### [personas/](personas/) — Persona Cognition & Identity
-PersonaUser architecture, consciousness integration, cognitive schedulers, memory lifecycle, genomic architecture, academy, fine-tuning phases.
-
-### [genome/](genome/) — LoRA Training & Inference
-Genome architecture, LoRA training strategy, fine-tuning commands, Candle inference, mesh distribution, training events, continuous learning.
-
-### [sentinel/](sentinel/) — Pipeline Engine
-Sentinel architecture, pipeline design, coding AI foundation, gap analysis, logging.
-
-### [grid/](grid/) — P2P Mesh Network
-Grid architecture, P2P mesh, decentralized marketplace design.
-
-### [live/](live/) — Voice, Video & Media
-Voice architecture, VAD system, live calls, captions, transcription, media format conversion, streaming backbone, WebRTC.
-
-### [governance/](governance/) — AI Governance & Ethics
-Democratic AI society, governance recipes, alignment philosophy, ethical attribution.
-
-### [infrastructure/](infrastructure/) — Core Systems
-Rust workers, daemons, data layer, commands, events, logging, AI providers, GPU memory, entity system, generators, ORM, MCP, RAG, security.
-
-### [planning/](planning/) — Roadmaps & Audits
-Phase plans, technical debt audits, business model, modernization, architecture index, bottleneck removal.
-
-### [papers/](papers/) — Research Papers
-Academic papers on RTOS cognitive architecture, LoRA genome democratization, Grid marketplace.
-
-### [testing/](testing/) — Test Documentation
-Test strategies, debug findings, CRUD reports, command testing architecture.
 
 ---
 
 ## Quick Start
 
 1. Read [CONTINUUM-ARCHITECTURE.md](CONTINUUM-ARCHITECTURE.md) — system overview
-2. Read the chapter relevant to your work
+2. Find your area in the directory table above, then read that directory
 3. See `system/[module]/` directories for code-level docs
 
 ---
