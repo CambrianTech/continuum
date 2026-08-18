@@ -1613,6 +1613,12 @@ pub fn test_invocation_with(
             args.extend(test_files.iter().cloned());
             // Flags must be era-portable — see the comment at the call site (`run_tests`).
             args.extend(["-v".into(), "-p".into(), "no:cacheprovider".into()]);
+            // Belt to [`strip_ansi`]'s braces: ask for no color at the SOURCE. A repo can
+            // force `--color=yes` from its own `setup.cfg` addopts (astropy does), and CLI
+            // args are appended after addopts so the later `--color=no` wins. This is the
+            // nicety — the parser's strip is what actually guarantees correctness, which is
+            // why an ancient pytest that rejected this flag still could not break grading.
+            args.push("--color=no".into());
             args
         }
         TestRunner::DjangoRuntests => {
@@ -1718,6 +1724,8 @@ pub fn parse_django_report(report: &str) -> (HashMap<String, bool>, HashMap<Stri
     let mut by_func: HashMap<String, bool> = HashMap::new();
     // A test-id line awaiting its outcome on a following docstring line: (func, class_norm).
     let mut pending: Option<(String, String)> = None;
+    // Same reason as the pytest parser — a colorized runner must not become "0 of N".
+    let report = strip_ansi(report);
     for line in report.lines() {
         let line = line.trim();
         let Some((head, tail)) = line.split_once(" ... ") else {
@@ -1782,14 +1790,73 @@ pub fn parse_django_report(report: &str) -> (HashMap<String, bool>, HashMap<Stri
     (by_node, by_func)
 }
 
+/// Remove ANSI escape sequences (CSI/SGR and OSC) from captured process output.
+///
+/// Borrowed when there is no `ESC` at all — the common case, since pytest suppresses color
+/// on a pipe — so the usual path allocates nothing.
+///
+/// Why a grader needs this at all (glass-boxed 2026-08-18): astropy's own `setup.cfg` carries
+/// `addopts = --color=yes`, which forces color even though our output is a pipe. Every result
+/// line then reads `…test_x.py::\x1b[1mtest_y\x1b[0m \x1b[32mPASSED\x1b[0m`, the escape lands
+/// INSIDE the node id and before the verdict, and a parser matching `starts_with("PASSED")`
+/// skips every line. The grader reported `PASS_TO_PASS 0 of 40` and declared the environment
+/// broken — while that same run printed `1 failed, 179 passed`. The suite was fine; the
+/// grader could not read it. A repo can force color from its own config, so stripping at the
+/// PARSER is the durable fix: it needs no flag, works on already-captured reports, and does
+/// not depend on any pytest version.
+pub fn strip_ansi(s: &str) -> std::borrow::Cow<'_, str> {
+    if !s.contains('\u{1b}') {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            // CSI: params/intermediates, then a final byte in @..~ ends the sequence.
+            Some('[') => {
+                for f in chars.by_ref() {
+                    if ('\u{40}'..='\u{7e}').contains(&f) {
+                        break;
+                    }
+                }
+            }
+            // OSC: runs until BEL or the ST pair (ESC \).
+            Some(']') => {
+                while let Some(f) = chars.next() {
+                    if f == '\u{7}' {
+                        break;
+                    }
+                    if f == '\u{1b}' {
+                        // ST is ESC \ — consume the backslash and stop.
+                        let _ = chars.next();
+                        break;
+                    }
+                }
+            }
+            // Any other two-byte escape: drop both bytes.
+            Some(_) => {}
+            None => break,
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
 /// Resolve pytest's `-v` report into a verdict per node id AND per bare function name.
 ///
 /// The dataset does not use one id shape. pytest and flask instances give node ids
 /// (`tests/test_x.py::test_y`); sympy gives BARE function names because sympy ships its own
 /// runner. Looking up both is what makes one grader serve every repo.
+///
+/// Color-forcing repos are handled by [`strip_ansi`] before matching — see its doc for the
+/// astropy incident this prevents.
 pub fn parse_pytest_report(report: &str) -> (HashMap<String, bool>, HashMap<String, bool>) {
     let mut by_node = HashMap::new();
     let mut by_func: HashMap<String, bool> = HashMap::new();
+    let report = strip_ansi(report);
     for line in report.lines() {
         let line = line.trim();
         let Some((node, rest)) = line.split_once(char::is_whitespace) else {
@@ -2544,6 +2611,61 @@ tests/test_x.py::TestC::test_param[3-4] PASSED";
         assert_eq!(verdict_for("test_never_ran", &by_node, &by_func), None);
     }
 
+    // what this catches: a COLORIZED report scoring 0 of N and being blamed on the environment.
+    // Live incident 2026-08-18 (astropy-14995): astropy's own setup.cfg carries
+    // `addopts = --color=yes`, so pytest emitted color onto a pipe. The escape lands INSIDE the
+    // node id and before the verdict, `starts_with("PASSED")` never matched, and the grader
+    // reported "UNGRADEABLE — PASS_TO_PASS passes 0 of 40 on the PRISTINE tree: the suite does
+    // not run in this environment" — in a run whose own tail read `1 failed, 179 passed`. The
+    // env was fine; the grader could not read it. Bytes below are the real shape pytest emits.
+    #[test]
+    fn a_colorized_report_parses_exactly_like_a_plain_one() {
+        let plain = "\
+astropy/nddata/mixins/tests/test_ndarithmetic.py::test_nddata_bitmask_arithmetic FAILED
+astropy/nddata/mixins/tests/test_ndarithmetic.py::test_arithmetics_data PASSED";
+        let colored = "\
+astropy/nddata/mixins/tests/test_ndarithmetic.py::\u{1b}[1mtest_nddata_bitmask_arithmetic\u{1b}[0m \u{1b}[31mFAILED\u{1b}[0m
+astropy/nddata/mixins/tests/test_ndarithmetic.py::\u{1b}[1mtest_arithmetics_data\u{1b}[0m \u{1b}[32mPASSED\u{1b}[0m";
+
+        let (plain_node, plain_func) = parse_pytest_report(plain);
+        let (color_node, color_func) = parse_pytest_report(colored);
+        assert_eq!(
+            color_node, plain_node,
+            "color must not change which node ids were seen"
+        );
+        assert_eq!(color_func, plain_func, "nor the bare-name verdicts");
+
+        // The specific thing that was returning "0 of N": a PASS must read as a pass.
+        assert_eq!(
+            verdict_for("test_arithmetics_data", &color_node, &color_func),
+            Some(true)
+        );
+        assert_eq!(
+            verdict_for("test_nddata_bitmask_arithmetic", &color_node, &color_func),
+            Some(false)
+        );
+        assert!(
+            !color_node.is_empty(),
+            "an empty map is the failure mode that got misreported as a broken environment"
+        );
+    }
+
+    // what this catches: strip_ansi corrupting ordinary text, or allocating when it need not.
+    #[test]
+    fn strip_ansi_is_borrow_only_when_clean_and_lossless_when_not() {
+        assert!(matches!(
+            strip_ansi("plain text ::  PASSED"),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        assert_eq!(strip_ansi("\u{1b}[32mPASSED\u{1b}[0m"), "PASSED");
+        // OSC (title-set) sequences terminate on BEL or ST, and swallow neither more nor less.
+        assert_eq!(strip_ansi("a\u{1b}]0;title\u{7}b"), "ab");
+        assert_eq!(strip_ansi("a\u{1b}]0;title\u{1b}\\b"), "ab");
+        // A truncated escape at end-of-input must not panic or emit garbage.
+        assert_eq!(strip_ansi("tail\u{1b}"), "tail");
+        assert_eq!(strip_ansi("tail\u{1b}["), "tail");
+    }
+
     // what this catches: a bare name appearing in two files where one fails — counting it as
     // passing would let real breakage through.
     #[test]
@@ -2720,8 +2842,9 @@ diff --git a/sympy/solvers/tests/test_other.py b/sympy/solvers/tests/test_other.
                 "-v",
                 "-p",
                 "no:cacheprovider",
+                "--color=no",
             ],
-            "the pytest argv is byte-identical to the pre-seam grader"
+            "the pytest argv pins the era-portable flag set, color explicitly OFF"
         );
     }
 
