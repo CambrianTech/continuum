@@ -581,6 +581,101 @@ pub fn interpreter_for_year(year: u32) -> &'static str {
 /// `pyproject.toml`. Empty when there is no pyproject, no `[build-system]` table, or no
 /// `requires` array. These must be pre-installed into the venv when building with
 /// `--no-build-isolation` (see the call site) — pip won't fetch them for us in that mode.
+/// The name of the repo's own TEST extra, from `[project.optional-dependencies]` — the
+/// group whose contents the suite needs to so much as COLLECT.
+///
+/// Why this exists (measured 2026-08-17, and it is the whole of astropy's 0-of-9): the env
+/// installs `-e .`, which resolves RUNTIME dependencies only. astropy's `conftest.py` opens
+/// with `import hypothesis`, a TEST dependency, so pytest dies loading conftest before it
+/// reaches a single test:
+///
+/// ```text
+/// ImportError while loading conftest '…/repo/conftest.py'.
+/// conftest.py:9: in <module>
+///     import hypothesis
+/// E   ModuleNotFoundError: No module named 'hypothesis'
+/// ```
+///
+/// PASS_TO_PASS then reads 0/9 on the PRISTINE tree, the gold gate correctly refuses to
+/// score, and EVERY astropy instance is ungradeable — a ceiling that has nothing to do with
+/// the citizen's patch. The repo already declares exactly what its suite needs; we simply
+/// never asked for it.
+///
+/// Names are not standardised, so prefer in the order the ecosystem actually uses them and
+/// take the first that the repo declares. Returns `None` when there is no pyproject, no
+/// optional-dependencies table, or no test-shaped group — those repos install as before.
+/// The `--exclude-newer` cutoff for an instance: its own creation date, or `None` when the
+/// dataset carries no date (which disables pinning AND healing — see `era_pinned_uv_install`).
+/// Extracted because BOTH the fresh-build path and the cached-env heal need the same answer,
+/// and two copies of "what era is this instance" is exactly how the two drift apart.
+fn era_cutoff(instance: &SweInstance) -> Option<String> {
+    if instance.created_at.is_empty() {
+        None
+    } else {
+        Some(instance.created_at.clone())
+    }
+}
+
+fn test_extra_name(repo_dir: &Path) -> Option<String> {
+    const PREFERRED: [&str; 4] = ["test", "tests", "testing", "dev"];
+    let text = std::fs::read_to_string(repo_dir.join("pyproject.toml")).ok()?;
+    let parsed: toml::Value = toml::from_str(&text).ok()?;
+    let groups = parsed
+        .get("project")?
+        .get("optional-dependencies")?
+        .as_table()?;
+    PREFERRED
+        .iter()
+        .find(|name| groups.contains_key(**name))
+        .map(|name| (*name).to_string())
+}
+
+/// Install the repo's test extra into an existing env, once. Non-fatal BY DESIGN: a repo
+/// whose suite already collects does not need it, and a resolve failure here must not
+/// delete an env that grades fine today. The marker file is what makes it once-only, and
+/// what lets envs built BEFORE this existed heal themselves on their next use instead of
+/// staying silently ungradeable forever.
+async fn ensure_test_extra(
+    uv: &str,
+    py_s: &str,
+    env_dir: &Path,
+    repo_dir: &Path,
+    as_of: Option<&str>,
+) {
+    let marker = env_dir.join(".test-extra");
+    if marker.exists() {
+        return;
+    }
+    let Some(extra) = test_extra_name(repo_dir) else {
+        // Nothing to install is a settled answer, not an unfinished one — record it so we
+        // do not re-parse the same pyproject on every grade.
+        let _ = std::fs::write(&marker, "none-declared\n");
+        return;
+    };
+    let spec = format!(".[{extra}]");
+    let outcome = era_pinned_uv_install(
+        uv,
+        py_s,
+        as_of,
+        &["--no-build-isolation", "-e", &spec],
+        Some(repo_dir),
+        &[("CFLAGS", ERA_CFLAGS)],
+    )
+    .await;
+    let ok = matches!(&outcome, Ok(o) if o.status.success());
+    crate::probe!(
+        class = "swe.env.test_extra",
+        extra = %extra,
+        installed = ok,
+        env = %env_dir.display(),
+        "the repo's own test extra — without it a conftest that imports a test-only \
+         dependency makes every instance in the repo ungradeable"
+    );
+    if ok {
+        let _ = std::fs::write(&marker, format!("{extra}\n"));
+    }
+}
+
 fn build_requires(repo_dir: &Path) -> Vec<String> {
     let text = match std::fs::read_to_string(repo_dir.join("pyproject.toml")) {
         Ok(t) => t,
@@ -702,6 +797,11 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
                     String::from_utf8_lossy(&out.stderr).trim()
                 ));
             }
+            // An env cached BEFORE the test extra existed is silently ungradeable (its
+            // conftest cannot import). Heal it here, once, guarded by the marker — the
+            // operator should never have to know which envs predate a fix.
+            ensure_test_extra(&uv, &py_s, &env_dir, repo_dir, era_cutoff(instance).as_deref())
+                .await;
         }
         return Ok(py);
     }
@@ -809,11 +909,7 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
         .await?;
     }
 
-    let as_of = if instance.created_at.is_empty() {
-        None
-    } else {
-        Some(instance.created_at.clone())
-    };
+    let as_of = era_cutoff(instance);
     let repo_s = repo_dir.to_string_lossy().to_string();
 
     // DEPENDENCY-SDIST BUILD DEPS (#383 cause 2, reproduced live 2026-08-16): the
@@ -1004,6 +1100,11 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
             ));
         }
     }
+    // LAST, because it is additive and must not be able to fail the build: the repo's own
+    // test extra. Everything above decides whether the env can BUILD and RUN a harness;
+    // this decides whether the suite can COLLECT. Non-fatal by design — see
+    // `ensure_test_extra`.
+    ensure_test_extra(&uv, &py_s, &env_dir, repo_dir, as_of.as_deref()).await;
     Ok(py)
 }
 
@@ -2042,6 +2143,43 @@ pub async fn grade(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the env installs `-e .` — RUNTIME deps only — and astropy's
+    // conftest.py opens with `import hypothesis`, a TEST dep. pytest then dies loading
+    // conftest, PASS_TO_PASS reads 0/9 on the PRISTINE tree, the gold gate refuses to score,
+    // and every astropy instance is ungradeable no matter what a citizen writes (measured
+    // 2026-08-17). This picks the group whose contents the suite needs. The preference ORDER
+    // is the load-bearing part: a repo declaring both `dev` and `test` must get `test`, or we
+    // install a kitchen-sink group and inherit its resolution failures.
+    #[test]
+    fn the_test_extra_is_the_narrowest_group_the_repo_declares() {
+        let dir = std::env::temp_dir().join(format!("swe-extra-{}", std::process::id()));
+        let write = |body: &str| {
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("pyproject.toml"), body).unwrap();
+        };
+
+        write("[project.optional-dependencies]\ndev = []\ntest = []\n");
+        assert_eq!(test_extra_name(&dir).as_deref(), Some("test"), "test beats dev");
+
+        write("[project.optional-dependencies]\ndocs = []\ntesting = []\n");
+        assert_eq!(
+            test_extra_name(&dir).as_deref(),
+            Some("testing"),
+            "a repo that spells it `testing` still gets its suite deps"
+        );
+
+        // No test-shaped group, and no pyproject at all, both mean "install as before" —
+        // NOT "install something plausible". A wrong extra is a resolve failure on a repo
+        // that grades fine today.
+        write("[project.optional-dependencies]\ndocs = []\n");
+        assert_eq!(test_extra_name(&dir), None, "docs-only declares no suite deps");
+        write("[project]\nname = \"x\"\n");
+        assert_eq!(test_extra_name(&dir), None, "no optional-dependencies table");
+        std::fs::remove_file(dir.join("pyproject.toml")).unwrap();
+        assert_eq!(test_extra_name(&dir), None, "no pyproject at all");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     // what this catches: a SECOND swe env root. On 2026-08-17 two roots existed —
     // `swe_cache_dir()/envs` (live, 46 envs / 8 repos) and `~/.continuum/cache/swe-envs`
