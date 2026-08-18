@@ -1476,8 +1476,14 @@ impl ActionCommand for BenchmarkDispatch {
             // airc directly, not the `work/claim` verb, so it cannot re-enter the
             // detached-solve dispatcher from here.)
             let mut pre_claimed = false;
+            //
+            // `staged_ok` gates the SWE arm for the SAME reason it gates the detached
+            // solve above ("why run broken code knowing she's gonna struggle and fall"):
+            // an unbuildable env can only void, and pre-claiming would put her hands in it
+            // for a full turn. The card still posts, claimable by hand once the env heals.
             let pre_claim_this = matches!(pc.work, CardWork::Gym { .. })
                 || (matches!(pc.work, CardWork::Swe { .. })
+                    && staged_ok
                     && driver == crate::cognition::bench_round::WorkDriver::Citizen);
             if pre_claim_this {
                 match self.registry.get(*who_peer) {
