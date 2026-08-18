@@ -1243,15 +1243,69 @@ async fn serve_persona_loop_inner(
                         // question, never an instruction — the card is not made
                         // louder and nothing nags inside the speak turn
                         // ([[no-hardcoded-heuristics-to-steer-cognition]]).
-                        if !directed {
+                        //
+                        // GLASS BOX (2026-08-18). This gate has FIVE conditions and used to
+                        // emit NOTHING when any of them declined, so "she holds a card and
+                        // never worked it" looked identical whether the citizen was absent,
+                        // the claims call failed, the states didn't match, or the set was
+                        // empty. One evening of live bisection produced five hypotheses that
+                        // the probe stream could not tell apart — because the branch was
+                        // silent on every path but the taken one. It now reports the DECISION
+                        // and every input to it, always. A gate whose refusal is invisible is
+                        // a gate nobody can debug ([[a-perception-fact-is-honesty]]).
+                        //
+                        // WHY `directed` NO LONGER BLOCKS. The act-question used to be asked
+                        // only on an UNDIRECTED turn — which made it unreachable on the one
+                        // path benchmarks actually use: `benchmark/dispatch` actuates with an
+                        // ADDRESSED imperative ("an addressed imperative in its OWN message
+                        // block actuates; a card sitting silently on the board does not"), so
+                        // every kickoff drives a DIRECTED turn and every directed turn skipped
+                        // the work question. The actuation path and the work gate were
+                        // mutually exclusive by construction. The `directed` flag was never
+                        // load-bearing for correctness here: this whole branch already sits
+                        // behind her PASS on the speak-question, so she has declined to talk
+                        // either way, and the act-question stays hers to pass again.
+                        //
+                        // WHY `Claimed` COUNTS AS HELD. The filter took `InProgress` only,
+                        // but claiming a card — `work/claim`, or dispatch's pre-claim — leaves
+                        // it `Claimed`; `InProgress` requires an explicit `work/state` call.
+                        // So the gate demanded a state that starting work is what produces:
+                        // she could never begin, because beginning was the precondition. Both
+                        // states mean "this card is in her hands", which is the only question
+                        // this gate is asking.
+                        {
                             if let Some(citizen) = conversation.stream_citizen() {
-                                if let Ok(claims) = citizen.active_claims().await {
-                                    let held: Vec<&airc_lib::WorkCard> = claims
+                                let claims_result = citizen.active_claims().await;
+                                let claims_err =
+                                    claims_result.as_ref().err().map(|e| e.to_string());
+                                let claims = claims_result.unwrap_or_default();
+                                let held: Vec<&airc_lib::WorkCard> = claims
+                                    .iter()
+                                    .filter(|c| {
+                                        matches!(
+                                            c.state,
+                                            airc_work::CardState::InProgress
+                                                | airc_work::CardState::Claimed
+                                        )
+                                    })
+                                    .collect();
+                                crate::probe!(
+                                    class = "persona.work.gate",
+                                    persona = %ctx.identity.agent_name,
+                                    directed = directed,
+                                    active_claims = claims.len(),
+                                    held = held.len(),
+                                    claims_error = claims_err.as_deref().unwrap_or(""),
+                                    states = claims
                                         .iter()
-                                        .filter(|c| {
-                                            matches!(c.state, airc_work::CardState::InProgress)
-                                        })
-                                        .collect();
+                                        .map(|c| format!("{:?}", c.state))
+                                        .collect::<Vec<_>>()
+                                        .join(","),
+                                    decision = if held.is_empty() { "no_held_work" } else { "work_turn" },
+                                    "held-work gate evaluated after a speak-pass — this row is \
+                                     the ONLY place the act-question's inputs are visible"
+                                );
+                                {
                                     if !held.is_empty() {
                                         let burst = held_work_burst(&held);
                                         // The producer's CONTEXT half, kept before the burst is
