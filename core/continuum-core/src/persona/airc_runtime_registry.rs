@@ -235,8 +235,42 @@ impl PersonaAircRuntimeRegistry {
     /// the fix is `persona/spawn`, not inventing an identity.
     /// [[general-by-design-beats-hardcoded-users]]
     pub fn any_live_citizen(&self) -> Option<Arc<PersonaAircRuntime>> {
+        self.any_live_citizen_other_than(None)
+    }
+
+    /// The same deterministic pick, EXCLUDING one peer — the author for a message
+    /// ADDRESSED to that peer.
+    ///
+    /// ## The round-killer this exists to make impossible (2026-08-17)
+    ///
+    /// A citizen cannot hear a message she is recorded as having said: her inbound
+    /// stream drops it at the self-skip in
+    /// [`crate::persona::airc_persona_conversation`] (correct — nobody should answer
+    /// their own speech). So authoring an ADDRESSED kickoff through
+    /// [`Self::any_live_citizen`] is a coin flip on whether the addressee ever hears
+    /// it, and the flip is rigged: the pick is the lexicographically-lowest
+    /// `agent_name`, so the SAME citizen is chosen every time.
+    ///
+    /// Measured live: with the roster culled to `Atlas` + `Benchy`, "Atlas" sorts
+    /// first, so `benchmark/dispatch` authored every `@Atlas (to you)` kickoff AS
+    /// Atlas. Three cards, three kickoffs, `kickoff_errors: []` — and ZERO turns,
+    /// silently, for the whole round, while a detached solver did the work beside
+    /// her. With a larger roster the same code usually picked someone else, which is
+    /// why the defect read as intermittent (#417) instead of structural.
+    ///
+    /// `None` means the ONLY live citizen is the addressee. That is a real refusal,
+    /// not a fallback: the caller must fail loud rather than send a message that
+    /// cannot be heard ([[fallbacks-are-illegal-fail-loud]]).
+    pub fn any_live_citizen_other_than(
+        &self,
+        exclude: Option<Uuid>,
+    ) -> Option<Arc<PersonaAircRuntime>> {
         self.inner
             .iter()
+            .filter(|e| match exclude {
+                Some(peer) => e.value().runtime.airc().peer_id().as_uuid() != peer,
+                None => true,
+            })
             .min_by(|a, b| {
                 a.value()
                     .runtime

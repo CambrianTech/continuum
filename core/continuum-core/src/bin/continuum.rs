@@ -1659,6 +1659,36 @@ async fn stop() -> Result<(), String> {
     // holding a port or VRAM once `stop` returns.
     reap_owned_orphans(&[]);
 
+    // Serving lanes are NOT descended from any core we just reaped (the daemon
+    // spawns them detached) and are NOT under `~/.continuum/bin`, so neither the
+    // tree kill nor the ownership sweep above can see them. Until this call
+    // existed, `stop` left every `llama-server` running and the registry was
+    // swept only on the NEXT boot — measured 2026-08-17 on the M5 as two lanes
+    // resident at once (a 19 GB ephemeral 27B beside the live 14B), which
+    // starved the planner into serving a 2,816-token window that cannot hold the
+    // tool surface. `reboot` could not clear it either: reboot is stop + start,
+    // and neither half owned lanes.
+    for outcome in continuum_core::inference::lane_registry::sweep_all() {
+        use continuum_core::inference::lane_registry::SweepOutcome as S;
+        match outcome {
+            S::ReapedLive { pid, port } => {
+                println!("  reaping serving lane (pid {pid}, port {port}) — live lane, this core is stopping")
+            }
+            S::ReapedEphemeral { pid, port } => {
+                println!("  reaping serving lane (pid {pid}, port {port}) — ephemeral lane, owner gone")
+            }
+            // A record whose pid is dead / recycled / unparseable is bookkeeping,
+            // not an event: garbage-collected silently so the loud lines above
+            // stay meaningful.
+            S::RemovedDead { .. } | S::RemovedReused { .. } | S::RemovedUnparseable { .. } => {}
+            // Unreachable under Shutdown (every role is reaped) — but matched
+            // explicitly so adding a mode can never silently fall through here.
+            S::LeftLive { pid } => {
+                println!("  WARNING: serving lane (pid {pid}) left running by a shutdown sweep — report this")
+            }
+        }
+    }
+
     let _ = std::fs::remove_file(&socket);
     Ok(())
 }

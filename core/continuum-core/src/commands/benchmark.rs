@@ -1447,7 +1447,40 @@ impl ActionCommand for BenchmarkDispatch {
                         )
                     }
                 };
-                match airc.say(&kickoff).await {
+                // AUTHOR IT AS SOMEONE ELSE. A citizen's inbound stream skips messages
+                // she is recorded as having said (correct — nobody answers their own
+                // speech), so a kickoff addressed to her and AUTHORED by her is dropped
+                // silently and she never takes a turn.
+                //
+                // That is not hypothetical: `curator_airc` falls back to
+                // `any_live_citizen()` for the operator (no self-peer, #27), which picks
+                // the lexicographically-lowest name. With the roster at `Atlas` + `Benchy`
+                // that is ALWAYS Atlas — so a round directed at Atlas sent her three
+                // kickoffs she authored herself, reported `kickoff_errors: []`, and
+                // produced ZERO turns while a detached solver did the work beside her
+                // (measured 2026-08-17). A bigger roster usually picked someone else,
+                // which is why it read as intermittent (#417) rather than structural.
+                let voice = match self
+                    .registry
+                    .any_live_citizen_other_than(Some(*who_peer))
+                    .map(|rt| rt.airc().clone())
+                {
+                    Some(a) => a,
+                    None => {
+                        // The only live citizen IS the addressee. Refuse loudly instead of
+                        // sending a message that cannot be heard — the card stays on the
+                        // board, and the operator learns the roster is too small to direct
+                        // work at all ([[fallbacks-are-illegal-fail-loud]]).
+                        kickoff_errors.push(format!(
+                            "{short}: {who} is the only live citizen, so nobody else can \
+                             voice a kickoff addressed to her — she would skip her own \
+                             message and never take a turn. Spawn a second citizen \
+                             (persona/spawn), then re-dispatch."
+                        ));
+                        continue;
+                    }
+                };
+                match voice.say(&kickoff).await {
                     Ok(_) => kickoffs += 1,
                     // The card stays claimable — a lost kickoff is REPORTED (never unwound
                     // or hidden); the citizen can still find and claim it off the board.
