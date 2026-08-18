@@ -1,7 +1,40 @@
 # Content travels by HANDLE, never by copy
 
-**Status:** design, agreed with Joel 2026-08-18. Supersedes every "reduce the result to
-fit" mechanism in cognition. Closes the open fork in task #17 (URI-Handle vs HandleRef).
+**Status:** design. The PRINCIPLE holds and is already implemented — by `spill` +
+`tool/output`, which predates this document.
+
+> ## ⚠ READ THIS BEFORE BUILDING ANYTHING BELOW
+>
+> **The mechanism already exists. Do not build a second one — I did, on 2026-08-18, and
+> it was deleted the same day.**
+>
+> | want | use | where |
+> |---|---|---|
+> | park an oversized tool result and hand back a reference | `spill::spill()` | `cognition/tool_executor/spill.rs` |
+> | let a citizen page / grep it | **`tool/output`** | `commands/tool/output.rs` |
+>
+> `spill` is content-addressed, per-persona-scoped *by directory layout* (hex-only handle
+> = path-traversal guard), registered with the `PressureBroker` for eviction, and its
+> verb does grep-with-context plus prebuilt `errors`/`warnings`/`failures`/`summary`
+> filters so a citizen can find a build failure without knowing regex. It is better than
+> what this document originally proposed.
+>
+> **What I built and deleted:** a `ContentSource` trait + `ContentRegistry` +
+> `content/fetch` verb (723 lines). It duplicated spill with fewer features, had ZERO
+> producers — so no citizen could ever obtain a handle for it — and still sat on the
+> command surface as an AiSafe verb. A registered verb that cannot work is a lying
+> affordance (#151/#357 class), and two verbs for one concept is the parallel-allocator
+> sin (#8). Removed in full: module, registry, verb, ts-rs bindings, registration.
+>
+> **Why I missed it:** I searched for the CONCEPT in my head (`ContentSource`, handle,
+> registry). The real thing is named for its JOB (`spill`, `tool/output`) — which is what
+> a good name looks like, and exactly what my search could not find. See
+> [[read-the-code-you-intend-to-replace-before-designing-its-replacement]].
+>
+> **What survives from the interface sketch below:** it is the right SHAPE for spill to
+> grow into if `tool/output` ever needs a second implementation (a RAG source, a positron
+> ViewState, a peer's artifact). Kept here as prose, deliberately not as code — an
+> unimplemented trait with no consumers is itself a confusing leftover.
 
 ---
 
@@ -186,18 +219,25 @@ Only the renderer does.
 Which is the test for any future work in this area: if it would have to be redesigned when
 the one-prompt constraint lifts, it is encoding the constraint instead of the intent.
 
-## Build order
+## Build order — REVISED after the duplicate was deleted
 
-1. **Reconcile the two handle models** (task #17) — `runtime::cell_shapes::HandleRef` and
-   the URI-handle form. One type, or this design forks on day one.
-2. **`ContentSource` in the substrate**, with the file engine as outlier A (coordinates
-   matter, refuses to be cut) and a RAG source as outlier B (maximally different: no
-   coordinates, already a projection). Per CLAUDE.md's outlier rule — if both fit without
-   forcing, the interface is proven.
-3. **`ToolResult` carries `header + handle`** instead of a `String` body.
-4. **A dereference verb** in the persona tool surface, so a citizen can page a handle.
-5. **Delete the reducers.** The recency fold and the recent-results tail-keep both go;
-   with handles there is nothing left for them to do.
+1. ~~Reconcile the two handle models (#17)~~ — moot for now. `spill` uses a
+   content-addressed hex stem; nothing else competes with it, because the competitor was
+   deleted. #17 only becomes live again if a SECOND `ContentSource` implementation
+   appears and needs to share a handle type with spill.
+2. ~~`ContentSource` in the substrate~~ — **do not build this speculatively.** Grow it out
+   of `spill` at the moment a second implementation actually exists, so the trait is
+   extracted from two real cases rather than imagined from zero (CLAUDE.md's outlier
+   rule, applied honestly).
+3. **The remaining real defect:** `working_memory`'s `recent_results_chars` re-cuts a
+   result that the executor ALREADY bounded and handle-backed, severing the
+   "your full output is saved as `<handle>`, page it with `tool/output`" sentence the
+   executor wrote. The citizen is told how to recover her output and the budget layer
+   cuts the telling off. Fixing it properly means `fold_with_recovery` returning
+   `{preview, Option<SpillRef>}` instead of a String with the handle baked into prose,
+   so the handle travels as DATA to working memory and the render layer cannot cut it.
+4. **Then** the recency fold and recent-results tail-keep can go, because a handle-backed
+   result has nothing left worth re-cutting.
 
 ## Forbidden moves
 

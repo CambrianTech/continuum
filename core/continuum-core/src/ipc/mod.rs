@@ -1120,11 +1120,6 @@ pub fn start_server(
 
     // Phase 1: GpuModule (GPU stats + pressure IPC)
     runtime.register(Arc::new(GpuModule::new(gpu_manager.clone())));
-    // Content handles: oversized results stay at their source and are paged through
-    // `content/fetch`. See docs/architecture/CONTENT-TRAVELS-BY-HANDLE.md.
-    runtime.register(Arc::new(
-        crate::modules::content::ContentModule::new(crate::content::global()),
-    ));
 
     // ForgeModule (continuum#1164 Phase 4 stub — forge/run IPC).
     // v1 returns a stub ForgeArtifact from a recipe; Phase 5+ wires the
