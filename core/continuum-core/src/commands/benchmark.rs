@@ -609,6 +609,21 @@ pub struct BenchmarkDispatchParams {
     /// without dispatching anything new.
     #[serde(default)]
     pub prune: Option<bool>,
+    /// Who works this round's cards: `detached_solve` (default) or `citizen`.
+    ///
+    /// - `detached_solve` — a forked copy of the citizen solves each card through
+    ///   `agent/solve`, with an exclusive warm slot. Proven; it produced our one SWE
+    ///   pass. It also produces no room turn, so the round teaches nobody (#456).
+    /// - `citizen` — nothing detached fires. The kickoff drives her to claim, and she
+    ///   works the card on her own held-work turn: hands rooted at the staged checkout,
+    ///   acts radiating into the run room, and the turn feeding the training producer.
+    ///
+    /// The score and the learning are both the objective, and only `citizen` can
+    /// deliver the second one — but it depends on the kickoff→claim hop that used to
+    /// stall rounds, so it is opt-in until that hop is proven under residency.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub drive: Option<crate::cognition::bench_round::WorkDriver>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -1346,6 +1361,13 @@ impl ActionCommand for BenchmarkDispatch {
             Some(s) => s.lanes.max(1),
             None => 0,
         };
+        // OPEN the round BEFORE the first card exists. Kickoffs go out inside the loop, so
+        // a citizen can claim card 1 while card 2 is still being posted — and `work/claim`
+        // asks the round who drives. Registering after the loop (as this did) left that
+        // window answering with the default, which would silently fire the detached solver
+        // on the first card of a citizen-driven round.
+        let driver = p.drive.unwrap_or_default();
+        crate::cognition::bench_round::open_round(room.room_id.as_uuid(), spec.name, driver);
         for pc in prepared.into_iter().take(take) {
             // A gym setup_shell task needs its workspace re-broken before work
             // starts — harness orchestration a claimed card can't provide yet.
@@ -1430,8 +1452,13 @@ impl ActionCommand for BenchmarkDispatch {
             let full = card_id.as_uuid().simple().to_string();
             let short = full[..8].to_string();
 
+            // The card joins the round the moment it exists — BEFORE the pre-claim and
+            // the kickoff below, either of which can put it into someone's hands. From
+            // here `work/claim` can read who drives it (see `open_round`).
+            crate::cognition::bench_round::add_card(room.room_id.as_uuid(), card_id.as_uuid());
+
             // Directed gym card: CLAIM IT FOR HER at dispatch, under her own airc
-            // identity. The SWE arm below already fires her scored solve directly
+            // identity. The detached-solve SWE arm below fires her scored solve directly
             // (dispatch_staged_swe_solve — "we don't wait on her to re-derive a
             // work/claim from the kickoff"); gym cards never got the same cut, so
             // every round spent its first multi-minute turn per card on claim
@@ -1440,8 +1467,19 @@ impl ActionCommand for BenchmarkDispatch {
             // #425-compatible: the claim is administrative — the WORK stays hers,
             // in-room, through her own cognition. Best-effort: a failed pre-claim
             // is REPORTED and the card stays claimable by hand.
+            //
+            // A CITIZEN-driven SWE card takes the same cut, and for the same reason it
+            // was written: nothing detached will fire for it, so the ONLY thing standing
+            // between the card and her work turn is the kickoff→claim hop that stalls
+            // rounds. Pre-claiming removes that hop without moving the work — she still
+            // does it herself, in her own loop, on the held-work turn. (This goes through
+            // airc directly, not the `work/claim` verb, so it cannot re-enter the
+            // detached-solve dispatcher from here.)
             let mut pre_claimed = false;
-            if let CardWork::Gym { .. } = &pc.work {
+            let pre_claim_this = matches!(pc.work, CardWork::Gym { .. })
+                || (matches!(pc.work, CardWork::Swe { .. })
+                    && driver == crate::cognition::bench_round::WorkDriver::Citizen);
+            if pre_claim_this {
                 match self.registry.get(*who_peer) {
                     Some(rt) => {
                         match rt
@@ -1548,7 +1586,10 @@ impl ActionCommand for BenchmarkDispatch {
             // zero solves). Her WHOLE cognition solves it with an exclusive warm slot; the
             // work/claim path stays the trigger for undirected / human-claimed cards. Only a
             // STAGED SWE card has a solve to fire here (a gym card self-grades differently).
-            if staged_ok && solves_fired < solve_cap {
+            if staged_ok
+                && solves_fired < solve_cap
+                && driver == crate::cognition::bench_round::WorkDriver::DetachedSolve
+            {
                 if let CardWork::Swe { .. } = &pc.work {
                     // The run room goes WITH the solve: her acts radiate receipts
                     // into the room this dispatch just spawned, so the round's work
@@ -1575,11 +1616,7 @@ impl ActionCommand for BenchmarkDispatch {
         // `work.card.state_changed` subscriber settles cards as they reach terminal
         // states and announces the END — instead of the round's fate being probe
         // archaeology ("random and directed by agent, not an ecosystem", Joel 8/16).
-        crate::cognition::bench_round::register_round(
-            room.room_id.as_uuid(),
-            spec.name,
-            &card_uuids,
-        );
+        crate::cognition::bench_round::seal_round(room.room_id.as_uuid());
 
         // PRUNE (opt-in): converge the board to one live card per task for THIS
         // benchmark. Scoped to the keys this dispatch planned, so pruning one

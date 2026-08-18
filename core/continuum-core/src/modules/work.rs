@@ -626,14 +626,33 @@ impl ActionCommand for WorkClaim {
         // nobody in the loop. Best-effort: a dispatch failure never voids the
         // claim — the claim is hers either way, and the probe says what happened.
         if let Some(caller) = ctx.caller.as_ref() {
-            // ROOMLESS, and named as such rather than papered over: the claim verb
-            // carries no activity — a citizen can claim from anywhere, and the card
-            // does not remember which room staged it. So a claim-fired solve still
-            // works invisibly. That is #425's whole subject (a bench claim must lead
-            // to IN-ROOM work, not a detached nil-room solve); the dispatch path
-            // below already has a room and passes it, so the two paths now differ
-            // exactly at the gap #425 exists to close.
-            dispatch_staged_swe_solve(ctx, &airc, caller.peer_id.as_uuid(), card_id, None).await;
+            // WHO DRIVES THIS CARD is the round's decision, not the claim verb's. On a
+            // `Citizen`-driven round nothing detached fires: the claim stands, and she
+            // works the card on her own held-work turn — which roots her hands at the
+            // staged checkout and feeds the training producer. Firing the solver here
+            // would take the card out from under that turn (the detached fork always
+            // wins the race), so the citizen path is unreachable unless this yields.
+            match crate::cognition::bench_round::driver_for_card(card_id.as_uuid()) {
+                crate::cognition::bench_round::WorkDriver::DetachedSolve => {
+                    // ROOMLESS, and named as such rather than papered over: the claim
+                    // verb carries no activity — a citizen can claim from anywhere, and
+                    // the card does not remember which room staged it. So a claim-fired
+                    // solve still works invisibly. That is #425's whole subject (a bench
+                    // claim must lead to IN-ROOM work, not a detached nil-room solve);
+                    // the dispatch path already has a room and passes it, so the two
+                    // paths differ exactly at the gap #425 exists to close.
+                    dispatch_staged_swe_solve(ctx, &airc, caller.peer_id.as_uuid(), card_id, None)
+                        .await;
+                }
+                crate::cognition::bench_round::WorkDriver::Citizen => {
+                    crate::probe!(
+                        class = "benchmark.dispatch",
+                        card_id = %card_id.as_uuid(),
+                        claimer = %caller.peer_id.as_uuid(),
+                        "citizen-driven round — NO detached solve; her own work turn drives this card"
+                    );
+                }
+            }
         }
         Ok(WorkClaimResult {
             card_id: p.card_id,
