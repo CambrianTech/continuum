@@ -614,6 +614,20 @@ pub struct Burst {
     /// The text projection of `turns` (+ room header) — what `world_state` IS.
     /// Materialized once at construction so the hot path never re-renders.
     pub rendered: String,
+    /// The engram this perception CAME FROM — the inbound message or work-card
+    /// kickoff that caused the turn to happen at all.
+    ///
+    /// The root of the turn's causal thread (CAUSAL-MEMORY-GRAPH.md §3a). It lives on
+    /// the `Burst` because the burst IS the trigger: threading it as a separate
+    /// parameter through every driver would let the two drift, and provenance belongs
+    /// on the thing whose provenance it is.
+    ///
+    /// Without it, the FIRST act of every chain has no `CausedBy` edge, so there is no
+    /// path in the graph from a work card to the acts done for it — the card and the
+    /// work are causally disconnected, and no query can show a link that was never
+    /// recorded. `None` for stimuli with no admitted antecedent (raw-string bursts,
+    /// eval fixtures), which is honest rather than invented.
+    pub trigger_engram: Option<uuid::Uuid>,
 }
 
 impl Burst {
@@ -651,7 +665,17 @@ impl Burst {
             turns,
             rendered,
             now_ms,
+            trigger_engram: None,
         }
+    }
+
+    /// Same burst, now carrying the engram that caused it — the root its acts chain
+    /// back to. Builder-style so the assembly sites that KNOW their trigger say so and
+    /// the ones that genuinely have none stay unchanged rather than passing a `None`
+    /// nobody reads.
+    pub fn caused_by(mut self, engram: Option<uuid::Uuid>) -> Self {
+        self.trigger_engram = engram;
+        self
     }
 }
 
@@ -664,6 +688,8 @@ impl From<String> for Burst {
             turns: vec![BurstTurn::opaque(s.clone())],
             rendered: s,
             now_ms: None,
+            // A raw string has no admitted antecedent — honest, never invented.
+            trigger_engram: None,
         }
     }
 }

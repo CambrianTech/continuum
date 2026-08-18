@@ -87,7 +87,10 @@ async fn settle_to_outcome(
     // This turn's causal thread: each admitted act observation becomes the
     // CausedBy target of the next act in the SAME chain — the driver owns the
     // chain, so an edge can never cross turns or rooms (CAUSAL-MEMORY-GRAPH.md).
-    let chain = super::apply::ActChain::new();
+    // ROOTED in what caused this turn, so the first act chains to its trigger rather
+    // than starting mid-air — the link that makes "which acts were done for this card"
+    // a graph query instead of an inference.
+    let chain = super::apply::ActChain::rooted_in(burst.trigger_engram);
     // The turn's investigation trail (see `SettleOutcome::touched_paths`).
     let mut touched: Vec<String> = Vec::new();
     // Fold each tick's deliberation cost in, so the settled outcome reports the
