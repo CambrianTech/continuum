@@ -2157,14 +2157,36 @@ pub async fn grade(
             verdict.error = Some(e);
             return verdict;
         }
-        let (pristine_p2p, _) = run_tests(repo_dir, &venv_py, &p2p, &test_files, runner).await;
+        let (pristine_p2p, pristine_report) =
+            run_tests(repo_dir, &venv_py, &p2p, &test_files, runner).await;
         if pristine_p2p.values().filter(|ok| **ok).count() == 0 {
             verdict.gate_ok = false;
+            // CARRY THE REPORT. This verdict is the ONLY artifact of the pristine run, and
+            // without the run's own output "the suite does not run in this environment" is
+            // a conclusion with its evidence deleted — the reader is left to reproduce it
+            // by hand and guess at the difference.
+            //
+            // Measured 2026-08-17, and it cost hours: astropy-14365 graded 0-of-8 here
+            // while the SAME invocation (`-m pytest <file> -v -p no:cacheprovider`, same
+            // venv, same tree) run by hand gave 8 passed + the instance's own bug failing —
+            // exactly the gate condition. Three hypotheses got proposed and none could be
+            // settled, because the one thing that would have named the divergence was
+            // discarded into `_` on this line. An instrument that knows the answer and
+            // drops it is worse than one that never looked.
+            let tail = report_tail(&pristine_report);
             verdict.error = Some(format!(
                 "UNGRADEABLE — PASS_TO_PASS passes 0 of {} on the PRISTINE tree: the \
                  suite does not run in this environment, so every score from this tree \
-                 is an env fault, never a capability verdict.",
-                verdict.p2p_total
+                 is an env fault, never a capability verdict.{}",
+                verdict.p2p_total,
+                if tail.is_empty() {
+                    " The pristine run produced NO output at all — the harness never \
+                     executed (a missing interpreter, a refused invocation, a run that \
+                     died before writing a byte), which is a different fault from a suite \
+                     that ran and failed.".to_string()
+                } else {
+                    format!("\n\nPRISTINE RUN OUTPUT (tail):\n{tail}")
+                }
             ));
             return verdict;
         }
