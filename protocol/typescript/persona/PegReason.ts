@@ -4,4 +4,4 @@
  * WHY a citizen is pegged — carried so a refusal can explain itself, and so the
  * measurement peg can be told apart from a durable one when a lease expires.
  */
-export type PegReason = { "kind": "measurement", run_id: string, } | { "kind": "genomeBound" } | { "kind": "operator" };
+export type PegReason = { "kind": "measurement", run_id: string, } | { "kind": "training", job_id: string, } | { "kind": "genomeBound" } | { "kind": "operator" };

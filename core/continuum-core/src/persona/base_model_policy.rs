@@ -99,8 +99,22 @@ pub enum PegReason {
     /// Held for the round's duration and released with it — the round-lifecycle owner
     /// (#371) sets and clears this, never the solver.
     Measurement { run_id: String },
+    /// A FORGE RUN is in flight and is targeting this base.
+    ///
+    /// This is the peg with the most utility, because continuous learning never stops: the
+    /// flywheel runs turns → corpus → forge → adapter → page-in continuously, and the
+    /// adapter coming out the far end is a derivative of whatever base it was trained
+    /// against. If her base floats between the corpus accruing and the forge finishing, the
+    /// adapter lands for a base she has already left — forged for nobody, and page-in must
+    /// then refuse it (#369).
+    ///
+    /// So a training run holds this for its duration, exactly as a measurement round holds
+    /// [`Self::Measurement`], and for the same underlying reason: a process is in flight
+    /// whose output is only valid against the base it started on.
+    Training { job_id: String },
     /// Her genome's adapters are forged against this base and are invalid on any other
-    /// (#369). Derived from the adapters she actually holds, not hand-declared.
+    /// (#369). Derived from the adapters she actually holds, not hand-declared — the
+    /// standing consequence of past [`Self::Training`] runs.
     GenomeBound,
     /// Operator intent — "this citizen runs on this model."
     Operator,
@@ -642,6 +656,35 @@ mod tests {
             "a baseline round on an unforged base is exactly the round you WANT — it just \
              has to be labelled so round 2's lift is attributable"
         );
+    }
+
+    // what this catches: a TRAINING peg refuses exactly like a measurement one. Continuous
+    // learning runs forever, so this is the peg that is held most of the time — and the
+    // failure it prevents is the worst of the three: a forge that starts on one base and
+    // finishes after she has drifted to another produces an adapter for nobody, which
+    // page-in must then refuse (#369). The corpus survives; the compute does not.
+    #[test]
+    fn a_training_peg_holds_the_base_for_the_duration_of_the_forge() {
+        let p = BaseModelPolicy::Pegged {
+            model: "big-27b".into(),
+            vram_budget_gb: 32.0,
+            reason: PegReason::Training {
+                job_id: "forge-coder-act-v3".into(),
+            },
+        };
+        assert_eq!(p.resolve(64.0, &all_forged()).unwrap().model, "big-27b");
+
+        let err = p.resolve(16.0, &all_forged()).unwrap_err();
+        match &err {
+            BaseModelError::PegDoesNotFit { reason, .. } => {
+                assert!(
+                    matches!(reason, PegReason::Training { .. }),
+                    "the refusal must carry WHY, so an operator can tell a live forge from \
+                     an operator pin: {reason:?}"
+                );
+            }
+            other => panic!("a training peg that does not fit must refuse, got {other:?}"),
+        }
     }
 
     // what this catches: `pegged_model` is what a genome page-in checks adapters against
