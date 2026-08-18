@@ -557,13 +557,48 @@ impl ActionCommand for AgentSolve {
                                     Ok(diff) => {
                                         use sha2::{Digest, Sha256};
                                         let sha = format!("{:x}", Sha256::digest(diff.as_bytes()));
-                                        if let Some(dir) = inner.capture_dir.as_ref() {
-                                            let _ = std::fs::create_dir_all(dir);
-                                            let _ = std::fs::write(
-                                                std::path::Path::new(dir)
-                                                    .join(format!("attempt-{attempt}.patch")),
-                                                &diff,
-                                            );
+                                        // CUSTODY IS NOT OPTIONAL. The workspace is reset for
+                                        // the next attempt, so this write is the only moment
+                                        // her diff exists anywhere durable. Every failure to
+                                        // keep it is announced — a silent drop is how a whole
+                                        // round of evidence was lost (see `run_artifact_dir`).
+                                        match run_artifact_dir(&run_id, inner.capture_dir.as_deref())
+                                        {
+                                            Some(dir) => {
+                                                let path = dir
+                                                    .join(format!("attempt-{attempt}.patch"));
+                                                if let Err(e) = std::fs::create_dir_all(&dir)
+                                                    .and_then(|_| std::fs::write(&path, &diff))
+                                                {
+                                                    tracing::error!(
+                                                        run_id = %run_id,
+                                                        attempt,
+                                                        path = %path.display(),
+                                                        error = %e,
+                                                        "PATCH CUSTODY LOST — her diff could not \
+                                                         be persisted and the workspace is about \
+                                                         to be reset; this attempt's verdict will \
+                                                         have no evidence behind it"
+                                                    );
+                                                } else {
+                                                    crate::probe!(
+                                                        class = "benchmark.patch.kept",
+                                                        run_id = %run_id,
+                                                        attempt,
+                                                        bytes = diff.len(),
+                                                        sha256 = %sha,
+                                                        path = %path.display(),
+                                                        "attempt patch persisted — the verdict has \
+                                                         evidence behind it"
+                                                    );
+                                                }
+                                            }
+                                            None => tracing::error!(
+                                                run_id = %run_id,
+                                                attempt,
+                                                "PATCH CUSTODY LOST — no artifact directory could \
+                                                 be resolved (no CONTINUUM_HOME, no home dir)"
+                                            ),
                                         }
                                         sha
                                     }
@@ -880,6 +915,31 @@ fn agent_solve_ledger_path(run_id: &str) -> Option<std::path::PathBuf> {
     let dir = base.join("progress");
     let _ = std::fs::create_dir_all(&dir);
     Some(dir.join(format!("agent-solve-{run_id}.json")))
+}
+
+/// Where THIS run's artifacts live — the patch above all. One definition, so a run's
+/// evidence never depends on how it happened to be launched.
+///
+/// `capture_dir` is an OPTIONAL caller courtesy (a hand-launched run naming its own
+/// folder). It was also, until 2026-08-18, the ONLY thing standing between an attempt
+/// and total evidence loss: the patch write sat behind `if let Some(dir) =
+/// capture_dir` with no else, so every run that did not pass one silently discarded
+/// the diff. Measured that day: all 25 patches on this box live under
+/// `benchmarks/swe/captures/run-*` — hand-launched runs. Every CITIZEN-dispatched run
+/// (`claim-*`, i.e. the entire path the benchmark actually runs on) kept none. A
+/// citizen wrote 41,166 bytes against sympy-13480, broke 40 previously-passing tests,
+/// and the one artifact that could say whether that was a surgical edit or a clobber
+/// was gone before anyone could read it.
+///
+/// So custody stops being a parameter. Absent an explicit dir, it is derived from the
+/// run's own ledger — the same `progress/` root the state file already uses, which
+/// exists for every run by construction.
+fn run_artifact_dir(run_id: &str, capture_dir: Option<&str>) -> Option<std::path::PathBuf> {
+    if let Some(d) = capture_dir {
+        return Some(std::path::PathBuf::from(d));
+    }
+    agent_solve_ledger_path(run_id)
+        .and_then(|p| p.parent().map(|d| d.join(format!("run-{run_id}"))))
 }
 
 /// Global admission gate for scored solve DRIVES — the fix for the lane-thrash death
@@ -1902,6 +1962,47 @@ fn frame_task(task: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    mod patch_custody {
+        // what this catches: patch custody going back to being a caller courtesy. It WAS
+        // one — the write sat behind `if let Some(capture_dir)` with no else — and the
+        // consequence was measured on 2026-08-18: every hand-launched run kept its diff
+        // (25 patches under benchmarks/swe/captures/run-*), and every citizen-dispatched
+        // `claim-*` run, which is the entire path the benchmark actually runs on, kept
+        // none. A 41,166-byte patch that broke 40 passing tests was unrecoverable hours
+        // later because the workspace had already been reset. A run that cannot produce
+        // the artifact behind its own verdict is an anecdote, not a measurement.
+        #[test]
+        fn a_run_that_names_no_capture_dir_still_gets_one() {
+            let derived = super::super::run_artifact_dir("claim-abc123", None)
+                .expect("a run always resolves an artifact dir");
+            assert!(
+                derived.ends_with("run-claim-abc123"),
+                "custody must be derived from the run itself, not left to the caller: \
+                 {}",
+                derived.display()
+            );
+            // And it lands beside the run's own state file — one place per run, so the
+            // verdict and the evidence for it are never in different worlds.
+            let ledger = super::super::agent_solve_ledger_path("claim-abc123")
+                .expect("ledger path resolves in the same environment");
+            assert_eq!(
+                derived.parent(),
+                ledger.parent(),
+                "the patch belongs beside the ledger that reports on it"
+            );
+        }
+
+        // what this catches: an explicit capture_dir being ignored once the fallback
+        // exists — the hand-launched runs that DO name a folder must keep landing there,
+        // or the 25 existing patches stop being where every prior receipt says they are.
+        #[test]
+        fn an_explicit_capture_dir_still_wins() {
+            let dir = super::super::run_artifact_dir("run-18057-h1", Some("/tmp/named-run"))
+                .expect("explicit dir resolves");
+            assert_eq!(dir, std::path::PathBuf::from("/tmp/named-run"));
+        }
+    }
+
     // what this catches: the wrapper asserting a DELIVERABLE SHAPE that the task contradicts.
     // The generic framing exists to kill narration ("only tool calls take effect"). It must not
     // also claim the grade is about "files your tools WRITE" — `swe_task_prompt` says the
