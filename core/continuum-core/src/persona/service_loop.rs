@@ -830,6 +830,11 @@ async fn serve_persona_loop_inner(
         // 2026-06-03 "introspect all rag" directive). The ranked Vec is no longer
         // threaded into a per-turn RespondInput (that path is gone); only the side-
         // effects and the admit remain.
+        // The engram of the message that woke this turn — the root its acts chain back
+        // to. Bound here (outer scope) because it is written at admission and read at
+        // burst assembly, two blocks apart.
+        let mut wake_engram: Option<uuid::Uuid> = None;
+
         {
             let cognition = ctx.cognition.lock().await;
             // recall BEFORE admit so the ranking is "what I knew going in" — the
@@ -857,18 +862,33 @@ async fn serve_persona_loop_inner(
             let admit_started = std::time::Instant::now();
             let admit_result = cognition.admission.admit(&inbox_msg, None);
             phase_timings.admit_ms = admit_started.elapsed().as_millis() as u64;
-            if let Err(e) = admit_result {
-                tracing::warn!(
-                    lamport = msg.lamport,
-                    error = %e,
-                    "admission.admit failed — engram not formed this turn"
-                );
-            } else {
-                tracing::info!(
-                    lamport = msg.lamport,
-                    engram_count = cognition.admission.engram_count(),
-                    "admitted incoming → L2 store"
-                );
+            match &admit_result {
+                Err(e) => {
+                    tracing::warn!(
+                        lamport = msg.lamport,
+                        error = %e,
+                        "admission.admit failed — engram not formed this turn"
+                    );
+                }
+                Ok(decision) => {
+                    // THE ROOT OF THIS TURN'S CAUSAL THREAD (CAUSAL-MEMORY-GRAPH.md §3a).
+                    // The message that woke her is already becoming an engram here; its id
+                    // was being discarded. Keeping it lets the turn's first act carry a
+                    // `CausedBy` edge to what actually caused it, instead of the chain
+                    // starting mid-air — which is what made "which acts were done for this"
+                    // unanswerable from the graph.
+                    //
+                    // Only an ADMITTED message is a cause. A Drop (dedup) or Quarantine has
+                    // no engram to point at, and inventing one would be a fabricated link —
+                    // worse than the honest gap it replaces.
+                    wake_engram = decision.admitted_engram_id();
+                    tracing::info!(
+                        lamport = msg.lamport,
+                        engram_count = cognition.admission.engram_count(),
+                        wake_engram = ?wake_engram,
+                        "admitted incoming → L2 store"
+                    );
+                }
             }
         }
 
@@ -952,8 +972,12 @@ async fn serve_persona_loop_inner(
             ctx.identity.peer_id,
             turn_room,
         );
+        // Carry the wake message's engram as this burst's cause, so the turn's acts
+        // chain back to what triggered them (CAUSAL-MEMORY-GRAPH.md §3a). `None` when
+        // the message was deduped/quarantined — an honest gap, never a made-up link.
         let workspace_burst =
-            crate::cognition::workspace::Burst::from_turns_at(turn_room, ws_turns, Some(now_ms));
+            crate::cognition::workspace::Burst::from_turns_at(turn_room, ws_turns, Some(now_ms))
+                .caused_by(wake_engram);
         // Mark this world-state as just-deliberated so the next heartbeat tick doesn't
         // re-run the same burst (the message path and the self-tick share the gate;
         // own chat is excluded so this reply can't re-trigger a self-tick, while her
