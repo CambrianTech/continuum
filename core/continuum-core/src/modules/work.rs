@@ -701,34 +701,31 @@ pub(crate) async fn dispatch_staged_swe_solve(
     let Some(card) = board.cards.iter().find(|c| c.card_id == card_id) else {
         return;
     };
-    // Her staged SWE checkouts — the exact layout swe-setup writes.
-    let Ok(home) = crate::commands::benchmark::continuum_home() else {
-        return;
-    };
-    let swe_root = home
-        .join("citizens/peers")
-        .join(claimer.to_string())
-        .join("workspace/swe");
-    let Ok(entries) = std::fs::read_dir(&swe_root) else {
-        return; // no staged work for her — an ordinary (non-SWE) claim.
-    };
-    let staged: Vec<String> = entries
-        .flatten()
-        .filter(|e| e.path().is_dir())
-        .filter_map(|e| e.file_name().to_str().map(str::to_string))
-        .filter(|name| card.title.contains(name.as_str()))
-        .collect();
-    let [instance] = staged.as_slice() else {
-        if staged.len() > 1 {
+    // Her staged SWE checkouts. ONE expression of that layout lives in
+    // `persona::staged_workspace` — the work turn roots her hands with the same resolver,
+    // so a change to staging can never leave the two disagreeing about which repo a card
+    // is about (they did disagree in kind already: this walk accepted any directory, that
+    // one requires a `.git`, so an interrupted clone read as a staged instance here).
+    let (instance, workspace) = match crate::persona::staged_workspace::resolve_for_titles(
+        &claimer,
+        [card.title.as_str()],
+    ) {
+        crate::persona::staged_workspace::CardWorkspace::One { instance, path } => {
+            (instance, path.to_string_lossy().to_string())
+        }
+        // No staged checkout for her matching this card — an ordinary (non-SWE) claim.
+        crate::persona::staged_workspace::CardWorkspace::None => return,
+        crate::persona::staged_workspace::CardWorkspace::Ambiguous { candidates } => {
             crate::probe!(
                 class = "benchmark.dispatch",
                 card_id = %card_id.as_uuid(),
                 claimer = %claimer,
-                matches = staged.len(),
+                matches = candidates.len(),
+                candidates = candidates.join(","),
                 "claim matched MULTIPLE staged instances — refusing to guess, no dispatch"
             );
+            return;
         }
-        return;
     };
     // WAIT for the boot-gate, don't guard against it. A claim can land while the serving lane
     // is still proving it can decode (the ~10-15s window after core-ready); parking here until
@@ -750,7 +747,6 @@ pub(crate) async fn dispatch_staged_swe_solve(
         );
         return;
     }
-    let workspace = swe_root.join(instance).to_string_lossy().to_string();
     // Her HANDS must resolve `python`/`pytest`/`pip` to THIS instance's venv, not the system
     // interpreter. Without this, `code/shell pytest` hits homebrew python3.14 (no pytest, no
     // repo), she loops `pip install pytest` into the wrong interpreter, and burns every action
@@ -759,7 +755,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
     // solve.rs already `.exists()`-filters it, so prepending a not-yet-built bin is harmless.
     let venv_bin = crate::cognition::swe_bench::swe_cache_dir()
         .join("envs")
-        .join(instance)
+        .join(&instance)
         .join("bin")
         .to_string_lossy()
         .to_string();

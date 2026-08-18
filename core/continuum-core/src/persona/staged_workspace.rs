@@ -67,44 +67,96 @@ pub fn staged_instances(peer: &uuid::Uuid) -> Vec<String> {
     out
 }
 
-/// The workspace a claimed card points at, or `None` when the card is not a staged
-/// benchmark card (the ordinary case).
+/// Which staged instance a set of card titles points at — the full answer, including the
+/// two ways there isn't one.
 ///
-/// `card_titles` is every title she currently holds — resolution is over the WHOLE held
-/// set rather than one card, because the question a work turn asks is "where are my hands
-/// supposed to be", and that has one answer for the turn. Two different held cards
-/// matching two different staged instances is the same ambiguity as one title matching
-/// two, and refuses identically.
-pub fn workspace_for_held_cards<'a, I>(peer: &uuid::Uuid, card_titles: I) -> Option<PathBuf>
+/// Callers need to tell these apart. A work turn treats [`None`](CardWorkspace::None) as
+/// "an ordinary card, hands stay put" and [`Ambiguous`](CardWorkspace::Ambiguous) as a
+/// staging defect worth reporting; a claim dispatcher wants the instance NAME as well as
+/// the path (its era venv is keyed by it). An `Option<PathBuf>` erased both distinctions,
+/// which is why the second caller kept its own copy of the walk.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CardWorkspace {
+    /// Exactly one staged instance is named by these titles.
+    One { instance: String, path: PathBuf },
+    /// No staged instance is named — the ordinary, non-benchmark case.
+    None,
+    /// More than one. Never resolved: rooting at either would put hands in a repo the
+    /// other card is not about, and a diff taken there scores a false zero for the one
+    /// actually being worked.
+    Ambiguous { candidates: Vec<String> },
+}
+
+/// Resolve card titles against this citizen's staged checkouts.
+///
+/// `card_titles` is every title in play — resolution is over the WHOLE set rather than one
+/// card, because the question a work turn asks is "where are my hands supposed to be", and
+/// that has one answer for the turn. Two different held cards matching two different
+/// staged instances is the same ambiguity as one title matching two, and refuses
+/// identically.
+pub fn resolve_for_titles<'a, I>(peer: &uuid::Uuid, card_titles: I) -> CardWorkspace
 where
     I: IntoIterator<Item = &'a str>,
 {
     let staged = staged_instances(peer);
-    if staged.is_empty() {
-        return None;
-    }
     let titles: Vec<&str> = card_titles.into_iter().collect();
+    match select(&staged, &titles) {
+        Selection::One(instance) => match staging_root(peer) {
+            Some(root) => CardWorkspace::One {
+                path: root.join(&instance),
+                instance,
+            },
+            None => CardWorkspace::None,
+        },
+        Selection::None => CardWorkspace::None,
+        Selection::Ambiguous(candidates) => CardWorkspace::Ambiguous { candidates },
+    }
+}
+
+/// The matching rule alone, with the filesystem taken out of it.
+///
+/// Split from [`resolve_for_titles`] so the rule is TESTED rather than restated: the
+/// disk half needs a fixture, the decision does not, and a test that re-derives the
+/// containment check in its own body cannot fail when the real one changes.
+#[derive(Debug, PartialEq, Eq)]
+enum Selection {
+    One(String),
+    None,
+    Ambiguous(Vec<String>),
+}
+
+fn select(staged: &[String], titles: &[&str]) -> Selection {
     let mut hits: Vec<&String> = staged
         .iter()
         .filter(|inst| titles.iter().any(|t| t.contains(inst.as_str())))
         .collect();
     hits.dedup();
     match hits.as_slice() {
-        [one] => staging_root(peer).map(|root| root.join(one.as_str())),
-        [] => None,
-        many => {
-            // Two staged instances named in her held titles. Rooting at either would put
-            // her hands in a repo the other card is not about — and a diff taken there
-            // scores a false zero for the one she was actually working. Refuse loudly.
+        [one] => Selection::One((*one).clone()),
+        [] => Selection::None,
+        many => Selection::Ambiguous(many.iter().map(|s| (*s).clone()).collect()),
+    }
+}
+
+/// The workspace a claimed card points at, or `None` when there isn't exactly one — the
+/// projection a WORK TURN wants, which only needs "root here or leave her hands alone".
+///
+/// Ambiguity probes here rather than at [`resolve_for_titles`] because this is the caller
+/// that would silently score a false zero: it roots hands and a diff is taken afterwards.
+/// A dispatcher matching on the enum reports ambiguity in its own vocabulary instead.
+pub fn workspace_for_held_cards<'a, I>(peer: &uuid::Uuid, card_titles: I) -> Option<PathBuf>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    match resolve_for_titles(peer, card_titles) {
+        CardWorkspace::One { path, .. } => Some(path),
+        CardWorkspace::None => None,
+        CardWorkspace::Ambiguous { candidates } => {
             crate::probe!(
                 class = "persona.work.staged_ambiguous",
                 peer = %peer,
-                matches = many.len(),
-                candidates = many
-                    .iter()
-                    .map(|s| s.as_str())
-                    .collect::<Vec<_>>()
-                    .join(","),
+                matches = candidates.len(),
+                candidates = candidates.join(","),
                 "held cards name MULTIPLE staged instances — refusing to guess which repo \
                  her hands belong in; she works in her own workspace this turn"
             );
@@ -117,32 +169,52 @@ where
 mod tests {
     use super::*;
 
+    fn staged(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| (*s).to_string()).collect()
+    }
+
     // what this catches: the containment rule is what binds a card to a repo, and it is
     // by construction (dispatch writes the title from the instance). A title that names
     // the instance resolves; an unrelated title does not, so an ordinary chat card never
     // silently re-roots a citizen's hands into a benchmark checkout.
     #[test]
     fn a_title_naming_a_staged_instance_selects_it_and_others_do_not() {
-        // Pure over the matching rule — the disk half is exercised by the live path, and
-        // a temp-dir fixture here would be testing `read_dir`, not the decision.
-        let staged = ["sympy__sympy-24152".to_string(), "flask-4045".to_string()];
-        let titles = ["benchmark: sympy__sympy-24152 — fix the printer"];
-        let hit: Vec<&String> = staged
-            .iter()
-            .filter(|i| titles.iter().any(|t| t.contains(i.as_str())))
-            .collect();
-        assert_eq!(hit.len(), 1);
-        assert_eq!(hit[0], "sympy__sympy-24152");
-
-        let unrelated = ["let's discuss the roadmap"];
-        let none: Vec<&String> = staged
-            .iter()
-            .filter(|i| unrelated.iter().any(|t| t.contains(i.as_str())))
-            .collect();
-        assert!(
-            none.is_empty(),
+        let staged = staged(&["sympy__sympy-24152", "psf__requests-2148"]);
+        assert_eq!(
+            select(&staged, &["benchmark: sympy__sympy-24152 — fix the printer"]),
+            Selection::One("sympy__sympy-24152".to_string())
+        );
+        assert_eq!(
+            select(&staged, &["let's discuss the roadmap"]),
+            Selection::None,
             "an ordinary card must never re-root her hands"
         );
+    }
+
+    // what this catches: the ambiguity arm collapsing into a pick. Two staged instances
+    // named across the titles in play must REFUSE — rooting at either puts hands in a repo
+    // the other card is not about, and the diff taken there scores a false zero for the one
+    // actually being worked. Both callers depend on this staying distinguishable from
+    // "nothing staged": the work turn probes and leaves her hands alone, the claim
+    // dispatcher declines to fire a solve.
+    #[test]
+    fn titles_naming_two_staged_instances_refuse_rather_than_pick() {
+        let staged = staged(&["sympy__sympy-24152", "psf__requests-2148"]);
+        let both = select(
+            &staged,
+            &["bench: sympy__sympy-24152", "bench: psf__requests-2148"],
+        );
+        match both {
+            Selection::Ambiguous(c) => assert_eq!(c.len(), 2, "both candidates must be named"),
+            other => panic!("two matches must refuse, got {other:?}"),
+        }
+    }
+
+    // what this catches: nothing staged at all — the ordinary case for every non-benchmark
+    // citizen, which must resolve without the rule ever finding a hit.
+    #[test]
+    fn a_citizen_with_nothing_staged_selects_nothing() {
+        assert_eq!(select(&[], &["bench: sympy__sympy-24152"]), Selection::None);
     }
 
     // what this catches: a citizen with NO staged instances resolves to None without
