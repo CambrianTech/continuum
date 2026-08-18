@@ -63,17 +63,9 @@ pub(super) fn tail_to_tokens(s: &str, budget_tokens: usize) -> String {
 /// geometry against known participant names, never content NLP
 /// ([[no-hardcoded-heuristics-to-steer-cognition]] — this renders a fact visible,
 /// it steers nothing).
-pub(super) fn turn_message_line(turn: &BurstTurn) -> String {
-    if turn.is_self || turn.author.is_empty() {
-        turn.content.clone()
-    } else {
-        format!("{}: {}", turn.author, turn.content)
-    }
-}
-
-/// [`turn_message_line`] with addressee annotation for peer turns. `participants`
-/// is every display name known in the window (peers + self); `self_name` is THIS
-/// persona's name, rendered as "you" so a directed ask reads as directed.
+/// `participants` is every display name known in the window (peers + self);
+/// `self_name` is THIS persona's name, rendered as "you" so a directed ask reads
+/// as directed.
 pub(super) fn turn_message_line_addressed(
     turn: &BurstTurn,
     participants: &[String],
@@ -121,15 +113,18 @@ pub(super) fn turn_message_line_addressed(
 /// ([[no-hardcoded-heuristics-to-steer-cognition]]).
 pub(super) const NEAR_DUP_JACCARD: f64 = 0.6;
 
-/// Minimum run length (consecutive near-identical PAIRS, so `3` = four messages
-/// in a row) before the repetition fact renders. Same calibration: the longest
-/// observed live runs were 36 and 80 messages; under healthy flow three
-/// consecutive ≥0.6 pairs is vanishingly rare. Evidence-scaled: below this, say
-/// nothing.
-const NEAR_DUP_MIN_RUN: usize = 3;
+/// Minimum CLUSTER size — how many of her own visible messages must be mutually
+/// near-identical (≥ [`NEAR_DUP_JACCARD`]) before the repetition fact renders.
+/// Counted anywhere in the window, at any period, NOT as a consecutive run: live
+/// loops cycle 2–3 templates, so a trailing-run rule went blind to exactly the
+/// loops it was built for (see [`own_repetition_fact`]). Same calibration corpus:
+/// the longest observed live loops were 36 and 80 messages; under healthy flow
+/// three mutually ≥0.6 messages is vanishingly rare. Evidence-scaled: below this,
+/// say nothing.
+const NEAR_DUP_MIN_CLUSTER: usize = 3;
 
 /// How many of her own recent utterances the spoken ring retains — the
-/// repetition detector's self-history window. Sized past NEAR_DUP_MIN_RUN
+/// repetition detector's self-history window. Sized past NEAR_DUP_MIN_CLUSTER
 /// with slack for interleaved non-loop turns; utterances are short-lived
 /// evidence, not memory (the hippocampus owns memory).
 const OWN_SPEECH_RING: usize = 8;
@@ -285,8 +280,10 @@ pub(super) fn jaccard(a: &str, b: &str) -> f64 {
 
 /// The persona's OWN-SPEECH repetition fact for this tick, if her trailing run
 /// of own turns is a loop: `Some("[repetition] your last N messages were nearly
-/// identical")` when the last [`NEAR_DUP_MIN_RUN`]+ consecutive own turns are
-/// pairwise ≥ [`NEAR_DUP_JACCARD`] similar. Pure fact, no imperative — perception
+/// identical")` when [`NEAR_DUP_MIN_CLUSTER`]+ of her own visible turns are
+/// mutually ≥ [`NEAR_DUP_JACCARD`] similar — a CLUSTER at any period, not a
+/// trailing run (see the detection comment below, and the live deploy that proved
+/// the run form blind). Pure fact, no imperative — perception
 /// renders what happened; it never steers what she says next.
 ///
 /// Why (task #134, glass-boxed 2026-07-11): Atlas looped stage-direction
@@ -343,7 +340,7 @@ pub(super) fn own_repetition_fact(turns: &[BurstTurn], spoken: &[String]) -> Opt
     // ALREADY has (her Silence Option prompt: "Choose PASS when … nothing new has
     // been raised"), surfaced at the moment repetition is structurally detected. The
     // fork (add something genuinely new, OR go silent) is hers; this only names it.
-    (best >= 3).then(|| {
+    (best >= NEAR_DUP_MIN_CLUSTER).then(|| {
         format!(
             "[repetition] {best} of your recent messages were nearly identical — you're \
              circling, and restating what you've already said adds nothing. If you have \
@@ -451,7 +448,7 @@ pub(super) fn template_loop_fact(turns: &[BurstTurn], spoken: &[String]) -> Opti
             .count();
         best = best.max(dups + 1);
     }
-    (best >= 3).then(|| {
+    (best >= NEAR_DUP_MIN_CLUSTER).then(|| {
         format!(
             "[template-loop] {best} of your recent messages reuse the same template with \
              the topic swapped — a new subject inside the same scaffold is still circling, \
@@ -674,8 +671,8 @@ fn matches_name_at(line: &str, pos: usize, name: &str) -> bool {
         .is_some_and(|s| s.eq_ignore_ascii_case(name))
 }
 
-/// Find WHO a message's first line addresses, by vocative GEOMETRY only — never
-/// content interpretation. Two shapes, matched against known participant names:
+/// Find WHO a message addresses, by vocative GEOMETRY only — never content
+/// interpretation. Two shapes, matched against known participant names:
 ///
 /// - **Leading vocative**: `Anwen, …` / `Atlas: …` / `Asha — …` / `@Anwen …`
 /// - **Greeting vocative** in the first line: `Sure, Anwen. Could you…` /
@@ -685,13 +682,8 @@ fn matches_name_at(line: &str, pos: usize, name: &str) -> bool {
 ///
 /// A bare mention ("I agree with Anwen's plan") matches neither shape and stays
 /// unannotated. Leading beats greeting; among greetings the earliest wins.
-pub(super) fn vocative_addressee<'a>(content: &str, participants: &'a [String]) -> Option<&'a str> {
-    vocative_addressees(content, participants)
-        .into_iter()
-        .next()
-}
-
-/// Every addressee the message's vocative geometry names, in discovery order,
+///
+/// Returns every addressee the geometry names, in discovery order,
 /// deduped, capped at 3. The LEADING form is scanned on every line (live
 /// coordination messages address several teammates on separate lines —
 /// "Atlas, please test… / Asha, could you…" — #134 specimen 2 was missed by
@@ -1442,8 +1434,8 @@ mod tests {
         // (the closing-punctuation requirement doubles as the word boundary).
         let names2 = vec![SPEAKER_LEAD.to_string()];
         assert_eq!(
-            vocative_addressee("Sure, Anwenne. Please post it.", &names2),
-            None
+            vocative_addressees("Sure, Anwenne. Please post it.", &names2),
+            Vec::<&str>::new()
         );
 
         // Name-AGNOSTIC proof: personas are procedurally generated, so the
