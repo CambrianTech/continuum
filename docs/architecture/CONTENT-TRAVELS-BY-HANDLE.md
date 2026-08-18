@@ -129,6 +129,63 @@ summarizes (a board row → the card's full content; a run tile → the transcri
 next design step after the build order below — the same `(header, handle)` pair, whether
 it arrives through a tool result or a rendered view.
 
+## Collapse-and-expand is the universal idiom — and it is positron's actual purpose
+
+The mechanism above is not novel and should not be. **Collapse a tree, expand what you
+care about** is how every IDE, every file browser, every code-review tool and every
+coworking surface has worked for decades, because it is how attention actually works. We
+are not inventing an interaction; we are giving citizens the one humans already have.
+
+What makes it load-bearing here is that the SAME structure serves both audiences:
+
+| | human | citizen |
+|---|---|---|
+| collapsed | a folded section, a card, a row | a header line in the prompt |
+| expand | click | `content/fetch` |
+| budget | screen space + attention | context window + attention |
+| what's underneath | identical | identical |
+
+A prompt IS a rendering. It has a viewport, a scroll budget, and an expansion gesture —
+they are just spelled differently. Which is why this belongs to positron and not to
+cognition: **positron's real job is to bridge UX and PX**, one definition projected to N
+renderers, and the persona's prompt is simply one of the renderers. Everything we build
+for the human screen should light up for a citizen for free, and the reverse. Anything
+that only reaches one of them is a projection we failed to define once.
+
+That is the Flutter analogy, and it is the right one: you author the surface generically,
+and every target renders it natively. Here the targets are a browser, a phone, a TUI —
+**and a mind**. A citizen of any kind, on any model, gets the same capacity to navigate
+what exists, because the capacity lives in the projection rather than in the client.
+
+### The cycle this closes
+
+Collapse/expand is not a one-shot. It is the loop:
+
+1. She perceives a condensed view — headers, summaries, the shape of things.
+2. Something warrants attention. She expands it (a tool call, a handle).
+3. **Her thinking section and her tool receipts carry the handles forward**, so what she
+   opened stays reachable next turn instead of aging into nothing.
+4. The next perception is condensed again, but around what she now knows.
+
+That is a cyclical RAG consciousness rather than a one-shot retrieval: attention narrows,
+detail arrives, the frame re-condenses around it, and the cycle repeats. The handle is
+what makes step 3 possible — a receipt that carries a reference stays *live*, where a
+receipt carrying a truncated copy is dead the moment it ages out. (This is the same gap
+#390/#414 measured from the other side: thousands of acts executed, one visible, no path
+to the rest.)
+
+### The single-prompt constraint is current, not intended
+
+Today all of this has to fit in one prompt, because that is what these LLMs accept. That
+is a property of the serving interface we intend to fix, NOT a property of the design — so
+nothing here should encode "one prompt" as an assumption. Handles are what make the
+eventual fix cheap: when a mind can hold a persistent, incrementally-updated working set
+instead of being re-rendered whole each turn, the projection layer does not change at all.
+Only the renderer does.
+
+Which is the test for any future work in this area: if it would have to be redesigned when
+the one-prompt constraint lifts, it is encoding the constraint instead of the intent.
+
 ## Build order
 
 1. **Reconcile the two handle models** (task #17) — `runtime::cell_shapes::HandleRef` and
