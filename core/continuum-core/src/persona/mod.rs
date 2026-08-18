@@ -30,6 +30,7 @@ pub mod active_work_source;
 pub mod airc_runtime_registry;
 pub mod airc_source;
 pub mod allocator;
+pub mod base_model_policy;
 pub mod cached_source;
 pub mod card;
 pub mod card_holder;
