@@ -377,8 +377,14 @@ pub(crate) async fn run_env(
 /// Clone the repo at `base_commit`. The commit is the whole point — a clone left at HEAD is
 /// how eight runs got scored against a tree with the fix already in it.
 pub async fn clone_at(instance: &SweInstance, repo_dir: &Path) -> Result<(), String> {
+    // A stale tree here is not "probably fine" — it is the tree the score comes from. Removal
+    // failing used to be SWALLOWED (`let _ =`), and the clone below then died on git's own
+    // "destination path already exists and is not an empty directory", which reads like a
+    // harness bug rather than a filesystem one. Say which it is.
     if repo_dir.exists() {
-        let _ = std::fs::remove_dir_all(repo_dir);
+        std::fs::remove_dir_all(repo_dir).map_err(|e| {
+            format!("could not clear the stale grade tree {}: {e}", repo_dir.display())
+        })?;
     }
     // The PARENT must exist first. `git clone` creates its target directory but not the chain
     // above it, and the failure surfaces late and cryptically — as a mid-fetch "unable to write
@@ -429,6 +435,26 @@ pub async fn clone_at(instance: &SweInstance, repo_dir: &Path) -> Result<(), Str
         }
     }
 
+    // Clone into a STAGING path and move it into place, never straight into `repo_dir`.
+    //
+    // `git clone` refuses any destination that is not empty, and on macOS `repo_dir` does not
+    // stay empty on its own: Finder / Spotlight drop a `.DS_Store` into a directory the instant
+    // they notice it. Measured 2026-08-17 — a re-grade of astropy-14995 failed with
+    // "destination path already exists and is not an empty directory" against a directory whose
+    // ONLY content was a `.DS_Store` stamped AFTER the remove above. The window between
+    // remove and clone was enough. A grade voided by an OS indexer is indistinguishable, from
+    // the receipt, from a grade voided by the harness — so close the window instead of
+    // widening the diagnosis. Staging + rename also means a half-fetched tree is never
+    // visible at `repo_dir`: the move is the commit point.
+    let staging = repo_dir.with_extension(format!(
+        "cloning-{}",
+        std::process::id()
+    ));
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging).map_err(|e| {
+            format!("could not clear the stale staging tree {}: {e}", staging.display())
+        })?;
+    }
     let out = run(
         "git",
         &[
@@ -436,18 +462,33 @@ pub async fn clone_at(instance: &SweInstance, repo_dir: &Path) -> Result<(), Str
             "--quiet",
             "--shared",
             &mirror.to_string_lossy(),
-            &repo_dir.to_string_lossy(),
+            &staging.to_string_lossy(),
         ],
         None,
     )
     .await?;
     if !out.status.success() {
+        let _ = std::fs::remove_dir_all(&staging);
         return Err(format!(
             "clone of {} from its local mirror failed: {}",
             instance.repo,
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
+    // Anything that reappeared at the destination while we fetched (see above) loses to the
+    // tree we just built.
+    if repo_dir.exists() {
+        std::fs::remove_dir_all(repo_dir).map_err(|e| {
+            format!("could not clear {} before staging the fresh clone: {e}", repo_dir.display())
+        })?;
+    }
+    std::fs::rename(&staging, repo_dir).map_err(|e| {
+        format!(
+            "could not move the fresh clone {} into place at {}: {e}",
+            staging.display(),
+            repo_dir.display()
+        )
+    })?;
     let out = run(
         "git",
         &["checkout", "--quiet", &instance.base_commit],
