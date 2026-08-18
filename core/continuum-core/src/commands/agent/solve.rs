@@ -907,14 +907,15 @@ impl ActionCommand for AgentSolve {
 
 /// Result file for a detached solve run, polled after the ack (mirrors the eval/competition
 /// progress-ledger convention: `~/.continuum/progress/agent-solve-<run_id>.json`).
+///
+/// Both the directory and the file name come from `cognition::swe_bench`, which is also where
+/// the boot reaper and the reboot guard READ them. They were spelled out independently here
+/// until 2026-08-18 and the names did not match, so neither reader ever saw a run this writer
+/// produced ([`crate::cognition::swe_bench::SOLVE_LEDGER_PREFIX`] carries the measurement).
 fn agent_solve_ledger_path(run_id: &str) -> Option<std::path::PathBuf> {
-    let base = std::env::var("CONTINUUM_HOME")
-        .map(std::path::PathBuf::from)
-        .ok()
-        .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))?;
-    let dir = base.join("progress");
+    let dir = crate::cognition::swe_bench::solve_ledger_dir();
     let _ = std::fs::create_dir_all(&dir);
-    Some(dir.join(format!("agent-solve-{run_id}.json")))
+    Some(crate::cognition::swe_bench::solve_ledger_path(&dir, run_id))
 }
 
 /// Where THIS run's artifacts live — the patch above all. One definition, so a run's

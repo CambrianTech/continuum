@@ -3147,18 +3147,13 @@ pub(crate) fn scan_run_cards(
     let entries = std::fs::read_dir(&base).map_err(|e| format!("read {}: {e}", base.display()))?;
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        let Some(run_id) = name
-            .strip_prefix("agent-solve-")
-            .and_then(|r| r.strip_suffix(".json"))
-        else {
+        // Grade files are read as SIBLINGS of their run below, never enumerated as runs
+        // (live first use showed `X.grade` phantoms). That rule and the prefix now live in
+        // ONE place with the boot reaper and the reboot guard, which is what stops the
+        // board and the reaper disagreeing about what a run ledger is called.
+        let Some(run_id) = crate::cognition::swe_bench::solve_run_id_from_file_name(&name) else {
             continue;
         };
-        // Grade files are read as SIBLINGS of their run below, never
-        // enumerated as runs (live first use showed `X.grade` phantoms:
-        // `agent-solve-X.grade.json` survives the prefix/suffix strip).
-        if run_id.ends_with(".grade") {
-            continue;
-        }
         if let Some(want) = run_id_filter {
             if want != run_id {
                 continue;

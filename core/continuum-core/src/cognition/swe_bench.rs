@@ -123,9 +123,69 @@ pub struct SweVerdict {
 
 /// Where a detached benchmark run journals its state. One file per run, rewritten in place:
 /// `state: "running"` at dispatch, then the verdict — or a killed-by-reboot marker.
+///
+/// Honours `CONTINUUM_HOME` the same way every other progress-ledger reader does
+/// (`benchmark::continuum_home`). It did not until 2026-08-18, which made this the SECOND
+/// way to spell the ledger root — and a reader that resolves a directory differently from
+/// the writer reports a self-consistent lie about an empty dir, the same failure shape the
+/// `swe_cache_dir` doc records for env coverage.
 pub fn solve_ledger_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(home).join(".continuum").join("progress")
+    crate::commands::benchmark::continuum_home()
+        .unwrap_or_else(|_| {
+            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())).join(".continuum")
+        })
+        .join("progress")
+}
+
+/// The ONE filename prefix a detached solve run's ledger carries: `agent-solve-<run_id>.json`,
+/// with its verdict alongside as `agent-solve-<run_id>.grade.json`.
+///
+/// # Why this is a constant and not spelled out per call site (2026-08-18)
+///
+/// It was spelled out per call site, and the two spellings did not match. `agent/solve`
+/// wrote `agent-solve-*` (`agent_solve_ledger_path`, the only production writer); the reaper
+/// and the reboot guard below read `swe-solve-*`, a name NOTHING in the tree has ever
+/// written. Measured on this box the day it was found: **506 `agent-solve-*` ledgers, 19 of
+/// them still marked `running` — the oldest 162 hours old — against 32 legacy `swe-solve-*`
+/// files, 0 running.** So neither half of the mechanism had ever engaged on a real run:
+///
+/// - [`reap_orphaned_solve_runs_in`] had never reaped a production run, so 19 orphans sat
+///   frozen as `running` instead of becoming honest FAILED records — the exact silent-death
+///   hole its own doc says it exists to close.
+/// - [`in_flight_solve_runs_in`] answered "nothing is in flight" to the reboot guard while
+///   19 runs were marked otherwise, so `continuum reboot` would have destroyed live work
+///   without naming it. A guard that cannot see is worse than no guard: it reports safety.
+///
+/// A unit test even pinned the mismatch as intent — it wrote `agent-solve-other.json` and
+/// asserted it stayed untouched as "another subsystem's ledger". There is no other
+/// subsystem; that WAS the production ledger.
+/// [[the-same-bug-at-two-sites-is-a-missing-constraint-not-two-bugs]]
+pub const SOLVE_LEDGER_PREFIX: &str = "agent-solve-";
+
+/// The run id a ledger file name carries, or `None` if it is not a run ledger.
+///
+/// Rejects `agent-solve-<id>.grade.json`: a grade is read as a SIBLING of its run, never
+/// enumerated as one. Without that check the prefix/suffix strip yields a phantom run whose
+/// id ends in `.grade` — the live first-use bug `scan_run_cards` already carried a guard for,
+/// now shared rather than re-derived.
+pub fn solve_run_id_from_file_name(name: &str) -> Option<&str> {
+    let run_id = name
+        .strip_prefix(SOLVE_LEDGER_PREFIX)?
+        .strip_suffix(".json")?;
+    if run_id.is_empty() || run_id.ends_with(".grade") {
+        return None;
+    }
+    Some(run_id)
+}
+
+/// This run's ledger file. The one path builder, so writer and reader cannot drift again.
+pub fn solve_ledger_path(dir: &Path, run_id: &str) -> PathBuf {
+    dir.join(format!("{SOLVE_LEDGER_PREFIX}{run_id}.json"))
+}
+
+/// This run's verdict file, alongside its ledger.
+pub fn solve_grade_path(dir: &Path, run_id: &str) -> PathBuf {
+    dir.join(format!("{SOLVE_LEDGER_PREFIX}{run_id}.grade.json"))
 }
 
 /// Runs this ledger dir believes are IN FLIGHT — written at dispatch, not yet resolved.
@@ -143,9 +203,10 @@ pub fn in_flight_solve_runs_in(dir: &Path) -> Vec<(String, String)> {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if !name.starts_with("swe-solve-") || !name.ends_with(".json") {
+        let Some(run_id) = solve_run_id_from_file_name(name) else {
             continue;
-        }
+        };
+        let run_id = run_id.to_string();
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
@@ -155,10 +216,6 @@ pub fn in_flight_solve_runs_in(dir: &Path) -> Vec<(String, String)> {
         if v.get("state").and_then(|s| s.as_str()) != Some("running") {
             continue;
         }
-        let run_id = name
-            .trim_start_matches("swe-solve-")
-            .trim_end_matches(".json")
-            .to_string();
         let instance = v
             .get("instance")
             .and_then(|i| i.as_str())
@@ -183,18 +240,42 @@ pub fn in_flight_solve_runs() -> Vec<(String, String)> {
 /// hour ago" when the evidence for both is an absent file — the same shape as #137's 41 train
 /// jobs submitted with zero outcomes recorded. The marker at dispatch is what makes the death
 /// observable; this reap is what makes it honest.
+/// The reap MERGES the death into the existing ledger rather than replacing it, because the
+/// ledger is the only pointer to what the dead run LEFT BEHIND.
+///
+/// A live `running` record carries `workspace` — the absolute path of the checkout her hands
+/// edited — alongside `instance`, `persona_id` and `acts`. Overwriting it with a bare marker
+/// (which this did until 2026-08-18) turns a gradeable orphan into an unlocatable one: the
+/// patch is still on disk, and nothing on the board can say where. That is the same class of
+/// harm as reaping a finished verdict, and the reason the existing keys are preserved here
+/// and only the failure fields are added.
 pub fn reap_orphaned_solve_runs_in(dir: &Path) -> Vec<String> {
     let mut reaped = Vec::new();
     for (run_id, instance) in in_flight_solve_runs_in(dir) {
-        let path = dir.join(format!("swe-solve-{run_id}.json"));
-        let marker = serde_json::json!({
-            "failed": true,
-            "runId": run_id,
-            "instance": instance,
-            "error": "killed by a core restart — the run was in flight when the core that owned \
-                      it went away. Nothing was scored; re-dispatch to measure this instance.",
-        });
-        if std::fs::write(&path, marker.to_string()).is_ok() {
+        let path = solve_ledger_path(dir, &run_id);
+        // Start from what the run itself journaled; the death is an ANNOTATION on that
+        // record, never a replacement for it.
+        let mut record = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .filter(|v| v.is_object())
+            .unwrap_or_else(|| serde_json::json!({}));
+        let obj = record.as_object_mut().expect("filtered to an object above");
+        obj.insert("failed".into(), serde_json::Value::Bool(true));
+        // `state` is what `in_flight_solve_runs_in` keys on. Clearing it off `running` is
+        // what makes the reap idempotent — a second boot must not re-reap.
+        obj.insert("state".into(), serde_json::Value::String("failed".into()));
+        obj.insert("runId".into(), serde_json::Value::String(run_id.clone()));
+        obj.insert("instance".into(), serde_json::Value::String(instance));
+        obj.insert(
+            "error".into(),
+            serde_json::Value::String(
+                "killed by a core restart — the run was in flight when the core that owned it \
+                 went away. Nothing was scored; re-dispatch to measure this instance."
+                    .into(),
+            ),
+        );
+        if std::fs::write(&path, record.to_string()).is_ok() {
             reaped.push(run_id);
         }
     }
@@ -2732,20 +2813,28 @@ diff --git a/sympy/solvers/tests/test_other.py b/sympy/solvers/tests/test_other.
     fn a_run_still_marked_running_at_boot_is_journaled_as_killed() {
         let dir = tempfile::tempdir().expect("tmp");
         let p = dir.path();
+        // The name `agent/solve` ACTUALLY writes. This test used to spell it
+        // `swe-solve-*` — a name nothing in the tree has ever written — and asserted that
+        // an `agent-solve-*` file was "another subsystem's ledger" left untouched. There is
+        // no other subsystem: that WAS production, so both the reaper and the reboot guard
+        // were green here and dead in the field (see SOLVE_LEDGER_PREFIX for the 19-orphan
+        // measurement). A fixture that names the file differently from the writer proves
+        // nothing about the writer.
         std::fs::write(
-            p.join("swe-solve-alive.json"),
-            r#"{"state":"running","runId":"alive","instance":"sympy__sympy-22005"}"#,
+            solve_ledger_path(p, "alive"),
+            r#"{"state":"running","runId":"alive","instance":"sympy__sympy-22005",
+                "workspace":"/tmp/ws/sympy__sympy-22005","persona_id":"abc","acts":3}"#,
         )
         .unwrap();
         // A FINISHED run must survive the reap untouched — reaping a real verdict would
         // destroy the only record of a measurement that actually happened.
         std::fs::write(
-            p.join("swe-solve-done.json"),
+            solve_ledger_path(p, "done"),
             r#"{"instance":"sympy__sympy-21379","acts":7,"detached":false}"#,
         )
         .unwrap();
-        // An unrelated ledger from another subsystem is not ours to touch.
-        std::fs::write(p.join("agent-solve-other.json"), r#"{"state":"running"}"#).unwrap();
+        // A grade file is a SIBLING of its run, never a run — the `.grade` phantom.
+        std::fs::write(solve_grade_path(p, "done"), r#"{"resolved":true}"#).unwrap();
 
         assert_eq!(
             in_flight_solve_runs_in(p),
@@ -2756,7 +2845,7 @@ diff --git a/sympy/solvers/tests/test_other.py b/sympy/solvers/tests/test_other.
         let reaped = reap_orphaned_solve_runs_in(p);
         assert_eq!(reaped, vec!["alive".to_string()]);
 
-        let after = std::fs::read_to_string(p.join("swe-solve-alive.json")).unwrap();
+        let after = std::fs::read_to_string(solve_ledger_path(p, "alive")).unwrap();
         assert!(
             after.contains("\"failed\":true"),
             "the orphan is now a FAILED run: {after}"
@@ -2765,20 +2854,58 @@ diff --git a/sympy/solvers/tests/test_other.py b/sympy/solvers/tests/test_other.
             after.contains("killed by a core restart"),
             "and it names the cause rather than leaving a bare zero: {after}"
         );
-        let done = std::fs::read_to_string(p.join("swe-solve-done.json")).unwrap();
+        // The reap ANNOTATES; it must not erase where the dead run left its patch. Without
+        // this the orphan becomes ungradeable — the artifact is on disk and nothing can say
+        // where.
+        assert!(
+            after.contains("/tmp/ws/sympy__sympy-22005"),
+            "the workspace pointer survives the reap: {after}"
+        );
+        assert!(
+            after.contains("\"acts\":3"),
+            "and so does what the run had journaled about itself: {after}"
+        );
+
+        let done = std::fs::read_to_string(solve_ledger_path(p, "done")).unwrap();
         assert!(
             done.contains("\"acts\":7"),
             "a finished verdict is never rewritten"
         );
-        let other = std::fs::read_to_string(p.join("agent-solve-other.json")).unwrap();
+        let grade = std::fs::read_to_string(solve_grade_path(p, "done")).unwrap();
         assert!(
-            !other.contains("failed"),
-            "another subsystem's ledger is untouched"
+            grade.contains("\"resolved\":true"),
+            "a grade sibling is never enumerated as a run, so never reaped"
         );
 
         assert!(
             in_flight_solve_runs_in(p).is_empty(),
             "after the reap nothing is in flight — a second boot must not re-reap"
+        );
+    }
+
+    // what this catches: the run-id parse must accept the name the writer emits and reject
+    // the grade sibling. Both halves were re-derived per call site before 2026-08-18, and
+    // the two spellings diverged (`swe-solve-` vs `agent-solve-`), which silently disarmed
+    // the boot reaper AND the reboot guard for every production run.
+    #[test]
+    fn a_ledger_file_name_yields_its_run_id_and_a_grade_sibling_yields_none() {
+        assert_eq!(
+            solve_run_id_from_file_name("agent-solve-claim-912427a1.json"),
+            Some("claim-912427a1")
+        );
+        assert_eq!(
+            solve_run_id_from_file_name("agent-solve-claim-912427a1.grade.json"),
+            None,
+            "a grade is read as a sibling, never enumerated as a run"
+        );
+        assert_eq!(solve_run_id_from_file_name("agent-solve-.json"), None);
+        assert_eq!(solve_run_id_from_file_name("swe-solve-legacy.json"), None);
+        assert_eq!(solve_run_id_from_file_name("competition-abc.json"), None);
+        // The writer and the reader must agree by construction, not by memory.
+        let path = solve_ledger_path(std::path::Path::new("/x"), "r1");
+        assert_eq!(
+            solve_run_id_from_file_name(path.file_name().unwrap().to_str().unwrap()),
+            Some("r1")
         );
     }
 
