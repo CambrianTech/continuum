@@ -460,6 +460,47 @@ impl PersonaAircRuntimeRegistry {
         loop_slot.as_ref().map(|h| h.is_finished())
     }
 
+    /// Is this citizen RESIDENT — a live service loop, i.e. actually in the room?
+    ///
+    /// Registration is not residency, and conflating them is what makes every
+    /// caller downstream lie. A citizen is registered the moment her identity is
+    /// minted or resumed; she is RESIDENT only once the supervisor attached a
+    /// service loop, which is what primes her perception stream and gives her a
+    /// turn, an idle tick, and a view of her own board.
+    ///
+    /// Measured 2026-08-18, and this is why the distinction exists: for ~15
+    /// minutes after a reboot `persona/instances/list` and `persona/roster` both
+    /// listed Atlas and Benchy while `persona.inbound.subscribe_opened` was 0 —
+    /// hosting was (correctly) parked waiting for the serving lane to prove it
+    /// could decode, because attaching a citizen to a lane that answers /health
+    /// 200 while every generation 500s makes each turn fail silently (#363). A
+    /// round was dispatched into that window: cards posted, `kickoffs: 2`,
+    /// `kickoff_errors: []`, ZERO turns. Nobody was home and every surface said
+    /// otherwise.
+    ///
+    /// `Some(false)` (loop attached, still running) is the ONLY resident state.
+    /// `None` = never attached. `Some(true)` = the loop finished and she is no
+    /// longer serving. Both are "not in the room", and callers must be able to
+    /// tell the difference between that and "here and working".
+    pub async fn is_resident(&self, persona_id: Uuid) -> bool {
+        resident_from_loop_state(self.is_service_loop_finished(persona_id).await)
+    }
+
+    /// Every RESIDENT citizen as `(agent_name, peer_id)`, name-sorted like
+    /// [`Self::roster_snapshot`] — the honest roster. A caller staging work
+    /// resolves against THIS, never against registration.
+    pub async fn resident_snapshot(&self) -> Vec<(String, Uuid)> {
+        let mut out = Vec::new();
+        for (name, peer) in self.roster_snapshot() {
+            // roster_snapshot keys on the airc peer_id, which IS the persona id
+            // used by the service-loop slot (one identity, one slot).
+            if self.is_resident(peer).await {
+                out.push((name, peer));
+            }
+        }
+        out
+    }
+
     /// Orderly shutdown of one persona's slot:
     /// 1. Take the service-loop JoinHandle out of the slot.
     /// 2. `.abort()` it and await its drain (yielding `ServeOutcome`
@@ -541,9 +582,46 @@ impl PersonaAircRuntimeRegistry {
     }
 }
 
+/// The residency truth table, as a pure function of the service-loop state so it can be
+/// pinned by a unit test — a live `PersonaAircRuntime` needs a real airc daemon, so the
+/// registry-level path is not constructible in tests (see `clone_shares_roster`).
+///
+/// | loop state    | meaning                          | resident |
+/// |---------------|----------------------------------|----------|
+/// | `None`        | registered, no loop ever attached| **no**   |
+/// | `Some(true)`  | loop attached, and it FINISHED   | **no**   |
+/// | `Some(false)` | loop attached and still running  | **yes**  |
+///
+/// `None` is the row that ate a benchmark round: registration alone made every readiness
+/// surface report a citizen who had no perception stream. See [`PersonaAircRuntimeRegistry::is_resident`].
+pub(crate) fn resident_from_loop_state(loop_finished: Option<bool>) -> bool {
+    matches!(loop_finished, Some(false))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: registration is not residency. `None` (in the registry, no service
+    // loop) and `Some(true)` (loop attached but finished) must BOTH read as not-resident —
+    // only a live loop counts. Collapsing `None` into "resident" is the 2026-08-18 defect
+    // that let benchmark/dispatch stage a full round into an empty room and report
+    // kickoffs: 2, kickoff_errors: [], zero turns.
+    #[test]
+    fn only_a_live_service_loop_counts_as_resident() {
+        assert!(
+            !resident_from_loop_state(None),
+            "registered with no loop is NOT in the room"
+        );
+        assert!(
+            !resident_from_loop_state(Some(true)),
+            "a FINISHED loop is not in the room either"
+        );
+        assert!(
+            resident_from_loop_state(Some(false)),
+            "loop attached and running — she can take a turn"
+        );
+    }
 
     #[test]
     fn new_registry_is_empty() {

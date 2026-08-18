@@ -817,20 +817,20 @@ pub struct BenchmarkDispatch {
 }
 
 /// Resolve the citizens a directed dispatch addresses — GENERALIZED for any repo user's
-/// roster, never our specific names. Pure over the live snapshot so it is unit-testable
+/// roster, never our specific names. Pure over the snapshots so it is unit-testable
 /// without a running airc daemon (a real `PersonaSlot` needs one); the wrapper in `run`
-/// just feeds `registry.roster_snapshot()` in.
+/// feeds `registry.resident_snapshot()` and `registry.roster_snapshot()` in.
 ///
-/// - `requested` empty → the WHOLE live roster (whoever THIS machine spawned). This is the
-///   "dispatch to my citizens, whoever they are" default: a fresh clone runs
-///   `benchmark/dispatch --name=…` with no `--assignees` and it targets their own online
+/// - `requested` empty → the WHOLE RESIDENT roster (whoever THIS machine has in the room).
+///   This is the "dispatch to my citizens, whoever they are" default: a fresh clone runs
+///   `benchmark/dispatch --name=…` with no `--assignees` and it targets their own resident
 ///   citizens. Directed dispatch is what actuates (a silent card does not — measured
-///   2026-08-07), so defaulting to the live roster keeps the loop autonomous everywhere.
-/// - `requested` non-empty → every name MUST resolve to a live citizen; an unknown name
-///   FAILS LOUD listing who is online (never silently addresses a ghost that never claims,
-///   and never silently skips SWE staging). Order is preserved for a stable round-robin.
-/// - roster empty → `Denied` (nobody online — `persona/spawn` first; the fix is a citizen,
-///   not an invented identity).
+///   2026-08-07), so defaulting to the resident roster keeps the loop autonomous everywhere.
+/// - `requested` non-empty → every name MUST resolve to a RESIDENT citizen; anything else
+///   FAILS LOUD listing who is resident (never silently addresses a citizen who cannot
+///   hear, and never silently skips SWE staging). Order is preserved for round-robin.
+/// - nobody resident → `Denied`, and the message distinguishes "not spawned" (fix:
+///   `persona/spawn`) from "spawned but not hosted yet" (fix: wait — see below).
 /// Seconds since the epoch — the only impurity `default_run_room_name` needs, kept out
 /// of it so the name itself is a pure function with a real unit test.
 fn epoch_secs() -> u64 {
@@ -866,16 +866,40 @@ fn default_run_room_name(benchmark: &str, epoch_secs: u64) -> String {
     format!("bench-{slug}-{epoch_secs}")
 }
 
+/// `live` is the RESIDENT snapshot (service loop attached and running), NOT the registered
+/// roster — `registered` is passed alongside it purely so a refusal can tell the operator
+/// WHICH of the two states they are in. That distinction is the whole point:
+///
+/// - registered ∧ ¬resident → she exists but has no perception stream. Hosting is waiting
+///   on something (usually a serving lane proving it can decode, #363). Work staged now is
+///   posted into an empty room and never worked.
+/// - ¬registered → nobody spawned her. The fix is `persona/spawn`, a different action.
+///
+/// Measured 2026-08-18: dispatching against the REGISTERED roster in the first state
+/// reported `dispatched: 2, kickoffs: 2, kickoff_errors: []` and produced zero turns.
 fn resolve_dispatch_roster(
     live: &[(String, uuid::Uuid)],
+    registered: &[(String, uuid::Uuid)],
     requested: &[String],
 ) -> Result<Vec<(String, uuid::Uuid)>, CommandError> {
     if live.is_empty() {
-        return Err(CommandError::Denied(
-            "no citizens are online to work the cards — spawn a persona (persona/spawn) \
-             first, then dispatch."
-                .to_string(),
-        ));
+        if registered.is_empty() {
+            return Err(CommandError::Denied(
+                "no citizens are online to work the cards — spawn a persona (persona/spawn) \
+                 first, then dispatch."
+                    .to_string(),
+            ));
+        }
+        let names: Vec<&str> = registered.iter().map(|(n, _)| n.as_str()).collect();
+        return Err(CommandError::Denied(format!(
+            "citizen(s) [{}] are registered but NOT RESIDENT — no service loop, so no \
+             perception stream, so nothing dispatched here would be heard. Hosting is \
+             normally waiting on the serving lane to prove it can decode; watch \
+             `inference.lane_relaunch_retry` and `persona.inbound.subscribe_opened`, and \
+             re-dispatch once `persona/roster` reports resident_count > 0. Staging a round \
+             into this window posts cards nobody can see.",
+            names.join(", "),
+        )));
     }
     if requested.is_empty() {
         return Ok(live.to_vec());
@@ -890,11 +914,30 @@ fn resolve_dispatch_roster(
     }
     if !unknown.is_empty() {
         let online: Vec<&str> = live.iter().map(|(n, _)| n.as_str()).collect();
+        // Name the registered-but-not-resident case separately: "not online" reads as a
+        // typo, and sending an operator hunting for a misspelling when the real answer is
+        // "she is here but not hosted yet" is the same lie in a smaller box.
+        let not_resident: Vec<&str> = unknown
+            .iter()
+            .filter(|n| registered.iter().any(|(r, _)| r == *n))
+            .map(|s| s.as_str())
+            .collect();
+        let residency_note = if not_resident.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " NOTE: [{}] are registered but not resident — they exist, they just have \
+                 no service loop yet (hosting is likely waiting on a serving lane). That \
+                 is a wait, not a typo.",
+                not_resident.join(", ")
+            )
+        };
         return Err(CommandError::Invalid(format!(
-            "assignee(s) not online: {}. Citizens currently online: [{}]. Pass names from \
-             that list, or omit --assignees to dispatch to all of them.",
+            "assignee(s) not resident: {}. Citizens resident right now: [{}]. Pass names \
+             from that list, or omit --assignees to dispatch to all of them.{}",
             unknown.join(", "),
             online.join(", "),
+            residency_note,
         )));
     }
     Ok(resolved)
@@ -1053,26 +1096,35 @@ impl ActionCommand for BenchmarkDispatch {
                     .to_string(),
             ));
         }
-        // #442 (roster half) + #412: a dispatch fired inside the post-boot resume window
-        // used to find an EMPTY roster and refuse instantly — so the operator hand-rolled
-        // a sleep-loop around dispatch (run by hand twice on 2026-08-17; a runbook line
-        // is a design defect). The serving half of #442 already parks
-        // (`await_ready_serving` below); the roster half now parks the same way: wait
-        // ONLY while the roster is EMPTY (citizens are still being re-hosted), bounded.
-        // An unknown NAME against a LIVE roster still fails fast — that error means a
+        // #442 (roster half) + #412 + #455: a dispatch fired inside the post-boot resume
+        // window used to find an EMPTY roster and refuse instantly — so the operator
+        // hand-rolled a sleep-loop around dispatch (run by hand twice on 2026-08-17; a
+        // runbook line is a design defect). The serving half of #442 already parks
+        // (`await_ready_serving` below); the roster half parks the same way, bounded.
+        //
+        // #455 is what this loop keys on NOW: RESIDENCY, not registration. Waiting for the
+        // roster to be non-empty released the wait ~10 minutes too early (#412) — citizens
+        // are registered, presence-pumping and renewing claims long before the supervisor
+        // attaches a service loop, so the old condition cleared while nobody could hear a
+        // thing. Measured 2026-08-18: roster listed 2, `subscribe_opened` was 0, a whole
+        // round went onto the board and produced zero turns.
+        //
+        // An unknown NAME against a RESIDENT roster still fails fast — that error means a
         // typo, never a resume in progress.
         const ROSTER_RESUME_WAIT: std::time::Duration = std::time::Duration::from_secs(180);
         const ROSTER_RESUME_POLL: std::time::Duration = std::time::Duration::from_secs(5);
         let wait_started = std::time::Instant::now();
-        while self.registry.roster_snapshot().is_empty()
-            && wait_started.elapsed() < ROSTER_RESUME_WAIT
-        {
+        let mut resident = self.registry.resident_snapshot().await;
+        while resident.is_empty() && wait_started.elapsed() < ROSTER_RESUME_WAIT {
             tracing::info!(
                 waited_s = wait_started.elapsed().as_secs(),
-                "dispatch: roster is empty (post-boot resume window, #412) — waiting for \
-                 citizens to be hosted rather than refusing"
+                registered = self.registry.roster_snapshot().len(),
+                probe_class = "benchmark.dispatch.awaiting_residency",
+                "dispatch: no RESIDENT citizen yet (registered != in the room, #412/#455) \
+                 — waiting for a service loop rather than staging into an empty room"
             );
             tokio::time::sleep(ROSTER_RESUME_POLL).await;
+            resident = self.registry.resident_snapshot().await;
         }
 
         // Resolve the dispatch roster against THIS machine's live citizens (never our
@@ -1083,7 +1135,8 @@ impl ActionCommand for BenchmarkDispatch {
         // Resolved BEFORE the room exists because the roster decides WHO gets moved into
         // it: a run room nobody is standing in is the other half of the bug this verb is
         // fixing ("old rooms flooded, or ones with nothing").
-        let roster = resolve_dispatch_roster(&self.registry.roster_snapshot(), &requested)?;
+        let roster =
+            resolve_dispatch_roster(&resident, &self.registry.roster_snapshot(), &requested)?;
 
         // Repo hint, read from the board the curator is standing in RIGHT NOW — before we
         // move her, and ONLY when the caller named no repo. The run room is fresh, so its
@@ -1605,6 +1658,92 @@ crate::register_command!(BenchmarkDispatch);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn citizen(name: &str) -> (String, uuid::Uuid) {
+        (
+            name.to_string(),
+            uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, name.as_bytes()),
+        )
+    }
+
+    // what this catches: THE round-killer of 2026-08-18. Citizens registered but not yet
+    // hosted made every readiness surface report a ready roster, and dispatch staged a full
+    // round into a room where nobody had a perception stream — `dispatched: 2, kickoffs: 2,
+    // kickoff_errors: []`, zero turns. Resolving against RESIDENCY must refuse instead, and
+    // the refusal must say WHICH state this is, because the two have opposite fixes:
+    // registered-but-not-resident is a WAIT, unregistered is `persona/spawn`.
+    #[test]
+    fn registered_but_not_resident_refuses_and_names_the_wait() {
+        let registered = vec![citizen("Atlas"), citizen("Benchy")];
+        let err = resolve_dispatch_roster(&[], &registered, &[]).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            matches!(err, CommandError::Denied(_)),
+            "staging into an empty room is denied, not a soft warning: {msg}"
+        );
+        assert!(
+            msg.contains("Atlas") && msg.contains("Benchy"),
+            "the refusal names WHO is registered so the operator can wait on them: {msg}"
+        );
+        assert!(
+            msg.contains("NOT RESIDENT"),
+            "and says the state plainly, not 'not online' (which reads as a typo): {msg}"
+        );
+    }
+
+    // what this catches: the OTHER arm must stay distinguishable. Nobody registered at all
+    // is a different problem with a different fix — `persona/spawn`, not a wait — and
+    // collapsing the two would send an operator to wait forever for a citizen who was
+    // never born.
+    #[test]
+    fn nobody_registered_at_all_points_at_spawn_not_at_waiting() {
+        let err = resolve_dispatch_roster(&[], &[], &[]).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(msg.contains("persona/spawn"), "names the actual fix: {msg}");
+        assert!(
+            !msg.contains("NOT RESIDENT"),
+            "must NOT claim a residency wait when there is nobody to wait for: {msg}"
+        );
+    }
+
+    // what this catches: a named assignee who is registered but not resident must not be
+    // reported as a typo. "not online" against a name the operator can see in
+    // `persona/roster` sends them hunting for a misspelling that does not exist — the same
+    // lie as the round-level one, in a smaller box.
+    #[test]
+    fn a_named_assignee_who_is_not_resident_is_told_apart_from_a_typo() {
+        let resident = vec![citizen("Atlas")];
+        let registered = vec![citizen("Atlas"), citizen("Benchy")];
+
+        let err =
+            resolve_dispatch_roster(&resident, &registered, &["Benchy".into()]).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("registered but not resident") && msg.contains("not a typo"),
+            "a real citizen who is merely unhosted must be named as a WAIT: {msg}"
+        );
+
+        // ...while a genuine typo still reads as one, with no residency excuse attached.
+        let err = resolve_dispatch_roster(&resident, &registered, &["Atals".into()]).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            !msg.contains("not a typo"),
+            "an unknown name gets no residency note — it IS a typo: {msg}"
+        );
+    }
+
+    // what this catches: with everyone resident, dispatch behaves exactly as before —
+    // empty request → the whole resident roster, in order. The residency gate must not
+    // narrow the happy path (the default dispatch is what actuates a round at all).
+    #[test]
+    fn all_resident_dispatches_the_whole_roster_in_order() {
+        let all = vec![citizen("Atlas"), citizen("Benchy")];
+        let got = resolve_dispatch_roster(&all, &all, &[]).unwrap();
+        assert_eq!(got, all, "empty request → everyone resident, order preserved");
+
+        let got = resolve_dispatch_roster(&all, &all, &["Benchy".into()]).unwrap();
+        assert_eq!(got, vec![citizen("Benchy")], "named assignee resolves");
+    }
 
     // what this catches: a derived run-room name that airc REFUSES. `ChannelName::new` accepts
     // only `[a-z0-9_-]`, so a benchmark named with a `/`, a `.` or a capital (`swe-bench/lite`,
