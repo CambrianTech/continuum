@@ -1254,11 +1254,88 @@ async fn serve_persona_loop_inner(
                                         .collect();
                                     if !held.is_empty() {
                                         let burst = held_work_burst(&held);
+                                        // The producer's CONTEXT half, kept before the burst is
+                                        // moved into the driver — one construction, so the
+                                        // training example records the prompt she was actually
+                                        // handed rather than a re-derived approximation of it.
+                                        let work_context = burst.clone();
                                         let work_framing =
                                             crate::cognition::workspace::TurnFraming::self_thread(
                                                 false,
                                             )
                                             .on_workspace();
+                                        // HANDS FOLLOW THE CARD (#456). Her held card may be a
+                                        // staged benchmark checkout — a real git repo under
+                                        // `workspace/swe/<instance>`. Without rooting her hands
+                                        // there she works the card by writing into her OWN
+                                        // workspace, and the grader's `git diff` on the sandbox
+                                        // scores a false ZERO: the same defect glass-boxed on
+                                        // agent/solve 2026-07-22 (2 real acts, correct file
+                                        // written, empty patch).
+                                        //
+                                        // This is the live sibling of agent/solve's re-root, and
+                                        // it is what lets a citizen work a bench card IN HER OWN
+                                        // LOOP — which is the only path where the L2 training
+                                        // producer fires, so it is also what puts benchmark
+                                        // experience into her genome instead of only her memory.
+                                        //
+                                        // The re-root is PROCESS-GLOBAL (the file engine keys on
+                                        // caller identity), so the restore below is mandatory on
+                                        // EVERY exit — #312: after a flask solve, Anwen's live
+                                        // self was still reading the exam repo hours later.
+                                        // Non-bench cards resolve to None and nothing moves.
+                                        let card_workspace =
+                                            crate::persona::staged_workspace::workspace_for_held_cards(
+                                                &ctx.identity.peer_id.as_uuid(),
+                                                held.iter().map(|c| c.title.as_str()),
+                                            );
+                                        let work_hands = match &card_workspace {
+                                            Some(ws) => {
+                                                let hands =
+                                                    crate::cognition::persona_workspace::ActingHands::of(
+                                                        &cycle,
+                                                    );
+                                                match crate::cognition::persona_workspace::root_acting_workspace(
+                                                    &cycle,
+                                                    &ws.to_string_lossy(),
+                                                    &[],
+                                                    false,
+                                                )
+                                                .await
+                                                {
+                                                    Ok(()) => {
+                                                        crate::probe!(
+                                                            class = "persona.work.hands_rooted",
+                                                            persona = %ctx.identity.agent_name,
+                                                            workspace = %ws.display(),
+                                                            cards = held.len(),
+                                                            "hands rooted at her claimed card's \
+                                                             staged workspace for this work turn"
+                                                        );
+                                                        hands
+                                                    }
+                                                    Err(e) => {
+                                                        // Fail LOUD, work anyway in her own
+                                                        // workspace: a citizen who cannot reach
+                                                        // the repo still gets her turn, and the
+                                                        // empty patch is then explained on the
+                                                        // probe stream instead of being a mystery
+                                                        // zero. No silent re-root.
+                                                        tracing::error!(
+                                                            persona = %ctx.identity.agent_name,
+                                                            workspace = %ws.display(),
+                                                            error = %e,
+                                                            "could NOT root hands at the claimed \
+                                                             card's workspace — she will work in \
+                                                             her own dir and any graded diff will \
+                                                             read EMPTY"
+                                                        );
+                                                        None
+                                                    }
+                                                }
+                                            }
+                                            None => None,
+                                        };
                                         let work = crate::cognition::act_observe::drive_to_settle(
                                             &cycle,
                                             burst,
@@ -1267,6 +1344,25 @@ async fn serve_persona_loop_inner(
                                             work_framing,
                                         )
                                         .await;
+                                        // Give her back her own hands BEFORE anything else can
+                                        // observe them — every exit path from here (Spoke, Passed,
+                                        // Acted) must leave her rooted at home (#312).
+                                        if let Some(hands) = &work_hands {
+                                            if let Err(e) =
+                                                crate::cognition::persona_workspace::restore_acting_workspace(
+                                                    hands,
+                                                )
+                                                .await
+                                            {
+                                                tracing::error!(
+                                                    persona = %ctx.identity.agent_name,
+                                                    error = %e,
+                                                    "work turn could NOT return her hands to her \
+                                                     own workspace — she is still rooted at the \
+                                                     card's repo and her live turns will act there"
+                                                );
+                                            }
+                                        }
                                         let (work_step, _) =
                                             crate::cognition::act_observe::SettleStep::from_settled(
                                                 work,
@@ -1296,6 +1392,33 @@ async fn serve_persona_loop_inner(
                                                         "work-turn report failed to send"
                                                     );
                                                 }
+                                                // L2 producer on the WORK turn (#456). This was
+                                                // missing, and it is the highest-value training
+                                                // signal the substrate produces: the reply turn
+                                                // below already feeds the producer, but the turn
+                                                // where she actually WORKS HER CLAIMED CARD did
+                                                // not — so every act of real work was invisible
+                                                // to the genome while chat was not.
+                                                //
+                                                // The (context, completion) pair here is honest:
+                                                // context = the card burst she was handed,
+                                                // completion = the report she wrote after doing
+                                                // the work. Same shape as the reply path, same
+                                                // best-effort spawn, same quality bar applied
+                                                // inside the producer.
+                                                //
+                                                // Still the LIVE path — an eval fork never
+                                                // reaches here (`drive_to_settle` is called from
+                                                // the fork, this call site is not), so the
+                                                // measurement-contamination guard the reply path
+                                                // relies on is unchanged.
+                                                crate::persona::training_producer::produce(
+                                                    ctx.identity.peer_id.as_uuid(),
+                                                    ctx.identity.agent_name.clone(),
+                                                    ctx.profile.model_id.clone(),
+                                                    work_context.clone(),
+                                                    text.clone(),
+                                                );
                                             }
                                             crate::cognition::act_observe::SettleStep::Passed => {
                                                 crate::probe!(

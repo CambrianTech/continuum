@@ -95,6 +95,7 @@ pub mod scripted_conversation;
 pub mod seed;
 pub mod self_task_generator;
 pub mod service_loop;
+pub mod staged_workspace;
 pub mod service_module;
 pub mod spawner;
 pub mod spawner_module;
