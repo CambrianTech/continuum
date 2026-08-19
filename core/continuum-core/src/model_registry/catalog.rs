@@ -1347,6 +1347,12 @@ fn model(spec: ModelSpec) -> Model {
         hf_source: spec.hf_source.map(str::to_string),
         gguf_local_path: spec.gguf_local_path.map(PathBuf::from),
         mmproj_local_path: spec.mmproj_local_path.map(PathBuf::from),
+        // Artifact SIZES, like the artifact paths above, are discovered not declared:
+        // `artifacts::resolve_model_artifacts` stamps them at registry load. Kept out
+        // of `ModelSpec` for the same reason `parameter_count` is — a hand-authored
+        // byte count is a fact that silently goes stale the moment a quant is re-pulled.
+        weights_bytes: None,
+        mmproj_bytes: None,
         chat_template: spec.chat_template.map(str::to_string),
         multi_party_strategy: spec.multi_party_strategy,
         stop_sequences: spec.stop_sequences.iter().map(|s| s.to_string()).collect(),

@@ -3431,6 +3431,8 @@ mod tests {
         use crate::model_registry::types::{Arch, MultiPartyChatStrategy};
         ServingTarget {
             model: Model {
+                weights_bytes: None,
+                mmproj_bytes: None,
                 id: id.to_string(),
                 name: None,
                 provider: "llamacpp-local".to_string(),

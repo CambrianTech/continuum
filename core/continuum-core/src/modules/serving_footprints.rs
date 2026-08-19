@@ -40,8 +40,27 @@ use tokio::sync::watch;
 use crate::inference::llama_server::ServingSnapshot;
 use crate::inference::vision_sidecar::SIDECAR_CTX;
 use crate::model_registry::live::ModelCatalog;
+use crate::model_registry::types::Model;
 use crate::resources::footprint_source::{FootprintReading, FootprintSource, Provenance};
 use crate::resources::lease::ResourceKind;
+
+/// THE residency calculation for one lane of one model — the single function every
+/// consumer of "how big would this be" calls.
+///
+/// `peak_resident_bytes` (weights + lanes × KV at the window + the concurrent-prefill
+/// compute reserve) PLUS the multimodal projector, which is a real resident term the
+/// weights alone omit: a vision lane loads the mmproj alongside the model, so counting
+/// only the GGUF under-reports it by the projector's whole size.
+///
+/// `None` — never a number — when the model cannot be sized. A caller that turns that
+/// into `0` re-creates the silent-zero defect; the two live callers both refuse instead.
+pub fn resident_bytes_for(model: &Model, window: u32, lanes: u32) -> Option<u64> {
+    let fp = crate::modules::serving_daemon::footprint_for(model)?;
+    Some(
+        fp.peak_resident_bytes(window, lanes)
+            .saturating_add(model.mmproj_bytes.unwrap_or(0)),
+    )
+}
 
 /// Which lane on the live snapshot an adapter answers for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,12 +180,9 @@ impl CatalogFootprintSource {
             .catalog
             .snapshot()
             .get(&shape.model_id)
-            .and_then(|live| crate::modules::serving_daemon::footprint_for(&live.model))
+            .and_then(|live| resident_bytes_for(&live.model, shape.window, shape.lanes))
         {
-            Some(fp) => FootprintReading::estimated(
-                ResourceKind::Vram,
-                fp.peak_resident_bytes(shape.window, shape.lanes),
-            ),
+            Some(bytes) => FootprintReading::estimated(ResourceKind::Vram, bytes),
             None => FootprintReading::unknown(ResourceKind::Vram),
         }
     }

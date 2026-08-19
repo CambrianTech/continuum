@@ -3058,8 +3058,22 @@ fn moe_host_cache_lease_inputs(
 }
 
 pub fn footprint_for(model: &Model) -> Option<ModelFootprint> {
-    let path = crate::model_registry::artifacts::resolve_gguf_for_model(model)?;
-    let weights_bytes = std::fs::metadata(&path).ok()?.len();
+    // THE ROW IS THE SOURCE OF TRUTH. `weights_bytes` is stamped once, where the GGUF
+    // path is resolved (`artifacts::hydrate_artifact_sizes`). This function runs on the
+    // governor's accounting tick, so re-`stat`ing the file per call put filesystem I/O
+    // on a hot path for a number that cannot change while the path is valid.
+    //
+    // The stat REMAINS as the fallback, and it is not dead code: rows built by hand in
+    // tests, fixtures, and any construction path that never went through the resolver
+    // carry `weights_bytes: None`. Falling back keeps those honest rather than sizing
+    // them at zero — but the fallback is the exception, not the steady state.
+    let weights_bytes = match model.weights_bytes {
+        Some(n) => n,
+        None => {
+            let path = crate::model_registry::artifacts::resolve_gguf_for_model(model)?;
+            std::fs::metadata(&path).ok()?.len()
+        }
+    };
     let mut fp = footprint_from_parts(
         &model.id,
         weights_bytes,
@@ -4029,6 +4043,8 @@ mod tests {
     fn fake_model(id: &str) -> Model {
         use crate::model_registry::types::{Arch, MultiPartyChatStrategy};
         Model {
+            weights_bytes: None,
+            mmproj_bytes: None,
             id: id.to_string(),
             name: None,
             provider: "llamacpp-local".to_string(),

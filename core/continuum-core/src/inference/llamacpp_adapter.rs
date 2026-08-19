@@ -1526,6 +1526,8 @@ mod tests {
 
     fn synthetic_llamacpp_local_model(id: &str, gguf_path: Option<PathBuf>) -> Model {
         Model {
+            weights_bytes: None,
+            mmproj_bytes: None,
             id: id.into(),
             name: None,
             provider: LLAMACPP_PROVIDER_ID.into(),
