@@ -165,7 +165,9 @@ impl LiveHostMemory {
         sys.refresh_memory();
         Self {
             total: sys.total_memory(),
-            last_known_free: AtomicU64::new(sys.available_memory()),
+            last_known_free: AtomicU64::new(
+                crate::system_resources::memory_pressure::available_from(&sys),
+            ),
         }
     }
 
@@ -177,7 +179,7 @@ impl LiveHostMemory {
     fn direct_sample(&self) -> Option<u64> {
         let mut sys = sysinfo::System::new();
         sys.refresh_memory();
-        match sys.available_memory() {
+        match crate::system_resources::memory_pressure::available_from(&sys) {
             0 => None,
             n => Some(n),
         }
