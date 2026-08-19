@@ -58,6 +58,7 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 use tokio::sync::watch;
 
+use crate::cognition::serving_plan::MIN_SERVE_CTX;
 use crate::inference::llama_server::ServingSnapshot;
 use crate::modules::serving_tier_down::{TierDownContext, TierDownPolicy};
 use crate::resources::{
@@ -204,6 +205,21 @@ impl ResourceConsumer for ServingConsumer {
             )),
             None => None,
         };
+        // A LOADING LANE STILL HOLDS BYTES. `active_ready()` is None until `/props`
+        // answers, but the weights are mmap'd from the moment the process starts. Charge
+        // them at a MINIMUM shape — one lane at the floor window — which under-states the
+        // eventual KV but names the dominant term (weights) immediately. Conservative in
+        // the safe direction: it grows to the true figure the moment readiness lands.
+        let planned = planned.or_else(|| {
+            let snap = self.serving.borrow();
+            snap.loading_model.clone().map(|id| {
+                let bytes = (self.footprint_of)(&id, MIN_SERVE_CTX, 1);
+                (
+                    bytes,
+                    format!("{id} loading — weights resident, KV not yet allocated"),
+                )
+            })
+        });
         let planned_bytes = planned.as_ref().map(|(b, _)| *b).unwrap_or(0);
 
         // THE HIGH-WATER REQUIRES A PROOF CHANNEL. `ready_verified_at_ms` is stamped the
@@ -408,6 +424,7 @@ mod tests {
     // the only lever is a full unload — the tier-down path has its own rig below.
     fn rig(active: &str, bytes: u64) -> (ServingConsumer, watch::Sender<ServingSnapshot>) {
         let (serving_tx, serving_rx) = watch::channel(ServingSnapshot {
+            loading_model: None,
             // test fixture: no live readiness was ever CONFIRMED here.
             ready_verified_at_ms: None,
             active_model: Some(active.to_string()),
@@ -473,6 +490,7 @@ mod tests {
     /// three tests against the flat rig before reading it.
     fn shape_rig(bytes_per_lane: u64) -> (ServingConsumer, watch::Sender<ServingSnapshot>) {
         let (serving_tx, serving_rx) = watch::channel(ServingSnapshot {
+            loading_model: None,
             ready_verified_at_ms: Some(1_000),
             active_model: Some("qwen3.8-27b".into()),
             ready: true,
@@ -512,6 +530,29 @@ mod tests {
             consumer.footprint().is_empty(),
             "with no way to ever prove release, we must not claim bytes we cannot give back"
         );
+    }
+
+    // what this catches: THE COLD-LOAD HOLE, measured live 2026-08-19 AFTER the
+    // high-water fix and NOT covered by it. On a first boot the consumer has no prior
+    // residency and `active_ready()` is None the whole way up, so the board read
+    // `serving 0.00 GB` while physical climbed 29.90 → 36.88 GB. The cause was upstream:
+    // the snapshot was binary, so throughout the load window it FORGOT what it was
+    // loading and the consumer had nothing to name. Now it does.
+    #[tokio::test]
+    async fn a_cold_load_charges_the_model_being_brought_up() {
+        let (consumer, serving_tx) = shape_rig(6_000_000_000);
+        serving_tx.send_modify(|s| {
+            // Cold: never ready, no prior residency, no verification stamp — exactly the
+            // first boot of a fresh install.
+            s.ready = false;
+            s.active_model = None;
+            s.ready_verified_at_ms = None;
+            s.loading_model = Some("qwen3.8-27b".into());
+        });
+        let fp = consumer.footprint();
+        assert_eq!(fp.len(), 1, "a loading lane must be attributed, not silent");
+        assert!(fp[0].bytes > 0, "the weights are resident from spawn");
+        assert!(fp[0].detail.contains("loading"));
     }
 
     // what this catches: THE MEASURED #438 COLLAPSE. Mid-reshape the board read
@@ -603,6 +644,7 @@ mod tests {
         let seen: Arc<Mutex<Option<(String, u32, u32)>>> = Arc::new(Mutex::new(None));
         let seen_w = seen.clone();
         let (serving_tx, serving_rx) = watch::channel(ServingSnapshot {
+            loading_model: None,
             // test fixture: no live readiness was ever CONFIRMED here.
             ready_verified_at_ms: None,
             active_model: Some("coder-14b".into()),
@@ -703,6 +745,7 @@ mod tests {
         watch::Receiver<Option<String>>,
     ) {
         let (serving_tx, serving_rx) = watch::channel(ServingSnapshot {
+            loading_model: None,
             // test fixture: no live readiness was ever CONFIRMED here.
             ready_verified_at_ms: None,
             active_model: Some(active.to_string()),

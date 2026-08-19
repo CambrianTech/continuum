@@ -3441,6 +3441,8 @@ fn snapshot_from_outcome(
             if served_context_window > 0 =>
         {
             ServingSnapshot {
+                // A lane with a verified window is serving, not loading.
+                loading_model: None,
                 // The claim carries the age of its evidence. Stamped HERE, at the
                 // moment the reconcile confirmed readiness — not at read time, which
                 // is what let `ready:true` survive a SIGKILLed process for as long as
@@ -3485,7 +3487,21 @@ fn snapshot_from_outcome(
         // a ready snapshot with a zero window; that would poison every binding
         // persona's budget. Publish "nothing live"; the server stays up and the
         // next reconcile re-reads /props.
-        EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. } => ServingSnapshot::empty(),
+        // LOADING. The lane is up (spawned or already serving) but `/props` has not yet
+        // given us a real window, so it is not READY. This arm used to return
+        // `ServingSnapshot::empty()` and DISCARD `desired` — throwing away the only
+        // knowledge of what is being brought up, for the whole load window. Measured on a
+        // cold boot 2026-08-19: physical climbed 29.90 → 36.88 GB while serving attributed
+        // 0.00 GB, because the consumer had nothing to name. Those bytes read as unowned,
+        // and a plan computed in that window sizes against a machine that looks two thirds
+        // full of someone else's memory.
+        //
+        // The bytes exist from spawn, not from readiness. Name the model so the consumer
+        // can charge them.
+        EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. } => ServingSnapshot {
+            loading_model: Some(desired.to_string()),
+            ..ServingSnapshot::empty()
+        },
         // A Degraded reconcile PUBLISHES its reason — the spawn/probe failure
         // (e.g. a missing llama-server binary, its path in the text) reaches
         // `serving/status` instead of dying as an anonymous empty snapshot
@@ -4644,6 +4660,7 @@ mod tests {
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
+            loading_model: None,
         });
         let budget = HostBudget {
             usable_bytes: 45 * GB,
@@ -4708,6 +4725,7 @@ mod tests {
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
+            loading_model: None,
         });
         (daemon, plan_window)
     }
@@ -4895,6 +4913,7 @@ mod tests {
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
+            loading_model: None,
         }
     }
 
@@ -5269,6 +5288,7 @@ mod tests {
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
+            loading_model: None,
         });
         // A quarter of the plan is a 300% shortfall — far past the margin — but the
         // gain must still PERSIST before it buys a relaunch (BigMama's sustained-delta
@@ -5300,6 +5320,7 @@ mod tests {
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
+            loading_model: None,
         });
         assert!(
             daemon.reconcile_to_plan().is_none(),
@@ -5330,6 +5351,7 @@ mod tests {
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
+            loading_model: None,
         });
         let budget = HostBudget {
             usable_bytes: 45 * GB,
