@@ -2192,9 +2192,60 @@ pub(crate) async fn grade_swe(p: SweGradeParams) -> Result<SweGradeResult, Comma
 
     // Resolve the candidate patch. A workspace's diff is READ here but graded in a fresh
     // clone below — where the solver worked is never where the score is taken.
+    // RESOLVE WHICH COPY, rather than trusting the caller to have picked right.
+    //
+    // The same instance is legitimately staged into MULTIPLE citizens' workspaces —
+    // dispatch round-robins over the roster. On 2026-08-18 `astropy__astropy-14995` sat in
+    // Atlas's tree (dirty: a real fix) AND Asha's (clean: staged, never worked), and an
+    // operator grade pointed at the clean one returned a confident `resolved: false` for
+    // work that existed ten directories away. Deletion was never the risk; AMBIGUITY was.
+    //
+    // So an omitted `workspace` no longer means "no candidate" — it means ASK. The answer
+    // comes from `staged_workspace`, the module that already owns "which checkout is this
+    // instance", and it refuses on ambiguity for the same reason its sibling does: grading
+    // either of two worked copies scores one citizen's diff against another's card.
+    let resolved_workspace: Option<String> = match p.workspace.clone() {
+        Some(ws) => Some(ws),
+        None if p.gold.unwrap_or(false) || p.patch.is_some() => None,
+        None => {
+            use crate::persona::staged_workspace::{grade_target, owners_of, GradeTarget};
+            let copies = owners_of(&instance.instance_id);
+            match grade_target(&copies) {
+                GradeTarget::One(path) => {
+                    crate::probe!(
+                        class = "benchmark.grade.workspace_resolved",
+                        instance = %instance.instance_id,
+                        staged_copies = copies.len(),
+                        path = %path.display(),
+                        "resolved the one WORKED staged copy — never guessed between citizens"
+                    );
+                    Some(path.to_string_lossy().to_string())
+                }
+                // No worked copy: fall through with no candidate. The empty-candidate guard
+                // below turns that into an ABSENCE, which is the honest verdict.
+                GradeTarget::NoWork => None,
+                GradeTarget::Ambiguous(paths) => {
+                    return Err(CommandError::Invalid(format!(
+                        "{} is staged with real work in {} citizens' workspaces — refusing to \
+                         guess which one this grade is about, because grading either scores one \
+                         citizen's diff against the other's card. Pass workspace=<path> \
+                         explicitly. Candidates: {}",
+                        instance.instance_id,
+                        paths.len(),
+                        paths
+                            .iter()
+                            .map(|p| p.display().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )));
+                }
+            }
+        }
+    };
+
     let candidate: Option<String> = if p.gold.unwrap_or(false) {
         Some(instance.patch.clone())
-    } else if let Some(ws) = p.workspace.as_ref() {
+    } else if let Some(ws) = resolved_workspace.as_ref() {
         Some(workspace_candidate_diff(ws)?)
     } else {
         p.patch.clone()
@@ -2294,8 +2345,10 @@ pub(crate) async fn grade_swe(p: SweGradeParams) -> Result<SweGradeResult, Comma
     // is an ABSENCE (harness fault), and teaching from a harness failure would
     // corrupt the reward signal (`an_errored_verdict_is_an_absence_not_a_zero`).
     if verdict.error.is_none() {
-        if let Some(peer_dir) = p
-            .workspace
+        // The RESOLVED workspace, not the caller's parameter: a grade that resolved the
+        // owner must teach THAT citizen, or the lesson lands on nobody (and, before
+        // resolution existed, could have landed on whoever the operator happened to name).
+        if let Some(peer_dir) = resolved_workspace
             .as_ref()
             .and_then(|ws| citizen_peer_dir_of(std::path::Path::new(ws)))
         {

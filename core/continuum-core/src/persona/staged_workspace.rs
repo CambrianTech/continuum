@@ -113,6 +113,93 @@ where
     }
 }
 
+/// One citizen's staged copy of an instance, and whether her hands actually touched it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StagedCopy {
+    pub peer: uuid::Uuid,
+    pub path: PathBuf,
+    /// The checkout carries uncommitted changes — a real candidate patch lives here.
+    pub has_work: bool,
+}
+
+/// Which citizen's copy of `instance` should be GRADED — the inverse of the per-peer
+/// question above, and the one the grade path needs.
+///
+/// # Why this exists (2026-08-18, and it nearly produced a false zero for a real pass)
+///
+/// The SAME instance is legitimately staged into more than one citizen's workspace:
+/// dispatch round-robins over the roster, so `astropy__astropy-14995` sat in BOTH Atlas's
+/// tree (dirty — a real fix, `M astropy/nddata/mixins/ndarithmetic.py`) and Asha's tree
+/// (clean — staged, never worked). Nothing at grade time said which copy was authoritative.
+/// Grading the clean one returned `patchBytes: 0, resolved: false` — a confident zero for
+/// work sitting ten directories away.
+///
+/// Deletion was never the risk; AMBIGUITY was. So the rule mirrors `resolve_for_titles`:
+/// exactly one WORKED copy resolves, and anything else refuses rather than guessing —
+/// because picking either of two worked copies scores one citizen's diff against the
+/// other's card ([[a-perception-fact-is-honesty-not-an-actuator]]: refusing is the honest
+/// outcome, and the caller names the candidates).
+pub fn owners_of(instance: &str) -> Vec<StagedCopy> {
+    let Ok(home) = crate::commands::benchmark::continuum_home() else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(home.join("citizens").join("peers")) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let Some(peer) = entry
+            .file_name()
+            .to_str()
+            .and_then(|n| uuid::Uuid::parse_str(n).ok())
+        else {
+            continue;
+        };
+        let path = entry.path().join("workspace").join("swe").join(instance);
+        if !path.join(".git").exists() {
+            continue;
+        }
+        let has_work = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&path)
+            .args(["status", "--porcelain"])
+            .output()
+            .map(|o| o.status.success() && !o.stdout.is_empty())
+            .unwrap_or(false);
+        out.push(StagedCopy {
+            peer,
+            path,
+            has_work,
+        });
+    }
+    out.sort_by(|a, b| a.peer.cmp(&b.peer));
+    out
+}
+
+/// Which staged copy to grade: the decision, with the filesystem taken out of it.
+///
+/// Split from [`owners_of`] for the same reason [`select`] is split below — the RULE is
+/// tested against a table, not against a disk fixture that re-derives it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum GradeTarget {
+    /// Exactly one copy carries work. Grade it.
+    One(PathBuf),
+    /// No copy carries work — an ABSENCE. Nothing to score; never a zero.
+    NoWork,
+    /// Two or more citizens hold worked copies. Refuse: grading either scores one
+    /// citizen's diff against the other's card.
+    Ambiguous(Vec<PathBuf>),
+}
+
+pub fn grade_target(copies: &[StagedCopy]) -> GradeTarget {
+    let worked: Vec<&StagedCopy> = copies.iter().filter(|c| c.has_work).collect();
+    match worked.as_slice() {
+        [one] => GradeTarget::One(one.path.clone()),
+        [] => GradeTarget::NoWork,
+        many => GradeTarget::Ambiguous(many.iter().map(|c| c.path.clone()).collect()),
+    }
+}
+
 /// The matching rule alone, with the filesystem taken out of it.
 ///
 /// Split from [`resolve_for_titles`] so the rule is TESTED rather than restated: the
@@ -224,5 +311,44 @@ mod tests {
     fn a_citizen_with_nothing_staged_has_no_card_workspace() {
         let peer = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, b"nothing-staged-fixture");
         assert!(workspace_for_held_cards(&peer, ["benchmark: anything"]).is_none());
+    }
+
+    fn copy(name: &str, has_work: bool) -> StagedCopy {
+        StagedCopy {
+            peer: uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, name.as_bytes()),
+            path: PathBuf::from(format!("/peers/{name}/workspace/swe/astropy__astropy-14995")),
+            has_work,
+        }
+    }
+
+    // what this catches: the false-zero generator. The SAME instance is legitimately staged
+    // into several citizens' workspaces (dispatch round-robins the roster). Measured live
+    // 2026-08-18: astropy-14995 sat in Atlas's tree DIRTY (a real fix) and Asha's tree CLEAN
+    // (staged, never worked). Grading the clean one returns resolved=false — a confident zero
+    // for work that existed ten directories away.
+    //
+    // The rule must therefore key on WORK, not on presence, and must refuse rather than pick
+    // when two citizens both worked it: grading either scores one citizen's diff against the
+    // other's card. Same posture as `select` above — ambiguity is reported, never resolved.
+    #[test]
+    fn the_worked_copy_is_graded_and_two_worked_copies_refuse() {
+        // one staged, unworked → an ABSENCE, never a zero
+        assert_eq!(grade_target(&[copy("asha", false)]), GradeTarget::NoWork);
+
+        // the live shape: two staged, exactly one worked → grade the worked one
+        let atlas = copy("atlas", true);
+        match grade_target(&[copy("asha", false), atlas.clone()]) {
+            GradeTarget::One(p) => assert_eq!(p, atlas.path, "the WORKED copy, not the first"),
+            other => panic!("expected the worked copy, got {other:?}"),
+        }
+
+        // two citizens both worked it → refuse, naming both
+        match grade_target(&[copy("atlas", true), copy("anwen", true)]) {
+            GradeTarget::Ambiguous(paths) => assert_eq!(paths.len(), 2),
+            other => panic!("two worked copies must never resolve, got {other:?}"),
+        }
+
+        // nothing staged at all → also an absence, not a panic
+        assert_eq!(grade_target(&[]), GradeTarget::NoWork);
     }
 }
