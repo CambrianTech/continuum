@@ -3407,4 +3407,67 @@ pub(crate) fn scan_run_cards(
     Ok(cards)
 }
 
+// ---------------------------------------------------------------------------
+// benchmark/rounds — the ROUND lifecycle, askable (#371)
+// ---------------------------------------------------------------------------
+
+/// No parameters. Rounds in flight are few (usually one) and each is a handful of
+/// fields, so paging and filtering would be ceremony over a list you always want whole.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/BenchmarkRoundsParams.ts"
+)]
+pub struct BenchmarkRoundsParams {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/BenchmarkRoundsResult.ts"
+)]
+pub struct BenchmarkRoundsResult {
+    /// Rounds currently in flight. EMPTY is a real, unambiguous answer — "no round is
+    /// running" — and never "the question could not be reached". A round is removed the
+    /// instant its last card settles, so a round that finished is absent by design and
+    /// its END is on the `bench.round.done` probe.
+    pub rounds: Vec<crate::cognition::bench_round::RoundSnapshot>,
+    /// How many are in flight, so a reader that only needs the yes/no does not have to
+    /// interpret an array's length.
+    pub in_flight: usize,
+}
+
+#[derive(Default)]
+pub struct BenchmarkRounds;
+
+#[async_trait]
+impl ActionCommand for BenchmarkRounds {
+    const NAME: &'static str = "benchmark/rounds";
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Every benchmark ROUND in flight, with its stage — the lifecycle question answered \
+         by a QUERY instead of by probe archaeology (#371). A round is the card set one \
+         `benchmark/dispatch` posted; its id IS its run room's id. Each row carries stage \
+         (working|done), dispatched/settled/remaining, and the work DRIVER (citizen — works \
+         in the room and feeds the curriculum — vs detached_solve). An EMPTY list is a real \
+         answer meaning no round is running, never a failure to reach the question; a round \
+         is dropped the moment its last card settles, and that END is the `bench.round.done` \
+         probe. This is what a fresh driver reads to answer 'has it started, is it stuck, is \
+         it done' with zero log reads.";
+    type Params = BenchmarkRoundsParams;
+    type Output = BenchmarkRoundsResult;
+
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        _p: BenchmarkRoundsParams,
+    ) -> Result<BenchmarkRoundsResult, CommandError> {
+        let rounds = crate::cognition::bench_round::live_rounds();
+        Ok(BenchmarkRoundsResult {
+            in_flight: rounds.len(),
+            rounds,
+        })
+    }
+}
+
 crate::register_stateless_command!(BenchmarkRuns);
+crate::register_stateless_command!(BenchmarkRounds);

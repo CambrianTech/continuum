@@ -318,6 +318,93 @@ pub fn observe_card_event(payload: &Value) {
     }
 }
 
+/// One in-flight round, as anyone may ask about it.
+///
+/// # Why this type exists (2026-08-18, and it is the acceptance test)
+///
+/// The round entity below has tracked stage, card set, and driver since it was written —
+/// and NOTHING could ask it. Transitions fired probes and the state lived in a private
+/// static, so "has the round started / is it stuck / is it done" was answerable only by
+/// probe archaeology. That is precisely the failure
+/// [ROUND-LIFECYCLE-AS-RECIPE-OWNED-STATE-MACHINE.md](../../../../docs/architecture/ROUND-LIFECYCLE-AS-RECIPE-OWNED-STATE-MACHINE.md)
+/// names in its own acceptance test:
+///
+/// > *Can a fresh driver — with no memory of this session — answer "is it ready, has it
+/// > started, is it stuck, is it done" using only queries, with zero log reads, zero probe
+/// > archaeology, and zero inference from an absence?*
+///
+/// A probe is a transition RECORD. It tells you what happened when someone was watching.
+/// It cannot answer a question asked later, which is when every question is actually asked.
+///
+/// **`settled` is reported explicitly rather than left to subtraction.** `dispatched -
+/// remaining` is the same number, and making the reader compute it is how an absence
+/// becomes a guess ([[an-absence-is-an-unfinished-measurement]]). Law 3 of the design doc:
+/// *an absence is never a state.*
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+    ts_rs::TS,
+)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/RoundSnapshot.ts"
+)]
+pub struct RoundSnapshot {
+    /// The round id — which IS its run room's id. A round is its room's activity; there is
+    /// never a second identifier ([[killing-a-derived-id-needs-a-directory-at-every-scope-boundary]]).
+    pub round_id: String,
+    pub benchmark: String,
+    /// `working` | `done`. Present here means IN FLIGHT — a completed round is removed the
+    /// instant it finishes, so `done` is only ever observed in the transition probe.
+    pub stage: String,
+    /// Cards this round dispatched.
+    pub dispatched: usize,
+    /// Cards that have reached a terminal state.
+    pub settled: usize,
+    /// Cards still working. Zero here with the round still listed would be a defect —
+    /// the settle that empties the set is what removes it.
+    pub remaining: usize,
+    /// Who works these cards: `citizen` (in the room, produces turns, feeds the curriculum)
+    /// or `detached_solve`. Decided at dispatch, read at claim time.
+    pub driver: String,
+}
+
+/// Every round this core is tracking, in a stable order.
+///
+/// Sorted by round id so two calls a second apart cannot reorder rows under a reader —
+/// a projection whose row order depends on `HashMap` iteration teaches its consumers to
+/// distrust it.
+pub fn live_rounds() -> Vec<RoundSnapshot> {
+    let rounds = ROUNDS.lock().unwrap_or_else(|e| e.into_inner());
+    let mut out: Vec<RoundSnapshot> = rounds
+        .values()
+        .map(|r| RoundSnapshot {
+            round_id: r.round_id.to_string(),
+            benchmark: r.benchmark.clone(),
+            stage: match r.stage {
+                RoundStage::Working => "working",
+                RoundStage::Done => "done",
+            }
+            .to_string(),
+            dispatched: r.dispatched(),
+            settled: r.dispatched().saturating_sub(r.remaining()),
+            remaining: r.remaining(),
+            driver: match r.driver {
+                WorkDriver::Citizen => "citizen",
+                WorkDriver::DetachedSolve => "detached_solve",
+            }
+            .to_string(),
+        })
+        .collect();
+    out.sort_by(|a, b| a.round_id.cmp(&b.round_id));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -396,6 +483,52 @@ mod tests {
         // Any further event on an already-settled card is inert — never a second Done.
         assert_eq!(r.settle_card(ids[2], "closed"), SettleOutcome::AlreadySettled);
         assert_eq!(r.stage(), RoundStage::Done);
+    }
+
+    // what this catches: the projection disagreeing with the entity it projects — a
+    // "settled" count that drifts from the round's own card map is worse than no query at
+    // all, because a driver would BELIEVE it. Also pins that progress is legible mid-round:
+    // the whole point of #371 is answering "how far along" without reading a log.
+    #[test]
+    fn a_round_in_flight_reports_its_own_progress_honestly() {
+        let round_id = Uuid::new_v4();
+        let ids = cards(3);
+        open_round(round_id, "swe-bench-lite", WorkDriver::Citizen);
+        for id in &ids {
+            add_card(round_id, *id);
+        }
+
+        let before = live_rounds();
+        let row = before
+            .iter()
+            .find(|r| r.round_id == round_id.to_string())
+            .expect("a dispatched round must be QUERYABLE — that is the whole fix");
+        assert_eq!(row.stage, "working");
+        assert_eq!((row.dispatched, row.settled, row.remaining), (3, 0, 3));
+        assert_eq!(
+            row.driver, "citizen",
+            "the driver decides whether this round teaches anybody anything — it must be readable"
+        );
+
+        // Settle one, and the projection must move WITH the entity, not lag it.
+        ROUNDS
+            .lock()
+            .unwrap()
+            .get_mut(&round_id)
+            .expect("still in flight")
+            .settle_card(ids[0], "closed");
+        let mid = live_rounds();
+        let row = mid
+            .iter()
+            .find(|r| r.round_id == round_id.to_string())
+            .expect("two of three cards are still working, so the round is still in flight");
+        assert_eq!(
+            (row.dispatched, row.settled, row.remaining),
+            (3, 1, 2),
+            "settled is reported, never left to subtraction — an absence must not become a guess"
+        );
+
+        ROUNDS.lock().unwrap().remove(&round_id);
     }
 
     // what this catches: a duplicate terminal event double-counting a card. The bridge
