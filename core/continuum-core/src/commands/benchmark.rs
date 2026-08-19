@@ -3241,6 +3241,67 @@ fn scan_workspace_artifact_cards(graded: &std::collections::HashSet<String>, now
 /// about, never silently dropped.
 const WORKSPACE_ARTIFACT_SCAN_CAP: usize = 200;
 
+/// Cards for instances that carry a DURABLE VERDICT — the third row source, and the one that
+/// makes a score visible at all.
+///
+/// # Why (2026-08-18, the last link in the grade tail)
+///
+/// Verdict persistence landed and the board still could not show a pass. Measured minutes
+/// after: `astropy__astropy-14995` graded `resolved=true, F2P 1/1, P2P 40/40`, the verdict
+/// was on disk and readable — and `benchmark/runs` reported `resolved: 1`, still counting only
+/// an old sympy row. Three rows for 14995 read `failed`, which was HONEST: those are the three
+/// solve RUNS that died at the reboot. A run and a verdict are different objects. The board
+/// projected runs and artifacts; a verdict had nowhere to appear.
+///
+/// Until this, `recorded_verdicts` only SUBTRACTED — it marked an artifact as graded so the
+/// artifact row disappeared, which made a scored instance LESS visible than an unscored one.
+/// A verdict must EMIT.
+///
+/// This is the acceptance test from
+/// [BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER](../../../docs/architecture/BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md):
+/// *can a citizen standing in the room perceive the run's state through the same ViewState
+/// pipe the human's screen uses?* A score answerable only by reading
+/// `benchmarks/swe/verdicts/*.json` is disconnected, and it failed.
+///
+/// Cheap by construction: no `git diff`, no process spawn — one small JSON read per scored
+/// instance, so this source needs no cap.
+fn scan_verdict_cards(now_ms: u64) -> Vec<BenchRunCard> {
+    swe_bench::recorded_verdicts()
+        .into_iter()
+        .map(|(instance, v)| {
+            let last_activity_ms = std::fs::metadata(swe_bench::verdict_path(&instance))
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            BenchRunCard {
+                run_id: format!("verdict:{instance}"),
+                instance: Some(instance),
+                attempt: None,
+                max_attempts: None,
+                solver: None,
+                // The verdict IS the phase. `record_verdict` refuses gold and errored
+                // verdicts, so every row here is a real capability result — never a control
+                // and never an env fault dressed as a score.
+                phase: if v.resolved { "resolved" } else { "failed" }.to_string(),
+                stalled: false,
+                last_activity_ms,
+                age_secs: now_ms.saturating_sub(last_activity_ms) / 1000,
+                acts: None,
+                files_changed: Vec::new(),
+                files_examined: Vec::new(),
+                resolved: Some(v.resolved),
+                fail_to_pass: Some(format!("{}/{}", v.f2p_passed, v.f2p_total)),
+                pass_to_pass: Some(format!("{}/{}", v.p2p_passed, v.p2p_total)),
+                patch_bytes: None,
+                failed_tests: v.failed_tests.clone(),
+                infra_error: None,
+            }
+        })
+        .collect()
+}
+
 pub(crate) fn scan_run_cards(
     run_id_filter: Option<&str>,
     limit: usize,
@@ -3315,11 +3376,12 @@ pub(crate) fn scan_run_cards(
             .filter(|c| c.resolved.is_some())
             .filter_map(|c| c.instance.clone())
             .collect();
-        graded.extend(
-            swe_bench::recorded_verdicts()
-                .into_iter()
-                .map(|(instance, _)| instance),
-        );
+        // A verdict EMITS its own row, and that row is also what marks the instance graded —
+        // so a scored instance is MORE visible than an unscored one, not less. Before this,
+        // verdicts only subtracted: the artifact row vanished and no score took its place.
+        let verdict_cards = scan_verdict_cards(now_ms);
+        graded.extend(verdict_cards.iter().filter_map(|c| c.instance.clone()));
+        cards.extend(verdict_cards);
         cards.extend(scan_workspace_artifact_cards(&graded, now_ms));
     }
     cards.sort_by(|a, b| b.last_activity_ms.cmp(&a.last_activity_ms));
