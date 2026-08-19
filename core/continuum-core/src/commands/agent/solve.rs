@@ -74,6 +74,8 @@ pub struct AgentSolveParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub room: Option<Uuid>,
+    // See `RunVisibility` below: the roomless case is now DECLARED rather than defaulted,
+    // because a silent invisible run is how 13,209 of them accumulated unnoticed (#425).
     /// Fire-and-poll (#86): when true, the solve is spawned DETACHED — `run` returns a job
     /// handle NOW (arms empty, `detached: true`) and the REAL result (patch + acts) lands in
     /// `~/.continuum/progress/agent-solve-<run_id>.json`. A real agentic drive (N full-generation
@@ -176,6 +178,68 @@ pub struct AgentSolveParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "number")]
     pub attempts: Option<u32>,
+}
+
+/// Whether this run's acts will be PERCEIVABLE, decided once and named.
+///
+/// # Why this is a type and not `p.room.unwrap_or_else(Uuid::nil)`
+///
+/// It was that `unwrap_or_else` (#425). A nil room makes `apply_act` skip receipt radiation
+/// entirely, so the run executes normally and lands in NO transcript — and nothing anywhere
+/// said so. 13,209 turns accumulated in that state (8.7% of all turns; 35% for one citizen)
+/// before anyone measured it, because an invisible run and a visible one produce identical
+/// logs. That is the same defect shape as a fetch cap that silently truncates: the system
+/// took a consequential branch and declined to mention it.
+///
+/// A roomless run is still LEGITIMATE — a bare `agent/solve` with no activity behind it has
+/// no room to radiate into, and inventing one would put receipts on a phantom (live-proven
+/// 2026-08-12, it stole the single-room chat projection). So this does not refuse. It
+/// DECLARES, so the invisibility is a stated property of the run rather than a silence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunVisibility {
+    /// Acts radiate `persona:act` receipts into this room — perceivable by a human screen
+    /// and a citizen mind through the one ViewState pipe.
+    InRoom(Uuid),
+    /// No room: the work executes and is perceived by nobody, and no curriculum-visible
+    /// room turn is produced.
+    Invisible,
+}
+
+impl RunVisibility {
+    /// The single place the room param becomes a decision.
+    pub fn resolve(room: Option<Uuid>) -> Self {
+        match room {
+            // A caller passing the nil uuid EXPLICITLY means the same thing as omitting it;
+            // treating them differently would let a nil slip through as "in room", which is
+            // exactly the silent branch this type exists to close.
+            Some(r) if !r.is_nil() => RunVisibility::InRoom(r),
+            _ => RunVisibility::Invisible,
+        }
+    }
+
+    /// The uuid the act pipeline expects — nil for the invisible case, which is the shape
+    /// `apply_act` already keys its skip on.
+    pub fn room_id(&self) -> Uuid {
+        match self {
+            RunVisibility::InRoom(r) => *r,
+            RunVisibility::Invisible => Uuid::nil(),
+        }
+    }
+
+    /// What to say when the run will be invisible. `None` when it is perceivable — a
+    /// visible run needs no announcement, and warning on the happy path trains people to
+    /// ignore the warning.
+    pub fn warning(&self) -> Option<&'static str> {
+        match self {
+            RunVisibility::InRoom(_) => None,
+            RunVisibility::Invisible => Some(
+                "this run has NO room: its acts execute but radiate no receipts, so nobody \
+                 — human or citizen — can perceive the work, and it produces no room turn. \
+                 Pass `room` (benchmark/dispatch supplies its per-run activity room) to make \
+                 the run perceivable.",
+            ),
+        }
+    }
 }
 
 /// What the caller grades when the solve returns. Two genuinely different contracts,
@@ -1250,7 +1314,20 @@ impl AgentSolve {
             // honest roomless fallback for a bare `agent/solve` with no activity
             // behind it; a DISPATCHED run always carries one, and that is what
             // turns her acts into room receipts instead of invisible work.
-            let room = p.room.unwrap_or_else(Uuid::nil);
+            let visibility = RunVisibility::resolve(p.room);
+            if let Some(why) = visibility.warning() {
+                // Announce ONCE, at the one place the branch is taken. This is the whole
+                // fix for #425's remaining half: the roomless state was never wrong, it was
+                // never SAID, and 13,209 turns went by in it.
+                crate::probe!(
+                    class = "agent.solve.roomless",
+                    run_id = %p.run_id.clone().unwrap_or_default(),
+                    persona_id = %p.persona_id,
+                    "solve run is INVISIBLE — no room, so no receipts and no room turn (#425)",
+                );
+                tracing::warn!(run_id = ?p.run_id, "agent/solve: {why}");
+            }
+            let room = visibility.room_id();
             // The workspace-grounding sentence counters the observed "new project ritual"
             // (glass-boxed 2026-07-22 via turn capture: her first act on a seeded task was
             // code/create-workspace("my_stack_project") + a Rust hello-world + git/commit —
@@ -1972,6 +2049,54 @@ fn frame_task(task: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    mod run_visibility {
+        use super::super::RunVisibility;
+        use uuid::Uuid;
+
+        // what this catches: the roomless branch going quiet again. It was
+        // `p.room.unwrap_or_else(Uuid::nil)` — a consequential branch taken in silence — and
+        // 13,209 turns (8.7% of all turns; 35% for one citizen) executed invisibly before
+        // anyone measured it, because an invisible run and a visible one log identically.
+        // The type exists so the branch has a NAME and the invisible case carries a sentence.
+        #[test]
+        fn a_roomless_run_is_declared_invisible_and_says_why() {
+            let v = RunVisibility::resolve(None);
+            assert_eq!(v, RunVisibility::Invisible);
+            assert!(v.room_id().is_nil(), "the act pipeline keys its skip on nil");
+            let why = v.warning().expect("an invisible run MUST announce itself");
+            assert!(
+                why.contains("NO room") && why.contains("perceive"),
+                "the warning must say what is lost, not just that a field was absent: {why}"
+            );
+            assert!(
+                why.contains("room"),
+                "and name the param that fixes it: {why}"
+            );
+        }
+
+        // what this catches: an EXPLICIT nil uuid slipping through as "in room". A caller
+        // passing Uuid::nil() means exactly what omitting it means; treating the two
+        // differently would reopen the silent branch through the other door.
+        #[test]
+        fn an_explicit_nil_room_is_the_same_as_no_room() {
+            assert_eq!(
+                RunVisibility::resolve(Some(Uuid::nil())),
+                RunVisibility::Invisible
+            );
+        }
+
+        // what this catches: warning on the happy path. A visible run needs no announcement,
+        // and a warning that fires every time trains everyone to ignore it.
+        #[test]
+        fn a_run_with_a_real_room_is_visible_and_stays_quiet() {
+            let room = Uuid::from_u128(7);
+            let v = RunVisibility::resolve(Some(room));
+            assert_eq!(v, RunVisibility::InRoom(room));
+            assert_eq!(v.room_id(), room, "the room must survive unchanged");
+            assert!(v.warning().is_none(), "a perceivable run must not warn");
+        }
+    }
+
     mod patch_custody {
         // what this catches: patch custody going back to being a caller courtesy. It WAS
         // one — the write sat behind `if let Some(capture_dir)` with no else — and the
