@@ -87,8 +87,16 @@ pub enum LaneClaim {
     /// This lane holds bytes of its own; size `shape` against the catalog.
     Holds(LaneShape),
     /// This holder genuinely holds nothing right now — a real zero, not a missing
-    /// answer. (Vision not ready, or provided by a lane another holder already charges.)
-    HoldsNothing,
+    /// answer — and the `&str` says WHICH zero it is.
+    ///
+    /// The reason is load-bearing, not decoration. Measured live 2026-08-19: the board
+    /// read `vision 0.00 GB` and the probe said only "holds nothing of its own", which is
+    /// true of BOTH "no vision provider is running at all" (personas are blind — a
+    /// defect) and "the main lane's own model sees, so vision costs nothing extra"
+    /// (everything is working perfectly). Those two demand opposite reactions and were
+    /// indistinguishable from the instrument. A zero without its reason is a number you
+    /// cannot act on.
+    HoldsNothing(&'static str),
     /// The lane is LIVE but its shape cannot be determined, so its size is unknown.
     /// Never zero: a live lane holding gigabytes must not read as an empty one.
     Live(&'static str),
@@ -100,7 +108,7 @@ pub enum LaneClaim {
 pub fn lane_claim(snap: &ServingSnapshot, vision: bool) -> LaneClaim {
     if !vision {
         if !snap.ready {
-            return LaneClaim::HoldsNothing;
+            return LaneClaim::HoldsNothing("no lane is serving");
         }
         return match (&snap.active_model, snap.served_context_window) {
             (Some(id), w) if w > 0 => LaneClaim::Holds(LaneShape {
@@ -114,7 +122,8 @@ pub fn lane_claim(snap: &ServingSnapshot, vision: bool) -> LaneClaim {
     }
 
     if !snap.vision_ready {
-        return LaneClaim::HoldsNothing;
+        // PERSONAS ARE BLIND. Same byte count as the happy case below, opposite meaning.
+        return LaneClaim::HoldsNothing("no vision provider is running — personas cannot see");
     }
 
     // THE DOUBLE-COUNT GUARD. When the verified vision endpoint IS the persona lane,
@@ -124,7 +133,9 @@ pub fn lane_claim(snap: &ServingSnapshot, vision: bool) -> LaneClaim {
     // pressure. The vision FEATURE holds nothing of its own here, and that is a
     // measured zero, not an unknown.
     if snap.vision_base_url.as_deref() == Some(snap.base_url.as_str()) {
-        return LaneClaim::HoldsNothing;
+        return LaneClaim::HoldsNothing(
+            "the main lane's own model sees — vision costs no extra residency",
+        );
     }
 
     match &snap.vision_model {
@@ -205,9 +216,11 @@ impl FootprintSource for CatalogFootprintSource {
     fn read(&self) -> Vec<FootprintReading> {
         let claim = lane_claim(&self.serving.borrow(), self.lane == Lane::Vision);
         let reading = match &claim {
-            LaneClaim::Holds(shape) => self.size(shape),
-            LaneClaim::HoldsNothing => FootprintReading::measured(ResourceKind::Vram, 0),
-            LaneClaim::Live(_) => FootprintReading::unknown(ResourceKind::Vram),
+            LaneClaim::Holds(shape) => self.size(shape).because("sized from the live catalog row"),
+            LaneClaim::HoldsNothing(reason) => {
+                FootprintReading::measured(ResourceKind::Vram, 0).because(reason)
+            }
+            LaneClaim::Live(reason) => FootprintReading::unknown(ResourceKind::Vram).because(reason),
         };
 
         // THE GLASS BOX for this decision (Joel: "we can probe the logic and estimates
@@ -230,11 +243,7 @@ impl FootprintSource for CatalogFootprintSource {
                 bytes = reading.bytes,
                 gib = format!("{:.2}", reading.bytes as f64 / 1024.0 / 1024.0 / 1024.0).as_str(),
                 provenance = format!("{:?}", reading.provenance).as_str(),
-                why = match &claim {
-                    LaneClaim::Holds(_) => "sized from the live catalog row",
-                    LaneClaim::HoldsNothing => "holds nothing of its own",
-                    LaneClaim::Live(reason) => reason,
-                },
+                why = reading.note,
                 "footprint reading",
             );
         }
@@ -299,7 +308,10 @@ impl crate::resources::consumer::ResourceConsumer for MonitoredHolder {
                 Some(crate::resources::consumer::ConsumerFootprint {
                     kind: r.kind,
                     bytes,
-                    detail: format!("{} [{:?}]", self.detail, r.provenance),
+                    // The reason rides onto the board, so a 0.00 GB row is readable
+                    // WITHOUT a probe query — "the main lane's own model sees" and
+                    // "personas cannot see" are the same number and opposite news.
+                    detail: format!("{} — {} [{:?}]", self.detail, r.note, r.provenance),
                 })
             })
             .collect()
@@ -344,7 +356,16 @@ mod tests {
         s.vision_base_url = Some("http://127.0.0.1:58080".into());
         s.vision_model = Some("qwen3.8-27b".into());
 
-        assert_eq!(lane_claim(&s, true), LaneClaim::HoldsNothing);
+        // The reason is asserted, not just the variant: this zero means "vision is FREE",
+        // and the test would pass just as happily on the "personas are blind" zero if it
+        // only checked the byte count. That indistinguishability was the live defect.
+        match lane_claim(&s, true) {
+            LaneClaim::HoldsNothing(why) => assert!(
+                why.contains("main lane"),
+                "expected the free-vision reason, got: {why}"
+            ),
+            other => panic!("expected HoldsNothing, got {other:?}"),
+        }
         // ...while the persona lane still charges the full residency once.
         assert_eq!(
             lane_claim(&s, false),
@@ -405,7 +426,42 @@ mod tests {
     // running is a real, usable zero — the distinction the Provenance ladder exists for.
     #[test]
     fn nothing_serving_is_a_real_zero() {
-        assert_eq!(lane_claim(&snap(), false), LaneClaim::HoldsNothing);
-        assert_eq!(lane_claim(&snap(), true), LaneClaim::HoldsNothing);
+        assert!(matches!(lane_claim(&snap(), false), LaneClaim::HoldsNothing(_)));
+        assert!(matches!(lane_claim(&snap(), true), LaneClaim::HoldsNothing(_)));
+    }
+
+    // what this catches: THE TWO ZEROS COLLAPSING BACK INTO ONE. Measured live
+    // 2026-08-19 — the board read `vision 0.00 GB` and the probe said only "holds
+    // nothing of its own", which is equally true when the 27B provides vision itself
+    // (perfect) and when nothing provides vision at all (personas are blind). Same
+    // number, opposite news, opposite response. This pins that they never again share
+    // an explanation.
+    #[test]
+    fn the_two_vision_zeros_never_read_the_same() {
+        let blind = match lane_claim(&snap(), true) {
+            LaneClaim::HoldsNothing(why) => why,
+            other => panic!("expected HoldsNothing, got {other:?}"),
+        };
+
+        let mut free = snap();
+        free.ready = true;
+        free.base_url = "http://127.0.0.1:58057/v1".into();
+        free.active_model = Some("qwen3.8-27b".into());
+        free.served_context_window = 22_528;
+        free.lanes = 4;
+        free.vision_ready = true;
+        free.vision_base_url = Some("http://127.0.0.1:58057/v1".into());
+        free.vision_model = Some("qwen3.8-27b".into());
+        let free_why = match lane_claim(&free, true) {
+            LaneClaim::HoldsNothing(why) => why,
+            other => panic!("expected HoldsNothing, got {other:?}"),
+        };
+
+        assert_ne!(blind, free_why, "two zeros, two meanings, two explanations");
+        assert!(blind.contains("cannot see"), "the bad zero names the harm: {blind}");
+        assert!(
+            free_why.contains("no extra residency"),
+            "the good zero names why it is free: {free_why}"
+        );
     }
 }

@@ -75,6 +75,15 @@ pub struct FootprintReading {
     /// Bytes held. Meaningless unless `provenance.is_usable()`.
     pub bytes: u64,
     pub provenance: Provenance,
+    /// WHY this number, in the adapter's own words — carried WITH the reading so a
+    /// consumer, a board row and a probe all render the same explanation instead of
+    /// three call sites re-deriving it.
+    ///
+    /// Measured live 2026-08-19: the board showed `vision 0.00 GB` and nothing on the
+    /// row could distinguish "no vision provider is running, personas are blind" from
+    /// "the main lane's own model sees, so vision is free". Same number, opposite
+    /// meanings, opposite responses. A zero without its reason is unactionable.
+    pub note: &'static str,
 }
 
 impl FootprintReading {
@@ -83,6 +92,7 @@ impl FootprintReading {
             kind,
             bytes,
             provenance: Provenance::Measured,
+            note: "",
         }
     }
 
@@ -91,6 +101,7 @@ impl FootprintReading {
             kind,
             bytes,
             provenance: Provenance::Estimated,
+            note: "",
         }
     }
 
@@ -99,7 +110,23 @@ impl FootprintReading {
             kind,
             bytes: 0,
             provenance: Provenance::Unknown,
+            note: "",
         }
+    }
+
+    /// Attach the explanation. Chainable so an adapter states the reason at the exact
+    /// branch that decided it, never reconstructed later from the number.
+    pub fn because(mut self, note: &'static str) -> Self {
+        self.note = note;
+        self
+    }
+
+    /// Demote a reading to [`Provenance::LastKnown`] with its age — the value was real
+    /// once and is being re-reported now. Kept as a transition on the constructor so a
+    /// stale reading can never be built by hand as a fresh `Measured` one.
+    pub fn aged(mut self, age_ms: u64) -> Self {
+        self.provenance = Provenance::LastKnown { age_ms };
+        self
     }
 
     /// Bytes if the reading can be used in arithmetic, else `None` — the call shape
@@ -153,15 +180,14 @@ impl LastKnown {
     pub fn reading(&self, kind: ResourceKind, now_ms: u64) -> FootprintReading {
         let at = self.at_ms.load(Ordering::Relaxed);
         if at == 0 {
-            return FootprintReading::unknown(kind);
+            return FootprintReading::unknown(kind).because("no live read has ever succeeded");
         }
-        FootprintReading {
-            kind,
-            bytes: self.bytes.load(Ordering::Relaxed),
-            provenance: Provenance::LastKnown {
-                age_ms: now_ms.saturating_sub(at),
-            },
-        }
+        // Built through the constructor, never a struct literal: a literal must be
+        // updated at every construction site each time the type grows a field, which is
+        // how `note` came to be missing here in the first place. One builder, one place.
+        FootprintReading::measured(kind, self.bytes.load(Ordering::Relaxed))
+            .aged(now_ms.saturating_sub(at))
+            .because("live read failed; reporting the last value actually obtained")
     }
 }
 
