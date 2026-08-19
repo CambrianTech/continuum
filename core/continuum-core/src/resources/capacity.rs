@@ -131,6 +131,26 @@ pub trait HostMemoryReader: Send + Sync {
 /// hot tick with the accounting lock held).
 pub struct LiveHostMemory {
     total: u64,
+    /// Last good free-bytes reading, from EITHER source. 0 = never read.
+    ///
+    /// # Why a fallback exists at all (regression, found live 2026-08-19)
+    ///
+    /// This first shipped reading ONLY `current_available_bytes()`, on the reasoning that
+    /// an unset atomic means "the monitor has not polled yet" — a couple of seconds at
+    /// boot, during which reporting `used = 0` is the sanctioned degradation.
+    ///
+    /// That reasoning was wrong in one specific and dangerous way: the atomic being 0
+    /// does not only mean "not yet". It also means "that monitor is not publishing",
+    /// which is unbounded. And because the unified pool routes BOTH axes through this one
+    /// reader, a single silent monitor made the governor believe the whole machine was
+    /// empty. Measured on this box: `system/resources` reported 54.2 GB used and 12.3 GB
+    /// of swap in use, while the board reported 51.84 GB available. Before unified
+    /// memory the VRAM axis read the GPU monitor independently and could not be blinded
+    /// this way — collapsing the axes created the single point of failure.
+    ///
+    /// Erring toward "plenty free" is the worst direction to err: it over-grants into a
+    /// machine that is already swapping.
+    last_known_free: AtomicU64,
 }
 
 impl Default for LiveHostMemory {
@@ -145,6 +165,21 @@ impl LiveHostMemory {
         sys.refresh_memory();
         Self {
             total: sys.total_memory(),
+            last_known_free: AtomicU64::new(sys.available_memory()),
+        }
+    }
+
+    /// A direct host sample — the SAME `host_statistics64` read `MemoryPressureMonitor`
+    /// makes on its own 2s cadence, so it is not a new class of work, and it is what
+    /// `system/resources` already serves from. Used only when the monitor's atomic is
+    /// unset; the daemon's tick is ~1Hz, so this is at most one cheap syscall per tick
+    /// on the degraded path and ZERO on the healthy one.
+    fn direct_sample(&self) -> Option<u64> {
+        let mut sys = sysinfo::System::new();
+        sys.refresh_memory();
+        match sys.available_memory() {
+            0 => None,
+            n => Some(n),
         }
     }
 }
@@ -153,8 +188,25 @@ impl HostMemoryReader for LiveHostMemory {
     fn total_bytes(&self) -> u64 {
         self.total
     }
+
+    /// Free bytes, from the monitor if it is publishing, else a direct sample, else the
+    /// last value either source gave. `None` ONLY if nothing has ever produced a reading
+    /// — which after a successful `new()` means the host itself reported nothing.
     fn available_bytes(&self) -> Option<u64> {
-        crate::system_resources::memory_pressure::current_available_bytes()
+        if let Some(n) = crate::system_resources::memory_pressure::current_available_bytes() {
+            self.last_known_free.store(n, Ordering::Relaxed);
+            return Some(n);
+        }
+        if let Some(n) = self.direct_sample() {
+            self.last_known_free.store(n, Ordering::Relaxed);
+            return Some(n);
+        }
+        // Stale is FAR better than fabricated-empty: a slightly old number keeps the
+        // governor conservative, whereas 0-used invites it to over-grant a full machine.
+        match self.last_known_free.load(Ordering::Relaxed) {
+            0 => None,
+            n => Some(n),
+        }
     }
 }
 
