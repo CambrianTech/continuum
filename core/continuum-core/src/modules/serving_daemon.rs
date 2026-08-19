@@ -4184,6 +4184,12 @@ mod tests {
             // so the reconcile publishes a READY snapshot carrying a real window.
             Ok(11008)
         }
+        async fn served_lanes(&self) -> Result<u32, LlamaServerError> {
+            // 0 = "this fake's /props names no slot count", i.e. nothing to compare
+            // on the lane axis. These daemon tests assert the window/readiness path,
+            // so the lane operand stays inert exactly as it was before it was probed.
+            Ok(0)
+        }
         async fn decode_smoke_ok(&self) -> bool {
             // Driven by `smoke_ok` so a test can wedge the COMPUTE path (the #175
             // liveness-heartbeat tests) independently of the control plane; defaults
