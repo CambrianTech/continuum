@@ -33,6 +33,7 @@
 //! re-deriving it. The provenance field is what makes that graduation observable rather
 //! than silent.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::watch;
@@ -149,6 +150,12 @@ pub struct CatalogFootprintSource {
     lane: Lane,
     catalog: Arc<ModelCatalog>,
     serving: watch::Receiver<ServingSnapshot>,
+    /// Last bytes we emitted a probe for, so the glass box shows TRANSITIONS instead of
+    /// re-stating a steady number every tick. `u64::MAX` = nothing emitted yet, which
+    /// guarantees the first read always lands (an instrument that has never fired is
+    /// indistinguishable from a broken one — #399: `serving.plan` at 2.6 rows/s was 51%
+    /// of the entire probe stream and drowned everything worth reading).
+    last_emitted: AtomicU64,
 }
 
 impl CatalogFootprintSource {
@@ -159,6 +166,7 @@ impl CatalogFootprintSource {
             lane: Lane::Persona,
             catalog,
             serving,
+            last_emitted: AtomicU64::new(u64::MAX),
         }
     }
 
@@ -169,6 +177,7 @@ impl CatalogFootprintSource {
             lane: Lane::Vision,
             catalog,
             serving,
+            last_emitted: AtomicU64::new(u64::MAX),
         }
     }
 
@@ -201,11 +210,13 @@ impl FootprintSource for CatalogFootprintSource {
             LaneClaim::Live(_) => FootprintReading::unknown(ResourceKind::Vram),
         };
 
-        // The seam Joel asked to be able to interrogate: every term that produced the
-        // number, plus its provenance, at the moment the decision is made. Without this
-        // a bad grant can only be re-derived by guessing what the inputs were — which
-        // is how a whole day went to a monitor that had been publishing a silent zero.
-        if !matches!(reading.provenance, Provenance::Measured) || reading.bytes > 0 {
+        // THE GLASS BOX for this decision (Joel: "we can probe the logic and estimates
+        // to see why/what screwed up"). Emits on TRANSITION — a changed byte count, a
+        // changed provenance, or any Unknown — never on every tick of a steady number.
+        // Unknown always fires because it is the state that silently poisons a budget.
+        let unknown = !reading.provenance.is_usable();
+        let changed = self.last_emitted.swap(reading.bytes, Ordering::Relaxed) != reading.bytes;
+        if unknown || changed {
             let (model, window, lanes) = match &claim {
                 LaneClaim::Holds(s) => (s.model_id.as_str(), s.window, s.lanes),
                 _ => ("-", 0, 0),
@@ -217,12 +228,95 @@ impl FootprintSource for CatalogFootprintSource {
                 window = window,
                 lanes = lanes,
                 bytes = reading.bytes,
+                gib = format!("{:.2}", reading.bytes as f64 / 1024.0 / 1024.0 / 1024.0).as_str(),
                 provenance = format!("{:?}", reading.provenance).as_str(),
+                why = match &claim {
+                    LaneClaim::Holds(_) => "sized from the live catalog row",
+                    LaneClaim::HoldsNothing => "holds nothing of its own",
+                    LaneClaim::Live(reason) => reason,
+                },
                 "footprint reading",
             );
         }
 
         vec![reading]
+    }
+}
+
+/// Registers a [`FootprintSource`] with the resource authority as a MONITOR-ONLY
+/// consumer: it declares what the holder is using so the board stops reading those bytes
+/// as unowned, and it refuses reclaim out loud because it has no actuator of its own.
+///
+/// # Why refusing is the honest answer for vision (#106/#395)
+///
+/// Vision bytes ARE releasable — the reconcile drops the sidecar the moment the main lane
+/// can see (`if main_sees { *sidecar_slot = None }`). But that release is driven by the
+/// serving plan, not by an inbound reclaim ask, and there is no handler that can free
+/// them on demand today. Claiming otherwise would make the authority plan against a
+/// reclaim that silently never happens — the exact "component green, wiring dead" failure
+/// that let `DiskPressureMonitor` log `level=high [no reporters]` while the disk filled.
+/// So: declare the bytes (which is what the governor was blind to), refuse the reclaim
+/// with a named reason (which is what an operator needs to see), and let the named
+/// follow-up be visible rather than implied.
+pub struct MonitoredHolder {
+    source: Arc<dyn FootprintSource>,
+    detail: &'static str,
+    refusal: &'static str,
+}
+
+impl MonitoredHolder {
+    pub fn new(
+        source: Arc<dyn FootprintSource>,
+        detail: &'static str,
+        refusal: &'static str,
+    ) -> Self {
+        Self {
+            source,
+            detail,
+            refusal,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::resources::consumer::ResourceConsumer for MonitoredHolder {
+    fn consumer_id(&self) -> &str {
+        self.source.holder_id()
+    }
+
+    fn footprint(&self) -> Vec<crate::resources::consumer::ConsumerFootprint> {
+        self.source
+            .read()
+            .into_iter()
+            .filter_map(|r| {
+                // UNKNOWN IS NOT ZERO — and at THIS seam that rule has teeth. The board
+                // sums declared footprints; contributing a 0 for a holder we could not
+                // size would claim "this holder holds nothing", which is a stronger and
+                // falser statement than declining to answer. Omitting the row leaves the
+                // bytes in `unowned`, where they read as immovable — conservative, and
+                // visible on the board as the gap it actually is.
+                let bytes = r.usable_bytes()?;
+                Some(crate::resources::consumer::ConsumerFootprint {
+                    kind: r.kind,
+                    bytes,
+                    detail: format!("{} [{:?}]", self.detail, r.provenance),
+                })
+            })
+            .collect()
+    }
+
+    async fn reclaim(
+        &self,
+        request: crate::resources::consumer::ReclaimRequest,
+    ) -> crate::resources::consumer::ReclaimOutcome {
+        crate::probe!(
+            class = "resources.footprint.reclaim_refused",
+            holder = self.source.holder_id(),
+            target_bytes = request.target_bytes,
+            reason = self.refusal,
+            "monitor-only holder cannot honor a reclaim",
+        );
+        crate::resources::consumer::ReclaimOutcome::refused(self.refusal)
     }
 }
 

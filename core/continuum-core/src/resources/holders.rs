@@ -106,15 +106,13 @@ pub fn standard_memory_holders() -> &'static [MemoryHolder] {
         MemoryHolder {
             id: "vision",
             kinds: BOTH,
-            status: HolderStatus::Undeclared(
-                "#106/#395: the VL lane is a SECOND llama-server (Qwen2.5-VL-7B on :58091) \
-                 measured at 9.4 GB resident and registers nothing. It is the single \
-                 largest unowned holder, and because it never yields, a 27B and vision \
-                 cannot be planned against the same pool. VL-as-consumer is the keystone \
-                 #395 names: it must lease, report a footprint, and tier down or unload \
-                 when a larger base is planned",
-            ),
-            what: "vision llama-server: VL weights + mmproj + its own KV",
+            status: HolderStatus::Declared,
+            what: "vision provider (a separate VL sidecar, or the main lane when its own \
+                   model sees) — declared by CatalogFootprintSource::vision via \
+                   MonitoredHolder. Was the single largest unowned block at 9.4 GB. \
+                   MONITOR-ONLY: it reports its bytes and refuses reclaim out loud, \
+                   because the release path is the serving reconcile dropping the \
+                   sidecar when the main lane can see, not an inbound handler (#106/#395)",
         },
         MemoryHolder {
             id: "embed",

@@ -829,6 +829,35 @@ impl ServingDaemonModule {
             Arc::new(crate::modules::serving_tier_down::CatalogTierDownPolicy::new(candidates)),
         );
         self.resource_daemon.add_consumer(Arc::new(consumer));
+
+        // THE VISION HOLDER declares itself (#106/#395/#56). Measured on the live board
+        // before this: vram physUsed 50.95G / attributed 6.81G / UNOWNED 44.14G — the
+        // governor could see the bytes were gone and not who had them, and unowned reads
+        // as immovable, so a model that physically fits was refused. The vision provider
+        // was one of the largest unowned blocks (~9.4G for the VL-7B sidecar).
+        //
+        // Monitor-only, and deliberately so: it declares the bytes but refuses reclaim
+        // out loud, because the release path is the serving reconcile
+        // (`if main_sees { sidecar = None }`), not an inbound handler. Declaring a
+        // reclaim it cannot perform would have the authority plan against a release that
+        // silently never happens.
+        let vision_source = Arc::new(crate::modules::serving_footprints::CatalogFootprintSource::vision(
+            self.catalog.clone(),
+            self.subscribe_serving(),
+        ));
+        crate::probe!(
+            class = "resources.footprint.wired",
+            holder = "vision",
+            source = "CatalogFootprintSource::vision",
+            "vision footprint source registered with the authority",
+        );
+        self.resource_daemon
+            .add_consumer(Arc::new(crate::modules::serving_footprints::MonitoredHolder::new(
+                vision_source,
+                "vision provider (sidecar or main lane)",
+                "no on-demand release: vision residency is dropped by the serving \
+                 reconcile when the main lane can see (#106/#395)",
+            )));
     }
 
     /// Honest serving budget for this host, RIGHT NOW — from the live free
