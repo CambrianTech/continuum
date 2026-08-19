@@ -111,6 +111,39 @@ payload preserved, idempotent. This is Joel's rule in code — deterministic, no
 poll, same answer given the same state. Every family inherits it instead of writing it
 (today only one family has it, and it was pointed at nothing).
 
+### L3b — the record carries PROGRESS, because liveness is not progress
+
+Added 2026-08-18 after the finding below, which is the same defect one level up from the
+ones that motivated this doc.
+
+An ad-hoc grading job ran for ~10 hours and produced **nothing**: worklist item 1's work
+tree was last touched at 10:15, checked at 20:06, one file, zero output, zero verdicts. It
+was reported as healthy six times on the strength of `pgrep` returning a pid. A process
+existing is not a process working — the same error as health-from-connection-existence
+rather than acked delivery, and as an empty read reported as "nothing to do".
+
+So `RunRecord` must carry, and `RunLedger` must expose:
+
+```rust
+fn heartbeat_ms(&self) -> u64;   // last time the run PROVED progress, not last time it existed
+fn deadline_ms(&self) -> Option<u64>;
+```
+
+with a derived `is_wedged(now)` — heartbeat older than its own declared cadence. Then
+"wedged" is a state the reconciler can settle deterministically, exactly like an orphan,
+instead of a thing a human has to notice. The wedge class already has history here (#385
+inference await blocking its thread, #386 wedge-killed attempts burning as capability
+zeros); the missing piece was never detection logic, it was a record with a heartbeat in it.
+
+**Corollary, and it is the reason this belongs in the architecture and not in a runbook:**
+the reboot guard fixed this morning protects exactly the work that *registers itself in a
+ledger*. My grading job registered nowhere, so it was invisible to the guard by
+construction — not a bug in the guard, a consequence of living outside the type. Ad-hoc
+operator jobs are outside every safety mechanism the substrate has. Either they enter
+through a ledger or they get no guard, no wedge detection, no reap, and no receipt. That is
+an argument for making the registered path the *easy* path, since the ad-hoc one will
+otherwise keep being chosen under time pressure — by me, demonstrably.
+
 ### L4 — the anti-blindness law (this is the part that actually prevents recurrence)
 
 **A test may not hand-author the artifact it reads.** Fixtures come from the production
