@@ -169,6 +169,7 @@
 pub mod arbiter;
 pub mod broker;
 pub mod capacity;
+pub mod holders;
 pub mod consumer;
 pub mod daemon;
 pub mod governor;
@@ -192,6 +193,7 @@ pub use capacity::{
     default_ram_reserve_for, CapacitySource, GpuCapacitySource, HostMemoryReader,
     HostRamCapacitySource, LiveHostMemory, MockCapacitySource, UnifiedMemoryPool,
 };
+pub use holders::{standard_memory_holders, HolderStatus, MemoryHolder, Reconciliation};
 pub use consumer::{
     ConsumerFootprint, ReclaimOutcome, ReclaimReason, ReclaimRequest, ReclaimStatus,
     ResourceConsumer,
