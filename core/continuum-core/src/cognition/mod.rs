@@ -31,6 +31,7 @@ pub mod act_observe;
 pub mod adaptive_throughput;
 pub mod audit;
 pub mod bench_round;
+pub mod bench_staging;
 pub mod bench_task;
 pub mod round_readiness;
 pub mod benchmark;

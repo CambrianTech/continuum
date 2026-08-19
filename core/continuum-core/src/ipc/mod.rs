@@ -1754,6 +1754,18 @@ pub fn start_server(
             crate::media::perception_registry(),
         ),
     ));
+    // Benchmark staging joins as a peer consumer (#56) — and it is the one that should ALWAYS
+    // lose. It holds host RAM only while a suite is being fetched and projected, and every row
+    // it holds is already on disk, so yielding costs a re-read and nothing a human or citizen
+    // can perceive. Where serving weighs a tier-down and bevy/voice REFUSE during a live call,
+    // staging releases unconditionally: it is the cheapest victim on the box and must be taken
+    // first. Until this existed, a benchmark and a live call simply raced `malloc` — which is
+    // exactly how staging OOMed this machine on 2026-08-19.
+    resource_daemon.add_consumer(Arc::new(
+        crate::cognition::bench_staging::StagingConsumer::new(
+            crate::cognition::bench_staging::staging_area(),
+        ),
+    ));
     runtime.register(Arc::new(VoiceModule::new(voice_state)));
 
     // Phase 3: CodeModule (wraps file engines and shell sessions per-persona)

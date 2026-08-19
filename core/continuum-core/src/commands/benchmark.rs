@@ -3764,10 +3764,39 @@ impl ActionCommand for BenchmarkFetch {
         let config = p.config.unwrap_or_else(|| def_config.to_string());
         let split = p.split.unwrap_or_else(|| def_split.to_string());
 
+        // PLAN BEFORE ALLOCATING (#56). Staging is a governed RAM consumer; it asks the
+        // governor for the headroom it may plan against and refuses with a named shortfall
+        // rather than allocating hopefully and letting the allocator arbitrate against a live
+        // call. The estimate is the catalog's declared task count × a per-row budget — coarse,
+        // and deliberately so: it is a SIZING input, not a measurement, and the footprint
+        // reported to the governor after the fetch is the honest number.
+        //
+        // ~24 KiB/row is derived from the staged suites on disk (SWE rows carry a problem
+        // statement + two patches; program rows carry a test body), rounded up so the estimate
+        // errs toward refusing rather than toward an OOM.
+        const EST_BYTES_PER_ROW: u64 = 24 * 1024;
+        let estimated = u64::from(spec.tasks) * EST_BYTES_PER_ROW;
+        let plan = crate::cognition::bench_staging::plan_against_governor(estimated);
+        if let Some(why) = plan.explain_refusal() {
+            crate::probe!(
+                class = "benchmark.staging.refused",
+                benchmark = spec.name,
+                estimated_bytes = estimated,
+                "staging refused: the governor cannot plan this suite's RAM right now",
+            );
+            return Err(CommandError::Denied(why));
+        }
+        let staging = crate::cognition::bench_staging::staging_area();
+
         let rows = crate::cognition::swe_bench::fetch_hf_rows(dataset, &config, &split)
 
             .await
             .map_err(CommandError::Internal)?;
+
+        // Declare what staging is actually holding, so the governor's footprint is the measured
+        // number rather than the estimate that sized the plan. Released below, in BOTH the
+        // normal path and under a reclaim — the two must agree or the ledger drifts.
+        staging.hold(estimated.min(rows.len() as u64 * EST_BYTES_PER_ROW));
 
         let denominator_matches = rows.len() as u32 == spec.tasks;
         crate::probe!(
@@ -3806,6 +3835,10 @@ impl ActionCommand for BenchmarkFetch {
         // holding the whole suite alive until the handler returns.
         let row_count = rows.len();
         drop(rows);
+        // The footprint returns to zero the moment the rows are gone. A consumer that keeps
+        // reporting bytes it no longer holds makes the governor evict a REAL holder to recover
+        // memory nobody has — the mirror image of the OOM this whole path exists to prevent.
+        staging.drop_all();
         Ok(BenchmarkFetchResult {
             benchmark: spec.name.to_string(),
             dataset: dataset.to_string(),
