@@ -84,6 +84,67 @@ fn wire_card_state_payload(event: &airc_core::TranscriptEvent) -> Option<Value> 
     }))
 }
 
+/// Once-per-process sighting of a (card_id, state) TRANSITION — the cross-path dedup
+/// between the in-process verb emit and the wire-echo bridge.
+///
+/// # Why two feeders exist at all (2026-08-17, the night two solved cards graded as
+/// nothing)
+///
+/// `work/state` used to rely ENTIRELY on its own transcript echo returning through a
+/// persona subscribe stream (`bridge_wire_work_event`, the only caller). Measured that
+/// night: Atlas closed astropy-14182 and astropy-14995 — both `Closed` in the store,
+/// on the board — and `persona.inbound.raw_event` counted 2 rows in 80 minutes (a
+/// comparable window earlier the same day: 83). #434 (post-reboot durable delivery to
+/// citizen scopes down) starves the echo, the bridge never fires, the grader never
+/// hears, and finished work grades as nothing. A grade tail that depends on wire
+/// delivery working is a grade tail with a known-open bug in its spine.
+///
+/// So the VERB now emits directly (in-process, delivery-proof) and the bridge remains
+/// for every writer that is NOT this core's `work/state` (operator CLI, remote peers).
+/// When delivery works both paths see the same transition; THIS ring makes it publish
+/// once. Keyed by (card, state) rather than wire event id because the verb path has no
+/// wire event yet. A LEGITIMATE re-transition to the same state hours later would be
+/// deduped only if the ring still held it — 256 transitions of churn ages it out long
+/// before that matters.
+fn first_transition_sighting(card_id: &str, state: &str) -> bool {
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+    const SEEN_CAP: usize = 256;
+    static SEEN: OnceLock<Mutex<VecDeque<String>>> = OnceLock::new();
+    let key = format!("{card_id}\u{1}{state}");
+    let seen = SEEN.get_or_init(|| Mutex::new(VecDeque::with_capacity(SEEN_CAP)));
+    let mut seen = seen.lock().unwrap_or_else(|p| p.into_inner());
+    if seen.contains(&key) {
+        return false;
+    }
+    if seen.len() >= SEEN_CAP {
+        seen.pop_front();
+    }
+    seen.push_back(key);
+    true
+}
+
+/// Publish one card-state transition onto the internal bus — the ONE emitter both
+/// feeders (the `work/state` verb, the wire bridge) route through. Dedup lives HERE so
+/// neither feeder needs to know the other exists.
+pub(crate) async fn emit_card_state_changed(payload: Value, via: &'static str) {
+    let card_id = payload["card_id"].as_str().unwrap_or("").to_string();
+    let state = payload["state"].as_str().unwrap_or("").to_string();
+    if !first_transition_sighting(&card_id, &state) {
+        return;
+    }
+    crate::probe!(
+        class = "work.card.state_changed.bridged",
+        via = via,
+        card_id = %card_id,
+        state = %state,
+        "card-state transition published onto the internal bus"
+    );
+    if let Some((bus, registry)) = WORK_EVENT_BUS.get() {
+        bus.publish(WORK_CARD_STATE_CHANGED, payload, registry).await;
+    }
+}
+
 /// Once-per-process sighting of a wire event id. Every resident persona's subscribe
 /// stream yields the SAME room event once, so the bridge below would otherwise
 /// publish N copies for N residents; first sighting wins. Bounded ring — old ids
@@ -122,17 +183,7 @@ pub async fn bridge_wire_work_event(event: &airc_core::TranscriptEvent) {
     if !first_sighting(event.event_id.as_uuid()) {
         return;
     }
-    crate::probe!(
-        class = "work.card.state_changed.bridged",
-        event_id = %event.event_id.as_uuid(),
-        room_id = %event.room_id.as_uuid(),
-        card_id = %payload["card_id"],
-        state = %payload["state"],
-        "wire card-state transition bridged onto the internal bus"
-    );
-    if let Some((bus, registry)) = WORK_EVENT_BUS.get() {
-        bus.publish(WORK_CARD_STATE_CHANGED, payload, registry).await;
-    }
+    emit_card_state_changed(payload, "wire-echo").await;
 }
 
 /// Default claim lease (ms) — 30 min — when the caller doesn't set one. The claim
@@ -301,6 +352,32 @@ fn parse_state(s: &str) -> Result<CardState, CommandError> {
 }
 
 // ─────────────────────────── work/claim ──────────────────────────
+
+/// The room whose board actually HOLDS `card_id`, searched across this scope's
+/// subscribed rooms — same walk as [`claim_following_card_room`], read-only.
+///
+/// Exists for the `work/state` direct emit: boards are per-room and the grade
+/// subscriber refuses an event with no room (the #345 wrong-room trap is a loud
+/// error now, not a silent misread), so the verb must name the CARD's room —
+/// never `current_room()`, which is merely where the persona is standing.
+async fn card_room_of(airc: &Arc<Airc>, card_id: WorkCardId) -> Option<uuid::Uuid> {
+    let set = airc.subscription_set().await.ok()?;
+    for sub in set.all() {
+        let room = sub.as_room();
+        let Ok(board) = airc.work_board_in(&room).await else {
+            continue;
+        };
+        if board
+            .snapshot()
+            .cards
+            .iter()
+            .any(|c| c.card_id == card_id)
+        {
+            return Some(room.channel.as_uuid());
+        }
+    }
+    None
+}
 
 /// Locate `card_id` on the board of one of the caller's OTHER subscribed rooms,
 /// switch her current room there, and retry the claim once.
@@ -549,14 +626,33 @@ impl ActionCommand for WorkClaim {
         // nobody in the loop. Best-effort: a dispatch failure never voids the
         // claim — the claim is hers either way, and the probe says what happened.
         if let Some(caller) = ctx.caller.as_ref() {
-            // ROOMLESS, and named as such rather than papered over: the claim verb
-            // carries no activity — a citizen can claim from anywhere, and the card
-            // does not remember which room staged it. So a claim-fired solve still
-            // works invisibly. That is #425's whole subject (a bench claim must lead
-            // to IN-ROOM work, not a detached nil-room solve); the dispatch path
-            // below already has a room and passes it, so the two paths now differ
-            // exactly at the gap #425 exists to close.
-            dispatch_staged_swe_solve(ctx, &airc, caller.peer_id.as_uuid(), card_id, None).await;
+            // WHO DRIVES THIS CARD is the round's decision, not the claim verb's. On a
+            // `Citizen`-driven round nothing detached fires: the claim stands, and she
+            // works the card on her own held-work turn — which roots her hands at the
+            // staged checkout and feeds the training producer. Firing the solver here
+            // would take the card out from under that turn (the detached fork always
+            // wins the race), so the citizen path is unreachable unless this yields.
+            match crate::cognition::bench_round::driver_for_card(card_id.as_uuid()) {
+                crate::cognition::bench_round::WorkDriver::DetachedSolve => {
+                    // ROOMLESS, and named as such rather than papered over: the claim
+                    // verb carries no activity — a citizen can claim from anywhere, and
+                    // the card does not remember which room staged it. So a claim-fired
+                    // solve still works invisibly. That is #425's whole subject (a bench
+                    // claim must lead to IN-ROOM work, not a detached nil-room solve);
+                    // the dispatch path already has a room and passes it, so the two
+                    // paths differ exactly at the gap #425 exists to close.
+                    dispatch_staged_swe_solve(ctx, &airc, caller.peer_id.as_uuid(), card_id, None)
+                        .await;
+                }
+                crate::cognition::bench_round::WorkDriver::Citizen => {
+                    crate::probe!(
+                        class = "benchmark.dispatch",
+                        card_id = %card_id.as_uuid(),
+                        claimer = %caller.peer_id.as_uuid(),
+                        "citizen-driven round — NO detached solve; her own work turn drives this card"
+                    );
+                }
+            }
         }
         Ok(WorkClaimResult {
             card_id: p.card_id,
@@ -605,34 +701,31 @@ pub(crate) async fn dispatch_staged_swe_solve(
     let Some(card) = board.cards.iter().find(|c| c.card_id == card_id) else {
         return;
     };
-    // Her staged SWE checkouts — the exact layout swe-setup writes.
-    let Ok(home) = crate::commands::benchmark::continuum_home() else {
-        return;
-    };
-    let swe_root = home
-        .join("citizens/peers")
-        .join(claimer.to_string())
-        .join("workspace/swe");
-    let Ok(entries) = std::fs::read_dir(&swe_root) else {
-        return; // no staged work for her — an ordinary (non-SWE) claim.
-    };
-    let staged: Vec<String> = entries
-        .flatten()
-        .filter(|e| e.path().is_dir())
-        .filter_map(|e| e.file_name().to_str().map(str::to_string))
-        .filter(|name| card.title.contains(name.as_str()))
-        .collect();
-    let [instance] = staged.as_slice() else {
-        if staged.len() > 1 {
+    // Her staged SWE checkouts. ONE expression of that layout lives in
+    // `persona::staged_workspace` — the work turn roots her hands with the same resolver,
+    // so a change to staging can never leave the two disagreeing about which repo a card
+    // is about (they did disagree in kind already: this walk accepted any directory, that
+    // one requires a `.git`, so an interrupted clone read as a staged instance here).
+    let (instance, workspace) = match crate::persona::staged_workspace::resolve_for_titles(
+        &claimer,
+        [card.title.as_str()],
+    ) {
+        crate::persona::staged_workspace::CardWorkspace::One { instance, path } => {
+            (instance, path.to_string_lossy().to_string())
+        }
+        // No staged checkout for her matching this card — an ordinary (non-SWE) claim.
+        crate::persona::staged_workspace::CardWorkspace::None => return,
+        crate::persona::staged_workspace::CardWorkspace::Ambiguous { candidates } => {
             crate::probe!(
                 class = "benchmark.dispatch",
                 card_id = %card_id.as_uuid(),
                 claimer = %claimer,
-                matches = staged.len(),
+                matches = candidates.len(),
+                candidates = candidates.join(","),
                 "claim matched MULTIPLE staged instances — refusing to guess, no dispatch"
             );
+            return;
         }
-        return;
     };
     // WAIT for the boot-gate, don't guard against it. A claim can land while the serving lane
     // is still proving it can decode (the ~10-15s window after core-ready); parking here until
@@ -654,7 +747,6 @@ pub(crate) async fn dispatch_staged_swe_solve(
         );
         return;
     }
-    let workspace = swe_root.join(instance).to_string_lossy().to_string();
     // Her HANDS must resolve `python`/`pytest`/`pip` to THIS instance's venv, not the system
     // interpreter. Without this, `code/shell pytest` hits homebrew python3.14 (no pytest, no
     // repo), she loops `pip install pytest` into the wrong interpreter, and burns every action
@@ -663,7 +755,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
     // solve.rs already `.exists()`-filters it, so prepending a not-yet-built bin is harmless.
     let venv_bin = crate::cognition::swe_bench::swe_cache_dir()
         .join("envs")
-        .join(instance)
+        .join(&instance)
         .join("bin")
         .to_string_lossy()
         .to_string();
@@ -870,12 +962,29 @@ impl ActionCommand for WorkState {
             .await
             .map_err(|e| CommandError::Internal(e.to_string()))?;
 
-        // NO bus emit here — the transition's transcript echo comes back on this
-        // persona's own subscribe stream and `bridge_wire_work_event` publishes
-        // [`WORK_CARD_STATE_CHANGED`] exactly once. One fact, one emitter: emitting
-        // from the verb too would double-fire every subscriber, and verb-side-only
-        // (the old shape) left cards closed by the airc CLI or a remote peer
-        // changing the board while grading nothing.
+        // DIRECT emit — the delivery-proof feeder. The previous shape relied
+        // entirely on this transition's transcript echo returning through a persona
+        // subscribe stream; under #434 (post-reboot durable delivery down) that echo
+        // never arrives and finished work grades as NOTHING (measured 2026-08-17:
+        // two cards Closed, zero grades, 2 raw events in 80 min). The verb KNOWS the
+        // transition happened — it just wrote it — so it publishes in-process. The
+        // wire bridge still covers external writers (operator CLI, remote peers);
+        // `emit_card_state_changed`'s (card,state) ring makes the two feeders
+        // publish once when both fire.
+        let room_id = card_room_of(&airc, card_id)
+            .await
+            .map(|r| r.to_string())
+            .unwrap_or_default();
+        emit_card_state_changed(
+            serde_json::json!({
+                "card_id": card_id.as_uuid().to_string(),
+                "state": serde_json::to_value(state)
+                    .unwrap_or(serde_json::Value::Null),
+                "room_id": room_id,
+            }),
+            "work-state-verb",
+        )
+        .await;
 
         Ok(WorkStateResult {
             card_id: p.card_id,
@@ -1452,6 +1561,27 @@ mod tests {
     #[test]
     fn card_state_changed_event_name_is_the_stable_emitter_subscriber_contract() {
         assert_eq!(WORK_CARD_STATE_CHANGED, "work.card.state_changed");
+    }
+
+    // what this catches: the grade tail now has TWO feeders — the `work/state` verb
+    // (in-process, delivery-proof) and the wire echo bridge (external writers). They
+    // both see the same transition whenever wire delivery is healthy, and a subscriber
+    // that grades twice would write two receipts for one card. The (card,state) ring is
+    // the ONLY thing making that one publish; the wire-event-id ring cannot cover it
+    // because the verb path has no wire event. Regression for the 2026-08-17 grade tail
+    // fix (two Closed cards, zero grades, #434 starving the single wire feeder).
+    #[test]
+    fn one_transition_publishes_once_no_matter_which_feeder_sees_it_first() {
+        let card = uuid::Uuid::new_v4().to_string();
+        assert!(first_transition_sighting(&card, "closed"), "first sighting publishes");
+        assert!(
+            !first_transition_sighting(&card, "closed"),
+            "the second feeder for the SAME transition must not publish again"
+        );
+        assert!(
+            first_transition_sighting(&card, "merged"),
+            "a DIFFERENT state on the same card is a different transition and must publish"
+        );
     }
 
     /// Build a wire transcript event through the REAL producer (`encode_work_event`),

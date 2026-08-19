@@ -83,12 +83,31 @@ fn short_circuit_acts(calls: &[ToolCall], nudge: &str, status: ActStatus) -> Vec
 pub struct ActChain(std::sync::Mutex<Option<Uuid>>);
 
 impl ActChain {
+    /// A chain with no recorded antecedent — its first act links to nothing.
+    /// Prefer [`rooted_in`](Self::rooted_in): a chain that knows what caused it is
+    /// what makes "which acts were done FOR this card" answerable.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// The chain's latest admitted act engram — the CAUSE of whatever act
-    /// comes next in this chain. `None` until the first admission.
+    /// A chain rooted in whatever CAUSED the turn (CAUSAL-MEMORY-GRAPH.md §3a) — the
+    /// stimulus engram for a real arrival, nothing for an ambient or synthetic burst.
+    ///
+    /// Seeding rather than special-casing is the whole trick: the write site already
+    /// links each act to `prior()`, so rooting the chain makes the FIRST act link to
+    /// its trigger through the same line of code. No new branch, no second rule, and
+    /// the thread has a head instead of starting mid-air.
+    ///
+    /// Takes the whole [`Cause`] rather than a pre-extracted id so the decision about
+    /// what counts as a root lives in ONE place (`Cause::root`) instead of at every
+    /// driver that builds a chain.
+    pub fn rooted_in(cause: &crate::cognition::workspace::Cause) -> Self {
+        Self(std::sync::Mutex::new(cause.root()))
+    }
+
+    /// The CAUSE of whatever act comes next in this chain: the latest admitted act
+    /// engram, or — before any act has run — the trigger the chain was rooted in.
+    /// `None` only when the chain has no antecedent at all.
     pub fn prior(&self) -> Option<Uuid> {
         *self.0.lock().unwrap_or_else(|p| p.into_inner())
     }

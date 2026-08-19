@@ -385,7 +385,27 @@ impl PersonaConversation for AircPersonaConversation {
                     // Skip our own turn, matched on the RESOLVED sender so a
                     // self-authored chat_transcript is caught too — not just
                     // a self `say()` (whose transport peer is us).
+                    //
+                    // PROBED, because this drop was SILENT and that cost a whole round
+                    // (2026-08-17). `benchmark/dispatch` authored `@Atlas (to you)`
+                    // kickoffs THROUGH Atlas (the operator has no self-peer, so
+                    // `curator_airc` borrows the lexicographically-first live citizen —
+                    // her). Every kickoff died right here: no error, no probe, no turn,
+                    // `kickoff_errors: []`, and hours spent looking at the grader, the
+                    // roster and the model. The skip is CORRECT — nobody answers their own
+                    // speech — but a message vanishing without a trace is how a structural
+                    // failure reads as "the citizen chose not to work"
+                    // ([[an-absence-is-an-unfinished-measurement]]).
                     if message.peer_id == self.own_peer_id {
+                        tracing::debug!(
+                            persona = %self.own_peer_id,
+                            from_peer = %event.peer_id,
+                            text_len = message.text.len(),
+                            probe_class = "persona.inbound.skipped_self_authored",
+                            "skipped a message this persona is recorded as having said — \
+                             if it was ADDRESSED to her, whoever sent it authored through \
+                             her identity and she cannot hear it"
+                        );
                         continue;
                     }
                     return Ok(Some(message));

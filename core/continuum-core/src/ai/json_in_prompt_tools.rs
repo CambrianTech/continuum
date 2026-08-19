@@ -2087,27 +2087,6 @@ where
     out
 }
 
-/// Yield substrings of `text` that are balanced `{...}` objects, outermost-first
-/// at each start position — so a `{"tool_call": {...}}` envelope is tried before
-/// its inner `{...}`. Brace-depth scan that ignores braces inside JSON strings
-/// (so `{"k":"}"}` doesn't fool it). Cheap; the candidate set is tiny in practice.
-fn json_object_candidates(text: &str) -> Vec<&str> {
-    let bytes = text.as_bytes();
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'{' {
-            if let Some(end) = matching_brace_end(bytes, i) {
-                out.push(&text[i..=end]);
-                // Continue scanning AFTER this object's open brace so nested/later
-                // objects are still considered, but we tried the outermost first.
-            }
-        }
-        i += 1;
-    }
-    out
-}
-
 /// Index of the `}` matching the `{` at `start`, respecting JSON string literals
 /// and escapes. `None` if unbalanced (truncated output).
 fn matching_brace_end(bytes: &[u8], start: usize) -> Option<usize> {

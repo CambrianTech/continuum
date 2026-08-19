@@ -69,8 +69,14 @@ const HOUR_GAP_THRESHOLD_MS: u64 = 60 * 60 * 1000;
 // via a handle. One source of truth for the gateway id: `llama_server::PROVIDER_ID`.
 const DEFAULT_GENERATE_PROVIDER: &str = crate::inference::llama_server::PROVIDER_ID;
 
-/// Default model when caller doesn't override.
-const DEFAULT_GENERATE_MODEL: &str = "continuum-ai/qwen3.5-4b-code-forged-GGUF";
+/// A model id for tests to pass explicitly — NOT a production default, and gated so it
+/// cannot become one. There is deliberately no default model: per the note on
+/// [`DEFAULT_GENERATE_PROVIDER`] above, the turn binds to whatever the gateway actually
+/// serves (discovered, via a handle), because a hardcoded id the gateway does not serve
+/// hard-fails `select()`. This constant only spares the request-shaping tests from
+/// repeating a literal.
+#[cfg(test)]
+const TEST_GENERATE_MODEL: &str = "continuum-ai/qwen3.5-4b-code-forged-GGUF";
 
 /// Default sampling temperature: moderate
 /// creativity for natural-language responses.
@@ -1200,12 +1206,12 @@ mod tests {
     fn generation_request_uses_documented_defaults() {
         let request = request_with_overrides(None, None, None, None);
         let inference =
-            build_response_generation_request(&request, DEFAULT_GENERATE_MODEL.to_string(), 0);
+            build_response_generation_request(&request, TEST_GENERATE_MODEL.to_string(), 0);
         assert_eq!(
             inference.provider.as_deref(),
             Some(DEFAULT_GENERATE_PROVIDER)
         );
-        assert_eq!(inference.model.as_deref(), Some(DEFAULT_GENERATE_MODEL));
+        assert_eq!(inference.model.as_deref(), Some(TEST_GENERATE_MODEL));
         assert_eq!(inference.temperature, Some(DEFAULT_GENERATE_TEMPERATURE));
         // No override + no client default = the model owns its length.
         assert_eq!(inference.max_tokens, None);
@@ -1243,7 +1249,7 @@ mod tests {
         let request = request_with_overrides(None, None, None, None);
         let inference = build_response_generation_request(
             &request,
-            DEFAULT_GENERATE_MODEL.to_string(),
+            TEST_GENERATE_MODEL.to_string(),
             1_700_000_000_000,
         );
         let identity = match &inference.messages.last().expect("identity present").content {

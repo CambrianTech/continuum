@@ -366,6 +366,69 @@ mod tests {
         );
     }
 
+    // what this catches: THE gap that made "which acts were done for this card"
+    // unanswerable. The chain used to start at `None`, so the FIRST act of every turn
+    // carried no CausedBy edge — and since a turn is triggered by a message or a
+    // work-card kickoff, that meant NO PATH IN THE GRAPH from a card to the work done
+    // for it. The card and its acts were causally disconnected, so every query showed
+    // "claimed, did nothing" no matter how much she actually did.
+    //
+    // Rooting the chain fixes it through the SAME write site — no new branch, no second
+    // rule — which is why this test asserts on the first act specifically.
+    #[tokio::test]
+    async fn a_chain_rooted_in_its_trigger_links_the_first_act_to_what_caused_the_turn() {
+        let exec = Arc::new(RecordingExecutor {
+            seen_context: Mutex::new(None),
+            result_content: "ok\n".into(),
+        });
+        let adm = admission();
+        let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+            .with_acting(body(exec.clone(), adm.clone()));
+        let room = Uuid::new_v4();
+
+        // The kickoff / inbound message that caused this turn to happen at all.
+        let trigger = Uuid::new_v4();
+        let chain =
+            ActChain::rooted_in(&crate::cognition::workspace::Cause::Stimulus(trigger));
+
+        acts_of(apply_act(&cycle, &[tool_call()], "start", room, &chain).await);
+        let first = chain.prior().expect("first act admitted onto the chain");
+        assert_ne!(first, trigger, "the act is its own engram, not the trigger");
+
+        let edges = adm.engram_neighbors(&first);
+        assert!(
+            edges.iter().any(|e| e.target == trigger
+                && e.kind == crate::persona::engram_graph::EdgeKind::CausedBy),
+            "the FIRST act must chain to the trigger that caused the turn — without \
+             this edge there is no path from a work card to the acts done for it; \
+             got {edges:?}"
+        );
+    }
+
+    // what this catches: an unrooted chain silently gaining a phantom antecedent. A
+    // burst with no admitted trigger — an idle tick (`Ambient`), an eval fixture
+    // (`Synthetic`) — must produce a first act with NO edge rather than one pointing
+    // at something invented. Honest absence over a fabricated link, which is also what
+    // makes the `engram.chain.rooted` probe's ambient rows mean something.
+    #[tokio::test]
+    async fn an_unrooted_chain_leaves_its_first_act_honestly_unlinked() {
+        let exec = Arc::new(RecordingExecutor {
+            seen_context: Mutex::new(None),
+            result_content: "ok\n".into(),
+        });
+        let adm = admission();
+        let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+            .with_acting(body(exec.clone(), adm.clone()));
+        let chain = ActChain::rooted_in(&crate::cognition::workspace::Cause::Ambient);
+
+        acts_of(apply_act(&cycle, &[tool_call()], "start", Uuid::new_v4(), &chain).await);
+        let first = chain.prior().expect("first act admitted");
+        assert!(
+            adm.engram_neighbors(&first).is_empty(),
+            "no trigger means no edge — never a fabricated one"
+        );
+    }
+
     /// Unwrap the typed acts of an `Acted` outcome (panics on NoHands/ExecutorError) —
     /// the typed sibling of the old `.expect("acted")` on the `Option<String>`.
     fn acts_of(outcome: ActOutcome) -> Vec<Observation> {

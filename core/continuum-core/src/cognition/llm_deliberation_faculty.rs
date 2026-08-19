@@ -1281,7 +1281,8 @@ impl LlmDeliberationFaculty {
             ),
         );
 
-        // #266 KV-cache fix lives in the block ORDER (see `deliberation_prompt::compose`):
+        // #266 KV-cache fix lives in the block ORDER (see `deliberation_prompt::stable_blocks`
+        // and `volatile_blocks`, assembled by `compose_split`):
         // the per-turn presence/own-time framing now renders LAST in the system message,
         // AFTER the standing grounding context, instead of before it. The raw
         // prompt-captures caught the framing sitting at char ~7607, ahead of the context,
@@ -1930,9 +1931,30 @@ impl Faculty for LlmDeliberationFaculty {
         // no text, no tool call, and therefore nothing to act or speak with. The
         // reasoning tail rides on the fault so the receipt says WHICH shape it was:
         // thought-but-committed-nothing, or the lane returned void.
+        // ONLY when there is nothing left to recover. This guard shipped (ce82f00ff)
+        // gating on "empty text + no tool call" alone, which is the EXACT precondition
+        // of the two recovery paths below — `persona.act.reasoning_lift` (a tool call
+        // sitting in the reasoning tail gets lifted and executed) and
+        // `persona.act.think_only` (#181's teacher sentinel, which hands her another
+        // generation starting from her own conclusions). Faulting first made both
+        // unreachable: measured live 2026-08-17, 40 `delib.empty_completion` faults
+        // against 87 turn starts while three SWE runs sat at the same act count for
+        // 1,357s. The recovery already existed; the guard was standing in front of it.
+        //
+        // So a REASONING-BEARING empty is not a fault — it is #181, and it has an
+        // owner. Fault only for the genuinely unrecoverable shapes: the lane returned
+        // void (no text, no reasoning, no call), or she has no hands for the sentinel
+        // to teach through. Both are still surfaced rather than read as chosen silence,
+        // which is what this guard is for ([[a-perception-FACT-is-honesty]]).
+        let nothing_to_recover = resp
+            .reasoning
+            .as_deref()
+            .is_none_or(|r| r.trim().is_empty())
+            || self.tools.is_empty();
         if resp.text.trim().is_empty()
             && !matches!(resp.finish_reason, FinishReason::ToolUse)
             && resp.tool_calls.as_ref().is_none_or(|c| c.is_empty())
+            && nothing_to_recover
         {
             let reasoning_tokens = resp.reasoning.as_ref().map_or(0, |r| r.len());
             let why = if reasoning_tokens > 0 {

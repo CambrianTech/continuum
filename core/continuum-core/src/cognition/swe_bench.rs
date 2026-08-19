@@ -123,9 +123,69 @@ pub struct SweVerdict {
 
 /// Where a detached benchmark run journals its state. One file per run, rewritten in place:
 /// `state: "running"` at dispatch, then the verdict — or a killed-by-reboot marker.
+///
+/// Honours `CONTINUUM_HOME` the same way every other progress-ledger reader does
+/// (`benchmark::continuum_home`). It did not until 2026-08-18, which made this the SECOND
+/// way to spell the ledger root — and a reader that resolves a directory differently from
+/// the writer reports a self-consistent lie about an empty dir, the same failure shape the
+/// `swe_cache_dir` doc records for env coverage.
 pub fn solve_ledger_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(home).join(".continuum").join("progress")
+    crate::commands::benchmark::continuum_home()
+        .unwrap_or_else(|_| {
+            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())).join(".continuum")
+        })
+        .join("progress")
+}
+
+/// The ONE filename prefix a detached solve run's ledger carries: `agent-solve-<run_id>.json`,
+/// with its verdict alongside as `agent-solve-<run_id>.grade.json`.
+///
+/// # Why this is a constant and not spelled out per call site (2026-08-18)
+///
+/// It was spelled out per call site, and the two spellings did not match. `agent/solve`
+/// wrote `agent-solve-*` (`agent_solve_ledger_path`, the only production writer); the reaper
+/// and the reboot guard below read `swe-solve-*`, a name NOTHING in the tree has ever
+/// written. Measured on this box the day it was found: **506 `agent-solve-*` ledgers, 19 of
+/// them still marked `running` — the oldest 162 hours old — against 32 legacy `swe-solve-*`
+/// files, 0 running.** So neither half of the mechanism had ever engaged on a real run:
+///
+/// - [`reap_orphaned_solve_runs_in`] had never reaped a production run, so 19 orphans sat
+///   frozen as `running` instead of becoming honest FAILED records — the exact silent-death
+///   hole its own doc says it exists to close.
+/// - [`in_flight_solve_runs_in`] answered "nothing is in flight" to the reboot guard while
+///   19 runs were marked otherwise, so `continuum reboot` would have destroyed live work
+///   without naming it. A guard that cannot see is worse than no guard: it reports safety.
+///
+/// A unit test even pinned the mismatch as intent — it wrote `agent-solve-other.json` and
+/// asserted it stayed untouched as "another subsystem's ledger". There is no other
+/// subsystem; that WAS the production ledger.
+/// [[the-same-bug-at-two-sites-is-a-missing-constraint-not-two-bugs]]
+pub const SOLVE_LEDGER_PREFIX: &str = "agent-solve-";
+
+/// The run id a ledger file name carries, or `None` if it is not a run ledger.
+///
+/// Rejects `agent-solve-<id>.grade.json`: a grade is read as a SIBLING of its run, never
+/// enumerated as one. Without that check the prefix/suffix strip yields a phantom run whose
+/// id ends in `.grade` — the live first-use bug `scan_run_cards` already carried a guard for,
+/// now shared rather than re-derived.
+pub fn solve_run_id_from_file_name(name: &str) -> Option<&str> {
+    let run_id = name
+        .strip_prefix(SOLVE_LEDGER_PREFIX)?
+        .strip_suffix(".json")?;
+    if run_id.is_empty() || run_id.ends_with(".grade") {
+        return None;
+    }
+    Some(run_id)
+}
+
+/// This run's ledger file. The one path builder, so writer and reader cannot drift again.
+pub fn solve_ledger_path(dir: &Path, run_id: &str) -> PathBuf {
+    dir.join(format!("{SOLVE_LEDGER_PREFIX}{run_id}.json"))
+}
+
+/// This run's verdict file, alongside its ledger.
+pub fn solve_grade_path(dir: &Path, run_id: &str) -> PathBuf {
+    dir.join(format!("{SOLVE_LEDGER_PREFIX}{run_id}.grade.json"))
 }
 
 /// Runs this ledger dir believes are IN FLIGHT — written at dispatch, not yet resolved.
@@ -143,9 +203,10 @@ pub fn in_flight_solve_runs_in(dir: &Path) -> Vec<(String, String)> {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if !name.starts_with("swe-solve-") || !name.ends_with(".json") {
+        let Some(run_id) = solve_run_id_from_file_name(name) else {
             continue;
-        }
+        };
+        let run_id = run_id.to_string();
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
@@ -155,10 +216,6 @@ pub fn in_flight_solve_runs_in(dir: &Path) -> Vec<(String, String)> {
         if v.get("state").and_then(|s| s.as_str()) != Some("running") {
             continue;
         }
-        let run_id = name
-            .trim_start_matches("swe-solve-")
-            .trim_end_matches(".json")
-            .to_string();
         let instance = v
             .get("instance")
             .and_then(|i| i.as_str())
@@ -183,18 +240,49 @@ pub fn in_flight_solve_runs() -> Vec<(String, String)> {
 /// hour ago" when the evidence for both is an absent file — the same shape as #137's 41 train
 /// jobs submitted with zero outcomes recorded. The marker at dispatch is what makes the death
 /// observable; this reap is what makes it honest.
+/// The reap MERGES the death into the existing ledger rather than replacing it, because the
+/// ledger is the only pointer to what the dead run LEFT BEHIND.
+///
+/// A live `running` record carries `workspace` — the absolute path of the checkout her hands
+/// edited — alongside `instance`, `persona_id` and `acts`. Overwriting it with a bare marker
+/// (which this did until 2026-08-18) turns a gradeable orphan into an unlocatable one: the
+/// patch is still on disk, and nothing on the board can say where. That is the same class of
+/// harm as reaping a finished verdict, and the reason the existing keys are preserved here
+/// and only the failure fields are added.
 pub fn reap_orphaned_solve_runs_in(dir: &Path) -> Vec<String> {
     let mut reaped = Vec::new();
     for (run_id, instance) in in_flight_solve_runs_in(dir) {
-        let path = dir.join(format!("swe-solve-{run_id}.json"));
-        let marker = serde_json::json!({
-            "failed": true,
-            "runId": run_id,
-            "instance": instance,
-            "error": "killed by a core restart — the run was in flight when the core that owned \
-                      it went away. Nothing was scored; re-dispatch to measure this instance.",
-        });
-        if std::fs::write(&path, marker.to_string()).is_ok() {
+        let path = solve_ledger_path(dir, &run_id);
+        // Start from what the run itself journaled; the death is an ANNOTATION on that
+        // record, never a replacement for it.
+        let mut record = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .filter(|v| v.is_object())
+            .unwrap_or_else(|| serde_json::json!({}));
+        let obj = record.as_object_mut().expect("filtered to an object above");
+        obj.insert("failed".into(), serde_json::Value::Bool(true));
+        // `state` is what `in_flight_solve_runs_in` keys on. Clearing it off `running` is
+        // what makes the reap idempotent — a second boot must not re-reap.
+        obj.insert("state".into(), serde_json::Value::String("failed".into()));
+        // `run_id`, NOT `runId`: this ledger family is written by `agent/solve`, which spells
+        // it snake_case throughout. The first cut of this reap inserted `runId` and shipped
+        // records carrying BOTH — two names for one field, in the same change that collapsed
+        // two names for one file. Caught on the live reap of 19 orphans. `entry` so a record
+        // that already carries its id keeps it untouched. (`cognition/eval` uses `runId` for
+        // its OWN ledger family; that is a different family and stays as it is.)
+        obj.entry("run_id")
+            .or_insert_with(|| serde_json::Value::String(run_id.clone()));
+        obj.insert("instance".into(), serde_json::Value::String(instance));
+        obj.insert(
+            "error".into(),
+            serde_json::Value::String(
+                "killed by a core restart — the run was in flight when the core that owned it \
+                 went away. Nothing was scored; re-dispatch to measure this instance."
+                    .into(),
+            ),
+        );
+        if std::fs::write(&path, record.to_string()).is_ok() {
             reaped.push(run_id);
         }
     }
@@ -231,12 +319,101 @@ pub fn reap_orphaned_solve_runs() -> Vec<String> {
 ///
 /// Corollary for anyone measuring env coverage: read the root from here, never from a path
 /// you remember or a directory you found by name.
+/// ONE MORE ROOT-DERIVATION NOTE, added 2026-08-18 because this function became the very
+/// thing its doc warns about. It resolved `HOME` directly while `solve_ledger_dir` and every
+/// other progress reader resolve `CONTINUUM_HOME` — so the benchmarks root and the ledger
+/// root were TWO roots again, exactly the shape described above.
+///
+/// It surfaced as test pollution, which is the cheap way to find it: a unit test set
+/// `CONTINUUM_HOME` to a tempdir to isolate its writes, and `record_verdict` wrote into the
+/// OPERATOR'S REAL `~/.continuum/benchmarks/swe/verdicts` anyway. The isolation was vacuous
+/// and the test was quietly seeding the live verdict record with fixture data — a fixture
+/// that would later read as a genuine measurement.
 pub fn swe_cache_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(home)
-        .join(".continuum")
+    crate::commands::benchmark::continuum_home()
+        .unwrap_or_else(|_| {
+            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())).join(".continuum")
+        })
         .join("benchmarks")
         .join("swe")
+}
+
+/// Where a scored instance's verdict lives — the DURABLE record that a grade happened.
+/// One file per instance under the governed benchmarks root, beside `work/` and `envs/`.
+///
+/// # Why this exists (2026-08-18, and it cost the day's only two passes)
+///
+/// `benchmark/swe-grade` computed a verdict, appended it to the citizen's experience
+/// stream, and RETURNED it. Nothing durable was written. So two real SWE-bench Lite
+/// resolutions — astropy-14995 and pytest-11143, each FAIL_TO_PASS 1/1 and PASS_TO_PASS
+/// 40/40, watched passing live — left no trace, and `benchmark/runs` kept rendering both
+/// artifacts as `ungraded`. Measured the same afternoon: **37 grade artifacts on disk from
+/// the detached-solve path, and 0 from any operator or workspace grade**, because that arm
+/// had no persistence at all.
+///
+/// A measurement the system cannot remember is not a measurement. This is the results-log
+/// half of [[run-ledgers-are-typed-artifacts]]: the run LEDGER is current state, keyed by
+/// run; the verdict is HISTORY, keyed by INSTANCE — because grading is per-instance and a
+/// workspace grade legitimately has no run id at all.
+pub fn verdict_dir() -> PathBuf {
+    swe_cache_dir().join("verdicts")
+}
+
+/// This instance's verdict file. One naming, so writer and board reader cannot drift
+/// (the failure mode that cost the boot reaper weeks — see [`SOLVE_LEDGER_PREFIX`]).
+pub fn verdict_path(instance_id: &str) -> PathBuf {
+    verdict_dir().join(format!("{instance_id}.json"))
+}
+
+/// Persist a REAL verdict. Returns the path written.
+///
+/// Refuses two things by construction, because both would launder the board:
+/// - an **errored** verdict — that is an ABSENCE (clone/env/patch fault), never a score,
+///   and recording it would tally a broken harness as a citizen's failure (the #384 class);
+/// - a **gold-gate** verdict — the positive control proves the ENV, not the citizen. A gold
+///   pass recorded as an instance verdict would read on the board as our result.
+pub fn record_verdict(verdict: &SweVerdict, is_gold: bool) -> Result<Option<PathBuf>, String> {
+    if is_gold || verdict.error.is_some() || verdict.instance_id.is_empty() {
+        return Ok(None);
+    }
+    let dir = verdict_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let path = verdict_path(&verdict.instance_id);
+    let body = serde_json::to_string_pretty(verdict).map_err(|e| e.to_string())?;
+    std::fs::write(&path, body).map_err(|e| format!("write {}: {e}", path.display()))?;
+    Ok(Some(path))
+}
+
+/// Read this instance's recorded verdict, or `None` if it has never been scored.
+pub fn read_verdict(instance_id: &str) -> Option<SweVerdict> {
+    let text = std::fs::read_to_string(verdict_path(instance_id)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// Every instance that carries a durable verdict, as `(instance_id, verdict)`.
+/// The board's source of "has this been scored", so an artifact stops reading `ungraded`
+/// the moment a real grade lands — and keeps reading scored across reboots.
+pub fn recorded_verdicts() -> Vec<(String, SweVerdict)> {
+    let Ok(entries) = std::fs::read_dir(verdict_dir()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if let Ok(v) = serde_json::from_str::<SweVerdict>(&text) {
+            if !v.instance_id.is_empty() {
+                out.push((v.instance_id.clone(), v));
+            }
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
 }
 
 /// Fetch a dataset split, cached on first use. On-demand, never a gated install step.
@@ -377,8 +554,14 @@ pub(crate) async fn run_env(
 /// Clone the repo at `base_commit`. The commit is the whole point — a clone left at HEAD is
 /// how eight runs got scored against a tree with the fix already in it.
 pub async fn clone_at(instance: &SweInstance, repo_dir: &Path) -> Result<(), String> {
+    // A stale tree here is not "probably fine" — it is the tree the score comes from. Removal
+    // failing used to be SWALLOWED (`let _ =`), and the clone below then died on git's own
+    // "destination path already exists and is not an empty directory", which reads like a
+    // harness bug rather than a filesystem one. Say which it is.
     if repo_dir.exists() {
-        let _ = std::fs::remove_dir_all(repo_dir);
+        std::fs::remove_dir_all(repo_dir).map_err(|e| {
+            format!("could not clear the stale grade tree {}: {e}", repo_dir.display())
+        })?;
     }
     // The PARENT must exist first. `git clone` creates its target directory but not the chain
     // above it, and the failure surfaces late and cryptically — as a mid-fetch "unable to write
@@ -429,6 +612,26 @@ pub async fn clone_at(instance: &SweInstance, repo_dir: &Path) -> Result<(), Str
         }
     }
 
+    // Clone into a STAGING path and move it into place, never straight into `repo_dir`.
+    //
+    // `git clone` refuses any destination that is not empty, and on macOS `repo_dir` does not
+    // stay empty on its own: Finder / Spotlight drop a `.DS_Store` into a directory the instant
+    // they notice it. Measured 2026-08-17 — a re-grade of astropy-14995 failed with
+    // "destination path already exists and is not an empty directory" against a directory whose
+    // ONLY content was a `.DS_Store` stamped AFTER the remove above. The window between
+    // remove and clone was enough. A grade voided by an OS indexer is indistinguishable, from
+    // the receipt, from a grade voided by the harness — so close the window instead of
+    // widening the diagnosis. Staging + rename also means a half-fetched tree is never
+    // visible at `repo_dir`: the move is the commit point.
+    let staging = repo_dir.with_extension(format!(
+        "cloning-{}",
+        std::process::id()
+    ));
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging).map_err(|e| {
+            format!("could not clear the stale staging tree {}: {e}", staging.display())
+        })?;
+    }
     let out = run(
         "git",
         &[
@@ -436,18 +639,33 @@ pub async fn clone_at(instance: &SweInstance, repo_dir: &Path) -> Result<(), Str
             "--quiet",
             "--shared",
             &mirror.to_string_lossy(),
-            &repo_dir.to_string_lossy(),
+            &staging.to_string_lossy(),
         ],
         None,
     )
     .await?;
     if !out.status.success() {
+        let _ = std::fs::remove_dir_all(&staging);
         return Err(format!(
             "clone of {} from its local mirror failed: {}",
             instance.repo,
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
+    // Anything that reappeared at the destination while we fetched (see above) loses to the
+    // tree we just built.
+    if repo_dir.exists() {
+        std::fs::remove_dir_all(repo_dir).map_err(|e| {
+            format!("could not clear {} before staging the fresh clone: {e}", repo_dir.display())
+        })?;
+    }
+    std::fs::rename(&staging, repo_dir).map_err(|e| {
+        format!(
+            "could not move the fresh clone {} into place at {}: {e}",
+            staging.display(),
+            repo_dir.display()
+        )
+    })?;
     let out = run(
         "git",
         &["checkout", "--quiet", &instance.base_commit],
@@ -540,6 +758,156 @@ pub fn interpreter_for_year(year: u32) -> &'static str {
 /// `pyproject.toml`. Empty when there is no pyproject, no `[build-system]` table, or no
 /// `requires` array. These must be pre-installed into the venv when building with
 /// `--no-build-isolation` (see the call site) — pip won't fetch them for us in that mode.
+/// The name of the repo's own TEST extra, from `[project.optional-dependencies]` — the
+/// group whose contents the suite needs to so much as COLLECT.
+///
+/// Why this exists (measured 2026-08-17, and it is the whole of astropy's 0-of-9): the env
+/// installs `-e .`, which resolves RUNTIME dependencies only. astropy's `conftest.py` opens
+/// with `import hypothesis`, a TEST dependency, so pytest dies loading conftest before it
+/// reaches a single test:
+///
+/// ```text
+/// ImportError while loading conftest '…/repo/conftest.py'.
+/// conftest.py:9: in <module>
+///     import hypothesis
+/// E   ModuleNotFoundError: No module named 'hypothesis'
+/// ```
+///
+/// PASS_TO_PASS then reads 0/9 on the PRISTINE tree, the gold gate correctly refuses to
+/// score, and EVERY astropy instance is ungradeable — a ceiling that has nothing to do with
+/// the citizen's patch. The repo already declares exactly what its suite needs; we simply
+/// never asked for it.
+///
+/// Names are not standardised, so prefer in the order the ecosystem actually uses them and
+/// take the first that the repo declares. Returns `None` when there is no pyproject, no
+/// optional-dependencies table, or no test-shaped group — those repos install as before.
+/// The `--exclude-newer` cutoff for an instance: its own creation date, or `None` when the
+/// dataset carries no date (which disables pinning AND healing — see `era_pinned_uv_install`).
+/// Extracted because BOTH the fresh-build path and the cached-env heal need the same answer,
+/// and two copies of "what era is this instance" is exactly how the two drift apart.
+fn era_cutoff(instance: &SweInstance) -> Option<String> {
+    if instance.created_at.is_empty() {
+        None
+    } else {
+        Some(instance.created_at.clone())
+    }
+}
+
+fn test_extra_name(repo_dir: &Path) -> Option<String> {
+    const PREFERRED: [&str; 4] = ["test", "tests", "testing", "dev"];
+    let declared = declared_extras(repo_dir);
+    PREFERRED
+        .iter()
+        .find(|name| declared.iter().any(|d| d == *name))
+        .map(|name| (*name).to_string())
+}
+
+/// Every extra group the repo declares, from BOTH places Python puts them.
+///
+/// The first version of this read `pyproject.toml` only and shipped believing it worked —
+/// the live run said otherwise (2026-08-17): astropy 5.3 declares its suite deps in
+/// `setup.cfg` under `[options.extras_require]`, has no `[project.optional-dependencies]`
+/// at all, and the pyproject-only parser returned None for the exact repo the fix was
+/// written for. Both files are ordinary in the ecosystem; reading one is reading half.
+fn declared_extras(repo_dir: &Path) -> Vec<String> {
+    let mut found = Vec::new();
+
+    // PEP 621.
+    if let Ok(text) = std::fs::read_to_string(repo_dir.join("pyproject.toml")) {
+        if let Ok(parsed) = toml::from_str::<toml::Value>(&text) {
+            if let Some(table) = parsed
+                .get("project")
+                .and_then(|p| p.get("optional-dependencies"))
+                .and_then(|o| o.as_table())
+            {
+                found.extend(table.keys().cloned());
+            }
+        }
+    }
+
+    // setuptools' declarative config. Hand-scanned rather than pulled in as a dependency:
+    // we need section keys, not values, and an INI parser for that is more surface than
+    // the six lines below.
+    if let Ok(text) = std::fs::read_to_string(repo_dir.join("setup.cfg")) {
+        let mut in_extras = false;
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with('[') {
+                in_extras = trimmed == "[options.extras_require]";
+                continue;
+            }
+            // A key is flush-left; anything indented is a continuation of the previous
+            // key's requirement list (`test =\n    pytest>=7.0`), never a group name.
+            if !in_extras || line.starts_with([' ', '\t']) {
+                continue;
+            }
+            if let Some((key, _)) = trimmed.split_once('=') {
+                let key = key.trim();
+                if !key.is_empty() {
+                    found.push(key.to_string());
+                }
+            }
+        }
+    }
+    found
+}
+
+/// Install the repo's test extra into an existing env, once. Non-fatal BY DESIGN: a repo
+/// whose suite already collects does not need it, and a resolve failure here must not
+/// delete an env that grades fine today. The marker file is what makes it once-only, and
+/// what lets envs built BEFORE this existed heal themselves on their next use instead of
+/// staying silently ungradeable forever.
+async fn ensure_test_extra(
+    uv: &str,
+    py_s: &str,
+    env_dir: &Path,
+    repo_dir: &Path,
+    as_of: Option<&str>,
+) {
+    let marker = env_dir.join(".test-extra");
+    // A marker is authoritative only when it NAMES the extra it installed. Markers written
+    // by the first version recorded "none-declared" from a half-blind parser; treating
+    // those as settled would make this fix unreachable on exactly the envs that need it,
+    // and would need a human to know which files to delete. They self-heal instead.
+    if std::fs::read_to_string(&marker)
+        .map(|m| !m.trim().is_empty() && m.trim() != "none-declared")
+        .unwrap_or(false)
+    {
+        return;
+    }
+    let Some(extra) = test_extra_name(repo_dir) else {
+        // NO NEGATIVE MARKER. The first version wrote "none-declared" here to avoid
+        // re-parsing, and then a parser that read only pyproject.toml recorded that answer
+        // PERMANENTLY for astropy — whose extras live in setup.cfg — so the heal could
+        // never run again even after the parser was fixed. Caching a negative is caching
+        // the limits of today's code. Re-reading two small files per grade costs nothing
+        // measurable next to cloning a repo and running its suite.
+        return;
+    };
+    let spec = format!(".[{extra}]");
+    let outcome = era_pinned_uv_install(
+        uv,
+        py_s,
+        as_of,
+        &["--no-build-isolation", "-e", &spec],
+        Some(repo_dir),
+        &[("CFLAGS", ERA_CFLAGS)],
+    )
+    .await;
+    let ok = matches!(&outcome, Ok(o) if o.status.success());
+    crate::probe!(
+        class = "swe.env.test_extra",
+        extra = %extra,
+        installed = ok,
+        env = %env_dir.display(),
+        "the repo's own test extra — without it a conftest that imports a test-only \
+         dependency makes every instance in the repo ungradeable"
+    );
+    if ok {
+        let _ = std::fs::write(&marker, format!("{extra}\n"));
+    }
+}
+
 fn build_requires(repo_dir: &Path) -> Vec<String> {
     let text = match std::fs::read_to_string(repo_dir.join("pyproject.toml")) {
         Ok(t) => t,
@@ -572,8 +940,39 @@ fn build_requires(repo_dir: &Path) -> Vec<String> {
 /// on this machine), the C is SUBJECT: demote exactly those three diagnostics back to the
 /// warnings they were. distutils APPENDS `CFLAGS` to its sysconfig baseline, so nothing else
 /// about the build changes, and modern code that doesn't trip them is untouched.
+///
+/// The FOURTH head (#383, measured live 2026-08-17 on astropy__astropy-14182, and the
+/// reason two dispatched rounds died at env-build after the jinja2 + build-requires fixes
+/// both landed): astropy vendors cfitsio, which vendors a 1990s zlib, whose
+/// `cextern/cfitsio/zlib/zutil.h:140` reads
+///
+/// ```c
+/// #if defined(MACOS) || defined(TARGET_OS_MAC)
+/// #  define OS_CODE  7
+/// #    ifndef fdopen
+/// #      define fdopen(fd,mode) NULL /* No fdopen() */
+/// ```
+///
+/// `TARGET_OS_MAC` is 1 on EVERY modern Apple SDK — it means "some Apple platform", not
+/// "classic Mac OS" as it did when this zlib was written. So the branch fires, `fdopen` is
+/// macro-replaced by `NULL`, and the system header's own declaration
+/// `FILE *fdopen(int, const char *)` becomes `FILE *NULL(int, const char *)` →
+/// `error: expected identifier or '('` in `<stdio.h>`, thousands of lines from anything
+/// astropy wrote. (The adjacent `'OS_CODE' macro redefined` warning is the same branch.)
+///
+/// The guard is `#ifndef fdopen`, so pre-defining it is the whole fix: `-Dfdopen=fdopen`
+/// makes the guard FALSE — the NULL stub is never emitted — and the macro itself is the
+/// identity, so every real `fdopen` call compiles to `fdopen`. Nothing is stubbed, nothing
+/// is renamed, no source is patched, and a repo that does not vendor this zlib never
+/// notices the flag.
+///
+/// It lives here rather than in a per-repo table because it is not an astropy fact — it is
+/// an ERA fact (old vendored zlib vs a modern Apple SDK), identical in shape to the three
+/// above: the compiler is HARNESS, the C is SUBJECT, and the subject built fine on the
+/// compilers of its own day.
 const ERA_CFLAGS: &str = "-Wno-error=incompatible-function-pointer-types \
-     -Wno-error=implicit-function-declaration -Wno-error=int-conversion";
+     -Wno-error=implicit-function-declaration -Wno-error=int-conversion \
+     -Dfdopen=fdopen";
 
 /// Build deps that a repo's DEPENDENCY sdists import at build time but that nothing installs
 /// under `--no-build-isolation` (we honor the top repo's `[build-system].requires`; a
@@ -630,6 +1029,11 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
                     String::from_utf8_lossy(&out.stderr).trim()
                 ));
             }
+            // An env cached BEFORE the test extra existed is silently ungradeable (its
+            // conftest cannot import). Heal it here, once, guarded by the marker — the
+            // operator should never have to know which envs predate a fix.
+            ensure_test_extra(&uv, &py_s, &env_dir, repo_dir, era_cutoff(instance).as_deref())
+                .await;
         }
         return Ok(py);
     }
@@ -737,11 +1141,7 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
         .await?;
     }
 
-    let as_of = if instance.created_at.is_empty() {
-        None
-    } else {
-        Some(instance.created_at.clone())
-    };
+    let as_of = era_cutoff(instance);
     let repo_s = repo_dir.to_string_lossy().to_string();
 
     // DEPENDENCY-SDIST BUILD DEPS (#383 cause 2, reproduced live 2026-08-16): the
@@ -757,13 +1157,44 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
     // (jinja2 IS a runtime dep of some subjects, e.g. flask).
     let sdist_deps = era_sdist_build_deps(&instance.repo);
     if !sdist_deps.is_empty() {
-        let mut args = vec!["pip", "install", "-q", "--python", &py_s];
-        if let Some(ref date) = as_of {
-            args.push("--exclude-newer");
-            args.push(date);
+        // Shares `era_pinned_uv_install` with the `-e .` install below. It did NOT before,
+        // and that asymmetry is what made every astropy instance ungradeable: the pin caps
+        // setuptools at the 2017 cutoff while markupsafe's build requires >=40.8.0, and the
+        // heal that reads uv's own `exclude-newer-package` hint lived only at the other site.
+        let mut out = era_pinned_uv_install(
+            &uv,
+            &py_s,
+            as_of.as_deref(),
+            sdist_deps,
+            None,
+            &[("CFLAGS", ERA_CFLAGS)],
+        )
+        .await?;
+        // BUILD TOOLS ARE NOT SUBJECT CODE — reproduced in isolation 2026-08-17: the era
+        // pin on this pre-install is UNSATISFIABLE BY CONSTRUCTION on a modern box, at
+        // every rung the heal can reach. Era markupsafe 1.0 (no wheel for this
+        // interpreter/arch, sdist build mandatory) needs setuptools>=40.8.0 which the pin
+        // excludes; LIFT setuptools (the heal's correct first move, verified firing) and
+        // the 2017 sdist dies on `ImportError: cannot import name 'Feature'` (removed in
+        // setuptools 46); lift markupsafe instead and era jinja2 2.10 dies at import on
+        // `soft_unicode` (removed in markupsafe 2.1). The only installable combination is
+        // MODERN jinja2 + MODERN markupsafe — verified importing clean.
+        //
+        // So when the healed era-pinned install still fails, retry ONCE unpinned, loudly.
+        // Scope-safe by construction: this table lists BUILD TOOLS for dependency-sdist
+        // code generators (astropy→pyerfa→jinja2), never subject requirements — a repo
+        // where the package IS subject code (flask) has no entry here, and the subject
+        // graph is resolved by the still-date-pinned `-e .` step below.
+        if !out.status.success() && as_of.is_some() {
+            tracing::warn!(
+                instance = %instance.instance_id,
+                deps = ?sdist_deps,
+                "era-pinned sdist build-dep install unsatisfiable at every heal rung — \
+                 retrying UNPINNED (build tools only; the subject graph stays date-pinned)"
+            );
+            out = era_pinned_uv_install(&uv, &py_s, None, sdist_deps, None, &[("CFLAGS", ERA_CFLAGS)])
+                .await?;
         }
-        args.extend(sdist_deps.iter().copied());
-        let out = run(&uv, &args, None).await?;
         if !out.status.success() {
             // Fail LOUD and leave no half-built env behind — same doctrine as the `-e .` gate.
             let _ = std::fs::remove_dir_all(&env_dir);
@@ -788,77 +1219,19 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
     // the minimum needed for a resolvable graph, discovered from the resolver's own evidence
     // rather than a hand-maintained package list. Bounded: each round must surface a NEW
     // package or we stop, and history-holes per graph are few.
-    let mut overrides: Vec<String> = Vec::new();
-    let out = loop {
-        let mut args = vec!["pip", "install", "-q", "--python", &py_s];
-        if let Some(ref date) = as_of {
-            args.push("--exclude-newer");
-            args.push(date);
-        }
-        for pin in &overrides {
-            args.push("--exclude-newer-package");
-            args.push(pin);
-        }
-        args.extend(["--no-build-isolation", "-e", "."]);
-        // ERA_CFLAGS rides on this one invocation because it is where every C build
-        // happens — the repo's own extensions AND its dependency sdists (pyerfa et al)
-        // compile inside this resolve.
-        let out = run_env(&uv, &args, Some(Path::new(&repo_s)), &[("CFLAGS", ERA_CFLAGS)]).await?;
-        if out.status.success() || as_of.is_none() {
-            break out;
-        }
-        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-        // Two heal arms, same bounded loop: (1) deleted-history — the date pin leaves zero
-        // candidates, uv's hint names the earliest surviving upload; (2) metadata-mismatch —
-        // an era sdist with no wheel for this platform builds as version 0.0.0
-        // (setuptools_scm without git metadata; live 2026-08-11: lazy-object-proxy 1.7.1 has
-        // no arm64 wheel, pulled by 2022 pylint→astroid), so the ONE unbuildable package's
-        // cutoff is lifted entirely — a modern wheel-shipping release of a shim library, in
-        // an otherwise era-pure graph, disclosed on the probe. Both parse uv's OWN evidence;
-        // no hand-maintained package list.
-        match deleted_history_override(&stderr)
-            .or_else(|| metadata_mismatch_override(&stderr))
-            .or_else(|| setuptools_importlib_clash_override(&stderr))
-        {
-            Some(pin) if !overrides.contains(&pin) && overrides.len() < 8 => {
-                tracing::warn!(
-                    instance = %instance.instance_id,
-                    r#override = %pin,
-                    "date-pinned resolution hit an unresolvable era package — retrying with \
-                     a per-package cutoff derived from uv's own error"
-                );
-                // The setuptools/importlib clash needs MORE than a lifted cutoff: the
-                // broken importlib-metadata 0.x is ALREADY INSTALLED in the venv (2019
-                // pluggy pulled it in the requirements step), and `-e .` won't touch an
-                // already-satisfied package — so the cutoff pin alone retries into the
-                // exact same crash (live: pytest-5413/5495 kickoff, 2026-08-12, the
-                // first run after this arm shipped). Apply the banner's own remedy
-                // directly: upgrade the installed copy, then retry the editable build.
-                if pin.starts_with("importlib-metadata=") {
-                    let up = run(
-                        &uv,
-                        &[
-                            "pip",
-                            "install",
-                            "-q",
-                            "--python",
-                            &py_s,
-                            "--upgrade",
-                            "importlib-metadata",
-                        ],
-                        None,
-                    )
-                    .await?;
-                    if !up.status.success() {
-                        // The heal itself failed — no point looping on the same wall.
-                        break out;
-                    }
-                }
-                overrides.push(pin);
-            }
-            _ => break out,
-        }
-    };
+    // ERA_CFLAGS rides on this invocation because it is where every C build happens — the
+    // repo's own extensions AND its dependency sdists (pyerfa et al) compile inside this
+    // resolve. The heal loop lives in `era_pinned_uv_install`, shared with the sdist
+    // build-dep pre-install above.
+    let out = era_pinned_uv_install(
+        &uv,
+        &py_s,
+        as_of.as_deref(),
+        &["--no-build-isolation", "-e", "."],
+        Some(Path::new(&repo_s)),
+        &[("CFLAGS", ERA_CFLAGS)],
+    )
+    .await?;
     if !out.status.success() {
         // DELETE the half-built env rather than cache it. Keying on "the directory exists"
         // made a failed install sticky: every later run reused a venv with no repo in it and
@@ -959,6 +1332,11 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
             ));
         }
     }
+    // LAST, because it is additive and must not be able to fail the build: the repo's own
+    // test extra. Everything above decides whether the env can BUILD and RUN a harness;
+    // this decides whether the suite can COLLECT. Non-fatal by design — see
+    // `ensure_test_extra`.
+    ensure_test_extra(&uv, &py_s, &env_dir, repo_dir, as_of.as_deref()).await;
     Ok(py)
 }
 
@@ -1074,6 +1452,111 @@ fn setuptools_importlib_clash_override(stderr: &str) -> Option<String> {
     }
 }
 
+/// How many per-package cutoff overrides one install may discover before we stop.
+///
+/// Each round must surface a NEW package (see the loop), so this bounds a pathological
+/// graph rather than a healthy one — history-holes per graph are few, and the live maximum
+/// observed across Lite is two.
+const MAX_ERA_OVERRIDES: usize = 8;
+
+/// ONE era-pinned `uv pip install`, healing from uv's own evidence.
+///
+/// # Why this is a function and not two copies of a loop
+///
+/// "Install under the instance's date pin, and when the resolver hits a hole that the pin
+/// itself created, read uv's hint and retry with the minimum per-package override" is ONE
+/// decision. It had TWO call sites in `ensure_env` — the editable `-e .` install, which had
+/// the heal loop, and the dependency-sdist build-dep pre-install, which did not — so the
+/// same class of failure was survivable at one site and fatal at the other.
+///
+/// Measured 2026-08-17: every astropy instance in swe-bench-lite's head died at the
+/// unhealed site with `could not pre-install …'s dependency-sdist build deps ["jinja2"]`.
+/// The cause is the pin working exactly as designed: jinja2 2.10 needs markupsafe 1.0,
+/// whose `setup.py` build requires `setuptools>=40.8.0`, while the 2017 cutoff caps
+/// setuptools at 38.2.4 — unsatisfiable by construction. uv's stderr named the package and
+/// suggested `exclude-newer-package`, which is precisely what the loop 30 lines below knew
+/// how to parse. Extracting it heals both sites and makes a third site inherit the
+/// behaviour by construction.
+///
+/// `tail` is the call-site-specific argv after the shared pin flags (`["jinja2"]`, or
+/// `["--no-build-isolation", "-e", "."]`). `as_of: None` disables pinning AND healing —
+/// with no pin there is no pin-induced hole to heal.
+async fn era_pinned_uv_install(
+    uv: &str,
+    py: &str,
+    as_of: Option<&str>,
+    tail: &[&str],
+    cwd: Option<&Path>,
+    envs: &[(&str, &str)],
+) -> Result<std::process::Output, String> {
+    let mut overrides: Vec<String> = Vec::new();
+    loop {
+        let mut args = vec!["pip", "install", "-q", "--python", py];
+        if let Some(date) = as_of {
+            args.push("--exclude-newer");
+            args.push(date);
+        }
+        for pin in &overrides {
+            args.push("--exclude-newer-package");
+            args.push(pin);
+        }
+        args.extend(tail.iter().copied());
+        let out = run_env(uv, &args, cwd, envs).await?;
+        if out.status.success() || as_of.is_none() {
+            return Ok(out);
+        }
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        // Three heal arms, same bounded loop: (1) deleted-history — the date pin leaves zero
+        // candidates and uv's hint names the earliest surviving upload; (2) metadata-mismatch
+        // — an era sdist with no wheel for this platform builds as version 0.0.0
+        // (setuptools_scm without git metadata), so the ONE unbuildable package's cutoff is
+        // lifted entirely; (3) the setuptools/importlib-metadata clash. All three parse uv's
+        // OWN evidence; no hand-maintained package list.
+        match deleted_history_override(&stderr)
+            .or_else(|| metadata_mismatch_override(&stderr))
+            .or_else(|| setuptools_importlib_clash_override(&stderr))
+        {
+            Some(pin) if !overrides.contains(&pin) && overrides.len() < MAX_ERA_OVERRIDES => {
+                tracing::warn!(
+                    r#override = %pin,
+                    tail = ?tail,
+                    "date-pinned resolution hit an unresolvable era package — retrying with \
+                     a per-package cutoff derived from uv's own error"
+                );
+                // The setuptools/importlib clash needs MORE than a lifted cutoff: the broken
+                // importlib-metadata 0.x is ALREADY INSTALLED in the venv (2019 pluggy pulled
+                // it in the requirements step), and an install won't touch an already-satisfied
+                // package — so the cutoff pin alone retries into the exact same crash (live:
+                // pytest-5413/5495 kickoff, 2026-08-12, the first run after this arm shipped).
+                // Apply the banner's own remedy directly: upgrade the installed copy, then
+                // retry. General to any `--no-build-isolation` build, not just `-e .`.
+                if pin.starts_with("importlib-metadata=") {
+                    let up = run(
+                        uv,
+                        &[
+                            "pip",
+                            "install",
+                            "-q",
+                            "--python",
+                            py,
+                            "--upgrade",
+                            "importlib-metadata",
+                        ],
+                        None,
+                    )
+                    .await?;
+                    if !up.status.success() {
+                        // The heal itself failed — no point looping on the same wall.
+                        return Ok(out);
+                    }
+                }
+                overrides.push(pin);
+            }
+            _ => return Ok(out),
+        }
+    }
+}
+
 fn which(bin: &str) -> Option<String> {
     let path = std::env::var("PATH").ok()?;
     for dir in path.split(':') {
@@ -1126,25 +1609,214 @@ pub fn runner_for_repo(repo: &str) -> TestRunner {
 
 /// The exact argv (after the venv's `python`) that runs an instance's test scope.
 /// Pure so the per-repo command shape is table-testable without a venv.
+/// The module name of the JSON runner dropped into django's `tests/` directory.
+/// `tests/` is on `sys.path` when runtests.py runs, so a bare module name resolves.
+const DJANGO_JSON_RUNNER_MODULE: &str = "continuum_json_runner";
+
+/// The settings module that SELECTS the JSON runner — the only seam django offers.
+///
+/// `runtests.py` has **no `--testrunner` flag in any era**; it reads
+/// `settings.TEST_RUNNER` and defaults it only when unset (verified in-tree at 1.11,
+/// 2.2, 3.2, 4.2, 5.2 and main — same three lines throughout). Passing a flag it does
+/// not know is not a no-op: argparse rejects the whole invocation before a single test
+/// runs, which is exactly what happened live on django-10914 (`unrecognized arguments:
+/// --testrunner=…`, suite 0/40 in 4s). So the runner is selected by a settings module
+/// that re-exports django's own `test_sqlite` and overrides that one key.
+const DJANGO_JSON_SETTINGS_MODULE: &str = "continuum_json_settings";
+
+/// Settings for [`DJANGO_JSON_SETTINGS_MODULE`]. A pure ADDITION to the clone: django's
+/// own `test_sqlite` stays untouched and supplies every database/hasher setting, so this
+/// shim cannot drift from whatever the era's suite settings happen to be.
+const DJANGO_JSON_SETTINGS_SRC: &str = r#"# Written by continuum's SWE-bench grader. Not part of django.
+# runtests.py honours settings.TEST_RUNNER; it has no --testrunner flag. Inherit
+# django's own suite settings verbatim and override only the runner.
+from test_sqlite import *  # noqa: F401,F403
+TEST_RUNNER = "continuum_json_runner.JsonRunner"
+"#;
+
+/// A `DiscoverRunner` that reports each test by its CANONICAL id instead of by prose.
+///
+/// WHY THIS EXISTS RATHER THAN A BETTER REGEX. unittest's verbose output is a rendering,
+/// not a data format: the outcome sits on the id line when a test has no docstring and on
+/// the DOCSTRING line when it does, django ≥4.1 changed the class-path shape, and a
+/// docstring can contain any characters including " ... " and " (". Every one of those is a
+/// way for a line-shaped parser to mis-attribute silently — and mis-attribution here does
+/// not look like a bug, it looks like a citizen who failed. `test.id()` is the id unittest
+/// itself uses; asking the runner for it removes the entire class of guess.
+///
+/// Skips and expected failures count as PASSES, unexpected successes as FAILURES — the same
+/// rule [`django_outcome`] applies, kept identical on purpose.
+const DJANGO_JSON_RUNNER_SRC: &str = r#"# Written by continuum's SWE-bench grader. Not part of django.
+import json, sys, unittest
+from django.test.runner import DiscoverRunner
+
+class _ContinuumResult(unittest.TextTestResult):
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.continuum_rows = {}
+    def _record(self, test, ok):
+        # shortDescription() is the docstring's first line — the SAME string unittest
+        # renders on its own output line, and therefore the id SWE-bench's own log parser
+        # captured for docstringed tests. Emitting it is not redundant: the dataset spells
+        # those tests BY THE DOCSTRING and by nothing else.
+        try:
+            desc = test.shortDescription() or ""
+        except Exception:
+            desc = ""
+        self.continuum_rows[test.id()] = (ok, desc)
+    def addSuccess(self, test):
+        super().addSuccess(test); self._record(test, True)
+    def addError(self, test, err):
+        super().addError(test, err); self._record(test, False)
+    def addFailure(self, test, err):
+        super().addFailure(test, err); self._record(test, False)
+    def addSkip(self, test, reason):
+        super().addSkip(test, reason); self._record(test, True)
+    def addExpectedFailure(self, test, err):
+        super().addExpectedFailure(test, err); self._record(test, True)
+    def addUnexpectedSuccess(self, test):
+        super().addUnexpectedSuccess(test); self._record(test, False)
+
+class JsonRunner(DiscoverRunner):
+    def get_resultclass(self):
+        return _ContinuumResult
+    def run_suite(self, suite, **kwargs):
+        result = super().run_suite(suite, **kwargs)
+        for tid, (ok, desc) in getattr(result, "continuum_rows", {}).items():
+            row = {"id": tid, "ok": ok}
+            if desc:
+                row["desc"] = desc
+            sys.stderr.write("CONTINUUM_TEST " + json.dumps(row) + "\n")
+        sys.stderr.flush()
+        return result
+"#;
+
+/// Drop the JSON runner AND the settings module that selects it into the clone's `tests/`
+/// dir. Returns whether both are usable — either alone does nothing, so this is one unit.
+/// Idempotent — grading re-runs over the same clone just overwrite them.
+async fn install_django_json_runner(repo_dir: &Path) -> bool {
+    let dir = repo_dir.join("tests");
+    if !dir.is_dir() {
+        return false;
+    }
+    for (module, src) in [
+        (DJANGO_JSON_RUNNER_MODULE, DJANGO_JSON_RUNNER_SRC),
+        (DJANGO_JSON_SETTINGS_MODULE, DJANGO_JSON_SETTINGS_SRC),
+    ] {
+        let path = dir.join(format!("{module}.py"));
+        if let Err(e) = std::fs::write(&path, src) {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "could not install the django JSON test runner — falling back to parsing the \
+                 verbose report, which mis-attributes docstringed tests (#383)"
+            );
+            return false;
+        }
+    }
+    true
+}
+
+/// One machine-readable row per test: `CONTINUUM_TEST {"id": …, "ok": …, "desc": …}`.
+///
+/// THREE spellings are registered for one outcome, because the dataset uses all three and a
+/// canonical id ALONE cannot resolve a django instance (measured on django-10914, gold gate):
+///
+/// | spelling | where it comes from | example |
+/// |---|---|---|
+/// | canonical id | `test.id()` | `test_utils.tests.AssertRaisesMsgTest.test_special_re_chars` |
+/// | unittest rendering | id, re-spelled | `test_special_re_chars (test_utils.tests.AssertRaisesMsgTest)` |
+/// | **docstring** | `test.shortDescription()` | `assertRaisesMessage shouldn't interpret RE special chars.` |
+///
+/// The third row is the one that is easy to miss and impossible to work around downstream.
+/// SWE-bench's own django ids were harvested from unittest's verbose log, and unittest prints
+/// the DOCSTRING in place of the id when a test has one — so for those tests the dataset's
+/// PASS_TO_PASS entry *is* the docstring, with no id anywhere in it. Verified in the dataset:
+/// 2 of django-10914's 98 p2p ids are docstring prose. Only the test itself knows its own
+/// docstring, which is why the runner emits it rather than the grader guessing.
+///
+/// Ids and renderings are unique, so they are inserted directly. Docstrings are NOT unique —
+/// two tests may share one — so they are AND-folded (pass only if every test carrying that
+/// docstring passed) and they never overwrite a real id.
+pub fn parse_django_json(report: &str) -> (HashMap<String, bool>, HashMap<String, bool>) {
+    let mut by_node = HashMap::new();
+    let mut by_func: HashMap<String, bool> = HashMap::new();
+    let mut by_desc: HashMap<String, bool> = HashMap::new();
+    for line in report.lines() {
+        let Some(payload) = line.trim().strip_prefix("CONTINUUM_TEST ") else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(payload) else {
+            continue;
+        };
+        let (Some(id), Some(ok)) = (v.get("id").and_then(|x| x.as_str()), v.get("ok").and_then(|x| x.as_bool()))
+        else {
+            continue;
+        };
+        by_node.insert(id.to_string(), ok);
+        if let Some((class_path, method)) = id.rsplit_once('.') {
+            by_node.insert(format!("{method} ({class_path})"), ok);
+            let entry = by_func.entry(method.to_string()).or_insert(true);
+            *entry = *entry && ok;
+        }
+        if let Some(desc) = v.get("desc").and_then(|x| x.as_str()) {
+            let desc = desc.trim();
+            if !desc.is_empty() {
+                let entry = by_desc.entry(desc.to_string()).or_insert(true);
+                *entry = *entry && ok;
+            }
+        }
+    }
+    // Docstrings fill gaps; they never shadow a canonical id or its rendering.
+    for (desc, ok) in by_desc {
+        by_node.entry(desc).or_insert(ok);
+    }
+    (by_node, by_func)
+}
+
 pub fn test_invocation(runner: TestRunner, test_files: &[String]) -> Vec<String> {
+    test_invocation_with(runner, test_files, false)
+}
+
+/// [`test_invocation`], plus whether django should be told to use the JSON runner.
+pub fn test_invocation_with(
+    runner: TestRunner,
+    test_files: &[String],
+    django_json: bool,
+) -> Vec<String> {
     match runner {
         TestRunner::Pytest => {
             let mut args: Vec<String> = vec!["-m".into(), "pytest".into()];
             args.extend(test_files.iter().cloned());
             // Flags must be era-portable — see the comment at the call site (`run_tests`).
             args.extend(["-v".into(), "-p".into(), "no:cacheprovider".into()]);
+            // Belt to [`strip_ansi`]'s braces: ask for no color at the SOURCE. A repo can
+            // force `--color=yes` from its own `setup.cfg` addopts (astropy does), and CLI
+            // args are appended after addopts so the later `--color=no` wins. This is the
+            // nicety — the parser's strip is what actually guarantees correctness, which is
+            // why an ancient pytest that rejected this flag still could not break grading.
+            args.push("--color=no".into());
             args
         }
         TestRunner::DjangoRuntests => {
             // Mirrors the official harness: verbosity 2 prints one line per test (the
-            // report we parse), test_sqlite is the settings module django's own suite
-            // ships for exactly this, and --parallel 1 keeps the per-test lines from
-            // interleaving across workers.
+            // report we parse when there are no JSON rows), test_sqlite is the settings
+            // module django's own suite ships for exactly this, and --parallel 1 keeps the
+            // per-test lines from interleaving across workers.
+            //
+            // The JSON runner is selected THROUGH settings (`TEST_RUNNER`), because that is
+            // the seam runtests.py actually reads — see [`DJANGO_JSON_SETTINGS_MODULE`]. Our
+            // shim re-exports test_sqlite, so this stays one settings argument either way.
+            let settings = if django_json {
+                DJANGO_JSON_SETTINGS_MODULE
+            } else {
+                "test_sqlite"
+            };
             let mut args: Vec<String> = vec![
                 "tests/runtests.py".into(),
                 "--verbosity".into(),
                 "2".into(),
-                "--settings=test_sqlite".into(),
+                format!("--settings={settings}"),
                 "--parallel".into(),
                 "1".into(),
             ];
@@ -1170,32 +1842,117 @@ fn django_directive(file: &str) -> String {
 /// The report line is `test_combine (expressions.tests.CombinedExprTests) ... ok` on
 /// django ≤4.0, and on ≥4.1 the class path grows a trailing method repeat
 /// (`...CombinedExprTests.test_combine) ... ok`) — normalized back so dataset ids hit.
+/// unittest's outcome vocabulary → pass/fail, or `None` for a line that is not an outcome.
+///
+/// ONE place, because the report has TWO line shapes (id-and-outcome on one line, or
+/// id-then-docstring-and-outcome across two) and both must classify identically. Two copies
+/// of this match is how a `skipped` counts as a pass in one shape and a non-outcome in the
+/// other — silent, and invisible in aggregate scores.
+///
+/// `skipped` and `expected failure` are PASSES: SWE-bench's own harness treats a test that
+/// declines to run as satisfied, and a test the suite knows is broken as behaving correctly.
+/// `unexpected success` is a FAILURE for the same reason — the suite's expectation was wrong.
+fn django_outcome(outcome: &str) -> Option<bool> {
+    if outcome.starts_with("ok")
+        || outcome.starts_with("skipped")
+        || outcome.starts_with("expected failure")
+    {
+        Some(true)
+    } else if outcome.starts_with("FAIL")
+        || outcome.starts_with("ERROR")
+        || outcome.starts_with("unexpected success")
+    {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// THE TWO-LINE DOCSTRING FORM (fixed 2026-08-17, found by the gold gate).
+///
+/// unittest's verbose output puts the outcome on the test-id line ONLY when the test has no
+/// docstring. With a docstring it prints TWO lines and the `... ok` lands on the SECOND:
+///
+/// ```text
+/// test_skip_if_db_feature (test_utils.tests.SkippingTestCase)
+/// Testing the django.test.skipIfDBFeature decorator. ... ok
+/// ```
+///
+/// This parser required `" ... "` AND `" ("` on ONE line, so BOTH lines fell through the
+/// `continue`s: the id line has no `" ... "`, the docstring line has no `" ("`. Every
+/// docstringed django test was therefore recorded NOWHERE, and absent-from-map reads
+/// downstream as not-passed.
+///
+/// Measured consequence, which is why this is not a cosmetic parse bug: django-10914's own
+/// GOLD patch graded `FAIL_TO_PASS 0/1, PASS_TO_PASS 35/40` and was reported as a
+/// "REGRESSION — your changes BROKE 5 test(s)", while the very output being quoted showed
+/// all five passing `... ok`. The 5 broken were the 5 docstringed ones. So django scores
+/// were never measuring django — and django is 114/300 of Lite (#383). Every django zero we
+/// have recorded is retro-actively uninterpretable.
+///
+/// Dataset ids for these tests may be EITHER spelling — SWE-bench's own id lists were
+/// harvested from this same verbose output, so some entries are the docstring text rather
+/// than the node id (e.g. "An exception is setUp() is reraised after disable() is called.").
+/// Both are therefore registered as keys for the same outcome; whichever spelling the
+/// dataset carries resolves. Registering both is not a fallback — it is the honest statement
+/// that one test has two names in this format.
 pub fn parse_django_report(report: &str) -> (HashMap<String, bool>, HashMap<String, bool>) {
     let mut by_node = HashMap::new();
     let mut by_func: HashMap<String, bool> = HashMap::new();
+    // A test-id line awaiting its outcome on a following docstring line: (func, class_norm).
+    let mut pending: Option<(String, String)> = None;
+    // Same reason as the pytest parser — a colorized runner must not become "0 of N".
+    let report = strip_ansi(report);
     for line in report.lines() {
         let line = line.trim();
         let Some((head, tail)) = line.split_once(" ... ") else {
+            // No outcome here. A bare `func (class.path)` line is the FIRST half of the
+            // two-line form — remember it. Anything else clears the pending slot so an
+            // outcome can never be attributed across unrelated output.
+            pending = match line
+                .split_once(" (")
+                .and_then(|(f, c)| c.strip_suffix(')').map(|c| (f, c)))
+            {
+                Some((func, class_path)) if !func.is_empty() && !class_path.is_empty() => {
+                    let class_norm = class_path
+                        .strip_suffix(&format!(".{func}"))
+                        .unwrap_or(class_path);
+                    Some((func.to_string(), class_norm.to_string()))
+                }
+                _ => None,
+            };
             continue;
         };
+        // An outcome line WITHOUT `" ("` is the docstring half. Attribute it to the id we
+        // remembered, and register the docstring text as a second key for the same test.
+        if !head.contains(" (") {
+            let outcome = tail.trim();
+            let ok = match django_outcome(outcome) {
+                Some(ok) => ok,
+                None => {
+                    pending = None;
+                    continue;
+                }
+            };
+            if let Some((func, class_norm)) = pending.take() {
+                by_node.insert(format!("{func} ({class_norm})"), ok);
+                let doc = head.trim();
+                if !doc.is_empty() {
+                    by_node.insert(doc.to_string(), ok);
+                }
+                let entry = by_func.entry(func).or_insert(true);
+                *entry = *entry && ok;
+            }
+            continue;
+        }
+        pending = None;
         let Some((func, class_part)) = head.split_once(" (") else {
             continue;
         };
         let Some(class_path) = class_part.strip_suffix(')') else {
             continue;
         };
-        let outcome = tail.trim();
-        let ok = if outcome.starts_with("ok")
-            || outcome.starts_with("skipped")
-            || outcome.starts_with("expected failure")
-        {
-            true
-        } else if outcome.starts_with("FAIL")
-            || outcome.starts_with("ERROR")
-            || outcome.starts_with("unexpected success")
-        {
-            false
-        } else {
+        let Some(ok) = django_outcome(tail.trim()) else {
             continue;
         };
         // django ≥4.1 prints `module.Class.test_name`; the dataset uses `module.Class`.
@@ -1210,14 +1967,73 @@ pub fn parse_django_report(report: &str) -> (HashMap<String, bool>, HashMap<Stri
     (by_node, by_func)
 }
 
+/// Remove ANSI escape sequences (CSI/SGR and OSC) from captured process output.
+///
+/// Borrowed when there is no `ESC` at all — the common case, since pytest suppresses color
+/// on a pipe — so the usual path allocates nothing.
+///
+/// Why a grader needs this at all (glass-boxed 2026-08-18): astropy's own `setup.cfg` carries
+/// `addopts = --color=yes`, which forces color even though our output is a pipe. Every result
+/// line then reads `…test_x.py::\x1b[1mtest_y\x1b[0m \x1b[32mPASSED\x1b[0m`, the escape lands
+/// INSIDE the node id and before the verdict, and a parser matching `starts_with("PASSED")`
+/// skips every line. The grader reported `PASS_TO_PASS 0 of 40` and declared the environment
+/// broken — while that same run printed `1 failed, 179 passed`. The suite was fine; the
+/// grader could not read it. A repo can force color from its own config, so stripping at the
+/// PARSER is the durable fix: it needs no flag, works on already-captured reports, and does
+/// not depend on any pytest version.
+pub fn strip_ansi(s: &str) -> std::borrow::Cow<'_, str> {
+    if !s.contains('\u{1b}') {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            // CSI: params/intermediates, then a final byte in @..~ ends the sequence.
+            Some('[') => {
+                for f in chars.by_ref() {
+                    if ('\u{40}'..='\u{7e}').contains(&f) {
+                        break;
+                    }
+                }
+            }
+            // OSC: runs until BEL or the ST pair (ESC \).
+            Some(']') => {
+                while let Some(f) = chars.next() {
+                    if f == '\u{7}' {
+                        break;
+                    }
+                    if f == '\u{1b}' {
+                        // ST is ESC \ — consume the backslash and stop.
+                        let _ = chars.next();
+                        break;
+                    }
+                }
+            }
+            // Any other two-byte escape: drop both bytes.
+            Some(_) => {}
+            None => break,
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
 /// Resolve pytest's `-v` report into a verdict per node id AND per bare function name.
 ///
 /// The dataset does not use one id shape. pytest and flask instances give node ids
 /// (`tests/test_x.py::test_y`); sympy gives BARE function names because sympy ships its own
 /// runner. Looking up both is what makes one grader serve every repo.
+///
+/// Color-forcing repos are handled by [`strip_ansi`] before matching — see its doc for the
+/// astropy incident this prevents.
 pub fn parse_pytest_report(report: &str) -> (HashMap<String, bool>, HashMap<String, bool>) {
     let mut by_node = HashMap::new();
     let mut by_func: HashMap<String, bool> = HashMap::new();
+    let report = strip_ansi(report);
     for line in report.lines() {
         let line = line.trim();
         let Some((node, rest)) = line.split_once(char::is_whitespace) else {
@@ -1307,7 +2123,16 @@ pub async fn run_tests(
     // arguments" before running a single test — every id read as failed, and the whole
     // 2019-pytest class graded p2p 0/N (live: pytest-5221 retry, 2026-08-12). Cosmetic
     // flags are not worth a version gate; `-v` and no:cacheprovider go back to 2.x.
-    let owned_args = test_invocation(runner, test_files);
+    // django is graded from CANONICAL ids, not from prose. `install_django_json_runner`
+    // drops a DiscoverRunner subclass into the clone that emits one machine-readable row
+    // per test keyed by `test.id()`; `test_invocation` then asks runtests.py to use it.
+    // If the drop fails we fall back to the verbose-report parser — reported, never silent,
+    // because a fallback that scores is indistinguishable from a fallback that lies.
+    let django_json = match runner {
+        TestRunner::DjangoRuntests => install_django_json_runner(repo_dir).await,
+        TestRunner::Pytest => false,
+    };
+    let owned_args = test_invocation_with(runner, test_files, django_json);
     let args: Vec<&str> = owned_args.iter().map(String::as_str).collect();
     let Ok(out) = run(&venv_py.to_string_lossy(), &args, Some(repo_dir)).await else {
         return (
@@ -1322,6 +2147,24 @@ pub async fn run_tests(
     );
     let (by_node, by_func) = match runner {
         TestRunner::Pytest => parse_pytest_report(&report),
+        // Machine-readable rows when the JSON runner is installed. If it emitted NOTHING
+        // (an import error in the runner or settings shim, a runtests.py that rejected the
+        // invocation, a crash before any test ran) fall back to the verbose report rather
+        // than scoring every id as failed — and say so, because a silent fallback here
+        // reads as a citizen's zero. This fallback is what kept django-10914's broken
+        // `--testrunner` invocation from grading as 40 capability failures.
+        TestRunner::DjangoRuntests if django_json => {
+            let (by_node, by_func) = parse_django_json(&report);
+            if by_node.is_empty() {
+                tracing::warn!(
+                    "the django JSON runner emitted no rows — falling back to the verbose \
+                     report. Grades from this run are less trustworthy (#383)."
+                );
+                parse_django_report(&report)
+            } else {
+                (by_node, by_func)
+            }
+        }
         TestRunner::DjangoRuntests => parse_django_report(&report),
     };
     let verdicts = ids
@@ -1424,6 +2267,60 @@ fn compose_failure_excerpt(
     }
 }
 
+/// THE GOLD GATE: grade the instance's OWN gold patch and require it to resolve.
+///
+/// This is the spine check [`SweInstance::patch`]'s own doc has promised since that field
+/// was written — "the spine check grades THIS; it must resolve or the environment is
+/// wrong" — and which did not exist. `grade(.., None)` means "grade the tree as the solver
+/// left it", not "grade gold", so nothing in the tree ever validated an env against a
+/// known-correct patch.
+///
+/// WHY THIS IS THE KEYSTONE FOR EVERY NUMBER WE REPORT. Without it a `resolved: false` has
+/// two indistinguishable causes: the citizen's patch was wrong, or the environment cannot
+/// score a correct patch at all. Measured 2026-08-17 on this box, the second is live and
+/// unquantified: a 2019-era django env carries pytest 8.4.2, and the module's own notes
+/// record era suites importing pytest internals that modern pytest deleted (flask 2.2's
+/// `from _pytest.monkeypatch import notset`). So today an unknown fraction of our zeros are
+/// harness artifacts being tallied as capability. That is not a measurement — it is noise
+/// with a number attached, and it is why 114/300 (#383) and #380 cannot be told apart from
+/// model failure by looking at scores.
+///
+/// The gate makes the distinction mechanical: gold resolves → the env can score, so a
+/// citizen's zero is HERS. Gold fails → the env is disqualified and no result from it may
+/// be reported as capability ([[an-absence-is-an-unfinished-measurement]]).
+///
+/// Deliberately a thin caller over [`grade`], not a parallel scorer: it must exercise the
+/// EXACT clone → apply → test path a real attempt takes, or it proves nothing about that
+/// path. A second implementation that agreed with itself would be the classic dead
+/// instrument.
+///
+/// `gate_ok == false` in the returned verdict is a DIFFERENT fact and is not a gate
+/// failure: it means FAIL_TO_PASS already passed on the pristine tree, so the instance
+/// carries no bug here. Callers must not conflate "this task cannot distinguish a fix"
+/// with "this environment is broken".
+pub async fn gold_gate(instance: &SweInstance, repo_dir: &Path) -> SweVerdict {
+    let mut verdict = grade(instance, repo_dir, Some(&instance.patch)).await;
+    // An env that cannot score its own gold patch is disqualified, and the reason has to
+    // survive into the receipt — a bare `resolved: false` here would read downstream as a
+    // capability zero, which is the exact confusion this gate exists to end.
+    if verdict.error.is_none() && !verdict.resolved {
+        verdict.error = Some(format!(
+            "GOLD GATE FAILED for {}: the instance's own gold patch did not resolve \
+             (FAIL_TO_PASS {}/{}, PASS_TO_PASS {}/{}). The environment cannot score a \
+             known-correct patch, so NO result from it is a capability measurement — \
+             not a zero, an absence. Era deps are the leading suspect (#380): check the \
+             interpreter rung against `interpreter_for_year` and the harness pytest \
+             version against what this era's suite can import.",
+            instance.instance_id,
+            verdict.f2p_passed,
+            verdict.f2p_total,
+            verdict.p2p_passed,
+            verdict.p2p_total,
+        ));
+    }
+    verdict
+}
+
 pub async fn grade(
     instance: &SweInstance,
     repo_dir: &Path,
@@ -1504,14 +2401,36 @@ pub async fn grade(
             verdict.error = Some(e);
             return verdict;
         }
-        let (pristine_p2p, _) = run_tests(repo_dir, &venv_py, &p2p, &test_files, runner).await;
+        let (pristine_p2p, pristine_report) =
+            run_tests(repo_dir, &venv_py, &p2p, &test_files, runner).await;
         if pristine_p2p.values().filter(|ok| **ok).count() == 0 {
             verdict.gate_ok = false;
+            // CARRY THE REPORT. This verdict is the ONLY artifact of the pristine run, and
+            // without the run's own output "the suite does not run in this environment" is
+            // a conclusion with its evidence deleted — the reader is left to reproduce it
+            // by hand and guess at the difference.
+            //
+            // Measured 2026-08-17, and it cost hours: astropy-14365 graded 0-of-8 here
+            // while the SAME invocation (`-m pytest <file> -v -p no:cacheprovider`, same
+            // venv, same tree) run by hand gave 8 passed + the instance's own bug failing —
+            // exactly the gate condition. Three hypotheses got proposed and none could be
+            // settled, because the one thing that would have named the divergence was
+            // discarded into `_` on this line. An instrument that knows the answer and
+            // drops it is worse than one that never looked.
+            let tail = report_tail(&pristine_report);
             verdict.error = Some(format!(
                 "UNGRADEABLE — PASS_TO_PASS passes 0 of {} on the PRISTINE tree: the \
                  suite does not run in this environment, so every score from this tree \
-                 is an env fault, never a capability verdict.",
-                verdict.p2p_total
+                 is an env fault, never a capability verdict.{}",
+                verdict.p2p_total,
+                if tail.is_empty() {
+                    " The pristine run produced NO output at all — the harness never \
+                     executed (a missing interpreter, a refused invocation, a run that \
+                     died before writing a byte), which is a different fault from a suite \
+                     that ran and failed.".to_string()
+                } else {
+                    format!("\n\nPRISTINE RUN OUTPUT (tail):\n{tail}")
+                }
             ));
             return verdict;
         }
@@ -1545,6 +2464,62 @@ pub async fn grade(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the env installs `-e .` — RUNTIME deps only — and astropy's
+    // conftest.py opens with `import hypothesis`, a TEST dep. pytest then dies loading
+    // conftest, PASS_TO_PASS reads 0/9 on the PRISTINE tree, the gold gate refuses to score,
+    // and every astropy instance is ungradeable no matter what a citizen writes (measured
+    // 2026-08-17). This picks the group whose contents the suite needs. The preference ORDER
+    // is the load-bearing part: a repo declaring both `dev` and `test` must get `test`, or we
+    // install a kitchen-sink group and inherit its resolution failures.
+    #[test]
+    fn the_test_extra_is_the_narrowest_group_the_repo_declares() {
+        let dir = std::env::temp_dir().join(format!("swe-extra-{}", std::process::id()));
+        let write = |body: &str| {
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("pyproject.toml"), body).unwrap();
+        };
+
+        write("[project.optional-dependencies]\ndev = []\ntest = []\n");
+        assert_eq!(test_extra_name(&dir).as_deref(), Some("test"), "test beats dev");
+
+        write("[project.optional-dependencies]\ndocs = []\ntesting = []\n");
+        assert_eq!(
+            test_extra_name(&dir).as_deref(),
+            Some("testing"),
+            "a repo that spells it `testing` still gets its suite deps"
+        );
+
+        // No test-shaped group, and no pyproject at all, both mean "install as before" —
+        // NOT "install something plausible". A wrong extra is a resolve failure on a repo
+        // that grades fine today.
+        write("[project.optional-dependencies]\ndocs = []\n");
+        assert_eq!(test_extra_name(&dir), None, "docs-only declares no suite deps");
+
+        // THE CASE THAT SHIPPED BROKEN (2026-08-17): astropy 5.3 has no
+        // [project.optional-dependencies] at all — its suite deps are setuptools
+        // declarative config. A pyproject-only parser returns None for the exact repo this
+        // fix exists for, which is what the live gold gate caught after I had already
+        // claimed the fix worked.
+        std::fs::remove_file(dir.join("pyproject.toml")).unwrap();
+        std::fs::write(
+            dir.join("setup.cfg"),
+            "[options]\npackages = find:\n\n[options.extras_require]\ntest =  # Required to run the suite.\n    pytest>=7.0\n    pytest-astropy>=0.10\ntest_all =\n    objgraph\n[options.package_data]\n* = data/*\n",
+        )
+        .unwrap();
+        assert_eq!(
+            test_extra_name(&dir).as_deref(),
+            Some("test"),
+            "setup.cfg extras are declarations too — and `test_all`, which sorts first \
+             alphabetically and is a superset, must NOT win over `test`"
+        );
+        let _ = std::fs::remove_file(dir.join("setup.cfg"));
+        write("[project]\nname = \"x\"\n");
+        assert_eq!(test_extra_name(&dir), None, "no optional-dependencies table");
+        std::fs::remove_file(dir.join("pyproject.toml")).unwrap();
+        assert_eq!(test_extra_name(&dir), None, "no pyproject at all");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     // what this catches: a SECOND swe env root. On 2026-08-17 two roots existed —
     // `swe_cache_dir()/envs` (live, 46 envs / 8 repos) and `~/.continuum/cache/swe-envs`
@@ -1813,6 +2788,61 @@ tests/test_x.py::TestC::test_param[3-4] PASSED";
         assert_eq!(verdict_for("test_never_ran", &by_node, &by_func), None);
     }
 
+    // what this catches: a COLORIZED report scoring 0 of N and being blamed on the environment.
+    // Live incident 2026-08-18 (astropy-14995): astropy's own setup.cfg carries
+    // `addopts = --color=yes`, so pytest emitted color onto a pipe. The escape lands INSIDE the
+    // node id and before the verdict, `starts_with("PASSED")` never matched, and the grader
+    // reported "UNGRADEABLE — PASS_TO_PASS passes 0 of 40 on the PRISTINE tree: the suite does
+    // not run in this environment" — in a run whose own tail read `1 failed, 179 passed`. The
+    // env was fine; the grader could not read it. Bytes below are the real shape pytest emits.
+    #[test]
+    fn a_colorized_report_parses_exactly_like_a_plain_one() {
+        let plain = "\
+astropy/nddata/mixins/tests/test_ndarithmetic.py::test_nddata_bitmask_arithmetic FAILED
+astropy/nddata/mixins/tests/test_ndarithmetic.py::test_arithmetics_data PASSED";
+        let colored = "\
+astropy/nddata/mixins/tests/test_ndarithmetic.py::\u{1b}[1mtest_nddata_bitmask_arithmetic\u{1b}[0m \u{1b}[31mFAILED\u{1b}[0m
+astropy/nddata/mixins/tests/test_ndarithmetic.py::\u{1b}[1mtest_arithmetics_data\u{1b}[0m \u{1b}[32mPASSED\u{1b}[0m";
+
+        let (plain_node, plain_func) = parse_pytest_report(plain);
+        let (color_node, color_func) = parse_pytest_report(colored);
+        assert_eq!(
+            color_node, plain_node,
+            "color must not change which node ids were seen"
+        );
+        assert_eq!(color_func, plain_func, "nor the bare-name verdicts");
+
+        // The specific thing that was returning "0 of N": a PASS must read as a pass.
+        assert_eq!(
+            verdict_for("test_arithmetics_data", &color_node, &color_func),
+            Some(true)
+        );
+        assert_eq!(
+            verdict_for("test_nddata_bitmask_arithmetic", &color_node, &color_func),
+            Some(false)
+        );
+        assert!(
+            !color_node.is_empty(),
+            "an empty map is the failure mode that got misreported as a broken environment"
+        );
+    }
+
+    // what this catches: strip_ansi corrupting ordinary text, or allocating when it need not.
+    #[test]
+    fn strip_ansi_is_borrow_only_when_clean_and_lossless_when_not() {
+        assert!(matches!(
+            strip_ansi("plain text ::  PASSED"),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        assert_eq!(strip_ansi("\u{1b}[32mPASSED\u{1b}[0m"), "PASSED");
+        // OSC (title-set) sequences terminate on BEL or ST, and swallow neither more nor less.
+        assert_eq!(strip_ansi("a\u{1b}]0;title\u{7}b"), "ab");
+        assert_eq!(strip_ansi("a\u{1b}]0;title\u{1b}\\b"), "ab");
+        // A truncated escape at end-of-input must not panic or emit garbage.
+        assert_eq!(strip_ansi("tail\u{1b}"), "tail");
+        assert_eq!(strip_ansi("tail\u{1b}["), "tail");
+    }
+
     // what this catches: a bare name appearing in two files where one fails — counting it as
     // passing would let real breakage through.
     #[test]
@@ -1879,20 +2909,28 @@ diff --git a/sympy/solvers/tests/test_other.py b/sympy/solvers/tests/test_other.
     fn a_run_still_marked_running_at_boot_is_journaled_as_killed() {
         let dir = tempfile::tempdir().expect("tmp");
         let p = dir.path();
+        // The name `agent/solve` ACTUALLY writes. This test used to spell it
+        // `swe-solve-*` — a name nothing in the tree has ever written — and asserted that
+        // an `agent-solve-*` file was "another subsystem's ledger" left untouched. There is
+        // no other subsystem: that WAS production, so both the reaper and the reboot guard
+        // were green here and dead in the field (see SOLVE_LEDGER_PREFIX for the 19-orphan
+        // measurement). A fixture that names the file differently from the writer proves
+        // nothing about the writer.
         std::fs::write(
-            p.join("swe-solve-alive.json"),
-            r#"{"state":"running","runId":"alive","instance":"sympy__sympy-22005"}"#,
+            solve_ledger_path(p, "alive"),
+            r#"{"state":"running","runId":"alive","instance":"sympy__sympy-22005",
+                "workspace":"/tmp/ws/sympy__sympy-22005","persona_id":"abc","acts":3}"#,
         )
         .unwrap();
         // A FINISHED run must survive the reap untouched — reaping a real verdict would
         // destroy the only record of a measurement that actually happened.
         std::fs::write(
-            p.join("swe-solve-done.json"),
+            solve_ledger_path(p, "done"),
             r#"{"instance":"sympy__sympy-21379","acts":7,"detached":false}"#,
         )
         .unwrap();
-        // An unrelated ledger from another subsystem is not ours to touch.
-        std::fs::write(p.join("agent-solve-other.json"), r#"{"state":"running"}"#).unwrap();
+        // A grade file is a SIBLING of its run, never a run — the `.grade` phantom.
+        std::fs::write(solve_grade_path(p, "done"), r#"{"resolved":true}"#).unwrap();
 
         assert_eq!(
             in_flight_solve_runs_in(p),
@@ -1903,7 +2941,7 @@ diff --git a/sympy/solvers/tests/test_other.py b/sympy/solvers/tests/test_other.
         let reaped = reap_orphaned_solve_runs_in(p);
         assert_eq!(reaped, vec!["alive".to_string()]);
 
-        let after = std::fs::read_to_string(p.join("swe-solve-alive.json")).unwrap();
+        let after = std::fs::read_to_string(solve_ledger_path(p, "alive")).unwrap();
         assert!(
             after.contains("\"failed\":true"),
             "the orphan is now a FAILED run: {after}"
@@ -1912,20 +2950,133 @@ diff --git a/sympy/solvers/tests/test_other.py b/sympy/solvers/tests/test_other.
             after.contains("killed by a core restart"),
             "and it names the cause rather than leaving a bare zero: {after}"
         );
-        let done = std::fs::read_to_string(p.join("swe-solve-done.json")).unwrap();
+        // The reap ANNOTATES; it must not erase where the dead run left its patch. Without
+        // this the orphan becomes ungradeable — the artifact is on disk and nothing can say
+        // where.
+        assert!(
+            after.contains("/tmp/ws/sympy__sympy-22005"),
+            "the workspace pointer survives the reap: {after}"
+        );
+        assert!(
+            after.contains("\"acts\":3"),
+            "and so does what the run had journaled about itself: {after}"
+        );
+
+        let done = std::fs::read_to_string(solve_ledger_path(p, "done")).unwrap();
         assert!(
             done.contains("\"acts\":7"),
             "a finished verdict is never rewritten"
         );
-        let other = std::fs::read_to_string(p.join("agent-solve-other.json")).unwrap();
+        let grade = std::fs::read_to_string(solve_grade_path(p, "done")).unwrap();
         assert!(
-            !other.contains("failed"),
-            "another subsystem's ledger is untouched"
+            grade.contains("\"resolved\":true"),
+            "a grade sibling is never enumerated as a run, so never reaped"
         );
 
         assert!(
             in_flight_solve_runs_in(p).is_empty(),
             "after the reap nothing is in flight — a second boot must not re-reap"
+        );
+    }
+
+    // what this catches: a REAL verdict must survive the process that produced it, and the
+    // two verdicts that must NEVER be recorded must not be. Before 2026-08-18 nothing was
+    // recorded at all: two genuine SWE-bench Lite resolutions were watched passing and the
+    // system retained nothing, so the board kept calling their artifacts `ungraded`.
+    //
+    // The fixture goes through `record_verdict` — the PRODUCTION writer — and is read back
+    // through `read_verdict`/`recorded_verdicts`, the readers the board actually uses. A
+    // hand-authored file here would test my belief about the writer instead of the writer,
+    // which is exactly how the boot reaper stayed green while pointed at a filename nothing
+    // emits ([[run-ledgers-are-typed-artifacts]] L4).
+    #[test]
+    fn a_real_verdict_persists_and_gold_or_errored_ones_never_do() {
+        let home = tempfile::tempdir().expect("tmp");
+        // `verdict_dir` derives from CONTINUUM_HOME via swe_cache_dir; isolate this test's
+        // writes rather than touching the operator's real benchmarks root.
+        let prev = std::env::var("CONTINUUM_HOME").ok();
+        std::env::set_var("CONTINUUM_HOME", home.path());
+
+        let real = SweVerdict {
+            instance_id: "astropy__astropy-14995".into(),
+            resolved: true,
+            f2p_passed: 1,
+            f2p_total: 1,
+            p2p_passed: 40,
+            p2p_total: 40,
+            gate_ok: true,
+            ..Default::default()
+        };
+        assert!(record_verdict(&real, false).unwrap().is_some());
+
+        let back = read_verdict("astropy__astropy-14995").expect("a recorded verdict reads back");
+        assert!(back.resolved, "resolution survives the round trip");
+        assert_eq!((back.f2p_passed, back.p2p_total), (1, 40), "counts survive too");
+        assert_eq!(
+            recorded_verdicts().len(),
+            1,
+            "and the board's enumerator sees exactly it"
+        );
+
+        // A gold pass proves the ENV, not the citizen. Recording it would render a positive
+        // control as our result.
+        let gold = SweVerdict {
+            instance_id: "sympy__sympy-24152".into(),
+            resolved: true,
+            ..Default::default()
+        };
+        assert!(record_verdict(&gold, true).unwrap().is_none(), "gold never records");
+
+        // An errored verdict is an ABSENCE, never a scored zero (#384). Two ways in: an env
+        // fault, and — found by the live positive control the day this landed — an EMPTY
+        // candidate. A pristine tree grades `resolved: false, gate_ok: true` forever, which
+        // is indistinguishable from a citizen who tried and missed, so `swe-grade` now stamps
+        // an empty candidate as an error rather than letting the board score her absence.
+        let errored = SweVerdict {
+            instance_id: "django__django-11049".into(),
+            error: Some("no candidate patch to grade — the workspace holds no diff".into()),
+            ..Default::default()
+        };
+        assert!(
+            record_verdict(&errored, false).unwrap().is_none(),
+            "an errored run is an absence, not a tallied failure"
+        );
+
+        assert_eq!(
+            recorded_verdicts().len(),
+            1,
+            "neither the control nor the fault reached the durable record"
+        );
+
+        match prev {
+            Some(v) => std::env::set_var("CONTINUUM_HOME", v),
+            None => std::env::remove_var("CONTINUUM_HOME"),
+        }
+    }
+
+    // what this catches: the run-id parse must accept the name the writer emits and reject
+    // the grade sibling. Both halves were re-derived per call site before 2026-08-18, and
+    // the two spellings diverged (`swe-solve-` vs `agent-solve-`), which silently disarmed
+    // the boot reaper AND the reboot guard for every production run.
+    #[test]
+    fn a_ledger_file_name_yields_its_run_id_and_a_grade_sibling_yields_none() {
+        assert_eq!(
+            solve_run_id_from_file_name("agent-solve-claim-912427a1.json"),
+            Some("claim-912427a1")
+        );
+        assert_eq!(
+            solve_run_id_from_file_name("agent-solve-claim-912427a1.grade.json"),
+            None,
+            "a grade is read as a sibling, never enumerated as a run"
+        );
+        assert_eq!(solve_run_id_from_file_name("agent-solve-.json"), None);
+        assert_eq!(solve_run_id_from_file_name("swe-solve-legacy.json"), None);
+        assert_eq!(solve_run_id_from_file_name("competition-abc.json"), None);
+        // The writer and the reader must agree by construction, not by memory.
+        let path = solve_ledger_path(std::path::Path::new("/x"), "r1");
+        assert_eq!(
+            solve_run_id_from_file_name(path.file_name().unwrap().to_str().unwrap()),
+            Some("r1")
         );
     }
 
@@ -1989,8 +3140,92 @@ diff --git a/sympy/solvers/tests/test_other.py b/sympy/solvers/tests/test_other.
                 "-v",
                 "-p",
                 "no:cacheprovider",
+                "--color=no",
             ],
-            "the pytest argv is byte-identical to the pre-seam grader"
+            "the pytest argv pins the era-portable flag set, color explicitly OFF"
+        );
+    }
+
+    // what this catches: selecting the JSON runner through a flag runtests.py does not have.
+    // Shipped once as `--testrunner=continuum_json_runner.JsonRunner` — argparse rejected the
+    // WHOLE invocation ("unrecognized arguments"), so django-10914's own GOLD patch graded
+    // 0/40 in 4 seconds. runtests.py has no such flag in ANY era; it reads settings.TEST_RUNNER
+    // and defaults it only when unset (verified in-tree at 1.11/2.2/3.2/4.2/5.2/main). So the
+    // runner is selected by a settings MODULE, and the invocation must differ from the plain
+    // one in exactly one argument — the settings value — and in nothing else.
+    #[test]
+    fn the_json_runner_is_selected_through_settings_never_a_flag() {
+        let files = vec!["tests/expressions/tests.py".to_string()];
+        let plain = test_invocation_with(TestRunner::DjangoRuntests, &files, false);
+        let json = test_invocation_with(TestRunner::DjangoRuntests, &files, true);
+
+        assert_eq!(plain.len(), json.len(), "the JSON path adds no argument");
+        let differences: Vec<_> = plain.iter().zip(&json).filter(|(a, b)| a != b).collect();
+        assert_eq!(
+            differences,
+            vec![(
+                &"--settings=test_sqlite".to_string(),
+                &format!("--settings={DJANGO_JSON_SETTINGS_MODULE}")
+            )],
+            "settings is the ONLY difference: {plain:?} vs {json:?}"
+        );
+        assert!(
+            !json.iter().any(|a| a.contains("--testrunner")),
+            "runtests.py has no --testrunner flag; passing one aborts the run before any test"
+        );
+        // The shim must inherit django's own suite settings rather than restate them, or it
+        // drifts from whatever the era's test_sqlite happens to configure.
+        assert!(DJANGO_JSON_SETTINGS_SRC.contains("from test_sqlite import *"));
+        assert!(DJANGO_JSON_SETTINGS_SRC
+            .contains(&format!("TEST_RUNNER = \"{DJANGO_JSON_RUNNER_MODULE}.JsonRunner\"")));
+    }
+
+    // what this catches: a canonical id alone cannot grade django. SWE-bench harvested its
+    // django ids from unittest's verbose log, and unittest prints a test's DOCSTRING instead
+    // of its id when it has one — so for those tests the dataset's PASS_TO_PASS entry is
+    // docstring prose with no id in it at all. Measured on django-10914's gold gate: with
+    // ids + renderings only, p2p capped at 38/40 and the two misses were exactly its two
+    // docstring-spelled ids. All three spellings must resolve to the same outcome, and a
+    // docstring shared by two tests must fold conservatively rather than let a pass mask
+    // a fail.
+    #[test]
+    fn a_docstringed_django_test_resolves_by_its_docstring_too() {
+        let report = "\
+CONTINUUM_TEST {\"id\": \"test_utils.tests.AssertRaisesMsgTest.test_special_re_chars\", \"ok\": true, \"desc\": \"assertRaisesMessage shouldn't interpret RE special chars.\"}
+CONTINUUM_TEST {\"id\": \"test_utils.tests.Plain.test_plain\", \"ok\": true}
+CONTINUUM_TEST {\"id\": \"a.B.test_shared_one\", \"ok\": true, \"desc\": \"A shared docstring.\"}
+CONTINUUM_TEST {\"id\": \"a.B.test_shared_two\", \"ok\": false, \"desc\": \"A shared docstring.\"}
+noise that is not a row
+CONTINUUM_TEST not json at all";
+        let (by_node, by_func) = parse_django_json(report);
+
+        // The dataset's spelling for a docstringed test IS the docstring.
+        assert_eq!(
+            verdict_for(
+                "assertRaisesMessage shouldn't interpret RE special chars.",
+                &by_node,
+                &by_func
+            ),
+            Some(true),
+            "a docstring-spelled dataset id must resolve"
+        );
+        // …and the canonical + rendered spellings of that same test still resolve.
+        for spelling in [
+            "test_utils.tests.AssertRaisesMsgTest.test_special_re_chars",
+            "test_special_re_chars (test_utils.tests.AssertRaisesMsgTest)",
+        ] {
+            assert_eq!(verdict_for(spelling, &by_node, &by_func), Some(true), "{spelling}");
+        }
+        // A docstring on two tests, one failing, must NOT read as a pass.
+        assert_eq!(
+            verdict_for("A shared docstring.", &by_node, &by_func),
+            Some(false),
+            "a shared docstring folds conservatively"
+        );
+        // A test with no docstring is unaffected, and unparseable lines are skipped.
+        assert_eq!(
+            verdict_for("test_utils.tests.Plain.test_plain", &by_node, &by_func),
+            Some(true)
         );
     }
 
