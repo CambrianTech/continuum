@@ -2870,6 +2870,39 @@ impl Drop for ServingLudicrousHold {
 
 /// True while at least one caller demands Ludicrous (Performance) serving — [`host_budget`]
 /// pins `PowerMode::Performance` regardless of the pressure read.
+/// Last VRAM ceiling the governed board actually reported this process, and when.
+/// The middle rung of the substitute-value ladder: when the board goes quiet, an old
+/// REAL number keeps the planner honest where a fabricated zero floors it.
+static LAST_GOOD_VRAM_CEILING: AtomicU64 = AtomicU64::new(0);
+static LAST_GOOD_VRAM_CEILING_AT_MS: AtomicU64 = AtomicU64::new(0);
+
+/// The device's PHYSICAL VRAM, seeded once at boot from the GPU monitor. A static
+/// hardware fact, known long before any pressure sample — which is precisely why a cold
+/// boot never has to guess zero. 0 = no GPU reported a size.
+static DEVICE_VRAM_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+/// Epoch milliseconds for the ladder's staleness arithmetic. Local because `now_ms` is
+/// currently hand-rolled in five files tree-wide; adding a sixth private copy here would
+/// be worse than reusing one, and hoisting all five is its own change, not this one.
+fn epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Seed the cold-boot prior. Called once as the serving daemon starts, BEFORE the first
+/// plan, so the very first tick already has a real number to stand on.
+pub fn seed_device_vram_prior(total_bytes: u64) {
+    DEVICE_VRAM_TOTAL.store(total_bytes, Ordering::Relaxed);
+    crate::probe!(
+        class = "serving.vram_ceiling_prior.seeded",
+        total_bytes = total_bytes,
+        gib = format!("{:.2}", total_bytes as f64 / 1024.0 / 1024.0 / 1024.0).as_str(),
+        "cold-boot VRAM prior seeded from the device",
+    );
+}
+
 pub fn serving_ludicrous_active() -> bool {
     SERVING_LUDICROUS_HOLDS.load(Ordering::Acquire) > 0
 }
@@ -2936,26 +2969,54 @@ fn governed_vram_ceiling(resource_daemon: &ResourceDaemon) -> Option<u64> {
 /// Joel, 2026-08-05: "this philosophy of 'errors are bad' has ruined most of my
 /// projects" — a fallback value is only legitimate when the fallback is VISIBLE.
 fn governed_vram_ceiling_or_report(resource_daemon: &ResourceDaemon, site: &'static str) -> u64 {
-    match governed_vram_ceiling(resource_daemon) {
-        Some(bytes) => bytes,
-        None => {
-            crate::probe!(
-                class = "serving.vram_ceiling_unknown",
-                site = site,
-                planning_with_bytes = 0u64,
-                "governed VRAM ceiling UNKNOWN at {site} — no Vram row on the resource board. \
-                 Planning as 0 bytes, which is NOT evidence the GPU is full."
-            );
-            tracing::warn!(
-                site,
-                "governed VRAM ceiling UNKNOWN (no Vram row on the resource board) — \
-                 planning as 0 bytes. If serving is floored or refusing lanes on a machine \
-                 with free VRAM, this is why: the governor has not reported, not that the \
-                 GPU is full."
-            );
-            0
-        }
+    // THE SUBSTITUTE-VALUE LADDER (#438). This used to be `.unwrap_or(0)`, and that zero
+    // — which no monitor ever measured — is what handed the planner `usable_gb = 0` at
+    // boot and got a 0.5B spawned on a 64 GB machine. See
+    // [`crate::resources::ceiling_prior`] for why 0 is safe for a GRANTER and
+    // catastrophic for a PLANNER, and why every rung below beats it.
+    let board = governed_vram_ceiling(resource_daemon);
+
+    // Record every real reading so the NEXT silent tick has something honest to stand on.
+    if let Some(bytes) = board {
+        LAST_GOOD_VRAM_CEILING.store(bytes, Ordering::Relaxed);
+        LAST_GOOD_VRAM_CEILING_AT_MS.store(epoch_ms(), Ordering::Relaxed);
     }
+
+    let last_at = LAST_GOOD_VRAM_CEILING_AT_MS.load(Ordering::Relaxed);
+    let reading = crate::resources::ceiling_prior::decide(crate::resources::CeilingEvidence {
+        board_bytes: board,
+        last_good: (last_at > 0).then(|| {
+            (
+                LAST_GOOD_VRAM_CEILING.load(Ordering::Relaxed),
+                epoch_ms().saturating_sub(last_at),
+            )
+        }),
+        device_total_bytes: match DEVICE_VRAM_TOTAL.load(Ordering::Relaxed) {
+            0 => None,
+            n => Some(n),
+        },
+    });
+
+    // Only NON-measured rungs are worth a probe row: a healthy board reading every tick
+    // is the steady state and would drown the stream (#399). A prior in use is exactly
+    // the condition an operator needs to see, so it always speaks.
+    if reading.provenance != crate::resources::Provenance::Measured {
+        crate::probe!(
+            class = "serving.vram_ceiling_prior",
+            site = site,
+            bytes = reading.bytes,
+            gib = format!("{:.2}", reading.bytes as f64 / 1024.0 / 1024.0 / 1024.0).as_str(),
+            provenance = format!("{:?}", reading.provenance).as_str(),
+            why = reading.note,
+            "planning against a SUBSTITUTE ceiling, not a measurement",
+        );
+    }
+
+    // `Unknown` is the one rung with no number, and it stays 0 HERE on purpose: with no
+    // board, no history and no device, refusing to plan is the honest outcome. The
+    // difference from before is that this is now the unreachable last rung on any machine
+    // with a GPU, instead of the FIRST thing a cold boot hit.
+    reading.usable_bytes().unwrap_or(0)
 }
 
 /// Performance-core proxy for the lane cap. `num_cpus::get_physical()` is the
@@ -3411,6 +3472,12 @@ impl ServiceModule for ServingDaemonModule {
         // authority (#79). See `register_as_consumer` — this is monitor-not-reserve:
         // no lease acquired, `available` math untouched, the authority simply stops
         // being blind to the ~multi-GB model actually resident.
+        // SEED THE COLD-BOOT PRIOR FIRST — before register_as_consumer, before the first
+        // reconcile, before anything can plan. The device's physical VRAM is a static
+        // hardware fact available immediately; without it the very first plan runs on the
+        // Unknown rung and floors, which is exactly the #438 boot transient.
+        seed_device_vram_prior(self.gpu.total_vram_bytes());
+
         self.register_as_consumer();
         // Reap orphaned llama-server lanes left by a crashed/SIGKILLed predecessor
         // BEFORE reconciling to the new plan — a mid-eval crash leaves ephemeral
