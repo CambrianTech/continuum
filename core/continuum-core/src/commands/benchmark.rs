@@ -2201,6 +2201,40 @@ pub(crate) async fn grade_swe(p: SweGradeParams) -> Result<SweGradeResult, Comma
     };
     let patch_bytes = candidate.as_ref().map(|c| c.len()).unwrap_or(0);
 
+    // AN EMPTY CANDIDATE IS AN ABSENCE, NOT A ZERO — refuse before spending a clone on it.
+    //
+    // Grading a pristine tree at `base_commit` ALWAYS yields `resolved: false` with
+    // `gate_ok: true`: the FAIL_TO_PASS test correctly fails because the bug is still there.
+    // That is byte-identical downstream to a citizen who tried and missed, so recording it
+    // manufactures a capability zero out of nothing — the #384/#386 class, and the exact
+    // failure this arm's own `gold_gate` comment exists to prevent one screen above.
+    //
+    // Caught by the positive control on 2026-08-18, minutes after verdict persistence landed:
+    // re-grading astropy-14995 (a REAL pass, watched at F2P 1/1 / P2P 40/40 that afternoon)
+    // returned `patchBytes: 0, resolved: false` and PERSISTED it. Her tree had been re-cloned
+    // — `git reflog` showed exactly two entries, `clone` then `checkout`, no work — so the
+    // artifact was gone and the harness scored its own absence as her failure. One run of the
+    // control turned a silent laundering bug into a named one.
+    //
+    // Also stops the experience stream teaching "you failed" from a tree that was wiped: the
+    // append below gates on `error.is_none()`, so an absence correctly teaches nothing.
+    if !p.gold.unwrap_or(false) && patch_bytes == 0 {
+        return Ok(SweGradeResult::from((
+            SweVerdict {
+                instance_id: instance.instance_id.clone(),
+                error: Some(format!(
+                    "no candidate patch to grade for {} — the workspace holds no diff (a fresh \
+                     or reset checkout), so there is nothing to score. This is an ABSENCE, not \
+                     a failed attempt: grading a pristine tree would report resolved=false for \
+                     a citizen who never got the chance.",
+                    instance.instance_id
+                )),
+                ..Default::default()
+            },
+            patch_bytes,
+        )));
+    }
+
     let work = swe_bench::swe_cache_dir()
         .join("work")
         .join(&instance.instance_id);

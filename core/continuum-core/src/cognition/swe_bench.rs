@@ -3016,10 +3016,14 @@ diff --git a/sympy/solvers/tests/test_other.py b/sympy/solvers/tests/test_other.
         };
         assert!(record_verdict(&gold, true).unwrap().is_none(), "gold never records");
 
-        // An errored verdict is an ABSENCE (clone/env fault), never a scored zero (#384).
+        // An errored verdict is an ABSENCE, never a scored zero (#384). Two ways in: an env
+        // fault, and — found by the live positive control the day this landed — an EMPTY
+        // candidate. A pristine tree grades `resolved: false, gate_ok: true` forever, which
+        // is indistinguishable from a citizen who tried and missed, so `swe-grade` now stamps
+        // an empty candidate as an error rather than letting the board score her absence.
         let errored = SweVerdict {
             instance_id: "django__django-11049".into(),
-            error: Some("env build failed".into()),
+            error: Some("no candidate patch to grade — the workspace holds no diff".into()),
             ..Default::default()
         };
         assert!(
