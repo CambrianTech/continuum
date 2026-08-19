@@ -31,6 +31,7 @@ pub mod act_observe;
 pub mod adaptive_throughput;
 pub mod audit;
 pub mod bench_round;
+pub mod round_readiness;
 pub mod benchmark;
 pub mod benchmark_humaneval;
 pub mod channel_digest;

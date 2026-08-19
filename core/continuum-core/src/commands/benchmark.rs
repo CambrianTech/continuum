@@ -624,6 +624,16 @@ pub struct BenchmarkDispatchParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub drive: Option<crate::cognition::bench_round::WorkDriver>,
+    /// Stage the round even though serving is NOT decode-verified (#442).
+    ///
+    /// Off by default, and the default is the point: dispatch refuses to post cards no
+    /// citizen can work, because a round staged into a dead lane looks dispatched and is
+    /// inert (#455). This is the explicit operator override — same contract as
+    /// `start --force` (#420) — and it announces itself in the log rather than passing
+    /// silently, since a gate that can be skipped without a trace is not a gate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub force: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -1353,13 +1363,55 @@ impl ActionCommand for BenchmarkDispatch {
         // launch a solve into a corpse, self-healing on the next dispatch). NOTE: this caps THIS
         // dispatch call; the global in-flight-solve admission gate shared with work/claim
         // (#385/#386) is the broader fix.
-        let solve_cap: u32 = match crate::inference::llama_server::await_ready_serving(
-            std::time::Duration::from_secs(30),
+        //
+        // #442, and the correction that makes it a GATE: the probe below was already here and
+        // already correct — its answer was simply advisory. On a dead lane this set the cap to
+        // zero and STAGED THE CARDS ANYWAY, posting a full round of work to a board with
+        // nothing on the box able to decode a token (#455: "we stage work into the gap"). A
+        // not-ready lane is now a STATE the round stops at, not a parameter that silently
+        // degrades it into an empty round.
+        //
+        // The wait budget is DERIVED, never invented: `DEFAULT_SERVING_WAIT` is
+        // `READY_TIMEOUT + margin` — the spawner's own load budget — so this gate can never
+        // declare failure before a legitimate cold load has had its full window. The flat 30s
+        // that used to be here was exactly that bug in miniature.
+        let awaited = crate::inference::llama_server::await_ready_serving(
+            crate::inference::llama_server::DEFAULT_SERVING_WAIT,
         )
-        .await
-        {
-            Some(s) => s.lanes.max(1),
-            None => 0,
+        .await;
+        let solve_cap: u32 = {
+            use crate::cognition::round_readiness::{decide, RoundReadiness};
+            let current = crate::inference::llama_server::current_serving();
+            match decide(awaited.as_ref(), Some(&current)) {
+                RoundReadiness::Ready { lanes } => lanes,
+                RoundReadiness::Blocked(reason) => {
+                    let why = reason.explain();
+                    crate::probe!(
+                        class = "bench.round.staging_blocked",
+                        benchmark = spec.name,
+                        forced = p.force.unwrap_or(false),
+                        reason = why.as_str(),
+                        "STAGING → READY refused: serving cannot work this round (#442)",
+                    );
+                    // Refuse, with the override announcing itself — same contract as
+                    // `start --force` (#420). A gate with no escape gets worked around;
+                    // a silent escape is worse than no gate.
+                    if !p.force.unwrap_or(false) {
+                        return Err(CommandError::Invalid(format!(
+                            "benchmark/dispatch refused to stage `{}`: {why}\n\
+                             (pass --force to stage anyway — it will post cards that cannot be \
+                             worked until a lane comes up)",
+                            spec.name
+                        )));
+                    }
+                    tracing::warn!(
+                        benchmark = %spec.name,
+                        reason = %why,
+                        "--force: staging a round into a lane that is NOT decode-verified"
+                    );
+                    0
+                }
+            }
         };
         // OPEN the round BEFORE the first card exists. Kickoffs go out inside the loop, so
         // a citizen can claim card 1 while card 2 is still being posted — and `work/claim`

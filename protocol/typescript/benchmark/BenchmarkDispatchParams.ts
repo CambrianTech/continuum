@@ -81,4 +81,14 @@ prune: boolean | null,
  * deliver the second one — but it depends on the kickoff→claim hop that used to
  * stall rounds, so it is opt-in until that hop is proven under residency.
  */
-drive?: WorkDriver, };
+drive?: WorkDriver, 
+/**
+ * Stage the round even though serving is NOT decode-verified (#442).
+ *
+ * Off by default, and the default is the point: dispatch refuses to post cards no
+ * citizen can work, because a round staged into a dead lane looks dispatched and is
+ * inert (#455). This is the explicit operator override — same contract as
+ * `start --force` (#420) — and it announces itself in the log rather than passing
+ * silently, since a gate that can be skipped without a trace is not a gate.
+ */
+force?: boolean, };
