@@ -1235,6 +1235,24 @@ pub fn start_server(
                 );
             }
         }
+        // HOST RAM (#56). Until 2026-08-19 this vec held ONLY the GPU source, so
+        // `capacity(Ram)` was 0 and therefore `available_for(_, Ram)` returned 0 for every
+        // consumer, permanently — the whole RAM half of the governor was structurally
+        // unreachable while looking finished. Nothing noticed because serving/Bevy/voice
+        // lease VRAM; the first consumer to plan against RAM (benchmark staging) was refused
+        // on a box with tens of gigabytes free. Unlike the GPU there is no detect() that can
+        // fail: every host has RAM, so this source is unconditional.
+        let host_ram = crate::resources::HostRamCapacitySource::with_default_reserve(
+            crate::resources::LiveHostMemory::new(),
+        );
+        log_info!(
+            "ipc",
+            "server",
+            "ResourceGovernor: host RAM governed — ceiling {} MB (reserve held back for the OS)",
+            crate::resources::CapacitySource::ceiling_bytes(&host_ram) / (1024 * 1024)
+        );
+        capacity_sources.push(Arc::new(host_ram));
+
         crate::resources::ResourceDaemon::start(
             capacity_sources,
             Vec::new(),

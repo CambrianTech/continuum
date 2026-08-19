@@ -109,6 +109,132 @@ impl CapacitySource for GpuCapacitySource {
     }
 }
 
+/// The two live host-RAM numbers, behind a trait so a test can drive them without a
+/// running [`MemoryPressureMonitor`] — same injection shape as `RenderSurface` and
+/// `StagingResidency`.
+pub trait HostMemoryReader: Send + Sync {
+    /// Total physical RAM. A CONSTANT for the machine, so implementations read it once.
+    fn total_bytes(&self) -> u64;
+    /// Free physical RAM as of the monitor's last poll, or `None` before the first one.
+    /// `None` is "unknown", NEVER "zero" — see [`HostRamCapacitySource::used_bytes`].
+    fn available_bytes(&self) -> Option<u64>;
+}
+
+/// Reads the live host through the [`MemoryPressureMonitor`]'s already-published numbers.
+///
+/// Total is probed ONCE at construction (`sysinfo::total_memory()`) because physical RAM is a
+/// stable fact about the machine, and available comes from
+/// [`current_available_bytes`](crate::system_resources::memory_pressure::current_available_bytes)
+/// — a lock-free atomic the monitor loop refreshes every 2s. Both reads satisfy the module's
+/// non-blocking contract; neither touches the reporter list (`budget_snapshot()` DOES — it locks
+/// and calls `budget()`/`report()` on every reporter, which must never happen on the daemon's
+/// hot tick with the accounting lock held).
+pub struct LiveHostMemory {
+    total: u64,
+}
+
+impl Default for LiveHostMemory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LiveHostMemory {
+    pub fn new() -> Self {
+        let mut sys = sysinfo::System::new();
+        sys.refresh_memory();
+        Self {
+            total: sys.total_memory(),
+        }
+    }
+}
+
+impl HostMemoryReader for LiveHostMemory {
+    fn total_bytes(&self) -> u64 {
+        self.total
+    }
+    fn available_bytes(&self) -> Option<u64> {
+        crate::system_resources::memory_pressure::current_available_bytes()
+    }
+}
+
+/// HOST RAM as a governed axis (#56).
+///
+/// # Why this did not exist until 2026-08-19, and what it cost
+///
+/// The governor has carried [`ResourceKind::Ram`] through leases, footprints, reclaim, and
+/// `available_for` since #56 — but the daemon's `capacity_sources` vec held ONLY the GPU source.
+/// So `capacity(Ram)` was 0, and therefore `available_for(_, Ram)` returned 0 for EVERY consumer,
+/// permanently. Serving, Bevy and Voice never noticed because they lease VRAM. The first
+/// consumer to plan against RAM — benchmark staging — was refused instantly, on a box with tens
+/// of gigabytes free.
+///
+/// The machinery was complete and one wire was missing, which is the failure shape this
+/// codebase keeps producing: a capability that is structurally unreachable while looking
+/// finished. It surfaced only because a new consumer actually tried to use it.
+///
+/// # The cold-boot trap, and why the ceiling is probed once
+///
+/// `total_bytes` from the monitor's snapshot is 0 until its first poll. A ceiling of 0 is not
+/// "no RAM" — it is "not measured yet" — and reporting it would reproduce the exact defect
+/// above for the first seconds of every boot. Physical RAM does not change, so it is read ONCE
+/// at construction and the ceiling is correct immediately.
+pub struct HostRamCapacitySource<R: HostMemoryReader> {
+    reader: R,
+    /// Bytes held back unconditionally so we never lease the host into the OOM killer's reach.
+    reserve_bytes: u64,
+}
+
+/// Bytes held back from the RAM ceiling so leases can never reach the OOM killer.
+///
+/// Proportional with bounds, because neither end works as a constant: a flat 4 GiB is
+/// noise on a 128 GB M5 and HALF the machine on an 8 GB box. An eighth, clamped to
+/// [1 GiB, 8 GiB], keeps the OS and the untracked slack solvent at every tier this
+/// substrate targets. ONE place, so a tier change is one edit.
+pub fn default_ram_reserve_for(total_bytes: u64) -> u64 {
+    const GIB: u64 = 1024 * 1024 * 1024;
+    (total_bytes / 8).clamp(GIB, 8 * GIB)
+}
+
+impl<R: HostMemoryReader> HostRamCapacitySource<R> {
+    pub fn new(reader: R, reserve_bytes: u64) -> Self {
+        Self {
+            reader,
+            reserve_bytes,
+        }
+    }
+
+    /// The production constructor — reserve derived from the machine it is running on.
+    pub fn with_default_reserve(reader: R) -> Self {
+        let reserve = default_ram_reserve_for(reader.total_bytes());
+        Self::new(reader, reserve)
+    }
+}
+
+impl<R: HostMemoryReader> CapacitySource for HostRamCapacitySource<R> {
+    fn kind(&self) -> ResourceKind {
+        ResourceKind::Ram
+    }
+
+    fn ceiling_bytes(&self) -> u64 {
+        self.reader
+            .total_bytes()
+            .saturating_sub(self.reserve_bytes)
+    }
+
+    fn used_bytes(&self) -> u64 {
+        // Before the monitor's first poll there is NO reading. Report 0 — the trait's documented
+        // degradation for a source with no physical monitor behind it, which leaves the governor
+        // at `capacity − granted`. The alternative (treating unknown as total-consumed) would
+        // refuse every RAM consumer for the first seconds of every boot, which is the very bug
+        // this type exists to end. The window is one 2s poll.
+        match self.reader.available_bytes() {
+            Some(avail) => self.reader.total_bytes().saturating_sub(avail),
+            None => 0,
+        }
+    }
+}
+
 /// Deterministic ceiling driver for rung-1/2 tests — the daemon's capacity input
 /// with no hardware. Set the ceiling and the daemon reacts on its next tick,
 /// exactly as a real scan would. `set_ceiling` is a lock-free atomic store, so a
@@ -213,5 +339,115 @@ mod tests {
         assert_eq!(src.ceiling_bytes(), 4_000);
         src.set_used(3_500);
         assert_eq!(src.used_bytes(), 3_500);
+    }
+
+    mod host_ram {
+        use super::*;
+
+        /// A reader whose available reading can be switched off, to model the window
+        /// before the memory monitor's first poll.
+        struct FakeHost {
+            total: u64,
+            available: Option<u64>,
+        }
+
+        impl HostMemoryReader for FakeHost {
+            fn total_bytes(&self) -> u64 {
+                self.total
+            }
+            fn available_bytes(&self) -> Option<u64> {
+                self.available
+            }
+        }
+
+        const GIB: u64 = 1024 * 1024 * 1024;
+
+        // what this catches: the RAM axis reporting a ceiling of 0, which is what made
+        // `available_for(_, Ram)` return 0 for every consumer for as long as this source
+        // did not exist (#56). A ceiling must be the machine's real RAM less the reserve.
+        #[test]
+        fn ceiling_is_physical_ram_less_the_reserve() {
+            let src = HostRamCapacitySource::new(
+                FakeHost {
+                    total: 64 * GIB,
+                    available: Some(40 * GIB),
+                },
+                4 * GIB,
+            );
+            assert_eq!(src.kind(), ResourceKind::Ram);
+            assert_eq!(src.ceiling_bytes(), 60 * GIB);
+            // used is EVERYONE's bytes, ours and the OS's alike — total − available.
+            assert_eq!(src.used_bytes(), 24 * GIB);
+        }
+
+        // what this catches: THE COLD-BOOT TRAP, and it is the same defect shape as the
+        // bug this type was written to end. Before the monitor's first poll there is no
+        // available reading. If "unknown" were rendered as "zero free", used would equal
+        // total, the remainder would be 0, and every RAM consumer would be refused for the
+        // first seconds of every boot — governed-but-useless, exactly the state the RAM
+        // axis was in before. Unknown must degrade to `capacity − granted`, never to zero
+        // capacity. The ceiling must ALSO survive, which is why total is probed once at
+        // construction rather than read from the (still-empty) monitor snapshot.
+        #[test]
+        fn an_unpolled_monitor_does_not_report_the_machine_as_full() {
+            let src = HostRamCapacitySource::new(
+                FakeHost {
+                    total: 64 * GIB,
+                    available: None,
+                },
+                4 * GIB,
+            );
+            assert_eq!(
+                src.ceiling_bytes(),
+                60 * GIB,
+                "the ceiling is a hardware constant and must not wait for a poll"
+            );
+            assert_eq!(
+                src.used_bytes(),
+                0,
+                "no reading means UNKNOWN, never 'all of it is spoken for'"
+            );
+        }
+
+        // what this catches: a reserve that is right at one hardware tier and absurd at
+        // another. A flat constant is either noise on a 128 GB box or half of an 8 GB one,
+        // and this substrate is claimed to run the same code on both.
+        #[test]
+        fn the_reserve_stays_sane_across_the_whole_hardware_ladder() {
+            // Small box: the proportional eighth would be 1 GiB — the floor holds it there,
+            // and crucially it does NOT eat half the machine.
+            assert_eq!(default_ram_reserve_for(8 * GIB), GIB);
+            let small = HostRamCapacitySource::with_default_reserve(FakeHost {
+                total: 8 * GIB,
+                available: Some(4 * GIB),
+            });
+            assert_eq!(small.ceiling_bytes(), 7 * GIB);
+
+            // Mid box: purely proportional.
+            assert_eq!(default_ram_reserve_for(32 * GIB), 4 * GIB);
+
+            // Big box: the ceiling clamp stops the reserve from growing without bound —
+            // an eighth of 128 GB would idle 16 GB the substrate is meant to be using.
+            assert_eq!(default_ram_reserve_for(128 * GIB), 8 * GIB);
+            let big = HostRamCapacitySource::with_default_reserve(FakeHost {
+                total: 128 * GIB,
+                available: Some(100 * GIB),
+            });
+            assert_eq!(big.ceiling_bytes(), 120 * GIB);
+        }
+
+        // what this catches: a reserve larger than the machine underflowing into a
+        // near-u64::MAX ceiling, which would report a laptop as having exabytes free.
+        #[test]
+        fn an_oversized_reserve_floors_at_zero_rather_than_wrapping() {
+            let src = HostRamCapacitySource::new(
+                FakeHost {
+                    total: 2 * GIB,
+                    available: Some(GIB),
+                },
+                8 * GIB,
+            );
+            assert_eq!(src.ceiling_bytes(), 0);
+        }
     }
 }

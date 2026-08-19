@@ -66,8 +66,7 @@
 //! if you do not — behind one paging + caching + error path.
 
 use crate::resources::{
-    ConsumerFootprint, ReclaimOutcome, ReclaimReason, ReclaimRequest, ResourceConsumer,
-    ResourceKind,
+    ConsumerFootprint, ReclaimOutcome, ReclaimRequest, ResourceConsumer, ResourceKind,
 };
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -312,6 +311,7 @@ impl<R: StagingResidency + 'static> ResourceConsumer for StagingConsumer<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::resources::ReclaimReason;
 
     /// what this catches: staging allocating hopefully and letting `malloc` arbitrate. That is
     /// what OOMed the box on 2026-08-19 — a benchmark and the rest of the system racing, with
