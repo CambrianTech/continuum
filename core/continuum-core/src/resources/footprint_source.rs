@@ -38,6 +38,24 @@
 //! cannot be made must SAY so, and the caller must decide; it must never silently
 //! become a number that happens to parse.
 
+//! # On `unwrap_or` (Joel, 2026-08-19 — a standing code-review correction)
+//!
+//! `unwrap_or(x)` is a decision with no name. It reads as punctuation and compiles as
+//! policy, and it leaves nowhere to write down WHY `x` is the right answer — which is
+//! exactly how one fabricated zero survived review at six call sites and put a 0.5B on a
+//! 64 GB machine.
+//!
+//! The rule is not "never use it". It is:
+//!
+//! 1. Prefer the type. `?`, a `match` arm, or an `Option` return states the branch and
+//!    lets a reviewer argue with it.
+//! 2. If a default is genuinely right, **justify it in a comment on the line**, and the
+//!    justification must show the failure direction moves toward LESS trust, never more.
+//!    A default that makes a caller believe it has MORE room, more evidence, or fresher
+//!    data than it does is always wrong, however tidy it looks.
+//! 3. Never default a value that a decision is computed from. Display and telemetry can
+//!    take a default; budgets, admissions and plans may not.
+
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::lease::ResourceKind;
@@ -61,6 +79,44 @@ pub enum Provenance {
 }
 
 impl Provenance {
+    /// How much this provenance can be trusted, highest first. The ORDER is the design
+    /// decision and it is deliberate:
+    ///
+    /// `Measured` — real, now.
+    /// `LastKnown` — real, but old. A number the hardware actually produced two seconds
+    ///   ago beats one no instrument ever produced.
+    /// `Estimated` — never real: derived from metadata or a device spec.
+    /// `Unknown` — nothing at all.
+    fn rank(&self) -> u8 {
+        match self {
+            Provenance::Measured => 3,
+            Provenance::LastKnown { .. } => 2,
+            Provenance::Estimated => 1,
+            Provenance::Unknown => 0,
+        }
+    }
+
+    /// THE CONTAGION RULE (Joel, 2026-08-19: "any in a chain can short circuit others").
+    ///
+    /// A derived quantity inherits the WEAKEST provenance among its inputs. This is the
+    /// whole reason the ladder in [`ceiling_prior`](super::ceiling_prior) is not enough
+    /// on its own: capacity → available → available_for → budget → ceiling → plan is a
+    /// chain of arithmetic, and a single fabricated value anywhere in it produces a
+    /// result every later layer computes CORRECTLY from a poisoned input. By the time
+    /// the planner sees the number it has been laundered through three subtractions and
+    /// is indistinguishable from a measurement.
+    ///
+    /// Same principle as NaN in floating point — a bad input poisons the result rather
+    /// than silently becoming zero — except this carries the reason with it, so the
+    /// poisoned value can say which link was guessing.
+    pub fn weakest(self, other: Provenance) -> Provenance {
+        if other.rank() < self.rank() {
+            other
+        } else {
+            self
+        }
+    }
+
     /// Whether a budget may safely be computed from this reading. `Unknown` must not
     /// silently contribute a zero, and the caller is expected to fail loud instead.
     pub fn is_usable(&self) -> bool {
@@ -133,6 +189,45 @@ impl FootprintReading {
     /// that makes "unknown" impossible to accidentally treat as zero.
     pub fn usable_bytes(&self) -> Option<u64> {
         self.provenance.is_usable().then_some(self.bytes)
+    }
+}
+
+impl FootprintReading {
+    /// Subtract another reading, propagating BOTH the weakest provenance and a trail of
+    /// the reason. Saturating: a capacity chain must never wrap into an enormous budget.
+    ///
+    /// Use this instead of `a.bytes - b.bytes` anywhere the result feeds a decision. The
+    /// raw subtraction silently launders a guess into something that looks measured;
+    /// this one cannot.
+    pub fn minus(self, other: FootprintReading) -> FootprintReading {
+        self.combine(other, self.bytes.saturating_sub(other.bytes))
+    }
+
+    /// Add another reading, propagating provenance the same way.
+    pub fn plus(self, other: FootprintReading) -> FootprintReading {
+        self.combine(other, self.bytes.saturating_add(other.bytes))
+    }
+
+    /// Take the smaller of two readings — a ceiling bounded by another ceiling — keeping
+    /// the weakest provenance of the pair, not the provenance of whichever won.
+    pub fn bounded_by(self, other: FootprintReading) -> FootprintReading {
+        self.combine(other, self.bytes.min(other.bytes))
+    }
+
+    fn combine(self, other: FootprintReading, bytes: u64) -> FootprintReading {
+        let provenance = self.provenance.weakest(other.provenance);
+        FootprintReading {
+            kind: self.kind,
+            bytes,
+            provenance,
+            // Carry the reason from whichever side is now the weakest link, because that
+            // is the one an operator has to go look at.
+            note: if provenance == other.provenance && provenance != self.provenance {
+                other.note
+            } else {
+                self.note
+            },
+        }
     }
 }
 
@@ -239,6 +334,60 @@ mod tests {
         assert_eq!(r.bytes, 9_400_000_000);
         assert_eq!(r.provenance, Provenance::LastKnown { age_ms: 2_500 });
         assert_eq!(r.usable_bytes(), Some(9_400_000_000));
+    }
+
+    // what this catches: THE SHORT-CIRCUIT (Joel: "any in a chain can short circuit
+    // others"). capacity → available → available_for → budget → ceiling is a chain of
+    // arithmetic, and ONE guessed input must not launder itself into something that
+    // reads measured three subtractions later. A derived value inherits its weakest
+    // ancestor, the way NaN poisons a float chain rather than becoming 0.
+    #[test]
+    fn one_guessed_link_poisons_the_whole_derived_chain() {
+        let capacity = FootprintReading::measured(ResourceKind::Vram, 64).because("board");
+        let guessed = FootprintReading::estimated(ResourceKind::Vram, 10).because("device spec");
+        let held = FootprintReading::measured(ResourceKind::Vram, 4).because("board");
+
+        // capacity - guessed - held: every later step still computes CORRECTLY, and the
+        // result must nonetheless refuse to claim it was measured.
+        let derived = capacity.minus(guessed).minus(held);
+        assert_eq!(derived.bytes, 50);
+        assert_eq!(
+            derived.provenance,
+            Provenance::Estimated,
+            "a chain is only as measured as its weakest input"
+        );
+        assert_eq!(
+            derived.note, "device spec",
+            "and it names the link that was guessing, so the operator knows where to look"
+        );
+    }
+
+    // what this catches: an all-measured chain being needlessly demoted. Contagion must
+    // not make everything perpetually suspect, or the signal stops meaning anything.
+    #[test]
+    fn an_all_measured_chain_stays_measured() {
+        let a = FootprintReading::measured(ResourceKind::Vram, 64);
+        let b = FootprintReading::measured(ResourceKind::Vram, 4);
+        assert_eq!(a.minus(b).provenance, Provenance::Measured);
+        assert_eq!(a.plus(b).bytes, 68);
+        assert_eq!(a.bounded_by(b).bytes, 4);
+    }
+
+    // what this catches: the trust ORDER silently changing. A real number from 2s ago
+    // must outrank a spec-sheet guess, and Unknown must sink everything it touches —
+    // including a bounded_by where the Unknown side has the larger value and "loses".
+    #[test]
+    fn unknown_sinks_the_chain_even_when_it_loses_the_comparison() {
+        let good = FootprintReading::measured(ResourceKind::Vram, 10);
+        let stale = FootprintReading::measured(ResourceKind::Vram, 99).aged(2_000);
+        let guess = FootprintReading::estimated(ResourceKind::Vram, 99);
+        let nothing = FootprintReading::unknown(ResourceKind::Vram).because("no source");
+
+        assert_eq!(good.bounded_by(stale).provenance, Provenance::LastKnown { age_ms: 2_000 });
+        assert_eq!(stale.bounded_by(guess).provenance, Provenance::Estimated);
+        let poisoned = good.bounded_by(nothing);
+        assert_eq!(poisoned.bytes, 0, "min() picked the unknown side's zero...");
+        assert_eq!(poisoned.usable_bytes(), None, "...and it must NOT read as a quantity");
     }
 
     // what this catches: a clock that goes backwards producing a wrapped, enormous age

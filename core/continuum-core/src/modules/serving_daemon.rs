@@ -2888,6 +2888,12 @@ fn epoch_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
+        // JUSTIFIED unwrap_or: the error case is a system clock set before 1970, and the
+        // 0 it yields is not a fabricated quantity — it is the sentinel this module
+        // already defines as "never recorded" (`LAST_GOOD_VRAM_CEILING_AT_MS == 0`), which
+        // makes the last-known rung correctly UNAVAILABLE rather than falsely fresh. The
+        // failure direction is toward less trust, not more, which is the only direction a
+        // default may ever move a decision.
         .unwrap_or(0)
 }
 
@@ -3012,11 +3018,19 @@ fn governed_vram_ceiling_or_report(resource_daemon: &ResourceDaemon, site: &'sta
         );
     }
 
-    // `Unknown` is the one rung with no number, and it stays 0 HERE on purpose: with no
-    // board, no history and no device, refusing to plan is the honest outcome. The
-    // difference from before is that this is now the unreachable last rung on any machine
-    // with a GPU, instead of the FIRST thing a cold boot hit.
-    reading.usable_bytes().unwrap_or(0)
+    // A NAMED BRANCH, NOT `unwrap_or(0)`. The value is the same; the difference is that
+    // the zero is now a decision someone wrote down and a reviewer can argue with,
+    // instead of a default that reads like punctuation. `unwrap_or` states no reason and
+    // leaves no place to put one — which is exactly how the original zero survived
+    // review at six call sites.
+    match reading.usable_bytes() {
+        Some(bytes) => bytes,
+        // No board, no history, no device. Planning against 0 makes the planner decline,
+        // and declining is the honest outcome when nothing on this machine can say how
+        // much VRAM exists. Unreachable on any host with a GPU — it is the ladder's last
+        // rung, not (as before) the first thing a cold boot hit.
+        None => 0,
+    }
 }
 
 /// Performance-core proxy for the lane cap. `num_cpus::get_physical()` is the

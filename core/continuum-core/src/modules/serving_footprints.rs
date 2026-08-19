@@ -57,10 +57,13 @@ use crate::resources::lease::ResourceKind;
 /// into `0` re-creates the silent-zero defect; the two live callers both refuse instead.
 pub fn resident_bytes_for(model: &Model, window: u32, lanes: u32) -> Option<u64> {
     let fp = crate::modules::serving_daemon::footprint_for(model)?;
-    Some(
-        fp.peak_resident_bytes(window, lanes)
-            .saturating_add(model.mmproj_bytes.unwrap_or(0)),
-    )
+    // NO `unwrap_or(0)` HERE, deliberately. `mmproj_bytes` is `Some(0)` when the model
+    // genuinely has no projector and `None` only when nothing has resolved it — so
+    // defaulting to 0 would silently under-report a vision lane by the projector's whole
+    // size on exactly the rows we failed to hydrate. `?` refuses instead, and the caller
+    // already treats `None` as "cannot be sized" rather than "is empty".
+    let projector = model.mmproj_bytes?;
+    Some(fp.peak_resident_bytes(window, lanes).saturating_add(projector))
 }
 
 /// Which lane on the live snapshot an adapter answers for.

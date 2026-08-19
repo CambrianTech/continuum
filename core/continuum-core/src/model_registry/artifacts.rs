@@ -29,10 +29,15 @@ pub fn hydrate_artifact_sizes(model: &mut Model) {
         .and_then(|p| fs::metadata(p).ok())
         .map(|md| md.len())
         .filter(|n| *n > 0);
-    model.mmproj_bytes = resolve_mmproj_for_model(model)
-        .and_then(|p| fs::metadata(p).ok())
-        .map(|md| md.len())
-        .filter(|n| *n > 0);
+    // `Some(0)` when the model HAS NO PROJECTOR — that is a real, known fact, not a
+    // missing measurement. `None` is reserved for "we could not resolve it", so a
+    // consumer can tell "this model holds no projector bytes" apart from "nobody has
+    // looked yet". Collapsing both to `None` (and then to 0 downstream) is the same
+    // defect as the capacity zero, one field over.
+    model.mmproj_bytes = match resolve_mmproj_for_model(model) {
+        None => Some(0),
+        Some(path) => fs::metadata(path).ok().map(|md| md.len()),
+    };
 }
 
 pub fn resolve_gguf_for_model(model: &Model) -> Option<PathBuf> {
