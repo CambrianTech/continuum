@@ -319,10 +319,21 @@ pub fn reap_orphaned_solve_runs() -> Vec<String> {
 ///
 /// Corollary for anyone measuring env coverage: read the root from here, never from a path
 /// you remember or a directory you found by name.
+/// ONE MORE ROOT-DERIVATION NOTE, added 2026-08-18 because this function became the very
+/// thing its doc warns about. It resolved `HOME` directly while `solve_ledger_dir` and every
+/// other progress reader resolve `CONTINUUM_HOME` — so the benchmarks root and the ledger
+/// root were TWO roots again, exactly the shape described above.
+///
+/// It surfaced as test pollution, which is the cheap way to find it: a unit test set
+/// `CONTINUUM_HOME` to a tempdir to isolate its writes, and `record_verdict` wrote into the
+/// OPERATOR'S REAL `~/.continuum/benchmarks/swe/verdicts` anyway. The isolation was vacuous
+/// and the test was quietly seeding the live verdict record with fixture data — a fixture
+/// that would later read as a genuine measurement.
 pub fn swe_cache_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(home)
-        .join(".continuum")
+    crate::commands::benchmark::continuum_home()
+        .unwrap_or_else(|_| {
+            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())).join(".continuum")
+        })
         .join("benchmarks")
         .join("swe")
 }
