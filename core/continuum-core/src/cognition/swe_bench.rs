@@ -327,6 +327,84 @@ pub fn swe_cache_dir() -> PathBuf {
         .join("swe")
 }
 
+/// Where a scored instance's verdict lives — the DURABLE record that a grade happened.
+/// One file per instance under the governed benchmarks root, beside `work/` and `envs/`.
+///
+/// # Why this exists (2026-08-18, and it cost the day's only two passes)
+///
+/// `benchmark/swe-grade` computed a verdict, appended it to the citizen's experience
+/// stream, and RETURNED it. Nothing durable was written. So two real SWE-bench Lite
+/// resolutions — astropy-14995 and pytest-11143, each FAIL_TO_PASS 1/1 and PASS_TO_PASS
+/// 40/40, watched passing live — left no trace, and `benchmark/runs` kept rendering both
+/// artifacts as `ungraded`. Measured the same afternoon: **37 grade artifacts on disk from
+/// the detached-solve path, and 0 from any operator or workspace grade**, because that arm
+/// had no persistence at all.
+///
+/// A measurement the system cannot remember is not a measurement. This is the results-log
+/// half of [[run-ledgers-are-typed-artifacts]]: the run LEDGER is current state, keyed by
+/// run; the verdict is HISTORY, keyed by INSTANCE — because grading is per-instance and a
+/// workspace grade legitimately has no run id at all.
+pub fn verdict_dir() -> PathBuf {
+    swe_cache_dir().join("verdicts")
+}
+
+/// This instance's verdict file. One naming, so writer and board reader cannot drift
+/// (the failure mode that cost the boot reaper weeks — see [`SOLVE_LEDGER_PREFIX`]).
+pub fn verdict_path(instance_id: &str) -> PathBuf {
+    verdict_dir().join(format!("{instance_id}.json"))
+}
+
+/// Persist a REAL verdict. Returns the path written.
+///
+/// Refuses two things by construction, because both would launder the board:
+/// - an **errored** verdict — that is an ABSENCE (clone/env/patch fault), never a score,
+///   and recording it would tally a broken harness as a citizen's failure (the #384 class);
+/// - a **gold-gate** verdict — the positive control proves the ENV, not the citizen. A gold
+///   pass recorded as an instance verdict would read on the board as our result.
+pub fn record_verdict(verdict: &SweVerdict, is_gold: bool) -> Result<Option<PathBuf>, String> {
+    if is_gold || verdict.error.is_some() || verdict.instance_id.is_empty() {
+        return Ok(None);
+    }
+    let dir = verdict_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let path = verdict_path(&verdict.instance_id);
+    let body = serde_json::to_string_pretty(verdict).map_err(|e| e.to_string())?;
+    std::fs::write(&path, body).map_err(|e| format!("write {}: {e}", path.display()))?;
+    Ok(Some(path))
+}
+
+/// Read this instance's recorded verdict, or `None` if it has never been scored.
+pub fn read_verdict(instance_id: &str) -> Option<SweVerdict> {
+    let text = std::fs::read_to_string(verdict_path(instance_id)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// Every instance that carries a durable verdict, as `(instance_id, verdict)`.
+/// The board's source of "has this been scored", so an artifact stops reading `ungraded`
+/// the moment a real grade lands — and keeps reading scored across reboots.
+pub fn recorded_verdicts() -> Vec<(String, SweVerdict)> {
+    let Ok(entries) = std::fs::read_dir(verdict_dir()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if let Ok(v) = serde_json::from_str::<SweVerdict>(&text) {
+            if !v.instance_id.is_empty() {
+                out.push((v.instance_id.clone(), v));
+            }
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
 /// Fetch a dataset split, cached on first use. On-demand, never a gated install step.
 pub async fn load_dataset(dataset: &str) -> Result<Vec<SweInstance>, String> {
     let cache = swe_cache_dir().join(format!("{}.json", dataset.replace('/', "__")));
@@ -2888,6 +2966,77 @@ diff --git a/sympy/solvers/tests/test_other.py b/sympy/solvers/tests/test_other.
             in_flight_solve_runs_in(p).is_empty(),
             "after the reap nothing is in flight — a second boot must not re-reap"
         );
+    }
+
+    // what this catches: a REAL verdict must survive the process that produced it, and the
+    // two verdicts that must NEVER be recorded must not be. Before 2026-08-18 nothing was
+    // recorded at all: two genuine SWE-bench Lite resolutions were watched passing and the
+    // system retained nothing, so the board kept calling their artifacts `ungraded`.
+    //
+    // The fixture goes through `record_verdict` — the PRODUCTION writer — and is read back
+    // through `read_verdict`/`recorded_verdicts`, the readers the board actually uses. A
+    // hand-authored file here would test my belief about the writer instead of the writer,
+    // which is exactly how the boot reaper stayed green while pointed at a filename nothing
+    // emits ([[run-ledgers-are-typed-artifacts]] L4).
+    #[test]
+    fn a_real_verdict_persists_and_gold_or_errored_ones_never_do() {
+        let home = tempfile::tempdir().expect("tmp");
+        // `verdict_dir` derives from CONTINUUM_HOME via swe_cache_dir; isolate this test's
+        // writes rather than touching the operator's real benchmarks root.
+        let prev = std::env::var("CONTINUUM_HOME").ok();
+        std::env::set_var("CONTINUUM_HOME", home.path());
+
+        let real = SweVerdict {
+            instance_id: "astropy__astropy-14995".into(),
+            resolved: true,
+            f2p_passed: 1,
+            f2p_total: 1,
+            p2p_passed: 40,
+            p2p_total: 40,
+            gate_ok: true,
+            ..Default::default()
+        };
+        assert!(record_verdict(&real, false).unwrap().is_some());
+
+        let back = read_verdict("astropy__astropy-14995").expect("a recorded verdict reads back");
+        assert!(back.resolved, "resolution survives the round trip");
+        assert_eq!((back.f2p_passed, back.p2p_total), (1, 40), "counts survive too");
+        assert_eq!(
+            recorded_verdicts().len(),
+            1,
+            "and the board's enumerator sees exactly it"
+        );
+
+        // A gold pass proves the ENV, not the citizen. Recording it would render a positive
+        // control as our result.
+        let gold = SweVerdict {
+            instance_id: "sympy__sympy-24152".into(),
+            resolved: true,
+            ..Default::default()
+        };
+        assert!(record_verdict(&gold, true).unwrap().is_none(), "gold never records");
+
+        // An errored verdict is an ABSENCE (clone/env fault), never a scored zero (#384).
+        let errored = SweVerdict {
+            instance_id: "django__django-11049".into(),
+            error: Some("env build failed".into()),
+            ..Default::default()
+        };
+        assert!(
+            record_verdict(&errored, false).unwrap().is_none(),
+            "an errored run is an absence, not a tallied failure"
+        );
+
+        assert_eq!(
+            recorded_verdicts().len(),
+            1,
+            "neither the control nor the fault reached the durable record"
+        );
+
+        match prev {
+            Some(v) => std::env::set_var("CONTINUUM_HOME", v),
+            None => std::env::remove_var("CONTINUUM_HOME"),
+        }
     }
 
     // what this catches: the run-id parse must accept the name the writer emits and reject

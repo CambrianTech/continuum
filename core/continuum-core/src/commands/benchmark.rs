@@ -2229,6 +2229,31 @@ pub(crate) async fn grade_swe(p: SweGradeParams) -> Result<SweGradeResult, Comma
         swe_bench::grade(&instance, &repo, candidate.as_deref()).await
     };
 
+    // PERSIST THE VERDICT before anything else consumes it. Until 2026-08-18 this arm
+    // computed a score, taught from it, and returned it — writing nothing durable. Two real
+    // Lite resolutions were watched passing that afternoon and left no trace; `benchmark/runs`
+    // went on rendering both artifacts as `ungraded`, and the day's honest rate could not be
+    // stated from anything the system held. A measurement the system cannot remember is not a
+    // measurement. `record_verdict` itself refuses gold and errored verdicts, so the board can
+    // never be laundered by a positive control or an env fault (see its doc).
+    match swe_bench::record_verdict(&verdict, p.gold.unwrap_or(false)) {
+        Ok(Some(path)) => crate::probe!(
+            class = "benchmark.verdict.recorded",
+            instance = %verdict.instance_id,
+            resolved = verdict.resolved,
+            path = %path.display(),
+            "verdict persisted — the board and every later reader now see this grade"
+        ),
+        Ok(None) => {}
+        // Fail LOUD in the log but never fail the grade: the verdict in hand is still true,
+        // and refusing to return it would lose the measurement twice over.
+        Err(e) => tracing::warn!(
+            instance = %verdict.instance_id,
+            error = %e,
+            "VERDICT NOT PERSISTED — this grade is real but the system will forget it"
+        ),
+    }
+
     // #319: a WORKSPACE grade is a citizen's lived, objectively judged work —
     // append it to her experience stream. Only her: the gold/raw-patch arms are
     // harness plumbing, not experience. And only a REAL verdict: an errored run
@@ -3194,11 +3219,20 @@ pub(crate) fn scan_run_cards(
     // artifact has no run id to match. See `scan_workspace_artifact_cards` for why the board
     // cannot be run-files-only.
     if run_id_filter.is_none() {
-        let graded: std::collections::HashSet<String> = cards
+        // "Scored" is the union of two sources, and it MUST be: a run ledger's own grade
+        // sibling, AND the durable per-instance verdict record. An operator or workspace
+        // grade has no run id at all, so before verdicts were recorded (2026-08-18) a real
+        // pass could not make an artifact stop reading `ungraded` — two of them didn't.
+        let mut graded: std::collections::HashSet<String> = cards
             .iter()
             .filter(|c| c.resolved.is_some())
             .filter_map(|c| c.instance.clone())
             .collect();
+        graded.extend(
+            swe_bench::recorded_verdicts()
+                .into_iter()
+                .map(|(instance, _)| instance),
+        );
         cards.extend(scan_workspace_artifact_cards(&graded, now_ms));
     }
     cards.sort_by(|a, b| b.last_activity_ms.cmp(&a.last_activity_ms));
