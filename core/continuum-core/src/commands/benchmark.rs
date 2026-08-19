@@ -3683,6 +3683,17 @@ pub struct BenchmarkFetchResult {
     /// True when `rows` and `declared_tasks` agree. False is not fatal — datasets are revised
     /// upstream — but a rate published over a disagreeing denominator is not comparable.
     pub denominator_matches: bool,
+    /// How many rows actually PROJECT into posable tasks through this suite's `SuiteAdapter`.
+    /// `None` = the suite has no adapter yet: its rows are staged but cannot be posed to a
+    /// citizen. Staged-but-unposable is the honest middle state, and reporting it as a distinct
+    /// value is what keeps a fetched suite from LOOKING runnable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tasks: Option<usize>,
+    /// Present only when projection is unavailable or failed, saying which of those it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub adapter_note: Option<String>,
 }
 
 #[derive(Default)]
@@ -3777,6 +3788,14 @@ impl ActionCommand for BenchmarkFetch {
                  computed over this is NOT comparable until the denominator is reconciled"
             );
         }
+        // Project through the suite's adapter in the same breath as the fetch, so "staged" and
+        // "posable" can never drift apart in the operator's head. A projection failure is
+        // reported, NOT swallowed and NOT fatal — the rows are legitimately on disk either way.
+        let (tasks, adapter_note) =
+            match crate::cognition::bench_task::project_suite(spec.name, &rows) {
+                Ok(t) => (Some(t.len()), None),
+                Err(e) => (None, Some(e)),
+            };
         Ok(BenchmarkFetchResult {
             benchmark: spec.name.to_string(),
             dataset: dataset.to_string(),
@@ -3785,6 +3804,8 @@ impl ActionCommand for BenchmarkFetch {
             rows: rows.len(),
             declared_tasks: spec.tasks,
             denominator_matches,
+            tasks,
+            adapter_note,
         })
     }
 }
