@@ -172,7 +172,43 @@ This single test, existing for any family, makes bugs 1–3 unrepresentable.
 
 ---
 
+## ⚠ DO NOT USE THIS TO HARDEN THE BYPASS (Joel, 2026-08-18)
+
+**`cognition/eval` is not a family to improve. It is the room-and-kanban bypass.**
+
+I chose it as outlier B and then wrote a build step to give it a dispatch record, a reaper
+and wedge detection. That is making the parallel runner *sturdier*, which
+[BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER](BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md) forbids in
+as many words — *"every patch to it deepens the hole"*, and *"if you are adding a field to a
+benchmark probe so an external consumer can parse it better — STOP. The consumer should not
+be external."* Joel's objection, and he is right: measurement that runs outside the room
+produces no room turns, and a nicer ledger makes that permanent instead of temporary.
+
+**So eval is NOT outlier B, and nothing in this doc licenses migrating it.** Outlier B is
+now `models/pull` — see below. It is maximally different in the way that matters
+(continuous byte-progress over time vs a terminal verdict) and it is *legitimate*
+infrastructure: pulling a model genuinely is a long detached job with no room to live in.
+
+**What survives from the eval read, reframed.** The finding stands and gets STRONGER, but
+it argues the opposite of what I had it arguing:
+
+> eval cannot distinguish a live run from a corpse — by its own source comment, a killed
+> run reads as an eternal pending forever.
+
+That is not a gap to plug in eval. It is evidence for absorbing measurement into rooms,
+where **the turn IS the receipt**: a citizen working in a room emits turns, and a room that
+goes quiet is legible without any ledger at all. eval needs a state record precisely
+*because* it has no room. Give it one and you have paid for the bypass to survive.
+
+Filed against the absorption work (#425 / the round-lifecycle line), not against this doc.
+
+---
+
 ## Outlier B result (2026-08-18): the draft did NOT fit, and the reason is the design
+
+*(Kept because the STRUCTURAL finding is what reshaped the interface, and it holds
+regardless of eval's fate — the same inversion exists wherever a family writes only on
+completion. Read it as a study of a shape, not as a migration plan.)*
 
 Read `cognition/eval` before building anything, per Joel. It is inverted from solve on the
 axis that matters, and the draft above assumed solve's shape.
@@ -240,10 +276,13 @@ Revised after the outlier-B read above, which changed step 1's shape before it w
    `RunLedger<SolveRun>` for state (dispatch-written, heartbeat-bearing) and its existing
    `.grade.json` files recognised as the `ResultsLog` half. Already half-collapsed by
    `f3cb3a65c`.
-2. **Outlier B — `cognition/eval`.** Its `.jsonl` stays as the results log; it GAINS a
-   `RunLedger<EvalRun>` state record written at dispatch, and inherits reap + wedge
-   detection it has never had. Ships as a behaviour change with the eternal-pending hole
-   named in the commit.
+2. **Outlier B — `models/pull`** (swapped off `cognition/eval`, see the ⚠ above). Maximally
+   different on the axis that stresses the interface: **continuous progress** (bytes of N,
+   updated throughout) rather than a terminal verdict, and no natural "room" to belong to —
+   pulling a model IS legitimately a detached job. If `RunLedger<R>` + `heartbeat_ms` carries
+   a download's live progress AND a solve's terminal state without forcing, it carries the
+   rest. This is also the family where L3b earns its keep: a stalled download is exactly a
+   heartbeat that stops advancing while the process stays alive.
 3. **L3 + L4 on both.** Reap and the round-trip test.
 4. **Generator.** `ledger/new <family>` scaffolds record + store binding + the round-trip
    test, so family seven inherits all of this instead of hand-rolling it. Generators encode
