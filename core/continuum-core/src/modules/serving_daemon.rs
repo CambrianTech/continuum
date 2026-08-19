@@ -2944,6 +2944,19 @@ fn governed_vram_ceiling(resource_daemon: &ResourceDaemon) -> Option<u64> {
         .kinds
         .iter()
         .find(|k| k.kind == ResourceKind::Vram)
+        // THE LAST FABRICATION POINT IN THE CHAIN (#438). A row can EXIST while its
+        // capacity reads 0 — `ledger.rs`'s `capacity.get(&kind).unwrap_or(0)` invents
+        // that zero for a kind whose capacity source has not reported yet, which at boot
+        // is simply true for a second. The ceiling ladder then classified it `Measured(0)`
+        // and passed it straight through, correctly by its own rules, because a zero that
+        // arrives as a number is indistinguishable from one that was observed.
+        //
+        // A governed VRAM kind with ZERO CAPACITY is never a true fact about a machine
+        // that reports a GPU: capacity is the device's size, not its free space, and a
+        // device does not shrink to nothing. So a zero-capacity row is treated as NO
+        // READING — the ladder falls to last-known, then to the device prior — while a
+        // zero AVAILABLE on a real capacity stays a genuine measurement (a full GPU).
+        .filter(|k| k.capacity_bytes > 0)
         // budget_for_replacing, NOT available_for. The serving planner's whole job is to
         // decide what should be resident NEXT, and the swap releases what is resident now
         // — so counting serving's own weights against serving's own plan is circular. It
@@ -2980,6 +2993,28 @@ fn governed_vram_ceiling_or_report(resource_daemon: &ResourceDaemon, site: &'sta
     // boot and got a 0.5B spawned on a 64 GB machine. See
     // [`crate::resources::ceiling_prior`] for why 0 is safe for a GRANTER and
     // catastrophic for a PLANNER, and why every rung below beats it.
+    // DISCRIMINATOR (#438): if a Vram row exists but carries zero capacity, say so with
+    // the numbers, so the next boot PROVES the mechanism instead of leaving it inferred.
+    if let Some(row) = resource_daemon
+        .board()
+        .kinds
+        .iter()
+        .find(|k| k.kind == ResourceKind::Vram)
+    {
+        if row.capacity_bytes == 0 {
+            crate::probe!(
+                class = "serving.vram_capacity_absent",
+                site = site,
+                capacity_bytes = row.capacity_bytes,
+                physical_used_bytes = row.physical_used_bytes,
+                available_bytes = row.available_bytes,
+                "a Vram row exists with ZERO CAPACITY — the capacity source has not \
+                 reported. Falling to the prior ladder; this is NOT evidence of a GPU \
+                 that shrank to nothing.",
+            );
+        }
+    }
+
     let board = governed_vram_ceiling(resource_daemon);
 
     // Record every real reading so the NEXT silent tick has something honest to stand on.
