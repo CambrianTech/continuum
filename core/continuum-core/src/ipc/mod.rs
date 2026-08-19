@@ -1200,6 +1200,9 @@ pub fn start_server(
     let resource_daemon = {
         let _rt_guard = rt_handle.enter();
         let mut capacity_sources: Vec<Arc<dyn crate::resources::CapacitySource>> = Vec::new();
+        // Some(gpu working-set hint) when the detected GPU shares the host's memory — the
+        // signal that memory must be governed as ONE pool rather than two ledgers.
+        let mut unified_gpu_hint: Option<u64> = None;
         match crate::gpu::monitor::detect() {
             Some(monitor) => {
                 log_info!(
@@ -1214,10 +1217,23 @@ pub fn start_server(
                 // live GPU stats next to cpu+mem — one probe, reused, never a
                 // second `gpu::monitor::detect()`.
                 system_monitor.attach_gpu_monitor(monitor.clone());
-                capacity_sources.push(Arc::new(crate::resources::GpuCapacitySource::new(
-                    monitor,
-                    GPU_SAFETY_RESERVE_BYTES,
-                )));
+                unified_gpu_hint = match monitor.memory_mode() {
+                    // UMA (Apple Silicon): VRAM and RAM are ONE physical pool. Registering
+                    // a GPU source here would create the second independent ledger that
+                    // `ResourceKind::Vram`'s doc forbids ("the authority's scan layer is
+                    // responsible for not double-counting") — measured live as VRAM
+                    // advertising 16.9 GB while RAM correctly reported 0. Both axes come
+                    // from UnifiedMemoryPool below instead.
+                    crate::gpu::monitor::MemoryMode::Unified => Some(monitor.total_bytes()),
+                    // Discrete: the axes really are separate pools. Unchanged.
+                    crate::gpu::monitor::MemoryMode::Discrete => {
+                        capacity_sources.push(Arc::new(crate::resources::GpuCapacitySource::new(
+                            monitor,
+                            GPU_SAFETY_RESERVE_BYTES,
+                        )));
+                        None
+                    }
+                };
             }
             None => {
                 // GpuMemoryManager::detect() already panics on a truly GPU-less host,
@@ -1235,23 +1251,57 @@ pub fn start_server(
                 );
             }
         }
-        // HOST RAM (#56). Until 2026-08-19 this vec held ONLY the GPU source, so
+        // HOST MEMORY (#56). Until 2026-08-19 this vec held ONLY the GPU source, so
         // `capacity(Ram)` was 0 and therefore `available_for(_, Ram)` returned 0 for every
         // consumer, permanently — the whole RAM half of the governor was structurally
         // unreachable while looking finished. Nothing noticed because serving/Bevy/voice
         // lease VRAM; the first consumer to plan against RAM (benchmark staging) was refused
         // on a box with tens of gigabytes free. Unlike the GPU there is no detect() that can
-        // fail: every host has RAM, so this source is unconditional.
-        let host_ram = crate::resources::HostRamCapacitySource::with_default_reserve(
-            crate::resources::LiveHostMemory::new(),
-        );
-        log_info!(
-            "ipc",
-            "server",
-            "ResourceGovernor: host RAM governed — ceiling {} MB (reserve held back for the OS)",
-            crate::resources::CapacitySource::ceiling_bytes(&host_ram) / (1024 * 1024)
-        );
-        capacity_sources.push(Arc::new(host_ram));
+        // fail: every host has RAM, so memory is governed unconditionally.
+        //
+        // WHICH shape depends on the hardware, which is why the GPU arm above reports its
+        // memory_mode rather than the boot path guessing from target_os.
+        match unified_gpu_hint {
+            Some(gpu_hint) => {
+                // UMA: ONE pool, two views. Honors the contract in `ResourceKind::Vram`'s
+                // own doc — "the authority's scan layer is responsible for not
+                // double-counting" — which was written, assigned here, and never built.
+                let pool = Arc::new(crate::resources::UnifiedMemoryPool::with_default_reserve(
+                    crate::resources::LiveHostMemory::new(),
+                    gpu_hint,
+                ));
+                let views = pool.views();
+                log_info!(
+                    "ipc",
+                    "server",
+                    "ResourceGovernor: UNIFIED memory — VRAM and RAM are ONE pool, \
+                     ceiling {} MB (GPU working-set hint {} MB); both axes report one \
+                     measured usage so neither can grant into the other's bytes",
+                    views
+                        .iter()
+                        .map(|v| v.ceiling_bytes())
+                        .max()
+                        .unwrap_or(0)
+                        / (1024 * 1024),
+                    gpu_hint / (1024 * 1024)
+                );
+                capacity_sources.extend(views);
+            }
+            None => {
+                // Discrete (or no GPU): RAM is its own pool, VRAM registered above if present.
+                let host_ram = crate::resources::HostRamCapacitySource::with_default_reserve(
+                    crate::resources::LiveHostMemory::new(),
+                );
+                log_info!(
+                    "ipc",
+                    "server",
+                    "ResourceGovernor: host RAM governed — ceiling {} MB \
+                     (reserve held back for the OS); VRAM is a separate pool",
+                    crate::resources::CapacitySource::ceiling_bytes(&host_ram) / (1024 * 1024)
+                );
+                capacity_sources.push(Arc::new(host_ram));
+            }
+        }
 
         crate::resources::ResourceDaemon::start(
             capacity_sources,

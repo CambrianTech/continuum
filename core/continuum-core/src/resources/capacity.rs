@@ -235,6 +235,132 @@ impl<R: HostMemoryReader> CapacitySource for HostRamCapacitySource<R> {
     }
 }
 
+/// ONE physical pool, presented as the two axes that draw on it (#56).
+///
+/// # The contract this implements, and who it was assigned to
+///
+/// [`ResourceKind::Vram`](super::lease::ResourceKind::Vram)'s own doc has always said
+/// it: *"On UMA (Apple Silicon) this overlaps `Ram` physically; the authority's scan
+/// layer is responsible for not double-counting."* This module IS the scan layer. The
+/// contract was written, assigned here, and never implemented — so the governor kept
+/// two independent ledgers over one pool and each could grant against bytes the other
+/// had already spent.
+///
+/// Measured on an M5 (2026-08-19) before this existed: VRAM reported 16.9 GB available
+/// while RAM reported 0, both describing the same ~6.4 GB of real free memory. Not a
+/// rounding disagreement — two ledgers, one pool, no link.
+///
+/// # Why the axes stay separate rather than collapsing to one
+///
+/// A serving lane asking for VRAM and staging asking for RAM are making *semantically*
+/// different requests even when the bytes are identical, and on a discrete box they are
+/// physically different too. Collapsing the kinds would erase a distinction that is real
+/// on CUDA. So the kinds survive; what changes is that on a unified host both views
+/// report the SAME measured usage, so neither can grant into bytes the other's residency
+/// has already consumed.
+///
+/// # The numbers
+///
+/// - **Pool ceiling** = host physical RAM − reserve. NOT `recommendedMaxWorkingSetSize`,
+///   which is a Metal *hint* about GPU working sets and is smaller than physical memory.
+/// - **VRAM view ceiling** = `min(pool ceiling, GPU working-set hint)`. The hint keeps its
+///   meaning as a cap on GPU-side allocation without becoming a second pool.
+/// - **Both views' used** = the one host measurement (`total − available`). On Apple
+///   Silicon the host VM free count already includes GPU buffers — `metal_monitor`'s
+///   Unified arm reads exactly this number for `free_bytes`, so using it here is agreeing
+///   with the GPU monitor, not second-guessing it.
+///
+/// # Known residual, stated rather than hidden
+///
+/// Grants are still tracked per kind, so within a single tick two axes could each grant
+/// against the same free bytes. The next tick closes it: a grant becomes residency, and
+/// residency is the shared measurement both views report. That one-tick window is the
+/// same race a single axis already has between `acquire` and the next scan — this does
+/// not widen it, and `committed = max(granted, physical_used)` means the larger of the
+/// two always binds. A cross-kind grant ledger would close it fully and is deferred.
+pub struct UnifiedMemoryPool<R: HostMemoryReader> {
+    host: R,
+    /// Metal's `recommendedMaxWorkingSetSize` — a soft cap on GPU allocation, not a pool.
+    gpu_working_set_hint: u64,
+    reserve_bytes: u64,
+}
+
+impl<R: HostMemoryReader> UnifiedMemoryPool<R> {
+    pub fn new(host: R, gpu_working_set_hint: u64, reserve_bytes: u64) -> Self {
+        Self {
+            host,
+            gpu_working_set_hint,
+            reserve_bytes,
+        }
+    }
+
+    /// Production constructor — reserve derived from the machine, same policy as the
+    /// discrete-host RAM source so a unified box and a discrete box hold back alike.
+    pub fn with_default_reserve(host: R, gpu_working_set_hint: u64) -> Self {
+        let reserve = default_ram_reserve_for(host.total_bytes());
+        Self::new(host, gpu_working_set_hint, reserve)
+    }
+
+    fn pool_ceiling(&self) -> u64 {
+        self.host.total_bytes().saturating_sub(self.reserve_bytes)
+    }
+
+    /// The ONE usage measurement, shared by both views. Unknown (pre-first-poll)
+    /// degrades to 0 for the same reason as [`HostRamCapacitySource::used_bytes`]:
+    /// "not measured yet" must never be rendered as "all of it is spoken for".
+    fn pool_used(&self) -> u64 {
+        match self.host.available_bytes() {
+            Some(avail) => self.host.total_bytes().saturating_sub(avail),
+            None => 0,
+        }
+    }
+
+    /// The two capacity sources to register with the daemon. Both read this pool, so
+    /// the governor sees one physical truth through two named axes.
+    pub fn views(self: Arc<Self>) -> Vec<Arc<dyn CapacitySource>>
+    where
+        R: 'static,
+    {
+        vec![
+            Arc::new(UnifiedPoolView {
+                pool: self.clone(),
+                kind: ResourceKind::Ram,
+            }),
+            Arc::new(UnifiedPoolView {
+                pool: self,
+                kind: ResourceKind::Vram,
+            }),
+        ]
+    }
+}
+
+/// One axis's view of a [`UnifiedMemoryPool`].
+struct UnifiedPoolView<R: HostMemoryReader> {
+    pool: Arc<UnifiedMemoryPool<R>>,
+    kind: ResourceKind,
+}
+
+impl<R: HostMemoryReader> CapacitySource for UnifiedPoolView<R> {
+    fn kind(&self) -> ResourceKind {
+        self.kind
+    }
+
+    fn ceiling_bytes(&self) -> u64 {
+        let pool = self.pool.pool_ceiling();
+        match self.kind {
+            // The GPU hint caps GPU-side allocation without minting a second pool.
+            ResourceKind::Vram => pool.min(self.pool.gpu_working_set_hint),
+            _ => pool,
+        }
+    }
+
+    fn used_bytes(&self) -> u64 {
+        // THE fix: one measurement, both axes. Reporting these independently is what
+        // let VRAM claim headroom RAM knew was gone.
+        self.pool.pool_used()
+    }
+}
+
 /// Deterministic ceiling driver for rung-1/2 tests — the daemon's capacity input
 /// with no hardware. Set the ceiling and the daemon reacts on its next tick,
 /// exactly as a real scan would. `set_ceiling` is a lock-free atomic store, so a
@@ -434,6 +560,125 @@ mod tests {
                 available: Some(100 * GIB),
             });
             assert_eq!(big.ceiling_bytes(), 120 * GIB);
+        }
+
+        mod unified {
+            use super::*;
+
+            /// The M5 this was found on, as `resources/board` actually reported it at
+            /// 2026-08-19 10:2x. Real numbers, not illustrative ones — this test IS the
+            /// incident.
+            const M5_TOTAL: u64 = 68_719_476_736; // 64 GiB physical
+            const M5_AVAILABLE: u64 = 6_856_146_944; // 6.39 GiB genuinely free
+            const M5_USED: u64 = M5_TOTAL - M5_AVAILABLE; // 61,863,329,792 — board's physicalUsed
+            /// Board's observed VRAM ceiling (Metal's working-set hint, less the GPU reserve).
+            const M5_GPU_HINT: u64 = 55_125_917_696;
+
+            fn m5_pool() -> Arc<UnifiedMemoryPool<FakeHost>> {
+                Arc::new(UnifiedMemoryPool::with_default_reserve(
+                    FakeHost {
+                        total: M5_TOTAL,
+                        available: Some(M5_AVAILABLE),
+                    },
+                    M5_GPU_HINT,
+                ))
+            }
+
+            fn view_of(
+                views: &[Arc<dyn CapacitySource>],
+                kind: ResourceKind,
+            ) -> &Arc<dyn CapacitySource> {
+                views.iter().find(|v| v.kind() == kind).expect("view exists")
+            }
+
+            // what this catches: THE DEFECT, with the numbers it was found with. Before this
+            // type existed the board reported VRAM available 16,954,408,960 (16.9 GB) while
+            // RAM reported 0 — two ledgers describing the same 6.39 GiB of real free memory,
+            // so a serving lane could lease ~17 GB that RAM already knew was spent. Both axes
+            // must now agree, because both read ONE measurement.
+            #[test]
+            fn vram_can_no_longer_advertise_headroom_that_ram_knows_is_gone() {
+                let views = m5_pool().views();
+                let ram = view_of(&views, ResourceKind::Ram);
+                let vram = view_of(&views, ResourceKind::Vram);
+
+                // The one shared measurement — this is the whole fix.
+                assert_eq!(ram.used_bytes(), M5_USED);
+                assert_eq!(vram.used_bytes(), M5_USED);
+                assert_eq!(ram.used_bytes(), vram.used_bytes());
+
+                // What the ledger will compute: capacity − max(granted, physical_used), and
+                // with nothing granted that is ceiling − used.
+                let ram_avail = ram.ceiling_bytes().saturating_sub(ram.used_bytes());
+                let vram_avail = vram.ceiling_bytes().saturating_sub(vram.used_bytes());
+                assert_eq!(ram_avail, 0, "RAM was already honest and must stay honest");
+                assert_eq!(
+                    vram_avail, 0,
+                    "the 16.9 GB phantom: VRAM must not offer bytes the pool does not have"
+                );
+            }
+
+            // what this catches: the pool ceiling silently becoming the GPU's working-set
+            // hint. That hint is smaller than physical memory, so adopting it pool-wide would
+            // shrink RAM for no reason; ignoring it entirely would let a GPU allocation blow
+            // past what Metal recommends. It caps VRAM only.
+            #[test]
+            fn the_gpu_hint_caps_vram_without_shrinking_the_pool() {
+                let views = m5_pool().views();
+                // 64 GiB − 8 GiB reserve. Matches the board's reported ram capacity exactly.
+                assert_eq!(
+                    view_of(&views, ResourceKind::Ram).ceiling_bytes(),
+                    60_129_542_144
+                );
+                // min(pool, hint) — and on this box the hint binds, matching the board's vram.
+                assert_eq!(
+                    view_of(&views, ResourceKind::Vram).ceiling_bytes(),
+                    M5_GPU_HINT
+                );
+            }
+
+            // what this catches: a GPU whose hint EXCEEDS the pool handing out bytes the host
+            // does not have. The pool always binds; the hint can only ever lower the ceiling.
+            #[test]
+            fn a_hint_larger_than_the_pool_never_raises_the_vram_ceiling() {
+                let pool = Arc::new(UnifiedMemoryPool::new(
+                    FakeHost {
+                        total: 16 * GIB,
+                        available: Some(8 * GIB),
+                    },
+                    1024 * GIB, // absurd hint
+                    2 * GIB,
+                ));
+                let views = pool.views();
+                let pool_ceiling = 14 * GIB;
+                assert_eq!(
+                    view_of(&views, ResourceKind::Vram).ceiling_bytes(),
+                    pool_ceiling
+                );
+                assert_eq!(
+                    view_of(&views, ResourceKind::Ram).ceiling_bytes(),
+                    pool_ceiling
+                );
+            }
+
+            // what this catches: the cold-boot trap reaching the unified path. Same reasoning
+            // as the discrete source — before the monitor's first poll, "unknown" must not be
+            // rendered as "fully consumed" on EITHER axis, or a UMA box refuses every request
+            // for the first seconds of every boot.
+            #[test]
+            fn an_unpolled_monitor_leaves_both_views_usable() {
+                let pool = Arc::new(UnifiedMemoryPool::with_default_reserve(
+                    FakeHost {
+                        total: 64 * GIB,
+                        available: None,
+                    },
+                    32 * GIB,
+                ));
+                for view in pool.views() {
+                    assert_eq!(view.used_bytes(), 0, "unknown is not 'all spoken for'");
+                    assert!(view.ceiling_bytes() > 0, "the ceiling must not wait on a poll");
+                }
+            }
         }
 
         // what this catches: a reserve larger than the machine underflowing into a
