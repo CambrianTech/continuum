@@ -2876,7 +2876,15 @@ fn governed_vram_ceiling(resource_daemon: &ResourceDaemon) -> Option<u64> {
         .kinds
         .iter()
         .find(|k| k.kind == ResourceKind::Vram)
-        .map(|_| resource_daemon.available_for(SERVING_CONSUMER_ID, ResourceKind::Vram))
+        // budget_for_replacing, NOT available_for. The serving planner's whole job is to
+        // decide what should be resident NEXT, and the swap releases what is resident now
+        // — so counting serving's own weights against serving's own plan is circular. It
+        // was measured doing exactly that on 2026-08-19: 30.25 GB resident subtracted from
+        // a 55.1 GB ceiling handed the planner 16.9 GB, a 27B does not fit in 16.9 GB, so
+        // it abandoned the 27B it was ALREADY RUNNING for a 7B, then a 0.5B. `acquire`
+        // still uses available_for — a lease must never be granted against bytes not yet
+        // released; only the replace-myself DECISION gets the add-back.
+        .map(|_| resource_daemon.budget_for_replacing(SERVING_CONSUMER_ID, ResourceKind::Vram))
 }
 
 /// The governed VRAM ceiling for a planner that has no way to represent "unknown",

@@ -181,6 +181,14 @@ impl ResourceGovernor {
         self.ledger.available_for(consumer_id, kind)
     }
 
+    /// The replace-myself budget — see
+    /// [`ResourceLeaseLedger::budget_for_replacing`](super::ledger::ResourceLeaseLedger::budget_for_replacing).
+    /// A consumer planning its own successor must not have its own residency counted
+    /// against it, or it can never choose anything as large as what it is running.
+    pub fn budget_for_replacing(&self, consumer_id: &str, kind: ResourceKind) -> u64 {
+        self.ledger.budget_for_replacing(consumer_id, kind)
+    }
+
     // ---- the tick ----------------------------------------------------------
 
     /// The per-tick decision. For each kind, compute how many bytes must come

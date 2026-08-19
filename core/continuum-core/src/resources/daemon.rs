@@ -306,6 +306,16 @@ impl ResourceDaemon {
         self.governor.lock().available_for(consumer_id, kind)
     }
 
+    /// The replace-myself budget: `available_for` plus the caller's OWN resident bytes,
+    /// because a consumer choosing its successor releases what it holds as part of the
+    /// swap. Without this the incumbent is counted against its own replacement and the
+    /// plan can only ratchet down — see
+    /// [`ResourceLeaseLedger::budget_for_replacing`](super::ledger::ResourceLeaseLedger::budget_for_replacing)
+    /// for the measured incident.
+    pub fn budget_for_replacing(&self, consumer_id: &str, kind: ResourceKind) -> u64 {
+        self.governor.lock().budget_for_replacing(consumer_id, kind)
+    }
+
     /// Register a leaseholder after startup — no restart (the directive's
     /// "never restart a daemon to manage resources").
     pub fn add_consumer(&self, consumer: Arc<dyn ResourceConsumer>) {
