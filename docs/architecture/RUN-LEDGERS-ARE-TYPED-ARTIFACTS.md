@@ -172,15 +172,78 @@ This single test, existing for any family, makes bugs 1–3 unrepresentable.
 
 ---
 
+## Outlier B result (2026-08-18): the draft did NOT fit, and the reason is the design
+
+Read `cognition/eval` before building anything, per Joel. It is inverted from solve on the
+axis that matters, and the draft above assumed solve's shape.
+
+| | `agent-solve` | `cognition/eval` |
+|---|---|---|
+| Written **when** | at DISPATCH, rewritten in place | at **COMPLETION** only (`append_progress_ledger`, 2 call sites) |
+| Addressed by | `agent-solve-<run>.json`, id in the FILENAME | `<persona>.jsonl`, id in a FIELD, reverse-scan every line |
+| What absence means | never started | **"still in flight, or the id is wrong"** — three-way ambiguous |
+| Reaper | yes (fixed today) | **none** |
+
+### The finding: eval cannot distinguish a live run from a corpse, and its own source says so
+
+`cognition/eval.rs:1781-84`, in-tree, written by whoever hit it:
+
+> a run that dies before `append_progress_ledger` leaves eval-status returning
+> `complete:false, row:null` forever — indistinguishable from "still starting", so the
+> poller waits on a corpse (cost me two cycles staring at `total:null` …)
+
+They patched the *error* path (`append_failed_ledger` exists precisely for this). A run
+that is **killed** — reboot, SIGKILL, crash — still reads as an eternal pending. That is
+the same orphan hole `agent-solve` closed with a dispatch-time marker plus a boot reaper,
+still open in eval, and the same shape as #137 (train jobs dying silently across reboots)
+and as tonight's wedged grader.
+
+### What that forces on the interface — and it is NOT a layout parameter
+
+The tempting move is `RunLedger<R, L: Layout>` with `FilePerRun` and `AppendJsonl` impls.
+That is wrong, and seeing why is the whole value of running B early:
+
+**eval's `.jsonl` is not a run-state ledger at all. It is a RESULTS LOG.** Append-only,
+one row per finished run, history-bearing — a legitimately different thing that should
+keep existing. What eval is missing is a *run-state record*, which it has never had. It
+cannot tell alive from dead because it stores no state, not because it stores state in a
+different layout.
+
+So the two concepts separate cleanly instead of being unified behind a strategy param:
+
+- **`RunLedger<R>` — current state, one record per run, written AT DISPATCH.** Uniform
+  across every family. This is what reap, wedge detection and the reboot guard read.
+- **`ResultsLog` — append-only history of finished runs.** eval's `.jsonl` already is one;
+  solve gets one for free instead of losing its per-run verdict files.
+
+### The law this promotes to a hard invariant
+
+> **The state record is written at DISPATCH. Absence means never started — never "in
+> flight."**
+
+Every guard in the substrate depends on it. Reap needs a `Running` row to find; wedge
+detection needs a heartbeat to age; the reboot guard needs something to name. A family
+that writes only on completion is *structurally* unable to be guarded, no matter how good
+the guard is. Solve already obeys this. eval does not, so **migrating eval is a behaviour
+change, not a refactor** — it adds a dispatch-time row and gains a reaper — and its PR
+must say so in those terms.
+
+Had I built against solve first, I would have shipped an interface that fit A perfectly and
+discovered on eval that "absence" means two opposite things — after the migration. That is
+the cost outlier B exists to avoid, and it was one file-read.
+
 ## Build order (outlier validation, per the methodical process)
 
-1. **L1+L2 against outlier A — `agent-solve`.** Simplest family: one file per run. Already
-   half-collapsed by `f3cb3a65c`, so this is finishing a move in flight.
-2. **Outlier B — `cognition/eval`.** Deliberately the MOST different: 11 `json!` literals,
-   separate progress/result/status records, its own `runId` camelCase spelling, live
-   polling by `observe`. If the interface fits solve *and* eval without forcing, it fits
-   the middle four. **If it does not fit, redesign before migrating anything else** — that
-   is the point of picking the extremes.
+Revised after the outlier-B read above, which changed step 1's shape before it was built.
+
+1. **L1+L2+L3b against outlier A — `agent-solve`**, with the record split confirmed by B:
+   `RunLedger<SolveRun>` for state (dispatch-written, heartbeat-bearing) and its existing
+   `.grade.json` files recognised as the `ResultsLog` half. Already half-collapsed by
+   `f3cb3a65c`.
+2. **Outlier B — `cognition/eval`.** Its `.jsonl` stays as the results log; it GAINS a
+   `RunLedger<EvalRun>` state record written at dispatch, and inherits reap + wedge
+   detection it has never had. Ships as a behaviour change with the eternal-pending hole
+   named in the commit.
 3. **L3 + L4 on both.** Reap and the round-trip test.
 4. **Generator.** `ledger/new <family>` scaffolds record + store binding + the round-trip
    test, so family seven inherits all of this instead of hand-rolling it. Generators encode
