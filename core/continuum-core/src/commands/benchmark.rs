@@ -1761,6 +1761,48 @@ mod tests {
         )
     }
 
+    // what this catches: #370. Every catalogued suite carried a real `source_url` and exactly
+    // ONE of them could be pulled, because the only fetcher was fused to the SWE row shape.
+    // This pins the derivation that makes the OTHER rows reachable — and pins that a non-HF
+    // source (a GitHub raw .jsonl, of which the catalog has two) is REFUSED rather than
+    // silently handed to the HF rows API, which would return an in-band error the caller
+    // would read as "the suite is empty".
+    #[test]
+    fn every_hf_catalogued_suite_yields_coordinates_and_non_hf_is_refused() {
+        assert_eq!(
+            hf_coords_from("https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite"),
+            Some("princeton-nlp/SWE-bench_Lite")
+        );
+        assert_eq!(
+            hf_coords_from(
+                "https://github.com/openai/human-eval/raw/master/data/HumanEval.jsonl.gz"
+            ),
+            None,
+            "a non-HF source must refuse, not fall through to the HF rows API"
+        );
+        // A dataset URL with no owner segment is not addressable by the rows API.
+        assert_eq!(hf_coords_from("https://huggingface.co/datasets/apps"), None);
+
+        // And the catalog itself: every HF-sourced row must resolve, or the suite is a name
+        // nothing can read — which is exactly the state #370 opened on.
+        let hf: Vec<_> = known_benchmarks()
+            .iter()
+            .filter_map(|b| b.source_url.map(|u| (b.name, u)))
+            .filter(|(_, u)| u.contains("huggingface.co"))
+            .collect();
+        assert!(
+            !hf.is_empty(),
+            "the catalog carries no HF-sourced suite at all — `benchmark/fetch` would be dead"
+        );
+        for (name, url) in hf {
+            assert!(
+                hf_coords_from(url).is_some(),
+                "`{name}` is HF-sourced at `{url}` but yields no coordinates — it would be \
+                 unfetchable while looking catalogued"
+            );
+        }
+    }
+
     // what this catches: THE round-killer of 2026-08-18. Citizens registered but not yet
     // hosted made every readiness surface report a ready roster, and dispatch staged a full
     // round into a room where nobody had a perception stream — `dispatched: 2, kickoffs: 2,
@@ -3521,5 +3563,147 @@ impl ActionCommand for BenchmarkRounds {
     }
 }
 
+// ---------------------------------------------------------------------------
+// benchmark/fetch — stage a catalogued suite so it can actually be run (#370)
+// ---------------------------------------------------------------------------
+
+/// A catalogued benchmark's HuggingFace coordinates, derived from its `source_url`.
+///
+/// Split out as a pure function so the URL→(dataset, config, split) rule is TESTED rather
+/// than restated at the call site. `config`/`split` default to the HF convention and are
+/// overridable per call, because a dataset that is not `default`/`test` is common and
+/// guessing wrong yields an in-band error the caller would otherwise read as "empty suite".
+pub fn hf_coords_from(source_url: &str) -> Option<&str> {
+    source_url
+        .strip_prefix("https://huggingface.co/datasets/")
+        .filter(|id| id.contains('/'))
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/BenchmarkFetchParams.ts"
+)]
+pub struct BenchmarkFetchParams {
+    /// Which catalogued benchmark to stage, as it appears in `benchmark/list`.
+    pub benchmark: String,
+    /// Dataset config. Defaults to `default` — the HF convention.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub config: Option<String>,
+    /// Split to pull. Defaults to `test`, which is what a benchmark is scored on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub split: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/BenchmarkFetchResult.ts"
+)]
+pub struct BenchmarkFetchResult {
+    pub benchmark: String,
+    pub dataset: String,
+    pub config: String,
+    pub split: String,
+    /// Rows actually staged. This is the suite's REAL denominator — compare it against the
+    /// catalog's `tasks` before trusting any rate computed from it.
+    pub rows: usize,
+    /// The catalog's declared task count, so a mismatch is visible at fetch time rather than
+    /// discovered when a published number turns out to be over the wrong denominator.
+    pub declared_tasks: u32,
+    /// True when `rows` and `declared_tasks` agree. False is not fatal — datasets are revised
+    /// upstream — but a rate published over a disagreeing denominator is not comparable.
+    pub denominator_matches: bool,
+}
+
+#[derive(Default)]
+pub struct BenchmarkFetch;
+
+#[async_trait]
+impl ActionCommand for BenchmarkFetch {
+    const NAME: &'static str = "benchmark/fetch";
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Stage a catalogued benchmark's task list from its `source_url`, cached on disk (#370). \
+         The catalog has carried ~20 suites with real source URLs while exactly ONE could be \
+         pulled, because the only fetcher was fused to the SWE row shape — every other suite was \
+         a name nothing could read. This pulls ANY HuggingFace-hosted suite through the same \
+         paging+cache path already proven against SWE-bench Lite. Reports the REAL row count \
+         beside the catalog's declared task count, because a pass rate over the wrong \
+         denominator is not comparable to anyone else's number. Fails loud on an unknown \
+         benchmark, a non-HF source, or a refused dataset — an empty pull is never reported as \
+         an empty suite.";
+    type Params = BenchmarkFetchParams;
+    type Output = BenchmarkFetchResult;
+
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        p: BenchmarkFetchParams,
+    ) -> Result<BenchmarkFetchResult, CommandError> {
+        let spec = known_benchmarks()
+            .iter()
+            .find(|b| b.name == p.benchmark)
+            .ok_or_else(|| {
+                CommandError::Invalid(format!(
+                    "unknown benchmark `{}` — see `benchmark/list` for the catalogued names",
+                    p.benchmark
+                ))
+            })?;
+        let source = spec.source_url.ok_or_else(|| {
+            CommandError::Invalid(format!(
+                "`{}` is an in-tree suite with no source to pull — it ships with the binary and \
+                 is already runnable via its eval_set",
+                spec.name
+            ))
+        })?;
+        let dataset = hf_coords_from(source).ok_or_else(|| {
+            CommandError::Invalid(format!(
+                "`{}` is sourced from `{source}`, which is not a HuggingFace dataset URL. Only \
+                 the HF path is wired; this suite needs its own fetcher.",
+                spec.name
+            ))
+        })?;
+        let config = p.config.unwrap_or_else(|| "default".to_string());
+        let split = p.split.unwrap_or_else(|| "test".to_string());
+
+        let rows = crate::cognition::swe_bench::fetch_hf_rows(dataset, &config, &split)
+            .await
+            .map_err(CommandError::Internal)?;
+
+        let denominator_matches = rows.len() as u32 == spec.tasks;
+        crate::probe!(
+            class = "benchmark.suite.staged",
+            benchmark = spec.name,
+            dataset = dataset,
+            rows = rows.len(),
+            declared = spec.tasks,
+            denominator_matches = denominator_matches,
+            "benchmark suite staged from its catalog source",
+        );
+        if !denominator_matches {
+            tracing::warn!(
+                benchmark = %spec.name,
+                staged = rows.len(),
+                declared = spec.tasks,
+                "staged row count disagrees with the catalog's declared tasks — any rate \
+                 computed over this is NOT comparable until the denominator is reconciled"
+            );
+        }
+        Ok(BenchmarkFetchResult {
+            benchmark: spec.name.to_string(),
+            dataset: dataset.to_string(),
+            config,
+            split,
+            rows: rows.len(),
+            declared_tasks: spec.tasks,
+            denominator_matches,
+        })
+    }
+}
+
 crate::register_stateless_command!(BenchmarkRuns);
 crate::register_stateless_command!(BenchmarkRounds);
+crate::register_stateless_command!(BenchmarkFetch);

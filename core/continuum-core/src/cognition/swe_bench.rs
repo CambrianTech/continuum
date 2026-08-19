@@ -416,22 +416,53 @@ pub fn recorded_verdicts() -> Vec<(String, SweVerdict)> {
     out
 }
 
-/// Fetch a dataset split, cached on first use. On-demand, never a gated install step.
-pub async fn load_dataset(dataset: &str) -> Result<Vec<SweInstance>, String> {
-    let cache = swe_cache_dir().join(format!("{}.json", dataset.replace('/', "__")));
+/// Pull every row of a HuggingFace dataset split, SHAPE-AGNOSTIC.
+///
+/// # Why this is split out (#370, 2026-08-19)
+///
+/// The catalog carries ~20 benchmark rows, each with a real `source_url`, and exactly ONE of
+/// them could ever be fetched — because the only fetcher in the tree was fused to
+/// `SweInstance`. Every other row was a name and a URL that nothing read: LiveCodeBench,
+/// aider-polyglot, bigcodebench, evalplus, all declared, none pullable. That is the same
+/// shape as the rest of this codebase's recurring defect — machinery written, never wired.
+///
+/// The paging and caching were never SWE-specific. Only the row DECODE was. So this returns
+/// raw `Value` rows and each family maps them to its own type: ONE fetcher, N shape-mappers
+/// ([[the-compression-principle]]). `load_dataset` below is now the SWE mapper over this, so
+/// the generic path is the one already proven against SWE-bench Lite in production — a new
+/// suite inherits a fetcher that works rather than getting a second, untested one.
+///
+/// Cached by (dataset, config, split) on first use; on-demand, never a gated install step.
+pub async fn fetch_hf_rows(
+    dataset: &str,
+    config: &str,
+    split: &str,
+) -> Result<Vec<serde_json::Value>, String> {
+    let slug = format!(
+        "{}__{config}__{split}",
+        dataset.replace('/', "__")
+    );
+    let cache = swe_cache_dir().join(format!("{slug}.rows.json"));
     if let Ok(bytes) = std::fs::read(&cache) {
-        if let Ok(rows) = serde_json::from_slice::<Vec<SweInstance>>(&bytes) {
+        if let Ok(rows) = serde_json::from_slice::<Vec<serde_json::Value>>(&bytes) {
             if !rows.is_empty() {
                 return Ok(rows);
             }
         }
     }
-    let mut rows: Vec<SweInstance> = Vec::new();
-    // The datasets-server caps a page at 100; SWE-bench Lite is 300.
-    for offset in (0..2000).step_by(100) {
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+    // The datasets-server caps a page at 100. The ceiling is a real bound, not a guess: it
+    // stops a mis-typed dataset name from paging forever against a server that answers 200
+    // with an empty list. A suite larger than this needs the bound RAISED deliberately, with
+    // its size named — never silently truncated, which would publish a partial denominator as
+    // if it were the whole suite.
+    const MAX_ROWS: usize = 5_000;
+    for offset in (0..MAX_ROWS).step_by(100) {
         let url = format!(
-            "https://datasets-server.huggingface.co/rows?dataset={}&config=default&split=test&offset={}&length=100",
+            "https://datasets-server.huggingface.co/rows?dataset={}&config={}&split={}&offset={}&length=100",
             urlencoding_encode(dataset),
+            urlencoding_encode(config),
+            urlencoding_encode(split),
             offset
         );
         let resp = reqwest::get(&url)
@@ -441,6 +472,13 @@ pub async fn load_dataset(dataset: &str) -> Result<Vec<SweInstance>, String> {
             .json()
             .await
             .map_err(|e| format!("dataset decode failed at offset {offset}: {e}"))?;
+        // The server reports its own errors in-band with a 200. Surface it verbatim rather
+        // than returning an empty set that a caller would read as "the suite is empty".
+        if let Some(err) = body.get("error").and_then(|e| e.as_str()) {
+            return Err(format!(
+                "huggingface refused `{dataset}` (config={config}, split={split}): {err}"
+            ));
+        }
         let page = body
             .get("rows")
             .and_then(|r| r.as_array())
@@ -451,14 +489,42 @@ pub async fn load_dataset(dataset: &str) -> Result<Vec<SweInstance>, String> {
         }
         for entry in page {
             if let Some(row) = entry.get("row") {
-                if let Ok(inst) = serde_json::from_value::<SweInstance>(row.clone()) {
-                    rows.push(inst);
-                }
+                rows.push(row.clone());
             }
         }
     }
     if rows.is_empty() {
-        return Err(format!("{dataset} returned no usable rows"));
+        return Err(format!(
+            "`{dataset}` (config={config}, split={split}) returned no rows — check the dataset \
+             id and split name; an empty pull is never treated as an empty suite"
+        ));
+    }
+    let _ = std::fs::create_dir_all(swe_cache_dir());
+    let _ = std::fs::write(&cache, serde_json::to_vec(&rows).unwrap_or_default());
+    Ok(rows)
+}
+
+/// The SWE shape-mapper over [`fetch_hf_rows`]. Cached on first use.
+pub async fn load_dataset(dataset: &str) -> Result<Vec<SweInstance>, String> {
+    let cache = swe_cache_dir().join(format!("{}.json", dataset.replace('/', "__")));
+    if let Ok(bytes) = std::fs::read(&cache) {
+        if let Ok(rows) = serde_json::from_slice::<Vec<SweInstance>>(&bytes) {
+            if !rows.is_empty() {
+                return Ok(rows);
+            }
+        }
+    }
+    let raw = fetch_hf_rows(dataset, "default", "test").await?;
+    let total = raw.len();
+    let rows: Vec<SweInstance> = raw
+        .into_iter()
+        .filter_map(|row| serde_json::from_value::<SweInstance>(row).ok())
+        .collect();
+    if rows.is_empty() {
+        return Err(format!(
+            "{dataset} fetched {total} rows but NONE decoded as a SWE instance — this dataset \
+             is not SWE-instance-shaped, so it needs its own mapper rather than this one"
+        ));
     }
     let _ = std::fs::create_dir_all(swe_cache_dir());
     let _ = std::fs::write(&cache, serde_json::to_vec(&rows).unwrap_or_default());
