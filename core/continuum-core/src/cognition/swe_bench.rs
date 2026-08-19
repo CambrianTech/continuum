@@ -499,6 +499,19 @@ pub async fn fetch_hf_rows(
              id and split name; an empty pull is never treated as an empty suite"
         ));
     }
+    // The cap above PROMISED it would never silently truncate, and until now nothing enforced
+    // that — a suite at or past the bound returned looking complete, which is precisely how a
+    // partial denominator gets published as if it were the whole suite. Refuse instead. A suite
+    // of exactly MAX_ROWS trips this too; a loud refusal on a boundary case is the correct trade
+    // against a silently short task list, and the fix is one deliberate edit that NAMES the size.
+    if rows.len() >= MAX_ROWS {
+        return Err(format!(
+            "`{dataset}` (config={config}, split={split}) hit the {MAX_ROWS}-row fetch bound. \
+             The suite may be larger than what was pulled, so this row count is NOT a \
+             trustworthy denominator. Raise MAX_ROWS in swe_bench.rs deliberately, naming the \
+             real suite size, rather than publishing a rate over a truncated list."
+        ));
+    }
     let _ = std::fs::create_dir_all(swe_cache_dir());
     let _ = std::fs::write(&cache, serde_json::to_vec(&rows).unwrap_or_default());
     Ok(rows)

@@ -380,9 +380,20 @@ fn adapters() -> Vec<Box<dyn SuiteAdapter>> {
 /// comparable to anyone's published number.
 pub fn project_suite(suite: &str, rows: &[Value]) -> Result<Vec<BenchTask>, String> {
     let all = adapters();
-    let adapter = all
-        .iter()
+    let adapter = adapter_for(&all, suite)?;
+    rows.iter()
+        .map(|r| adapter.project(suite, r))
+        .collect::<Result<Vec<_>, _>>()
+}
+
+/// The adapter lookup + its refusal, in ONE place so the two entry points cannot drift.
+fn adapter_for<'a>(
+    all: &'a [Box<dyn SuiteAdapter>],
+    suite: &str,
+) -> Result<&'a dyn SuiteAdapter, String> {
+    all.iter()
         .find(|a| a.serves().contains(&suite))
+        .map(|b| b.as_ref())
         .ok_or_else(|| {
             let known: Vec<&str> = all.iter().flat_map(|a| a.serves().iter().copied()).collect();
             format!(
@@ -390,10 +401,33 @@ pub fn project_suite(suite: &str, rows: &[Value]) -> Result<Vec<BenchTask>, Stri
                  Adapted suites: {}. Adding one is an impl of SuiteAdapter plus a registry row.",
                 known.join(", ")
             )
-        })?;
-    rows.iter()
-        .map(|r| adapter.project(suite, r))
-        .collect::<Result<Vec<_>, _>>()
+        })
+}
+
+/// How many rows project, WITHOUT materializing every task.
+///
+/// # Why this exists rather than `project_suite(..).len()`
+///
+/// MEASURED DEFECT, mine, 2026-08-19: `benchmark/fetch` called `project_suite` purely to report
+/// a COUNT, which allocated a full second copy of the dataset — every statement, patch, and test
+/// body cloned out of rows that were still held — on top of the parsed `Vec<Value>`. The
+/// memleak tracker flagged the result at `benchmark/fetch:+138MB` and I read past it; a
+/// concurrent full-suite `cargo test` then OOMed the box.
+///
+/// The projection was the right thing to do (staged-but-unposable must be visible); holding two
+/// copies to learn one number was not. Each task is projected, validated, and DROPPED here, so
+/// peak memory stays one dataset regardless of suite size — and the refusal semantics are
+/// identical, because it is the same adapter and the same first-error-aborts rule.
+pub fn count_projectable(suite: &str, rows: &[Value]) -> Result<usize, String> {
+    let all = adapters();
+    let adapter = adapter_for(&all, suite)?;
+    let mut projected = 0usize;
+    for row in rows {
+        // The BenchTask is built, validated, and dropped at the end of this iteration.
+        adapter.project(suite, row)?;
+        projected += 1;
+    }
+    Ok(projected)
 }
 
 #[cfg(test)]

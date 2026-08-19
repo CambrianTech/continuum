@@ -3791,17 +3791,27 @@ impl ActionCommand for BenchmarkFetch {
         // Project through the suite's adapter in the same breath as the fetch, so "staged" and
         // "posable" can never drift apart in the operator's head. A projection failure is
         // reported, NOT swallowed and NOT fatal — the rows are legitimately on disk either way.
+        //
+        // `count_projectable`, NOT `project_suite(..).len()`: this path only needs the COUNT, and
+        // materializing every task here held a second full copy of the dataset alongside `rows`
+        // (measured at +138MB on the memleak tracker, and it OOMed the box under a concurrent
+        // test run). Same adapter, same abort-on-first-bad-row rule, one dataset in memory.
         let (tasks, adapter_note) =
-            match crate::cognition::bench_task::project_suite(spec.name, &rows) {
-                Ok(t) => (Some(t.len()), None),
+            match crate::cognition::bench_task::count_projectable(spec.name, &rows) {
+                Ok(n) => (Some(n), None),
                 Err(e) => (None, Some(e)),
             };
+        // `fetch_hf_rows` already wrote the rows to the on-disk cache, and everything below
+        // needs only counts. Releasing them here keeps peak RSS at one dataset instead of
+        // holding the whole suite alive until the handler returns.
+        let row_count = rows.len();
+        drop(rows);
         Ok(BenchmarkFetchResult {
             benchmark: spec.name.to_string(),
             dataset: dataset.to_string(),
             config,
             split,
-            rows: rows.len(),
+            rows: row_count,
             declared_tasks: spec.tasks,
             denominator_matches,
             tasks,
