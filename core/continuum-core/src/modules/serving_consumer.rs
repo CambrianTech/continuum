@@ -105,6 +105,14 @@ pub struct ServingConsumer {
     /// it (candidates intersect to the pin), freeing the delta without going dark
     /// (#105). The tier-down lever.
     pin: watch::Sender<Option<String>>,
+    /// HIGH-WATER RESIDENCY (#438, measured 2026-08-19). The bytes this consumer has
+    /// held and has NOT been shown releasing. See `footprint` for why a plan-derived
+    /// number alone under-reports by a whole model during every reshape.
+    held_high_water: std::sync::atomic::AtomicU64,
+    /// The `ready_verified_at_ms` of the last snapshot we accepted as PROOF the previous
+    /// process is gone. Evidence, not a timer: the high-water decays only when readiness
+    /// is re-verified at the new shape.
+    decayed_at_verified_ms: std::sync::atomic::AtomicU64,
     /// active model id + live shape → resident VRAM bytes (weights + per-lane KV).
     footprint_of: FootprintFn,
     /// The swappable intelligence that chooses whether/where to tier down under
@@ -128,6 +136,8 @@ impl ServingConsumer {
             serving,
             suppress,
             pin,
+            held_high_water: std::sync::atomic::AtomicU64::new(0),
+            decayed_at_verified_ms: std::sync::atomic::AtomicU64::new(0),
             footprint_of,
             tier_down,
             pending: Mutex::new(HashMap::new()),
@@ -183,17 +193,75 @@ impl ResourceConsumer for ServingConsumer {
     }
 
     fn footprint(&self) -> Vec<ConsumerFootprint> {
-        match self.active_ready() {
-            Some((id, window, lanes)) => {
-                let bytes = (self.footprint_of)(&id, window, lanes);
-                vec![ConsumerFootprint {
-                    kind: ResourceKind::Vram,
-                    bytes,
-                    detail: format!("{id} weights+KV resident ({lanes} lane(s) × {window} ctx)"),
-                }]
-            }
-            None => Vec::new(),
+        use std::sync::atomic::Ordering;
+
+        // WHAT THE PLAN SAYS is served right now. Zero while a lane is loading or
+        // relaunching, because `active_ready` gates on `ready`.
+        let planned = match self.active_ready() {
+            Some((id, window, lanes)) => Some((
+                (self.footprint_of)(&id, window, lanes),
+                format!("{id} weights+KV resident ({lanes} lane(s) × {window} ctx)"),
+            )),
+            None => None,
+        };
+        let planned_bytes = planned.as_ref().map(|(b, _)| *b).unwrap_or(0);
+
+        // THE HIGH-WATER REQUIRES A PROOF CHANNEL. `ready_verified_at_ms` is stamped the
+        // moment readiness is CONFIRMED for the lane now serving, and a verification we
+        // have not yet consumed is proof the previous process is gone. If the snapshot
+        // carries NO stamp at all, there is no mechanism that could ever prove release —
+        // and a claim that can never be falsified would strand this machine's capacity
+        // forever. So: no proof channel, no claim. Report the plan and nothing more.
+        //
+        // That is the same rule as everywhere else today — the failure direction must
+        // move toward LESS trust. Under-reporting for a moment is recoverable; holding an
+        // unfalsifiable claim on a third of the box is not.
+        let Some(verified) = self.serving.borrow().ready_verified_at_ms else {
+            return planned
+                .map(|(bytes, detail)| {
+                    vec![ConsumerFootprint {
+                        kind: ResourceKind::Vram,
+                        bytes,
+                        detail,
+                    }]
+                })
+                .unwrap_or_default();
+        };
+
+        // DECAY ON EVIDENCE, NEVER ON A TIMER.
+        let consumed = self.decayed_at_verified_ms.load(Ordering::Relaxed);
+        if verified > consumed && planned.is_some() {
+            self.decayed_at_verified_ms.store(verified, Ordering::Relaxed);
+            self.held_high_water.store(planned_bytes, Ordering::Relaxed);
+        } else if planned_bytes > self.held_high_water.load(Ordering::Relaxed) {
+            self.held_high_water.store(planned_bytes, Ordering::Relaxed);
         }
+
+        let held = self.held_high_water.load(Ordering::Relaxed);
+        if held == 0 {
+            // Never held anything and nothing is planned — a real, honest nothing.
+            return Vec::new();
+        }
+
+        // REPORT WHAT WE HOLD, NOT WHAT WE INTEND. Measured live 2026-08-19: mid-reshape
+        // the board read `serving 25.93 GB (1 lane)` against `phys 47.25 GB` — the old
+        // 4-lane process was still resident while the snapshot had already flipped to the
+        // new shape. The 21.3 GB gap became "unowned", unowned reads as immovable,
+        // `available` collapsed to 8.42 GB, the 27B no longer fit, and the planner took a
+        // 0.5B. Under-reporting our own residency is indistinguishable from someone else
+        // holding it, and it is strictly more dangerous: it invites over-commit against
+        // bytes we have not released.
+        let detail = match &planned {
+            Some((b, d)) if *b >= held => d.clone(),
+            Some((_, d)) => format!("{d} — reporting prior residency, not yet confirmed released"),
+            None => "prior residency held while no lane is ready (loading or relaunching)"
+                .to_string(),
+        };
+        vec![ConsumerFootprint {
+            kind: ResourceKind::Vram,
+            bytes: held,
+            detail,
+        }]
     }
 
     async fn reclaim(&self, request: ReclaimRequest) -> ReclaimOutcome {
@@ -398,6 +466,112 @@ mod tests {
     // is not actually resident, the daemon's scan-vs-footprint reconcile would
     // see phantom bytes; if it reported nothing while a model is live, the
     // authority would think serving is reclaimable-free and over-grant into it.
+    /// A rig whose footprint actually SCALES with the lane count — the shared `rig`
+    /// deliberately returns a flat number ("the shape is ignored here"), which is right
+    /// for the reclaim-handshake tests and useless for these: with a flat resolver a
+    /// 4-lane and a 1-lane serve are the same size, so a shrink is unobservable. I wrote
+    /// three tests against the flat rig before reading it.
+    fn shape_rig(bytes_per_lane: u64) -> (ServingConsumer, watch::Sender<ServingSnapshot>) {
+        let (serving_tx, serving_rx) = watch::channel(ServingSnapshot {
+            ready_verified_at_ms: Some(1_000),
+            active_model: Some("qwen3.8-27b".into()),
+            ready: true,
+            base_url: "http://localhost:0/v1".into(),
+            adapters: Vec::new(),
+            served_context_window: 22_528,
+            lanes: 4,
+            degraded_reason: None,
+            vision_ready: false,
+            vision_base_url: None,
+            vision_model: None,
+        });
+        let (suppress_tx, _srx) = watch::channel(Arc::new(HashSet::new()));
+        let (pin_tx, _prx) = watch::channel(None);
+        let footprint_of: FootprintFn =
+            Arc::new(move |_id: &str, _w: u32, lanes: u32| bytes_per_lane * lanes as u64);
+        let consumer = ServingConsumer::new(
+            serving_rx,
+            suppress_tx,
+            pin_tx,
+            footprint_of,
+            Arc::new(DeclineTierDown),
+        );
+        (consumer, serving_tx)
+    }
+
+    // what this catches: a high-water that can never be released. If the snapshot carries
+    // no `ready_verified_at_ms`, nothing can ever prove the old process died — holding a
+    // claim on those bytes would strand them for the life of the process. No proof
+    // channel, no claim.
+    #[tokio::test]
+    async fn without_a_verification_stamp_no_high_water_is_claimed() {
+        let (consumer, serving_tx) = rig("qwen3-coder-30b", 18_000); // stamp is None
+        assert_eq!(consumer.footprint()[0].bytes, 18_000);
+        serving_tx.send_modify(|s| s.ready = false);
+        assert!(
+            consumer.footprint().is_empty(),
+            "with no way to ever prove release, we must not claim bytes we cannot give back"
+        );
+    }
+
+    // what this catches: THE MEASURED #438 COLLAPSE. Mid-reshape the board read
+    // `serving 25.93 GB (1 lane)` against `phys 47.25 GB` — the old 4-lane process was
+    // still resident while the snapshot had already flipped to the new shape. The 21.3 GB
+    // gap read as unowned, unowned reads as immovable, `available` fell to 8.42 GB, the
+    // 27B stopped fitting, and the planner took a 0.5B. Shrinking the SHAPE must not
+    // shrink what we claim to HOLD until something proves the bytes came back.
+    #[tokio::test]
+    async fn a_shrinking_shape_does_not_shrink_reported_residency_without_proof() {
+        let (consumer, serving_tx) = shape_rig(6_000_000_000);
+        let wide = consumer.footprint()[0].bytes;
+        assert!(wide > 0, "a ready 4-lane serve must attribute something");
+
+        // The plan reshapes to 1 lane. No NEW readiness verification yet — the old
+        // process may still be resident, and nothing has shown us otherwise.
+        serving_tx.send_modify(|s| s.lanes = 1);
+        let during = consumer.footprint();
+        assert_eq!(
+            during[0].bytes, wide,
+            "must still claim the wider residency until a verification proves release"
+        );
+        assert!(during[0].detail.contains("not yet confirmed released"));
+    }
+
+    // what this catches: the OTHER half — `active_ready()` returns None while a lane
+    // loads or relaunches, and the old code returned an EMPTY vec. Zero attributed while
+    // gigabytes are demonstrably resident is the same defect wearing a different face.
+    #[tokio::test]
+    async fn a_loading_lane_still_reports_the_bytes_it_has_not_released() {
+        let (consumer, serving_tx) = shape_rig(6_000_000_000);
+        let held = consumer.footprint()[0].bytes;
+
+        serving_tx.send_modify(|s| s.ready = false); // relaunching
+        let during = consumer.footprint();
+        assert_eq!(during.len(), 1, "must NOT go silent while bytes are resident");
+        assert_eq!(during[0].bytes, held);
+        assert!(during[0].detail.contains("loading or relaunching"));
+    }
+
+    // what this catches: the opposite failure — never decaying, which strands capacity
+    // forever. A FRESH readiness verification is proof the previous process is gone, so
+    // the claim must collapse to the live plan. Evidence, not a timer.
+    #[tokio::test]
+    async fn a_new_readiness_verification_releases_the_high_water() {
+        let (consumer, serving_tx) = shape_rig(6_000_000_000);
+        let wide = consumer.footprint()[0].bytes;
+
+        serving_tx.send_modify(|s| s.lanes = 1);
+        assert_eq!(consumer.footprint()[0].bytes, wide, "no proof yet");
+
+        // The new 1-lane process verifies ready → the old one is gone.
+        serving_tx.send_modify(|s| s.ready_verified_at_ms = Some(2_000));
+        let after = consumer.footprint()[0].bytes;
+        assert!(
+            after < wide,
+            "a confirmed relaunch must release the claim, or capacity is stranded forever"
+        );
+    }
+
     #[tokio::test]
     async fn footprint_is_the_active_ready_model_only() {
         let (consumer, serving_tx) = rig("qwen3-coder-30b", 18_000);
