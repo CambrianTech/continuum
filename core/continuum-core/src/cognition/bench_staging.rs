@@ -47,18 +47,23 @@
 //! named shortfall is strictly better than an OOM that takes the citizens down with it — Joel's
 //! *"otherwise broken json and other things make the system completely degrade"*.
 //!
-//! # What is deliberately NOT here yet
+//! # Three states, in descending preference — and the middle one is the point
 //!
-//! There is an obvious third state: when the budget is too small to hold a suite, STREAM it —
-//! page from the HF cursor (or the disk cache) and project row-by-row, so peak stays one page
-//! regardless of suite size. That upgrades a refusal into an adaptation, and it is the better
-//! system.
+//! ```text
+//!   suite fits the budget          → Resident  hold it, hand the caller a Vec
+//!   suite doesn't, one page does   → Streamed  page it, project each row, drop it
+//!   not even one page fits         → Refuse    name the shortfall
+//! ```
 //!
-//! It is not in this enum, because a variant nothing can construct is a lie about what the
-//! system does. Real streaming needs the pager inverted (a per-page callback instead of an
-//! accumulate-then-return) and the on-disk cache moved from one JSON array to JSONL so it can
-//! be read incrementally. That is a real change and it gets its own slice, at which point
-//! `Refuse` narrows to "not even one page fits" and everything else adapts.
+//! A concern that can only succeed or fail forces a human to arbitrate. A concern that can
+//! ADAPT keeps working while a call holds the RAM — which is the difference between a
+//! benchmark that competes with the citizens and one that coexists with them.
+//!
+//! `Streamed` is real, not aspirational: [`stream_hf_rows`](crate::cognition::swe_bench::stream_hf_rows)
+//! is the pager and `fetch_hf_rows` is a thin collector over it, so peak is one page at any
+//! suite size and the row cache is JSONL specifically so it can be read back incrementally. The
+//! memory profile became the CALLER's choice — collect if you need the rows, project and drop
+//! if you do not — behind one paging + caching + error path.
 
 use crate::resources::{
     ConsumerFootprint, ReclaimOutcome, ReclaimReason, ReclaimRequest, ResourceConsumer,
@@ -78,8 +83,16 @@ pub enum StagingPlan {
         /// What staging expects to hold, and therefore what it should lease.
         bytes: u64,
     },
-    /// Not enough. Refuse and NAME the shortfall — never allocate hopefully and let the
-    /// allocator arbitrate, which is how a benchmark takes a live call down with it.
+    /// Not enough headroom to hold the suite — so DON'T hold it. Page it, project each row, and
+    /// drop it, so peak stays one page regardless of suite size. Slower than resident and it
+    /// cannot hand the caller a `Vec`, but it completes the work instead of refusing it, and it
+    /// does not evict a peer to do so. This is the "decide how to fit" answer.
+    Streamed {
+        /// What a single page costs — the real peak for this mode.
+        page_bytes: u64,
+    },
+    /// Not even one page fits. NOW refuse, and name the shortfall — never allocate hopefully and
+    /// let the allocator arbitrate, which is how a benchmark takes a live call down with it.
     Refuse {
         needed: u64,
         available: u64,
@@ -93,16 +106,32 @@ impl StagingPlan {
     /// `available_for(CONSUMER_ID, Ram)`. A zero estimate is treated as Resident with zero
     /// bytes — an empty suite legitimately needs nothing, and refusing it would turn a
     /// harmless no-op into an error.
-    pub fn decide(estimated_bytes: u64, available: u64) -> Self {
+    /// `page_bytes` is what ONE page costs — the floor below which even streaming cannot run.
+    ///
+    /// Three states, in descending preference: hold it, page it, refuse it. The middle state is
+    /// the one that matters — a concern that can only succeed or fail forces the operator to
+    /// arbitrate; a concern that can ADAPT keeps working while a call has the RAM.
+    pub fn decide(estimated_bytes: u64, available: u64, page_bytes: u64) -> Self {
         if estimated_bytes <= available {
             StagingPlan::Resident {
                 bytes: estimated_bytes,
             }
+        } else if page_bytes <= available {
+            StagingPlan::Streamed { page_bytes }
         } else {
             StagingPlan::Refuse {
-                needed: estimated_bytes,
+                needed: page_bytes,
                 available,
             }
+        }
+    }
+
+    /// Bytes this plan will actually hold at peak — what staging should declare to the governor.
+    pub fn peak_bytes(&self) -> u64 {
+        match self {
+            StagingPlan::Resident { bytes } => *bytes,
+            StagingPlan::Streamed { page_bytes } => *page_bytes,
+            StagingPlan::Refuse { .. } => 0,
         }
     }
 
@@ -110,13 +139,14 @@ impl StagingPlan {
     /// A gate that blocks without saying why relocates the archaeology instead of ending it.
     pub fn explain_refusal(&self) -> Option<String> {
         match self {
-            StagingPlan::Resident { .. } => None,
+            StagingPlan::Resident { .. } | StagingPlan::Streamed { .. } => None,
             StagingPlan::Refuse { needed, available } => Some(format!(
-                "benchmark staging needs ~{needed} bytes of RAM but the governor can only plan \
-                 {available} for `{CONSUMER_ID}` right now — another consumer (a serving lane, \
-                 a live call) holds the difference. Staging REFUSES rather than allocating \
-                 hopefully, because winning a race against the allocator here takes the \
-                 citizens down with it. Retry when the box is quieter, or free a lane."
+                "benchmark staging cannot run: even STREAMING one page needs ~{needed} bytes of \
+                 RAM and the governor can only plan {available} for `{CONSUMER_ID}` right now — \
+                 another consumer (a serving lane, a live call) holds the rest. Staging refuses \
+                 rather than allocating hopefully, because winning a race against the allocator \
+                 here takes the citizens down with it. Retry when the box is quieter, or free a \
+                 lane."
             )),
         }
     }
@@ -209,14 +239,14 @@ pub fn staging_area() -> std::sync::Arc<StagingArea> {
 /// running (a unit test, a CLI invocation before boot). The fallback is deliberate and narrow:
 /// with no governor there is no peer to starve, so refusing would block work for nobody's
 /// benefit — but it is stated here rather than hidden as an `unwrap_or`.
-pub fn plan_against_governor(estimated_bytes: u64) -> StagingPlan {
+pub fn plan_against_governor(estimated_bytes: u64, page_bytes: u64) -> StagingPlan {
     let Some(daemon) = crate::resources::ResourceDaemon::global() else {
         return StagingPlan::Resident {
             bytes: estimated_bytes,
         };
     };
     let available = daemon.available_for(CONSUMER_ID, ResourceKind::Ram);
-    StagingPlan::decide(estimated_bytes, available)
+    StagingPlan::decide(estimated_bytes, available, page_bytes)
 }
 
 /// Staging's face to the governor.
@@ -287,25 +317,53 @@ mod tests {
     /// what OOMed the box on 2026-08-19 — a benchmark and the rest of the system racing, with
     /// the loser being whoever asked second. A plan that REFUSES with a named shortfall is
     /// strictly better than an allocation that wins and takes the citizens down.
+    /// what this catches: THE point of the whole type. A suite too big to hold must not refuse
+    /// while a page still fits — it must ADAPT. A concern that can only succeed or fail forces a
+    /// human to arbitrate; one that can page keeps working while a live call holds the RAM.
+    /// If this ever regresses to Refuse, benchmarks start losing to calls instead of yielding
+    /// gracefully to them, and the operator gets a wall where they should get a slower run.
     #[test]
-    fn a_suite_larger_than_the_budget_refuses_and_names_the_shortfall() {
-        let plan = StagingPlan::decide(8_000, 5_000);
+    fn a_suite_too_big_to_hold_streams_instead_of_refusing() {
+        let plan = StagingPlan::decide(8_000, 5_000, 1_000);
+        assert_eq!(plan, StagingPlan::Streamed { page_bytes: 1_000 });
+        assert!(
+            plan.explain_refusal().is_none(),
+            "streaming is success, not a refusal — it must not read as an error"
+        );
+        assert_eq!(
+            plan.peak_bytes(),
+            1_000,
+            "and the governor must be told the PAGE cost, not the suite cost"
+        );
+    }
+
+    /// what this catches: the refusal firing on the wrong condition. It is legitimate ONLY when
+    /// not even one page fits — anything above that has an adaptation available and refusing
+    /// would be the tool giving up while it still had a way through.
+    #[test]
+    fn only_a_budget_below_one_page_refuses_and_it_names_the_shortfall() {
+        let plan = StagingPlan::decide(8_000, 500, 1_000);
         assert_eq!(
             plan,
             StagingPlan::Refuse {
-                needed: 8_000,
-                available: 5_000
+                needed: 1_000,
+                available: 500
             }
         );
         let why = plan.explain_refusal().expect("a refusal must explain itself");
         assert!(
-            why.contains("8000") && why.contains("5000"),
+            why.contains("1000") && why.contains("500"),
             "the shortfall must be NAMED, not described as 'insufficient': {why}"
+        );
+        assert!(
+            why.contains("STREAMING"),
+            "and say that even the adaptive path was tried: {why}"
         );
         assert!(
             why.contains(CONSUMER_ID),
             "and say which consumer was budgeted: {why}"
         );
+        assert_eq!(plan.peak_bytes(), 0, "a refused plan holds nothing");
     }
 
     /// what this catches: an off-by-one at the boundary refusing a suite that exactly fits, and
@@ -314,14 +372,16 @@ mod tests {
     #[test]
     fn a_suite_that_exactly_fits_is_resident_and_an_empty_one_always_is() {
         assert_eq!(
-            StagingPlan::decide(5_000, 5_000),
+            StagingPlan::decide(5_000, 5_000, 1_000),
             StagingPlan::Resident { bytes: 5_000 }
         );
         assert_eq!(
-            StagingPlan::decide(0, 0),
+            StagingPlan::decide(0, 0, 0),
             StagingPlan::Resident { bytes: 0 }
         );
-        assert!(StagingPlan::decide(5_000, 5_000).explain_refusal().is_none());
+        assert!(StagingPlan::decide(5_000, 5_000, 1_000)
+            .explain_refusal()
+            .is_none());
     }
 
     /// what this catches: THE property that makes staging safe to run beside a video call.

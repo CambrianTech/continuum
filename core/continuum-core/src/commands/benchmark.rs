@@ -3775,70 +3775,109 @@ impl ActionCommand for BenchmarkFetch {
         // statement + two patches; program rows carry a test body), rounded up so the estimate
         // errs toward refusing rather than toward an OOM.
         const EST_BYTES_PER_ROW: u64 = 24 * 1024;
+        // The HF pager reads 100 rows at a time, so one page is the real peak of the streaming
+        // mode — the floor below which not even adaptation can run.
+        const ROWS_PER_PAGE: u64 = 100;
         let estimated = u64::from(spec.tasks) * EST_BYTES_PER_ROW;
-        let plan = crate::cognition::bench_staging::plan_against_governor(estimated);
+        let page_bytes = ROWS_PER_PAGE * EST_BYTES_PER_ROW;
+        let plan = crate::cognition::bench_staging::plan_against_governor(estimated, page_bytes);
         if let Some(why) = plan.explain_refusal() {
             crate::probe!(
                 class = "benchmark.staging.refused",
                 benchmark = spec.name,
                 estimated_bytes = estimated,
-                "staging refused: the governor cannot plan this suite's RAM right now",
+                page_bytes = page_bytes,
+                "staging refused: not even one page fits the governor's RAM plan",
             );
             return Err(CommandError::Denied(why));
         }
         let staging = crate::cognition::bench_staging::staging_area();
+        // Declare the plan's PEAK, not the suite size — for a streamed plan those differ by the
+        // whole point of streaming, and reporting the suite would have the governor evicting a
+        // peer to make room for bytes staging is never going to hold.
+        staging.hold(plan.peak_bytes());
+        let streaming = matches!(plan, crate::cognition::bench_staging::StagingPlan::Streamed { .. });
+        crate::probe!(
+            class = "benchmark.staging.plan",
+            benchmark = spec.name,
+            streaming = streaming,
+            peak_bytes = plan.peak_bytes(),
+            estimated_bytes = estimated,
+            "staging planned against the governor's RAM headroom",
+        );
 
-        let rows = crate::cognition::swe_bench::fetch_hf_rows(dataset, &config, &split)
-
+        // THE ADAPTATION. Both arms project every row and both report the same counts; they
+        // differ only in whether the rows are ever all in memory at once. `count_projectable`
+        // needs a slice, so the streamed arm projects page-locally through the same adapter —
+        // one row alive at a time.
+        let (row_count, tasks, adapter_note) = if streaming {
+            let mut projected = 0usize;
+            let mut failure: Option<String> = None;
+            let streamed = crate::cognition::swe_bench::stream_hf_rows(
+                dataset,
+                &config,
+                &split,
+                |row| {
+                    if failure.is_some() {
+                        return Ok(());
+                    }
+                    match crate::cognition::bench_task::count_projectable(
+                        spec.name,
+                        std::slice::from_ref(row),
+                    ) {
+                        Ok(n) => projected += n,
+                        // Record and keep draining: aborting mid-stream would leave the partial
+                        // cache unpromoted AND lose the row count, so the caller could not tell
+                        // a projection failure from a fetch failure.
+                        Err(e) => failure = Some(e),
+                    }
+                    Ok(())
+                },
+            )
             .await
             .map_err(CommandError::Internal)?;
+            match failure {
+                Some(e) => (streamed, None, Some(e)),
+                None => (streamed, Some(projected), None),
+            }
+        } else {
+            let rows = crate::cognition::swe_bench::fetch_hf_rows(dataset, &config, &split)
+                .await
+                .map_err(CommandError::Internal)?;
+            let (tasks, note) =
+                match crate::cognition::bench_task::count_projectable(spec.name, &rows) {
+                    Ok(n) => (Some(n), None),
+                    Err(e) => (None, Some(e)),
+                };
+            let n = rows.len();
+            drop(rows);
+            (n, tasks, note)
+        };
+        // The footprint returns to zero the moment the rows are gone. A consumer that keeps
+        // reporting bytes it no longer holds makes the governor evict a REAL holder to recover
+        // memory nobody has — the mirror image of the OOM this whole path exists to prevent.
+        staging.drop_all();
 
-        // Declare what staging is actually holding, so the governor's footprint is the measured
-        // number rather than the estimate that sized the plan. Released below, in BOTH the
-        // normal path and under a reclaim — the two must agree or the ledger drifts.
-        staging.hold(estimated.min(rows.len() as u64 * EST_BYTES_PER_ROW));
-
-        let denominator_matches = rows.len() as u32 == spec.tasks;
+        let denominator_matches = row_count as u32 == spec.tasks;
         crate::probe!(
             class = "benchmark.suite.staged",
             benchmark = spec.name,
             dataset = dataset,
-            rows = rows.len(),
+            rows = row_count,
             declared = spec.tasks,
+            streamed = streaming,
             denominator_matches = denominator_matches,
             "benchmark suite staged from its catalog source",
         );
         if !denominator_matches {
             tracing::warn!(
                 benchmark = %spec.name,
-                staged = rows.len(),
+                staged = row_count,
                 declared = spec.tasks,
                 "staged row count disagrees with the catalog's declared tasks — any rate \
                  computed over this is NOT comparable until the denominator is reconciled"
             );
         }
-        // Project through the suite's adapter in the same breath as the fetch, so "staged" and
-        // "posable" can never drift apart in the operator's head. A projection failure is
-        // reported, NOT swallowed and NOT fatal — the rows are legitimately on disk either way.
-        //
-        // `count_projectable`, NOT `project_suite(..).len()`: this path only needs the COUNT, and
-        // materializing every task here held a second full copy of the dataset alongside `rows`
-        // (measured at +138MB on the memleak tracker, and it OOMed the box under a concurrent
-        // test run). Same adapter, same abort-on-first-bad-row rule, one dataset in memory.
-        let (tasks, adapter_note) =
-            match crate::cognition::bench_task::count_projectable(spec.name, &rows) {
-                Ok(n) => (Some(n), None),
-                Err(e) => (None, Some(e)),
-            };
-        // `fetch_hf_rows` already wrote the rows to the on-disk cache, and everything below
-        // needs only counts. Releasing them here keeps peak RSS at one dataset instead of
-        // holding the whole suite alive until the handler returns.
-        let row_count = rows.len();
-        drop(rows);
-        // The footprint returns to zero the moment the rows are gone. A consumer that keeps
-        // reporting bytes it no longer holds makes the governor evict a REAL holder to recover
-        // memory nobody has — the mirror image of the OOM this whole path exists to prevent.
-        staging.drop_all();
         Ok(BenchmarkFetchResult {
             benchmark: spec.name.to_string(),
             dataset: dataset.to_string(),

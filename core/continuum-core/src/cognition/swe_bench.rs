@@ -438,25 +438,113 @@ pub async fn fetch_hf_rows(
     config: &str,
     split: &str,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let slug = format!(
-        "{}__{config}__{split}",
-        dataset.replace('/', "__")
-    );
-    let cache = swe_cache_dir().join(format!("{slug}.rows.json"));
-    if let Ok(bytes) = std::fs::read(&cache) {
+    let mut rows = Vec::new();
+    stream_hf_rows(dataset, config, split, |row| {
+        rows.push(row.clone());
+        Ok(())
+    })
+    .await?;
+    Ok(rows)
+}
+
+/// The datasets-server caps a page at 100. The ceiling is a real bound, not a guess: it stops a
+/// mis-typed dataset name from paging forever against a server that answers 200 with an empty
+/// list. A suite larger than this needs the bound RAISED deliberately, with its size named —
+/// never silently truncated, which would publish a partial denominator as if it were the whole
+/// suite.
+const MAX_ROWS: usize = 5_000;
+
+/// Where a suite's rows are cached. JSONL — one row per line — specifically so it can be read
+/// back INCREMENTALLY. A single JSON array cannot be: `from_slice` must materialize the whole
+/// thing, which is what made streaming impossible and staging an unbounded allocator.
+fn rows_cache_path(dataset: &str, config: &str, split: &str) -> std::path::PathBuf {
+    let slug = format!("{}__{config}__{split}", dataset.replace('/', "__"));
+    swe_cache_dir().join(format!("{slug}.rows.jsonl"))
+}
+
+/// The pre-JSONL cache written by every build before 2026-08-19. Read once and migrated rather
+/// than discarded — throwing away a correct 500-row cache to change a file extension would make
+/// the next fetch re-pull from the network for no reason.
+fn legacy_array_cache_path(dataset: &str, config: &str, split: &str) -> std::path::PathBuf {
+    let slug = format!("{}__{config}__{split}", dataset.replace('/', "__"));
+    swe_cache_dir().join(format!("{slug}.rows.json"))
+}
+
+/// THE pager. One row at a time, never accumulating — so peak memory is one page regardless of
+/// suite size, and a caller that only needs a count or a projection never holds the dataset.
+///
+/// # Why this is the pager and `fetch_hf_rows` is a thin collector over it
+///
+/// The accumulate-then-return shape was the root of the OOM: every caller got the whole suite in
+/// memory whether it needed it or not, and `benchmark/fetch` needed only a count. Inverting to a
+/// callback makes the memory profile the CALLER's choice — collect if you need the rows, project
+/// and drop if you do not — with one paging + caching + error path behind both
+/// ([[the-compression-principle]]).
+///
+/// Returns the number of rows streamed. Three sources, in order:
+/// 1. the JSONL cache, read line by line (no whole-file materialization);
+/// 2. the legacy single-array cache, migrated to JSONL as it is read;
+/// 3. the network, written to a TEMP JSONL page by page and atomically renamed on success —
+///    so an interrupted fetch never leaves a short cache that a later run would trust as complete.
+pub async fn stream_hf_rows<F>(
+    dataset: &str,
+    config: &str,
+    split: &str,
+    mut on_row: F,
+) -> Result<usize, String>
+where
+    F: FnMut(&serde_json::Value) -> Result<(), String>,
+{
+    use std::io::{BufRead, Write};
+
+    let cache = rows_cache_path(dataset, config, split);
+    if let Ok(file) = std::fs::File::open(&cache) {
+        let mut streamed = 0usize;
+        for line in std::io::BufReader::new(file).lines() {
+            let line = line.map_err(|e| format!("reading cached rows for `{dataset}`: {e}"))?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let row: serde_json::Value = serde_json::from_str(&line)
+                .map_err(|e| format!("corrupt cached row for `{dataset}`: {e}"))?;
+            on_row(&row)?;
+            streamed += 1;
+        }
+        if streamed > 0 {
+            return Ok(streamed);
+        }
+        // An empty cache file is debris from an interrupted write, not an empty suite. Fall
+        // through and re-fetch rather than reporting zero rows as a fact about the dataset.
+    }
+
+    // Legacy array cache: read once, hand rows through, and rewrite as JSONL so the next call
+    // takes the streaming path. This one read is bounded by a file that already exists on disk.
+    let legacy = legacy_array_cache_path(dataset, config, split);
+    if let Ok(bytes) = std::fs::read(&legacy) {
         if let Ok(rows) = serde_json::from_slice::<Vec<serde_json::Value>>(&bytes) {
             if !rows.is_empty() {
-                return Ok(rows);
+                let _ = std::fs::create_dir_all(swe_cache_dir());
+                if let Ok(mut out) = std::fs::File::create(&cache) {
+                    for row in &rows {
+                        let _ = writeln!(out, "{}", serde_json::to_string(row).unwrap_or_default());
+                    }
+                }
+                let _ = std::fs::remove_file(&legacy);
+                for row in &rows {
+                    on_row(row)?;
+                }
+                return Ok(rows.len());
             }
         }
     }
-    let mut rows: Vec<serde_json::Value> = Vec::new();
-    // The datasets-server caps a page at 100. The ceiling is a real bound, not a guess: it
-    // stops a mis-typed dataset name from paging forever against a server that answers 200
-    // with an empty list. A suite larger than this needs the bound RAISED deliberately, with
-    // its size named — never silently truncated, which would publish a partial denominator as
-    // if it were the whole suite.
-    const MAX_ROWS: usize = 5_000;
+
+    // Network. Written page-by-page to a temp file so the cache is BUILT without ever holding
+    // the suite, and renamed only after the row count has passed both guards below.
+    let _ = std::fs::create_dir_all(swe_cache_dir());
+    let tmp = cache.with_extension("jsonl.partial");
+    let mut out = std::fs::File::create(&tmp)
+        .map_err(|e| format!("cannot open the staging cache for `{dataset}`: {e}"))?;
+    let mut streamed = 0usize;
     for offset in (0..MAX_ROWS).step_by(100) {
         let url = format!(
             "https://datasets-server.huggingface.co/rows?dataset={}&config={}&split={}&offset={}&length=100",
@@ -475,36 +563,44 @@ pub async fn fetch_hf_rows(
         // The server reports its own errors in-band with a 200. Surface it verbatim rather
         // than returning an empty set that a caller would read as "the suite is empty".
         if let Some(err) = body.get("error").and_then(|e| e.as_str()) {
+            let _ = std::fs::remove_file(&tmp);
             return Err(format!(
                 "huggingface refused `{dataset}` (config={config}, split={split}): {err}"
             ));
         }
-        let page = body
-            .get("rows")
-            .and_then(|r| r.as_array())
-            .cloned()
-            .unwrap_or_default();
+        let Some(page) = body.get("rows").and_then(|r| r.as_array()) else {
+            break;
+        };
         if page.is_empty() {
             break;
         }
         for entry in page {
             if let Some(row) = entry.get("row") {
-                rows.push(row.clone());
+                // Write BEFORE handing to the caller: if the caller aborts, the bytes already
+                // fetched are still on disk under the partial name, and the guards below decide
+                // whether they are trustworthy enough to promote.
+                let _ = writeln!(out, "{}", serde_json::to_string(row).unwrap_or_default());
+                on_row(row)?;
+                streamed += 1;
             }
         }
     }
-    if rows.is_empty() {
+    drop(out);
+
+    if streamed == 0 {
+        let _ = std::fs::remove_file(&tmp);
         return Err(format!(
             "`{dataset}` (config={config}, split={split}) returned no rows — check the dataset \
              id and split name; an empty pull is never treated as an empty suite"
         ));
     }
-    // The cap above PROMISED it would never silently truncate, and until now nothing enforced
+    // The cap PROMISED it would never silently truncate, and until 2026-08-19 nothing enforced
     // that — a suite at or past the bound returned looking complete, which is precisely how a
-    // partial denominator gets published as if it were the whole suite. Refuse instead. A suite
-    // of exactly MAX_ROWS trips this too; a loud refusal on a boundary case is the correct trade
-    // against a silently short task list, and the fix is one deliberate edit that NAMES the size.
-    if rows.len() >= MAX_ROWS {
+    // partial denominator gets published as if it were the whole suite. Refuse, and do NOT
+    // promote the partial file: a truncated cache that survives is a wrong denominator that
+    // reproduces on every later run.
+    if streamed >= MAX_ROWS {
+        let _ = std::fs::remove_file(&tmp);
         return Err(format!(
             "`{dataset}` (config={config}, split={split}) hit the {MAX_ROWS}-row fetch bound. \
              The suite may be larger than what was pulled, so this row count is NOT a \
@@ -512,9 +608,10 @@ pub async fn fetch_hf_rows(
              real suite size, rather than publishing a rate over a truncated list."
         ));
     }
-    let _ = std::fs::create_dir_all(swe_cache_dir());
-    let _ = std::fs::write(&cache, serde_json::to_vec(&rows).unwrap_or_default());
-    Ok(rows)
+    // Atomic promote — a reader either sees the whole cache or no cache, never a short one.
+    std::fs::rename(&tmp, &cache)
+        .map_err(|e| format!("cannot promote the staging cache for `{dataset}`: {e}"))?;
+    Ok(streamed)
 }
 
 /// The SWE shape-mapper over [`fetch_hf_rows`]. Cached on first use.
