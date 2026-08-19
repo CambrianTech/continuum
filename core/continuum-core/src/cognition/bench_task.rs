@@ -39,12 +39,16 @@
 //! a capability zero. That is the same confusion [[an-absence-is-an-unfinished-measurement]]
 //! names, moved one layer earlier.
 
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use ts_rs::TS;
 
 /// What the citizen is asked to produce. Distinct from HOW it is scored ([`Oracle`]) because the
 /// two vary independently: two suites can both want a written function and grade it completely
 /// differently.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/Deliverable.ts")]
 pub enum Deliverable {
     /// Patch an existing repository at a pinned commit. The workspace IS that repo, and the
     /// deliverable is a diff against it.
@@ -63,7 +67,8 @@ pub enum Deliverable {
 
 /// The held-out scoring oracle. NEVER rendered into a citizen's prompt — it is the answer key,
 /// and a suite whose oracle leaks into the statement is measuring recall, not capability.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/Oracle.ts")]
 pub enum Oracle {
     /// Apply a test patch, then run named tests. Resolved iff every `fail_to_pass` passes AND
     /// no `pass_to_pass` regresses — the second half is what makes a plausible-but-breaking
@@ -92,6 +97,117 @@ pub struct BenchTask {
     pub statement: String,
     pub deliverable: Deliverable,
     pub oracle: Oracle,
+}
+
+// ---------------------------------------------------------------------------
+// The wire: two DECLARED classes, so nothing downstream ever re-parses (#445)
+// ---------------------------------------------------------------------------
+//
+// Joel, 2026-08-19: *"parsing is a temporary solution to something that can emit well formed
+// events and constant non string matchy airc events with headers."*
+//
+// Right. The parse above is legitimate ONLY because HuggingFace is a foreign, unversioned
+// source we do not control — that is the edge, and an edge always costs a parse. The defect
+// would be letting the parse LEAK past it: if a card, a room, or a grader re-sniffed row shapes,
+// the string-matching disease would just move one layer in. So the row is parsed exactly once,
+// here, and everything after it travels as a declared class with a schema version, filtered
+// daemon-side by channel rather than matched by string.
+//
+// AND THE DISCIPLINE PAYS IMMEDIATELY, in a way string-matching never could have:
+// the ANSWER KEY GETS ITS OWN CLASS. `benchmark:task.posed` is broadcast per-room — citizens
+// subscribe and receive the task. `benchmark:task.oracle` is `Local` and NOT broadcast, so it
+// never crosses airc and a citizen has no channel on which to receive it. Held-out-ness stops
+// being a convention somebody has to remember and becomes a property of the transport.
+
+/// Wire schema version for both benchmark task classes. Subscribers fail loud on a mismatch
+/// (`on_unknown_schema` defaults to `Fail`) — never silently decode a shape they don't know.
+pub const BENCH_TASK_SCHEMA_VERSION: &str = "1.0.0";
+
+/// The task AS POSED — everything a citizen may see, and nothing else.
+pub const EVENT_TASK_POSED: &str = "benchmark:task.posed";
+/// The held-out answer key. Grader-only by TRANSPORT, not by convention.
+pub const EVENT_TASK_ORACLE: &str = "benchmark:task.oracle";
+
+/// Citizen-visible half of a [`BenchTask`]. Structurally cannot carry the oracle — the field
+/// does not exist on this type, so "did we leak the answer?" is a compile-time question.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/PosedTask.ts")]
+pub struct PosedTask {
+    pub id: String,
+    pub suite: String,
+    pub statement: String,
+    pub deliverable: Deliverable,
+}
+
+/// Grader-only half. Rides a non-broadcast class; `id` + `suite` rejoin it to its [`PosedTask`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/TaskOracle.ts")]
+pub struct TaskOracle {
+    pub id: String,
+    pub suite: String,
+    pub oracle: Oracle,
+}
+
+impl BenchTask {
+    /// Split into the two wire payloads. Consuming `self` is deliberate: there is then no
+    /// lingering whole-task value for a caller to publish by accident.
+    pub fn split(self) -> (PosedTask, TaskOracle) {
+        (
+            PosedTask {
+                id: self.id.clone(),
+                suite: self.suite.clone(),
+                statement: self.statement,
+                deliverable: self.deliverable,
+            },
+            TaskOracle {
+                id: self.id,
+                suite: self.suite,
+                oracle: self.oracle,
+            },
+        )
+    }
+}
+
+/// Register both classes. Idempotent, same as `declare_contract_event_classes`.
+pub fn declare_bench_task_event_classes() -> Result<usize, String> {
+    use crate::events::{declare_event_class, EventClassChannelStrategy, EventClassConfig};
+
+    // Posed: per-room, because a bench task belongs to its run room and subscribers must be
+    // able to filter on the channel WITHOUT decoding the payload first.
+    declare_event_class(
+        EVENT_TASK_POSED,
+        &EventClassConfig {
+            broadcast: true,
+            channel: Some(EventClassChannelStrategy::ByRoomId),
+            schema_version: BENCH_TASK_SCHEMA_VERSION.to_string(),
+            on_unknown_schema: None,
+            description: Some(
+                "A benchmark task as posed to a citizen — statement + deliverable, never the \
+                 oracle (#370/#445)"
+                    .to_string(),
+            ),
+        },
+    )
+    .map_err(|e| format!("failed to declare '{EVENT_TASK_POSED}': {e}"))?;
+
+    // Oracle: LOCAL and NOT broadcast. This single line is what makes held-out-ness structural.
+    declare_event_class(
+        EVENT_TASK_ORACLE,
+        &EventClassConfig {
+            broadcast: false,
+            channel: Some(EventClassChannelStrategy::Local),
+            schema_version: BENCH_TASK_SCHEMA_VERSION.to_string(),
+            on_unknown_schema: None,
+            description: Some(
+                "The held-out answer key for a benchmark task. NEVER broadcast — grading is \
+                 in-process, and a citizen has no channel to receive this on (#370/#445)"
+                    .to_string(),
+            ),
+        },
+    )
+    .map_err(|e| format!("failed to declare '{EVENT_TASK_ORACLE}': {e}"))?;
+
+    Ok(2)
 }
 
 /// Projects one suite's raw rows into [`BenchTask`]s.
@@ -377,6 +493,41 @@ mod tests {
         no_target.as_object_mut().unwrap()["FAIL_TO_PASS"] = json!("[]");
         let err = project_suite("swe-bench-lite", &[no_target]).unwrap_err();
         assert!(err.contains("FAIL_TO_PASS"), "{err}");
+    }
+
+    /// what this catches: THE leak that matters. If the oracle ever rides a broadcast class, a
+    /// citizen can receive the answer key, every score after that is worthless, and NOTHING in a
+    /// log would look wrong. Pinning `broadcast: false` on the oracle class makes held-out-ness a
+    /// property of the TRANSPORT rather than a convention someone has to remember at each publish
+    /// site — which is the whole reason typed classes beat string-matched routing here.
+    #[test]
+    fn the_answer_key_can_never_be_broadcast_while_the_task_always_is() {
+        use crate::events::lookup_event_class;
+        declare_bench_task_event_classes().expect("declare must succeed");
+
+        let posed = lookup_event_class(EVENT_TASK_POSED).expect("posed class must be registered");
+        assert!(posed.broadcast, "citizens must be able to receive the task");
+        assert_eq!(posed.schema_version, BENCH_TASK_SCHEMA_VERSION);
+
+        let oracle = lookup_event_class(EVENT_TASK_ORACLE).expect("oracle class registered");
+        assert!(
+            !oracle.broadcast,
+            "the ANSWER KEY must never cross airc — this is the leak that silently invalidates \
+             every score downstream"
+        );
+
+        // And the split must actually separate them: the posed half has no field that COULD
+        // carry an oracle, so a leak is a compile error rather than a review catch.
+        let (posed_task, key) = SweAdapter
+            .project("swe-bench-lite", &swe_row())
+            .unwrap()
+            .split();
+        assert_eq!(posed_task.id, key.id, "the two halves rejoin on id");
+        let posed_json = serde_json::to_string(&posed_task).unwrap();
+        assert!(
+            !posed_json.contains("test_patch") && !posed_json.contains("FAIL_TO_PASS"),
+            "the posed half leaked oracle content: {posed_json}"
+        );
     }
 
     /// what this catches: a fetched-but-unadapted suite looking runnable. `benchmark/fetch` can

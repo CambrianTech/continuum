@@ -15,4 +15,15 @@ declared_tasks: number,
  * True when `rows` and `declared_tasks` agree. False is not fatal — datasets are revised
  * upstream — but a rate published over a disagreeing denominator is not comparable.
  */
-denominator_matches: boolean, };
+denominator_matches: boolean, 
+/**
+ * How many rows actually PROJECT into posable tasks through this suite's `SuiteAdapter`.
+ * `None` = the suite has no adapter yet: its rows are staged but cannot be posed to a
+ * citizen. Staged-but-unposable is the honest middle state, and reporting it as a distinct
+ * value is what keeps a fetched suite from LOOKING runnable.
+ */
+tasks?: number, 
+/**
+ * Present only when projection is unavailable or failed, saying which of those it was.
+ */
+adapter_note?: string, };
