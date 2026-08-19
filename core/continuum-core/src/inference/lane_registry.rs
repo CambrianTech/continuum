@@ -64,9 +64,52 @@ pub struct LaneRecord {
     pub port: u16,
     pub role: LaneRole,
     /// The base model id the lane serves — for operator legibility in the sweep
-    /// log, not a control input.
+    /// log, AND (since 2026-08-19) the key a successor core sizes it by.
     #[serde(default)]
     pub model: String,
+    /// The per-slot context window this lane was launched with.
+    ///
+    /// # Why the record carries the SHAPE, not just the identity
+    ///
+    /// A successor core must be able to answer "how many bytes do my past forms
+    /// hold?" — Joel's third quantity — *before* it plans anything. Residency is
+    /// `weights + KV(window, lanes)`, so a record naming only the model cannot
+    /// answer it, and a core that cannot answer it counts its own predecessor's
+    /// 50 GB as FOREIGN. Measured 2026-08-19: that misfiling read as
+    /// `usable_gb = 2` on a 64 GB machine, so the planner chose a 3B and reaped a
+    /// healthy 27B to make room for it — twice in one boot.
+    ///
+    /// `0` means an older record that predates these fields. That is UNKNOWN, and
+    /// callers must refuse to size it rather than treat it as a zero-byte lane
+    /// ([[an-absence-is-an-unfinished-measurement]]).
+    #[serde(default)]
+    pub context_window: u32,
+    /// The continuous-batching slot count (`--parallel` / `n_seq_max`) this lane
+    /// was launched with. `0` is UNKNOWN — see [`Self::context_window`].
+    #[serde(default)]
+    pub lanes: u32,
+}
+
+/// The LIVE-role lane left behind by a previous generation of this core, if one
+/// is still running — a **past form of ourself**.
+///
+/// Returns a record only when the pid is genuinely alive, so a stale file cannot
+/// conjure residency. The shape fields may be `0` (an older record); sizing is the
+/// caller's judgement and it must refuse rather than guess.
+pub fn live_lane() -> Option<LaneRecord> {
+    let dir = lanes_dir()?;
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let Ok(body) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        let Ok(rec) = serde_json::from_str::<LaneRecord>(&body) else {
+            continue; // unparseable garbage is dropped, exactly as the sweep does
+        };
+        if rec.role == LaneRole::Live && lane_process::is_alive(rec.pid) {
+            return Some(rec);
+        }
+    }
+    None
 }
 
 /// WHY a sweep is running — the one axis on which boot and shutdown differ.
@@ -310,6 +353,10 @@ mod tests {
             port,
             role,
             model: "test-model".into(),
+            // A realistic shape: these tests exercise sweep/reap, but a record with a
+            // real shape is what production writes, so the fixture matches it.
+            context_window: 16_384,
+            lanes: 4,
         }
     }
 

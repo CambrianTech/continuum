@@ -59,8 +59,48 @@ use parking_lot::Mutex;
 use tokio::sync::watch;
 
 use crate::cognition::serving_plan::MIN_SERVE_CTX;
+use crate::inference::lane_registry::LaneRecord;
 use crate::inference::llama_server::ServingSnapshot;
 use crate::modules::serving_tier_down::{TierDownContext, TierDownPolicy};
+
+/// Size a lane inherited from a previous generation of this core — **a past form of
+/// ourself** — from its custody record alone, with no probe and no clock.
+///
+/// # Why this exists (#452, measured 2026-08-19)
+///
+/// A fresh core's `ServingSnapshot` is empty for a lane it did not spawn, so the
+/// consumer reported ZERO bytes and the governor filed the predecessor's ~50 GB under
+/// `external` — someone else's. That read as `usable_gb = 2` on a 64 GB machine, the
+/// planner chose a 3B, and a healthy 27B was reaped to make room for it. Twice, in one
+/// boot. The self-eviction ratchet could not save it either: the ratchet adds back our
+/// OWN measured residency, and the lane was not ours yet.
+///
+/// # The refusal is the load-bearing half
+///
+/// A record written before the shape fields existed carries `0`, which means UNKNOWN,
+/// not "a zero-byte lane". Returning `None` there hands the caller an absence it can
+/// reason about; returning `0` would hand it a *quantity* it would happily budget
+/// against — the exact defect class this file spent the day removing
+/// ([[an-absence-is-an-unfinished-measurement]]).
+///
+/// Pure over `(record, sizer)` so both arms are testable without a filesystem, a
+/// process, or a live governor.
+fn inherited_footprint(
+    rec: &LaneRecord,
+    size: impl Fn(&str, u32, u32) -> u64,
+) -> Option<(u64, String)> {
+    if rec.context_window == 0 || rec.lanes == 0 {
+        return None;
+    }
+    Some((
+        size(&rec.model, rec.context_window, rec.lanes),
+        format!(
+            "{} inherited from a previous generation (pid {}, {} lane(s) × {} ctx) — a \
+             past form of ourself, ours to count and ours to control",
+            rec.model, rec.pid, rec.lanes, rec.context_window
+        ),
+    ))
+}
 use crate::resources::{
     ConsumerFootprint, ReclaimOutcome, ReclaimReason, ReclaimRequest, ReclaimStatus,
     ResourceConsumer, ResourceKind,
@@ -219,6 +259,25 @@ impl ResourceConsumer for ServingConsumer {
                     format!("{id} loading — weights resident, KV not yet allocated"),
                 )
             })
+        });
+        // A PAST FORM OF OURSELF IS STILL OURS (#452, measured 2026-08-19).
+        //
+        // Neither arm above can see a lane this core did not spawn. After a crash the
+        // predecessor's llama-server keeps running — named in our own custody record,
+        // holding tens of GB — while a fresh core's snapshot is empty. It therefore
+        // reported ZERO, and the governor filed those bytes under `external`: someone
+        // else's. Measured consequence: `usable_gb = 2` on a 64 GB machine, so the
+        // planner chose a 3B and REAPED a healthy 27B to make room for it, twice in one
+        // boot. The self-eviction ratchet could not rescue it either — the ratchet adds
+        // back our OWN measured residency, and the lane wasn't ours yet.
+        //
+        // The record is the durable statement of what our previous generation holds, so
+        // read it. Refuse to size a record that predates the shape fields: `0` there
+        // means UNKNOWN, and a fabricated number is the exact class of bug this whole
+        // day was spent removing.
+        let planned = planned.or_else(|| {
+            let rec = crate::inference::lane_registry::live_lane()?;
+            inherited_footprint(&rec, |m, w, l| (self.footprint_of)(m, w, l))
         });
         let planned_bytes = planned.as_ref().map(|(b, _)| *b).unwrap_or(0);
 
@@ -892,5 +951,51 @@ mod tests {
         assert_eq!(out.status, ReclaimStatus::Refused);
         assert_eq!(out.freed_bytes, 0);
         assert!(out.detail.unwrap().contains("Ram"));
+    }
+
+    fn inherited_rec(window: u32, lanes: u32) -> LaneRecord {
+        LaneRecord {
+            pid: 64372,
+            port: 58057,
+            role: crate::inference::lane_registry::LaneRole::Live,
+            model: "ggml-org/Qwen3.8-27B-GGUF".into(),
+            context_window: window,
+            lanes,
+        }
+    }
+
+    // what this catches: THE 2026-08-19 GOVERNOR DEFECT. A lane inherited from a crashed
+    // predecessor holds real bytes, and if the consumer reports nothing for it the
+    // governor files those bytes under `external` — someone else's. Measured live: that
+    // read as usable_gb=2 on a 64 GB box, so the planner chose a 3B and reaped a healthy
+    // 27B to make room for it, TWICE in one boot. A past form of ourself must be counted
+    // as OURS, sized from its own custody record, with a reason that says where it came
+    // from.
+    #[test]
+    fn a_lane_inherited_from_a_previous_generation_is_counted_as_ours() {
+        let rec = inherited_rec(22_784, 4);
+        let (bytes, why) = inherited_footprint(&rec, |_m, w, l| u64::from(w) * u64::from(l))
+            .expect("a fully-described inherited lane must be sizable");
+        assert_eq!(bytes, 22_784 * 4, "sized from the record's OWN shape");
+        assert!(
+            why.contains("inherited") && why.contains("64372"),
+            "the reason must name the past form it came from, got {why:?}"
+        );
+    }
+
+    // what this catches: the refusal half, which is the one that keeps this honest. A
+    // record written before the shape fields existed carries 0 — that is UNKNOWN, not a
+    // zero-byte lane. Regression here (returning Some(0)) hands the governor a QUANTITY
+    // where it should get an absence, which is the same fabricated-zero class as #438's
+    // usable_gb=0 and the sidecar's two-zeros bug. Refuse instead
+    // ([[an-absence-is-an-unfinished-measurement]]).
+    #[test]
+    fn an_old_record_without_a_shape_is_unknown_and_never_a_zero_byte_lane() {
+        for rec in [inherited_rec(0, 4), inherited_rec(22_784, 0), inherited_rec(0, 0)] {
+            assert!(
+                inherited_footprint(&rec, |_m, _w, _l| 999).is_none(),
+                "a record missing its shape must refuse to be sized, never report 0"
+            );
+        }
     }
 }

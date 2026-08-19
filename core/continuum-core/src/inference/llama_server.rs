@@ -2924,6 +2924,11 @@ impl LlamaServerControl for LlamaServerProcess {
                 port,
                 role,
                 model: target.model_id().to_string(),
+                // The SHAPE, so a successor core can size this lane as its own
+                // without probing it — the difference between counting our
+                // predecessor's bytes as ours and counting them as foreign.
+                context_window: target.context_window,
+                lanes: target.lanes,
             };
             if let Err(e) = crate::inference::lane_registry::record(&rec) {
                 crate::probe!(
