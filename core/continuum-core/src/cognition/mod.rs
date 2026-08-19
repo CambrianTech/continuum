@@ -86,6 +86,7 @@ pub mod shared_analysis;
 pub mod should_respond;
 pub mod should_respond_module;
 pub mod swe_bench;
+pub mod swe_verdict_sweep;
 pub mod threat_detector;
 pub mod throughput_lease;
 pub mod token_budget;

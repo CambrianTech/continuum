@@ -87,6 +87,42 @@ impl ServiceModule for BenchmarkGradeModule {
     }
 
     async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
+        // RECONCILE the artifacts already on disk, once, as this module comes up.
+        //
+        // Grading belongs to the benchmark recipe — it IS the activity's outcome score
+        // (docs/architecture/BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md), so it is owned HERE,
+        // by the module that owns every other grade path, and never by some unrelated daemon's
+        // boot sequence. (Written after doing exactly that and being corrected: a sweep hung
+        // off `serving_daemon` start is the parallel-runner shape this repo has a whole
+        // document forbidding. Joel: "Grading is supposed to be part of the regular benchmark
+        // recipe".)
+        //
+        // Why a reconciliation exists at all, next to two event paths that are both correct:
+        // the grade-on-done subscriber fires on a card TRANSITION, and the tick sweep detects
+        // a LAPSED lease. Neither can see an artifact with no card — detached `agent/solve`
+        // runs (#425) produce exactly that, and 17 unscored citizen patches were sitting on
+        // this box the night it was written, two of them PASSES over a day old. This is the
+        // same reap-or-adopt boot owns for every other resource (#452): an orphaned ARTIFACT
+        // is an orphaned run.
+        //
+        // Deterministic and idempotent (see the sweep's module doc), so it is a reconciliation
+        // and not the forbidden condition-poll: it enumerates ALL staged instances in sorted
+        // order with no cap and no recency sort, skips anything already carrying a verdict, and
+        // refuses ambiguity rather than guessing. Same disk, same outcome, every time.
+        //
+        // DETACHED because each grade is a fresh clone plus a real test suite — minutes apiece.
+        // Module init must not block on it, and the citizens' first turn must not queue behind
+        // it.
+        tokio::spawn(async {
+            let report = crate::cognition::swe_verdict_sweep::sweep().await;
+            if report.graded > 0 {
+                tracing::info!(
+                    graded = report.graded,
+                    resolved = report.resolved,
+                    "benchmark artifact reconciliation scored citizen work that had no verdict"
+                );
+            }
+        });
         // THE live wiring. `config().event_subscriptions` installs a SYNCHRONOUS-tier
         // subscription the registry marks `synchronous: false` — which `publish()`
         // filters OUT, and runtime.rs:99 says so out loud: "event_subscriptions are
