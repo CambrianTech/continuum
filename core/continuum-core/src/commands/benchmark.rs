@@ -1769,37 +1769,56 @@ mod tests {
     // would read as "the suite is empty".
     #[test]
     fn every_hf_catalogued_suite_yields_coordinates_and_non_hf_is_refused() {
-        assert_eq!(
-            hf_coords_from("https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite"),
-            Some("princeton-nlp/SWE-bench_Lite")
-        );
-        assert_eq!(
-            hf_coords_from(
-                "https://github.com/openai/human-eval/raw/master/data/HumanEval.jsonl.gz"
-            ),
-            None,
-            "a non-HF source must refuse, not fall through to the HF rows API"
-        );
-        // A dataset URL with no owner segment is not addressable by the rows API.
-        assert_eq!(hf_coords_from("https://huggingface.co/datasets/apps"), None);
+        let by_name = |n: &str| known_benchmarks().iter().find(|b| b.name == n).unwrap();
 
-        // And the catalog itself: every HF-sourced row must resolve, or the suite is a name
-        // nothing can read — which is exactly the state #370 opened on.
-        let hf: Vec<_> = known_benchmarks()
-            .iter()
-            .filter_map(|b| b.source_url.map(|u| (b.name, u)))
-            .filter(|(_, u)| u.contains("huggingface.co"))
-            .collect();
-        assert!(
-            !hf.is_empty(),
-            "the catalog carries no HF-sourced suite at all — `benchmark/fetch` would be dead"
+        assert_eq!(
+            by_name("swe-bench-lite").reach(),
+            SourceReach::Rows {
+                dataset: "princeton-nlp/SWE-bench_Lite",
+                config: "default",
+                split: "test"
+            }
         );
-        for (name, url) in hf {
+        assert!(
+            matches!(by_name("humaneval").reach(), SourceReach::ForeignSource { .. }),
+            "a GitHub raw .jsonl must NOT fall through to the HF rows API — that returns an \
+             in-band error a caller reads as 'the suite is empty'"
+        );
+        assert!(matches!(by_name("hard-rs").reach(), SourceReach::InTree));
+
+        // The two live-verified script datasets (2026-08-19): the rows API refuses these at
+        // EVERY coordinate, so they must be told apart from a wrong-config miss or the
+        // operator retries configs forever.
+        for n in ["apps", "livecodebench"] {
             assert!(
-                hf_coords_from(url).is_some(),
-                "`{name}` is HF-sourced at `{url}` but yields no coordinates — it would be \
-                 unfetchable while looking catalogued"
+                matches!(by_name(n).reach(), SourceReach::HuggingFaceScriptDataset { .. }),
+                "`{n}` is a loading-script dataset; classifying it as fetchable sends the \
+                 caller into a config-guessing loop that can never succeed"
             );
+        }
+
+        // what this catches specifically: bigcodebench publishes REVISIONS as splits and has
+        // no `test` split at all. The default coordinates return "Unexpected error" — measured
+        // live — so the version we score against has to be a recorded catalog fact.
+        assert_eq!(
+            by_name("bigcodebench").reach(),
+            SourceReach::Rows {
+                dataset: "bigcode/bigcodebench",
+                config: "default",
+                split: "v0.1.4"
+            }
+        );
+
+        // And no catalogued row may be silently unclassifiable.
+        for b in known_benchmarks() {
+            let reach = b.reach();
+            if let SourceReach::Rows { dataset, .. } = reach {
+                assert!(
+                    dataset.contains('/'),
+                    "`{}` resolves to `{dataset}`, which the rows API cannot address",
+                    b.name
+                );
+            }
         }
     }
 
@@ -3567,16 +3586,64 @@ impl ActionCommand for BenchmarkRounds {
 // benchmark/fetch — stage a catalogued suite so it can actually be run (#370)
 // ---------------------------------------------------------------------------
 
-/// A catalogued benchmark's HuggingFace coordinates, derived from its `source_url`.
-///
-/// Split out as a pure function so the URL→(dataset, config, split) rule is TESTED rather
-/// than restated at the call site. `config`/`split` default to the HF convention and are
-/// overridable per call, because a dataset that is not `default`/`test` is common and
-/// guessing wrong yields an in-band error the caller would otherwise read as "empty suite".
-pub fn hf_coords_from(source_url: &str) -> Option<&str> {
-    source_url
-        .strip_prefix("https://huggingface.co/datasets/")
-        .filter(|id| id.contains('/'))
+/// Where a catalogued suite's rows actually live, and whether anything in this tree can read
+/// them. Four states, because the four have four different fixes and collapsing any two of
+/// them produces a refusal the operator has to go do archaeology on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceReach {
+    /// Servable by the HuggingFace rows API at these exact coordinates.
+    Rows {
+        dataset: &'static str,
+        config: &'static str,
+        split: &'static str,
+    },
+    /// HuggingFace-hosted, but a LOADING-SCRIPT dataset: the rows API refuses it outright
+    /// ("runs arbitrary Python code"). No config or split makes it work, so a refusal that
+    /// merely says "not found" invites an infinite guessing loop. Measured live 2026-08-19
+    /// against `datasets-server.huggingface.co/splits` for both rows carrying this.
+    HuggingFaceScriptDataset { dataset: &'static str },
+    /// A real source, just not one the HF path can read (GitHub raw files, a repo to clone).
+    /// Needs its own fetcher; naming that is the honest answer.
+    ForeignSource { url: &'static str },
+    /// Ships with the binary — there is nothing to pull.
+    InTree,
+}
+
+impl BenchmarkSpec {
+    /// The suite's fetch coordinates, as DATA rather than as an operator's memory.
+    ///
+    /// `config`/`split` are NOT derivable from the URL and are not uniformly `default`/`test`
+    /// — bigcodebench versions its splits (`v0.1.4`), and a wrong guess returns an in-band HF
+    /// error that a caller reads as "the suite is empty". So the exceptions live here, in the
+    /// ONE place that knows, exactly as [`BenchmarkSpec::swe_dataset`] already does for row
+    /// shape. The dataset id is still read back off `source_url` so it is never duplicated.
+    pub fn reach(&self) -> SourceReach {
+        let Some(url) = self.source_url else {
+            return SourceReach::InTree;
+        };
+        let Some(dataset) = url
+            .strip_prefix("https://huggingface.co/datasets/")
+            .filter(|id| id.contains('/'))
+        else {
+            return SourceReach::ForeignSource { url };
+        };
+        // Loading-script datasets: the rows API cannot serve these at ANY coordinates.
+        if matches!(dataset, "codeparrot/apps" | "livecodebench/code_generation_lite") {
+            return SourceReach::HuggingFaceScriptDataset { dataset };
+        }
+        let (config, split) = match dataset {
+            // bigcodebench publishes revisions as SPLITS; `test` does not exist. v0.1.4 is
+            // the newest as of 2026-08-19 — bump it here when they publish, so the version
+            // scored against is a recorded catalog fact and not whatever the default was.
+            "bigcode/bigcodebench" => ("default", "v0.1.4"),
+            _ => ("default", "test"),
+        };
+        SourceReach::Rows {
+            dataset,
+            config,
+            split,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
@@ -3652,24 +3719,42 @@ impl ActionCommand for BenchmarkFetch {
                     p.benchmark
                 ))
             })?;
-        let source = spec.source_url.ok_or_else(|| {
-            CommandError::Invalid(format!(
-                "`{}` is an in-tree suite with no source to pull — it ships with the binary and \
-                 is already runnable via its eval_set",
-                spec.name
-            ))
-        })?;
-        let dataset = hf_coords_from(source).ok_or_else(|| {
-            CommandError::Invalid(format!(
-                "`{}` is sourced from `{source}`, which is not a HuggingFace dataset URL. Only \
-                 the HF path is wired; this suite needs its own fetcher.",
-                spec.name
-            ))
-        })?;
-        let config = p.config.unwrap_or_else(|| "default".to_string());
-        let split = p.split.unwrap_or_else(|| "test".to_string());
+        let (dataset, def_config, def_split) = match spec.reach() {
+            SourceReach::Rows {
+                dataset,
+                config,
+                split,
+            } => (dataset, config, split),
+            SourceReach::InTree => {
+                return Err(CommandError::Invalid(format!(
+                    "`{}` is an in-tree suite with no source to pull — it ships with the binary \
+                     and is already runnable via its eval_set",
+                    spec.name
+                )))
+            }
+            SourceReach::HuggingFaceScriptDataset { dataset } => {
+                return Err(CommandError::Invalid(format!(
+                    "`{}` is hosted at `{dataset}` as a LOADING-SCRIPT dataset — HuggingFace's \
+                     rows API refuses those outright (\"runs arbitrary Python code\"), so NO \
+                     config or split makes this work and retrying with different ones is wasted \
+                     effort. It needs a fetcher that reads the repo's own files (or an upstream \
+                     parquet conversion) before it can be staged.",
+                    spec.name
+                )))
+            }
+            SourceReach::ForeignSource { url } => {
+                return Err(CommandError::Invalid(format!(
+                    "`{}` is sourced from `{url}`, which is not a HuggingFace dataset. Only the \
+                     HF rows path is wired; this suite needs its own fetcher.",
+                    spec.name
+                )))
+            }
+        };
+        let config = p.config.unwrap_or_else(|| def_config.to_string());
+        let split = p.split.unwrap_or_else(|| def_split.to_string());
 
         let rows = crate::cognition::swe_bench::fetch_hf_rows(dataset, &config, &split)
+
             .await
             .map_err(CommandError::Internal)?;
 
