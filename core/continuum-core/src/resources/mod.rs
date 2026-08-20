@@ -191,7 +191,6 @@ pub use broker::{
 };
 
 pub use arbiter::{ArbiterContext, LeaseArbiter, TieredArbiter};
-pub use capacity::{CapacitySource, GpuCapacitySource, MockCapacitySource};
 pub use capacity::{
     default_ram_reserve_for, CapacitySource, GpuCapacitySource, HostMemoryReader,
     HostRamCapacitySource, LiveHostMemory, MockCapacitySource, UnifiedMemoryPool,

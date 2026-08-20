@@ -447,7 +447,6 @@ impl LaneAdmission {
     pub fn try_hold_ambient_turn(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
         self.ambient
             .get_or_init(|| {
-                std::sync::Arc::new(tokio::sync::Semaphore::new(AMBIENT_TURN_CONCURRENCY))
                 let n = self.nondirected_budget();
                 self.ambient_installed.store(n, Ordering::Release);
                 std::sync::Arc::new(tokio::sync::Semaphore::new(n))
@@ -794,7 +793,6 @@ mod tests {
         // A simultaneous-wake burst: several ambient turns try to claim a slot at once.
         // Exactly `budget` win; the rest get None and must yield.
         let mut held: Vec<tokio::sync::OwnedSemaphorePermit> = Vec::new();
-        for _ in 0..AMBIENT_TURN_CONCURRENCY {
         for _ in 0..budget {
             held.push(
                 gate.try_hold_ambient_turn()

@@ -334,7 +334,6 @@ mod tests {
             test_event_in(room, "b", 2),
             test_event_in(room, "c", 3),
         ]);
-        let (b, _) = builder();
         let b = builder();
         let d = b
             .build(persona, room.as_uuid(), &reader, 100, 0)
@@ -357,8 +356,6 @@ mod tests {
             test_event_in(room, "b", 2),
             test_event_in(room, "c", 3),
         ]);
-        let (b, marks) = builder();
-        marks.advance(persona, room.as_uuid(), 2); // read through lamport 2
         let b = builder();
         let reader = reader.read_through(2);
         let d = b
@@ -439,8 +436,6 @@ mod tests {
             test_event_in(room, "b", 2),
             test_event_in(room, "c", 3),
         ]);
-        let (b, marks) = builder();
-        marks.advance(persona, room.as_uuid(), 2);
         let b = builder();
         let reader = reader.read_through(2);
         let d = b
@@ -464,8 +459,6 @@ mod tests {
             test_event_in(room, "b", 2),
             test_event_in(room, "c", 3),
         ]);
-        let (b, marks) = builder();
-        marks.advance(persona, room.as_uuid(), 3); // read everything
         let b = builder();
         let reader = reader.read_through(3);
         let d = b
@@ -510,7 +503,6 @@ mod tests {
             test_event_in(room_b, "b-only", 1),
             test_event_in(room_a, "a-two", 2),
         ]);
-        let (b, _) = builder();
         let b = builder();
         let d = b
             .build(persona, room_a.as_uuid(), &reader, 100, 0)
@@ -549,22 +541,17 @@ mod tests {
             .unread()
             .iter()
             .any(|e| e.text().unwrap().contains("OPERATOR")));
-        b.bookmarks()
-            .advance(persona, room.as_uuid(), d.tip_lamport().unwrap());
         let read_to = d.tip_lamport().unwrap();
 
         // Peers flood: 6 newer messages (> grounding=5), persona engages again.
         for (i, l) in (11..=16).enumerate() {
             events.push(test_event_in(room, &format!("peer chatter {i}"), l));
         }
-        let reader = StubReader::new(events.clone());
         let reader = StubReader::new(events.clone()).read_through(read_to);
         let d = b
             .build(persona, room.as_uuid(), &reader, 100, 5)
             .await
             .unwrap();
-        b.bookmarks()
-            .advance(persona, room.as_uuid(), d.tip_lamport().unwrap());
         let read_to = d.tip_lamport().unwrap();
 
         // Next build: the operator message is GONE — not in unread (read long
@@ -572,7 +559,6 @@ mod tests {
         for (i, l) in (17..=18).enumerate() {
             events.push(test_event_in(room, &format!("more chatter {i}"), l));
         }
-        let reader = StubReader::new(events);
         let reader = StubReader::new(events).read_through(read_to);
         let d = b
             .build(persona, room.as_uuid(), &reader, 100, 5)

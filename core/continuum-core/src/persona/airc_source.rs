@@ -729,7 +729,6 @@ mod tests {
             events: vec![event_in(room, Some("hello"), 1)],
             paged_room: Mutex::new(None),
         });
-        let (source, _, _) = isolated_source(reader.clone());
         let (source, _) = isolated_source(reader.clone());
         source
             .deliver(&ctx_in(room), 1_000, ResolutionPreference::Raw)
@@ -805,7 +804,6 @@ mod tests {
             event_in(room, Some("hello"), 1),
             event_in(room, Some("world"), 2),
         ]));
-        let (source, _, _) = isolated_source(reader);
         let (source, _) = isolated_source(reader);
         let delivery = source
             .deliver(&ctx_in(room), 1_000, ResolutionPreference::Raw)
@@ -877,7 +875,6 @@ mod tests {
         }
         events.push(event_in(room, Some(&long("newest peer question")), 6));
         let reader = Arc::new(StubReader::new(events));
-        let (source, _, _) = isolated_source(reader);
         let (source, _) = isolated_source(reader);
         let delivery = source
             .deliver(&ctx_in(room), 400, ResolutionPreference::Raw)
@@ -989,7 +986,6 @@ mod tests {
         let room = RoomId::new();
         let reader = Arc::new(StubReader::new(vec![event_in(room, Some("x"), 1)]));
         reader.set_fail(true);
-        let (source, _, _) = isolated_source(reader);
         let (source, _) = isolated_source(reader);
         let delivery = source
             .deliver(&ctx_in(room), 1_000, ResolutionPreference::Raw)
@@ -1008,7 +1004,6 @@ mod tests {
             event_in(room, Some("bbbbb"), 2),
             event_in(room, Some("ccccc"), 3),
         ]));
-        let (source, _, _) = isolated_source(reader);
         let (source, _) = isolated_source(reader);
         let delivery = source
             .deliver(&ctx_in(room), 4, ResolutionPreference::Raw)

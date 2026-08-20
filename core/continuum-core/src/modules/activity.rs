@@ -392,8 +392,6 @@ pub async fn spawn_activity_room(
         // long as the binding had no reader at all, which is exactly how a field-name
         // typo here would have cost nothing and been noticed by nobody.
         let binding = RoomRecipeBinding {
-            recipe: p.recipe.clone(),
-            parent: p.parent.clone(),
             recipe: recipe.to_string(),
             parent,
             params: resolved_params,

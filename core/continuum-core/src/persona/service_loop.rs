@@ -496,7 +496,6 @@ async fn serve_persona_loop_inner(
                     match crate::cognition::resource_admission::try_hold_ambient_turn() {
                         Some(permit) => permit,
                         None => {
-                            next_beat = (next_beat + next_beat / 2).min(rest_cap);
                             // A YIELD IS NOT A REST — do NOT compound the beat here.
                             //
                             // The backoff below (after a real cycle) is earned: she THOUGHT,
@@ -973,8 +972,6 @@ async fn serve_persona_loop_inner(
             ctx.identity.peer_id,
             turn_room,
         );
-        let workspace_burst =
-            crate::cognition::workspace::Burst::from_turns_at(turn_room, ws_turns, Some(now_ms));
         // Carry the wake message's engram as this burst's cause, so the turn's acts
         // chain back to what triggered them (CAUSAL-MEMORY-GRAPH.md §3a). `None` when
         // the message was deduped/quarantined — an honest gap, never a made-up link.
@@ -2720,7 +2717,6 @@ async fn run_self_cycle(
             // first ring deploy missed THIS say path entirely (4 verbatim
             // repeats, no [repetition], caught live 2026-07-12 10:20).
             // Every successful say records, whichever path spoke.
-            crate::cognition::deliberation_budget::record_own_speech(ctx.identity.peer_id, &text);
             crate::cognition::deliberation_budget::record_own_speech(
                 ctx.identity.peer_id,
                 ctx.identity.default_room,

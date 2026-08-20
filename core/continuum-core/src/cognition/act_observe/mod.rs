@@ -1161,7 +1161,6 @@ mod tests {
         let room = Uuid::new_v4();
 
         // First act genuinely runs; its result lands in working memory.
-        let first = acts_of(apply_act(&cycle, &[tool_call()], "check the math", room).await);
         let first = acts_of(apply_act(&cycle, &[tool_call()], "check the math", room, &ActChain::new()).await);
         assert_eq!(
             first[0].call.name, "code/run",

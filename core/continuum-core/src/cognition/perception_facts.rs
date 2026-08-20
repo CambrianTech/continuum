@@ -454,14 +454,6 @@ mod tests {
         );
         let l = ledger(&render_facts(&cx, &FactPolicy::default()));
         assert!(
-            !l.contains("nothing has executed yet"),
-            "denied her real act: {l}"
-        );
-        assert!(
-            l.contains("aged out of working memory"),
-            "must explain the void: {l}"
-        );
-        assert!(l.contains("1 step executed earlier"));
             l.contains("code/shell(ls)"),
             "the archive must keep her act visible through ring churn: {l}"
         );

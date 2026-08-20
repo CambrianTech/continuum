@@ -611,7 +611,6 @@ impl ChatProjection {
     }
 
     /// As [`Self::with_purpose`], plus the per-room stores every per-room envelope
-    /// is mirrored into (#408).
     /// is mirrored into (#408). Experiences resolve from the EMBEDDED recipe set
     /// only — the right floor for tests and headless fixtures. Production goes
     /// through [`Self::with_experience`] so on-disk authored recipes resolve too
@@ -1126,7 +1125,6 @@ pub fn spawn(
         }
     };
     rt.spawn(async move {
-        let mut projection = ChatProjection::with_rooms(substrate, purpose, rooms);
         let mut projection =
             ChatProjection::with_experience(substrate, purpose, rooms, experience_source);
         if let Some((executor, room)) = seed {

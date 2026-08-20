@@ -205,7 +205,6 @@ pub fn in_flight_solve_runs_in(dir: &Path) -> Vec<(String, String)> {
         };
         let Some(run_id) = solve_run_id_from_file_name(name) else {
             continue;
-        }
         };
         let run_id = run_id.to_string();
         let Ok(text) = std::fs::read_to_string(&path) else {
@@ -331,9 +330,6 @@ pub fn reap_orphaned_solve_runs() -> Vec<String> {
 /// and the test was quietly seeding the live verdict record with fixture data — a fixture
 /// that would later read as a genuine measurement.
 pub fn swe_cache_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(home)
-        .join(".continuum")
     crate::commands::benchmark::continuum_home()
         .unwrap_or_else(|_| {
             PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())).join(".continuum")
@@ -564,11 +560,6 @@ where
             .json()
             .await
             .map_err(|e| format!("dataset decode failed at offset {offset}: {e}"))?;
-        let page = body
-            .get("rows")
-            .and_then(|r| r.as_array())
-            .cloned()
-            .unwrap_or_default();
         // The server reports its own errors in-band with a 200. Surface it verbatim rather
         // than returning an empty set that a caller would read as "the suite is empty".
         if let Some(err) = body.get("error").and_then(|e| e.as_str()) {
@@ -1511,74 +1502,6 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
     // the minimum needed for a resolvable graph, discovered from the resolver's own evidence
     // rather than a hand-maintained package list. Bounded: each round must surface a NEW
     // package or we stop, and history-holes per graph are few.
-    let mut overrides: Vec<String> = Vec::new();
-    let out = loop {
-        let mut args = vec!["pip", "install", "-q", "--python", &py_s];
-        if let Some(ref date) = as_of {
-            args.push("--exclude-newer");
-            args.push(date);
-        }
-        for pin in &overrides {
-            args.push("--exclude-newer-package");
-            args.push(pin);
-        }
-        args.extend(["--no-build-isolation", "-e", "."]);
-        let out = run(&uv, &args, Some(Path::new(&repo_s))).await?;
-        if out.status.success() || as_of.is_none() {
-            break out;
-        }
-        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-        // Two heal arms, same bounded loop: (1) deleted-history — the date pin leaves zero
-        // candidates, uv's hint names the earliest surviving upload; (2) metadata-mismatch —
-        // an era sdist with no wheel for this platform builds as version 0.0.0
-        // (setuptools_scm without git metadata; live 2026-08-11: lazy-object-proxy 1.7.1 has
-        // no arm64 wheel, pulled by 2022 pylint→astroid), so the ONE unbuildable package's
-        // cutoff is lifted entirely — a modern wheel-shipping release of a shim library, in
-        // an otherwise era-pure graph, disclosed on the probe. Both parse uv's OWN evidence;
-        // no hand-maintained package list.
-        match deleted_history_override(&stderr)
-            .or_else(|| metadata_mismatch_override(&stderr))
-            .or_else(|| setuptools_importlib_clash_override(&stderr))
-        {
-            Some(pin) if !overrides.contains(&pin) && overrides.len() < 8 => {
-                tracing::warn!(
-                    instance = %instance.instance_id,
-                    r#override = %pin,
-                    "date-pinned resolution hit an unresolvable era package — retrying with \
-                     a per-package cutoff derived from uv's own error"
-                );
-                // The setuptools/importlib clash needs MORE than a lifted cutoff: the
-                // broken importlib-metadata 0.x is ALREADY INSTALLED in the venv (2019
-                // pluggy pulled it in the requirements step), and `-e .` won't touch an
-                // already-satisfied package — so the cutoff pin alone retries into the
-                // exact same crash (live: pytest-5413/5495 kickoff, 2026-08-12, the
-                // first run after this arm shipped). Apply the banner's own remedy
-                // directly: upgrade the installed copy, then retry the editable build.
-                if pin.starts_with("importlib-metadata=") {
-                    let up = run(
-                        &uv,
-                        &[
-                            "pip",
-                            "install",
-                            "-q",
-                            "--python",
-                            &py_s,
-                            "--upgrade",
-                            "importlib-metadata",
-                        ],
-                        None,
-                    )
-                    .await?;
-                    if !up.status.success() {
-                        // The heal itself failed — no point looping on the same wall.
-                        break out;
-                    }
-                }
-                overrides.push(pin);
-            }
-            _ => break out,
-        }
-    };
     // ERA_CFLAGS rides on this invocation because it is where every C build happens — the
     // repo's own extensions AND its dependency sdists (pyerfa et al) compile inside this
     // resolve. The heal loop lives in `era_pinned_uv_install`, shared with the sdist
@@ -2484,10 +2407,6 @@ pub async fn run_tests(
             String::new(),
         );
     }
-    let mut args: Vec<&str> = vec!["-m", "pytest"];
-    for f in test_files {
-        args.push(f);
-    }
     // Pytest flags must be era-portable: the interpreter under `-m pytest` can be the repo's
     // OWN pytest (pytest-dev instances: the editable install IS the subject) or an era-pinned
     // one. `--no-header` (6.1+) and `-rN` (5.1+) made pytest 4.4 exit 4 with "unrecognized
@@ -2751,7 +2670,6 @@ pub async fn grade(instance: &SweInstance, model_patch: Option<&str>) -> SweVerd
         verdict.error = Some(e);
         return verdict;
     }
-    let (pre, _) = run_tests(repo_dir, &venv_py, &f2p, &test_files).await;
     let (pre, _) = run_tests(repo_dir, &venv_py, &f2p, &test_files, runner).await;
     let already: Vec<&String> = pre
         .iter()
@@ -3413,7 +3331,6 @@ diff --git a/sympy/solvers/tests/test_other.py b/sympy/solvers/tests/test_other.
         let reaped = reap_orphaned_solve_runs_in(p);
         assert_eq!(reaped, vec!["alive".to_string()]);
 
-        let after = std::fs::read_to_string(p.join("swe-solve-alive.json")).unwrap();
         let after = std::fs::read_to_string(solve_ledger_path(p, "alive")).unwrap();
         assert!(
             after.contains("\"failed\":true"),
@@ -3423,7 +3340,6 @@ diff --git a/sympy/solvers/tests/test_other.py b/sympy/solvers/tests/test_other.
             after.contains("killed by a core restart"),
             "and it names the cause rather than leaving a bare zero: {after}"
         );
-        let done = std::fs::read_to_string(p.join("swe-solve-done.json")).unwrap();
         // The reap ANNOTATES; it must not erase where the dead run left its patch. Without
         // this the orphan becomes ungradeable — the artifact is on disk and nothing can say
         // where.
@@ -3441,10 +3357,6 @@ diff --git a/sympy/solvers/tests/test_other.py b/sympy/solvers/tests/test_other.
             done.contains("\"acts\":7"),
             "a finished verdict is never rewritten"
         );
-        let other = std::fs::read_to_string(p.join("agent-solve-other.json")).unwrap();
-        assert!(
-            !other.contains("failed"),
-            "another subsystem's ledger is untouched"
         let grade = std::fs::read_to_string(solve_grade_path(p, "done")).unwrap();
         assert!(
             grade.contains("\"resolved\":true"),

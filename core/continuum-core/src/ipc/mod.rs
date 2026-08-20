@@ -140,15 +140,6 @@ pub mod recipe_room_purpose;
 ///
 /// It is a registry of `Arc`-shared substrates, so this is a handle lookup, not a
 /// cache: cloning it clones `Arc`s.
-pub fn global_room_substrates(
-) -> std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates> {
-    use std::sync::OnceLock;
-    static G: OnceLock<std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates>> =
-        OnceLock::new();
-    G.get_or_init(|| {
-        std::sync::Arc::new(continuum_positron::scoping::PerRoomSubstrates::new())
-    })
-    .clone()
 pub fn global_room_substrates() -> std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates> {
     use std::sync::OnceLock;
     static G: OnceLock<std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates>> =
@@ -3413,8 +3404,6 @@ pub fn start_server(
 
                 // Benchmark board (#329): fold the run-ledger projection into
                 // kind="bench" — the academy right-rail's live rows (who is
-                // solving what, attempt N/M, patch forming, verdicts).
-                positron_bench_source::spawn_bench_emitter(&state.rt_handle, ws_substrate.clone());
                 // solving what, attempt N/M, patch forming, verdicts). Dual-
                 // published: the websocket substrate for human eyes AND the
                 // global bench substrate for citizen minds (#426) — one
