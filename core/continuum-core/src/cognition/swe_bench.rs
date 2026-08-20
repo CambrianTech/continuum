@@ -1229,6 +1229,48 @@ fn era_sdist_build_deps(repo: &str) -> &'static [&'static str] {
     }
 }
 
+/// Directories a legacy `setup.py` build writes INTO THE CHECKOUT, which must not survive into
+/// the next attempt.
+///
+/// `.eggs/` is the one that actually kills runs; `build/` is included because a stale
+/// `build/temp.<plat>-<pyver>/` silently reuses objects compiled against a different
+/// interpreter or numpy ABI, which fails far downstream of here with an unrelated-looking
+/// import error.
+const SETUPTOOLS_CHECKOUT_DEBRIS: &[&str] = &[".eggs", "build"];
+
+/// Remove build debris a previous attempt left in the repo checkout.
+///
+/// # This made two astropy instances permanently unbuildable (measured 2026-08-20)
+///
+/// Pre-PEP-517 `setup.py` files declare `setup_requires`, and setuptools satisfies those by
+/// downloading eggs into a `.eggs/` directory INSIDE THE CHECKOUT. On the next run,
+/// `setuptools.wheel._convert_metadata` does a bare `os.mkdir(destination_eggdir)` on a path
+/// that already exists and raises:
+///
+///     FileExistsError: [Errno 17] File exists:
+///       .../astropy__astropy-6938/.eggs/markupsafe-3.0.3-py3.9-macosx-10.9-universal2.egg
+///
+/// So the FIRST failure — for whatever reason — poisons every attempt after it, forever. The
+/// env teardown already deletes `env_dir` for exactly this reason ("a cached broken env would
+/// poison every later run"), but the checkout is a SECOND piece of state the build writes and
+/// nobody was clearing. Same bug, second location.
+///
+/// It was invisible because astropy's `__init__.py` catches the build failure and re-raises
+/// `ImportError: astropy` with "try rerunning this command manually to see what the issue
+/// was" — so the harness reported a generic import failure and the real `FileExistsError` was
+/// four frames down inside a message we printed but never read. Confirmed by hand: with the
+/// `.eggs/` dir present `build_ext --inplace` exits 1; `rm -rf .eggs` and the identical
+/// command exits 0.
+///
+/// Called BEFORE the install (the debris may predate this process) and again on failure (so a
+/// failing instance does not hand the next attempt a rigged tree) — the same
+/// pristine-by-construction discipline `ensure_grade_checkout` applies to grading.
+fn clear_setuptools_build_debris(repo_dir: &Path) {
+    for name in SETUPTOOLS_CHECKOUT_DEBRIS {
+        let _ = std::fs::remove_dir_all(repo_dir.join(name));
+    }
+}
+
 pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathBuf, String> {
     let env_dir = swe_cache_dir().join("envs").join(&instance.instance_id);
     let py = env_dir.join("bin").join("python");
@@ -1464,6 +1506,9 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
     // repo's own extensions AND its dependency sdists (pyerfa et al) compile inside this
     // resolve. The heal loop lives in `era_pinned_uv_install`, shared with the sdist
     // build-dep pre-install above.
+    // The env teardown below deletes `env_dir` — but a failed build ALSO leaves debris in the
+    // CHECKOUT, which nothing was cleaning, and that debris is permanently fatal.
+    clear_setuptools_build_debris(Path::new(&repo_s));
     let out = era_pinned_uv_install(
         &uv,
         &py_s,
@@ -1477,6 +1522,10 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
         // DELETE the half-built env rather than cache it. Keying on "the directory exists"
         // made a failed install sticky: every later run reused a venv with no repo in it and
         // reported a gold failure whose real cause was three steps upstream.
+        //
+        // Same reasoning, the other half of the state: the build writes into the CHECKOUT too,
+        // and that debris outlives `env_dir` (see `clear_setuptools_build_debris`).
+        clear_setuptools_build_debris(Path::new(&repo_s));
         let _ = std::fs::remove_dir_all(&env_dir);
         return Err(format!(
             "could not install {}'s repo into a venv — a cached broken env would poison every \
