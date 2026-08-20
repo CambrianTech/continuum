@@ -76,12 +76,13 @@ pub fn global() -> WorkingSetRegistry {
 /// Where one mind's measured demand lives across restarts — beside the rest of
 /// her durable state, because it IS her property and should travel with her.
 /// Mirrors `persona_workspace::volatile_path`'s layout exactly.
+fn personas_root() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into()); // JUSTIFIED unwrap_or_else: a HOME-less process is a real environment, not an unknown quantity; "." keeps the path RELATIVE so a demand file lands somewhere inspectable instead of at the filesystem root
+    std::path::PathBuf::from(home).join(".continuum/personas")
+}
+
 fn demand_path(persona: Uuid) -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    std::path::PathBuf::from(home)
-        .join(".continuum/personas")
-        .join(persona.to_string())
-        .join("working-set.json")
+    personas_root().join(persona.to_string()).join("working-set.json")
 }
 
 /// One mind's observed demand.
@@ -211,6 +212,56 @@ impl WorkingSetRegistry {
                 "working-set file unreadable — this mind re-measures its window from scratch"
             ),
         }
+    }
+
+    /// Re-adopt EVERY mind's persisted demand at boot, before the planner can tick.
+    ///
+    /// # Why the per-persona `rehydrate` was not enough (measured 2026-08-20)
+    ///
+    /// `ceiling()` is a HOST question — "how much serving does the work on this box need"
+    /// — but the only thing that populated it was `rehydrate`, called per-persona at spawn.
+    /// So between boot and the first spawn (measured ~10 min, #412) the host had no demand
+    /// at all, and with nothing resident it had none indefinitely: the plan fell to
+    /// `BOOTSTRAP_WORKING_SET` and served 16,384 while 224 `working-set.json` files sat on
+    /// disk — one of them recording a peak of 31,834 tokens over 18 turns. The 27B was
+    /// serving a quarter of the window this host had already proven it needs.
+    ///
+    /// Loading all of them cannot over-commit the GPU, and that is worth stating because
+    /// it is where the caution belongs and does NOT: demand is a REQUEST, not an
+    /// allocation. `plan_serving_stable` clamps it against what the host can fit — that is
+    /// precisely what a `bound_by=host-fit` plan is — under `CO_CONSUMER_HEADROOM` and the
+    /// governor's own `budget_for_replacing`. Raising demand can only raise the ASK; the
+    /// governor still decides. The failure mode of asking for too little is the one we
+    /// measured; the failure mode of asking for too much is a plan that says `host-fit`.
+    ///
+    /// Unreadable or absent files stay silent — the same honesty `rehydrate` keeps. A
+    /// ghost persona dir with no `working-set.json` contributes nothing rather than a zero.
+    pub fn rehydrate_all(&self) -> usize {
+        let Ok(entries) = std::fs::read_dir(personas_root()) else {
+            return 0; // no personas root yet — a fresh install, not an error
+        };
+        let mut adopted = 0;
+        for entry in entries.flatten() {
+            let Some(persona) = entry
+                .file_name()
+                .to_str()
+                .and_then(|s| Uuid::parse_str(s).ok())
+            else {
+                continue; // not a persona dir; never guess an id from a non-uuid name
+            };
+            let before = self.observed.contains_key(&persona);
+            self.rehydrate(persona);
+            if !before && self.observed.contains_key(&persona) {
+                adopted += 1;
+            }
+        }
+        tracing::info!(
+            probe_class = "working_set.rehydrated_all",
+            adopted,
+            ceiling = ?self.ceiling(),
+            "re-adopted this host's persisted window demand before the first plan"
+        );
+        adopted
     }
 
     /// The window this host's minds have actually demanded: the largest per-persona

@@ -781,6 +781,12 @@ impl ServingDaemonModule {
     pub fn declare_to_memory_authority(&self) {
         seed_device_vram_prior(self.gpu.total_vram_bytes());
         self.register_as_consumer();
+        // Same ordering law as the two lines above, for the OTHER half of the plan's inputs.
+        // Those two make our own footprint visible to the authority before a plan may tick;
+        // this makes the host's earned DEMAND visible in the same window. Without it the
+        // first plans run with `ceiling() == None` and serve BOOTSTRAP_WORKING_SET — measured
+        // 2026-08-20 as a 27B held at 16,384 while a 31,834-token peak sat on disk.
+        self.working_set.rehydrate_all();
     }
 
     pub fn register_planner_on_authority_tick(self: &Arc<Self>) {
