@@ -634,7 +634,10 @@ fn acquire_eval_lane_slot(
         ),
         (None, _) => {
             // Ungoverned node: the ORIGINAL raw-free probe, behavior unchanged.
-            let free_vram = crate::gpu::monitor::detect().map(|m| m.free_bytes());
+            // `and_then`, not `map`: "no GPU" and "GPU with no reading yet" are
+            // the same answer to a placement question — unknown — and
+            // `choose_lane_placement` already models unknown as `None`.
+            let free_vram = crate::gpu::monitor::detect().and_then(|m| m.free_bytes());
             let (placement, reason) = choose_lane_placement(free_vram, footprint);
             (placement, reason.to_string(), None, free_vram)
         }
@@ -1394,6 +1397,7 @@ pub struct EvalGene {
     /// Influence dial in [0,1+] — 0 = base, 1 = full gene. The page-in is analog:
     /// the per-request scale rides into `"lora":[{id,scale}]`. Defaults to 1.0.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub scale: Option<f64>,
 }
@@ -1439,10 +1443,12 @@ pub struct CognitionEvalParams {
     /// None/0 = solo. First slice supports one reviewer; live single-pass path only (no gene,
     /// no base_model_id).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub reviewers: Option<u32>,
     /// Max act→observe cycles per task before it counts as unfinished. Default 8.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub max_acts: Option<u32>,
     /// Agentic-recovery budget: how many times a FAILED test-graded task is handed its
@@ -1451,6 +1457,7 @@ pub struct CognitionEvalParams {
     /// weights) — so a `0` vs `N` A/B on the identical model+benchmark measures exactly the
     /// edge our agentic loop adds, repeatably, from one param.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub max_retries: Option<u32>,
     /// Free-text label for THIS run, written to the progress ledger so a trend
@@ -1685,12 +1692,14 @@ pub struct CognitionEvalResult {
     /// `pass_rate`/`results` above are the candidate arm; this is what it's measured
     /// against.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub base_pass_rate: Option<f64>,
     /// `pass_rate - base_pass_rate` — the LIFT the gene produced (A/B mode only).
     /// Positive = the gene made her a better coder; the measure→decide gate adopts
     /// only `lift > 0`. Negative = an overfit/regressing gene, correctly rejected.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub lift: Option<f64>,
     /// Which device the measurement lane ran on: `"gpu"` or `"cpu"` (A/B mode), or
@@ -1704,11 +1713,13 @@ pub struct CognitionEvalResult {
     /// Live free VRAM (bytes) at lane spawn, net of the resident living lane — the
     /// headroom the GPU-first decision saw. `None` when no GPU monitor / single-pass.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub lane_free_vram_bytes: Option<u64>,
     /// Estimated weight+scratch footprint (bytes) of the measurement lane's base —
     /// what GPU-first weighed against free VRAM. `None` when unsized / single-pass.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub lane_estimated_footprint_bytes: Option<u64>,
     /// Set ONLY when infra prevented a trustworthy measurement (the shared serving lane

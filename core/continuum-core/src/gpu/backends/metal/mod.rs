@@ -54,13 +54,9 @@
 
 mod mach_ffi;
 
-use crate::gpu::monitor::GpuMonitor;
-use crate::runtime::{spawn_daemon, Daemon, DaemonChannel};
+use crate::gpu::device_probe::{GpuDeviceProbe, GpuSample, MonitoredGpu};
 use async_trait::async_trait;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::watch;
-use tokio::time::Duration;
 
 /// Memory accounting mode chosen at construction time based on the
 /// Metal device's `hasUnifiedMemory` property.
@@ -81,125 +77,119 @@ use tokio::time::Duration;
 ///   this-process GPU usage and derives free from the device's working-set bound.
 pub use crate::gpu::monitor::MemoryMode;
 
-/// Tick cadence for the background sampler. 1Hz keeps Activity-Monitor
-/// parity (its baseline cadence) and is essentially free per call —
-/// each tick is two Mach syscalls + one Metal property read. Faster ticks
-/// don't gain meaningful signal because the OS only updates `host_vm_info`
-/// counters at ~1Hz internally.
-const TICK_INTERVAL: Duration = Duration::from_secs(1);
+// Cadence is the base's (`device_probe::DEFAULT_TICK`, 1Hz) and this backend
+// accepts it: 1Hz keeps Activity-Monitor parity, costs two Mach syscalls plus one
+// Metal property read, and the OS only refreshes `host_vm_info` at ~1Hz internally
+// so faster ticks buy no signal. Nothing Metal-specific to override.
 
-pub struct MetalMonitor {
+/// The Metal-SPECIFIC half of GPU monitoring, and nothing else.
+///
+/// Holds only what is genuinely Apple's: the device handle, the constants probed
+/// from it once, and how to ask Mach for a reading. Retention of the last good
+/// sample, the unknown-until-first-sample state, the tick and the pressure signal
+/// are [`MonitoredGpu`]'s — shared with CUDA and with the Vulkan/MLX adapters still
+/// to come, so none of them can express those differently. See
+/// [`crate::gpu::device_probe`] for why that split is load-bearing (this backend is
+/// the one that got it wrong).
+pub struct MetalProbe {
     device_name: String,
     total_bytes: u64,
-    free_bytes: AtomicU64,
-    process_bytes: AtomicU64,
-    /// The embedded publish channel — carries derived pressure (`1 - free/total`)
-    /// as its snapshot. Ungated: this monitor reports a continuous signal; the
-    /// pressure-broker decides what pressure level warrants backoff, so there is
-    /// no daemon-side gate here. `GpuMonitor::pressure_rx` mints a receiver from it.
-    channel: DaemonChannel<f32>,
-    /// The Metal device handle, owned so the tick can sample it each cycle.
+    /// The Metal device handle, owned so each sample can read it.
     /// `metal::Device` is `Send + Sync` (auto-impl via `foreign_obj_type!` in the
     /// metal crate), so it crosses to the daemon task safely. Needed every tick on
     /// Discrete mode for `current_allocated_size`; unused on Unified but kept for
     /// symmetry + future IOReport hooks.
     device: metal::Device,
-    /// Sampling strategy fixed at construction time. Read-only after
-    /// init; exposed via `memory_mode()` for telemetry / tests that
-    /// branch on hardware shape.
+    /// Sampling strategy fixed at construction time.
     memory_mode: MemoryMode,
 }
 
-impl MetalMonitor {
-    /// Construct a MetalMonitor and spawn it on the shared [`Daemon`] runner.
-    /// Returns `None` if no Metal device is available (rare on a Mac;
-    /// happens in headless build environments without `MTLCreateSystemDefaultDevice`).
-    /// `None` is NOT a cue to substitute a CPU monitor — there is no CPU
-    /// fallback (#980). A GPU host with no Metal device is a fail-loud
-    /// condition the caller surfaces by name; it must never silently run
-    /// "all CPU again" against fabricated numbers.
-    ///
-    /// Returns an `Arc<Self>` because [`spawn_daemon`] takes one (the runner's
-    /// task captures it for the process lifetime) and callers store the monitor
-    /// as `Arc<dyn GpuMonitor>` anyway.
-    pub fn new() -> Option<Arc<Self>> {
+/// A Metal device under the shared monitoring machinery. The name is unchanged
+/// because every caller's contract is unchanged — only the ownership of the common
+/// half moved.
+pub type MetalMonitor = MonitoredGpu<MetalProbe>;
+
+impl MetalProbe {
+    /// Probe for a Metal device. `None` if there is none (rare on a Mac; happens in
+    /// headless build environments without `MTLCreateSystemDefaultDevice`).
+    /// `None` is NOT a cue to substitute a CPU monitor — there is no CPU fallback
+    /// (#980). A GPU host with no Metal device is a fail-loud condition the caller
+    /// surfaces by name; it must never silently run "all CPU again" against
+    /// fabricated numbers.
+    pub fn detect() -> Option<Self> {
         let device = metal::Device::system_default()?;
         let total_bytes = device.recommended_max_working_set_size();
-        let device_name = device.name().to_string();
         if total_bytes == 0 {
             return None;
         }
-        let memory_mode = if device.has_unified_memory() {
-            MemoryMode::Unified
-        } else {
-            MemoryMode::Discrete
-        };
-
-        let monitor = Arc::new(Self {
-            device_name,
+        Some(Self {
+            device_name: device.name().to_string(),
             total_bytes,
-            free_bytes: AtomicU64::new(total_bytes),
-            process_bytes: AtomicU64::new(0),
-            channel: DaemonChannel::ungated(0.0f32),
+            memory_mode: if device.has_unified_memory() {
+                MemoryMode::Unified
+            } else {
+                MemoryMode::Discrete
+            },
             device,
-            memory_mode,
-        });
-
-        // The shared runner owns the interval + per-tick catch_unwind. The
-        // previous hand-rolled sampler had NO isolation — a panic in a Mach FFI
-        // read would have killed GPU monitoring for the whole process; now it
-        // loses one tick and resumes against the last-good snapshot. The task
-        // captures this Arc for the process lifetime (no "stop monitoring" case).
-        let _ = spawn_daemon(monitor.clone());
-        Some(monitor)
+        })
     }
+}
 
-    /// Sampling strategy chosen at construction. Exposed for
-    /// telemetry + test branching. Production callers should use
-    /// the trait methods, which abstract the mode away.
-    pub fn memory_mode(&self) -> MemoryMode {
-        self.memory_mode
+impl MetalMonitor {
+    /// Detect a Metal device and put it under the shared monitor. Returns an
+    /// `Arc<Self>` because the daemon runner takes one (its task captures it for the
+    /// process lifetime) and callers store it as `Arc<dyn GpuMonitor>` anyway.
+    pub fn new() -> Option<Arc<Self>> {
+        MetalProbe::detect().map(MonitoredGpu::spawn)
     }
 }
 
 #[async_trait]
-impl Daemon for MetalMonitor {
-    type Snapshot = f32;
+impl GpuDeviceProbe for MetalProbe {
+    fn platform(&self) -> &'static str {
+        "metal"
+    }
 
-    fn name(&self) -> &'static str {
+    fn daemon_name(&self) -> &'static str {
         "metal-gpu"
     }
 
-    fn cadence(&self) -> Duration {
-        TICK_INTERVAL
+    fn device_name(&self) -> &str {
+        &self.device_name
     }
 
-    fn channel(&self) -> &DaemonChannel<f32> {
-        &self.channel
+    fn total_bytes(&self) -> u64 {
+        self.total_bytes
     }
 
-    /// Refresh free + process bytes and publish derived pressure. Pure atomic
-    /// stores + one `sample_memory` call (two Mach syscalls + one Metal property
-    /// read) — no lock, no await held across state, so it slots straight into the
-    /// runner's per-tick `catch_unwind`.
-    async fn tick(&self) {
-        let (free, proc) = sample_memory(self.memory_mode, self.total_bytes, &self.device);
-        self.free_bytes.store(free, Ordering::Relaxed);
-        self.process_bytes.store(proc, Ordering::Relaxed);
+    /// The real `hasUnifiedMemory` answer, detected at construction. This is the
+    /// signal that tells the ResourceGovernor whether its VRAM and RAM ledgers
+    /// describe one physical pool or two — never inferred from `target_os`, since
+    /// an Intel Mac with a discrete AMD card also runs macOS and is NOT unified.
+    fn memory_mode(&self) -> MemoryMode {
+        self.memory_mode
+    }
 
-        // Pressure: 1.0 - free/total. Clamped to [0,1] for sanity — on Unified,
-        // free can briefly exceed total in some host_statistics64 reporting
-        // windows due to inactive→free transitions racing with our read; on
-        // Discrete, free is `saturating_sub(total, allocated)` which never
-        // exceeds total, but the clamp keeps the shape uniform across modes.
-        let pressure = if self.total_bytes > 0 {
-            1.0 - (free as f32 / self.total_bytes as f32).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        self.channel.publish(pressure);
+    /// Two Mach syscalls (Unified) or one Metal property read (Discrete). In-process
+    /// and non-blocking, so this returns without ever yielding.
+    ///
+    /// Utilization / temperature / power stay `None` pending
+    /// Phase 2.0a-IOReport (IOReport.framework for compute utilization, SMC channels
+    /// for thermals + power). `None` is the correct answer for a sensor we do not
+    /// read — the base maps it to "no reading", not to 0.
+    async fn sample(&self) -> GpuSample {
+        let (free_bytes, process_bytes) =
+            sample_memory(self.memory_mode, self.total_bytes, &self.device);
+        GpuSample {
+            free_bytes,
+            process_bytes,
+            utilization: None,
+            temperature_c: None,
+            power_watts: None,
+        }
     }
 }
+
 
 /// Read (free_bytes, process_bytes) for the current tick. Branches
 /// on memory mode:
@@ -215,63 +205,30 @@ impl Daemon for MetalMonitor {
 ///   other processes on the same device — IOReport.framework
 ///   (Phase 2.0a) tightens this when wired. Bounded by `total` so
 ///   the broker's pressure invariants always hold.
-fn sample_memory(mode: MemoryMode, total: u64, device: &metal::Device) -> (u64, u64) {
+///
+/// Returns `None` for a term the platform could not report this tick. It does
+/// NOT substitute: a failed `host_statistics64` used to read as `total` — "the
+/// syscall broke, so assume the whole pool is free" — which is the single most
+/// dangerous number this file can hand the governor. The caller keeps its last
+/// MEASURED value instead and the reading simply does not refresh.
+fn sample_memory(
+    mode: MemoryMode,
+    total: u64,
+    device: &metal::Device,
+) -> (Option<u64>, Option<u64>) {
     match mode {
-        MemoryMode::Unified => {
-            let free = mach_ffi::read_system_free_bytes().unwrap_or(total);
-            let proc = mach_ffi::read_process_phys_footprint().unwrap_or(0);
-            (free, proc)
-        }
+        MemoryMode::Unified => (
+            mach_ffi::read_system_free_bytes(),
+            mach_ffi::read_process_phys_footprint(),
+        ),
         MemoryMode::Discrete => {
+            // Metal's own property — infallible, so this arm always measures.
             let allocated = device.current_allocated_size() as u64;
-            let free = total.saturating_sub(allocated);
-            (free, allocated)
+            (Some(total.saturating_sub(allocated)), Some(allocated))
         }
     }
 }
 
-impl GpuMonitor for MetalMonitor {
-    fn platform(&self) -> &'static str {
-        "metal"
-    }
-
-    /// The real `hasUnifiedMemory` answer, detected at construction. This is the
-    /// signal that tells the ResourceGovernor whether its VRAM and RAM ledgers
-    /// describe one physical pool or two — never inferred from `target_os`, since
-    /// an Intel Mac with a discrete AMD card also runs macOS and is NOT unified.
-    fn memory_mode(&self) -> MemoryMode {
-        self.memory_mode
-    }
-    fn device_name(&self) -> &str {
-        &self.device_name
-    }
-    fn total_bytes(&self) -> u64 {
-        self.total_bytes
-    }
-    fn free_bytes(&self) -> u64 {
-        self.free_bytes.load(Ordering::Relaxed)
-    }
-    fn process_bytes(&self) -> u64 {
-        self.process_bytes.load(Ordering::Relaxed)
-    }
-    fn utilization(&self) -> f32 {
-        // TODO Phase 2.0a-IOReport: live GPU compute utilization via
-        // IOReport.framework. Returns 0.0 until then — policy can still
-        // make memory-pressure decisions without it.
-        0.0
-    }
-    fn temperature_c(&self) -> Option<f32> {
-        // TODO Phase 2.0a-IOReport: SMC / IOReport thermal sensors.
-        None
-    }
-    fn power_watts(&self) -> Option<f32> {
-        // TODO Phase 2.0a-IOReport: SMC / IOReport power channels.
-        None
-    }
-    fn pressure_rx(&self) -> watch::Receiver<f32> {
-        self.channel.handle().subscribe()
-    }
-}
 
 // ─── Tests ──────────────────────────────────────────────────────────────
 //
@@ -282,6 +239,10 @@ impl GpuMonitor for MetalMonitor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The monitor surface now arrives through the shared base, so the trait has to
+    // be in scope explicitly — it is no longer implemented in this file.
+    use crate::gpu::monitor::GpuMonitor;
+    use tokio::time::Duration;
 
     /// What this catches: `MetalMonitor::new()` failing to detect a
     /// Metal device on a Mac (CI baseline check). If this returns None
@@ -342,7 +303,12 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(1100)).await;
 
         let total = monitor.total_bytes();
-        let free = monitor.free_bytes();
+        // `expect` is the point, not a convenience: after a full tick on a live Mac
+        // a reading MUST exist. This assertion also covers the state that used to be
+        // unrepresentable — a monitor that never sampled and answered with `total`.
+        let free = monitor
+            .free_bytes()
+            .expect("a live Mac must have a real free-bytes reading one tick after spawn");
         let proc = monitor.process_bytes();
         eprintln!(
             "[metal-monitor] mode={:?} total={} ({} GB) free={} ({} GB) process={} ({} MB)",
@@ -443,6 +409,10 @@ mod tests {
         };
         let total = device.recommended_max_working_set_size();
         let (free, proc) = sample_memory(MemoryMode::Discrete, total, &device);
+        // Discrete reads a Metal property that cannot fail, so this arm must always
+        // MEASURE — `None` here would mean the arm went fallible without saying so.
+        let free = free.expect("discrete free is derived from an infallible Metal property");
+        let proc = proc.expect("discrete allocated is derived from an infallible Metal property");
         assert!(
             free <= total,
             "discrete free ({free}) must not exceed total ({total})"
@@ -469,7 +439,11 @@ mod tests {
         assert_eq!(snap.platform, "metal");
         assert_eq!(snap.total_bytes, monitor.total_bytes());
         assert_eq!(snap.device_name, monitor.device_name());
-        let dt = (snap.free_bytes as i64 - monitor.free_bytes() as i64).unsigned_abs();
+        // Both sides must be readings — a snapshot taken after a live tick that
+        // carried no free value would mean the snapshot path lost it.
+        let snap_free = snap.free_bytes.expect("snapshot carries the live free reading") as i64;
+        let live_free = monitor.free_bytes().expect("monitor has a live free reading") as i64;
+        let dt = (snap_free - live_free).unsigned_abs();
         assert!(
             dt < 1_000_000_000,
             "snapshot.free vs getter drift > 1GB: {dt}"

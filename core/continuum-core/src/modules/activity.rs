@@ -130,6 +130,7 @@ pub struct ActivitySpawnParams {
     /// receives a parsed id, and an unparseable one is rejected at the boundary
     /// instead of flowing inward as a plausible-looking String.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "string")]
     #[schemars(with = "Option<String>")]
     pub parent: Option<RoomId>,

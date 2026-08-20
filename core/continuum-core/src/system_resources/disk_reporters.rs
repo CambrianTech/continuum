@@ -188,6 +188,13 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
         TrackedDir::new("cargo-target", home.join(".continuum/cache/cargo-target")),
         TrackedDir::new("genome-models", home.join(".continuum/genome/models")),
         TrackedDir::new("citizens", home.join(".continuum/citizens")),
+        // Per-persona durable mind state: longterm.db + working-set.json, one dir per uuid.
+        // UNTRACKED until 2026-08-20, which made it invisible to BOTH halves of the governed-
+        // disk contract — no size report, and the eviction guard could not flag a missing
+        // decision because that guard iterates THIS list. Exactly the silent-class shape the
+        // 2026-07-13 incident was about, found at 295 dirs / 18 MB with 286 of them under
+        // 100 KB — spawn ghosts (#437), not minds.
+        TrackedDir::new("personas", home.join(".continuum/personas")),
         TrackedDir::new("forge", home.join(".continuum/forge")),
         // Benchmark working set: per-instance repo clones + per-instance venvs. Grows LINEARLY
         // with instances graded — a full SWE-bench Lite sweep is 300 repos, and one sympy

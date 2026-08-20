@@ -33,20 +33,24 @@ pub struct BenchRunRow {
     /// True exactly when `phase == "quiet"` (stall-window silence).
     pub stalled: bool,
     #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub attempt: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub max_attempts: Option<u32>,
     /// Seconds since the newest artifact write — the pulse.
     #[ts(type = "number")]
     pub age_secs: u64,
     #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub acts: Option<u32>,
     /// Graded diff bytes when a grade exists; the result's own live diff
     /// length before that (the "patch is forming" leading indicator).
     #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub patch_bytes: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none", default)]

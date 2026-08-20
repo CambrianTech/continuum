@@ -62,6 +62,7 @@ pub struct RoomRecipeBinding {
     /// hope that whoever fills it in spells a uuid correctly, and nothing rejects
     /// `"the benchmark one"` ([[uuids-are-not-strings-and-never-hand-drawn]]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "string")]
     pub parent: Option<airc_core::RoomId>,
     /// The RESOLVED parameters this room was spawned with (#433) — caller

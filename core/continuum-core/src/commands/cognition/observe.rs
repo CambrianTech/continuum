@@ -106,6 +106,7 @@ pub struct Scoreboard {
     pub provenance: BenchmarkProvenance,
     /// Live free VRAM (GB) at last grade — the resource axis. `null` when ungoverned.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub vram_free_gb: Option<u64>,
     /// Receiver-clock ms of the last progress tick — staleness signal.

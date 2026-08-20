@@ -86,16 +86,19 @@ pub struct ResolutionBenchParams {
     /// reflexive floor and full. Default 4. This is the climb's resolution, not a
     /// serving-capacity constant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub steps: Option<u32>,
     /// The reflexive floor budget (tokens) — the cheapest draft. Small enough that a
     /// long solution truncates here (so the verifier escalates), large enough for a
     /// complete short answer. Default 160. The benchmark's independent variable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub min_tokens: Option<u32>,
     /// The full-resolution budget (tokens) — the deepest draft. Default 2048.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub max_tokens: Option<u32>,
     /// Fire-and-poll (#86): a multi-generation run can outlast an IPC timeout. `true`

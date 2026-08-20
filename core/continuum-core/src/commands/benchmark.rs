@@ -447,6 +447,7 @@ pub struct BenchmarkRecordParams {
     pub output_tokens: Option<u32>,
     /// Wall-clock seconds for the run (feeds cost-per-resolved-task).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub wall_seconds: Option<u32>,
     /// Free-text context (instrument caveats, instance list, capture dir).
@@ -552,6 +553,7 @@ pub struct BenchmarkDispatchParams {
     pub name: String,
     /// How many tasks (from the top) to post as cards. Omit for all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub limit: Option<u32>,
     /// Board repo key the cards land under, e.g. `CambrianTech/continuum`.
@@ -2428,9 +2430,9 @@ pub(crate) async fn grade_swe(p: SweGradeParams) -> Result<SweGradeResult, Comma
     // with WHY, and an `error` is contractually an ABSENCE, never a tallied failure
     // (see `SweVerdict::error`). One path, so every caller inherits the labelling.
     let verdict = if p.gold.unwrap_or(false) {
-        swe_bench::gold_gate(&instance, &repo).await
+        swe_bench::gold_gate(&instance).await
     } else {
-        swe_bench::grade(&instance, &repo, candidate.as_deref()).await
+        swe_bench::grade(&instance, candidate.as_deref()).await
     };
 
     // PERSIST THE VERDICT before anything else consumes it. Until 2026-08-18 this arm
@@ -3051,6 +3053,7 @@ pub struct BenchRunCard {
     #[ts(optional, type = "number")]
     pub attempt: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub max_attempts: Option<u32>,
     /// Solver persona (from the result ledger; absent while attempt 1 is
@@ -3074,6 +3077,7 @@ pub struct BenchRunCard {
     #[ts(type = "number")]
     pub age_secs: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub acts: Option<u32>,
     pub files_changed: Vec<String>,

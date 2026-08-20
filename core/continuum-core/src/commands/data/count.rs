@@ -17,6 +17,7 @@ pub struct DataCountParams {
     pub collection: String,
     /// Optional equality filter (`{ "field": value }`); omit to count all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "Record<string, unknown>")]
     pub filter: Option<serde_json::Map<String, serde_json::Value>>,
     /// Storage handle. Defaults to "main" (the shared DB). Accepts the legacy

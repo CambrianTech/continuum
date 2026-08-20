@@ -176,9 +176,11 @@ impl From<&DynamicAvatarModel> for AvatarCatalogEntry {
 pub struct AvatarPreference {
     /// Preferred art style (None = any)
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub style: Option<AvatarStyle>,
     /// Preferred specific model ID (highest priority if set)
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub model_id: Option<String>,
     /// Exclude these tags
     #[serde(default)]

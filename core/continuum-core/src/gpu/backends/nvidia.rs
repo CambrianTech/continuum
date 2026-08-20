@@ -41,25 +41,20 @@
 //! number (that stale-`free`-that-never-drops bug is exactly what the whole
 //! live-monitor layer exists to kill).
 
-use crate::gpu::monitor::GpuMonitor;
-use crate::runtime::{spawn_daemon, Daemon, DaemonChannel};
+use crate::gpu::device_probe::{GpuDeviceProbe, GpuSample, MonitoredGpu};
 use async_trait::async_trait;
-use std::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::watch;
-use tokio::time::Duration;
 
-/// Tick cadence for the background sampler. 1Hz keeps parity with
-/// Activity-Monitor / `nvidia-smi -l 1` and is the practical floor for a
-/// subprocess query — faster ticks just multiply child-process churn for
-/// no extra signal (the driver's counters don't update meaningfully
-/// faster than this under normal load).
-const TICK_INTERVAL: Duration = Duration::from_secs(1);
+// Cadence is the base's (`device_probe::DEFAULT_TICK`, 1Hz) and this backend
+// accepts it: 1Hz keeps parity with `nvidia-smi -l 1` and is the practical floor
+// for a subprocess query — faster ticks just multiply child-process churn for no
+// extra signal, since the driver's counters don't update meaningfully faster under
+// normal load. Nothing NVIDIA-specific to override.
 
-/// One sampled reading of the `--query-gpu` columns. Parsed from a single
-/// `nvidia-smi` CSV line; `None` fields mean the GPU didn't expose that
-/// sensor (e.g. datacenter cards without a power cap report `[N/A]`).
-struct GpuSample {
+/// One parsed `--query-gpu` CSV row. Purely NVIDIA's wire shape; `None` fields
+/// mean the GPU didn't expose that sensor (datacenter cards without a power cap
+/// report `[N/A]`). Converted to the backend-neutral [`GpuSample`] in `sample()`.
+struct SmiReading {
     free_bytes: u64,
     total_bytes: u64,
     utilization: f32,
@@ -67,156 +62,92 @@ struct GpuSample {
     power_watts: Option<f32>,
 }
 
-pub struct NvidiaMonitor {
+/// The NVIDIA-SPECIFIC half of GPU monitoring, and nothing else: the device name
+/// and total confirmed once at construction, plus how to ask `nvidia-smi`.
+///
+/// Everything that used to sit beside it here — the atomics, the last-good
+/// retention, the sensor sentinel encoding, pressure derivation, the tick — was
+/// identical to the Metal backend's copy and now lives once in
+/// [`MonitoredGpu`](crate::gpu::device_probe::MonitoredGpu).
+pub struct NvidiaProbe {
     device_name: String,
     total_bytes: u64,
-    free_bytes: AtomicU64,
-    process_bytes: AtomicU64,
-    /// Utilization stored as parts-per-thousand (0..1000) so it fits an
-    /// atomic; `utilization()` divides back to 0.0..1.0.
-    utilization_x1000: AtomicU32,
-    /// Temperature in milli-Celsius, or `i32::MIN` sentinel for "no sensor".
-    temperature_mc: AtomicI32,
-    /// Power in milli-watts, or `i32::MIN` sentinel for "no sensor".
-    power_mw: AtomicI32,
-    /// Embedded publish channel carrying derived pressure (`1 - free/total`).
-    /// Ungated — the monitor reports a continuous signal; the governor /
-    /// pressure-broker decides what level warrants backoff.
-    channel: DaemonChannel<f32>,
 }
 
-/// Sentinel stored in the temperature / power atomics meaning "the GPU did
-/// not report this sensor on the last tick". Distinct from a real 0.
-const NO_SENSOR: i32 = i32::MIN;
+/// An NVIDIA device under the shared monitoring machinery.
+pub type NvidiaMonitor = MonitoredGpu<NvidiaProbe>;
+
+impl NvidiaProbe {
+    /// Probe for an NVIDIA device. `None` when `nvidia-smi` is absent or its
+    /// output doesn't parse — i.e. this is not an NVIDIA host. That is a fail-loud
+    /// capability gap for the caller, NOT a cue to substitute a CPU monitor or a
+    /// fabricated number.
+    ///
+    /// One synchronous probe here so a non-NVIDIA host returns `None` immediately
+    /// rather than spawning a daemon that can never sample; every refresh after is
+    /// async.
+    pub fn detect() -> Option<Self> {
+        let (device_name, reading) = probe_blocking()?;
+        Some(Self {
+            device_name,
+            total_bytes: reading.total_bytes,
+        })
+    }
+}
 
 impl NvidiaMonitor {
-    /// Construct an `NvidiaMonitor` and spawn it on the shared `Daemon`
-    /// runner. Returns `None` when `nvidia-smi` is absent or its output
-    /// doesn't parse — i.e. this is not an NVIDIA host (or the tool isn't
-    /// installed). `None` is a fail-loud capability gap for the caller, NOT
-    /// a cue to substitute a CPU monitor or a fabricated number.
-    ///
-    /// Performs one synchronous probe at construction (so a non-NVIDIA host
-    /// returns `None` immediately rather than spawning a daemon that can
-    /// never sample); the per-tick refresh thereafter is fully async.
+    /// Detect an NVIDIA device and put it under the shared monitor.
     pub fn new() -> Option<Arc<Self>> {
-        let (name, sample) = probe_blocking()?;
-
-        let monitor = Arc::new(Self {
-            device_name: name,
-            total_bytes: sample.total_bytes,
-            free_bytes: AtomicU64::new(sample.free_bytes),
-            process_bytes: AtomicU64::new(0),
-            utilization_x1000: AtomicU32::new((sample.utilization * 1000.0) as u32),
-            temperature_mc: AtomicI32::new(to_milli(sample.temperature_c)),
-            power_mw: AtomicI32::new(to_milli(sample.power_watts)),
-            channel: DaemonChannel::ungated(derive_pressure(sample.free_bytes, sample.total_bytes)),
-        });
-
-        // The shared runner owns the interval + per-tick catch_unwind: a
-        // panic in parsing loses one tick and resumes against the last-good
-        // snapshot rather than killing GPU monitoring for the whole process.
-        let _ = spawn_daemon(monitor.clone());
-        Some(monitor)
+        NvidiaProbe::detect().map(MonitoredGpu::spawn)
     }
 }
 
 #[async_trait]
-impl Daemon for NvidiaMonitor {
-    type Snapshot = f32;
-
-    fn name(&self) -> &'static str {
-        "nvidia-gpu"
-    }
-
-    fn cadence(&self) -> Duration {
-        TICK_INTERVAL
-    }
-
-    fn channel(&self) -> &DaemonChannel<f32> {
-        &self.channel
-    }
-
-    /// Refresh free / process / util / thermals from `nvidia-smi` and
-    /// publish derived pressure. The two child processes are awaited off
-    /// the reactor (`tokio::process`), so the tick never blocks a runtime
-    /// thread; a transient `nvidia-smi` hiccup leaves the last-good atomics
-    /// in place (we only store fields we successfully parsed).
-    async fn tick(&self) {
-        if let Some(sample) = query_gpu().await {
-            self.free_bytes.store(sample.free_bytes, Ordering::Relaxed);
-            self.utilization_x1000
-                .store((sample.utilization * 1000.0) as u32, Ordering::Relaxed);
-            self.temperature_mc
-                .store(to_milli(sample.temperature_c), Ordering::Relaxed);
-            self.power_mw
-                .store(to_milli(sample.power_watts), Ordering::Relaxed);
-            self.channel
-                .publish(derive_pressure(sample.free_bytes, self.total_bytes));
-        }
-        if let Some(proc_bytes) = query_process_bytes().await {
-            self.process_bytes.store(proc_bytes, Ordering::Relaxed);
-        }
-    }
-}
-
-impl GpuMonitor for NvidiaMonitor {
+impl GpuDeviceProbe for NvidiaProbe {
     fn platform(&self) -> &'static str {
         "cuda"
     }
+
+    fn daemon_name(&self) -> &'static str {
+        "nvidia-gpu"
+    }
+
     fn device_name(&self) -> &str {
         &self.device_name
     }
+
     fn total_bytes(&self) -> u64 {
         self.total_bytes
     }
-    fn free_bytes(&self) -> u64 {
-        self.free_bytes.load(Ordering::Relaxed)
-    }
-    fn process_bytes(&self) -> u64 {
-        self.process_bytes.load(Ordering::Relaxed)
-    }
-    fn utilization(&self) -> f32 {
-        self.utilization_x1000.load(Ordering::Relaxed) as f32 / 1000.0
-    }
-    fn temperature_c(&self) -> Option<f32> {
-        from_milli(self.temperature_mc.load(Ordering::Relaxed))
-    }
-    fn power_watts(&self) -> Option<f32> {
-        from_milli(self.power_mw.load(Ordering::Relaxed))
-    }
-    fn pressure_rx(&self) -> watch::Receiver<f32> {
-        self.channel.handle().subscribe()
+
+    /// Two `nvidia-smi` child processes, awaited off the reactor
+    /// (`tokio::process`), so this never blocks a runtime thread.
+    ///
+    /// The two queries fail INDEPENDENTLY, and the `GpuSample` shape carries that
+    /// faithfully: a `--query-gpu` hiccup leaves `free`/`utilization`/thermals
+    /// `None` while a successful compute-apps query still reports
+    /// `process_bytes`. Neither failure invents a value — the base keeps whatever
+    /// it last measured for the terms that went missing.
+    async fn sample(&self) -> GpuSample {
+        let gpu = query_gpu().await;
+        GpuSample {
+            free_bytes: gpu.as_ref().map(|r| r.free_bytes),
+            process_bytes: query_process_bytes().await,
+            utilization: gpu.as_ref().map(|r| r.utilization),
+            temperature_c: gpu.as_ref().and_then(|r| r.temperature_c),
+            power_watts: gpu.as_ref().and_then(|r| r.power_watts),
+        }
     }
 }
 
-// ─── pure helpers (parse + derive) — unit-tested without a GPU ──────────
-
-/// Derive pressure `1 - free/total`, clamped to [0,1]. `total == 0` (no
-/// device / parse failure) yields 0.0 rather than a divide-by-zero.
-fn derive_pressure(free: u64, total: u64) -> f32 {
-    if total == 0 {
-        return 0.0;
-    }
-    (1.0 - (free as f32 / total as f32)).clamp(0.0, 1.0)
-}
-
-/// `Option<f32>` → milli-units in an `i32` atomic; `None` → `NO_SENSOR`.
-fn to_milli(v: Option<f32>) -> i32 {
-    match v {
-        Some(x) => (x * 1000.0) as i32,
-        None => NO_SENSOR,
-    }
-}
-
-/// Inverse of [`to_milli`]: the `NO_SENSOR` sentinel decodes to `None`.
-fn from_milli(mc: i32) -> Option<f32> {
-    if mc == NO_SENSOR {
-        None
-    } else {
-        Some(mc as f32 / 1000.0)
-    }
-}
+// ─── NVIDIA-SPECIFIC parsing — unit-tested without a GPU ───────────────
+//
+// Pressure derivation and the None-vs-0 sensor encoding used to live here too,
+// in a copy that existed identically in the Metal backend. Both are LOGIC, not
+// eccentricity — one device's `[N/A]` means what another's missing syscall means —
+// so they moved to `device_probe::MonitoredGpu`, which now owns them for CUDA,
+// Metal, and the Vulkan/MLX adapters to come. What remains below is the genuinely
+// NVIDIA part: the shape of `nvidia-smi`'s CSV.
 
 /// Parse one `--query-gpu` CSV line:
 /// `memory.free, memory.total, utilization.gpu, temperature.gpu, power.draw`
@@ -224,7 +155,7 @@ fn from_milli(mc: i32) -> Option<f32> {
 /// (`[N/A]`, `[Not Supported]`) parse to `None` for the optional sensors;
 /// the two memory columns are required (return `None` for the whole line if
 /// either is missing — a reading with no memory total is useless).
-fn parse_gpu_csv_line(line: &str) -> Option<GpuSample> {
+fn parse_gpu_csv_line(line: &str) -> Option<SmiReading> {
     let cols: Vec<&str> = line.split(',').map(|c| c.trim()).collect();
     if cols.len() < 5 {
         return None;
@@ -239,7 +170,7 @@ fn parse_gpu_csv_line(line: &str) -> Option<GpuSample> {
         .unwrap_or(0.0);
     let temperature_c = cols[3].parse::<f32>().ok();
     let power_watts = cols[4].parse::<f32>().ok();
-    Some(GpuSample {
+    Some(SmiReading {
         free_bytes,
         total_bytes,
         utilization,
@@ -279,7 +210,7 @@ const QUERY_GPU_ARGS: [&str; 2] = [
 /// Synchronous one-shot probe used at construction. Mirrors
 /// `detect_cuda()`'s blocking `std::process::Command` shape so `new()` can
 /// decide "is this an NVIDIA host" before committing a daemon task.
-fn probe_blocking() -> Option<(String, GpuSample)> {
+fn probe_blocking() -> Option<(String, SmiReading)> {
     use std::process::Command;
     let out = Command::new("nvidia-smi")
         .args(QUERY_GPU_ARGS)
@@ -308,7 +239,7 @@ fn probe_blocking() -> Option<(String, GpuSample)> {
 
 /// Async per-tick GPU query (off the reactor — never blocks a runtime
 /// thread). `None` on any failure so the tick keeps the last-good atomics.
-async fn query_gpu() -> Option<GpuSample> {
+async fn query_gpu() -> Option<SmiReading> {
     let out = tokio::process::Command::new("nvidia-smi")
         .args(QUERY_GPU_ARGS)
         .output()
@@ -374,43 +305,6 @@ mod tests {
         // A line missing the memory columns is useless → whole line rejected.
         assert!(parse_gpu_csv_line("[N/A], [N/A], 0, 0, 0").is_none());
         assert!(parse_gpu_csv_line("only,three,cols").is_none());
-    }
-
-    /// What this catches: pressure math regressing (sign flip, no clamp, or
-    /// divide-by-zero when total is 0). Pressure is what the governor acts
-    /// on, so the boundaries matter.
-    #[test]
-    fn pressure_derivation_is_sane_and_clamped() {
-        assert!(
-            (derive_pressure(0, 100) - 1.0).abs() < 1e-6,
-            "no free → full pressure"
-        );
-        assert!(
-            (derive_pressure(100, 100) - 0.0).abs() < 1e-6,
-            "all free → zero pressure"
-        );
-        assert!(
-            (derive_pressure(25, 100) - 0.75).abs() < 1e-6,
-            "25% free → 0.75 pressure"
-        );
-        assert_eq!(
-            derive_pressure(50, 0),
-            0.0,
-            "total 0 must not divide-by-zero"
-        );
-        // free briefly exceeding total (driver reporting race) clamps, not negative.
-        assert_eq!(derive_pressure(200, 100), 0.0);
-    }
-
-    /// What this catches: the None-vs-0 distinction for optional sensors
-    /// round-tripping through the atomic milli-encoding. A real 0°C must
-    /// stay Some(0.0); a missing sensor must stay None — conflating them
-    /// would make the governor think a sensorless GPU is freezing.
-    #[test]
-    fn sensor_milli_encoding_round_trips_none_and_zero() {
-        assert_eq!(from_milli(to_milli(None)), None);
-        assert_eq!(from_milli(to_milli(Some(0.0))), Some(0.0));
-        assert_eq!(from_milli(to_milli(Some(52.5))), Some(52.5));
     }
 
     /// What this catches: process-VRAM summing matching the wrong pid, or

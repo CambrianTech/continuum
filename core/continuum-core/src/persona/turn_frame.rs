@@ -178,6 +178,7 @@ pub struct PersonaTurnFrameReplayRecord {
     /// Capturing the prompt at record time pins the input to
     /// inference for downstream attribution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub response_prompt: Option<ResponsePrompt>,
 }
 

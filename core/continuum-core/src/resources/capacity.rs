@@ -103,9 +103,18 @@ impl CapacitySource for GpuCapacitySource {
         // Everything physically resident right now, ours and external alike:
         // total − free. `free_bytes`/`total_bytes` are cached monitor accessors —
         // non-blocking. Saturating so a momentary free > total glitch reads 0.
-        self.monitor
-            .total_bytes()
-            .saturating_sub(self.monitor.free_bytes())
+        //
+        // No reading yet → 0, the SAME degradation `HostRamCapacitySource`
+        // already chose for host RAM and for the same reason: the governor
+        // falls back to its own `capacity − granted` accounting, whereas
+        // treating unknown as fully-consumed would refuse every VRAM consumer
+        // for the first seconds of every boot. This is where the policy for an
+        // unknown reading belongs — the monitor's job is to report that it
+        // doesn't know, not to pick a number that hides it.
+        match self.monitor.free_bytes() {
+            Some(free) => self.monitor.total_bytes().saturating_sub(free),
+            None => 0,
+        }
     }
 }
 

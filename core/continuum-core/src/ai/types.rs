@@ -60,6 +60,7 @@ pub enum ContentPart {
         tool_use_id: String,
         content: String,
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         is_error: Option<bool>,
     },
 }

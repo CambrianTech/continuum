@@ -71,6 +71,7 @@ pub mod sdk_codegen;
 pub mod secrets;
 pub mod sensory;
 pub mod shell_portable;
+pub mod source_hygiene;
 pub mod system_resources;
 pub mod tool_parsing;
 pub mod utils;

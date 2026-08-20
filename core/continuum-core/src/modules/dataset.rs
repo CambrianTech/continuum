@@ -47,6 +47,7 @@ pub struct DatasetManifest {
     #[ts(optional, type = "number")]
     pub pre_cutoff: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub post_cutoff: Option<usize>,
     pub imported_at: String,

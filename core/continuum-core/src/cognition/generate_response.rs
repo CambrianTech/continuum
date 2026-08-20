@@ -139,6 +139,7 @@ pub struct GenerateResponseRequest {
     /// Hard cap on how long PR-2's async composer waits before
     /// returning timeout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub timeout_ms: Option<u64>,
     /// Rust-owned admission policy for this generation. When omitted,
