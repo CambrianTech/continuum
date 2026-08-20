@@ -90,7 +90,18 @@ pub trait GpuMonitor: Send + Sync {
     /// CURRENTLY free bytes — observed from the platform, NOT from our
     /// internal allocation accounting. This is the signal that lets the
     /// policy detect a video game grabbing our headroom.
-    fn free_bytes(&self) -> u64;
+    ///
+    /// `None` is "unknown", NEVER "zero" and never "all of it" — before the
+    /// monitor's first sample, or when the platform read fails. Same law as
+    /// [`HostMemoryReader::available_bytes`](crate::resources::capacity::HostMemoryReader::available_bytes),
+    /// which is this signal's host-RAM sibling; the degradation policy for an
+    /// unknown reading is the CAPACITY SOURCE's to decide, not the monitor's.
+    ///
+    /// This returned `Option` in place of a `u64` because the Metal impl was
+    /// answering a failed Mach syscall with `total_bytes` — i.e. "the syscall
+    /// broke, so assume every byte is free", the most optimistic possible lie
+    /// told directly to the governor. An unreadable sensor is not a full tank.
+    fn free_bytes(&self) -> Option<u64>;
 
     /// Bytes allocated by OUR process specifically. Lets the policy
     /// distinguish "system is tight" from "we are tight" and react
@@ -152,8 +163,12 @@ pub struct GpuSnapshot {
     pub device_name: String,
     #[ts(type = "number")]
     pub total_bytes: u64,
-    #[ts(type = "number")]
-    pub free_bytes: u64,
+    /// Absent when the platform has no free-bytes reading yet — a renderer
+    /// must show "unknown", never compute `used = total - 0` and paint a
+    /// full bar. See [`GpuMonitor::free_bytes`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub free_bytes: Option<u64>,
     #[ts(type = "number")]
     pub process_bytes: u64,
     pub utilization: f32,
@@ -241,8 +256,11 @@ impl GpuMonitor for MockMonitor {
     fn total_bytes(&self) -> u64 {
         self.total_bytes
     }
-    fn free_bytes(&self) -> u64 {
-        self.free_bytes.load(std::sync::atomic::Ordering::Relaxed)
+    fn free_bytes(&self) -> Option<u64> {
+        // A scripted mock always HAS a reading — the scenario set it. The
+        // unknown state is a property of real sensors, so tests that want it
+        // reach for a monitor that models the failure, not a `None` here.
+        Some(self.free_bytes.load(std::sync::atomic::Ordering::Relaxed))
     }
     fn process_bytes(&self) -> u64 {
         self.process_bytes
@@ -369,7 +387,7 @@ mod tests {
         m.set_power_watts(45.0);
         m.set_pressure(0.6);
 
-        assert_eq!(m.free_bytes(), 1024);
+        assert_eq!(m.free_bytes(), Some(1024));
         assert_eq!(m.process_bytes(), 8192);
         assert!((m.utilization() - 0.75).abs() < 0.01);
         assert_eq!(m.temperature_c(), Some(82.0)); // i32 truncation
@@ -414,7 +432,7 @@ mod tests {
         let snap = m.snapshot();
         assert_eq!(snap.platform, "mock");
         assert_eq!(snap.total_bytes, 1_000_000);
-        assert_eq!(snap.free_bytes, 700_000);
+        assert_eq!(snap.free_bytes, Some(700_000));
         assert_eq!(snap.process_bytes, 200_000);
         assert!((snap.utilization - 0.4).abs() < 0.01);
         assert!((snap.pressure - 0.3).abs() < 0.01);

@@ -8,6 +8,10 @@
 //! GpuMemoryManager detects real VRAM at startup (Metal/CUDA), enforces
 //! per-subsystem budgets, and provides an RAII allocation guard pattern.
 
+/// The GPU adapter contract: backends supply a sample, the base owns the rest.
+/// Read this before adding a Vulkan/MLX/ROCm backend — implement `GpuDeviceProbe`,
+/// never `GpuMonitor` directly.
+pub mod device_probe;
 pub mod eviction_registry;
 pub mod memory_manager;
 #[cfg(target_os = "macos")]
@@ -28,7 +32,8 @@ pub use memory_manager::{
     GpuSubsystem, SubsystemStats, PRESSURE_CRITICAL, PRESSURE_HIGH, PRESSURE_WARNING,
 };
 #[cfg(target_os = "macos")]
-pub use metal_monitor::MetalMonitor;
+pub use device_probe::{GpuDeviceProbe, GpuSample, MonitoredGpu};
+pub use metal_monitor::{MetalMonitor, MetalProbe};
 pub use monitor::{GpuMonitor, GpuSnapshot, MockMonitor};
-pub use nvidia_monitor::NvidiaMonitor;
+pub use nvidia_monitor::{NvidiaMonitor, NvidiaProbe};
 pub use tracker::GpuModelTracker;

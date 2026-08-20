@@ -634,7 +634,10 @@ fn acquire_eval_lane_slot(
         ),
         (None, _) => {
             // Ungoverned node: the ORIGINAL raw-free probe, behavior unchanged.
-            let free_vram = crate::gpu::monitor::detect().map(|m| m.free_bytes());
+            // `and_then`, not `map`: "no GPU" and "GPU with no reading yet" are
+            // the same answer to a placement question — unknown — and
+            // `choose_lane_placement` already models unknown as `None`.
+            let free_vram = crate::gpu::monitor::detect().and_then(|m| m.free_bytes());
             let (placement, reason) = choose_lane_placement(free_vram, footprint);
             (placement, reason.to_string(), None, free_vram)
         }
