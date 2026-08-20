@@ -244,6 +244,7 @@ pub fn types_rs_template(params: &GenerateModuleParams) -> String {
 //!   UUID's canonical string
 //! - `#[ts(optional, ...)]` on `Option<T>` fields
 //! - `#[serde(skip_serializing_if = "Option::is_none")]` on optional
+#[ts(optional)]
 //!   output fields so absent != null on the wire
 //! - `rename_all = "camelCase"` on every struct (already set below)
 

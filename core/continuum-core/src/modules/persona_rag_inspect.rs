@@ -101,15 +101,19 @@ pub struct RagInspectParams {
     /// short form shown in rosters).
     pub persona: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub context_window: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub airc_floor: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub airc_max: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub airc_fetch_limit: Option<u32>,
     /// Optional absolute path for the JSONL capture trace. When set,
@@ -122,6 +126,7 @@ pub struct RagInspectParams {
     /// reasons against. Default: substrate's current wall-clock.
     /// Set this for deterministic replay tests.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub now_ms: Option<u64>,
     /// When true, chain through inference: assemble delivered items

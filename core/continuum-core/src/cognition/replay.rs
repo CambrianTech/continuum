@@ -95,6 +95,7 @@ pub struct CognitionReplayParams {
     /// Which captured turn to reconstruct when `world_state` is not supplied.
     /// Negative counts from the end (`-1` = most recent, the default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub turn: Option<i64>,
     /// Room scope for the reconstructed workspace. Overrides the captured turn's

@@ -1294,6 +1294,7 @@ pub struct WorkListResult {
     /// at the moment of the miss, not a silent zero and not a redefinition of `state`
     /// (the column filter keeps meaning the column).
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub note: Option<String>,
 
     /// The matched cards. LAST by design — see the field-order note at the top of this

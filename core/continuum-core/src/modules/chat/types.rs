@@ -88,6 +88,7 @@ pub struct ChatPollResult {
     /// pagination/loop ergonomics — the next poll round just keeps
     /// passing the most-recently-seen id.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "string")]
     pub after_message_id: Option<Uuid>,
 
@@ -95,6 +96,7 @@ pub struct ChatPollResult {
     /// scroll-back page passes the OLDEST id it now holds. An empty
     /// `messages` with this set means history is exhausted.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "string")]
     pub before_message_id: Option<Uuid>,
 }

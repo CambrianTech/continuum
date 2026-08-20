@@ -9,11 +9,11 @@ export type NodeCapability = { "type": "compute",
 /**
  * GPU model name (e.g., "RTX 5090", "M3 Pro")
  */
-gpu: string | null, 
+gpu?: string, 
 /**
  * Available VRAM in megabytes
  */
-vram_mb: number, } | { "type": "storage", available_mb: number, } | { "type": "inference", models: Array<string>, } | { "type": "training", 
+vram_mb?: number, } | { "type": "storage", available_mb: number, } | { "type": "inference", models: Array<string>, } | { "type": "training", 
 /**
  * Maximum LoRA rank supported
  */

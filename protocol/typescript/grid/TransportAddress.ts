@@ -16,7 +16,7 @@ port: number,
 /**
  * Tailscale machine name (e.g., "bigmama")
  */
-machine_name: string | null, } | { "transport": "reticulum", 
+machine_name?: string, } | { "transport": "reticulum", 
 /**
  * Reticulum destination hash (hex-encoded Ed25519 public key derivative).
  */

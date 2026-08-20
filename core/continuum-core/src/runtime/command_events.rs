@@ -84,6 +84,7 @@ pub struct CommandCompletedEvent {
     /// away — match this completion to the exact call it dispatched, and reuse the same
     /// handle in a follow-up command (cancel/query).
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "string")]
     pub handle: Option<uuid::Uuid>,
 
@@ -91,6 +92,7 @@ pub struct CommandCompletedEvent {
     /// dispatcher gets the outcome from the event itself, no second call. Absent for
     /// synchronous commands (the caller already holds the return value).
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "unknown")]
     pub result: Option<serde_json::Value>,
 }

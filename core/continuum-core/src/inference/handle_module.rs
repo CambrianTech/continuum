@@ -110,6 +110,7 @@ pub struct OpenParams {
     /// this handle MUST carry a matching persona_id. Defense in
     /// depth at the inference layer.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "string")]
     pub persona_id: Option<Uuid>,
     /// What the persona is doing — drives the lane's KV budget +
@@ -236,15 +237,18 @@ pub struct InspectResult {
     pub seed_kv_tokens: Option<u32>,
     /// Max KV tokens the lane is allowed to grow to.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub max_kv_tokens: Option<u32>,
     /// Bytes accounted in FootprintRegistry for this lane.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub bytes_accounted: Option<u64>,
     /// Lease expiration wall-clock — observers track approaching
     /// expiry to renew or close.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub lease_expires_at_ms: Option<u64>,
     /// True when the lease is `Pinned` (Realtime) and the pressure

@@ -56,6 +56,7 @@ pub struct AgentSolveParams {
     pub workspace: String,
     /// Max act→observe cycles (default 12).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub max_acts: Option<u32>,
     /// The ROOM this run happens in — `benchmark/dispatch`'s per-run activity room
@@ -72,6 +73,7 @@ pub struct AgentSolveParams {
     /// BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md names as the failure mode, and the
     /// reason the flywheel saw no turns from a full graded attempt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "string")]
     pub room: Option<Uuid>,
     // See `RunVisibility` below: the roomless case is now DECLARED rather than defaulted,
@@ -123,6 +125,7 @@ pub struct AgentSolveParams {
     /// attempt 3, and post-grade detection could only warn an attempt 4 that
     /// never exists).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(skip)]
     pub prev_failed_patch_sha: Option<String>,
     /// DIAGNOSTIC ONLY (default false — she competes WHOLE, memory ON). When true, her
@@ -176,6 +179,7 @@ pub struct AgentSolveParams {
     /// fault ends the run early. Default 1 (one shot, exactly the old behavior) — the
     /// per-benchmark adapter that dispatches the run owns its N, not this abstraction.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub attempts: Option<u32>,
 }

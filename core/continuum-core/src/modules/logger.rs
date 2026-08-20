@@ -108,6 +108,7 @@ pub struct WriteLogPayload {
     pub component: String,
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(type = "any", optional)]
     pub args: Option<Value>,
 }

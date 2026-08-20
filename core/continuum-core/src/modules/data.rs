@@ -3793,6 +3793,7 @@ pub struct DataListParams {
     /// Optional field filter as plain JSON: `{"roomId": "general"}` for an
     /// equality match, `{"age": {"$gt": 18}}` for an operator match.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "Record<string, unknown>")]
     pub filter: Option<serde_json::Value>,
     /// Optional ordering clauses, applied in order.
@@ -3868,6 +3869,7 @@ pub struct VectorHit {
     pub score: f64,
     pub distance: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "Record<string, unknown>")]
     pub data: Option<serde_json::Value>,
 }

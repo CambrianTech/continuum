@@ -68,15 +68,18 @@ pub struct TrainingJobRequest {
     /// manual spot-checks; that default is a command affordance, not an
     /// adoption gate.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub eval_set: Option<String>,
     /// LoRA-specific hyperparams (rank, alpha, dropout, target
     /// modules). `None` lets the adapter pick its provider defaults —
     /// `Some` overrides them.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub lora: Option<LoRAHyperparams>,
     /// Training schedule (epochs, batch size, learning rate, sequence
     /// length). `None` lets the adapter pick provider defaults.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub schedule: Option<ScheduleParams>,
     /// Where the resulting artifact should land on local disk.
     /// `None` lets the adapter pick — usually
@@ -84,6 +87,7 @@ pub struct TrainingJobRequest {
     /// Provider artifacts (OpenAI's `ft:gpt-4o-mini:...`) don't have a
     /// local path; the field is `None` in their [`TrainingArtifact`].
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub local_artifact_dir: Option<PathBuf>,
 }
 
@@ -207,6 +211,7 @@ pub struct TrainingExample {
     pub prompt: String,
     pub completion: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(type = "Record<string, unknown> | undefined")]
     pub metadata: Option<serde_json::Value>,
 }
@@ -397,6 +402,7 @@ pub struct TrainingArtifact {
     /// artifact lives provider-side and we don't keep a local copy
     /// (the inference adapter pulls it on demand).
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub local_path: Option<PathBuf>,
     /// The artifact's on-disk shape. Drives whether the completion sentinel
     /// dispatches a custodian convert before eval/page-in. Defaults to
@@ -423,8 +429,10 @@ pub struct JobMetrics {
     /// substrate uses this to decide if the layer is worth shipping
     /// into the mesh.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub final_loss: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub final_validation_loss: Option<f64>,
     #[ts(type = "number")]
     pub wall_clock_ms: u64,
@@ -433,6 +441,7 @@ pub struct JobMetrics {
     /// ([[forge-alloy-secures-commodity-zero-trust-plus-reputation]])
     /// pick the cheapest viable provider per request.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub cost_usd: Option<f64>,
 }
 
