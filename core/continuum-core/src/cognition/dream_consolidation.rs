@@ -979,9 +979,24 @@ async fn dream_pass(
     // (a magic constant that crushes a real context window is the "120k clamped to 3k →
     // all models suck" anti-pattern, Joel 2026-07-17 [[no-hardcoded-context-numbers-derive-from-the-live-window]]).
     // The prompt (system + observations) must leave room for the reply so
-    // prompt+reply ≤ n_ctx (no-context-shift). Reserve the SAME completion fraction the
-    // deliberation path uses — `completion_budget_for` = window/4 — for the distilled
-    // reply, and give the rest (×4 chars/token) to observations. When the window is
+    // prompt+reply ≤ n_ctx (no-context-shift). The reserve comes from `ContextBudget`'s own
+    // `latest_action_chars`, which is where a window-relative CHARS bound belongs.
+    //
+    // CORRECTED 2026-08-20 — this comment claimed to "reserve the SAME completion fraction
+    // the deliberation path uses — `completion_budget_for` = window/4". That was false in
+    // three ways and had been for as long as it was written: it named a function this code
+    // never called, and the deliberation reserve is neither `/4` nor a bare share any more
+    // (it yields to a mandatory prompt floor, and `completion_budget_for` is deleted). The
+    // claim SURVIVED only because both fractions happened to be a quarter, so the prose
+    // agreed with the arithmetic by coincidence rather than by construction.
+    //
+    // Deliberately NOT "fixed" by wiring this to the deliberation reserve. These are
+    // different budgets for different prompts — a distiller's reply is not a citizen's turn
+    // — and inventing a dependency to make a sentence true would couple two things that
+    // have no reason to move together. The honest fix is prose that describes what the code
+    // does.
+    //
+    // The rest (×4 chars/token) goes to observations. When the window is
     // unknown (mid-relaunch) fall back to the substrate floor MIN_SERVE_CTX (an established
     // constant, not an invented one), which the next ready tick supersedes.
     let distiller = distiller_for(&reflector);

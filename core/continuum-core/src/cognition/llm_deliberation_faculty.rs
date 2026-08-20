@@ -490,6 +490,28 @@ impl LlmDeliberationFaculty {
     }
 
 
+    /// What the prompt MUST carry before any reserve may claim a token: the tool schemas,
+    /// the bare framing, and room for at least one message.
+    ///
+    /// # The burst is mandatory, and leaving it out is why the floor was still wrong
+    ///
+    /// The first version of this floor was `tools + framing` — which correctly stopped the
+    /// reserve from eating framing, and still produced a citizen who could not hold a
+    /// conversation. Measured at `MIN_SERVE_CTX` (2,048) with the share at 1/2: framing alone
+    /// is 1,506, the reserve yields to 542, and what remains for the message she is answering
+    /// is ZERO. The reserve was behaving perfectly; the floor was simply not describing the
+    /// whole obligation. A prompt with no room for the turn's own message is not a prompt.
+    ///
+    /// The burst allowance is [`Self::COMPLETION_FLOOR_TOKENS`] — deliberately the SAME term
+    /// as the smallest usable reply, not a new number. The symmetry is the argument: a turn
+    /// needs at least as much room for what she is answering as for the answer itself, and
+    /// inventing a second constant here is exactly what the de-hardcode guard exists to stop.
+    fn mandatory_prompt_floor(&self) -> u32 {
+        self.describe_tool_tokens() as u32
+            + self.framing_floor_tokens()
+            + Self::COMPLETION_FLOOR_TOKENS
+    }
+
     /// The reply's reserve, YIELDING to what the prompt must mandatorily carry.
     ///
     /// # Why the share alone could never be raised (proven 2026-08-20)
@@ -513,7 +535,7 @@ impl LlmDeliberationFaculty {
     /// bound that WARNS about a too-small window and the reserve that LIVES within one can
     /// never disagree about what "mandatory" means.
     fn completion_reserve_within(&self, context_window: u32) -> u32 {
-        let mandatory = self.describe_tool_tokens() as u32 + self.framing_floor_tokens();
+        let mandatory = self.mandatory_prompt_floor();
         let share = context_window / Self::COMPLETION_SHARE_DENOM;
         // `.max(FLOOR)` last and deliberately: below `MIN_SERVE_CTX` the floor can exceed the
         // whole window, and a zero reserve is a mute citizen — strictly worse than a prompt
@@ -536,12 +558,20 @@ impl LlmDeliberationFaculty {
     /// Not a hardcoded context size (the de-hardcode guard keys on WINDOW/TOKEN-named
     /// constants holding bare literals): this is a ratio, and the window it divides is the
     /// live served one.
-    const COMPLETION_SHARE_DENOM: u32 = 4;
+    const COMPLETION_SHARE_DENOM: u32 = 2;
 
-    /// Floor so a tiny window still yields a usable reply. Binding only below
-    /// `COMPLETION_SHARE_DENOM * this`, which is under `MIN_SERVE_CTX` — i.e. a regime
-    /// production cannot actually produce.
-    const COMPLETION_FLOOR_TOKENS: u32 = 256;
+    /// Floor so a tiny window still yields a usable reply, and the same term the prompt
+    /// floor uses for a minimum burst.
+    ///
+    /// DERIVED from `MIN_SERVE_CTX`, not declared: an eighth of the smallest window the
+    /// serving stack will ever hand out. A bare `256` here was caught by
+    /// `context_budget::no_new_hardcoded_context_or_prompt_size_constant_anywhere_in_the_crate`
+    /// — correctly, and the catch is worth recording: the constant carries `TOKENS` in its
+    /// name, the guard keys on exactly that, and every prompt-shaping test stayed GREEN
+    /// while it was wrong. Only the full suite sees this guard. Deriving it also means the
+    /// floor tracks the substrate floor for free if `MIN_SERVE_CTX` ever moves, instead of
+    /// becoming a second opinion about how small a window can get.
+    const COMPLETION_FLOOR_TOKENS: u32 = crate::cognition::serving_plan::MIN_SERVE_CTX / 8;
 
     /// Build a generation request for the message thread. Centralized so the
     /// first prompt and any future re-prompt share one shape. Takes the model
@@ -3254,12 +3284,22 @@ mod tests {
             // The next real shrink is structural — rung 2 of the ladder becoming the
             // TURN's working set instead of a static list — after which this ceiling
             // guards the SPINE and stops taxing capability.
-            const AGENTIC_SURFACE_BOUND_CEILING: u32 = 11300;
+            // The guard is about SURFACE GROWTH, so it measures the SURFACE. It used to assert
+            // on `min_window_for_agentic_surface()`, which is `fixed * D/(D-1)` — the surface
+            // AND the reserve policy multiplied together. Changing the reserve split therefore
+            // moved a ceiling whose own message says "framing/tools grew again. Shrink the
+            // surface", and the D=4→2 experiment tripped it at 16,864 with the surface
+            // completely unchanged. Two concerns in one assertion; the reserve half was never
+            // this guard's business. `fixed` is tools + bare framing and nothing else, so this
+            // now moves if and only if the surface actually grows.
+            const AGENTIC_SURFACE_CEILING: u32 = 8500;
+            let surface =
+                faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
             assert!(
-                needed <= AGENTIC_SURFACE_BOUND_CEILING,
-                "the agentic surface now needs {needed} tokens (was 8040, ceiling \
-                 {AGENTIC_SURFACE_BOUND_CEILING}) — framing/tools grew again. Shrink the \
-                 surface (#333) or state plainly what was added and re-pin the ceiling"
+                surface <= AGENTIC_SURFACE_CEILING,
+                "the agentic surface is now {surface} tokens (measured 8432, ceiling \
+                 {AGENTIC_SURFACE_CEILING}) — framing/tools grew. Shrink the surface (#333) \
+                 or state plainly what was added and re-pin the ceiling"
             );
             assert!(
                 needed > window,
