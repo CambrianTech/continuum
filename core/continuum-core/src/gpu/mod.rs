@@ -31,8 +31,15 @@ pub use memory_manager::{
     AllocationsByPriority, GpuAllocationGuard, GpuError, GpuMemoryManager, GpuPriority, GpuStats,
     GpuSubsystem, SubsystemStats, PRESSURE_CRITICAL, PRESSURE_HIGH, PRESSURE_WARNING,
 };
-#[cfg(target_os = "macos")]
+// `device_probe` is the PLATFORM-NEUTRAL base every backend implements — it must be
+// exported everywhere. `metal_monitor` is the macOS adapter and carries the gate that
+// its `mod` declaration already has. Getting these two the wrong way round is exactly
+// what shipped: the cfg attribute binds to the NEXT item only, so inserting the
+// device_probe line above metal_monitor silently moved the gate onto the base and left
+// the macOS-only adapter exported on every target. Compiled clean on this Mac, E0432
+// on every other host.
 pub use device_probe::{GpuDeviceProbe, GpuSample, MonitoredGpu};
+#[cfg(target_os = "macos")]
 pub use metal_monitor::{MetalMonitor, MetalProbe};
 pub use monitor::{GpuMonitor, GpuSnapshot, MockMonitor};
 pub use nvidia_monitor::{NvidiaMonitor, NvidiaProbe};
