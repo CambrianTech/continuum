@@ -182,11 +182,7 @@ impl CommandResult {
     /// the UUID before constructing the handle, use
     /// [`super::cell_shapes::HandleRef::mint`] directly and wrap with
     /// `CommandResult::Handle(...)`.
-    pub fn handle(
-        owner: impl Into<String>,
-        id: uuid::Uuid,
-        type_tag: impl Into<String>,
-    ) -> Self {
+    pub fn handle(owner: impl Into<String>, id: uuid::Uuid, type_tag: impl Into<String>) -> Self {
         CommandResult::Handle(super::cell_shapes::HandleRef::with_id(owner, id, type_tag))
     }
 
@@ -207,8 +203,9 @@ impl CommandResult {
         match self {
             CommandResult::Json(v) => Ok(v.clone()),
             CommandResult::Binary { metadata, .. } => Ok(metadata.clone()),
-            CommandResult::Handle(h) => serde_json::to_value(h)
-                .map_err(|e| format!("HandleRef serialization failed: {e}")),
+            CommandResult::Handle(h) => {
+                serde_json::to_value(h).map_err(|e| format!("HandleRef serialization failed: {e}"))
+            }
             CommandResult::Stream(_) => Err(Self::stream_protocol_error()),
             CommandResult::Lambda(_) => Err(Self::lambda_protocol_error()),
         }
@@ -415,7 +412,10 @@ pub trait ServiceModule: Send + Sync + Any {
     /// the right answer is a typed error at that call site, NOT a global
     /// panicking accessor. See task #224 for the GLOBAL_EXECUTOR removal
     /// rationale.
-    fn install_executor(&self, _executor: std::sync::Arc<super::command_executor::CommandExecutor>) {
+    fn install_executor(
+        &self,
+        _executor: std::sync::Arc<super::command_executor::CommandExecutor>,
+    ) {
         // Default: module doesn't dispatch commands.
     }
 

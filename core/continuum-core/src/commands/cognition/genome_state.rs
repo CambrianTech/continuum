@@ -17,7 +17,10 @@ use crate::persona::genome_paging::GenomePagingState;
 use crate::sdk_codegen::CommandError;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/GenomeStateParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/GenomeStateParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct GenomeStateParams {
     /// Persona whose genome state is read.

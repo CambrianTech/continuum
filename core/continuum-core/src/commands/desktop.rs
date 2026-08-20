@@ -4,12 +4,12 @@
 //! resource so repeated calls DON'T spawn a new tab every time.
 //!
 //! Start-simple: a lightweight on-disk session marker is the "lease" — one desktop
-//! per machine. A second `cu desktop` for the same URL is a no-op ("already open")
+//! per machine. A second `uu desktop` for the same URL is a no-op ("already open")
 //! so it never opens a duplicate window; `focus:true` forces a re-open. A later
 //! slice promotes this to a first-class [`crate::resources`] / ResourceGovernor
 //! (#56) consumer alongside VRAM / serving / Bevy, so the desktop window is
 //! allocated + reclaimed like any other machine resource. Owner-scoped: the local
-//! `cu` operator opens their own box's desktop; no persona identity required.
+//! `uu` operator opens their own box's desktop; no persona identity required.
 
 use std::path::PathBuf;
 
@@ -28,7 +28,10 @@ const DEFAULT_DESKTOP_URL: &str = "http://localhost:5173/?core=ws://127.0.0.1:89
 /// Inputs to `desktop`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/desktop/DesktopParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/desktop/DesktopParams.ts"
+)]
 pub struct DesktopParams {
     /// URL to open. Omit for the default local web client
     /// (`CONTINUUM_DESKTOP_URL`, else the localhost dev URL).
@@ -43,7 +46,10 @@ pub struct DesktopParams {
 /// Result of `desktop`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/desktop/DesktopResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/desktop/DesktopResult.ts"
+)]
 pub struct DesktopResult {
     /// The URL that is now open.
     pub url: String,
@@ -66,10 +72,7 @@ fn session_path() -> Result<PathBuf, CommandError> {
     let home = dirs::home_dir().ok_or_else(|| {
         CommandError::Internal("no home directory for the desktop session marker".into())
     })?;
-    Ok(home
-        .join(".continuum")
-        .join("desktop")
-        .join("session.json"))
+    Ok(home.join(".continuum").join("desktop").join("session.json"))
 }
 
 fn now_ms() -> u64 {
@@ -119,7 +122,7 @@ fn open_in_default_browser(url: &str) -> Result<&'static str, CommandError> {
 }
 
 /// `desktop` — open the UI in the natural browser, single-instance. AiSafe;
-/// operator-scoped (the local `cu` caller opens their own box's desktop).
+/// operator-scoped (the local `uu` caller opens their own box's desktop).
 #[derive(Default)]
 pub struct Desktop;
 
@@ -188,7 +191,7 @@ crate::register_stateless_command!(Desktop);
 mod tests {
     use super::*;
 
-    // what this catches: reachable as `cu desktop` (name mirrors the verb typed).
+    // what this catches: reachable as `uu desktop` (name mirrors the verb typed).
     #[test]
     fn name_is_desktop() {
         assert_eq!(Desktop::NAME, "desktop");

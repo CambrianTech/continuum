@@ -19,7 +19,10 @@ fn default_min_cluster_size() -> usize {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/embedding/ClusterParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/embedding/ClusterParams.ts"
+)]
 pub struct ClusterParams {
     /// Embeddings to cluster. All must share one dimension.
     pub embeddings: Vec<Vec<f32>>,
@@ -34,7 +37,10 @@ pub struct ClusterParams {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/embedding/ClusterResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/embedding/ClusterResult.ts"
+)]
 pub struct ClusterResult {
     /// Clusters found, sorted by cohesion (strength) descending.
     pub clusters: Vec<Cluster>,

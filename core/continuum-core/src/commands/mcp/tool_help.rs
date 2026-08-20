@@ -24,6 +24,8 @@ use crate::modules::mcp::McpCatalog;
 )]
 #[serde(rename_all = "camelCase")]
 pub struct McpToolHelpParams {
+    /// The exact tool/command name to get the call shape for (e.g. `code/read`) —
+    /// as listed by `commands/list` or `mcp/search-tools`.
     pub tool: String,
 }
 
@@ -41,6 +43,7 @@ pub struct McpToolHelpParams {
 pub struct McpToolHelpResult {
     pub found: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "unknown")]
     pub help: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]

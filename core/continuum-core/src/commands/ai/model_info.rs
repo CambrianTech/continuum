@@ -18,7 +18,10 @@ use crate::ai::AdapterRegistry;
     Debug, Clone, Default, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema,
 )]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/ai/AiModelInfoParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/AiModelInfoParams.ts"
+)]
 pub struct AiModelInfoParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -31,7 +34,10 @@ pub struct AiModelInfoParams {
 /// Result of `ai/model-info`.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/ai/AiModelInfoResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/AiModelInfoResult.ts"
+)]
 pub struct AiModelInfoResult {
     /// Provider id that resolved the model.
     pub provider: String,

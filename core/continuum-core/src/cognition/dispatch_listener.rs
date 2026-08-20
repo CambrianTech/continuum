@@ -18,21 +18,24 @@ use crate::cognition::working_memory::{DispatchStatus, WorkingMemory};
 use crate::runtime::command_events::{CommandCompletedEvent, COMMAND_COMPLETED_TOPIC};
 use crate::runtime::message_bus::MessageBus;
 
-/// Max chars of a dispatched command's result folded back into the mind — a compile log or
-/// a sentinel's report is bounded so one huge result can't dominate the perception. The
-/// full result is recoverable via the command's own handle if the mind needs more.
-const DISPATCH_RESULT_MAX_CHARS: usize = 4_000;
+// A dispatched command's result (a compile log, a sentinel's report) is bounded so one huge
+// result can't dominate perception; the full text stays recoverable through the command's own
+// handle. The bound is a FRACTION OF HER LIVE WINDOW, never a constant — the old
+// `DISPATCH_RESULT_MAX_CHARS = 4_000` is exactly the "4k or smaller window" that makes a
+// 1M-context model useless. [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
+use crate::cognition::context_budget::ContextBudget;
 
 /// Render a command result Value into the compact text the mind reads. A JSON string is
 /// shown bare (no quotes); anything else is compact JSON. Bounded by
-/// `DISPATCH_RESULT_MAX_CHARS`.
+/// the live window (`ContextBudget::dispatch_result_chars`).
 fn summarize_result(value: &serde_json::Value) -> String {
     let raw = match value {
         serde_json::Value::String(s) => s.clone(),
         other => other.to_string(),
     };
-    if raw.chars().count() > DISPATCH_RESULT_MAX_CHARS {
-        raw.chars().take(DISPATCH_RESULT_MAX_CHARS).collect::<String>() + " …[truncated]"
+    let cap = ContextBudget::live().dispatch_result_chars();
+    if raw.chars().count() > cap {
+        raw.chars().take(cap).collect::<String>() + " …[truncated]"
     } else {
         raw
     }
@@ -96,12 +99,20 @@ pub fn spawn(bus: Arc<MessageBus>, working_memory: Arc<WorkingMemory>) {
 mod tests {
     use super::*;
 
-    fn ev(handle: Option<uuid::Uuid>, success: bool, result: serde_json::Value) -> CommandCompletedEvent {
+    fn ev(
+        handle: Option<uuid::Uuid>,
+        success: bool,
+        result: serde_json::Value,
+    ) -> CommandCompletedEvent {
         CommandCompletedEvent {
             command_name: "cargo/build".to_string(),
             duration_ms: 10,
             success,
-            error: if success { None } else { Some("link error".to_string()) },
+            error: if success {
+                None
+            } else {
+                Some("link error".to_string())
+            },
             handle,
             result: if success { Some(result) } else { None },
         }
@@ -121,9 +132,15 @@ mod tests {
         wm.record_dispatch_event(mine, "cargo build", "dispatched…", DispatchStatus::Running);
 
         // A completion for a handle we never dispatched → ignored.
-        assert!(!fold_completion(&wm, ev(Some(not_mine), true, serde_json::json!("ok"))));
+        assert!(!fold_completion(
+            &wm,
+            ev(Some(not_mine), true, serde_json::json!("ok"))
+        ));
         // A synchronous completion (no handle) → ignored.
-        assert!(!fold_completion(&wm, ev(None, true, serde_json::json!("ok"))));
+        assert!(!fold_completion(
+            &wm,
+            ev(None, true, serde_json::json!("ok"))
+        ));
 
         // Our handle completes → folded in as Done with the result.
         assert!(fold_completion(
@@ -133,10 +150,16 @@ mod tests {
         let snap = wm.dispatched_snapshot();
         let ours = snap.iter().find(|(h, ..)| *h == mine).unwrap();
         assert_eq!(ours.3, DispatchStatus::Done);
-        assert_eq!(ours.2, "0 errors, 0 warnings", "the result streamed back to the mind");
+        assert_eq!(
+            ours.2, "0 errors, 0 warnings",
+            "the result streamed back to the mind"
+        );
 
         // A failure on our handle folds in as Failed with the error.
-        assert!(fold_completion(&wm, ev(Some(mine), false, serde_json::Value::Null)));
+        assert!(fold_completion(
+            &wm,
+            ev(Some(mine), false, serde_json::Value::Null)
+        ));
         let snap = wm.dispatched_snapshot();
         let ours = snap.iter().find(|(h, ..)| *h == mine).unwrap();
         assert_eq!(ours.3, DispatchStatus::Failed);

@@ -19,6 +19,12 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+/// Default resource-headroom fraction: usable = total × this. 0.8 leaves 20% for
+/// the governor + peer consumers (and, for disk, doubles as the disk-full safety
+/// margin). A dedicated deep-learning FOUNDRY appliance overrides to 1.0.
+const DEFAULT_HEADROOM: f64 = 0.8;
 
 /// Path to `~/.continuum/config.env` (mirrors [`crate::secrets`]).
 pub fn config_path() -> Option<PathBuf> {
@@ -40,29 +46,83 @@ pub fn upsert(key: &str, value: &str) -> Result<(), String> {
     upsert_in(&path, key, value)
 }
 
-/// Path-taking core of [`read`] — testable without touching `$HOME`.
-pub fn read_from(path: &Path, key: &str) -> Option<String> {
-    let content = fs::read_to_string(path).ok()?;
-    let mut found = None;
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        if let Some((k, v)) = trimmed.split_once('=') {
-            if k.trim() == key {
-                found = Some(v.trim().to_string());
-            }
+/// Strip one layer of surrounding single or double quotes from a config value.
+///
+/// Values are now WRITTEN single-quoted, because this file is `source`d by bash and an unquoted
+/// Windows path is destroyed by it: bash treats each backslash as an escape, so
+/// `HF_HOME=D:\continuum-cold\huggingface` sources as `D:continuum-coldhuggingface` — a
+/// drive-relative path that Windows then resolves to a WHOLE SEPARATE cache root. Measured: a
+/// 76 GB model download landing in `D:\continuum-coldhuggingface\` while every resolver looked
+/// under `D:\continuum-cold\huggingface\`.
+///
+/// Reading has to tolerate both forms: installs predating the quoting fix still have bare values,
+/// and an operator editing this file by hand may write either.
+fn unquote(v: &str) -> String {
+    let bytes = v.as_bytes();
+    if bytes.len() >= 2 {
+        let (first, last) = (bytes[0], bytes[bytes.len() - 1]);
+        if (first == b'\'' && last == b'\'') || (first == b'"' && last == b'"') {
+            return v[1..v.len() - 1].to_string();
         }
     }
-    found
+    v.to_string()
+}
+
+/// Every assignment in the file, in file order, duplicates included.
+///
+/// Exists because the file has to reach a CHILD PROCESS, not just answer a
+/// single-key question. `tools/scripts/start-server.sh` gets that for free —
+/// it `source`s config.env under `set -a`, so a core launched through the
+/// script inherits every key. A core launched by exec'ing the installed binary
+/// got NONE of them, and instead inherited whatever environment the calling CLI
+/// happened to have. Measured 2026-08-14: a core auto-started from an agent
+/// session was running with that session's env and no `CONTINUUM_PROBE_DIR`,
+/// so the glass box was silently OFF on a node whose config.env sets it.
+///
+/// Order is preserved and duplicates are kept so the caller can apply them
+/// left-to-right and get shell `source` semantics (last assignment wins) from
+/// the application itself, rather than this function having to pick.
+pub fn read_all() -> Vec<(String, String)> {
+    config_path().map(|p| read_all_from(&p)).unwrap_or_default()
+}
+
+/// Path-taking core of [`read_all`] — testable without touching `$HOME`.
+/// THE parser for this format; [`read_from`] is a projection of it, so a fix to
+/// comment/quote handling can never apply to one reader and miss the other.
+pub fn read_all_from(path: &Path) -> Vec<(String, String)> {
+    let Ok(content) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    content
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                return None;
+            }
+            let (k, v) = trimmed.split_once('=')?;
+            Some((k.trim().to_string(), unquote(v.trim())))
+        })
+        .collect()
+}
+
+/// Path-taking core of [`read`] — testable without touching `$HOME`.
+/// Last assignment wins, matching the shell `source` semantics the bootstrap
+/// relies on.
+pub fn read_from(path: &Path, key: &str) -> Option<String> {
+    read_all_from(path)
+        .into_iter()
+        .filter(|(k, _)| k == key)
+        .next_back()
+        .map(|(_, v)| v)
 }
 
 /// Path-taking core of [`upsert`] — testable without touching `$HOME`. Writes
 /// through a temp file + rename so a concurrent reader never sees a half-write.
 pub fn upsert_in(path: &Path, key: &str, value: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("config_env: create_dir_all {parent:?}: {e}"))?;
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("config_env: create_dir_all {parent:?}: {e}"))?;
     }
     let existing = fs::read_to_string(path).unwrap_or_default();
 
@@ -98,12 +158,59 @@ pub fn upsert_in(path: &Path, key: &str, value: &str) -> Result<(), String> {
 
     let tmp = path.with_extension("env.tmp");
     {
-        let mut f = fs::File::create(&tmp).map_err(|e| format!("config_env: create {tmp:?}: {e}"))?;
+        let mut f =
+            fs::File::create(&tmp).map_err(|e| format!("config_env: create {tmp:?}: {e}"))?;
         f.write_all(out.as_bytes())
             .map_err(|e| format!("config_env: write {tmp:?}: {e}"))?;
     }
     fs::rename(&tmp, path).map_err(|e| format!("config_env: rename {tmp:?} -> {path:?}: {e}"))?;
     Ok(())
+}
+
+// ─── Typed policy getters ────────────────────────────────────────────────────
+//
+// These are the SINGLE entry point for operator-tunable resource headroom. The
+// forbidden pattern (CONCURRENCY-STYLE-GUIDE forbidden-move #2) is SCATTERED
+// per-module env/config reads — `config_env::read("KEY").unwrap_or(default)`
+// re-derived at each of 161 call sites. The fix is ONE file everyone goes through:
+// the key name, default, clamp, and cache all live HERE; consumers just call
+// `config_env::vram_headroom()`. Load-once (OnceLock) so budget code on a hot tick
+// never re-reads the file — matching the guide's "config loaded once at boot".
+
+/// Parse an operator-set fraction into `[0.0, 1.0]`, else `default`. Pure +
+/// testable: absent/empty → default; non-finite/garbage → warn + default; valid →
+/// clamped. Clamping means a fat-fingered `1.5` can't over-commit the resource.
+fn parse_fraction(raw: Option<&str>, default: f64) -> f64 {
+    match raw.map(str::trim).filter(|s| !s.is_empty()) {
+        None => default,
+        Some(s) => match s.parse::<f64>() {
+            Ok(f) if f.is_finite() => f.clamp(0.0, 1.0),
+            _ => {
+                tracing::warn!(
+                    target: "config_env",
+                    "invalid headroom fraction {s:?} — using default {default}"
+                );
+                default
+            }
+        },
+    }
+}
+
+/// Headroom fraction for the VRAM/RAM serving budget: `usable = total × this`.
+/// Default 0.8 (leave 20% for the governor + peers); a dedicated foundry sets 1.0.
+/// Read once and cached. Override key: `CONTINUUM_VRAM_HEADROOM`.
+pub fn vram_headroom() -> f64 {
+    static V: OnceLock<f64> = OnceLock::new();
+    *V.get_or_init(|| parse_fraction(read("CONTINUUM_VRAM_HEADROOM").as_deref(), DEFAULT_HEADROOM))
+}
+
+/// Headroom fraction for the disk frozen/cold artifact tier: `usable = drive_free ×
+/// this`. Default 0.8 (the 20% doubles as the disk-full safety guard); a foundry
+/// with a dedicated drive sets 1.0. Read once and cached. Override key:
+/// `CONTINUUM_DISK_HEADROOM`.
+pub fn disk_headroom() -> f64 {
+    static D: OnceLock<f64> = OnceLock::new();
+    *D.get_or_init(|| parse_fraction(read("CONTINUUM_DISK_HEADROOM").as_deref(), DEFAULT_HEADROOM))
 }
 
 #[cfg(test)]
@@ -118,6 +225,102 @@ mod tests {
         std::env::temp_dir().join(format!("continuum-config-env-test-{n}/config.env"))
     }
 
+    /// What this catches: the file has to reach a CHILD PROCESS, not just answer one key. A core
+    /// launched by exec'ing the installed binary gets its environment from `read_all`; a core
+    /// launched via start-server.sh gets it from bash `source` under `set -a`. Those two must
+    /// agree, or the same node behaves differently depending on which verb started it — measured
+    /// 2026-08-14, when the exec path produced a core with NO `CONTINUUM_PROBE_DIR` (glass box
+    /// silently OFF) on a machine whose config.env sets it.
+    ///
+    /// Pins the three things a `source` consumer depends on: comments and blanks are skipped,
+    /// quotes are stripped the same way single-key reads strip them, and duplicate assignments
+    /// are KEPT IN ORDER so applying them left-to-right reproduces shell last-wins. Returning a
+    /// deduped map instead would silently pick a winner here and could disagree with `read_from`.
+    #[test]
+    fn read_all_reproduces_source_semantics_for_a_child_process() {
+        let p = tmp_config();
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(
+            &p,
+            "# comment\n\nA=1\nB='two'\nA=3\n  C=\"three\"  \n",
+        )
+        .unwrap();
+
+        let all = read_all_from(&p);
+        assert_eq!(
+            all,
+            vec![
+                ("A".to_string(), "1".to_string()),
+                ("B".to_string(), "two".to_string()),
+                ("A".to_string(), "3".to_string()),
+                ("C".to_string(), "three".to_string()),
+            ],
+            "file order preserved, duplicates kept, comments/blanks dropped, quotes stripped"
+        );
+
+        // The projection must agree with the parser it is built from: applying `all` in order
+        // leaves A=3, and that is exactly what a single-key read reports.
+        assert_eq!(read_from(&p, "A").as_deref(), Some("3"), "last assignment wins");
+        assert_eq!(read_from(&p, "B").as_deref(), Some("two"));
+        assert_eq!(read_from(&p, "missing"), None);
+    }
+
+    /// What this catches: a missing config.env must read as "no keys", never panic — a fresh
+    /// clone has no such file and still has to be able to launch a core (#291).
+    #[test]
+    fn read_all_on_a_missing_file_is_empty_not_a_panic() {
+        let p = tmp_config();
+        assert!(read_all_from(&p).is_empty());
+    }
+
+    /// What this catches: a Windows path written by the installer must survive being read back,
+    /// quoted or not. The installer now single-quotes values because this file is `source`d by
+    /// bash, which eats backslashes in an unquoted value:
+    ///   HF_HOME=D:\continuum-cold\huggingface  ->  D:continuum-coldhuggingface
+    /// Windows resolves that drive-relative string into a SEPARATE cache root, and a 76 GB model
+    /// download really did land there while every resolver looked at the correct path. The reader
+    /// must therefore strip the new quotes AND still accept pre-fix installs that have bare values.
+    #[test]
+    fn windows_paths_read_back_intact_quoted_or_bare() {
+        let p = tmp_config();
+        let win = r"D:\continuum-cold\huggingface";
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(
+            &p,
+            format!("# header\nHF_HOME='{win}'\nCONTINUUM_STORAGE_PATH={win}\nQ=\"{win}\"\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            read_from(&p, "HF_HOME").as_deref(),
+            Some(win),
+            "single-quoted value"
+        );
+        assert_eq!(
+            read_from(&p, "CONTINUUM_STORAGE_PATH").as_deref(),
+            Some(win),
+            "bare value from a pre-fix install must still work"
+        );
+        assert_eq!(
+            read_from(&p, "Q").as_deref(),
+            Some(win),
+            "double-quoted value"
+        );
+        let _ = fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    /// What this catches: unquote() must not eat a lone quote or mangle a value that merely
+    /// CONTAINS one — only a matched surrounding pair is a quote wrapper.
+    #[test]
+    fn unquote_only_strips_matched_surrounding_pairs() {
+        assert_eq!(unquote("plain"), "plain");
+        assert_eq!(unquote("'quoted'"), "quoted");
+        assert_eq!(unquote("\"quoted\""), "quoted");
+        assert_eq!(unquote("'mismatched\""), "'mismatched\"");
+        assert_eq!(unquote("it's"), "it's");
+        assert_eq!(unquote("'"), "'");
+        assert_eq!(unquote(""), "");
+    }
+
     /// What this catches: a freshly written key reads back, and a sibling key is
     /// untouched — the get/set round-trip + non-destructiveness the command relies on.
     #[test]
@@ -126,7 +329,10 @@ mod tests {
         upsert_in(&p, "HTTP_PORT", "9000").unwrap();
         upsert_in(&p, "CONTINUUM_LAUNCH_MODE", "headless").unwrap();
         assert_eq!(read_from(&p, "HTTP_PORT").as_deref(), Some("9000"));
-        assert_eq!(read_from(&p, "CONTINUUM_LAUNCH_MODE").as_deref(), Some("headless"));
+        assert_eq!(
+            read_from(&p, "CONTINUUM_LAUNCH_MODE").as_deref(),
+            Some("headless")
+        );
         let _ = fs::remove_dir_all(p.parent().unwrap());
     }
 
@@ -143,8 +349,14 @@ mod tests {
             .lines()
             .filter(|l| l.trim_start().starts_with("CONTINUUM_LAUNCH_MODE="))
             .count();
-        assert_eq!(count, 1, "expected exactly one assignment line, got:\n{content}");
-        assert_eq!(read_from(&p, "CONTINUUM_LAUNCH_MODE").as_deref(), Some("headless"));
+        assert_eq!(
+            count, 1,
+            "expected exactly one assignment line, got:\n{content}"
+        );
+        assert_eq!(
+            read_from(&p, "CONTINUUM_LAUNCH_MODE").as_deref(),
+            Some("headless")
+        );
         let _ = fs::remove_dir_all(p.parent().unwrap());
     }
 
@@ -157,8 +369,14 @@ mod tests {
         fs::write(&p, "# Continuum Configuration\n\nHTTP_PORT=9000\n").unwrap();
         upsert_in(&p, "CONTINUUM_LAUNCH_MODE", "headless").unwrap();
         let content = fs::read_to_string(&p).unwrap();
-        assert!(content.contains("# Continuum Configuration"), "comment dropped:\n{content}");
-        assert!(content.contains("HTTP_PORT=9000"), "sibling dropped:\n{content}");
+        assert!(
+            content.contains("# Continuum Configuration"),
+            "comment dropped:\n{content}"
+        );
+        assert!(
+            content.contains("HTTP_PORT=9000"),
+            "sibling dropped:\n{content}"
+        );
         let _ = fs::remove_dir_all(p.parent().unwrap());
     }
 
@@ -172,5 +390,28 @@ mod tests {
         fs::write(&p, "# CONTINUUM_LAUNCH_MODE=ui (this is a comment)\n").unwrap();
         assert_eq!(read_from(&p, "CONTINUUM_LAUNCH_MODE"), None);
         let _ = fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    /// What this catches: the headroom-fraction contract — absent/empty/garbage
+    /// take the default; a foundry's 1.0 passes; and a fat-fingered over-1.0 (or
+    /// negative) is CLAMPED so config can never over-commit the resource. This is
+    /// the single-source getter's behavior, tested on the pure core.
+    #[test]
+    fn parse_fraction_defaults_clamps_and_honors_override() {
+        // absent / empty / whitespace → default
+        assert_eq!(parse_fraction(None, 0.8), 0.8);
+        assert_eq!(parse_fraction(Some(""), 0.8), 0.8);
+        assert_eq!(parse_fraction(Some("   "), 0.8), 0.8);
+        // valid overrides
+        assert_eq!(parse_fraction(Some("1.0"), 0.8), 1.0); // dedicated foundry
+        assert_eq!(parse_fraction(Some(" 0.5 "), 0.8), 0.5); // trimmed
+        assert_eq!(parse_fraction(Some("0.9"), 0.8), 0.9);
+        // out-of-range clamps (can't over-commit / go negative)
+        assert_eq!(parse_fraction(Some("1.5"), 0.8), 1.0);
+        assert_eq!(parse_fraction(Some("-0.3"), 0.8), 0.0);
+        // garbage / non-finite → default
+        assert_eq!(parse_fraction(Some("abc"), 0.8), 0.8);
+        assert_eq!(parse_fraction(Some("NaN"), 0.8), 0.8);
+        assert_eq!(parse_fraction(Some("inf"), 0.8), 0.8);
     }
 }

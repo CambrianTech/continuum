@@ -85,6 +85,9 @@ fn build_chat_state(content: &str) -> ChatViewState {
             timestamp: 1_700_000_000_000,
         }],
         roster: vec![RosterSlotView {
+            pronouns: None,
+            role_label: None,
+            bio: None,
             member_id,
             display_name: "Helper".into(),
             kind: SenderKind::Agent,
@@ -97,7 +100,10 @@ fn build_chat_state(content: &str) -> ChatViewState {
             last_seen_ms: 1_700_000_000_000,
             vitals: BTreeMap::new(),
             loadout: None,
+            avatar_url: None,
+            genes: Vec::new(),
         }],
+        acts: vec![],
     }
 }
 

@@ -15,7 +15,10 @@ use crate::modules::logger::{LoggerCommandState, WriteLogPayload};
 
 /// Batch payload for `log/write-batch`: a list of entries to enqueue in one call.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/logger/WriteLogBatchPayload.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/logger/WriteLogBatchPayload.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct WriteLogBatchPayload {
     /// The entries to queue. Each is the same shape as a single `log/write`.
@@ -24,7 +27,10 @@ pub struct WriteLogBatchPayload {
 
 /// Result of `log/write-batch`: how many entries were accepted onto the queue.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/logger/WriteLogBatchResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/logger/WriteLogBatchResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct WriteLogBatchResult {
     #[ts(type = "number")]

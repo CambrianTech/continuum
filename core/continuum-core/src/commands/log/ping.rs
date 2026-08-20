@@ -15,13 +15,19 @@ use crate::modules::logger::LoggerCommandState;
 
 /// Empty params for `log/ping` — it reads live counters and takes no input.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/logger/LoggerPingParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/logger/LoggerPingParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct LoggerPingParams {}
 
 /// Result of `log/ping` — a snapshot of the logger's health counters.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/logger/LoggerPingResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/logger/LoggerPingResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct LoggerPingResult {
     /// Milliseconds since the logger started.

@@ -1,7 +1,7 @@
 # Local Agentic Coding on Consumer Hardware: A Fair, Reproducible Comparison of Models and Harnesses
 
 **Status: DESIGN + PILOT. Results sections fill exclusively from the evidence ledger
-(`~/.continuum/benchmarks/ledger.jsonl` via `cu benchmark/matrix`) — no hand-authored
+(`~/.continuum/benchmarks/ledger.jsonl` via `uu benchmark/matrix`) — no hand-authored
 numbers, same recipe→artifact doctrine as the forge alloy.**
 
 ## Abstract (to be finalized from results)
@@ -82,7 +82,7 @@ cloud-API list price for any cloud reference rows).
 
 Devstral-24B 19/20; Qwen2.5-Coder-14B 18/20 (67s); Qwen3-Coder-30B-A3B 18/20;
 Hermes-4.3-36B 16/20 (1129s); Hermes-3-8B 9/20; forged-4B flagged serving-suspect.
-Full table + replication commands: `cu benchmark/matrix`.
+Full table + replication commands: `uu benchmark/matrix`.
 
 ## 6b. DEFINITIVE results — full valid set (2026-07-12 overnight, n=156, OURS arm, greedy)
 
@@ -153,7 +153,7 @@ The system was built so that reproduction is the SAME path we use ourselves — 
 bespoke lab scripts. Everything below assumes one prerequisite, stated once:
 
 > **With continuum installed** (one-line installer from the README; installs the core,
-> the `cu` CLI, and manages its own `llama-server` binary), on a 64GB Apple-silicon
+> the `uu` CLI, and manages its own `llama-server` binary), on a 64GB Apple-silicon
 > Mac or equivalent.
 
 **Out-of-repo dependencies (the complete list):**
@@ -173,12 +173,12 @@ shapes:
 
 ```bash
 # OURS arm, any registered model:
-cu benchmark/run '{"persona_id":"<any persona uuid>","name":"humaneval-rs",
+uu benchmark/run '{"persona_id":"<any persona uuid>","name":"humaneval-rs",
   "limit":20,"base_model_id":"<model id>","max_acts":6,"detach":true}'
 # result lands in ~/.continuum/progress/<persona>.jsonl; record it:
-cu benchmark/record '{...model/harness/benchmark/resolved/total/replication/...}'
+uu benchmark/record '{...model/harness/benchmark/resolved/total/replication/...}'
 # render the comparison from all recorded rows:
-cu benchmark/matrix
+uu benchmark/matrix
 ```
 
 Runs are greedy-decoded and snapshot-isolated: same weights + same tasks → same

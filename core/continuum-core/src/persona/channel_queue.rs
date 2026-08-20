@@ -234,8 +234,9 @@ impl ChannelQueue {
 
         // Phase 3: rebuild items list — singletons + consolidated.
         let old_items = std::mem::take(&mut self.items);
-        let mut new_items: Vec<Arc<dyn QueueItemBehavior>> =
-            Vec::with_capacity(old_items.len() - consolidated_items.len() + consolidated_items.len());
+        let mut new_items: Vec<Arc<dyn QueueItemBehavior>> = Vec::with_capacity(
+            old_items.len() - consolidated_items.len() + consolidated_items.len(),
+        );
         for (i, item) in old_items.into_iter().enumerate() {
             if !all_consumed[i] {
                 new_items.push(item);

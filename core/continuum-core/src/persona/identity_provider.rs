@@ -74,7 +74,10 @@ pub struct PersonaIdentityIntent {
 /// operators see what happened at boot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-#[ts(export, export_to = "../../../protocol/typescript/persona/PersonaIdentitySource.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/PersonaIdentitySource.ts"
+)]
 pub enum PersonaIdentitySource {
     /// Existing persona found on disk + resumed. The airc-side
     /// keypair (identity.key) is loaded by airc-lib; the continuum-
@@ -107,7 +110,8 @@ pub trait PersonaIdentityProvider: Send + Sync {
 
     /// Yield the next persona's identity intent, or `Ok(None)` if
     /// the provider is exhausted.
-    async fn next_persona(&mut self) -> Result<Option<PersonaIdentityIntent>, PersonaIdentityError>;
+    async fn next_persona(&mut self)
+        -> Result<Option<PersonaIdentityIntent>, PersonaIdentityError>;
 }
 
 #[cfg(test)]

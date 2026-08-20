@@ -39,7 +39,10 @@ use ts_rs::TS;
 /// A class of sensitive content a detector matches. The wire enum the
 /// `cognition/redact-memory` command selects over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/RedactionClass.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/RedactionClass.ts"
+)]
 pub enum RedactionClass {
     /// A credential / API key / access token.
     Secret,
@@ -201,21 +204,23 @@ pub struct SecretDetector {
 /// Known credential prefixes. Signature list — extend as new key formats
 /// appear; a prefix hit flags the whole token regardless of length.
 const SECRET_PREFIXES: &[&str] = &[
-    "sk-",    // OpenAI / Anthropic-style
-    "ghp_",   // GitHub personal token
-    "gho_",   // GitHub OAuth token
-    "ghs_",   // GitHub server token
+    "sk-",  // OpenAI / Anthropic-style
+    "ghp_", // GitHub personal token
+    "gho_", // GitHub OAuth token
+    "ghs_", // GitHub server token
     "github_pat_",
-    "xoxb-",  // Slack bot
-    "xoxp-",  // Slack user
-    "AKIA",   // AWS access key id
-    "ASIA",   // AWS temp access key id
-    "AIza",   // Google API key
+    "xoxb-", // Slack bot
+    "xoxp-", // Slack user
+    "AKIA",  // AWS access key id
+    "ASIA",  // AWS temp access key id
+    "AIza",  // Google API key
 ];
 
 impl Default for SecretDetector {
     fn default() -> Self {
-        Self { min_entropy_len: 32 }
+        Self {
+            min_entropy_len: 32,
+        }
     }
 }
 
@@ -320,7 +325,10 @@ impl ExamKeyDetector {
         // Longest-first: a more specific answer redacts before a shorter one it
         // may contain, and the policy's tie-break keeps the longer span.
         prepared.sort_by(|a, b| b.len().cmp(&a.len()));
-        Self { answers: prepared, min_len }
+        Self {
+            answers: prepared,
+            min_len,
+        }
     }
 
     /// Number of loaded answers (post-filter). Zero → this detector is inert,
@@ -378,11 +386,18 @@ mod tests {
         // Known prefix (short) still flagged.
         assert_eq!(d.detect("token sk-abc123XYZ here").len(), 1);
         // Long mixed alnum (no prefix) flagged by entropy shape.
-        assert_eq!(d.detect("val AbCdEf0123456789AbCdEf0123456789 end").len(), 1);
+        assert_eq!(
+            d.detect("val AbCdEf0123456789AbCdEf0123456789 end").len(),
+            1
+        );
         // Ordinary English: no letters+digits mix, short → nothing.
-        assert!(d.detect("the quick brown fox jumps over the lazy dog").is_empty());
+        assert!(d
+            .detect("the quick brown fox jumps over the lazy dog")
+            .is_empty());
         // A long all-alpha word (no digit) is not entropy-flagged.
-        assert!(d.detect("supercalifragilisticexpialidociousandthensome").is_empty());
+        assert!(d
+            .detect("supercalifragilisticexpialidociousandthensome")
+            .is_empty());
     }
 
     // what this catches: ExamKeyDetector (outlier B) finds held-out answers
@@ -390,7 +405,11 @@ mod tests {
     #[test]
     fn exam_key_detector_finds_answers_case_insensitively() {
         let d = ExamKeyDetector::new(
-            ["service_loop.rs".to_string(), "3000".to_string(), "x".to_string()],
+            [
+                "service_loop.rs".to_string(),
+                "3000".to_string(),
+                "x".to_string(),
+            ],
             ExamKeyDetector::DEFAULT_MIN_LEN,
         );
         // "x" is below min_len → not loaded.
@@ -411,7 +430,8 @@ mod tests {
             ["service_loop.rs".to_string()],
             ExamKeyDetector::DEFAULT_MIN_LEN,
         ))]);
-        let memory = "I was asked which file holds the loop; I answered service_loop.rs and it passed.";
+        let memory =
+            "I was asked which file holds the loop; I answered service_loop.rs and it passed.";
         let (out, report) = policy.redact(memory);
         assert_eq!(report.count(RedactionClass::ExamKey), 1);
         assert!(out.contains("I was asked which file holds the loop"));

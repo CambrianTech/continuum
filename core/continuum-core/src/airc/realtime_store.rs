@@ -56,6 +56,8 @@ pub struct AircRealtimePublishResult {
     export_to = "../../../protocol/typescript/airc/AircRealtimeReplayParams.ts"
 )]
 pub struct AircRealtimeReplayParams {
+    /// The room (airc channel) id whose realtime state to replay — the room you
+    /// want the snapshot for. Full id or the short form shown in rosters.
     #[ts(type = "string")]
     pub room_id: Uuid,
     #[ts(optional)]
@@ -349,7 +351,7 @@ impl AircRealtimeState {
             })
             .filter(|manifest| manifest.advertises_room(room_id))
             .collect::<Vec<_>>();
-        manifests.sort_by(|a, b| a.peer_id.cmp(&b.peer_id));
+        manifests.sort_by_key(|m| m.peer_id.as_uuid());
         manifests
     }
 
@@ -373,7 +375,7 @@ fn capability_index_for_manifests(manifests: &[AircPeerManifest]) -> Vec<AircCap
             index
                 .entry(capability.id.clone())
                 .or_default()
-                .push(manifest.peer_id.clone());
+                .push(manifest.peer_id.to_string());
         }
     }
 
@@ -407,6 +409,7 @@ mod tests {
         AircPeerCapability, AircPresenceState, AircRealtimePayloadRef, AircRealtimeSchema,
         AircSubscriptionAction, AircSubscriptionEvent,
     };
+    use airc_core::PeerId;
     use serde_json::json;
 
     const GENERAL: Uuid = Uuid::from_u128(0xA1);
@@ -463,7 +466,10 @@ mod tests {
             advertised_at_ms,
             AircRealtimePayload::PeerManifest {
                 manifest: AircPeerManifest {
-                    peer_id: peer_id.to_string(),
+                    peer_id: PeerId::from_uuid(uuid::Uuid::new_v5(
+                        &uuid::Uuid::NAMESPACE_OID,
+                        peer_id.as_bytes(),
+                    )),
                     display_name: Some(peer_id.to_string()),
                     room_ids: rooms.to_vec(),
                     capabilities: capabilities
@@ -620,7 +626,14 @@ mod tests {
         assert!(!second.stored_for_replay);
         assert_eq!(
             second.coalesced_presence_key.as_deref(),
-            Some("peer_manifest:peer-a")
+            Some(
+                format!(
+                    "peer_manifest:{}",
+                    PeerId::from_uuid(uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, b"peer-a"))
+                        .as_uuid()
+                )
+                .as_str()
+            )
         );
         assert_eq!(second.active_peer_manifest_count, 1);
 
@@ -642,9 +655,16 @@ mod tests {
             result
                 .active_peer_manifests
                 .iter()
-                .map(|manifest| manifest.peer_id.as_str())
+                .map(|manifest| manifest.peer_id.as_uuid().to_string())
                 .collect::<Vec<_>>(),
-            ["peer-a", "peer-b"]
+            [
+                PeerId::from_uuid(uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, b"peer-a"))
+                    .as_uuid()
+                    .to_string(),
+                PeerId::from_uuid(uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, b"peer-b"))
+                    .as_uuid()
+                    .to_string(),
+            ]
         );
         assert_eq!(result.capability_index.len(), 2);
         assert_eq!(
@@ -653,7 +673,11 @@ mod tests {
         );
         assert_eq!(
             result.capability_index[0].peer_ids,
-            vec!["peer-a".to_string()]
+            vec![
+                PeerId::from_uuid(uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, b"peer-a"))
+                    .as_uuid()
+                    .to_string()
+            ]
         );
         assert_eq!(
             result.capability_index[1].capability_id,
@@ -661,7 +685,14 @@ mod tests {
         );
         assert_eq!(
             result.capability_index[1].peer_ids,
-            vec!["peer-a".to_string(), "peer-b".to_string()]
+            vec![
+                PeerId::from_uuid(uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, b"peer-a"))
+                    .as_uuid()
+                    .to_string(),
+                PeerId::from_uuid(uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, b"peer-b"))
+                    .as_uuid()
+                    .to_string()
+            ]
         );
 
         let expired = store
@@ -691,7 +722,10 @@ mod tests {
             AircRealtimePayload::Receipt {
                 receipt: crate::airc::realtime::AircReceipt {
                     event_id: "evt-1".to_string(),
-                    peer_id: "peer-1".to_string(),
+                    peer_id: PeerId::from_uuid(uuid::Uuid::new_v5(
+                        &uuid::Uuid::NAMESPACE_OID,
+                        b"peer-1",
+                    )),
                     received_at_ms: 10,
                     replay_cursor: None,
                 },
@@ -882,405 +916,81 @@ mod tests {
     #[cfg(feature = "stress-tests")]
     mod stress {
         use super::*;
-    //
-    // Per Joel 2026-05-30: "Each persona exists in its own threads."
-    //
-    // Headless-Rust moment-of-truth context: multi-persona chat lands
-    // on this store via `airc/realtime-publish`. Several personas
-    // publishing concurrently to the same room (and reading replay
-    // concurrently) is THE production scenario. Correctness here is a
-    // precondition for the headless integration test.
-    //
-    // Today's store uses ONE module-wide `parking_lot::Mutex` — every
-    // publish and every replay takes the same lock. That serializes
-    // multi-room throughput more than strictly necessary, but it
-    // delivers the correctness guarantees these tests pin:
-    //
-    // - no events lost under concurrent publishes (event count
-    //   matches publish count exactly)
-    // - per-room Lamport sequence is contiguous 1..N (no gaps, no
-    //   duplicates, no out-of-order) regardless of publish
-    //   interleaving
-    // - replay during concurrent publish observes a consistent
-    //   snapshot (events strictly increasing by Lamport, never
-    //   partial mid-mutation state)
-    // - multiple concurrent replays agree (or differ only in how
-    //   many of the in-flight publishes they observed — never in the
-    //   prefix they share)
-    //
-    // Future refinement (out of scope, flagged): if the moment-of-
-    // truth scenario grows past 5–10 personas, sharding state by
-    // room_id (DashMap<Uuid, Mutex<RoomState>>) would unblock
-    // multi-room throughput while keeping the same correctness
-    // contract. Not needed today; the module-wide lock is the
-    // simplest substrate that meets the requirements.
-    //
-    // Every test uses `flavor = "multi_thread", worker_threads = 4`
-    // so spawned tasks actually preempt on distinct OS threads.
-
-    use std::sync::Arc;
-
-    /// N concurrent personas publish durable events to the SAME
-    /// room. The store must persist every event with NO losses and
-    /// assign contiguous per-room Lamport ids 1..N (no gaps, no
-    /// duplicates, no out-of-order).
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn concurrent_publishes_to_same_room_lose_no_events_and_keep_lamports_contiguous() {
-        const PARALLEL: usize = 64;
-        let store = Arc::new(InMemoryAircRealtimeStore::new(PARALLEL * 2));
-
-        let mut tasks = Vec::with_capacity(PARALLEL);
-        for i in 0..PARALLEL {
-            let store = store.clone();
-            tasks.push(tokio::spawn(async move {
-                store
-                    .publish(AircRealtimePublishParams {
-                        envelope: durable_event(
-                            &format!("evt-{i:03}"),
-                            GENERAL,
-                            i as u64 + 1,
-                        ),
-                    })
-                    .expect("publish must succeed")
-            }));
-        }
-        let results: Vec<AircRealtimePublishResult> = futures::future::join_all(tasks)
-            .await
-            .into_iter()
-            .map(|r| r.expect("task must not panic"))
-            .collect();
-
-        // Every publish reported ok and stored_for_replay.
-        for r in &results {
-            assert!(r.ok, "publish must report ok");
-            assert!(
-                r.stored_for_replay,
-                "durable events must store for replay: {r:?}"
-            );
-        }
-
-        // Replay everything and verify zero losses + contiguous Lamports.
-        let replay = store
-            .replay(AircRealtimeReplayParams {
-                room_id: GENERAL,
-                after_cursor: None,
-                limit: Some(MAX_ROOM_REPLAY_LIMIT),
-                include_presence: None,
-                include_subscriptions: None,
-                include_peer_manifests: None,
-                include_capability_index: None,
-                now_ms: None,
-            })
-            .expect("replay must succeed");
-
-        assert_eq!(
-            replay.events.len(),
-            PARALLEL,
-            "no events lost under concurrent publish: got {}, expected {}",
-            replay.events.len(),
-            PARALLEL
-        );
-
-        // The published event_ids ("evt-000".."evt-063") must all be
-        // present exactly once. Order across event_ids is non-
-        // deterministic (publishes raced); only completeness matters.
-        let mut observed_ids: Vec<String> = replay
-            .events
-            .iter()
-            .map(|e| e.event_id.clone())
-            .collect();
-        observed_ids.sort();
-        let mut expected_ids: Vec<String> =
-            (0..PARALLEL).map(|i| format!("evt-{i:03}")).collect();
-        expected_ids.sort();
-        assert_eq!(observed_ids, expected_ids, "every event must appear exactly once");
-
-        // The cursor protocol's whole point: Lamport is per-room
-        // monotonic, contiguous, starts at 1. Replay returns events
-        // in queue order which equals publish order which equals
-        // Lamport order. Pull every cursor's lamport and assert
-        // 1..=PARALLEL.
-        let lamport_observed: Vec<u64> = replay
-            .events
-            .iter()
-            .map(|envelope| {
-                // The envelope itself doesn't carry the cursor —
-                // re-derive by indexing in the store's queue. The
-                // replay() result orders events monotonically by
-                // Lamport (queue iteration is insertion order). So
-                // the Nth event has Lamport N+1.
-                envelope.created_at_ms
-            })
-            .collect();
-        // created_at_ms was set to (i+1) when publishing. Under a
-        // correct Lamport sequence, the events come back in publish
-        // order — so the FIRST observed event has created_at_ms = 1,
-        // the SECOND = 2, etc. If Lamport sequencing duplicates or
-        // skips values, the queue order won't match the
-        // created_at_ms sequence the publishers used.
         //
-        // We don't assert exact ordering of created_at_ms (publishers
-        // raced, the lock decides who goes first) — we assert that
-        // EACH published timestamp appears EXACTLY once.
-        let mut sorted_ts = lamport_observed.clone();
-        sorted_ts.sort();
-        let expected_ts: Vec<u64> = (1..=PARALLEL as u64).collect();
-        assert_eq!(
-            sorted_ts, expected_ts,
-            "every published timestamp must appear exactly once in replay (no duplicates from a race)"
-        );
-    }
+        // Per Joel 2026-05-30: "Each persona exists in its own threads."
+        //
+        // Headless-Rust moment-of-truth context: multi-persona chat lands
+        // on this store via `airc/realtime-publish`. Several personas
+        // publishing concurrently to the same room (and reading replay
+        // concurrently) is THE production scenario. Correctness here is a
+        // precondition for the headless integration test.
+        //
+        // Today's store uses ONE module-wide `parking_lot::Mutex` — every
+        // publish and every replay takes the same lock. That serializes
+        // multi-room throughput more than strictly necessary, but it
+        // delivers the correctness guarantees these tests pin:
+        //
+        // - no events lost under concurrent publishes (event count
+        //   matches publish count exactly)
+        // - per-room Lamport sequence is contiguous 1..N (no gaps, no
+        //   duplicates, no out-of-order) regardless of publish
+        //   interleaving
+        // - replay during concurrent publish observes a consistent
+        //   snapshot (events strictly increasing by Lamport, never
+        //   partial mid-mutation state)
+        // - multiple concurrent replays agree (or differ only in how
+        //   many of the in-flight publishes they observed — never in the
+        //   prefix they share)
+        //
+        // Future refinement (out of scope, flagged): if the moment-of-
+        // truth scenario grows past 5–10 personas, sharding state by
+        // room_id (DashMap<Uuid, Mutex<RoomState>>) would unblock
+        // multi-room throughput while keeping the same correctness
+        // contract. Not needed today; the module-wide lock is the
+        // simplest substrate that meets the requirements.
+        //
+        // Every test uses `flavor = "multi_thread", worker_threads = 4`
+        // so spawned tasks actually preempt on distinct OS threads.
 
-    /// Concurrent publishes to DIFFERENT rooms: each room's Lamport
-    /// sequence is INDEPENDENT. Room A getting Lamports 1..N doesn't
-    /// affect room B's 1..M.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn concurrent_publishes_to_different_rooms_keep_independent_lamport_sequences() {
-        const PER_ROOM: usize = 20;
-        let store = Arc::new(InMemoryAircRealtimeStore::new(PER_ROOM * 2));
+        use std::sync::Arc;
 
-        let mut tasks = Vec::with_capacity(PER_ROOM * 3);
-        for room in [GENERAL, CAMBRIANTECH, OTHER] {
-            for i in 0..PER_ROOM {
+        /// N concurrent personas publish durable events to the SAME
+        /// room. The store must persist every event with NO losses and
+        /// assign contiguous per-room Lamport ids 1..N (no gaps, no
+        /// duplicates, no out-of-order).
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn concurrent_publishes_to_same_room_lose_no_events_and_keep_lamports_contiguous() {
+            const PARALLEL: usize = 64;
+            let store = Arc::new(InMemoryAircRealtimeStore::new(PARALLEL * 2));
+
+            let mut tasks = Vec::with_capacity(PARALLEL);
+            for i in 0..PARALLEL {
                 let store = store.clone();
                 tasks.push(tokio::spawn(async move {
                     store
                         .publish(AircRealtimePublishParams {
-                            envelope: durable_event(
-                                &format!("evt-{:?}-{i:03}", room.as_u128()),
-                                room,
-                                i as u64 + 1,
-                            ),
+                            envelope: durable_event(&format!("evt-{i:03}"), GENERAL, i as u64 + 1),
                         })
-                        .expect("publish must succeed");
+                        .expect("publish must succeed")
                 }));
             }
-        }
-        futures::future::join_all(tasks).await;
-
-        // Replay each room independently; each must have exactly
-        // PER_ROOM events.
-        for room in [GENERAL, CAMBRIANTECH, OTHER] {
-            let replay = store
-                .replay(AircRealtimeReplayParams {
-                    room_id: room,
-                    after_cursor: None,
-                    limit: Some(MAX_ROOM_REPLAY_LIMIT),
-                    include_presence: None,
-                    include_subscriptions: None,
-                    include_peer_manifests: None,
-                    include_capability_index: None,
-                    now_ms: None,
-                })
-                .expect("replay must succeed");
-            assert_eq!(
-                replay.events.len(),
-                PER_ROOM,
-                "room {room}: must have exactly PER_ROOM events, isolated from other rooms"
-            );
-            // Cursor lamport at the end is PER_ROOM — per-room
-            // sequence is contiguous 1..PER_ROOM regardless of
-            // cross-room interleaving.
-            let last_cursor = replay
-                .cursor
-                .as_ref()
-                .expect("non-empty replay must produce a cursor");
-            assert_eq!(
-                last_cursor.lamport, PER_ROOM as u64,
-                "room {room}: final Lamport must be PER_ROOM"
-            );
-        }
-    }
-
-    /// Concurrent publishers AND a replayer: the replayer must
-    /// observe a consistent snapshot — never partial mid-mutation
-    /// state, never a Lamport gap.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn replay_during_concurrent_publish_observes_consistent_snapshot() {
-        const PUBLISHERS: usize = 32;
-        const REPLAYERS: usize = 8;
-        let store = Arc::new(InMemoryAircRealtimeStore::new(PUBLISHERS * 2));
-
-        let mut publish_tasks = Vec::with_capacity(PUBLISHERS);
-        for i in 0..PUBLISHERS {
-            let store = store.clone();
-            publish_tasks.push(tokio::spawn(async move {
-                store
-                    .publish(AircRealtimePublishParams {
-                        envelope: durable_event(
-                            &format!("evt-{i:03}"),
-                            GENERAL,
-                            i as u64 + 1,
-                        ),
-                    })
-                    .expect("publish must succeed");
-            }));
-        }
-        let mut replay_tasks = Vec::with_capacity(REPLAYERS);
-        for _ in 0..REPLAYERS {
-            let store = store.clone();
-            replay_tasks.push(tokio::spawn(async move {
-                store
-                    .replay(AircRealtimeReplayParams {
-                        room_id: GENERAL,
-                        after_cursor: None,
-                        limit: Some(MAX_ROOM_REPLAY_LIMIT),
-                        include_presence: None,
-                        include_subscriptions: None,
-                        include_peer_manifests: None,
-                        include_capability_index: None,
-                        now_ms: None,
-                    })
-                    .expect("replay must succeed")
-            }));
-        }
-        futures::future::join_all(publish_tasks).await;
-        let replays: Vec<AircRealtimeReplayResult> = futures::future::join_all(replay_tasks)
-            .await
-            .into_iter()
-            .map(|r| r.expect("task must not panic"))
-            .collect();
-
-        // Each individual replay must be internally CONSISTENT — its
-        // returned events' created_at_ms values, sorted, form a
-        // contiguous prefix of 1..=PUBLISHERS. (The replay may have
-        // observed any subset depending on when it acquired the
-        // lock, but the subset MUST be a valid prefix — no gaps,
-        // no duplicates.)
-        for (i, replay) in replays.iter().enumerate() {
-            let mut ts: Vec<u64> = replay
-                .events
-                .iter()
-                .map(|e| e.created_at_ms)
+            let results: Vec<AircRealtimePublishResult> = futures::future::join_all(tasks)
+                .await
+                .into_iter()
+                .map(|r| r.expect("task must not panic"))
                 .collect();
-            ts.sort();
-            ts.dedup();
-            assert_eq!(
-                ts.len(),
-                replay.events.len(),
-                "replayer {i}: observed events must all be distinct (no duplicate from a torn read)"
-            );
-            // Every replayed ts must be in [1, PUBLISHERS].
-            for &t in &ts {
+
+            // Every publish reported ok and stored_for_replay.
+            for r in &results {
+                assert!(r.ok, "publish must report ok");
                 assert!(
-                    (1..=PUBLISHERS as u64).contains(&t),
-                    "replayer {i}: ts {t} out of valid range [1, {PUBLISHERS}] — torn read?"
+                    r.stored_for_replay,
+                    "durable events must store for replay: {r:?}"
                 );
             }
-        }
 
-        // After all publishes settle, one final replay sees the full
-        // PUBLISHERS events (no losses).
-        let final_replay = store
-            .replay(AircRealtimeReplayParams {
-                room_id: GENERAL,
-                after_cursor: None,
-                limit: Some(MAX_ROOM_REPLAY_LIMIT),
-                include_presence: None,
-                include_subscriptions: None,
-                include_peer_manifests: None,
-                include_capability_index: None,
-                now_ms: None,
-            })
-            .expect("final replay must succeed");
-        assert_eq!(
-            final_replay.events.len(),
-            PUBLISHERS,
-            "after all publishes settle: no losses"
-        );
-        let last_cursor = final_replay.cursor.as_ref().unwrap();
-        assert_eq!(
-            last_cursor.lamport, PUBLISHERS as u64,
-            "final Lamport equals PUBLISHERS — contiguous 1..N"
-        );
-    }
-
-    /// Cursor-based incremental replay under concurrent publish: a
-    /// caller that polls with `after_cursor` must never re-see
-    /// events it already saw, and must eventually see every event
-    /// that gets published.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn cursor_polling_during_concurrent_publish_never_loses_or_duplicates_events() {
-        const PUBLISHERS: usize = 40;
-        let store = Arc::new(InMemoryAircRealtimeStore::new(PUBLISHERS * 2));
-
-        // Spawn publishers in the background.
-        let mut publish_tasks = Vec::with_capacity(PUBLISHERS);
-        for i in 0..PUBLISHERS {
-            let store = store.clone();
-            publish_tasks.push(tokio::spawn(async move {
-                // Slight stagger so the poller has a chance to catch
-                // mid-stream snapshots.
-                if i % 4 == 0 {
-                    tokio::task::yield_now().await;
-                }
-                store
-                    .publish(AircRealtimePublishParams {
-                        envelope: durable_event(
-                            &format!("evt-{i:03}"),
-                            GENERAL,
-                            i as u64 + 1,
-                        ),
-                    })
-                    .expect("publish must succeed");
-            }));
-        }
-
-        // Concurrently poll with a moving cursor — collect every
-        // unique event we see.
-        let store_for_poll = store.clone();
-        let poll_task = tokio::spawn(async move {
-            let mut cursor: Option<AircReplayCursor> = None;
-            let mut observed_ids = Vec::new();
-            for _ in 0..(PUBLISHERS * 2) {
-                let r = store_for_poll
-                    .replay(AircRealtimeReplayParams {
-                        room_id: GENERAL,
-                        after_cursor: cursor.clone(),
-                        limit: Some(MAX_ROOM_REPLAY_LIMIT),
-                        include_presence: None,
-                        include_subscriptions: None,
-                        include_peer_manifests: None,
-                        include_capability_index: None,
-                        now_ms: None,
-                    })
-                    .expect("replay must succeed");
-                for evt in &r.events {
-                    observed_ids.push(evt.event_id.clone());
-                }
-                if let Some(c) = r.cursor.clone() {
-                    cursor = Some(c);
-                }
-                tokio::task::yield_now().await;
-            }
-            observed_ids
-        });
-
-        // Wait for all publishers to finish, THEN one more poll loop
-        // to drain anything left.
-        futures::future::join_all(publish_tasks).await;
-        let mut observed: Vec<String> = poll_task.await.expect("poll task must not panic");
-
-        // One final drain in case the poll loop exited before
-        // observing the very last publishes.
-        let mut cursor: Option<AircReplayCursor> = None;
-        for evt in &observed {
-            if let Some(idx) = observed
-                .iter()
-                .enumerate()
-                .filter(|(_, e)| *e == evt)
-                .last()
-                .map(|(i, _)| i)
-            {
-                let _ = idx;
-            }
-        }
-        // Walk the queue from after the last cursor we observed.
-        let after = if observed.is_empty() {
-            None
-        } else {
-            // Find the LATEST cursor we observed by re-querying.
-            let r = store
+            // Replay everything and verify zero losses + contiguous Lamports.
+            let replay = store
                 .replay(AircRealtimeReplayParams {
                     room_id: GENERAL,
                     after_cursor: None,
@@ -1291,62 +1001,376 @@ mod tests {
                     include_capability_index: None,
                     now_ms: None,
                 })
-                .unwrap();
-            // The LAST cursor that matches our last-observed event id.
-            r.events
+                .expect("replay must succeed");
+
+            assert_eq!(
+                replay.events.len(),
+                PARALLEL,
+                "no events lost under concurrent publish: got {}, expected {}",
+                replay.events.len(),
+                PARALLEL
+            );
+
+            // The published event_ids ("evt-000".."evt-063") must all be
+            // present exactly once. Order across event_ids is non-
+            // deterministic (publishes raced); only completeness matters.
+            let mut observed_ids: Vec<String> =
+                replay.events.iter().map(|e| e.event_id.clone()).collect();
+            observed_ids.sort();
+            let mut expected_ids: Vec<String> =
+                (0..PARALLEL).map(|i| format!("evt-{i:03}")).collect();
+            expected_ids.sort();
+            assert_eq!(
+                observed_ids, expected_ids,
+                "every event must appear exactly once"
+            );
+
+            // The cursor protocol's whole point: Lamport is per-room
+            // monotonic, contiguous, starts at 1. Replay returns events
+            // in queue order which equals publish order which equals
+            // Lamport order. Pull every cursor's lamport and assert
+            // 1..=PARALLEL.
+            let lamport_observed: Vec<u64> = replay
+                .events
                 .iter()
-                .zip(r.events.iter().skip(1).map(|_| ()).chain(std::iter::once(())))
-                .find_map(|(evt, _)| {
-                    if observed.last() == Some(&evt.event_id) {
-                        Some(AircReplayCursor {
-                            room_id: GENERAL,
-                            lamport: evt.created_at_ms, // == publish-time ts == approx Lamport
-                            event_id: evt.event_id.clone(),
-                            observed_at_ms: Some(evt.created_at_ms),
-                        })
-                    } else {
-                        None
-                    }
+                .map(|envelope| {
+                    // The envelope itself doesn't carry the cursor —
+                    // re-derive by indexing in the store's queue. The
+                    // replay() result orders events monotonically by
+                    // Lamport (queue iteration is insertion order). So
+                    // the Nth event has Lamport N+1.
+                    envelope.created_at_ms
                 })
-        };
-        cursor = after;
-        let final_drain = store
-            .replay(AircRealtimeReplayParams {
-                room_id: GENERAL,
-                after_cursor: cursor,
-                limit: Some(MAX_ROOM_REPLAY_LIMIT),
-                include_presence: None,
-                include_subscriptions: None,
-                include_peer_manifests: None,
-                include_capability_index: None,
-                now_ms: None,
-            })
-            .unwrap();
-        for evt in &final_drain.events {
-            if !observed.contains(&evt.event_id) {
-                observed.push(evt.event_id.clone());
+                .collect();
+            // created_at_ms was set to (i+1) when publishing. Under a
+            // correct Lamport sequence, the events come back in publish
+            // order — so the FIRST observed event has created_at_ms = 1,
+            // the SECOND = 2, etc. If Lamport sequencing duplicates or
+            // skips values, the queue order won't match the
+            // created_at_ms sequence the publishers used.
+            //
+            // We don't assert exact ordering of created_at_ms (publishers
+            // raced, the lock decides who goes first) — we assert that
+            // EACH published timestamp appears EXACTLY once.
+            let mut sorted_ts = lamport_observed.clone();
+            sorted_ts.sort();
+            let expected_ts: Vec<u64> = (1..=PARALLEL as u64).collect();
+            assert_eq!(
+            sorted_ts, expected_ts,
+            "every published timestamp must appear exactly once in replay (no duplicates from a race)"
+        );
+        }
+
+        /// Concurrent publishes to DIFFERENT rooms: each room's Lamport
+        /// sequence is INDEPENDENT. Room A getting Lamports 1..N doesn't
+        /// affect room B's 1..M.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn concurrent_publishes_to_different_rooms_keep_independent_lamport_sequences() {
+            const PER_ROOM: usize = 20;
+            let store = Arc::new(InMemoryAircRealtimeStore::new(PER_ROOM * 2));
+
+            let mut tasks = Vec::with_capacity(PER_ROOM * 3);
+            for room in [GENERAL, CAMBRIANTECH, OTHER] {
+                for i in 0..PER_ROOM {
+                    let store = store.clone();
+                    tasks.push(tokio::spawn(async move {
+                        store
+                            .publish(AircRealtimePublishParams {
+                                envelope: durable_event(
+                                    &format!("evt-{:?}-{i:03}", room.as_u128()),
+                                    room,
+                                    i as u64 + 1,
+                                ),
+                            })
+                            .expect("publish must succeed");
+                    }));
+                }
+            }
+            futures::future::join_all(tasks).await;
+
+            // Replay each room independently; each must have exactly
+            // PER_ROOM events.
+            for room in [GENERAL, CAMBRIANTECH, OTHER] {
+                let replay = store
+                    .replay(AircRealtimeReplayParams {
+                        room_id: room,
+                        after_cursor: None,
+                        limit: Some(MAX_ROOM_REPLAY_LIMIT),
+                        include_presence: None,
+                        include_subscriptions: None,
+                        include_peer_manifests: None,
+                        include_capability_index: None,
+                        now_ms: None,
+                    })
+                    .expect("replay must succeed");
+                assert_eq!(
+                    replay.events.len(),
+                    PER_ROOM,
+                    "room {room}: must have exactly PER_ROOM events, isolated from other rooms"
+                );
+                // Cursor lamport at the end is PER_ROOM — per-room
+                // sequence is contiguous 1..PER_ROOM regardless of
+                // cross-room interleaving.
+                let last_cursor = replay
+                    .cursor
+                    .as_ref()
+                    .expect("non-empty replay must produce a cursor");
+                assert_eq!(
+                    last_cursor.lamport, PER_ROOM as u64,
+                    "room {room}: final Lamport must be PER_ROOM"
+                );
             }
         }
 
-        // No duplicates: every observed id appears at most once.
-        let mut sorted = observed.clone();
-        sorted.sort();
-        let before_dedup = sorted.len();
-        sorted.dedup();
-        assert_eq!(
+        /// Concurrent publishers AND a replayer: the replayer must
+        /// observe a consistent snapshot — never partial mid-mutation
+        /// state, never a Lamport gap.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn replay_during_concurrent_publish_observes_consistent_snapshot() {
+            const PUBLISHERS: usize = 32;
+            const REPLAYERS: usize = 8;
+            let store = Arc::new(InMemoryAircRealtimeStore::new(PUBLISHERS * 2));
+
+            let mut publish_tasks = Vec::with_capacity(PUBLISHERS);
+            for i in 0..PUBLISHERS {
+                let store = store.clone();
+                publish_tasks.push(tokio::spawn(async move {
+                    store
+                        .publish(AircRealtimePublishParams {
+                            envelope: durable_event(&format!("evt-{i:03}"), GENERAL, i as u64 + 1),
+                        })
+                        .expect("publish must succeed");
+                }));
+            }
+            let mut replay_tasks = Vec::with_capacity(REPLAYERS);
+            for _ in 0..REPLAYERS {
+                let store = store.clone();
+                replay_tasks.push(tokio::spawn(async move {
+                    store
+                        .replay(AircRealtimeReplayParams {
+                            room_id: GENERAL,
+                            after_cursor: None,
+                            limit: Some(MAX_ROOM_REPLAY_LIMIT),
+                            include_presence: None,
+                            include_subscriptions: None,
+                            include_peer_manifests: None,
+                            include_capability_index: None,
+                            now_ms: None,
+                        })
+                        .expect("replay must succeed")
+                }));
+            }
+            futures::future::join_all(publish_tasks).await;
+            let replays: Vec<AircRealtimeReplayResult> = futures::future::join_all(replay_tasks)
+                .await
+                .into_iter()
+                .map(|r| r.expect("task must not panic"))
+                .collect();
+
+            // Each individual replay must be internally CONSISTENT — its
+            // returned events' created_at_ms values, sorted, form a
+            // contiguous prefix of 1..=PUBLISHERS. (The replay may have
+            // observed any subset depending on when it acquired the
+            // lock, but the subset MUST be a valid prefix — no gaps,
+            // no duplicates.)
+            for (i, replay) in replays.iter().enumerate() {
+                let mut ts: Vec<u64> = replay.events.iter().map(|e| e.created_at_ms).collect();
+                ts.sort();
+                ts.dedup();
+                assert_eq!(
+                ts.len(),
+                replay.events.len(),
+                "replayer {i}: observed events must all be distinct (no duplicate from a torn read)"
+            );
+                // Every replayed ts must be in [1, PUBLISHERS].
+                for &t in &ts {
+                    assert!(
+                        (1..=PUBLISHERS as u64).contains(&t),
+                        "replayer {i}: ts {t} out of valid range [1, {PUBLISHERS}] — torn read?"
+                    );
+                }
+            }
+
+            // After all publishes settle, one final replay sees the full
+            // PUBLISHERS events (no losses).
+            let final_replay = store
+                .replay(AircRealtimeReplayParams {
+                    room_id: GENERAL,
+                    after_cursor: None,
+                    limit: Some(MAX_ROOM_REPLAY_LIMIT),
+                    include_presence: None,
+                    include_subscriptions: None,
+                    include_peer_manifests: None,
+                    include_capability_index: None,
+                    now_ms: None,
+                })
+                .expect("final replay must succeed");
+            assert_eq!(
+                final_replay.events.len(),
+                PUBLISHERS,
+                "after all publishes settle: no losses"
+            );
+            let last_cursor = final_replay.cursor.as_ref().unwrap();
+            assert_eq!(
+                last_cursor.lamport, PUBLISHERS as u64,
+                "final Lamport equals PUBLISHERS — contiguous 1..N"
+            );
+        }
+
+        /// Cursor-based incremental replay under concurrent publish: a
+        /// caller that polls with `after_cursor` must never re-see
+        /// events it already saw, and must eventually see every event
+        /// that gets published.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn cursor_polling_during_concurrent_publish_never_loses_or_duplicates_events() {
+            const PUBLISHERS: usize = 40;
+            let store = Arc::new(InMemoryAircRealtimeStore::new(PUBLISHERS * 2));
+
+            // Spawn publishers in the background.
+            let mut publish_tasks = Vec::with_capacity(PUBLISHERS);
+            for i in 0..PUBLISHERS {
+                let store = store.clone();
+                publish_tasks.push(tokio::spawn(async move {
+                    // Slight stagger so the poller has a chance to catch
+                    // mid-stream snapshots.
+                    if i % 4 == 0 {
+                        tokio::task::yield_now().await;
+                    }
+                    store
+                        .publish(AircRealtimePublishParams {
+                            envelope: durable_event(&format!("evt-{i:03}"), GENERAL, i as u64 + 1),
+                        })
+                        .expect("publish must succeed");
+                }));
+            }
+
+            // Concurrently poll with a moving cursor — collect every
+            // unique event we see.
+            let store_for_poll = store.clone();
+            let poll_task = tokio::spawn(async move {
+                let mut cursor: Option<AircReplayCursor> = None;
+                let mut observed_ids = Vec::new();
+                for _ in 0..(PUBLISHERS * 2) {
+                    let r = store_for_poll
+                        .replay(AircRealtimeReplayParams {
+                            room_id: GENERAL,
+                            after_cursor: cursor.clone(),
+                            limit: Some(MAX_ROOM_REPLAY_LIMIT),
+                            include_presence: None,
+                            include_subscriptions: None,
+                            include_peer_manifests: None,
+                            include_capability_index: None,
+                            now_ms: None,
+                        })
+                        .expect("replay must succeed");
+                    for evt in &r.events {
+                        observed_ids.push(evt.event_id.clone());
+                    }
+                    if let Some(c) = r.cursor.clone() {
+                        cursor = Some(c);
+                    }
+                    tokio::task::yield_now().await;
+                }
+                observed_ids
+            });
+
+            // Wait for all publishers to finish, THEN one more poll loop
+            // to drain anything left.
+            futures::future::join_all(publish_tasks).await;
+            let mut observed: Vec<String> = poll_task.await.expect("poll task must not panic");
+
+            // One final drain in case the poll loop exited before
+            // observing the very last publishes.
+            let mut cursor: Option<AircReplayCursor> = None;
+            for evt in &observed {
+                if let Some(idx) = observed
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| *e == evt)
+                    .last()
+                    .map(|(i, _)| i)
+                {
+                    let _ = idx;
+                }
+            }
+            // Walk the queue from after the last cursor we observed.
+            let after = if observed.is_empty() {
+                None
+            } else {
+                // Find the LATEST cursor we observed by re-querying.
+                let r = store
+                    .replay(AircRealtimeReplayParams {
+                        room_id: GENERAL,
+                        after_cursor: None,
+                        limit: Some(MAX_ROOM_REPLAY_LIMIT),
+                        include_presence: None,
+                        include_subscriptions: None,
+                        include_peer_manifests: None,
+                        include_capability_index: None,
+                        now_ms: None,
+                    })
+                    .unwrap();
+                // The LAST cursor that matches our last-observed event id.
+                r.events
+                    .iter()
+                    .zip(
+                        r.events
+                            .iter()
+                            .skip(1)
+                            .map(|_| ())
+                            .chain(std::iter::once(())),
+                    )
+                    .find_map(|(evt, _)| {
+                        if observed.last() == Some(&evt.event_id) {
+                            Some(AircReplayCursor {
+                                room_id: GENERAL,
+                                lamport: evt.created_at_ms, // == publish-time ts == approx Lamport
+                                event_id: evt.event_id.clone(),
+                                observed_at_ms: Some(evt.created_at_ms),
+                            })
+                        } else {
+                            None
+                        }
+                    })
+            };
+            cursor = after;
+            let final_drain = store
+                .replay(AircRealtimeReplayParams {
+                    room_id: GENERAL,
+                    after_cursor: cursor,
+                    limit: Some(MAX_ROOM_REPLAY_LIMIT),
+                    include_presence: None,
+                    include_subscriptions: None,
+                    include_peer_manifests: None,
+                    include_capability_index: None,
+                    now_ms: None,
+                })
+                .unwrap();
+            for evt in &final_drain.events {
+                if !observed.contains(&evt.event_id) {
+                    observed.push(evt.event_id.clone());
+                }
+            }
+
+            // No duplicates: every observed id appears at most once.
+            let mut sorted = observed.clone();
+            sorted.sort();
+            let before_dedup = sorted.len();
+            sorted.dedup();
+            assert_eq!(
             sorted.len(),
             before_dedup,
             "cursor polling must never return the same event twice (duplication = lost cursor monotonicity)"
         );
 
-        // Eventually we saw every published event.
-        let expected: std::collections::HashSet<String> =
-            (0..PUBLISHERS).map(|i| format!("evt-{i:03}")).collect();
-        let actual: std::collections::HashSet<String> = observed.into_iter().collect();
-        assert_eq!(
-            actual, expected,
-            "cursor polling + final drain must observe every published event (no losses)"
-        );
-    }
+            // Eventually we saw every published event.
+            let expected: std::collections::HashSet<String> =
+                (0..PUBLISHERS).map(|i| format!("evt-{i:03}")).collect();
+            let actual: std::collections::HashSet<String> = observed.into_iter().collect();
+            assert_eq!(
+                actual, expected,
+                "cursor polling + final drain must observe every published event (no losses)"
+            );
+        }
     } // end mod stress
 }

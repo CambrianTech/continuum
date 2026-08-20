@@ -206,6 +206,13 @@ export class WebSocketTransport implements Transport {
     // is added to the union — one that lacks those fields — this line stops
     // compiling and forces a real dispatch here rather than a silent drop.
     const { id, response } = msg;
+    // A frame with NO id is not a reply — the ingress also fans out push-style
+    // frames (state envelopes / stream deltas) to every connection, including
+    // command-only sockets (glass-boxed live 2026-07-30: 22× "unknown
+    // correlation id undefined" spam while every command actually worked).
+    // Ignore pushes here — the StateConnection socket is their consumer; the
+    // server-side fix is not fanning out to unsubscribed sockets at all.
+    if (id === undefined || id === null) return;
     const pending = this.pending.get(id);
     if (!pending) {
       console.error(`WebSocketTransport: reply for unknown correlation id ${id}`);

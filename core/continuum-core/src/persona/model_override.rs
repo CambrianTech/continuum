@@ -98,11 +98,12 @@ impl PersonaModelOverride {
         let path = home.model_override_json();
         match std::fs::read(&path) {
             Ok(bytes) => {
-                let parsed = serde_json::from_slice(&bytes)
-                    .map_err(|source| PersonaModelOverrideError::Malformed {
+                let parsed = serde_json::from_slice(&bytes).map_err(|source| {
+                    PersonaModelOverrideError::Malformed {
                         path: path.clone(),
                         source,
-                    })?;
+                    }
+                })?;
                 Ok(Some(parsed))
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -118,10 +119,11 @@ impl PersonaModelOverride {
         use std::io::Write as _;
 
         let path = home.model_override_json();
-        home.ensure_exists().map_err(|source| PersonaModelOverrideError::Io {
-            path: path.clone(),
-            source,
-        })?;
+        home.ensure_exists()
+            .map_err(|source| PersonaModelOverrideError::Io {
+                path: path.clone(),
+                source,
+            })?;
 
         let json = serde_json::to_vec_pretty(self).map_err(|source| {
             PersonaModelOverrideError::Malformed {
@@ -131,20 +133,21 @@ impl PersonaModelOverride {
         })?;
 
         let tmp_path = path.with_extension("json.tmp");
-        let mut file = std::fs::File::create(&tmp_path).map_err(|source| {
-            PersonaModelOverrideError::Io {
+        let mut file =
+            std::fs::File::create(&tmp_path).map_err(|source| PersonaModelOverrideError::Io {
                 path: tmp_path.clone(),
                 source,
-            }
-        })?;
-        file.write_all(&json).map_err(|source| PersonaModelOverrideError::Io {
-            path: tmp_path.clone(),
-            source,
-        })?;
-        file.sync_all().map_err(|source| PersonaModelOverrideError::Io {
-            path: tmp_path.clone(),
-            source,
-        })?;
+            })?;
+        file.write_all(&json)
+            .map_err(|source| PersonaModelOverrideError::Io {
+                path: tmp_path.clone(),
+                source,
+            })?;
+        file.sync_all()
+            .map_err(|source| PersonaModelOverrideError::Io {
+                path: tmp_path.clone(),
+                source,
+            })?;
         std::fs::rename(&tmp_path, &path).map_err(|source| PersonaModelOverrideError::Io {
             path: path.clone(),
             source,
@@ -190,7 +193,11 @@ mod tests {
     #[test]
     fn write_then_load_round_trips() {
         let (_tmp, home) = home();
-        let ov = PersonaModelOverride::new("qwen3-coder-14b", Some("joel".into()), 1_700_000_000_123);
+        let ov = PersonaModelOverride::new(
+            "qwen3-coder-14b",
+            Some("operator".into()),
+            1_700_000_000_123,
+        );
         ov.write(&home).expect("write succeeds");
 
         let loaded = PersonaModelOverride::load(&home)
@@ -198,7 +205,7 @@ mod tests {
             .expect("an override is present after write");
         assert_eq!(loaded, ov);
         assert_eq!(loaded.model_id, "qwen3-coder-14b");
-        assert_eq!(loaded.set_by.as_deref(), Some("joel"));
+        assert_eq!(loaded.set_by.as_deref(), Some("operator"));
         assert_eq!(loaded.set_at_ms, 1_700_000_000_123);
     }
 
@@ -208,10 +215,16 @@ mod tests {
     #[test]
     fn second_write_replaces_the_first() {
         let (_tmp, home) = home();
-        PersonaModelOverride::new("model-a", None, 1).write(&home).expect("first write");
-        PersonaModelOverride::new("model-b", None, 2).write(&home).expect("second write");
+        PersonaModelOverride::new("model-a", None, 1)
+            .write(&home)
+            .expect("first write");
+        PersonaModelOverride::new("model-b", None, 2)
+            .write(&home)
+            .expect("second write");
 
-        let loaded = PersonaModelOverride::load(&home).expect("load").expect("present");
+        let loaded = PersonaModelOverride::load(&home)
+            .expect("load")
+            .expect("present");
         assert_eq!(loaded.model_id, "model-b", "the latest assignment wins");
         assert_eq!(loaded.set_at_ms, 2);
     }
@@ -221,12 +234,16 @@ mod tests {
     #[test]
     fn clear_removes_and_is_idempotent() {
         let (_tmp, home) = home();
-        PersonaModelOverride::new("model-x", None, 1).write(&home).expect("write");
+        PersonaModelOverride::new("model-x", None, 1)
+            .write(&home)
+            .expect("write");
         assert!(PersonaModelOverride::load(&home).expect("load").is_some());
 
         PersonaModelOverride::clear(&home).expect("first clear");
         assert!(
-            PersonaModelOverride::load(&home).expect("load after clear").is_none(),
+            PersonaModelOverride::load(&home)
+                .expect("load after clear")
+                .is_none(),
             "cleared override is gone → catalog default"
         );
         PersonaModelOverride::clear(&home).expect("clearing an absent override is idempotent");

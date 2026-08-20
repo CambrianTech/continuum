@@ -12,7 +12,10 @@ use crate::modules::code::CodeState;
 use crate::sdk_codegen::CommandError;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/code/GitPushParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/GitPushParams.ts"
+)]
 pub struct GitPushParams {
     /// Remote name (e.g. `origin`). Omit for git's default.
     #[serde(default)]
@@ -23,7 +26,10 @@ pub struct GitPushParams {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/code/GitPushResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/GitPushResult.ts"
+)]
 pub struct GitPushResult {
     /// Raw `git push` output.
     pub output: String,
@@ -39,6 +45,7 @@ crate::action_command! {
     pub struct CodeGitPush { state: Arc<CodeState> }
     name: "code/git/push",
     access: Privileged,
+    aliases: &["git_push"],
     params: GitPushParams,
     output: GitPushResult,
     run(this, ctx, p) => {

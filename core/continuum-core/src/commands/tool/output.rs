@@ -18,13 +18,17 @@ use crate::cognition::tool_executor::spill;
 use crate::sdk_codegen::{ActionCommand, CommandError, Ctx};
 
 /// Default context lines around each grep match (like `grep -C2`).
+// context-budget-exempt: grep-style -C lines around a match — a display shape; the rendered slice's total size is window-derived (render_slice_chars)
 const DEFAULT_CONTEXT_LINES: usize = 2;
 /// Default cap on grep match windows — enough to see the failures, bounded so a
 /// pattern that matches everything can't re-flood.
 const DEFAULT_MAX_MATCHES: usize = 50;
-/// Char budget for the rendered slice. Below the executor's fold cap (16k) so a
-/// normal investigation isn't itself re-spilled.
-const RENDER_BUDGET_CHARS: usize = 12_000;
+// Char budget for the rendered slice — a fraction of the caller's LIVE served window
+// (`ContextBudget::render_slice_chars`), kept below the result-fold bound so a normal
+// investigation isn't itself re-spilled. Never a constant: the old `RENDER_BUDGET_CHARS =
+// 12_000` clipped a 1M-context mind to the same slice as a 16k one.
+// [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
+use crate::cognition::context_budget::ContextBudget;
 
 /// Prebuilt failure-hunting filters, so a persona navigates a flood WITHOUT having to
 /// know regex — the PX "hit the ground running" affordance for the overwhelming case
@@ -33,6 +37,10 @@ const RENDER_BUDGET_CHARS: usize = 12_000;
 /// values show up in `commands/help`, so the persona sees the menu of filters.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/tool/OutputFilter.ts"
+)]
 pub enum OutputFilter {
     /// Everything that looks like a hard failure — the default "what broke?" filter.
     Errors,
@@ -67,7 +75,10 @@ impl OutputFilter {
 /// else selects WHAT to pull back.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/tool/ToolOutputParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/tool/ToolOutputParams.ts"
+)]
 pub struct ToolOutputParams {
     /// The output id from the elision marker (e.g. `"deadbeefcafe0001"`). This is
     /// the spill the preview told you was saved.
@@ -104,7 +115,10 @@ pub struct ToolOutputParams {
 /// bounded, line-numbered slice you asked for.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/tool/ToolOutputResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/tool/ToolOutputResult.ts"
+)]
 pub struct ToolOutputResult {
     /// Echo of the handle read.
     pub handle: String,
@@ -195,7 +209,7 @@ impl ActionCommand for ToolOutput {
             params.context_lines.unwrap_or(DEFAULT_CONTEXT_LINES),
             range,
             params.max_matches.unwrap_or(DEFAULT_MAX_MATCHES),
-            RENDER_BUDGET_CHARS,
+            ContextBudget::live().render_slice_chars(),
         )
         .map_err(CommandError::Invalid)?;
 
@@ -239,10 +253,18 @@ mod tests {
         }
         let log = "   Compiling foo\nerror[E0308]: mismatched types\nwarning: unused var\n\
                    test result: FAILED. 1 passed; 2 failed";
-        assert!(Regex::new(OutputFilter::Errors.pattern()).unwrap().is_match(log));
-        assert!(Regex::new(OutputFilter::Warnings.pattern()).unwrap().is_match(log));
-        assert!(Regex::new(OutputFilter::Failures.pattern()).unwrap().is_match(log));
-        assert!(Regex::new(OutputFilter::Summary.pattern()).unwrap().is_match(log));
+        assert!(Regex::new(OutputFilter::Errors.pattern())
+            .unwrap()
+            .is_match(log));
+        assert!(Regex::new(OutputFilter::Warnings.pattern())
+            .unwrap()
+            .is_match(log));
+        assert!(Regex::new(OutputFilter::Failures.pattern())
+            .unwrap()
+            .is_match(log));
+        assert!(Regex::new(OutputFilter::Summary.pattern())
+            .unwrap()
+            .is_match(log));
     }
 
     // what this catches: with no authenticated caller there is no persona to

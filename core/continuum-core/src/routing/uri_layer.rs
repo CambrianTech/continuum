@@ -134,12 +134,7 @@ impl<S> Layer<S> for UriCaptureLayer
 where
     S: Subscriber + for<'lookup> LookupSpan<'lookup>,
 {
-    fn on_new_span(
-        &self,
-        attrs: &span::Attributes<'_>,
-        id: &span::Id,
-        ctx: Context<'_, S>,
-    ) {
+    fn on_new_span(&self, attrs: &span::Attributes<'_>, id: &span::Id, ctx: Context<'_, S>) {
         let mut visitor = UriFieldVisitor::default();
         attrs.record(&mut visitor);
         if let Some(uri) = visitor.uri {
@@ -211,7 +206,11 @@ mod tests {
     fn chain_empty_outside_any_span() {
         install_capture(|| {
             let chain = current_uri_chain();
-            assert!(chain.is_empty(), "expected empty chain outside any span, got {:?}", chain);
+            assert!(
+                chain.is_empty(),
+                "expected empty chain outside any span, got {:?}",
+                chain
+            );
         });
     }
 
@@ -221,10 +220,7 @@ mod tests {
             let span = tracing::info_span!("cmd", uri = "airc:///inference/llm/generate");
             let _enter = span.enter();
             let chain = current_uri_chain();
-            assert_eq!(
-                chain,
-                vec!["airc:///inference/llm/generate".to_string()]
-            );
+            assert_eq!(chain, vec!["airc:///inference/llm/generate".to_string()]);
         });
     }
 

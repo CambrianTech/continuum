@@ -132,6 +132,55 @@ impl MediaFrame {
             })
             .await
     }
+
+    /// NON-BLOCKING read of an already-warmed scaled cell — the read-side twin of
+    /// [`scaled`] (which WARMS async). Returns `Some(Arc<Result<..>>)` ONLY if the
+    /// `(crop, dest)` derivative has ALREADY resolved on `compute`; `None` if it hasn't
+    /// been computed yet. This is how live perception stays alive: a persona takes what's
+    /// ready NOW and the rest bridges in on a later tick — it NEVER awaits a cell
+    /// ([[command-async-shape-prefer-stream-never-block]]). Warm with `scaled`/`prefetch`
+    /// (fire-and-forget in a spawned task); read here.
+    pub fn scaled_if_ready(
+        &self,
+        compute: &SharedCompute,
+        crop: Option<CropRect>,
+        dest: DestSize,
+    ) -> Option<Arc<Result<Vec<u8>, String>>> {
+        compute.get::<Result<Vec<u8>, String>>(&self.content_hash, &derivative_key(crop, dest))
+    }
+
+    /// NON-BLOCKING read of the already-warmed description cell — the read-side twin of
+    /// [`description`]. `Some` only if the describe cell has resolved; `None` otherwise.
+    /// Same "take what's ready, never wait" contract as [`scaled_if_ready`].
+    pub fn description_if_ready(
+        &self,
+        compute: &SharedCompute,
+    ) -> Option<Arc<Result<String, String>>> {
+        compute.get::<Result<String, String>>(&self.content_hash, DESCRIBE_KEY)
+    }
+
+    /// The perceptual-change SIGNATURE cell — a tiny luma fingerprint, computed ONCE per
+    /// content hash and shared. Diffing two frames' signatures is the change monitor that
+    /// gates the expensive describe (universal, any view). Cheap enough to warm alongside
+    /// the thumbnail; the diff itself is inline ([`image_ops::luma_mean_abs_delta`]).
+    pub async fn signature(&self, compute: &SharedCompute) -> Arc<Result<Vec<u8>, String>> {
+        let source = Arc::clone(&self.source);
+        compute
+            .get_or_compute(&self.content_hash, SIGNATURE_KEY, async move {
+                super::image_ops::luma_signature(&source, super::image_ops::SIGNATURE_SIZE)
+            })
+            .await
+    }
+
+    /// NON-BLOCKING read of the already-warmed signature cell — the read-side twin of
+    /// [`signature`]. `Some` only if it has resolved; the change monitor reads this so it
+    /// never awaits on the hot path (a cold signature simply means "can't tell yet").
+    pub fn signature_if_ready(
+        &self,
+        compute: &SharedCompute,
+    ) -> Option<Arc<Result<Vec<u8>, String>>> {
+        compute.get::<Result<Vec<u8>, String>>(&self.content_hash, SIGNATURE_KEY)
+    }
 }
 
 /// sha256-hex of `bytes` — the content address (same hashing spill/vision use).
@@ -151,6 +200,10 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// description per content hash — the describer/mime don't fork the key because the
 /// bytes fully determine the derivative (the compute-once contract).
 const DESCRIBE_KEY: &str = "describe";
+
+/// The SharedCompute key for the perceptual-change signature cell within a frame's scope.
+/// One fingerprint per content hash — shared by every watcher of the same frame.
+const SIGNATURE_KEY: &str = "signature";
 
 /// The SharedCompute key for one scaled derivative within a frame's scope —
 /// stable and unique per `(crop, dest)` so identical requests share a cell.
@@ -193,8 +246,16 @@ mod tests {
         let a = MediaFrame::from_bytes(png(10, 10));
         let b = MediaFrame::from_bytes(png(10, 10));
         let c = MediaFrame::from_bytes(png(12, 12));
-        assert_eq!(a.content_hash(), b.content_hash(), "same bytes → same address");
-        assert_ne!(a.content_hash(), c.content_hash(), "different bytes → different address");
+        assert_eq!(
+            a.content_hash(),
+            b.content_hash(),
+            "same bytes → same address"
+        );
+        assert_ne!(
+            a.content_hash(),
+            c.content_hash(),
+            "different bytes → different address"
+        );
         assert_eq!(a.content_hash().len(), 64, "sha256-hex");
     }
 
@@ -205,7 +266,10 @@ mod tests {
     async fn a_scaled_cell_computes_once_and_is_shared_zero_copy() {
         let compute = SharedCompute::new();
         let frame = MediaFrame::from_bytes(png(100, 80));
-        let dest = DestSize { width: 20, height: 16 };
+        let dest = DestSize {
+            width: 20,
+            height: 16,
+        };
 
         let first = frame.scaled(&compute, None, dest).await;
         let second = frame.scaled(&compute, None, dest).await;
@@ -219,8 +283,20 @@ mod tests {
         assert_eq!(img.dimensions(), (20, 16));
 
         // A different destination is a distinct cell (its own cached transform).
-        let other = frame.scaled(&compute, None, DestSize { width: 10, height: 8 }).await;
-        assert!(!Arc::ptr_eq(&first, &other), "different spec → different cell");
+        let other = frame
+            .scaled(
+                &compute,
+                None,
+                DestSize {
+                    width: 10,
+                    height: 8,
+                },
+            )
+            .await;
+        assert!(
+            !Arc::ptr_eq(&first, &other),
+            "different spec → different cell"
+        );
     }
 
     // what this catches: prefetch WARMS cells ahead of time — after it, the
@@ -231,8 +307,14 @@ mod tests {
         let compute = SharedCompute::new();
         let frame = MediaFrame::from_bytes(png(64, 64));
         let sizes = [
-            DestSize { width: 16, height: 16 },
-            DestSize { width: 32, height: 32 },
+            DestSize {
+                width: 16,
+                height: 16,
+            },
+            DestSize {
+                width: 32,
+                height: 32,
+            },
         ];
 
         assert_eq!(compute.key_count(frame.content_hash()), 0, "cold");
@@ -285,7 +367,11 @@ mod tests {
             Arc::ptr_eq(&first, &second),
             "same content → SAME cached description Arc (computed once)"
         );
-        assert_eq!(calls.load(Ordering::SeqCst), 1, "describer ran at most once");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "describer ran at most once"
+        );
     }
 
     // what this catches: a describe FAILURE is cached as Err and surfaced — the
@@ -302,8 +388,68 @@ mod tests {
         }
         let compute = SharedCompute::new();
         let frame = MediaFrame::from_bytes(png(8, 8));
-        let d = frame.description(&compute, &FailingDescriber, "image/png").await;
+        let d = frame
+            .description(&compute, &FailingDescriber, "image/png")
+            .await;
         assert_eq!(d.as_ref().as_ref().unwrap_err(), "vision model unavailable");
+    }
+
+    // what this catches: THE non-blocking-read contract — a cell reads None BEFORE it's
+    // warmed (perception takes what's ready, never waits), and after warming the _if_ready
+    // read returns the SAME cached Arc (zero-copy, no recompute). How live perception stays
+    // alive: fire the warm, read what's ready NOW, the rest bridges in later.
+    #[tokio::test]
+    async fn ready_reads_are_none_until_warmed_then_share_the_cell() {
+        let compute = SharedCompute::new();
+        let frame = MediaFrame::from_bytes(png(50, 40));
+        let dest = DestSize {
+            width: 20,
+            height: 16,
+        };
+        let describer = CountingDescriber {
+            calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        };
+
+        // Cold: nothing warmed → non-blocking reads see nothing (absent this tick).
+        assert!(
+            frame.scaled_if_ready(&compute, None, dest).is_none(),
+            "scaled cold → None"
+        );
+        assert!(
+            frame.description_if_ready(&compute).is_none(),
+            "describe cold → None"
+        );
+
+        // Warm the cells (the async fire; in the PerceptionBuffer this is a spawned task).
+        let warmed_scaled = frame.scaled(&compute, None, dest).await;
+        let warmed_desc = frame.description(&compute, &describer, "image/png").await;
+
+        // Non-blocking reads now return the SAME cached Arc — ready, zero-copy.
+        let read_scaled = frame
+            .scaled_if_ready(&compute, None, dest)
+            .expect("scaled ready");
+        let read_desc = frame
+            .description_if_ready(&compute)
+            .expect("describe ready");
+        assert!(
+            Arc::ptr_eq(&read_scaled, &warmed_scaled),
+            "ready read shares the warmed cell"
+        );
+        assert!(
+            Arc::ptr_eq(&read_desc, &warmed_desc),
+            "ready read shares the warmed cell"
+        );
+        // A DIFFERENT spec is still cold — reads only what was actually warmed.
+        assert!(frame
+            .scaled_if_ready(
+                &compute,
+                None,
+                DestSize {
+                    width: 8,
+                    height: 8
+                }
+            )
+            .is_none());
     }
 
     // what this catches: two SEPARATE frame handles to the SAME content share the
@@ -315,7 +461,10 @@ mod tests {
         let bytes = png(40, 40);
         let persona_a_frame = MediaFrame::from_bytes(bytes.clone());
         let persona_b_frame = MediaFrame::from_bytes(bytes);
-        let dest = DestSize { width: 8, height: 8 };
+        let dest = DestSize {
+            width: 8,
+            height: 8,
+        };
 
         let a = persona_a_frame.scaled(&compute, None, dest).await;
         let b = persona_b_frame.scaled(&compute, None, dest).await;

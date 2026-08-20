@@ -1453,9 +1453,9 @@ Then also:
 
     #[test]
     fn xml_params_extraction() {
-        let block = "<name>Joel</name><age>30</age>";
+        let block = "<name>Operator</name><age>30</age>";
         let params = extract_xml_params(block);
-        assert_eq!(params.get("name").unwrap(), "Joel");
+        assert_eq!(params.get("name").unwrap(), "Operator");
         assert_eq!(params.get("age").unwrap(), "30");
     }
 

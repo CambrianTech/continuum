@@ -30,7 +30,9 @@ use crate::live::avatar::frame::AvatarConfig;
 use crate::live::avatar::render_loop::{allocate_bevy_slot, BevySlotAllocation};
 use crate::live::avatar::selection::select_avatar_by_identity;
 use crate::live::transport::bridge_client::LiveKitAgentManager;
+use crate::live::transport::call_server::CallManager;
 use crate::live::video::bevy_renderer::{AVATAR_HEIGHT, AVATAR_WIDTH};
+use crate::runtime::handle::Handle;
 use crate::{clog_error, clog_info, clog_warn};
 
 /// Resolve the render config for a persona identity. Uses the SAME selection the
@@ -66,6 +68,7 @@ fn config_for_identity(identity: &str, display_name: &str) -> Result<AvatarConfi
 /// participant, after `get_or_create_agent` has joined that persona to the room.
 pub async fn spawn_avatar_video_pump(
     manager: Arc<LiveKitAgentManager>,
+    call_manager: Arc<CallManager>,
     call_id: String,
     identity: String,
     display_name: String,
@@ -96,6 +99,15 @@ pub async fn spawn_avatar_video_pump(
         let _guard = guard;
         let mut published = 0u64;
 
+        // Native call-plane tee (#193/#172): a stable source handle (created once so
+        // mix-minus filtering is consistent) + a monotonic sequence/clock. The SAME
+        // frame we publish to LiveKit is tee'd into the native video plane so native
+        // clients (positron web, glass-box harness) see her real face, not the
+        // retired test pattern. Render once, two sinks.
+        let native_handle = Handle::new();
+        let native_start = std::time::Instant::now();
+        let mut native_seq: u32 = 0;
+
         loop {
             // Frame arrival is the clock — wake when the readback observer writes one.
             frame_notify.notified().await;
@@ -113,6 +125,24 @@ pub async fn spawn_avatar_video_pump(
             if (frame.width * frame.height) as usize != frame.data.len() / 4 {
                 continue;
             }
+
+            // Tee the same frame into the native call plane. No-op when no native
+            // WS client has the call open; never blocks the LiveKit path meaningfully
+            // (a couple of read-locks + a broadcast send). u16 cast is safe — avatar
+            // frames are 640x360.
+            native_seq = native_seq.wrapping_add(1);
+            call_manager
+                .push_avatar_frame(
+                    &call_id,
+                    &identity,
+                    native_handle,
+                    native_seq,
+                    native_start.elapsed().as_millis() as u32,
+                    &frame.data,
+                    frame.width as u16,
+                    frame.height as u16,
+                )
+                .await;
 
             match manager
                 .publish_video_frame(&call_id, &identity, &frame.data, frame.width, frame.height)

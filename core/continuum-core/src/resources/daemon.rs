@@ -64,8 +64,8 @@ use crate::{clog_info, clog_warn};
 use super::capacity::CapacitySource;
 use super::consumer::{ConsumerFootprint, ReclaimOutcome, ResourceConsumer};
 use super::governor::{GovernorConfig, ResourceGovernor};
-use super::ledger::LeaseBoard;
 use super::lease::{LeaseError, LeaseRequest, ReclaimPolicy, ResourceKind, ResourceLease};
+use super::ledger::LeaseBoard;
 
 /// Default daemon cadence. Faster than the 5 s `PressureBroker` tick because the
 /// daemon also drives lease *expirations*, which want sub-second resolution; one
@@ -164,6 +164,15 @@ pub struct ResourceDaemon {
     /// identical drift re-logged 1/sec is noise, not a new event — the live board still
     /// carries the current drift for readers every tick.
     last_drift_bytes: Mutex<[u64; 3]>,
+    /// The base "decide under the authority's tick" pattern (MEMORY-AUTHORITY-DAEMON):
+    /// closures that run EVERY tick with the authoritative fresh board. A consumer whose
+    /// job needs a memory DECISION — serving's lane plan (model / lanes / window), an eval
+    /// lane's window — registers here via [`on_tick`] instead of sampling memory on its own
+    /// hot path, computes its allocation from THIS board, and publishes it on its own
+    /// `watch` for its subscribers. One authority owns the tick; everyone else reacts to
+    /// what it decides. Grows after startup (no restart), like `consumers`; each observer is
+    /// panic-isolated so one broken consumer can't abort the reconcile tick.
+    tick_observers: RwLock<Vec<Arc<dyn Fn(&LeaseBoard) + Send + Sync>>>,
 }
 
 static GLOBAL_RESOURCE_DAEMON: std::sync::OnceLock<std::sync::Arc<ResourceDaemon>> =
@@ -216,6 +225,7 @@ impl ResourceDaemon {
             evict_rx: Mutex::new(evict_rx),
             config,
             last_drift_bytes: Mutex::new([0; 3]),
+            tick_observers: RwLock::new(Vec::new()),
         });
 
         // The canonical runner owns the loop: interval + Skip + PER-TICK
@@ -256,6 +266,27 @@ impl ResourceDaemon {
         Ok(lease)
     }
 
+    /// [`acquire`](Self::acquire), but hand back an RAII [`LeaseGuard`] that
+    /// releases the bytes when it drops. This is the OS-`malloc`/RAII shape for a
+    /// consumer that reserves VRAM/RAM for a BOUNDED job — an ephemeral eval lane,
+    /// a forge run: ask the board for the slot, and if granted, hold the guard for
+    /// the job's lifetime. The bytes return to the board automatically on an early
+    /// `?` return, a normal end, or a panic — no manual `release` to forget. The
+    /// lease TTL is the backstop if the whole PROCESS dies (SIGKILL) without ever
+    /// running the guard's `Drop`. An `Err(InsufficientCapacity)` is the honest
+    /// "no room" answer the caller uses to spill to CPU or defer — never an OOM.
+    pub fn acquire_guarded(
+        self: &std::sync::Arc<Self>,
+        req: &LeaseRequest,
+    ) -> Result<LeaseGuard, LeaseError> {
+        let lease = self.acquire(req)?;
+        Ok(LeaseGuard {
+            daemon: std::sync::Arc::clone(self),
+            lease_id: lease.lease_id,
+            released: false,
+        })
+    }
+
     pub fn renew(&self, lease_id: &str, expires_at_ms: u64) -> Result<(), LeaseError> {
         let now = now_ms();
         let mut g = self.governor.lock();
@@ -265,6 +296,24 @@ impl ResourceDaemon {
     pub fn reserve(&self, consumer_id: impl Into<String>, kind: ResourceKind, min_bytes: u64) {
         let mut g = self.governor.lock();
         g.reserve(consumer_id, kind, min_bytes);
+    }
+
+    /// This consumer's plannable headroom: global available minus every OTHER
+    /// consumer's unmet reservation floor — the same math `acquire` enforces,
+    /// exposed for BUDGETING so a planner sizes itself only into bytes it could
+    /// actually be granted (#225). A short governor-lock read, non-blocking.
+    pub fn available_for(&self, consumer_id: &str, kind: ResourceKind) -> u64 {
+        self.governor.lock().available_for(consumer_id, kind)
+    }
+
+    /// The replace-myself budget: `available_for` plus the caller's OWN resident bytes,
+    /// because a consumer choosing its successor releases what it holds as part of the
+    /// swap. Without this the incumbent is counted against its own replacement and the
+    /// plan can only ratchet down — see
+    /// [`ResourceLeaseLedger::budget_for_replacing`](super::ledger::ResourceLeaseLedger::budget_for_replacing)
+    /// for the measured incident.
+    pub fn budget_for_replacing(&self, consumer_id: &str, kind: ResourceKind) -> u64 {
+        self.governor.lock().budget_for_replacing(consumer_id, kind)
     }
 
     /// Register a leaseholder after startup — no restart (the directive's
@@ -277,6 +326,21 @@ impl ResourceDaemon {
         self.quarantine.lock().clear(&id);
         self.consumers.write().push(consumer);
         clog_info!("🧮 ResourceDaemon: consumer '{id}' registered");
+    }
+
+    /// Register a closure to run EVERY reconcile tick with the authoritative fresh
+    /// board — the base "decide under the authority's tick" pattern
+    /// (MEMORY-AUTHORITY-DAEMON). This is how a consumer whose job needs a memory
+    /// DECISION — serving's lane plan (model / lanes / window), an eval lane's window —
+    /// computes it in the ONE place that owns memory, WITHOUT sampling memory on its own
+    /// hot path: it reads the passed `&LeaseBoard` (the live truth, netted over every
+    /// measured consumer + external pressure) and publishes its allocation on its own
+    /// `watch` for its subscribers. Code the pattern once here; every consumer that
+    /// registers gets a smarter base for free as the authority improves. No restart
+    /// (registrable after startup, like [`add_consumer`]); each observer is panic-isolated
+    /// on the tick.
+    pub fn on_tick(&self, observer: Arc<dyn Fn(&LeaseBoard) + Send + Sync>) {
+        self.tick_observers.write().push(observer);
     }
 
     /// The ids of every registered leaseholder, in registration order. A cheap
@@ -462,6 +526,23 @@ impl ResourceDaemon {
             }
         }
 
+        // Fan the fresh board out to every tick-observer BEFORE publishing it — the
+        // "decide under the authority's tick" pattern. A consumer's memory DECISION
+        // (serving's lane plan, an eval lane's window) runs HERE, on the one authority's
+        // tick, reading THIS board — never sampling memory on its own hot path. Arcs are
+        // cloned out from under the lock so the (possibly non-trivial) closures never hold
+        // it; each is panic-isolated so one broken consumer can't abort the reconcile tick,
+        // exactly like the `footprint()` poll above.
+        {
+            let observers: Vec<Arc<dyn Fn(&LeaseBoard) + Send + Sync>> =
+                self.tick_observers.read().iter().cloned().collect();
+            for obs in &observers {
+                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| obs(&board))).is_err() {
+                    clog_warn!("🧮 ResourceDaemon: a tick-observer panicked — skipped this tick");
+                }
+            }
+        }
+
         // Publish post-plan board so readers (and the gate) stay fresh even when
         // calm.
         self.channel.publish(board);
@@ -557,6 +638,64 @@ impl ResourceDaemon {
             g.board()
         };
         self.channel.publish(board);
+    }
+}
+
+/// RAII grant handle from [`ResourceDaemon::acquire_guarded`]: the held bytes
+/// return to the board when this drops. The byte-residency companion to a scope
+/// guard — a bounded consumer (eval lane, forge run) holds it for the job and the
+/// reservation is released on any exit path (early `?`, normal end, panic). The
+/// lease's TTL backstops a process death that never runs `Drop` (SIGKILL). Not
+/// `Clone` (one guard per grant); dropping releases exactly once.
+pub struct LeaseGuard {
+    daemon: std::sync::Arc<ResourceDaemon>,
+    lease_id: String,
+    released: bool,
+}
+
+impl LeaseGuard {
+    /// The board-visible id of the held lease — for evidence/telemetry lines.
+    pub fn lease_id(&self) -> &str {
+        &self.lease_id
+    }
+
+    /// The bytes this guard holds, read live off the board (0 if already gone).
+    pub fn bytes(&self) -> u64 {
+        self.daemon
+            .board()
+            .leases
+            .iter()
+            .find(|l| l.lease_id == self.lease_id)
+            .map(|l| l.bytes)
+            .unwrap_or(0)
+    }
+
+    /// Release the reservation early (idempotent). `Drop` calls this if the guard
+    /// is dropped without an explicit release.
+    pub fn release(mut self) {
+        self.release_inner();
+    }
+
+    fn release_inner(&mut self) {
+        if self.released {
+            return;
+        }
+        self.released = true;
+        // Best-effort: a MissingLease (already released / TTL-expired and swept)
+        // is benign — the bytes are already back on the board. Fail-loud in the
+        // log, never panic on a drop path.
+        if let Err(e) = self.daemon.release(&self.lease_id) {
+            clog_warn!(
+                "🧮 LeaseGuard: release of lease '{}' failed (likely already expired): {e:?}",
+                self.lease_id
+            );
+        }
+    }
+}
+
+impl Drop for LeaseGuard {
+    fn drop(&mut self) {
+        self.release_inner();
     }
 }
 
@@ -701,16 +840,28 @@ mod tests {
         // First untracked residency → fires.
         assert!(drift_should_report(2 * gb, &mut last), "first drift fires");
         // Same drift next tick → silent (this is the 1/sec flood we're killing).
-        assert!(!drift_should_report(2 * gb, &mut last), "stable drift stays silent");
+        assert!(
+            !drift_should_report(2 * gb, &mut last),
+            "stable drift stays silent"
+        );
         // Sub-threshold jitter → still silent.
-        assert!(!drift_should_report(2 * gb + 1024 * 1024, &mut last), "1MiB jitter is not material");
+        assert!(
+            !drift_should_report(2 * gb + 1024 * 1024, &mut last),
+            "1MiB jitter is not material"
+        );
         // A material move (a lane spin-up) → re-fires.
-        assert!(drift_should_report(2 * gb + DRIFT_REPORT_DELTA_BYTES, &mut last), "material move re-fires");
+        assert!(
+            drift_should_report(2 * gb + DRIFT_REPORT_DELTA_BYTES, &mut last),
+            "material move re-fires"
+        );
         // Drift resolves → silent, but state resets…
         assert!(!drift_should_report(0, &mut last), "resolution is silent");
         assert_eq!(last, 0, "resolved drift resets the baseline");
         // …so a returning residency fires again.
-        assert!(drift_should_report(2 * gb, &mut last), "a returning residency re-fires");
+        assert!(
+            drift_should_report(2 * gb, &mut last),
+            "a returning residency re-fires"
+        );
     }
 
     /// A scriptable consumer: holds bytes, frees per a configurable response so a
@@ -812,10 +963,142 @@ mod tests {
         }
     }
 
+    // what this catches: the RAII lease guard (#56/G1) — `acquire_guarded` reserves
+    // bytes that show on the board, and dropping the guard returns them WITHOUT a
+    // manual `release`. This is the primitive the ephemeral eval lane holds for its
+    // lifetime; if Drop didn't release, every eval would permanently leak its VRAM
+    // reservation off the board and the box would starve after a few benchmarks.
+    // Also pins the honest refusal: a request past the ceiling is InsufficientCapacity,
+    // not an over-grant (the "pressure, not OOM" answer the caller spills to CPU on).
+    #[tokio::test]
+    async fn lease_guard_reserves_then_releases_on_drop() {
+        let src = Arc::new(MockCapacitySource::new(ResourceKind::Vram, 10_000));
+        let daemon = ResourceDaemon::start(
+            vec![src],
+            vec![],
+            DaemonConfig {
+                tick_interval: Duration::from_millis(20),
+                min_reclaim_budget: Duration::from_millis(100),
+                governor: GovernorConfig {
+                    min_dwell_ms: 0,
+                    graceful_grace_ms: 50,
+                },
+            },
+        );
+        let vram_available = |d: &ResourceDaemon| {
+            d.board()
+                .kinds
+                .iter()
+                .find(|k| k.kind == ResourceKind::Vram)
+                .map(|k| k.available_bytes)
+                .unwrap_or(0)
+        };
+        assert_eq!(
+            vram_available(&daemon),
+            10_000,
+            "starts with the full ceiling free"
+        );
+
+        {
+            let guard = daemon
+                .acquire_guarded(&req("eval-lane", 6_000, 60_000, ReclaimPolicy::Pinned))
+                .expect("6GB fits under the 10GB ceiling");
+            assert_eq!(guard.bytes(), 6_000, "guard reports the held bytes");
+            assert_eq!(
+                daemon.board().leases.len(),
+                1,
+                "the reservation is on the board"
+            );
+            assert_eq!(
+                vram_available(&daemon),
+                4_000,
+                "available drops by the held bytes"
+            );
+
+            // A second ask that exceeds the remaining 4GB is refused HONESTLY (the
+            // caller spills to CPU on exactly this) — never an over-grant.
+            match daemon.acquire_guarded(&req("eval-lane-2", 5_000, 60_000, ReclaimPolicy::Pinned))
+            {
+                Err(LeaseError::InsufficientCapacity {
+                    available,
+                    requested,
+                    ..
+                }) => {
+                    assert_eq!(available, 4_000);
+                    assert_eq!(requested, 5_000);
+                }
+                Err(e) => panic!("expected InsufficientCapacity, got a different error: {e:?}"),
+                Ok(_) => panic!(
+                    "expected InsufficientCapacity — the board over-granted past its ceiling"
+                ),
+            }
+        } // guard drops here → release
+
+        assert_eq!(
+            daemon.board().leases.len(),
+            0,
+            "drop released the reservation — no leak"
+        );
+        assert_eq!(
+            vram_available(&daemon),
+            10_000,
+            "the full ceiling is free again after drop"
+        );
+    }
+
+    // what this catches: the base "decide under the authority's tick" pattern
+    // (MEMORY-AUTHORITY-DAEMON). A registered `on_tick` observer runs EVERY reconcile
+    // tick with the authoritative fresh board and can read the live VRAM available — the
+    // seam that lets serving/eval compute their memory decision in the ONE authority
+    // instead of sampling memory on their own hot path. Regresses dropping the fan-out.
+    #[tokio::test]
+    async fn on_tick_runs_observers_with_the_live_board() {
+        let src = Arc::new(MockCapacitySource::new(ResourceKind::Vram, 10_000));
+        let daemon = ResourceDaemon::start(
+            vec![src],
+            vec![],
+            DaemonConfig {
+                tick_interval: Duration::from_millis(20),
+                min_reclaim_budget: Duration::from_millis(100),
+                governor: GovernorConfig {
+                    min_dwell_ms: 0,
+                    graceful_grace_ms: 50,
+                },
+            },
+        );
+        let seen_vram = Arc::new(AtomicU64::new(0));
+        let sink = seen_vram.clone();
+        daemon.on_tick(Arc::new(move |board: &LeaseBoard| {
+            // Runs UNDER the authority's tick with the live board — reads the memory
+            // truth, never samples memory itself.
+            let vram = board
+                .kinds
+                .iter()
+                .find(|k| k.kind == ResourceKind::Vram)
+                .map(|k| k.available_bytes)
+                .unwrap_or(0);
+            sink.store(vram, Ordering::SeqCst);
+        }));
+        // The daemon's own tick fans the board out to the observer within a few ticks.
+        let fired = wait_until(&daemon, |_| seen_vram.load(Ordering::SeqCst) > 0).await;
+        assert!(
+            fired,
+            "an on_tick observer must run under the authority's reconcile tick"
+        );
+        assert_eq!(
+            seen_vram.load(Ordering::SeqCst),
+            10_000,
+            "the observer saw the live board's VRAM available — the authority's memory truth"
+        );
+    }
+
     // Poll the board until a predicate holds or we exhaust attempts (the daemon
     // ticks asynchronously). Keeps tests deterministic without sleeping a fixed
     // wall-clock budget that would flake on slow CI.
-    async fn wait_until(daemon: &ResourceDaemon, mut pred: impl FnMut(&LeaseBoard) -> bool) -> bool {
+    async fn wait_until(
+        daemon: &ResourceDaemon,
+        mut pred: impl FnMut(&LeaseBoard) -> bool,
+    ) -> bool {
         for _ in 0..200 {
             if pred(&daemon.board()) {
                 return true;
@@ -843,7 +1126,10 @@ mod tests {
             DaemonConfig {
                 tick_interval: Duration::from_millis(20),
                 min_reclaim_budget: Duration::from_millis(100),
-                governor: GovernorConfig { min_dwell_ms: 0, graceful_grace_ms: 50 },
+                governor: GovernorConfig {
+                    min_dwell_ms: 0,
+                    graceful_grace_ms: 50,
+                },
             },
         );
 
@@ -857,9 +1143,14 @@ mod tests {
         // ledger's only victim is the whole 8GB lease; serving fully releases it.
         src.set_ceiling(5_000);
 
-        let settled =
-            wait_until(&daemon, |b| b.leases.iter().map(|l| l.bytes).sum::<u64>() == 0).await;
-        assert!(settled, "daemon should drive the reclaim and free the lease");
+        let settled = wait_until(&daemon, |b| {
+            b.leases.iter().map(|l| l.bytes).sum::<u64>() == 0
+        })
+        .await;
+        assert!(
+            settled,
+            "daemon should drive the reclaim and free the lease"
+        );
         assert_eq!(serving.held(), 0, "consumer actually freed its bytes");
         assert!(!daemon.is_over_budget(), "back within budget after reclaim");
     }
@@ -881,7 +1172,10 @@ mod tests {
             DaemonConfig {
                 tick_interval: Duration::from_millis(20),
                 min_reclaim_budget: Duration::from_millis(100),
-                governor: GovernorConfig { min_dwell_ms: 0, graceful_grace_ms: 50 },
+                governor: GovernorConfig {
+                    min_dwell_ms: 0,
+                    graceful_grace_ms: 50,
+                },
             },
         );
 
@@ -894,12 +1188,24 @@ mod tests {
         // not on the over-budget flag, which reads false at t=0 before the daemon
         // has noticed the squeeze.
         let settled = wait_until(&daemon, |b| {
-            b.leases.iter().any(|l| l.lease_id == lease.lease_id && l.bytes == 5_000)
+            b.leases
+                .iter()
+                .any(|l| l.lease_id == lease.lease_id && l.bytes == 5_000)
         })
         .await;
-        assert!(settled, "tier-down should shrink the lease to its freed size");
-        assert_eq!(serving.held(), 5_000, "consumer tier-down freed exactly the overage");
-        assert!(!daemon.is_over_budget(), "granted back within the ceiling — settled, no thrash");
+        assert!(
+            settled,
+            "tier-down should shrink the lease to its freed size"
+        );
+        assert_eq!(
+            serving.held(),
+            5_000,
+            "consumer tier-down freed exactly the overage"
+        );
+        assert!(
+            !daemon.is_over_budget(),
+            "granted back within the ceiling — settled, no thrash"
+        );
     }
 
     // what this catches: a Deferred reclaim is patient backpressure across the
@@ -916,7 +1222,10 @@ mod tests {
             DaemonConfig {
                 tick_interval: Duration::from_millis(20),
                 min_reclaim_budget: Duration::from_millis(100),
-                governor: GovernorConfig { min_dwell_ms: 0, graceful_grace_ms: 0 },
+                governor: GovernorConfig {
+                    min_dwell_ms: 0,
+                    graceful_grace_ms: 0,
+                },
             },
         );
 
@@ -946,7 +1255,10 @@ mod tests {
 
         // Consumer becomes ready → next tick reclaims the overage.
         serving.set_mode("release");
-        let settled = wait_until(&daemon, |b| b.leases.iter().map(|l| l.bytes).sum::<u64>() <= 1_000).await;
+        let settled = wait_until(&daemon, |b| {
+            b.leases.iter().map(|l| l.bytes).sum::<u64>() <= 1_000
+        })
+        .await;
         assert!(settled, "once ready, the daemon reclaims to the ceiling");
         let _ = lease;
     }
@@ -968,14 +1280,20 @@ mod tests {
             DaemonConfig {
                 tick_interval: Duration::from_millis(20),
                 min_reclaim_budget: Duration::from_millis(100),
-                governor: GovernorConfig { min_dwell_ms: 0, graceful_grace_ms: 50 },
+                governor: GovernorConfig {
+                    min_dwell_ms: 0,
+                    graceful_grace_ms: 50,
+                },
             },
         );
 
         // No acquire — serving holds bytes but never leased. The tick's footprint
         // poll must still attribute the residency on the board.
         let surfaced = wait_until(&daemon, |b| !b.attributions.is_empty()).await;
-        assert!(surfaced, "footprint poll should attribute measured residency each tick");
+        assert!(
+            surfaced,
+            "footprint poll should attribute measured residency each tick"
+        );
 
         let board = daemon.board();
         assert_eq!(board.attributions.len(), 1);
@@ -983,13 +1301,23 @@ mod tests {
         assert_eq!(board.attributions[0].bytes, 18_000);
         assert_eq!(board.attributions[0].kind, ResourceKind::Vram);
 
-        let vram = board.kinds.iter().find(|k| k.kind == ResourceKind::Vram).unwrap();
+        let vram = board
+            .kinds
+            .iter()
+            .find(|k| k.kind == ResourceKind::Vram)
+            .unwrap();
         assert_eq!(vram.granted_bytes, 0, "nothing leased");
         assert_eq!(vram.measured_bytes, 18_000, "but 18GB measured-resident");
         // available is the honest free-based remainder — capacity − granted, NOT
         // reduced by the measured residency. Measurement reports; it never reserves.
-        assert_eq!(vram.available_bytes, 24_000, "available untouched by measurement");
-        assert!(!daemon.is_over_budget(), "measured residency is not an over-budget condition");
+        assert_eq!(
+            vram.available_bytes, 24_000,
+            "available untouched by measurement"
+        );
+        assert!(
+            !daemon.is_over_budget(),
+            "measured residency is not an over-budget condition"
+        );
     }
 
     // what this catches: the un-inversion wired end-to-end through the daemon tick —
@@ -1011,35 +1339,75 @@ mod tests {
             DaemonConfig {
                 tick_interval: Duration::from_millis(20),
                 min_reclaim_budget: Duration::from_millis(100),
-                governor: GovernorConfig { min_dwell_ms: 0, graceful_grace_ms: 50 },
+                governor: GovernorConfig {
+                    min_dwell_ms: 0,
+                    graceful_grace_ms: 50,
+                },
             },
         );
 
         // A game grabs 21GB of VRAM: physical_used = 21_000, ceiling fixed at 24_000.
         src.set_used(21_000);
-        let contracted =
-            wait_until(&daemon, |b| b.kinds.iter().any(|k| k.physical_used_bytes == 21_000)).await;
-        assert!(contracted, "the tick must feed external physical usage onto the board");
+        let contracted = wait_until(&daemon, |b| {
+            b.kinds.iter().any(|k| k.physical_used_bytes == 21_000)
+        })
+        .await;
+        assert!(
+            contracted,
+            "the tick must feed external physical usage onto the board"
+        );
 
         let board = daemon.board();
-        let vram = board.kinds.iter().find(|k| k.kind == ResourceKind::Vram).unwrap();
-        assert_eq!(vram.capacity_bytes, 24_000, "ceiling is fixed — the grab did not move it");
+        let vram = board
+            .kinds
+            .iter()
+            .find(|k| k.kind == ResourceKind::Vram)
+            .unwrap();
+        assert_eq!(
+            vram.capacity_bytes, 24_000,
+            "ceiling is fixed — the grab did not move it"
+        );
         assert_eq!(vram.granted_bytes, 0, "we hold no lease");
-        assert_eq!(vram.physical_used_bytes, 21_000, "but 21GB is physically resident");
-        assert_eq!(vram.external_bytes, 21_000, "all of it external — no consumer of ours claims it");
-        assert_eq!(vram.available_bytes, 3_000, "available = 24k − max(0, 21k) = 3k, NOT the blind 24k");
-        assert!(!daemon.is_over_budget(), "21k < 24k ceiling — tight, not over");
+        assert_eq!(
+            vram.physical_used_bytes, 21_000,
+            "but 21GB is physically resident"
+        );
+        assert_eq!(
+            vram.external_bytes, 21_000,
+            "all of it external — no consumer of ours claims it"
+        );
+        assert_eq!(
+            vram.available_bytes, 3_000,
+            "available = 24k − max(0, 21k) = 3k, NOT the blind 24k"
+        );
+        assert!(
+            !daemon.is_over_budget(),
+            "21k < 24k ceiling — tight, not over"
+        );
 
         // The game grabs more, past the ceiling: physical_used = 26_000 > 24_000.
         src.set_used(26_000);
         let over = wait_until(&daemon, |_| daemon.is_over_budget()).await;
-        assert!(over, "physical usage over the fixed ceiling is an over-budget condition on its own");
+        assert!(
+            over,
+            "physical usage over the fixed ceiling is an over-budget condition on its own"
+        );
         let board = daemon.board();
-        let vram = board.kinds.iter().find(|k| k.kind == ResourceKind::Vram).unwrap();
-        assert_eq!(vram.available_bytes, 0, "committed exceeds capacity → zero to commit");
+        let vram = board
+            .kinds
+            .iter()
+            .find(|k| k.kind == ResourceKind::Vram)
+            .unwrap();
+        assert_eq!(
+            vram.available_bytes, 0,
+            "committed exceeds capacity → zero to commit"
+        );
         // Nothing safe to reclaim (no lease of ours) — the daemon stays alive and
         // keeps publishing, it does not thrash trying to evict a game's memory.
-        assert!(daemon.board().leases.is_empty(), "no lease existed to be reclaimed");
+        assert!(
+            daemon.board().leases.is_empty(),
+            "no lease existed to be reclaimed"
+        );
     }
 
     // what this catches: a panicking consumer is isolated (catch_unwind) and
@@ -1056,7 +1424,10 @@ mod tests {
             DaemonConfig {
                 tick_interval: Duration::from_millis(20),
                 min_reclaim_budget: Duration::from_millis(50),
-                governor: GovernorConfig { min_dwell_ms: 0, graceful_grace_ms: 0 },
+                governor: GovernorConfig {
+                    min_dwell_ms: 0,
+                    graceful_grace_ms: 0,
+                },
             },
         );
         daemon
@@ -1081,6 +1452,9 @@ mod tests {
             "panicking consumer's bytes stay accounted, never yanked"
         );
         assert_eq!(bad.held(), 4_000, "panicking consumer freed nothing");
-        assert!(daemon.is_over_budget(), "still over budget — nothing was freed");
+        assert!(
+            daemon.is_over_budget(),
+            "still over budget — nothing was freed"
+        );
     }
 }

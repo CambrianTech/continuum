@@ -1,6 +1,6 @@
 # Project-tier benchmarks — developing the personas against real apps, websites, projects
 
-`cu benchmark/list` catalogs 21 benchmarks. The function/program tier runs locally
+`uu benchmark/list` catalogs 21 benchmarks. The function/program tier runs locally
 today (humaneval-rs, hard-rs, frontier-rs, coder-eval — rustc compile+run). This doc
 is the **whole-app / website / project tier**: the yardsticks the frontier labs
 report on, and exactly what we develop the personas against.

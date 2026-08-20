@@ -26,77 +26,90 @@ pub mod command_inbound_pump;
 // Joel (2026-06-01): "You mix this fake shit in and it's going live
 // ALL THE TIME. The fake shit is a CHOSEN model adapter no other
 // form. Declaration." cfg gating IS the declaration.
-#[cfg(any(test, feature = "test-fixtures"))]
-pub mod scripted_adapter_factory;
-#[cfg(any(test, feature = "test-fixtures"))]
-pub mod scripted_conversation;
+pub mod active_work_source;
 pub mod airc_runtime_registry;
 pub mod airc_source;
 pub mod allocator;
+pub mod base_model_policy;
+pub mod cached_source;
+pub mod card;
+pub mod card_holder;
 pub mod channel_items;
 pub mod channel_queue;
 pub mod channel_registry;
 pub mod channel_types;
 pub mod channel_view;
+pub mod claim_rejections;
 pub mod cognition;
 pub mod cognition_io;
+pub mod cognition_pulse;
 pub mod decay_tick;
 pub mod domain_classifier;
+pub mod durable_history;
 pub mod engram;
 pub mod engram_graph;
 pub mod engram_source;
 pub mod evaluator;
 pub mod focus;
 pub mod genome_paging;
+pub mod grounding_invalidation;
 pub mod home;
 pub mod host;
 pub mod hw_tier_descriptor;
 pub mod identity_provider;
-pub mod persona_identity;
 pub mod inbox;
+pub mod inbox_admission;
 pub mod inference_profile;
 pub mod loop_dedup;
-pub mod model_override;
-pub mod portability;
-pub mod profile_builder;
-pub mod service_loop;
-pub mod spawner;
-pub mod spawner_module;
-pub mod supervisor;
-pub mod training_producer;
-pub mod inbox_admission;
+pub mod media_perception_source;
 pub mod media_policy;
 pub mod message_cache;
+pub mod mission_source;
+pub mod model_override;
 pub mod model_selection;
 pub mod name_generator;
+pub mod persona_identity;
+pub mod portability;
+pub mod profile_builder;
 pub mod projection;
 pub mod prompt_assembly;
 pub mod rag_budget;
+pub mod viewstate_rag;
 pub mod rag_capture;
 pub mod rag_inspect;
 pub mod rag_replay;
 pub mod recall_metadata;
-pub mod redaction;
-pub mod active_work_source;
 pub mod recorder;
+pub mod redaction;
 pub mod resource_forecast;
 pub mod response;
+pub mod resume_or_mint_provider;
+pub mod role_template;
 pub mod room_board_source;
 pub mod room_doctrine_source;
 pub mod room_roster_source;
-pub mod resume_or_mint_provider;
-pub mod role_template;
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod scripted_adapter_factory;
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod scripted_conversation;
 pub mod seed;
 pub mod self_task_generator;
+pub mod act_question;
+pub mod service_loop;
+pub mod staged_workspace;
 pub mod service_module;
+pub mod spawner;
+pub mod spawner_module;
+pub mod supervisor;
 pub mod text_analysis;
 pub mod trace;
+pub mod training_producer;
 pub mod turn_context;
-pub mod wall_source;
-pub mod workspace_map_source;
 pub mod turn_frame;
 pub mod types;
 pub mod unified;
+pub mod wall_source;
+pub mod workspace_map_source;
 
 pub use admission::{
     build_engram_from_candidate, AdmissionCandidate, AdmissionConfig, AdmissionContext,
@@ -113,7 +126,6 @@ pub use allocator::{
     allocate as allocate_personas, load_catalog, select_local_model, AllocationResult,
     PersonaAllocation, PersonaCatalogEntry,
 };
-pub use model_override::{PersonaModelOverride, PersonaModelOverrideError};
 pub use channel_items::{ChannelEnqueueRequest, MediaItemRequest};
 pub use channel_registry::ChannelRegistry;
 pub use channel_types::{ActivityDomain, ChannelRegistryStatus, ChannelStatus, ServiceCycleResult};
@@ -140,6 +152,7 @@ pub use message_cache::{
     CachedMessage, ContentDedupResult, ContentDeduplicator, EchoChamberResult, RecentMessageCache,
     SenderCategory,
 };
+pub use model_override::{PersonaModelOverride, PersonaModelOverrideError};
 pub use model_selection::{
     AdapterInfo, AdapterRegistry, ModelSelectionError, ModelSelectionRequest, ModelSelectionResult,
 };

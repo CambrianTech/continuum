@@ -19,7 +19,8 @@
  */
 
 import { type TemplateResult } from 'lit';
-import { chatWorkspace, type ChatViewModel } from '@continuum/chat-view';
+import { chatWorkspace, type ChatViewModel, type WorkspaceLive } from '@continuum/chat-view';
+import type { WorkspaceChrome } from '@continuum/patterns';
 import { webTarget } from '../render/litTarget';
 
 /** The read surface: header + roster `Listing` + purpose-dispatched Content.
@@ -28,7 +29,16 @@ import { webTarget } from '../render/litTarget';
  * neutral `WorkspaceView` (`chatWorkspace`) and let the web `RenderTarget` paint it.
  * The markup is byte-identical to the former inline template (screenshot-verified) —
  * the difference is architectural: the same projection a persona reads over RAG and a
- * mobile Flutter target will paint. `apps/web` flows through `mount(chatApp, …, webTarget)`. */
-export function renderChat(vm: ChatViewModel): TemplateResult {
-  return webTarget.workspace(chatWorkspace(vm));
+ * mobile Flutter target will paint. `apps/web` flows through `mount(chatApp, …, webTarget)`.
+ *
+ * `live` carries the optional live extras — nav (room set + unread) and sys (the
+ * SYS gauge) — each honestly absent until its subscription delivers. `chrome`
+ * carries the host-owned fragments the shell places (the compose bar into the
+ * center column's footer — Discord geometry, rails full height). */
+export function renderChat(
+  vm: ChatViewModel,
+  live?: WorkspaceLive,
+  chrome?: WorkspaceChrome<TemplateResult>,
+): TemplateResult {
+  return webTarget.workspace(chatWorkspace(vm, live), chrome);
 }

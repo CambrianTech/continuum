@@ -32,6 +32,7 @@
 pub mod airc_remote;
 pub mod backends;
 pub mod batching_probe;
+pub mod child_log;
 pub mod coordinator;
 pub mod coordinator_pool;
 pub mod footprint_registry;
@@ -54,7 +55,10 @@ pub mod ort_providers;
 pub mod placement_capture;
 pub mod recipe_budget;
 pub mod throughput_expectation;
+pub mod placement_watch;
 pub mod vendored;
+pub mod vision_sidecar;
+pub mod wedge;
 
 // Re-export commonly used types
 pub use backends::{read_gguf_metadata, GenomeAdapter, ModelBackend, ModelFormat};

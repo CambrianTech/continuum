@@ -48,7 +48,10 @@ use crate::sdk_codegen::CommandError;
 
 /// Which model to force-serve on this host.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/model_registry/ServingPinParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/model_registry/ServingPinParams.ts"
+)]
 pub struct ServingPinParams {
     /// The model id as it appears in `models/list`. Must be downloaded and must
     /// fit a serving lane on this host — fails loud otherwise.
@@ -59,7 +62,10 @@ pub struct ServingPinParams {
 /// the fit numbers it was gated on (so the caller sees the headroom, not just a
 /// yes).
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/model_registry/PinReport.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/model_registry/PinReport.ts"
+)]
 pub struct PinReport {
     /// The model id now pinned — the daemon's next reconcile swaps the live
     /// server to it.
@@ -195,9 +201,16 @@ mod tests {
 
     fn plan(fits: bool) -> ServingPlan {
         ServingPlan {
-            base_model_id: "x".into(),
+            base_model: crate::cognition::serving_plan::ModelFootprint {
+                model_id: "x".into(),
+                weights_bytes: 0,
+                kv_per_token: 0,
+                context_window: 8192,
+                capability_rank: 0,
+            },
             served_context_window: 8192,
             lanes: 1,
+            grid_overflow_lanes: 0,
             resident_models: 1,
             fits_on_gpu: fits,
             rationale: "test".into(),
@@ -217,10 +230,21 @@ mod tests {
         })
     }
 
-    fn build(fit: PinFitChecker, catalog: Arc<ModelCatalog>) -> (ServingPin, watch::Receiver<Option<String>>) {
+    fn build(
+        fit: PinFitChecker,
+        catalog: Arc<ModelCatalog>,
+    ) -> (ServingPin, watch::Receiver<Option<String>>) {
         let (pin, pin_rx) = watch::channel(None);
         let (_tx, serving) = watch::channel(ServingSnapshot::empty());
-        (ServingPin { pin, fit, catalog, serving }, pin_rx)
+        (
+            ServingPin {
+                pin,
+                fit,
+                catalog,
+                serving,
+            },
+            pin_rx,
+        )
     }
 
     // what this catches: the wire name mirrors the file path — the routing
@@ -235,13 +259,28 @@ mod tests {
     #[tokio::test]
     async fn unknown_model_is_not_found() {
         let (catalog, _id) = catalog_and_id();
-        let (cmd, pin_rx) = build(fixed_fit(PinFit { plan: Some(plan(true)), weights_bytes: 0, budget_bytes: 0 }), catalog);
+        let (cmd, pin_rx) = build(
+            fixed_fit(PinFit {
+                plan: Some(plan(true)),
+                weights_bytes: 0,
+                budget_bytes: 0,
+            }),
+            catalog,
+        );
         let err = cmd
-            .run(&Ctx::default(), ServingPinParams { model_id: "no-such-model".into() })
+            .run(
+                &Ctx::default(),
+                ServingPinParams {
+                    model_id: "no-such-model".into(),
+                },
+            )
             .await
             .expect_err("unknown id must fail loud");
         assert!(matches!(err, CommandError::NotFound(_)));
-        assert!(pin_rx.borrow().is_none(), "no pin set on a rejected request");
+        assert!(
+            pin_rx.borrow().is_none(),
+            "no pin set on a rejected request"
+        );
     }
 
     // what this catches: a real model that won't fit a lane is refused loud as
@@ -251,7 +290,11 @@ mod tests {
     async fn model_that_wont_fit_is_denied() {
         let (catalog, id) = catalog_and_id();
         let (cmd, pin_rx) = build(
-            fixed_fit(PinFit { plan: Some(plan(false)), weights_bytes: 30_000_000_000, budget_bytes: 8_000_000_000 }),
+            fixed_fit(PinFit {
+                plan: Some(plan(false)),
+                weights_bytes: 30_000_000_000,
+                budget_bytes: 8_000_000_000,
+            }),
             catalog,
         );
         let err = cmd
@@ -259,7 +302,10 @@ mod tests {
             .await
             .expect_err("over-budget model must be denied");
         assert!(matches!(err, CommandError::Denied(_)));
-        assert!(pin_rx.borrow().is_none(), "the pin must NOT be set when the model won't fit");
+        assert!(
+            pin_rx.borrow().is_none(),
+            "the pin must NOT be set when the model won't fit"
+        );
     }
 
     // what this catches: a model with no servable artifact (plan None) is denied
@@ -268,7 +314,11 @@ mod tests {
     async fn not_downloaded_is_denied() {
         let (catalog, id) = catalog_and_id();
         let (cmd, pin_rx) = build(
-            fixed_fit(PinFit { plan: None, weights_bytes: 0, budget_bytes: 8_000_000_000 }),
+            fixed_fit(PinFit {
+                plan: None,
+                weights_bytes: 0,
+                budget_bytes: 8_000_000_000,
+            }),
             catalog,
         );
         let err = cmd
@@ -286,15 +336,28 @@ mod tests {
     async fn fitting_model_is_pinned() {
         let (catalog, id) = catalog_and_id();
         let (cmd, pin_rx) = build(
-            fixed_fit(PinFit { plan: Some(plan(true)), weights_bytes: 4_000_000_000, budget_bytes: 40_000_000_000 }),
+            fixed_fit(PinFit {
+                plan: Some(plan(true)),
+                weights_bytes: 4_000_000_000,
+                budget_bytes: 40_000_000_000,
+            }),
             catalog,
         );
         let report = cmd
-            .run(&Ctx::default(), ServingPinParams { model_id: id.clone() })
+            .run(
+                &Ctx::default(),
+                ServingPinParams {
+                    model_id: id.clone(),
+                },
+            )
             .await
             .expect("fitting model pins");
         assert_eq!(report.pinned_model, id);
         assert_eq!(report.served_context_window, 8192);
-        assert_eq!(pin_rx.borrow().as_deref(), Some(id.as_str()), "the pin watch carries the forced model");
+        assert_eq!(
+            pin_rx.borrow().as_deref(),
+            Some(id.as_str()),
+            "the pin watch carries the forced model"
+        );
     }
 }

@@ -24,7 +24,7 @@ fn default_max_results() -> usize {
 )]
 pub struct MemoryMultiLayerRecallParams {
     /// Which persona's corpus to recall from.
-    pub persona_id: String,
+    pub persona_id: crate::identity::PersonaRef,
     /// The semantic query. Absent ⇒ the semantic layer degrades to non-semantic recall.
     #[serde(default)]
     #[ts(optional)]
@@ -52,6 +52,15 @@ crate::action_command! {
     output: MemoryRecallResponse,
     run(this, _ctx, p) => {
         let _timer = TimingGuard::new("module", "memory_multi_layer_recall");
+        // First touch after a restart: hydrate the corpus from the persona's
+        // durable longterm.db — recall reads THROUGH to the truth, it never
+        // reports an empty mind just because the cache is cold (card aded8871).
+        if let Some(loaded) = super::hydrate_corpus_if_missing(&this.state, &p.persona_id).await? {
+            log_info!(
+                "module", "memory_multi_layer_recall",
+                "Hydrated corpus for {} from durable store ({loaded} memories)", p.persona_id
+            );
+        }
         let req = MultiLayerRecallRequest {
             query_text: p.query_text,
             room_id: p.room_id,

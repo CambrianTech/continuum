@@ -8,9 +8,9 @@ use crate::live::audio::capabilities::ModelCapabilityRegistry;
 use crate::live::audio::mixer::{AudioMixer, ParticipantStream};
 use crate::live::audio::router::{AudioRouter, RoutedParticipant};
 use crate::live::audio::stt;
-use crate::runtime::handle::Handle;
 use crate::live::types::FrameKind;
 use crate::live::video::source::{TestPatternSource, VideoSource};
+use crate::runtime::handle::Handle;
 use crate::utils::audio::{
     base64_decode_i16, bytes_to_i16, i16_to_f32, is_silence, resample_to_16k,
 };
@@ -344,9 +344,64 @@ pub struct CallManager {
     audio_router: AudioRouter,
     /// Model capability registry for looking up what models can do
     capability_registry: Arc<ModelCapabilityRegistry>,
+    /// Stable per-(call,persona) mixer handle for the native-plane voice tee (#193
+    /// audio convergence). A persona is not a native WS participant — she publishes
+    /// to LiveKit — so `push_persona_audio` registers her as a virtual AI sender in
+    /// the call's mixer under this handle. Keyed `"{call_id}\0{user_id}"`.
+    persona_audio_handles: RwLock<HashMap<String, Handle>>,
+    /// Core-side session registration hook (#58). `None` in tests and until boot
+    /// installs it; a call still works without it, it is just not registered — which
+    /// is precisely the state the live-call view now renders instead of hiding.
+    session_registrar: Option<SessionRegistrar>,
 }
 
+/// Told when a participant joins a live call, so the CORE can register the session
+/// itself (#58).
+///
+/// A callback, not an import: transport announces a fact and never learns what the
+/// session layer does with it. `CallManager` stays ignorant of `VoiceService`,
+/// `VoiceOrchestrator` and `VoiceParticipant`, which is what keeps the recipe layer
+/// from leaking into the audio path.
+///
+/// Why it exists at all: registration was CLIENT-driven. `join_call` knew a call had
+/// started, held the call id (= the airc RoomId) and the joiner, and told nobody. So
+/// the orchestration lived in whichever client bothered to implement it — exactly one
+/// did, in Node, in `legacy/` — and iOS/Android/TUI citizens were structurally
+/// voiceless. The legacy bridge documents the consequence: "Without this, isInCall()
+/// returns false and AI responses are silently dropped."
+pub type SessionRegistrar = Arc<dyn Fn(&str, &str, &str, bool) + Send + Sync>;
+
 impl CallManager {
+    /// Install the core-side registrar. Called once at boot, where the session service
+    /// and the call manager both exist; absent in tests, where a call needs no session.
+    pub fn set_session_registrar(&mut self, registrar: SessionRegistrar) {
+        self.session_registrar = Some(registrar);
+    }
+
+    /// Every LIVE call and how many participants are in it — the read side the live-call
+    /// projection needs (#58).
+    ///
+    /// There was no reader here either, and that absence is load-bearing: nothing could
+    /// compare "calls the CallServer is actually running" against "sessions the
+    /// orchestrator thinks are registered". That comparison IS the defect made visible.
+    /// A live call with no matching registration is precisely the state where a persona
+    /// sits in the room, present and silent, `isInCall()` returns false, and her responses
+    /// are dropped with nothing anywhere saying why.
+    ///
+    /// Returns a snapshot rather than a guard: the caller is a periodic projection, and
+    /// holding these locks across an await would put a rendering concern in the audio path.
+    pub async fn live_calls(&self) -> Vec<(String, usize)> {
+        let calls = self.calls.read().await;
+        let participants = self.participant_calls.read().await;
+        calls
+            .keys()
+            .map(|call_id| {
+                let n = participants.values().filter(|c| *c == call_id).count();
+                (call_id.clone(), n)
+            })
+            .collect()
+    }
+
     pub fn new() -> Self {
         Self {
             calls: RwLock::new(HashMap::new()),
@@ -355,6 +410,8 @@ impl CallManager {
             video_source_shutdowns: RwLock::new(HashMap::new()),
             audio_router: AudioRouter::new(),
             capability_registry: Arc::new(ModelCapabilityRegistry::new()),
+            persona_audio_handles: RwLock::new(HashMap::new()),
+            session_registrar: None,
         }
     }
 
@@ -371,15 +428,24 @@ impl CallManager {
             self.start_audio_loop(call_id.to_string(), call.clone())
                 .await;
 
-            // Auto-start test video source (proves video plumbing works)
-            // TODO: Remove when real video sources (webcam, bgfx-rs, avatar API) are connected
-            let shutdown_tx = Self::start_test_video_source_for(&call, call_id);
+            // Real video sources are now connected (#193/#172): the avatar pump tees
+            // each persona's Bevy frame into this call's video plane via
+            // `push_avatar_frame`. The SMPTE test pattern is retired to an opt-in
+            // debug affordance — it used to auto-start and mask the real avatar with
+            // 160x120 color bars for every native client. Set CONTINUUM_CALL_TEST_PATTERN=1
+            // to bring it back for plumbing checks on a call with no real source.
+            if crate::config_env::read("CONTINUUM_CALL_TEST_PATTERN")
+                .map(|v| v.trim() == "1" || v.trim().eq_ignore_ascii_case("true"))
+                .unwrap_or(false)
             {
-                let mut shutdowns = self.video_source_shutdowns.write().await;
-                shutdowns
-                    .entry(call_id.to_string())
-                    .or_default()
-                    .push(shutdown_tx);
+                let shutdown_tx = Self::start_test_video_source_for(&call, call_id);
+                {
+                    let mut shutdowns = self.video_source_shutdowns.write().await;
+                    shutdowns
+                        .entry(call_id.to_string())
+                        .or_default()
+                        .push(shutdown_tx);
+                }
             }
 
             call
@@ -475,6 +541,28 @@ impl CallManager {
         }
     }
 
+    /// Canonicalize a wire `call_id` to the airc [`RoomId`] string that keys ALL call
+    /// state — the ONE gate that makes "the call room IS the airc room" true by
+    /// construction (#193, [[all-rooms-are-airc-rooms-no-mirrors]],
+    /// [[call-identity-is-airc-room-id-owned-by-airc-across-the-mesh]]). A `call_id` that
+    /// is already an airc room uuid passes through as its canonical string; anything else
+    /// is REJECTED loud — there is no parallel `call_id` namespace to fall back to.
+    ///
+    /// Name → RoomId derivation belongs at the CLIENT (which holds airc's mesh identity),
+    /// not here: a foreign airc peer dialing this call can't derive OUR names, so the wire
+    /// carries the airc RoomId. This keeps the id owned by airc across the whole mesh.
+    fn require_airc_room(call_id: &str) -> Result<String, String> {
+        super::call_room::call_room_id_if_uuid(call_id)
+            .map(|room| room.to_string())
+            .ok_or_else(|| {
+                format!(
+                    "call_id '{call_id}' is not an airc room id — the call room IS the airc \
+                     room; send the airc RoomId (uuid), not a name. A name resolves to its \
+                     RoomId through airc (derive_room_id) BEFORE dialing the call."
+                )
+            })
+    }
+
     /// Join a participant to a call
     /// is_ai: If true, creates AI participant with server-side audio buffering
     pub async fn join_call(
@@ -483,7 +571,11 @@ impl CallManager {
         user_id: &str,
         display_name: &str,
         is_ai: bool,
-    ) -> CallJoinResult {
+    ) -> Result<CallJoinResult, String> {
+        // The gate: every call is keyed by its canonical airc RoomId, or refused. No rogue
+        // call_id ever enters the maps.
+        let call_id = Self::require_airc_room(call_id)?;
+        let call_id = call_id.as_str();
         let call = self.get_or_create_call(call_id).await;
         let handle = Handle::new();
 
@@ -514,6 +606,19 @@ impl CallManager {
             participant_calls.insert(handle, call_id.to_string());
         }
 
+        // TELL THE CORE (#58). This is the wire that was never run: join_call has always
+        // known a call started, held the call id — which IS the airc RoomId, enforced by
+        // require_airc_room above — and the joiner, and told nobody. Registration was left
+        // to whichever client implemented it, so exactly one did (Node, in legacy/), and
+        // every other client's citizens were structurally voiceless.
+        //
+        // Fired AFTER the participant is in the maps, so the registrar can never observe a
+        // call the transport does not yet have. Absent registrar = unchanged behaviour;
+        // the live-call view renders that call as unregistered rather than hiding it.
+        if let Some(register) = &self.session_registrar {
+            register(call_id, user_id, display_name, is_ai);
+        }
+
         // Subscribe to all broadcast channels
         let (audio_rx, transcription_rx, video_rx, message_rx) = {
             let call = call.read().await;
@@ -531,13 +636,13 @@ impl CallManager {
             handle.short(),
             call_id
         );
-        CallJoinResult {
+        Ok(CallJoinResult {
             handle,
             audio_rx,
             transcription_rx,
             video_rx,
             message_rx,
-        }
+        })
     }
 
     /// Join a participant to a call with model-specific capabilities
@@ -549,9 +654,9 @@ impl CallManager {
         user_id: &str,
         display_name: &str,
         model_id: &str,
-    ) -> CallJoinResult {
-        // AI participants always get server-side buffering
-        let result = self.join_call(call_id, user_id, display_name, true).await;
+    ) -> Result<CallJoinResult, String> {
+        // AI participants always get server-side buffering (join_call gates the airc room id).
+        let result = self.join_call(call_id, user_id, display_name, true).await?;
 
         // Create routed participant with model capabilities
         let participant = RoutedParticipant::ai(
@@ -575,7 +680,7 @@ impl CallManager {
         // Add to audio router for capability-based routing
         self.audio_router.add_participant(participant).await;
 
-        result
+        Ok(result)
     }
 
     /// Inject TTS audio into a call (for text-only models speaking)
@@ -775,6 +880,105 @@ impl CallManager {
                 }
             }
         }
+    }
+
+    /// Tee a pre-rendered avatar RGBA frame into a call's native video plane (#193/#172).
+    ///
+    /// A persona is not a native WS participant — she publishes to LiveKit via the
+    /// bridge. But the SAME Bevy-rendered frame the avatar pump sends to LiveKit is
+    /// tee'd here so native clients (positron web "Go live", the glass-box harness)
+    /// see her real face instead of the placeholder test pattern. Render once, two
+    /// sinks — no second Bevy slot, no parallel renderer.
+    ///
+    /// The caller (the pump) owns a stable `source_handle` (created once per pump)
+    /// so mix-minus filtering is consistent across frames, and a monotonic
+    /// `sequence` + `timestamp_ms` for the frame header. `user_id` is the persona's
+    /// uuid — the label native clients key their tile on. No-op when no native Call
+    /// exists yet (no WS client has the call open) or nobody is subscribed.
+    pub async fn push_avatar_frame(
+        &self,
+        call_id: &str,
+        user_id: &str,
+        source_handle: Handle,
+        sequence: u32,
+        timestamp_ms: u32,
+        rgba: &[u8],
+        width: u16,
+        height: u16,
+    ) {
+        let call = {
+            let calls = self.calls.read().await;
+            match calls.get(call_id) {
+                Some(c) => c.clone(),
+                None => return, // no native Call — nobody has this call open
+            }
+        };
+        let video_tx = {
+            let call = call.read().await;
+            call.video_tx.clone()
+        };
+        let header = crate::live::types::VideoFrameHeader {
+            width,
+            height,
+            pixel_format: crate::live::types::VideoPixelFormat::RGBA8,
+            timestamp_ms,
+            sequence,
+        };
+        let frame = crate::live::types::VideoFrame {
+            header,
+            data: rgba.to_vec(),
+        };
+        // No receivers is fine (call open by nobody) — same contract as push_video.
+        let _ = video_tx.send((source_handle, user_id.to_string(), frame.to_bytes()));
+    }
+
+    /// Tee a persona's synthesized voice into a call's native audio plane (#193 audio
+    /// convergence — the sibling of [`push_avatar_frame`]).
+    ///
+    /// A persona speaks via LiveKit (`speak_in_call` → bridge), but native clients
+    /// (positron web "Go live", the glass-box harness) read the native mixer — which,
+    /// with only a lone listener, plays HOLD MUSIC. This registers the persona as a
+    /// virtual AI sender in the call's mixer and dumps her TTS PCM into its AI ring
+    /// buffer; the audio loop then pulls it frame-by-frame and broadcasts it, and her
+    /// presence makes the call no longer "alone" so the hold-music fill stops. Render
+    /// once, two sinks: the SAME synthesized samples go to LiveKit and here.
+    ///
+    /// Self-healing: the per-(call,persona) handle is stable across utterances, and if
+    /// the call was torn down + recreated (mixer no longer knows the handle) the
+    /// persona is re-registered. No-op when no native Call exists yet.
+    pub async fn push_persona_audio(
+        &self,
+        call_id: &str,
+        user_id: &str,
+        display_name: &str,
+        samples: Vec<i16>,
+    ) {
+        let call = {
+            let calls = self.calls.read().await;
+            match calls.get(call_id) {
+                Some(c) => c.clone(),
+                None => return, // no native Call — nobody has this call open
+            }
+        };
+        let key = format!("{call_id}\0{user_id}");
+        let handle = {
+            let mut handles = self.persona_audio_handles.write().await;
+            *handles.entry(key).or_insert_with(Handle::new)
+        };
+        let mut call = call.write().await;
+        // Ensure the persona is a live AI participant in THIS mixer (self-heal across
+        // call recreation). AI participants carry a ring buffer sized for whole
+        // utterances dumped at once — exactly this path.
+        if call.mixer.find_user_id_by_handle(&handle).is_none() {
+            call.mixer
+                .add_participant(crate::live::audio::mixer::ParticipantStream::new_ai(
+                    handle,
+                    user_id.to_string(),
+                    display_name.to_string(),
+                ));
+        }
+        // Dump the whole utterance; the audio loop drains it frame-by-frame at cadence.
+        let _ = call.push_audio(&handle, samples);
     }
 
     /// Broadcast a CallMessage to all participants in a call (avatar updates, etc.)
@@ -1211,7 +1415,18 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, manager: Arc<Cal
                     Some(Ok(Message::Text(text))) => {
                         match serde_json::from_str::<CallMessage>(&text) {
                             Ok(CallMessage::Join { call_id, user_id, display_name, is_ai }) => {
-                                let join = manager.join_call(&call_id, &user_id, &display_name, is_ai).await;
+                                // The call room IS the airc room: a call_id that isn't an airc
+                                // RoomId is refused, not given a rogue parallel identity (#193).
+                                let join = match manager.join_call(&call_id, &user_id, &display_name, is_ai).await {
+                                    Ok(j) => j,
+                                    Err(e) => {
+                                        clog_error!("Join refused for call_id '{}': {}", call_id, e);
+                                        let _ = msg_tx.send(Message::Text(
+                                            serde_json::json!({ "type": "error", "error": e }).to_string().into()
+                                        )).await;
+                                        continue;
+                                    }
+                                };
                                 let handle = join.handle;
                                 let mut audio_rx = join.audio_rx;
                                 let mut transcription_rx = join.transcription_rx;
@@ -1423,6 +1638,38 @@ mod tests {
     use crate::live::audio::mixer::test_utils::*;
     use crate::utils::audio::base64_encode_i16;
 
+    /// A valid airc RoomId (uuid) to key test calls. Post-#193 the call room IS the airc
+    /// room, so `join_call` accepts only an airc RoomId — a bare name is refused. Tests dial
+    /// with the RoomId, exactly as a real client would after resolving the name through airc.
+    const TEST_ROOM: &str = "11111111-1111-1111-1111-111111111111";
+
+    // what this catches (#193): the call room IS the airc room BY CONSTRUCTION. The gate
+    // refuses a bare name (there is no parallel call_id namespace to fall back to — the
+    // nodejs rogue-id cancer), and every spelling of an airc RoomId collapses to ONE
+    // canonical key, so two peers dialing the same room meet in the same call.
+    #[test]
+    fn require_airc_room_refuses_names_and_canonicalizes_uuid_spellings() {
+        assert!(
+            CallManager::require_airc_room("general").is_err(),
+            "a name is not an airc room id"
+        );
+        assert!(
+            CallManager::require_airc_room("persona-call").is_err(),
+            "no rogue call_id namespace"
+        );
+        assert!(
+            CallManager::require_airc_room("").is_err(),
+            "empty is refused"
+        );
+        let dashed =
+            CallManager::require_airc_room("22222222-2222-2222-2222-222222222222").unwrap();
+        let simple = CallManager::require_airc_room("22222222222222222222222222222222").unwrap();
+        assert_eq!(
+            dashed, simple,
+            "dashed + 32-char spellings of one RoomId ⇒ one canonical key"
+        );
+    }
+
     #[test]
     fn test_base64_roundtrip() {
         let samples = generate_sine_wave(440.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE);
@@ -1437,8 +1684,9 @@ mod tests {
 
         // Join a call (false = not AI)
         let join = manager
-            .join_call("test-call", "user-1", "Alice", false)
-            .await;
+            .join_call(TEST_ROOM, "user-1", "Alice", false)
+            .await
+            .unwrap();
 
         // Check stats
         let stats = manager.get_stats(&join.handle).await;
@@ -1460,9 +1708,13 @@ mod tests {
 
         // Two participants join (humans)
         let join_a = manager
-            .join_call("test-call", "user-a", "Alice", false)
-            .await;
-        let join_b = manager.join_call("test-call", "user-b", "Bob", false).await;
+            .join_call(TEST_ROOM, "user-a", "Alice", false)
+            .await
+            .unwrap();
+        let join_b = manager
+            .join_call(TEST_ROOM, "user-b", "Bob", false)
+            .await
+            .unwrap();
 
         // Check count
         let stats = manager.get_stats(&join_a.handle).await;
@@ -1489,8 +1741,9 @@ mod tests {
         let manager = CallManager::new();
 
         let join = manager
-            .join_call("test-call", "user-1", "Alice", false)
-            .await;
+            .join_call(TEST_ROOM, "user-1", "Alice", false)
+            .await
+            .unwrap();
 
         // Mute
         manager.set_mute(&join.handle, true).await;
@@ -1507,9 +1760,13 @@ mod tests {
 
         // Two participants join
         let join_a = manager
-            .join_call("test-call", "user-a", "Alice", false)
-            .await;
-        let mut join_b = manager.join_call("test-call", "user-b", "Bob", false).await;
+            .join_call(TEST_ROOM, "user-a", "Alice", false)
+            .await
+            .unwrap();
+        let mut join_b = manager
+            .join_call(TEST_ROOM, "user-b", "Bob", false)
+            .await
+            .unwrap();
 
         // Alice sends a video frame
         let fake_frame = vec![0x00; 20]; // 16 byte header + 4 byte payload
@@ -1533,5 +1790,94 @@ mod tests {
 
         manager.leave_call(&join_a.handle).await;
         manager.leave_call(&join_b.handle).await;
+    }
+
+    // what this catches (#192): the media substrate is right if TWO AI PERSONAS can hold a
+    // call — SEE + HEAR + SPEAK each other — with NO UI, purely through the server-side call
+    // machinery. Proves per-sender SFU delivery + mix-minus in BOTH directions, and that a
+    // persona never keeps its OWN echoed frame. Unlike `test_video_push_broadcast` (which
+    // tolerated non-delivery — "Err is acceptable"), this AWAITS delivery and FAILS if the
+    // substrate drops it: the headless proof that no browser is needed for two beings to be
+    // present to each other in a call.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn two_ai_personas_see_hear_and_speak_headless() {
+        use tokio::time::{timeout, Duration};
+
+        let manager = CallManager::new();
+        // Two PERSONAS (is_ai = true) join the same call — no browser, no UI.
+        let asha = manager
+            .join_call(TEST_ROOM, "@persona:asha", "Asha", true)
+            .await
+            .unwrap();
+        let mut anwen = manager
+            .join_call(TEST_ROOM, "@persona:anwen", "Anwen", true)
+            .await
+            .unwrap();
+        // Snapshot Asha's video stream from the start so we catch every frame (incl. her own
+        // echo, which mix-minus must let us skip).
+        let mut asha_video = asha.video_rx.resubscribe();
+
+        // SEE+SPEAK, direction 1: Asha shows video → Anwen must SEE Asha's exact frame.
+        let asha_frame = {
+            let mut f = vec![0u8; 20]; // 16-byte header + payload (opaque to the broadcast)
+            f[16] = 0xA1;
+            f
+        };
+        manager.push_video(&asha.handle, asha_frame.clone()).await;
+        let seen = timeout(Duration::from_secs(2), async {
+            loop {
+                let (sender, uid, data) = anwen.video_rx.recv().await.expect("video open");
+                if sender == asha.handle {
+                    return (uid, data);
+                }
+            }
+        })
+        .await
+        .expect("Anwen must SEE Asha — the substrate dropped the video");
+        assert_eq!(seen.0, "@persona:asha");
+        assert_eq!(seen.1, asha_frame, "Anwen sees Asha's exact frame");
+
+        // SEE+SPEAK, direction 2: Anwen shows video → Asha must SEE Anwen's exact frame,
+        // skipping Asha's OWN echoed frame first (mix-minus at the consumer).
+        let anwen_frame = {
+            let mut f = vec![0u8; 20];
+            f[16] = 0xB2;
+            f
+        };
+        manager.push_video(&anwen.handle, anwen_frame.clone()).await;
+        let seen = timeout(Duration::from_secs(2), async {
+            loop {
+                let (sender, uid, data) = asha_video.recv().await.expect("video open");
+                if sender == asha.handle {
+                    continue; // mix-minus: never keep your own echo
+                }
+                return (uid, data);
+            }
+        })
+        .await
+        .expect("Asha must SEE Anwen — the substrate dropped the video");
+        assert_eq!(seen.0, "@persona:anwen");
+        assert_eq!(seen.1, anwen_frame, "Asha sees Anwen's exact frame");
+
+        // HEAR: Asha speaks → Anwen must HEAR a frame that ORIGINATES from Asha (per-sender
+        // SFU + mix-minus loop). Non-silent sine so VAD passes.
+        let audio = generate_sine_wave(440.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE);
+        manager.push_audio(&asha.handle, audio).await;
+        let heard = timeout(Duration::from_secs(3), async {
+            loop {
+                match anwen.audio_rx.recv().await {
+                    Ok((sender, uid, _)) if sender == asha.handle => return uid,
+                    Ok(_) => continue, // hold-music / own echo — skip
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(_) => panic!("audio channel closed before Anwen heard Asha"),
+                }
+            }
+        })
+        .await
+        .expect("Anwen must HEAR Asha — the audio substrate dropped it");
+        assert_eq!(heard, "@persona:asha");
+
+        manager.leave_call(&asha.handle).await;
+        manager.leave_call(&anwen.handle).await;
     }
 }

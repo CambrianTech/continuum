@@ -5,6 +5,16 @@
 layer, sidecar contracts, persona-internal namespaces, or any new
 client that wants to address substrate state from anywhere.
 
+> **⚠️ TARGET, not current reality (reconciled 2026-08-10).** This document
+> describes the addressing primitive as it SHOULD be, keyed on `peer_id`. The
+> *live* remote router (`modules/grid/router.rs::find_gpu_node`) does NOT key on
+> `peer_id` today — it keys on a Tailscale-IP `node_id` String, a different
+> key-space from the `PeerId`-keyed capacity gossip and the `BudgetSource`-keyed
+> reputation. Unifying them onto the one `peer_id` (the `node_id == peer_id` join,
+> #2228) is the precondition for everything here, and is specified in
+> **GRID-ELASTIC-CAPABILITY.md §3d** (the authoritative live-routing + identity
+> spec). Read §3d before assuming any routing described here is wired.
+
 ## Why this document exists
 
 The substrate provides exactly two universal primitives:

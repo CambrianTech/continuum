@@ -226,7 +226,12 @@ mod tests {
 
         let persona = uuid::Uuid::new_v4();
         let room = uuid::Uuid::new_v4();
-        let transport = InProcessTransport::new(executor, Some(CallerIdentity::airc(crate::identity::PeerId::from_uuid(persona))));
+        let transport = InProcessTransport::new(
+            executor,
+            Some(CallerIdentity::airc(crate::identity::PeerId::from_uuid(
+                persona,
+            ))),
+        );
 
         // The persona is a client: scope to the room, then act.
         let conn = Connection::new(transport).scoped(room);
@@ -247,7 +252,8 @@ mod tests {
         // (2) the persona's identity reached the AuthPolicy gate.
         let seen = captured.lock().unwrap().clone().expect("gate saw a caller");
         assert_eq!(
-            seen.peer_id.as_uuid(), persona,
+            seen.peer_id.as_uuid(),
+            persona,
             "the persona is gated as ITSELF — no internal/trusted bypass, no forged identity"
         );
     }

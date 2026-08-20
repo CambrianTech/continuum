@@ -17,6 +17,7 @@
 //! 20 minutes in. The live policy re-derives placement from every snapshot, so partition,
 //! join, loss, and return all fall out of ONE rule.
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 use crate::identity::PeerId;
@@ -83,7 +84,11 @@ impl GridPlacementPolicy for LocalFirstFitPolicy {
 
         // Local first — same never-below-1 floor as FitPolicy (a resident model must be able
         // to run one prefill; that's a residency decision, not a concurrency one).
-        let local_fit = lanes_that_fit(grid.local.gpu_free_bytes_live, self.safety_margin_bytes, req.spike_bytes);
+        let local_fit = lanes_that_fit(
+            grid.local.gpu_free_bytes_live,
+            self.safety_margin_bytes,
+            req.spike_bytes,
+        );
         let local_lanes = local_fit.clamp(1, want);
         let mut remaining = want - local_lanes;
 
@@ -91,7 +96,11 @@ impl GridPlacementPolicy for LocalFirstFitPolicy {
         // Each peer is capped by ITS OWN fit — the misfit-parts rule. Unreachable peers are
         // memories, not offers: they get nothing, which IS the mid-lease reclaim.
         let mut reachable: Vec<&PeerCapacity> = grid.peers.iter().filter(|p| p.reachable).collect();
-        reachable.sort_by(|a, b| b.capacity.gpu_free_bytes_live.cmp(&a.capacity.gpu_free_bytes_live));
+        reachable.sort_by(|a, b| {
+            b.capacity
+                .gpu_free_bytes_live
+                .cmp(&a.capacity.gpu_free_bytes_live)
+        });
 
         let mut remote = Vec::new();
         for peer in reachable {
@@ -110,10 +119,121 @@ impl GridPlacementPolicy for LocalFirstFitPolicy {
             }
         }
 
-        Placement { local_lanes, remote }
+        Placement {
+            local_lanes,
+            remote,
+        }
     }
     fn name(&self) -> &'static str {
         "local-first-fit"
+    }
+}
+
+/// MODEL-AWARE grid placement — the convergence of the [`super::super::resources::placement`]
+/// kernel's affinity rule onto the grid policy shape (Slice A2). Where [`LocalFirstFitPolicy`]
+/// fills by FREE BYTES (model-blind — it would cold-load a base onto the emptiest node even
+/// when a peer already holds it WARM), this ranks nodes AFFINITY-FIRST: a node already serving
+/// the demand's base beats a node with more free RAM every time, because routing there avoids a
+/// cold weight-load + cross-node transfer — AND it frees the local GPU for whatever else is live
+/// (a video huddle running while a benchmark rides a warm peer). Among equally-warm nodes it
+/// prefers local (no network hop), then most-free. No local floor: if the base is warm on a peer
+/// and cold locally, the whole demand can ride the peer, leaving the local accelerator untouched.
+///
+/// The warm-base map is carried on the policy (constructed per-scenario) rather than threaded
+/// onto the widely-built [`GridSnapshot`]/[`LeaseRequest`] — that snapshot-threading is the
+/// deliberate follow-up that lands WITH the live grid-serving consumer (the ~48-site schema
+/// change buys nothing while these policies are simulator-only). Here the affinity IDEA is
+/// proven in the gym against the byte-fill baseline. An empty `demand_base` (or empty `warm`)
+/// degrades to locality-then-free ordering — the model-blind path, unchanged.
+/// [[misfit-grid-is-a-distributed-moe]] [[seamless-persona-failover-model-and-genome]]
+pub struct AffinityFitPolicy {
+    /// Headroom kept free on EVERY node — same meaning as [`LocalFirstFitPolicy`].
+    pub safety_margin_bytes: u64,
+    /// The base the demand needs. Nodes already holding it warm are preferred. Empty =
+    /// model-blind (no affinity signal → locality-then-free ordering).
+    pub demand_base: String,
+    /// Which bases each peer holds WARM this snapshot, keyed by peer. In the live path this
+    /// moves onto `GridSnapshot`; carried here so the affinity idea is sim-validated with zero
+    /// churn to the widely-constructed snapshot/request types.
+    pub warm: HashMap<PeerId, Vec<String>>,
+    /// Whether the LOCAL node already holds the demand's base warm.
+    pub local_warm: bool,
+}
+
+impl AffinityFitPolicy {
+    fn peer_is_warm(&self, peer: &PeerId) -> bool {
+        !self.demand_base.is_empty()
+            && self
+                .warm
+                .get(peer)
+                .is_some_and(|bases| bases.iter().any(|b| b == &self.demand_base))
+    }
+}
+
+impl GridPlacementPolicy for AffinityFitPolicy {
+    fn place(&self, grid: &GridSnapshot, req: &LeaseRequest) -> Placement {
+        let want = req.want_concurrency.max(1);
+
+        // One candidate per servable node: local + every REACHABLE peer (unreachable peers are
+        // memories, not offers — the same reclaim rule as local-first). `peer: None` = local.
+        struct Cand {
+            peer: Option<PeerId>,
+            free: u64,
+            warm: bool,
+        }
+        let mut cands: Vec<Cand> = Vec::with_capacity(1 + grid.peers.len());
+        cands.push(Cand {
+            peer: None,
+            free: grid.local.gpu_free_bytes_live,
+            warm: !self.demand_base.is_empty() && self.local_warm,
+        });
+        for p in grid.peers.iter().filter(|p| p.reachable) {
+            cands.push(Cand {
+                peer: Some(p.peer),
+                free: p.capacity.gpu_free_bytes_live,
+                warm: self.peer_is_warm(&p.peer),
+            });
+        }
+
+        // Affinity FIRST (warm beats free — the whole point), then local before remote (no
+        // network hop), then most-free. `sort_by` is STABLE, so equal keys keep insertion order
+        // (local pushed first, then peers in snapshot order) — deterministic without needing an
+        // Ord on PeerId.
+        cands.sort_by(|a, b| {
+            b.warm
+                .cmp(&a.warm)
+                .then_with(|| b.peer.is_none().cmp(&a.peer.is_none()))
+                .then_with(|| b.free.cmp(&a.free))
+        });
+
+        // Fill the demand down the ranked order, each node capped by ITS OWN per-node fit (the
+        // misfit-parts rule — the aggregate never gets a vote). No local floor: a fully-warm
+        // peer can take the whole demand, leaving the local accelerator free for live work.
+        let mut remaining = want;
+        let mut local_lanes = 0u32;
+        let mut remote: Vec<(PeerId, u32)> = Vec::new();
+        for c in &cands {
+            if remaining == 0 {
+                break;
+            }
+            let take =
+                lanes_that_fit(c.free, self.safety_margin_bytes, req.spike_bytes).min(remaining);
+            if take == 0 {
+                continue;
+            }
+            match c.peer {
+                None => local_lanes += take,
+                Some(p) => remote.push((p, take)),
+            }
+            remaining -= take;
+        }
+        Placement {
+            local_lanes,
+            remote,
+        }
+    }
+    fn name(&self) -> &'static str {
+        "affinity-fit"
     }
 }
 
@@ -129,14 +249,19 @@ pub struct StickyPlacementPolicy<P: GridPlacementPolicy> {
 
 impl<P: GridPlacementPolicy> StickyPlacementPolicy<P> {
     pub fn new(inner: P) -> Self {
-        Self { inner, cached: Mutex::new(None) }
+        Self {
+            inner,
+            cached: Mutex::new(None),
+        }
     }
 }
 
 impl<P: GridPlacementPolicy> GridPlacementPolicy for StickyPlacementPolicy<P> {
     fn place(&self, grid: &GridSnapshot, req: &LeaseRequest) -> Placement {
         let mut cached = self.cached.lock().expect("sim-only lock");
-        cached.get_or_insert_with(|| self.inner.place(grid, req)).clone()
+        cached
+            .get_or_insert_with(|| self.inner.place(grid, req))
+            .clone()
     }
     fn name(&self) -> &'static str {
         "sticky-init-time"
@@ -159,7 +284,9 @@ pub fn stranded_lanes(grid: &GridSnapshot, placement: &Placement) -> u32 {
 /// free GPU — the aggregate never gets a vote. Returns the number of overflowing nodes.
 pub fn placement_oom_count(grid: &GridSnapshot, req: &LeaseRequest, placement: &Placement) -> u32 {
     let mut ooms = 0;
-    if (placement.local_lanes as u64).saturating_mul(req.spike_bytes) > grid.local.gpu_free_bytes_live {
+    if (placement.local_lanes as u64).saturating_mul(req.spike_bytes)
+        > grid.local.gpu_free_bytes_live
+    {
         ooms += 1;
     }
     for (peer, lanes) in &placement.remote {
@@ -217,7 +344,9 @@ impl PlacementDecision {
         // distinct for `from_u128` test ids (which zero-pad the FRONT).
         let short = |p: &PeerId| {
             let s = p.to_string();
-            s.chars().skip(s.len().saturating_sub(8)).collect::<String>()
+            s.chars()
+                .skip(s.len().saturating_sub(8))
+                .collect::<String>()
         };
         let mut placed: Vec<String> = Vec::new();
         if self.placement.local_lanes > 0 {
@@ -233,9 +362,17 @@ impl PlacementDecision {
                 NodePick::Peer(p) => short(p),
             };
             if v.stranded_lanes > 0 {
-                trouble.push(format!("STRANDED {} lanes on {} (unreachable)", v.stranded_lanes, name));
+                trouble.push(format!(
+                    "STRANDED {} lanes on {} (unreachable)",
+                    v.stranded_lanes, name
+                ));
             } else if v.overflowed {
-                trouble.push(format!("OOM on {} ({} lanes > {}GB free)", name, v.assigned_lanes, v.free_bytes / GB));
+                trouble.push(format!(
+                    "OOM on {} ({} lanes > {}GB free)",
+                    name,
+                    v.assigned_lanes,
+                    v.free_bytes / GB
+                ));
             } else if !v.reachable && v.assigned_lanes == 0 {
                 trouble.push(format!("{} unreachable, skipped", name));
             }
@@ -248,7 +385,11 @@ impl PlacementDecision {
             self.want,
             placed.join(" "),
             self.experience,
-            if trouble.is_empty() { String::new() } else { format!(" | {}", trouble.join("; ")) }
+            if trouble.is_empty() {
+                String::new()
+            } else {
+                format!(" | {}", trouble.join("; "))
+            }
         )
     }
 }
@@ -279,7 +420,11 @@ impl GridCaptureSink for RecordingGridCapture {
 }
 impl RecordingGridCapture {
     pub fn render(&self) -> String {
-        self.decisions.iter().map(|d| d.render()).collect::<Vec<_>>().join("\n")
+        self.decisions
+            .iter()
+            .map(|d| d.render())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
@@ -347,7 +492,13 @@ impl GridSimulator {
             let experience = score_experience(&room_faculties(ooms == 0, served));
             experience_sum += experience;
 
-            sink.capture(Self::explain(ev, &scenario.demand, &placement, policy.name(), experience));
+            sink.capture(Self::explain(
+                ev,
+                &scenario.demand,
+                &placement,
+                policy.name(),
+                experience,
+            ));
             last = Some(placement.clone());
             placements.push(placement);
         }
@@ -368,7 +519,12 @@ impl GridSimulator {
         experience: f32,
     ) -> PlacementDecision {
         let assigned = |peer: &PeerId| {
-            placement.remote.iter().find(|(p, _)| p == peer).map(|(_, n)| *n).unwrap_or(0)
+            placement
+                .remote
+                .iter()
+                .find(|(p, _)| p == peer)
+                .map(|(_, n)| *n)
+                .unwrap_or(0)
         };
         let mut verdicts = vec![NodeVerdict {
             node: NodePick::Local,
@@ -387,7 +543,8 @@ impl GridSimulator {
                 free_bytes: p.capacity.gpu_free_bytes_live,
                 assigned_lanes: lanes,
                 overflowed: p.reachable
-                    && (lanes as u64).saturating_mul(req.spike_bytes) > p.capacity.gpu_free_bytes_live,
+                    && (lanes as u64).saturating_mul(req.spike_bytes)
+                        > p.capacity.gpu_free_bytes_live,
                 stranded_lanes: if p.reachable { 0 } else { lanes },
             });
         }
@@ -450,29 +607,49 @@ pub fn grid_week() -> GridScenario {
 
     GridScenario {
         name: "grid-week",
-        demand: LeaseRequest { consumer: "serving".into(), want_concurrency: 6, spike_bytes: 2 * GB },
+        demand: LeaseRequest {
+            consumer: "serving".into(),
+            want_concurrency: 6,
+            spike_bytes: 2 * GB,
+        },
         timeline: vec![
             GridEvent {
                 t_ms: 0,
-                grid: GridSnapshot { local, peers: vec![peer(small, 3, true), peer(big, 7, true)] },
+                grid: GridSnapshot {
+                    local,
+                    peers: vec![peer(small, 3, true), peer(big, 7, true)],
+                },
             },
             GridEvent {
                 t_ms: 1_200_000, // 20 min: the big peer dies mid-lease
-                grid: GridSnapshot { local, peers: vec![peer(small, 3, true), peer(big, 7, false)] },
+                grid: GridSnapshot {
+                    local,
+                    peers: vec![peer(small, 3, true), peer(big, 7, false)],
+                },
             },
             GridEvent {
                 t_ms: 2_400_000, // 40 min: it returns
-                grid: GridSnapshot { local, peers: vec![peer(small, 3, true), peer(big, 7, true)] },
+                grid: GridSnapshot {
+                    local,
+                    peers: vec![peer(small, 3, true), peer(big, 7, true)],
+                },
             },
             GridEvent {
                 t_ms: 3_600_000, // 60 min: total partition — the network is GONE
-                grid: GridSnapshot { local, peers: vec![peer(small, 3, false), peer(big, 7, false)] },
+                grid: GridSnapshot {
+                    local,
+                    peers: vec![peer(small, 3, false), peer(big, 7, false)],
+                },
             },
             GridEvent {
                 t_ms: 4_800_000, // 80 min: network back, and a brand-new node joins the grid
                 grid: GridSnapshot {
                     local,
-                    peers: vec![peer(small, 3, false), peer(big, 7, false), peer(newcomer, 11, true)],
+                    peers: vec![
+                        peer(small, 3, false),
+                        peer(big, 7, false),
+                        peer(newcomer, 11, true),
+                    ],
                 },
             },
         ],
@@ -516,13 +693,20 @@ pub fn bittorrent_swarm(n_peers: u64, n_ticks: u64) -> GridScenario {
                 .collect();
             GridEvent {
                 t_ms: tick * 10_000,
-                grid: GridSnapshot { local: dev(3), peers },
+                grid: GridSnapshot {
+                    local: dev(3),
+                    peers,
+                },
             }
         })
         .collect();
     GridScenario {
         name: "bittorrent-swarm",
-        demand: LeaseRequest { consumer: "serving".into(), want_concurrency: 8, spike_bytes: 2 * GB },
+        demand: LeaseRequest {
+            consumer: "serving".into(),
+            want_concurrency: 8,
+            spike_bytes: 2 * GB,
+        },
         timeline,
     }
 }
@@ -541,22 +725,49 @@ mod tests {
     // OOM proves the aggregate never got a vote.
     #[test]
     fn live_placement_survives_the_grid_week_partition_loss_join_and_all() {
-        let result = GridSimulator::run(&grid_week(), &LocalFirstFitPolicy { safety_margin_bytes: GB });
+        let result = GridSimulator::run(
+            &grid_week(),
+            &LocalFirstFitPolicy {
+                safety_margin_bytes: GB,
+            },
+        );
 
-        assert_eq!(result.score.oom_count, 0, "per-node fits must never overflow any node");
-        assert_eq!(result.score.stranded_lanes, 0, "live re-derivation never strands a lane");
+        assert_eq!(
+            result.score.oom_count, 0,
+            "per-node fits must never overflow any node"
+        );
+        assert_eq!(
+            result.score.stranded_lanes, 0,
+            "live re-derivation never strands a lane"
+        );
 
         let totals: Vec<u32> = result.placements.iter().map(|p| p.total()).collect();
-        assert_eq!(totals[0], 6, "misfit sum: 2 local + 3 big + 1 small covers the demand");
-        assert_eq!(totals[1], 3, "big peer died mid-lease → its lanes reclaimed, grid serves the rest");
+        assert_eq!(
+            totals[0], 6,
+            "misfit sum: 2 local + 3 big + 1 small covers the demand"
+        );
+        assert_eq!(
+            totals[1], 3,
+            "big peer died mid-lease → its lanes reclaimed, grid serves the rest"
+        );
         assert_eq!(totals[2], 6, "peer returned → REGROWN to full demand");
-        assert_eq!(totals[3], 2, "total partition → local keeps serving its honest fit, never blocks");
-        assert_eq!(totals[4], 6, "a brand-new node joining 80 min in is adopted to full demand");
+        assert_eq!(
+            totals[3], 2,
+            "total partition → local keeps serving its honest fit, never blocks"
+        );
+        assert_eq!(
+            totals[4], 6,
+            "a brand-new node joining 80 min in is adopted to full demand"
+        );
 
         // The misfit-parts detail at t=0: the small peer contributes exactly its own fit (1),
         // not a share of some aggregate.
         let small_share = result.placements[0].remote.iter().map(|(_, n)| *n).min();
-        assert_eq!(small_share, Some(1), "the small node serves exactly what IT fits — 1 lane");
+        assert_eq!(
+            small_share,
+            Some(1),
+            "the small node serves exactly what IT fits — 1 lane"
+        );
     }
 
     // what this catches: THE INIT-TIME TRAP, executable. A placement computed once at boot and
@@ -568,10 +779,17 @@ mod tests {
     #[test]
     fn init_time_placement_strands_lanes_and_loses_on_experience() {
         let scenario = grid_week();
-        let live = GridSimulator::run(&scenario, &LocalFirstFitPolicy { safety_margin_bytes: GB });
+        let live = GridSimulator::run(
+            &scenario,
+            &LocalFirstFitPolicy {
+                safety_margin_bytes: GB,
+            },
+        );
         let sticky = GridSimulator::run(
             &scenario,
-            &StickyPlacementPolicy::new(LocalFirstFitPolicy { safety_margin_bytes: GB }),
+            &StickyPlacementPolicy::new(LocalFirstFitPolicy {
+                safety_margin_bytes: GB,
+            }),
         );
 
         assert!(
@@ -580,7 +798,10 @@ mod tests {
              init-time trap the whole fabric exists to kill, got {:?}",
             sticky.score
         );
-        assert_eq!(live.score.stranded_lanes, 0, "the live policy never strands");
+        assert_eq!(
+            live.score.stranded_lanes, 0,
+            "the live policy never strands"
+        );
         assert!(
             live.score.mean_experience > sticky.score.mean_experience,
             "re-deriving from every snapshot must WIN the perception reward over init-time \
@@ -606,13 +827,28 @@ mod tests {
         let grid = GridSnapshot {
             local: dev(4),
             peers: vec![
-                PeerCapacity { peer: a, capacity: dev(4), reachable: true },
-                PeerCapacity { peer: b, capacity: dev(4), reachable: true },
+                PeerCapacity {
+                    peer: a,
+                    capacity: dev(4),
+                    reachable: true,
+                },
+                PeerCapacity {
+                    peer: b,
+                    capacity: dev(4),
+                    reachable: true,
+                },
             ],
         };
-        let demand = LeaseRequest { consumer: "serving".into(), want_concurrency: 6, spike_bytes: 2 * GB };
+        let demand = LeaseRequest {
+            consumer: "serving".into(),
+            want_concurrency: 6,
+            spike_bytes: 2 * GB,
+        };
 
-        let placement = LocalFirstFitPolicy { safety_margin_bytes: GB }.place(&grid, &demand);
+        let placement = LocalFirstFitPolicy {
+            safety_margin_bytes: GB,
+        }
+        .place(&grid, &demand);
         assert_eq!(
             placement.total(),
             3,
@@ -623,6 +859,118 @@ mod tests {
             0,
             "and honesty means zero per-node overflow"
         );
+    }
+
+    // what this catches (Slice A2): AFFINITY beats byte-fill — the strategic-across-nodes win,
+    // and the concrete answer to "video chat AND a benchmark at once". A warm peer (already
+    // serving the demand's base) with LESS free RAM must win over an emptier COLD node: routing
+    // there avoids a cold weight-load + cross-node transfer AND frees the local GPU for the live
+    // video huddle. Model-blind LocalFirstFit floors local and fills by free bytes — it pays the
+    // cold load and eats the local accelerator. AffinityFit routes the exam to the warm peer and
+    // leaves local at ZERO. If affinity ever collapsed to byte-fill, the grid would fight itself
+    // instead of placing each workload where it already fits. [[misfit-grid-is-a-distributed-moe]]
+    #[test]
+    fn affinity_routes_to_the_warm_peer_over_an_emptier_cold_node() {
+        let dev = |free_gb: u64| DeviceCapacity {
+            gpu_total_bytes: 32 * GB,
+            gpu_free_bytes_live: free_gb * GB,
+            system_ram_free_bytes: 16 * GB,
+        };
+        let warm_peer = PeerId::from_u128(20);
+        // Local has the MOST free but is COLD (doesn't hold coder-32b). The peer has less free
+        // but already serves coder-32b warm.
+        let grid = GridSnapshot {
+            local: dev(20),
+            peers: vec![PeerCapacity {
+                peer: warm_peer,
+                capacity: dev(6),
+                reachable: true,
+            }],
+        };
+        let demand = LeaseRequest {
+            consumer: "eval".into(),
+            want_concurrency: 1,
+            spike_bytes: 2 * GB,
+        };
+
+        // Byte-fill: local wins (emptier + local floor) — the benchmark cold-loads on the live GPU.
+        let byte_fill = LocalFirstFitPolicy {
+            safety_margin_bytes: GB,
+        }
+        .place(&grid, &demand);
+        assert_eq!(
+            byte_fill.local_lanes, 1,
+            "byte-fill floors local and ignores the warm peer"
+        );
+        assert!(
+            byte_fill.remote.is_empty(),
+            "byte-fill never reaches for the warm peer"
+        );
+
+        // Affinity: the lane goes to the WARM peer, leaving the local GPU free for live work.
+        let mut warm = HashMap::new();
+        warm.insert(warm_peer, vec!["coder-32b".to_string()]);
+        let affinity = AffinityFitPolicy {
+            safety_margin_bytes: GB,
+            demand_base: "coder-32b".to_string(),
+            warm,
+            local_warm: false,
+        }
+        .place(&grid, &demand);
+        assert_eq!(
+            affinity.local_lanes, 0,
+            "affinity leaves the local GPU free for the live call"
+        );
+        assert_eq!(
+            affinity.remote,
+            vec![(warm_peer, 1)],
+            "the exam runs on the node that already holds its weights warm"
+        );
+        // And it never strands or over-commits (the resilience invariants still hold).
+        assert_eq!(stranded_lanes(&grid, &affinity), 0);
+        assert_eq!(placement_oom_count(&grid, &demand, &affinity), 0);
+    }
+
+    // what this catches: with NO affinity signal (empty demand_base), AffinityFit degrades to the
+    // model-blind ordering — locality first, then free — so it never behaves worse than the
+    // byte-fill baseline on a cold grid. The affinity policy is a strict SUPERSET: it adds warm
+    // routing without losing the misfit-parts guarantees.
+    #[test]
+    fn affinity_with_no_warm_signal_falls_back_to_locality_then_free() {
+        let dev = |free_gb: u64| DeviceCapacity {
+            gpu_total_bytes: 32 * GB,
+            gpu_free_bytes_live: free_gb * GB,
+            system_ram_free_bytes: 16 * GB,
+        };
+        let peer = PeerId::from_u128(21);
+        let grid = GridSnapshot {
+            local: dev(6),
+            peers: vec![PeerCapacity {
+                peer,
+                capacity: dev(6),
+                reachable: true,
+            }],
+        };
+        let demand = LeaseRequest {
+            consumer: "eval".into(),
+            want_concurrency: 3,
+            spike_bytes: 2 * GB,
+        };
+        let p = AffinityFitPolicy {
+            safety_margin_bytes: GB,
+            demand_base: String::new(),
+            warm: HashMap::new(),
+            local_warm: false,
+        }
+        .place(&grid, &demand);
+        // Local fills first (2 lanes fit in 6GB−1GB margin @2GB spike), then the peer takes 1.
+        assert_eq!(p.local_lanes, 2, "no affinity ⇒ local first");
+        assert_eq!(
+            p.remote,
+            vec![(peer, 1)],
+            "then spill the remainder to the peer"
+        );
+        assert_eq!(placement_oom_count(&grid, &demand, &p), 0);
     }
 
     // what this catches: BITTORRENT SCALE. 40 peers flapping at ~70% uptime for 200 ticks, every
@@ -636,14 +984,27 @@ mod tests {
     #[test]
     fn live_placement_rides_bittorrent_churn_at_swarm_scale() {
         let scenario = bittorrent_swarm(40, 200);
-        let live = GridSimulator::run(&scenario, &LocalFirstFitPolicy { safety_margin_bytes: GB });
+        let live = GridSimulator::run(
+            &scenario,
+            &LocalFirstFitPolicy {
+                safety_margin_bytes: GB,
+            },
+        );
         let sticky = GridSimulator::run(
             &scenario,
-            &StickyPlacementPolicy::new(LocalFirstFitPolicy { safety_margin_bytes: GB }),
+            &StickyPlacementPolicy::new(LocalFirstFitPolicy {
+                safety_margin_bytes: GB,
+            }),
         );
 
-        assert_eq!(live.score.oom_count, 0, "no node ever overflows, at any tick");
-        assert_eq!(live.score.stranded_lanes, 0, "no lane is ever left on a vanished peer");
+        assert_eq!(
+            live.score.oom_count, 0,
+            "no node ever overflows, at any tick"
+        );
+        assert_eq!(
+            live.score.stranded_lanes, 0,
+            "no lane is ever left on a vanished peer"
+        );
         assert!(
             live.score.mean_experience > 0.95,
             "a 40-peer swarm at 70% uptime collectively covers 8 lanes essentially always \
@@ -683,10 +1044,16 @@ mod tests {
         let mut live_box = RecordingGridCapture::default();
         GridSimulator::run_traced(
             &scenario,
-            &LocalFirstFitPolicy { safety_margin_bytes: GB },
+            &LocalFirstFitPolicy {
+                safety_margin_bytes: GB,
+            },
             &mut live_box,
         );
-        assert_eq!(live_box.decisions.len(), scenario.timeline.len(), "one decision per tick");
+        assert_eq!(
+            live_box.decisions.len(),
+            scenario.timeline.len(),
+            "one decision per tick"
+        );
         let t20 = &live_box.decisions[1];
         assert!(
             t20.render().contains("unreachable, skipped"),
@@ -704,7 +1071,9 @@ mod tests {
         let mut sticky_box = RecordingGridCapture::default();
         GridSimulator::run_traced(
             &scenario,
-            &StickyPlacementPolicy::new(LocalFirstFitPolicy { safety_margin_bytes: GB }),
+            &StickyPlacementPolicy::new(LocalFirstFitPolicy {
+                safety_margin_bytes: GB,
+            }),
             &mut sticky_box,
         );
         assert!(

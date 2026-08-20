@@ -10,7 +10,10 @@ use crate::modules::launch_mode::{normalize_mode, LAUNCH_MODE_KEY};
 /// deliberately-set preference from the unset default.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/system/LaunchModeGetResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/system/LaunchModeGetResult.ts"
+)]
 pub struct LaunchModeGetResult {
     /// `headless` | `ui` | `auto` — the canonical stored mode (unset ⇒ `auto`).
     pub mode: String,

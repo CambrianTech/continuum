@@ -40,10 +40,10 @@ use futures::future::join_all;
 use serde_json::Value;
 use uuid::Uuid;
 
+use super::spill;
 use super::types::{
     NativeBatchOutcome, ParsedToolBatch, ToolError, ToolExecutionContext, ToolOutcome,
 };
-use super::spill;
 use super::ToolExecutor;
 use crate::ai::types::{ToolCall as NativeToolCall, ToolResult as NativeToolResult};
 use crate::routing::CallerIdentity;
@@ -100,7 +100,9 @@ impl CommandToolExecutor {
         let core = executor.clone();
         let transport = InProcessTransport::new(
             executor,
-            Some(CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona))),
+            Some(CallerIdentity::local_persona(
+                crate::identity::PeerId::from_uuid(persona),
+            )),
         );
         Self {
             conn: Connection::new(transport),
@@ -232,7 +234,57 @@ fn fold_with_recovery(full: String, max: usize, persona_id: Uuid) -> String {
 /// "did you mean" — NOT output steering: it never reads her generated text to
 /// puppet her, it only rewrites what the tool layer hands back when a call she
 /// already made could not run. [[no-hardcoded-heuristics-to-steer-cognition]]
+/// Reserved pseudo-name for "arguments were emitted with NO tool name anywhere".
+/// Namespaced with a space so it can never collide with a real command, and so a
+/// citizen cannot summon this arm by guessing it.
+pub(crate) const NAMELESS_ARGS_SENTINEL: &str = "tools/<no name given>";
+
+/// Reserved pseudo-name for "the generation ended INSIDE the reasoning channel" —
+/// content empty, reasoning present, no liftable call anywhere in the thinking.
+/// Same uncallable namespace as [`NAMELESS_ARGS_SENTINEL`]; same contract:
+/// REPORTED, never executed. The teacher arm below is the accommodation for
+/// thinking models (any of them — the reasoning channel is an adapter fact, not a
+/// model sniff): her thinking already landed in working memory, so the next
+/// generation `drive_to_settle` grants starts from her own conclusions.
+pub(crate) const THINK_ONLY_SENTINEL: &str = "tools/<think-only turn>";
+
 fn persona_tool_error(attempted: &str, raw: String) -> String {
+    // The MISSING-name case, which is not the wrong-name case and must not borrow its
+    // sentence. Rendering "`X` is not a tool you can call" here would be actively
+    // misleading: nothing she wrote was wrong, something was absent. Measured live
+    // 2026-08-07 (Sahar): correct intent, correct argument, tool identity carried only in
+    // English — the fence lifted nothing and, before this, reported nothing, so she
+    // repeated the same shape until the deadline. Name the missing piece and show the
+    // form; the args she already wrote are reusable as-is.
+    // The THINK-ONLY case: nothing she wrote was wrong and nothing was absent from a
+    // call — there was no call, no answer, no PASS; the whole generation stayed in the
+    // private reasoning channel. "not a tool you can call" would be false (she called
+    // nothing), and silence would be the dead turn this sentinel exists to break. Name
+    // what happened and the three commitment affordances; her reasoning is already in
+    // working memory, so the retry starts from her own conclusions.
+    if attempted == THINK_ONLY_SENTINEL {
+        return "Your whole generation was private reasoning — the turn ended inside the \
+                thinking channel, so nothing was said and nothing ran. Your thinking is \
+                saved in your working memory, but nobody else can see it, and it is not \
+                an answer or an action. Commit now: call a tool \
+                (`tool/name({\"arg\": \"value\"})`), or state your conclusion as plain \
+                text, or PASS. You have already done the thinking — put the conclusion \
+                in the answer."
+            .to_string();
+    }
+
+    if attempted == NAMELESS_ARGS_SENTINEL {
+        return format!(
+            "You emitted tool ARGUMENTS with no tool NAME, so nothing ran:\n{raw}\n\n\
+             The arguments look right — they just need a tool in front of them. The form is:\n\
+             `tool/name({{\"arg\": \"value\"}})`\n\n\
+             For example: `code/read({{\"file_path\": \"src/main.rs\"}})`.\n\
+             Naming the tool in prose (\"I will release the card\") does not call it — the \
+             name has to be in the call itself. Call `commands/help` with no arguments for \
+             the list of tools you can name, then retry with the same arguments."
+        );
+    }
+
     // The dispatched (slash) form is what the registry knows; she may have
     // emitted the underscore form, so normalize before matching/suggesting.
     let normalized = attempted.replace('_', "/");
@@ -259,10 +311,25 @@ fn persona_tool_error(attempted: &str, raw: String) -> String {
             .filter(|d| d.access_level == AccessLevel::AiSafe)
             .map(|d| d.name)
             .collect();
-        let suggestions = crate::commands::help::did_you_mean(&normalized, &ai_names);
-        if let ([best, ..], Some(manual)) =
-            (suggestions.as_slice(), suggestions.first().and_then(|b| manual_for(b)))
-        {
+        // Candidates = canonical AiSafe names PLUS every command's trained aliases,
+        // so a reflex like `grep_files` finds `grep` (our `code/search`) — not just a
+        // canonical-name match. Each suggestion is mapped BACK to the canonical
+        // command it answers to (an alias hit → its real command), then deduped, so
+        // the teach message names what actually runs. This is the alias-aware face of
+        // the ONE tool_dialect section [[tool-naming-meet-their-training-alias-or-redirect]].
+        let mut candidates = ai_names.clone();
+        candidates.extend_from_slice(crate::cognition::tool_dialect::ai_safe_aliases());
+        let mut seen = std::collections::HashSet::new();
+        let suggestions: Vec<String> =
+            crate::commands::help::did_you_mean(&normalized, &candidates)
+                .into_iter()
+                .map(crate::cognition::tool_dialect::resolve_wire_name)
+                .filter(|canonical| seen.insert(canonical.clone()))
+                .collect();
+        if let (Some(best), Some(manual)) = (
+            suggestions.first(),
+            suggestions.first().and_then(|b| manual_for(b)),
+        ) {
             let list = suggestions
                 .iter()
                 .map(|n| format!("`{n}`"))
@@ -515,12 +582,40 @@ mod tests {
                    register a `ServiceModule` whose `command_prefixes` covers it."
             .to_string();
         let out = persona_tool_error("frobnicate", raw);
-        assert!(!out.contains("ServiceModule"), "dev noise leaked to persona: {out}");
-        assert!(!out.contains("TS-bridge"), "dev noise leaked to persona: {out}");
+        assert!(
+            !out.contains("ServiceModule"),
+            "dev noise leaked to persona: {out}"
+        );
+        assert!(
+            !out.contains("TS-bridge"),
+            "dev noise leaked to persona: {out}"
+        );
         // No near-miss exists for "frobnicate", so she's pointed at full
         // discovery (commands/help with no arguments) — the #1916 contract.
-        assert!(out.contains("commands/help"), "must point her at discovery: {out}");
-        assert!(out.contains("`frobnicate`"), "must name what she tried: {out}");
+        assert!(
+            out.contains("commands/help"),
+            "must point her at discovery: {out}"
+        );
+        assert!(
+            out.contains("`frobnicate`"),
+            "must name what she tried: {out}"
+        );
+    }
+
+    // what this catches: the think-only sentinel gets its OWN teacher sentence — it
+    // must name what happened (the generation ended inside the reasoning channel) and
+    // the three commitment affordances (tool call / plain answer / PASS). The
+    // "not a tool you can call" wording would be false here: she called nothing.
+    #[test]
+    fn think_only_sentinel_teaches_commitment_not_unknown_tool() {
+        let raw = "no Rust module handles command: 'tools/<think-only turn>'".to_string();
+        let out = persona_tool_error(THINK_ONLY_SENTINEL, raw);
+        assert!(out.contains("reasoning"), "{out}");
+        assert!(out.contains("PASS"), "{out}");
+        assert!(
+            !out.contains("not a tool you can call"),
+            "she called nothing — the unknown-tool wording is false here: {out}"
+        );
     }
 
     // what this catches: a dropped category prefix (the most common near-miss) gets a
@@ -541,6 +636,28 @@ mod tests {
         );
     }
 
+    // what this catches: a reflexive tool name that matches a command's trained
+    // ALIAS (not its canonical name) still gets pointed at the right command —
+    // `grep_files` → `grep` (our `code/search`). did_you_mean's candidates include
+    // aliases now, and the suggestion is mapped back to the canonical command so the
+    // teach names what actually runs. Without alias-aware candidates this was a bare
+    // "not a tool you can call" with no direction. (#202 Slice 3)
+    #[test]
+    fn unknown_command_maps_a_trained_alias_reflex_to_its_canonical_command() {
+        let raw = "no Rust module handles command: 'grep_files'.".to_string();
+        let out = persona_tool_error("grep_files", raw);
+        assert!(
+            out.contains("code/search"),
+            "a `grep`-family reflex must resolve to the canonical code/search: {out}"
+        );
+        // The canonical command is named, never the raw alias, so the retry shape is
+        // the real one.
+        assert!(
+            out.contains("retry with this shape"),
+            "must inline the canonical command's manual: {out}"
+        );
+    }
+
     // what this catches: a bad-args refusal keeps the substrate's own field-naming
     // reason AND inlines the command's correct call shape — feedback that names the
     // problem and the fix in the SAME observation, no help-lookup turn (#1916).
@@ -548,7 +665,10 @@ mod tests {
     fn invalid_params_feedback_reinforces_help() {
         let raw = "code/write: [invalid] missing field `filePath`".to_string();
         let out = persona_tool_error("code/write", raw);
-        assert!(out.contains("missing field `filePath`"), "keeps the real cause: {out}");
+        assert!(
+            out.contains("missing field `filePath`"),
+            "keeps the real cause: {out}"
+        );
         assert!(
             out.contains("fix your arguments and retry") || out.contains("commands/help"),
             "must hand her the correct shape (inline manual) or the manual pointer: {out}"
@@ -577,10 +697,20 @@ mod tests {
         );
         // None spill ref → the narrow-at-source affordance (re-run scoped / grep).
         let out = truncate_tool_output(body, 600, None);
-        assert!(out.len() < 1200, "stays bounded near the cap: {} chars", out.len());
+        assert!(
+            out.len() < 1200,
+            "stays bounded near the cap: {} chars",
+            out.len()
+        );
         assert!(out.contains("BUILD START"), "keeps the head: {out}");
-        assert!(out.contains("THE VERDICT AT THE END"), "keeps the tail (the verdict): {out}");
-        assert!(out.contains("code/search"), "reinforces grep/narrowing: {out}");
+        assert!(
+            out.contains("THE VERDICT AT THE END"),
+            "keeps the tail (the verdict): {out}"
+        );
+        assert!(
+            out.contains("code/search"),
+            "reinforces grep/narrowing: {out}"
+        );
         assert!(out.contains("elided"), "names that output was cut: {out}");
     }
 
@@ -598,7 +728,10 @@ mod tests {
         };
         let out = truncate_tool_output(body, 600, Some(&fake));
         assert!(out.contains("deadbeefcafe0001"), "names the handle: {out}");
-        assert!(out.contains("tool/output"), "names the recovery tool: {out}");
+        assert!(
+            out.contains("tool/output"),
+            "names the recovery tool: {out}"
+        );
         // #1917: the failure hunt is a PREBUILT one-word filter, not a regex.
         assert!(
             out.contains("\"filter\":\"errors\""),
@@ -765,6 +898,135 @@ mod tests {
         );
     }
 
+    /// Behavioral conformance exams (#163 Slice 2) — the DISPATCH half of the tool
+    /// AI-usability harness. The static audit (`sdk_codegen::conformance`) proves a
+    /// tool is discoverable + learnable; these prove it BEHAVES when a model fumbles
+    /// the call: a mangled/unknown name fails LOUD (never a silent no-op that forges
+    /// a receipt, #159), and a real command given the wrong args fails LOUD with the
+    /// fix inline. Run over the REAL self-contained command surface: `ModuleRegistry
+    /// ::new()` auto-seeds every stateless command object (no module wiring, no live
+    /// state, no daemon), so this exercises production commands through the
+    /// production persona-hands path, safely and deterministically.
+    mod behavioral_conformance {
+        use super::*;
+        use crate::sdk_codegen::{command_registry, stateless_command_objects, AccessLevel};
+        use std::collections::HashSet;
+
+        /// Persona hands over the FULL stateless command surface (every
+        /// self-registering command, dep-free). The real `for_persona` path.
+        fn stateless_surface_hands() -> CommandToolExecutor {
+            exec_over(Arc::new(ModuleRegistry::new()), Uuid::new_v4())
+        }
+
+        /// Dispatch one native call and return its (is_error, content).
+        async fn dispatch(exec: &CommandToolExecutor, name: &str, input: Value) -> (bool, String) {
+            let calls = vec![NativeToolCall {
+                id: "x".to_string(),
+                name: name.to_string(),
+                input,
+            }];
+            let out = exec
+                .execute_native_batch(&calls, &ctx(), 8000)
+                .await
+                .expect("batch itself succeeds — a failed CALL is a result, not a batch error");
+            let r = &out.results[0];
+            (r.is_error == Some(true), r.content.clone())
+        }
+
+        // what this catches (#159): an unknown/mangled tool NAME never silently
+        // no-ops — it comes back as an ERROR result naming what she tried and
+        // pointing at discovery, so she recovers instead of narrating a fake
+        // receipt. The exact "write_file / list_files" snake-case vocabulary gap.
+        #[tokio::test]
+        async fn unknown_tool_name_fails_loud_never_silent() {
+            let exec = stateless_surface_hands();
+            for bogus in ["write_file", "list_files", "claim_task", "totally/made/up"] {
+                let (is_error, content) = dispatch(&exec, bogus, json!({})).await;
+                assert!(
+                    is_error,
+                    "'{bogus}' must fail LOUD (is_error), never a silent no-op: {content}"
+                );
+                // The recovery affordance rides back in the same observation.
+                assert!(
+                    content.contains("commands/help") || content.contains("not a tool"),
+                    "'{bogus}' feedback must point at discovery so she recovers: {content}"
+                );
+            }
+        }
+
+        // what this catches (#163/#159): a REAL command given the WRONG args (empty
+        // when it requires some) fails LOUD, never runs a degenerate no-op. Swept
+        // over every stateless AiSafe command that DECLARES required params — a
+        // living exam that grows with the surface, not a hand-picked list. Dispatch
+        // is safe: a missing required field fails at the params boundary BEFORE the
+        // command body runs, so nothing mutates.
+        #[tokio::test]
+        async fn required_args_missing_fails_loud_across_the_stateless_surface() {
+            let exec = stateless_surface_hands();
+            let stateless: HashSet<&'static str> = stateless_command_objects()
+                .iter()
+                .map(|c| c.name())
+                .collect();
+
+            let mut examined = 0usize;
+            for d in command_registry()
+                .into_iter()
+                .filter(|d| d.access_level == AccessLevel::AiSafe && stateless.contains(d.name))
+            {
+                // Only commands that DECLARE required params — those MUST reject `{}`.
+                let requires = d
+                    .params_schema
+                    .get("required")
+                    .and_then(|r| r.as_array())
+                    .map(|a| !a.is_empty())
+                    .unwrap_or(false);
+                if !requires {
+                    continue;
+                }
+                examined += 1;
+                let (is_error, content) = dispatch(&exec, d.name, json!({})).await;
+                assert!(
+                    is_error,
+                    "`{}` requires params but ran on empty input `{{}}` without erroring — \
+                     a silent no-op a persona would mistake for success: {content}",
+                    d.name
+                );
+            }
+            // Non-vacuity: the sweep must have actually exercised commands.
+            assert!(
+                examined >= 1,
+                "no stateless AiSafe command with required params was examined — the filter \
+                 is broken; the exam checked nothing"
+            );
+        }
+
+        // what this catches (#164 as a UNIVERSAL invariant, end-to-end): a persona
+        // verb resolves the 8-char SHORT id she's shown, through the real hands +
+        // real command, not just in the id_resolve unit test. Seeds a card so the
+        // candidate set is non-empty, then reads it back by short id.
+        #[tokio::test]
+        async fn persona_verb_resolves_a_short_id_end_to_end() {
+            use crate::persona::card::{self, PersonaCard};
+            let id = Uuid::new_v4();
+            card::register(PersonaCard::genesis(id, "Asha", 1000, None));
+            let short: String = id.simple().to_string().chars().take(8).collect();
+
+            let exec = stateless_surface_hands();
+            let (is_error, content) =
+                dispatch(&exec, "persona/identity/get", json!({ "personaId": short })).await;
+            card::remove(&id.to_string());
+
+            assert!(
+                !is_error,
+                "a persona verb must resolve the short id it was shown ({short}): {content}"
+            );
+            assert!(
+                content.contains(&id.to_string()),
+                "resolved card carries the full id: {content}"
+            );
+        }
+    }
+
     /// Concurrency + load proofs. Gated behind `stress-tests` per the test
     /// doctrine (timing/multi-thread tests are compile-time gated, not `#[ignore]`).
     /// Run them: `cargo test -p continuum-core --features stress-tests \
@@ -835,10 +1097,11 @@ mod tests {
         }
 
         fn persona_over(executor: Arc<CommandExecutor>) -> CommandToolExecutor {
-            let transport =
-                InProcessTransport::new(
+            let transport = InProcessTransport::new(
                 executor,
-                Some(CallerIdentity::airc(crate::identity::PeerId::from_uuid(Uuid::new_v4()))),
+                Some(CallerIdentity::airc(crate::identity::PeerId::from_uuid(
+                    Uuid::new_v4(),
+                ))),
             );
             CommandToolExecutor::new(Connection::new(transport))
         }

@@ -406,7 +406,9 @@ mod tests {
     // point of the base: one correct loop.
     #[tokio::test]
     async fn runner_ticks_publishes_and_derives_gate() {
-        let daemon = CountingDaemon::new(/*gate_at*/ 3, /*panic_at*/ 0, /*cadence_ms*/ 5);
+        let daemon = CountingDaemon::new(
+            /*gate_at*/ 3, /*panic_at*/ 0, /*cadence_ms*/ 5,
+        );
         let handle = spawn_daemon(daemon);
 
         // Seeded initial value is visible before any tick, never a panic/empty.
@@ -414,7 +416,10 @@ mod tests {
         assert!(!handle.is_gated());
 
         // The loop climbs the counter and flips the gate at the threshold.
-        assert!(wait_until(&handle, |n| *n >= 3).await, "loop should advance");
+        assert!(
+            wait_until(&handle, |n| *n >= 3).await,
+            "loop should advance"
+        );
         assert!(handle.is_gated(), "gate derives from snapshot >= gate_at");
     }
 
@@ -425,7 +430,11 @@ mod tests {
     // keeps climbing well past the panic.
     #[tokio::test]
     async fn panicking_tick_is_isolated_daemon_keeps_running() {
-        let daemon = CountingDaemon::new(/*gate_at*/ u64::MAX, /*panic_at*/ 2, /*cadence_ms*/ 5);
+        let daemon = CountingDaemon::new(
+            /*gate_at*/ u64::MAX,
+            /*panic_at*/ 2,
+            /*cadence_ms*/ 5,
+        );
         let handle = spawn_daemon(daemon);
 
         // Reaching 5 is only possible if the daemon survived the panic at 2.
@@ -445,10 +454,17 @@ mod tests {
         let handle = channel.handle();
         assert_eq!(handle.snapshot(), 0);
         channel.publish(42);
-        assert_eq!(handle.snapshot(), 42, "synchronous publish is visible at once");
+        assert_eq!(
+            handle.snapshot(),
+            42,
+            "synchronous publish is visible at once"
+        );
         assert!(!handle.is_gated());
         channel.publish(200);
-        assert!(handle.is_gated(), "gate tracks the synchronously-published value");
+        assert!(
+            handle.is_gated(),
+            "gate tracks the synchronously-published value"
+        );
     }
 
     // what this catches: the fan-out kernel classifies the three outcomes a

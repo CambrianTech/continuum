@@ -24,7 +24,10 @@ use crate::sdk_codegen::{CommandError, Ctx};
 /// Params for `command/migrate`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/command/CommandMigrateParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/command/CommandMigrateParams.ts"
+)]
 pub struct CommandMigrateParams {
     /// The legacy wire name to port, e.g. `data/list`.
     pub command: String,
@@ -54,7 +57,10 @@ pub struct CommandMigrateParams {
 /// Result of `command/migrate`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/command/CommandMigrateResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/command/CommandMigrateResult.ts"
+)]
 pub struct CommandMigrateResult {
     /// The wire name ported.
     pub command: String,
@@ -109,9 +115,8 @@ pub(crate) async fn migrate(p: CommandMigrateParams) -> Result<CommandMigrateRes
     let outcome: MigrateFsOutcome = tokio::task::spawn_blocking(move || {
         let root = resolve_src_root(src_override.as_deref())?;
         let module_path = root.join(format!("modules/{module_for_fs}.rs"));
-        let legacy = std::fs::read_to_string(&module_path).map_err(|e| {
-            CommandError::NotFound(format!("read {}: {e}", module_path.display()))
-        })?;
+        let legacy = std::fs::read_to_string(&module_path)
+            .map_err(|e| CommandError::NotFound(format!("read {}: {e}", module_path.display())))?;
         let captured = extract_match_arm(&legacy, &command_for_fs);
 
         let body = build_stub_body(&id_for_fs.name, captured.as_deref());

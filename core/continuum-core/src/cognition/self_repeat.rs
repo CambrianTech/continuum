@@ -36,6 +36,25 @@ pub fn text_similarity(a: &str, b: &str) -> f64 {
     inter / union
 }
 
+/// How much of `part` reappears in `whole`, in `0.0..=1.0` — ASYMMETRIC containment, the
+/// sibling of [`text_similarity`] and deliberately NOT the same measure.
+///
+/// Jaccard asks "are these two texts the same?". Containment asks "did this text SWALLOW that
+/// one?". The difference matters the moment one side is much longer: a persona who reproduces
+/// a 30-token perception fact inside a 300-token message scores ~0.1 on Jaccard (diluted by
+/// her own words) but 1.0 on containment. When the question is "did you echo what you were
+/// told", dilution by verbosity must not launder the echo.
+///
+/// Shares [`content_tokens`] with `text_similarity` on purpose — one tokenizer, so a change to
+/// what counts as a content word can never make the two measures disagree about a text.
+pub fn containment(whole: &str, part: &str) -> f64 {
+    let (tw, tp) = (content_tokens(whole), content_tokens(part));
+    if tp.is_empty() {
+        return 0.0;
+    }
+    tp.intersection(&tw).count() as f64 / tp.len() as f64
+}
+
 /// The default self-repeat threshold. 0.8 catches a reworded restatement (Asha's
 /// near-identical policy) while leaving room for a genuinely new point that happens to
 /// reuse the same vocabulary.
@@ -100,12 +119,20 @@ mod tests {
         let repeat = "When my genome is about to be evicted under pressure, I think it is \
                       best to gracefully yield rather than negotiate to stay, so the system \
                       keeps optimal performance and I re-page once resources return.";
-        assert!(is_self_repeat(repeat, &[prior.to_string()], SELF_REPEAT_THRESHOLD));
+        assert!(is_self_repeat(
+            repeat,
+            &[prior.to_string()],
+            SELF_REPEAT_THRESHOLD
+        ));
 
         // A genuinely new point (different content) → not a repeat.
         let new_point = "Actually, the harder question is whether the room should get a vote \
                          before any one persona's genome is paged out — a fairness quorum.";
-        assert!(!is_self_repeat(new_point, &[prior.to_string()], SELF_REPEAT_THRESHOLD));
+        assert!(!is_self_repeat(
+            new_point,
+            &[prior.to_string()],
+            SELF_REPEAT_THRESHOLD
+        ));
 
         // No prior output → never a repeat.
         assert!(!is_self_repeat(repeat, &[], SELF_REPEAT_THRESHOLD));
@@ -147,7 +174,10 @@ mod tests {
     // what this catches: similarity is bounded, symmetric, and 1.0 for identical text.
     #[test]
     fn similarity_is_bounded_and_identical_is_one() {
-        assert_eq!(text_similarity("hello there world", "hello there world"), 1.0);
+        assert_eq!(
+            text_similarity("hello there world", "hello there world"),
+            1.0
+        );
         assert_eq!(text_similarity("", "anything"), 0.0);
         let s = text_similarity("the quick brown fox", "the lazy brown dog");
         assert!((0.0..=1.0).contains(&s) && s > 0.0 && s < 1.0);

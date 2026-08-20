@@ -52,6 +52,7 @@ const SNAC_SAMPLE_RATE: u32 = 24000;
 /// Max audio tokens to generate (prevents runaway generation).
 /// 7 tokens/frame × ~10 frames/sec = ~70 tokens/sec of audio.
 /// 2100 tokens ≈ 30 seconds max.
+// context-budget-exempt: the TTS model's own audio-token architecture limit, not a text-context bound
 const MAX_AUDIO_TOKENS: usize = 2100;
 
 /// Temperature for audio token sampling (Orpheus default)
@@ -114,7 +115,7 @@ impl OrpheusTts {
 
     /// Search directories for model files
     fn model_search_dirs() -> Vec<PathBuf> {
-        let mut dirs = vec![PathBuf::from("models/orpheus")];
+        let mut dirs = vec![crate::live::audio::model_root::voice_model_path("orpheus")];
         if let Some(data_dir) = dirs::data_dir() {
             dirs.push(data_dir.join("orpheus"));
         }
@@ -153,7 +154,7 @@ impl OrpheusTts {
         clog_warn!("  Model: https://huggingface.co/canopylabs/orpheus-3b-0.1-ft");
         clog_warn!("  SNAC:  https://huggingface.co/hubertsiuzdak/snac_24khz");
         clog_warn!("  Place files in: models/orpheus/");
-        PathBuf::from("models/orpheus")
+        crate::live::audio::model_root::voice_model_path("orpheus")
     }
 
     fn dir_has_required_files(dir: &Path) -> bool {

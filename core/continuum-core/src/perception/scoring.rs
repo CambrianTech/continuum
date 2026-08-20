@@ -38,7 +38,10 @@ fn default_min_count() -> u32 {
 /// fields must hold on the SAME node for it to match (AND semantics).
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/perception/UiCheck.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/perception/UiCheck.ts"
+)]
 pub struct UiCheck {
     /// Human-readable statement of what this asserts — rendered on the scorecard
     /// ("has a Submit button", "shows the heading 'Welcome'").
@@ -68,7 +71,10 @@ pub struct UiCheck {
 /// The outcome of one [`UiCheck`] against an observation.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/perception/UiCheckResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/perception/UiCheckResult.ts"
+)]
 pub struct UiCheckResult {
     pub description: String,
     pub passed: bool,
@@ -81,7 +87,10 @@ pub struct UiCheckResult {
 /// money signal. `score` is `passed / total` in `0.0..=1.0`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/perception/UiScore.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/perception/UiScore.ts"
+)]
 pub struct UiScore {
     #[ts(type = "number")]
     pub passed: u32,
@@ -100,7 +109,10 @@ pub struct UiScore {
 /// and the STOP-zone edit stays trivial.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/perception/UiGrade.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/perception/UiGrade.ts"
+)]
 pub struct UiGrade {
     /// Did the persona's UI meet the bar (`score >= pass_threshold`, on a real
     /// observation with at least one check)?
@@ -303,7 +315,10 @@ mod tests {
         assert_eq!(score.total, 2);
         assert_eq!(score.score, 0.5);
         assert!(score.results[0].passed);
-        assert!(!score.results[1].passed, "the absent link must fail its check");
+        assert!(
+            !score.results[1].passed,
+            "the absent link must fail its check"
+        );
     }
 
     // what this catches: a UI that DIDN'T render (failed observation / no
@@ -372,8 +387,14 @@ mod tests {
                 min_count: 1,
             },
         ];
-        assert!(!grade_ui(&login_form(), &mixed, 1.0).passed, "half-met fails at 1.0");
-        assert!(grade_ui(&login_form(), &mixed, 0.5).passed, "half-met passes at 0.5");
+        assert!(
+            !grade_ui(&login_form(), &mixed, 1.0).passed,
+            "half-met fails at 1.0"
+        );
+        assert!(
+            grade_ui(&login_form(), &mixed, 0.5).passed,
+            "half-met passes at 0.5"
+        );
         assert_eq!(grade_ui(&login_form(), &mixed, 1.0).score, 0.5);
     }
 

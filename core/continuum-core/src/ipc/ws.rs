@@ -63,6 +63,7 @@ pub async fn serve(
     executor: Arc<CommandExecutor>,
     substrate: Substrate,
     per_user: Arc<PerUserSubstrates>,
+    nav: Arc<crate::ipc::positron_nav_source::NavProjectorRegistry>,
 ) {
     let listener = match TcpListener::bind(&bind_addr).await {
         Ok(listener) => {
@@ -102,9 +103,12 @@ pub async fn serve(
                 let substrate = substrate.clone();
                 let per_user = Arc::clone(&per_user);
                 let dispatcher = Arc::clone(&dispatcher);
+                let nav = Arc::clone(&nav);
                 tokio::spawn(async move {
-                    handle_ws_connection(stream, peer, executor, substrate, per_user, dispatcher)
-                        .await;
+                    handle_ws_connection(
+                        stream, peer, executor, substrate, per_user, dispatcher, nav,
+                    )
+                    .await;
                 });
             }
             Err(e) => {
@@ -139,6 +143,7 @@ async fn handle_ws_connection(
     substrate: Substrate,
     per_user: Arc<PerUserSubstrates>,
     dispatcher: Arc<dyn CommandDispatch>,
+    nav: Arc<crate::ipc::positron_nav_source::NavProjectorRegistry>,
 ) {
     // Capture the citizen id from the connect URL (`?me=<uuid>`) during the
     // handshake — this is WHO the session belongs to, so its per-user views (nav)
@@ -168,6 +173,12 @@ async fn handle_ws_connection(
         peer,
         citizen
     );
+
+    // A citizen session's per-user views need their projector running — the
+    // registry spawns it on first arrival, no-ops on every later connection.
+    if let Some(me) = citizen {
+        nav.ensure(me);
+    }
 
     let (mut ws_sink, mut ws_source) = ws_stream.split();
 
@@ -244,7 +255,12 @@ async fn handle_ws_connection(
             match rail.recv().await {
                 Ok(d) => {
                     let frame = WsServerMessage::stream_delta(
-                        d.room_id, d.sender_id, d.stream_id, d.seq, d.token, d.done,
+                        d.room_id,
+                        d.sender_id,
+                        d.stream_id,
+                        d.seq,
+                        d.token,
+                        d.done,
                     );
                     match serde_json::to_string(&frame) {
                         Ok(json) => {
@@ -253,7 +269,12 @@ async fn handle_ws_connection(
                             }
                         }
                         Err(e) => {
-                            crate::log_error!("ipc", "ws", "failed to serialize stream delta: {}", e)
+                            crate::log_error!(
+                                "ipc",
+                                "ws",
+                                "failed to serialize stream delta: {}",
+                                e
+                            )
                         }
                     }
                 }
@@ -404,6 +425,21 @@ mod tests {
     use super::*;
     use continuum_airc_protocol::{AircCommandRequest, AircCommandResponse};
 
+    /// An inert nav registry for connection-handler tests: real type, fixed
+    /// empty room set, fresh bus. Anonymous test connections never call
+    /// `ensure`, and a citizen-scoped test that does gets a projector writing
+    /// into the same `per_user` the session reads — the real wiring, no mock.
+    fn test_nav_registry(
+        per_user: Arc<PerUserSubstrates>,
+    ) -> Arc<crate::ipc::positron_nav_source::NavProjectorRegistry> {
+        use crate::ipc::positron_nav_source::{ChannelBookmarksNavReader, NavProjectorRegistry};
+        Arc::new(NavProjectorRegistry::new(
+            Arc::new(crate::runtime::MessageBus::new()),
+            per_user,
+            Arc::new(ChannelBookmarksNavReader::fixed(Vec::new())),
+        ))
+    }
+
     // what this catches: the citizen id is extracted from the `?me=<uuid>` connect
     // query the client already sends — so a WS session is citizen-scoped, not the
     // nil-caller anonymous it was. Absent/garbage → None (honest anonymous), not a
@@ -412,9 +448,17 @@ mod tests {
     fn parse_me_extracts_the_citizen_from_the_connect_query() {
         let me = uuid::Uuid::from_u128(0xa54a);
         let q = format!("core=ws%3A%2F%2Fx&me={me}&other=1");
-        assert_eq!(parse_me(Some(&q)), Some(me), "extracts me from a real query");
+        assert_eq!(
+            parse_me(Some(&q)),
+            Some(me),
+            "extracts me from a real query"
+        );
         assert_eq!(parse_me(Some("me=not-a-uuid")), None, "garbage uuid → None");
-        assert_eq!(parse_me(Some("core=x&room=general")), None, "no me param → None");
+        assert_eq!(
+            parse_me(Some("core=x&room=general")),
+            None,
+            "no me param → None"
+        );
         assert_eq!(parse_me(None), None, "no query → None");
     }
 
@@ -522,9 +566,11 @@ mod tests {
         let dispatcher: Arc<dyn CommandDispatch> =
             Arc::new(ExecutorDispatch::new(Arc::clone(&exec)));
         let per_user = Arc::new(PerUserSubstrates::new());
+        let nav = test_nav_registry(Arc::clone(&per_user));
         tokio::spawn(async move {
             if let Ok((stream, peer)) = listener.accept().await {
-                handle_ws_connection(stream, peer, exec, substrate, per_user, dispatcher).await;
+                handle_ws_connection(stream, peer, exec, substrate, per_user, dispatcher, nav)
+                    .await;
             }
         });
 
@@ -613,10 +659,19 @@ mod tests {
         let addr = listener.local_addr().expect("local addr");
         let conn_substrate = substrate.clone();
         let per_user = Arc::new(PerUserSubstrates::new());
+        let nav = test_nav_registry(Arc::clone(&per_user));
         tokio::spawn(async move {
             if let Ok((stream, peer)) = listener.accept().await {
-                handle_ws_connection(stream, peer, executor, conn_substrate, per_user, dispatcher)
-                    .await;
+                handle_ws_connection(
+                    stream,
+                    peer,
+                    executor,
+                    conn_substrate,
+                    per_user,
+                    dispatcher,
+                    nav,
+                )
+                .await;
             }
         });
 

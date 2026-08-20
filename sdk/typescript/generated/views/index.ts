@@ -23,6 +23,7 @@
 
 export type { ChatViewState } from './ChatViewState';
 export type { ChatMessageView } from './ChatMessageView';
+export type { ActReceiptView } from './ActReceiptView';
 export type { RosterSlotView } from './RosterSlotView';
 export type { SenderKind } from './SenderKind';
 export type { Provenance } from './Provenance';
@@ -34,3 +35,35 @@ export type { RosterViewState } from './RosterViewState';
 // foundry widget closure (kind="foundry" → ForgeViewState + its model row)
 export type { ForgeViewState } from './ForgeViewState';
 export type { ForgeModelView } from './ForgeModelView';
+
+// nav closure (kind="nav" → NavViewState) — a citizen's open tabs (with derived
+// unread), current tab, per-room read cursors, and bookmarks. Per-USER, unlike
+// the per-room chat/roster/foundry kinds; served from the citizen's ?me= scoped
+// session substrate.
+export type { NavViewState } from './NavViewState';
+export type { NavTab } from './NavTab';
+export type { NavBookmark } from './NavBookmark';
+export type { NavTargetKind } from './NavTargetKind';
+
+// system-metrics closure (kind="system-metrics" → SystemMetricsViewState) — the
+// node's live CPU/MEM series the SYS gauge draws, core-carried window.
+export type { SystemMetricsViewState } from './SystemMetricsViewState';
+// serving closure (kind="serving" → ServingViewState) — the serving glass box
+// (#141 slice 1: header + pager series + bandit arms + event cards).
+export type { ServingViewState } from './ServingViewState';
+export type { ServingHeaderView } from './ServingHeaderView';
+export type { ServingArmView } from './ServingArmView';
+export type { ServingEventCard } from './ServingEventCard';
+export type { MetricSeriesView } from './MetricSeriesView';
+
+// kanban closure (kind="kanban" → KanbanViewState) — the room's work board;
+// vendored for the persona home's claims feed (cards filtered by assignee).
+export type { KanbanViewState } from './KanbanViewState';
+export type { KanbanCardView } from './KanbanCardView';
+export type { KanbanLaneView } from './KanbanLaneView';
+export type { KanbanCardState } from './KanbanCardState';
+export type { KanbanLaneState } from './KanbanLaneState';
+export type { KanbanPriority } from './KanbanPriority';
+export type { KanbanPullRequest } from './KanbanPullRequest';
+export type { BenchViewState } from './BenchViewState';
+export type { BenchRunRow } from './BenchRunRow';

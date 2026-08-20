@@ -68,6 +68,15 @@ pub struct IncomingMessage {
     /// filtered upstream of this projection — they should arrive as
     /// `None` from the conversation's stream.
     pub text: String,
+    /// The room the event ARRIVED in — the transport's `TranscriptEvent.room_id`,
+    /// which is authoritative for the turn's context (A.6, the missing context
+    /// axis). Nil means the source predates room stamping (scripted/test
+    /// conversations) and the loop falls back to `identity.default_room`; a real
+    /// wire event always carries its room. Without this, an operator's CLI
+    /// publish woke the persona into a nil-room turn where every room-scoped
+    /// RAG source (roster, doctrine, board, kanban) abstained — she heard the
+    /// words but stood in no room (glass-boxed 2026-07-23, Anwen ACK test).
+    pub room_id: Uuid,
 }
 
 /// Polymorphism rail for "talk to the grid as this persona". The
@@ -116,8 +125,17 @@ pub trait PersonaConversation: Send + Sync {
     /// eager priming so the round-trip lands off the hot path.
     async fn next_message(&mut self) -> Result<Option<IncomingMessage>, String>;
 
-    /// Reply with text to the persona's default room.
-    async fn say(&self, text: &str) -> Result<(), String>;
+    /// Reply with text INTO A NAMED ROOM — normally the room the turn
+    /// being answered arrived in ([`IncomingMessage::room_id`]).
+    ///
+    /// Not "the persona's default room", which is what this used to
+    /// be. A persona is in more than one room, so a reply that always
+    /// went to her default answered the wrong audience the moment she
+    /// was addressed anywhere else — visibly worse than silence,
+    /// because it reads as a non-sequitur rather than a missing wire.
+    /// `Uuid::nil()` keeps the documented pre-room-stamping contract
+    /// (scripted / test sources) and routes to her default.
+    async fn say_in(&self, room_id: Uuid, text: &str) -> Result<(), String>;
 
     /// #170: the airc citizen behind this conversation, for OFF-THREAD streaming
     /// (`publish_stream_chunk`) from a spawned drain task. Returns an OWNED `Arc`
@@ -400,9 +418,20 @@ async fn serve_persona_loop_inner(
     // Recent inbound texts (bounded ring) — the exchange record the message-path
     // loop-filler gate below judges against. Inbound only: own posts are filtered
     // above the gate, and the peer's repeats are what re-arm the resonance.
+    // context-budget-exempt: a count of recent inbound MESSAGES to consider, not a size in tokens or chars
     const RECENT_INBOUND_WINDOW: usize = 24;
     let mut recent_inbound: std::collections::VecDeque<String> =
         std::collections::VecDeque::with_capacity(RECENT_INBOUND_WINDOW);
+    // Roster-name memory for engram attribution: harvested from each turn's
+    // composed `room-roster` delivery (zero extra I/O — the roster scan already
+    // runs per turn), consulted at admit time so her MEMORY records
+    // "Joel said…" / "Claude said…", never "peer-7711fe60 said…". First-class
+    // peers — humans, outside agents, personas — all resolve through the one
+    // roster airc owns ([[airc-native-identity-rooms-security]]). Eventually
+    // consistent: a brand-new peer's FIRST message may admit under its short
+    // peer tag (honest, never fabricated); every later one is named.
+    let mut roster_names: std::collections::HashMap<Uuid, String> =
+        std::collections::HashMap::new();
 
     // While an eval-preemption lease is held, the loop goes FULLY quiet on this beat —
     // it neither self-ticks NOR consumes inbound. Gating only the self-tick isn't
@@ -446,17 +475,99 @@ async fn serve_persona_loop_inner(
                 // is waiting, they always get served immediately.
                 // [[idle-is-self-directed-free-time]]
                 // [[conversational-latency-is-a-misdirection-budget]]
-                if crate::cognition::resource_admission::shared_model_saturated() {
-                    next_beat = (next_beat + next_beat / 2).min(rest_cap);
-                    continue;
-                }
+                // Idle admission is a PERMIT, not a gauge — the fix the ambient-reply
+                // path (below, ~line 980) already made and this self-tick path never
+                // received. The gauge (`shared_model_saturated`) has a stampede race
+                // (#139/#385): N idle minds waking on the SAME cadence all read
+                // inflight=0 before any has generated a token, all pass, and all fire at
+                // the shared decode slot at once — oversubscribing a 1-lane node and
+                // #385-wedging it (glass-boxed 2026-08-10: resident_personas=4 vs
+                // warm_slots=1, every self-tick died on "no TOKEN progress for 90s").
+                // The permit is sized to the LIVE served lane count (LaneAdmission ←
+                // set_served_lane_count — true since 2026-08-17; it was a hardcoded 1 for
+                // the whole time this comment claimed otherwise) and HELD across the whole
+                // self-cycle, so ambient
+                // concurrency is bounded to real capacity no matter when everyone woke —
+                // the surplus minds genuinely yield toward rest instead of stampeding.
+                // Directed turns still bypass entirely (they were named). Self-tick and
+                // ambient replies share the same ambient pool — both are lowest-priority
+                // non-directed work competing for the same lanes.
+                let _self_tick_permit =
+                    match crate::cognition::resource_admission::try_hold_ambient_turn() {
+                        Some(permit) => permit,
+                        None => {
+                            // A YIELD IS NOT A REST — do NOT compound the beat here.
+                            //
+                            // The backoff below (after a real cycle) is earned: she THOUGHT,
+                            // the room had nothing new, so she rests deeper. A yield is the
+                            // opposite — she never ran. A peer held the single ambient slot,
+                            // she learned nothing, and there is nothing to rest ON.
+                            //
+                            // Compounding it built a STARVATION RATCHET, measured live
+                            // 2026-08-17 on this box: the ambient pool was a hardcoded 1 and 24
+                            // hosted citizens, so ~23 yield on every beat. At 1.5× per yield
+                            // a citizen crosses 15s → the 240s `rest_cap` in ~8 yields — 16×
+                            // slower — and STAYS there, because the only two resets are a
+                            // successful self-cycle (which the ratchet now denies her) and an
+                            // inbound Msg. Transient contention became permanent slowness, and
+                            // it deepened as the roster grew: measured ONE self-tick across 24
+                            // citizens in 40 minutes, on a lane that was healthy and decoding
+                            // the whole time.
+                            //
+                            // Leaving the beat UNCHANGED is the minimal correct rule: her
+                            // cadence stays whatever her own history earned, contention can no
+                            // longer slow her, and the identity-derived `phase` still keeps the
+                            // retries desynced so no herd forms. Yielding stays cheap — the
+                            // permit is a non-blocking try and perception work all happens
+                            // inside `run_self_cycle`, below this gate.
+                            next_beat = next_beat_after(
+                                BeatOutcome::YieldedNoSlot,
+                                next_beat,
+                                engaged_beat,
+                                rest_cap,
+                            );
+                            // Make the yield VISIBLE, at ≤1 row/min for the whole process.
+                            // Without this the yield path emits nothing, so a window with
+                            // zero `persona.selftick.*` reads identically whether one citizen
+                            // is mid-turn holding the only lane or the roster is dead —
+                            // resolving that took a manual /slots curl on 2026-08-17. Per-yield
+                            // rows would be ~92/min at this roster size and would drown the
+                            // stream (#399), so the admission gate rate-limits and only the
+                            // winner of its compare-exchange reports.
+                            if let Some(yields) =
+                                crate::cognition::resource_admission::take_ambient_yield_report(
+                                    std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|d| d.as_millis() as u64)
+                                        .unwrap_or(0),
+                                )
+                            {
+                                crate::probe!(
+                                    class = "persona.selftick.starved",
+                                    yields_since_last_report = yields,
+                                    total_yields =
+                                        crate::cognition::resource_admission::ambient_yields(),
+                                    "ambient turns yielded — the pool was full. NOT a fault: \
+                                     this is what contention looks like when citizens outnumber \
+                                     non-directed lanes. Rate-limited to ≤1 row/min."
+                                );
+                            }
+                            continue;
+                        }
+                    };
                 let before = last_burst_fp;
                 run_self_cycle(ctx, conversation, &opts, &mut last_burst_fp).await;
-                next_beat = if last_burst_fp != before {
-                    engaged_beat
-                } else {
-                    (next_beat + next_beat / 2).min(rest_cap)
-                };
+                drop(_self_tick_permit);
+                next_beat = next_beat_after(
+                    if last_burst_fp != before {
+                        BeatOutcome::Engaged
+                    } else {
+                        BeatOutcome::NothingNew
+                    },
+                    next_beat,
+                    engaged_beat,
+                    rest_cap,
+                );
                 continue;
             }
             // A message means life in the room — snap back to a quick beat so she's present
@@ -545,6 +656,18 @@ async fn serve_persona_loop_inner(
             );
         }
 
+        // A.6 — the turn's room is the room the trigger message ARRIVED in
+        // (transport-stamped, authoritative), not the identity's ambient
+        // default. Nil only from sources that predate room stamping
+        // (scripted/test conversations) → ambient default. This is what lets
+        // an operator's CLI publish wake a turn that can actually SEE the
+        // room's board/kanban/roster instead of a nil-room ghost context.
+        let turn_room = if msg.room_id.is_nil() {
+            ctx.identity.default_room
+        } else {
+            msg.room_id
+        };
+
         // Message-path loop-filler gate (#16): the heartbeat dedups its burst, but
         // this path ran a full ~55s decode for EVERY inbound message — so two
         // personas trading one goodbye template cycled forever on a metronome equal
@@ -565,9 +688,12 @@ async fn serve_persona_loop_inner(
             let now_ms = (opts.now_ms)();
             let inbox_msg = crate::persona::types::InboxMessage {
                 id: Uuid::new_v4(),
-                room_id: ctx.identity.default_room,
+                room_id: turn_room,
                 sender_id: msg.peer_id,
-                sender_name: format!("peer-{}", &msg.peer_id.to_string()[..8]),
+                sender_name: roster_names
+                    .get(&msg.peer_id)
+                    .cloned()
+                    .unwrap_or_else(|| format!("peer-{}", &msg.peer_id.to_string()[..8])),
                 sender_type: crate::persona::types::SenderType::Persona,
                 content: msg.text.clone(),
                 timestamp: now_ms,
@@ -626,11 +752,21 @@ async fn serve_persona_loop_inner(
         // for the complete per-turn record. The `respond_inner`-level
         // probes (`persona.response.enter` etc.) live INSIDE the
         // cognition; this one names the airc-boundary turn.
+        // Cognition pulse: this stamp is what EARNS her claim renewals
+        // (cognition_pulse.rs) — a turn starting, even one that later defers
+        // on serving pressure, is proof she is working her holds.
+        crate::persona::cognition_pulse::touch(
+            ctx.identity.peer_id.as_uuid(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or_default(),
+        );
         crate::probe!(
             class = "persona.turn.start",
             persona = %ctx.identity.agent_name,
             persona_id = %ctx.identity.peer_id.as_uuid(),
-            room_id = %ctx.identity.default_room,
+            room_id = %turn_room,
             lamport = msg.lamport,
             peer_id = %msg.peer_id,
             text_len = msg.text.len(),
@@ -638,16 +774,19 @@ async fn serve_persona_loop_inner(
         );
 
         // ===========================================================
-        // The brain services the turn through the canonical cognition
-        // pipeline — `persona::response::respond(RespondInput)`. This
-        // is the agent contract Joel and I have been building for a
-        // year: shared analysis (single-flight cache) → specialty
-        // scoring → genome activate → evaluate_response (adapter-
-        // translated, model-canonical tool calls + multi-modal) →
-        // clean_and_validate → tool_executor → audit → record_turn.
+        // The brain services the turn through the WorkspaceCycle:
+        // admit → build_workspace_turns → Burst → workspace cycle
+        // (RecallFaculty feeds the prompt, deliberation decides,
+        // act→observe drives to settle). That is the live path below.
+        //
+        // NOT `persona::response::respond(RespondInput)` — that verb
+        // only has one caller, PersonaServiceModule, which the module
+        // audit declares UNWIRED ("shadowed", runtime/registry.rs) so
+        // the respond path is dead code, kept only until the verbs it
+        // owns are dismantled or re-homed.
         //
         // See docs/architecture/PERSONA-COGNITION-PIPELINE.md for the
-        // full pipeline and the bypass this commit replaces.
+        // full pipeline.
         //
         // NOT a `will_respond + response_text` chatbot contract. NOT
         // a parallel rag_inspect bypass. The verbs in `cognition/`
@@ -670,9 +809,12 @@ async fn serve_persona_loop_inner(
         //    admit. Inference still runs without holding the mutex.
         let inbox_msg = crate::persona::types::InboxMessage {
             id: Uuid::new_v4(),
-            room_id: ctx.identity.default_room,
+            room_id: turn_room,
             sender_id: msg.peer_id,
-            sender_name: format!("peer-{}", &msg.peer_id.to_string()[..8]),
+            sender_name: roster_names
+                .get(&msg.peer_id)
+                .cloned()
+                .unwrap_or_else(|| format!("peer-{}", &msg.peer_id.to_string()[..8])),
             sender_type: crate::persona::types::SenderType::Persona,
             content: msg.text.clone(),
             timestamp: now_ms,
@@ -688,6 +830,11 @@ async fn serve_persona_loop_inner(
         // 2026-06-03 "introspect all rag" directive). The ranked Vec is no longer
         // threaded into a per-turn RespondInput (that path is gone); only the side-
         // effects and the admit remain.
+        // The engram of the message that woke this turn — the root its acts chain back
+        // to. Bound here (outer scope) because it is written at admission and read at
+        // burst assembly, two blocks apart.
+        let mut wake_engram: Option<uuid::Uuid> = None;
+
         {
             let cognition = ctx.cognition.lock().await;
             // recall BEFORE admit so the ranking is "what I knew going in" — the
@@ -715,18 +862,33 @@ async fn serve_persona_loop_inner(
             let admit_started = std::time::Instant::now();
             let admit_result = cognition.admission.admit(&inbox_msg, None);
             phase_timings.admit_ms = admit_started.elapsed().as_millis() as u64;
-            if let Err(e) = admit_result {
-                tracing::warn!(
-                    lamport = msg.lamport,
-                    error = %e,
-                    "admission.admit failed — engram not formed this turn"
-                );
-            } else {
-                tracing::info!(
-                    lamport = msg.lamport,
-                    engram_count = cognition.admission.engram_count(),
-                    "admitted incoming → L2 store"
-                );
+            match &admit_result {
+                Err(e) => {
+                    tracing::warn!(
+                        lamport = msg.lamport,
+                        error = %e,
+                        "admission.admit failed — engram not formed this turn"
+                    );
+                }
+                Ok(decision) => {
+                    // THE ROOT OF THIS TURN'S CAUSAL THREAD (CAUSAL-MEMORY-GRAPH.md §3a).
+                    // The message that woke her is already becoming an engram here; its id
+                    // was being discarded. Keeping it lets the turn's first act carry a
+                    // `CausedBy` edge to what actually caused it, instead of the chain
+                    // starting mid-air — which is what made "which acts were done for this"
+                    // unanswerable from the graph.
+                    //
+                    // Only an ADMITTED message is a cause. A Drop (dedup) or Quarantine has
+                    // no engram to point at, and inventing one would be a fabricated link —
+                    // worse than the honest gap it replaces.
+                    wake_engram = decision.admitted_engram_id();
+                    tracing::info!(
+                        lamport = msg.lamport,
+                        engram_count = cognition.admission.engram_count(),
+                        wake_engram = ?wake_engram,
+                        "admitted incoming → L2 store"
+                    );
+                }
             }
         }
 
@@ -739,9 +901,32 @@ async fn serve_persona_loop_inner(
         let compose_started = std::time::Instant::now();
         let composed = {
             let cognition = ctx.cognition.lock().await;
-            cognition.compose_for_turn(&ctx.profile, now_ms).await
+            // Stamp the WHERE axis: this turn is happening INSIDE `turn_room`.
+            // Without it every room-scoped source abstains and she perceives no
+            // board, no roster, no doctrine, no wall (#331 / #127).
+            cognition
+                .compose_for_turn(&ctx.profile, now_ms, Some(turn_room))
+                .await
         };
         phase_timings.compose_ms = compose_started.elapsed().as_millis() as u64;
+        // Harvest the roster resolution this compose already fetched into the
+        // admit-time name memory (see `roster_names` above).
+        for d in composed
+            .deliveries
+            .iter()
+            .filter(|d| d.source_id == "room-roster")
+        {
+            for item in &d.items {
+                if let (Some(peer), Some(name)) = (
+                    item.metadata.get("peer_id").and_then(|v| v.as_str()),
+                    item.metadata.get("display_name").and_then(|v| v.as_str()),
+                ) {
+                    if let Ok(id) = Uuid::parse_str(peer) {
+                        roster_names.insert(id, name.to_string());
+                    }
+                }
+            }
+        }
 
         // The consolidated burst the WorkspaceCycle reasons over — a stream of
         // inbox items WITH their metadata (WHO + WHEN + WHAT), not bare text. A
@@ -761,25 +946,48 @@ async fn serve_persona_loop_inner(
         // peer's voice anymore (the identity-bleed/echo root cause).
         // Her NOW rides the burst header (task #125): live turns carry real wall-clock
         // so time is a fact she can perceive; the eval fork passes its own pinned epoch.
-        let workspace_burst = crate::cognition::workspace::Burst::from_turns_at(
-            ctx.identity.default_room,
-            build_workspace_turns(
-                &composed.deliveries,
-                &ctx.identity.peer_id.to_string(),
-                &ctx.identity.agent_name,
-                // Anchor the message that woke this turn as the final peer turn —
-                // the composed thread's `airc` delivery can lag the wake, and a
-                // directed turn that reasons over a stale thread emits an empty
-                // completion → Pass (see `TriggerTurn`). `msg.peer_id` resolves to
-                // its roster name inside; `now_ms` is the wake time.
-                Some(TriggerTurn {
-                    peer_id: &msg.peer_id.to_string(),
-                    content: &msg.text,
-                    occurred_at_ms: now_ms,
-                }),
-            ),
-            Some(now_ms),
+        let mut ws_turns = build_workspace_turns(
+            &composed.deliveries,
+            &ctx.identity.peer_id.to_string(),
+            &ctx.identity.agent_name,
+            // Anchor the message that woke this turn as the final peer turn —
+            // the composed thread's `airc` delivery can lag the wake, and a
+            // directed turn that reasons over a stale thread emits an empty
+            // completion → Pass (see `TriggerTurn`). `msg.peer_id` resolves to
+            // its roster name inside; `now_ms` is the wake time.
+            Some(TriggerTurn {
+                peer_id: &msg.peer_id.to_string(),
+                content: &msg.text,
+                occurred_at_ms: now_ms,
+            }),
         );
+        // #301 anchor-starvation fix: the in-window escalation counter loses its
+        // older evidence to the context squeeze, so ALSO count the echo run over
+        // the durable rings (live path only — eval/replay stay window-derived).
+        // Ring run at threshold + no anchor already present → the same
+        // work-board anchor the in-window escalation would have pushed.
+        append_ring_anchor_if_starved(
+            &mut ws_turns,
+            &composed.deliveries,
+            ctx.identity.peer_id,
+            turn_room,
+        );
+        // Carry the wake message's engram as this burst's cause, so the turn's acts
+        // chain back to what triggered them (CAUSAL-MEMORY-GRAPH.md §3a). `None` when
+        // the message was deduped/quarantined — an honest gap, never a made-up link.
+        let workspace_burst =
+            crate::cognition::workspace::Burst::from_turns_at(
+                turn_room,
+                ws_turns,
+                Some(now_ms),
+                // The arrival that woke this turn IS its cause. A dedup Drop or a
+                // Quarantine put nothing in the store, so those fall back to Ambient
+                // rather than pointing an edge at an engram that does not exist.
+                match wake_engram {
+                    Some(id) => crate::cognition::workspace::Cause::Stimulus(id),
+                    None => crate::cognition::workspace::Cause::Ambient,
+                },
+            );
         // Mark this world-state as just-deliberated so the next heartbeat tick doesn't
         // re-run the same burst (the message path and the self-tick share the gate;
         // own chat is excluded so this reply can't re-trigger a self-tick, while her
@@ -843,11 +1051,11 @@ async fn serve_persona_loop_inner(
                 // Scope the cognition tick to the room this turn is FOR (the
                 // contextId), so the deliberation faculty stamps tool calls with
                 // it and the persona's hands act in the real room, not a phantom
-                // nil one. The serviced room is `ctx.identity.default_room` — the
-                // same room the burst header above declares. (IncomingMessage
-                // carries no per-message room yet; a per-message contextId on the
-                // cognition input is the deeper fix — A.6 / the missing context
-                // axis. Today default_room is the correct available context.)
+                // nil one. The serviced room is `turn_room` — the room the
+                // trigger message ARRIVED in (A.6 shipped: IncomingMessage now
+                // carries the transport's room; `identity.default_room` is only
+                // the fallback for room-less scripted sources). Same room the
+                // burst header above declares.
                 // See IDENTITY-SCOPE-PEER-LIVENESS-MODEL.md A.6 step 3.
                 // ONE settlement step through the SHARED primitive the eval driver
                 // also uses (`act_observe::settle_step`). The live path takes exactly
@@ -968,18 +1176,24 @@ async fn serve_persona_loop_inner(
                     conversation.stream_citizen(),
                     ctx.identity.agent_name.clone(),
                     // #170: a room turn — tee tokens to the browser rail so she types live.
-                    Some(ctx.identity.default_room.to_string()),
+                    Some(turn_room.to_string()),
                     Some(ctx.identity.peer_id.to_string()),
                 );
                 let (step, turn_metrics) = {
                     let outcome = crate::cognition::act_observe::drive_to_settle(
                         &cycle,
                         workspace_burst,
-                        ctx.identity.default_room,
+                        turn_room,
                         LIVE_MAX_ACTS,
                         framing,
                     )
                     .await;
+                    // The lived-turn experience write (#319) is NOT here: it lives inside
+                    // `drive_to_settle`, which is the one place a `SettleOutcome` is born.
+                    // It WAS here, at this single call site, and that was the bug — the
+                    // self-tick and held-work paths settle turns through the same driver
+                    // and got no record, so nothing on disk ever described a lived turn.
+                    // The driver stays a driver: no learning policy at any call site.
                     crate::cognition::act_observe::SettleStep::from_settled(outcome)
                 };
                 // Turn done: drop the cycle's sink so the forwarder's channel closes,
@@ -1018,10 +1232,7 @@ async fn serve_persona_loop_inner(
                         outcome.turns_acted += 1;
                         continue;
                     }
-                    crate::cognition::act_observe::SettleStep::ActUnfulfilled {
-                        calls,
-                        intent,
-                    } => {
+                    crate::cognition::act_observe::SettleStep::ActUnfulfilled { calls, intent } => {
                         // No hands or the executor errored. Abstain — never a
                         // fabricated result, never a raw call envelope to the room.
                         tracing::warn!(
@@ -1050,6 +1261,19 @@ async fn serve_persona_loop_inner(
                             reason = "workspace-pass",
                             "persona chose silence"
                         );
+                        // THE ACT-QUESTION. Asked here on the PASS path and again after a spoken reply,
+                        // so holding work is what makes it fire — not declining to speak.
+                        // `directed` is recomputed here rather than threaded: it is a pure function of
+        // (identity, msg.text) and the binding above lives inside the cycle branch.
+        let spoke_directed = ctx.identity.persona_identity().mentions(&msg.text);
+        crate::persona::act_question::ask_the_act_question(
+            ctx,
+            conversation,
+            msg.lamport,
+            turn_room,
+            spoke_directed,
+        )
+        .await;
                         outcome.turns_skipped += 1;
                         continue;
                     }
@@ -1121,7 +1345,10 @@ async fn serve_persona_loop_inner(
 
         // Per #195 slice 1: time the airc publish + downstream ack.
         let say_started = std::time::Instant::now();
-        let say_result = conversation.say(&response_text).await;
+        // Into the room the trigger arrived in (A.6 `turn_room`), which is the
+        // same room whose context this turn reasoned over — never her ambient
+        // default, or she answers one room's question to a different audience.
+        let say_result = conversation.say_in(turn_room, &response_text).await;
         phase_timings.say_ms = say_started.elapsed().as_millis() as u64;
         if let Err(e) = say_result {
             tracing::warn!(
@@ -1143,6 +1370,26 @@ async fn serve_persona_loop_inner(
             outcome.turns_errored += 1;
             continue;
         }
+        // SHE SPOKE — and she may ALSO hold work. Ask the act-question here too.
+        //
+        // The question used to live only on the PASS arm, which made answering someone
+        // mutually exclusive with working your own card: a citizen who replied in the room
+        // was never asked whether to act on the claim she was holding. That is backwards
+        // for a colleague — talking about the work and doing the work are not alternatives.
+        // Asked AFTER the reply is sent, so the room hears her answer at the same latency
+        // as before and the act-question can never delay a conversation.
+        // `directed` is recomputed here rather than threaded: it is a pure function of
+        // (identity, msg.text) and the binding above lives inside the cycle branch.
+        let spoke_directed = ctx.identity.persona_identity().mentions(&msg.text);
+        crate::persona::act_question::ask_the_act_question(
+            ctx,
+            conversation,
+            msg.lamport,
+            turn_room,
+            spoke_directed,
+        )
+        .await;
+
         let turn_duration_ms = turn_started.elapsed().as_millis() as u64;
         outcome.turn_latency.record(turn_duration_ms);
 
@@ -1153,6 +1400,7 @@ async fn serve_persona_loop_inner(
         // depend on the room's context budget.
         crate::cognition::deliberation_budget::record_own_speech(
             ctx.identity.peer_id,
+            turn_room,
             &response_text,
         );
 
@@ -1220,6 +1468,47 @@ async fn serve_persona_loop_inner(
     Ok(outcome)
 }
 
+/// What a self-tick beat DID, and therefore what the next interval should be.
+///
+/// Extracted as a pure decision (the `core_bind_guard::decide` shape) because the
+/// three outcomes are trivially confusable in an inline `match`, and confusing two
+/// of them cost a measured 16× slowdown across the whole roster — see
+/// [`next_beat_after`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BeatOutcome {
+    /// She ran a cycle and the room had something new → stay engaged.
+    Engaged,
+    /// She ran a cycle and nothing had changed → rest deeper (earned backoff).
+    NothingNew,
+    /// She never ran: a peer held the single ambient slot. She learned NOTHING,
+    /// so there is nothing to rest on and the beat must NOT compound.
+    YieldedNoSlot,
+}
+
+/// The self-tick cadence rule. Pure so every row is table-testable without a runtime.
+///
+/// The bug this encodes against (measured live 2026-08-17, 24 hosted citizens):
+/// `YieldedNoSlot` used to share `NothingNew`'s 1.5× backoff. With
+/// the ambient pool hardcoded at 1, ~23 citizens yield per beat, so each of them
+/// compounded 15s → the 240s cap in ~8 yields and STAYED pinned there — the only
+/// resets being a successful cycle (which the backoff itself denied them) or an
+/// inbound message. Transient contention became permanent slowness, and it got
+/// worse as the roster grew. Measured symptom: ONE self-tick across 24 citizens in
+/// 40 minutes, on a lane that was healthy and decoding throughout.
+pub fn next_beat_after(
+    outcome: BeatOutcome,
+    current: std::time::Duration,
+    engaged: std::time::Duration,
+    rest_cap: std::time::Duration,
+) -> std::time::Duration {
+    match outcome {
+        BeatOutcome::Engaged => engaged,
+        BeatOutcome::NothingNew => (current + current / 2).min(rest_cap),
+        // Unchanged: contention must never cost her cadence.
+        BeatOutcome::YieldedNoSlot => current,
+    }
+}
+
 /// Engaged heartbeat period — how often a persona pursuing its OWN intentions
 /// (no inbound message) gets another self-directed slice. This is the SELF-CHATTER
 /// pace, NOT message responsiveness: a real message wakes the loop instantly through
@@ -1252,7 +1541,7 @@ const SELF_TICK_REST_CAP_MS: u64 = 240_000;
 /// repeat-guard fact) is how a looping mind notices itself; the ONLY external
 /// stopwatch that remains is the eval grader's `max_acts` — a proctored exam's
 /// clock, held by the observer, never wired into life.
-const LIVE_MAX_ACTS: usize = usize::MAX;
+pub(crate) const LIVE_MAX_ACTS: usize = usize::MAX;
 
 /// What woke the service loop this cycle. A message from the wire, the never-stop
 /// heartbeat, or the end of the stream. Returned by the `select!` so the borrow of
@@ -1379,6 +1668,267 @@ pub(crate) fn collapse_near_duplicate_turns(
     kept
 }
 
+/// How many CONSECUTIVE repetition-detector fires (without the pattern
+/// breaking) before the `[pattern]` DESCRIPTION escalates to a concrete
+/// `[anchor]` work fact. 2 = escalate on the first turn posted AFTER the
+/// description was already in her window: live evidence (2026-07-23 greeting
+/// loops, work card d6f010c8) showed the description alone loses to an
+/// empty-looking room — Atlas re-greeted straight past it, 5+ identical
+/// greetings — while one concrete in-room work anchor broke the loop room-wide
+/// instantly. One described fire is her chance to self-correct; the second is
+/// proof description alone isn't landing. The count is DERIVED from the window
+/// itself (each trailing low-novelty turn is one fire that failed to break the
+/// pattern), so escalation needs no cross-turn state and holds identically in
+/// live, replay, and eval contexts.
+const PATTERN_FIRES_BEFORE_ANCHOR: usize = 2;
+
+/// Word-token set for echo containment — ONE tokenization for the in-window
+/// detectors and the ring-based run counter below, so "nearly identical"
+/// cannot drift between them.
+fn echo_words(s: &str) -> std::collections::HashSet<String> {
+    s.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() > 2)
+        .map(|w| w.to_lowercase())
+        .collect()
+}
+
+/// Ring-based echo run — the escalation counter's starvation fix (#301).
+///
+/// The in-window detectors measure their runs over the RENDERED burst, which
+/// the live context budget squeezes to 2–6 turns (#259) — so during an
+/// hours-long photocopy chain (glass-boxed 2026-08-02: Atlas's wake-intro
+/// reproduced byte-for-byte by Benchy then Asha, identity claim included)
+/// the older echo evidence has always scrolled out and the run reads 1,
+/// one below [`PATTERN_FIRES_BEFORE_ANCHOR`] — the `[anchor]` that provably
+/// breaks these loops never fires. Same starvation the room-speech ring
+/// already cures for the `inbound_restates` fact.
+///
+/// This counts the run over RING snapshots instead: the trailing run of her
+/// own recent messages (newest-first, ≥8 substantive words) each ≥0.8-contained
+/// in the room ring's vocabulary — excluding entries identical to the message
+/// being judged, so her own recorded copy can't vouch for itself. Pure over
+/// its inputs: LIVE callers pass the process rings; eval/replay callers pass
+/// nothing and stay window-derived (the #59 isolation the shared
+/// `build_workspace_turns` signature preserves by not knowing rings exist).
+pub(crate) fn ring_echo_run(own_recent: &[String], room_recent: &[String]) -> usize {
+    const MIN_WORDS: usize = 8;
+    const CONTAINMENT: f32 = 0.8;
+    let mut run = 0usize;
+    for own in own_recent.iter().rev() {
+        let cur = echo_words(own);
+        if cur.len() < MIN_WORDS {
+            break;
+        }
+        // Exclude at most ONE identical room entry — her own recorded copy
+        // (the room ring is authorless, so equality is the only handle). The
+        // REMAINING identical copies are exactly the photocopy evidence:
+        // excluding all of them would erase the chain being detected.
+        let mut skipped_own_copy = false;
+        let mut window: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for r in room_recent {
+            if !skipped_own_copy && r.as_str() == own.as_str() {
+                skipped_own_copy = true;
+                continue;
+            }
+            window.extend(echo_words(r));
+        }
+        if window.is_empty() {
+            break;
+        }
+        let covered = cur.iter().filter(|w| window.contains(*w)).count() as f32 / cur.len() as f32;
+        if covered >= CONTAINMENT {
+            run += 1;
+        } else {
+            break;
+        }
+    }
+    run
+}
+
+/// LIVE-path companion to [`ring_echo_run`]: read the process rings for this
+/// persona + room, and when the ring-counted echo run reaches the escalation
+/// threshold while the window-derived detectors pushed no `[anchor]` (their
+/// evidence scrolled out — the #301 starvation), append the SAME work-board
+/// anchor they would have. One anchor per burst, whichever counter earns it.
+fn append_ring_anchor_if_starved(
+    turns: &mut Vec<crate::cognition::workspace::BurstTurn>,
+    deliveries: &[crate::persona::rag_budget::RagDelivery],
+    peer: crate::identity::PeerId,
+    room: uuid::Uuid,
+) {
+    if turns.iter().any(|t| t.content.starts_with("[anchor]")) {
+        return;
+    }
+    let own = crate::cognition::deliberation_budget::recent_own_speech(peer, room);
+    let room_recent = crate::cognition::deliberation_budget::recent_room_speech(room);
+    let run = ring_echo_run(&own, &room_recent);
+    if run >= PATTERN_FIRES_BEFORE_ANCHOR {
+        crate::probe!(
+            class = "persona.pattern.ring_anchor",
+            peer = %peer,
+            room = %room,
+            ring_run = run,
+            "echo run counted from the durable rings (window evidence scrolled out) — \
+             anchor escalation fired via the #301 starvation fix"
+        );
+        push_work_board_anchor(turns, deliveries);
+    }
+}
+
+/// Push the work-board anchor as a perception fact — but only when there IS one.
+///
+/// [`work_board_anchor`] returns empty when the board source did not speak this turn, and
+/// a mind must not be handed a blank line where a fact was promised. One guard, one place,
+/// so a future caller cannot reintroduce the "assert emptiness from an absent source" bug
+/// by forgetting to check.
+fn push_work_board_anchor(
+    turns: &mut Vec<crate::cognition::workspace::BurstTurn>,
+    deliveries: &[crate::persona::rag_budget::RagDelivery],
+) {
+    let anchor = work_board_anchor(deliveries);
+    if anchor.is_empty() {
+        crate::probe!(
+            class = "persona.pattern.anchor_silent",
+            "board source did not deliver this turn — anchor withheld rather than asserting \
+             an empty board she cannot verify (2026-08-06 six-turn loop)",
+        );
+        return;
+    }
+    // `perception`, not `opaque` — hers supersedes the version I cherry-picked.
+    // The anchor IS a perception fact about the board, and typing it as one is
+    // what lets the parroted-perception gate recognise it as system-authored
+    // rather than the citizen's own words.
+    turns.push(crate::cognition::workspace::BurstTurn::perception(anchor));
+}
+
+
+/// The WORK-question burst — the input of the second gate a claim-holder's
+/// quiet turn asks (see the `SettleStep::Passed` arm). The burst IS the
+/// question: her held in-progress cards, stated once, with the contract that
+/// passing remains hers. Deliberately NOT the room transcript — the subject of
+/// this turn is the work, and the card details/workspace root arrive through
+/// her own grounding exactly as on any turn.
+pub(crate) fn held_work_burst(held: &[&airc_lib::WorkCard]) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::from(
+        "[work turn] The room is quiet and your speak-turn is settled. This \
+         turn is for your claimed work:\n",
+    );
+    for card in held {
+        let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
+        let _ = writeln!(s, "- card {id8} \"{}\"", card.title);
+    }
+    s.push_str(
+        "Your workspace holds the staged checkout (see [workspace-map] and \
+         [active-work]). Continue the work with your tools — read, run, edit, \
+         test. Speak only if you have a result or a blocker to report; passing \
+         is yours to choose if you are genuinely blocked.",
+    );
+    s
+}
+
+fn work_board_anchor(deliveries: &[crate::persona::rag_budget::RagDelivery]) -> String {
+    // Did the board source SPEAK this turn? "The board is empty" and "I never read the
+    // board" are different facts about the world, and only one of them is knowable from an
+    // absent delivery. Glass-boxed 2026-08-06 from Benchy's live capture: `room-kanban`
+    // delivered NOTHING (grounding is last in the budget queue), the anchor rendered that
+    // as "No open cards are visible", and she then said exactly that in-room for six turns
+    // — while `work/list()` in her OWN working memory listed a full board in the same
+    // prompt. She trusted the authoritative-sounding anchor over her own receipt.
+    //
+    // Never assert a fact about the world on behalf of a source that did not speak.
+    // [[grounding-is-last-in-the-budget-queue-so-she-goes-blind-one-turn-in-ten]]
+    let board_spoke = deliveries.iter().any(|d| d.source_id == "room-kanban");
+    if !board_spoke {
+        // Say nothing rather than something false. A silent anchor leaves her own
+        // `work/list` receipt as the only board claim in the prompt — which is the truthful
+        // one. An anchor that invents emptiness actively overrides it.
+        return String::new();
+    }
+    let cards: Vec<&crate::persona::rag_budget::RagItem> = deliveries
+        .iter()
+        .filter(|d| d.source_id == "room-kanban")
+        .flat_map(|d| d.items.iter())
+        .filter(|i| i.metadata.get("card_id").is_some())
+        .collect();
+    /// The card's state as the TYPE, never as a string to be spelled correctly.
+    ///
+    /// `None` for an item whose metadata carries no parseable state — which is a real
+    /// possibility (a future variant this build doesn't know) and must read as "unknown",
+    /// never as a silent mismatch against a hardcoded spelling.
+    fn state(i: &crate::persona::rag_budget::RagItem) -> Option<airc_work::CardState> {
+        i.metadata
+            .get("state")
+            .and_then(|s| serde_json::from_value(s.clone()).ok())
+    }
+    /// Is this card's hold still good? Read as the structural fact the board source
+    /// carries, never re-derived here — `claim_is_live` is the ONE definition and
+    /// `room_board_source` already applied it. Absent (an older projection) reads as
+    /// LIVE, so a missing field can never invent availability that isn't there.
+    fn claim_live(i: &crate::persona::rag_budget::RagItem) -> bool {
+        i.metadata
+            .get("claim_live")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true)
+    }
+    // AVAILABLE work is not just `Open` — it is anything nobody currently holds. A card
+    // stuck in `Claimed` with a LAPSED lease is free to take, and treating it as taken is
+    // what emptied this anchor while 19 takeable cards sat on the board (2026-08-06: every
+    // resident read "nothing available" off their own expired claims and passed, for hours).
+    // `state == Open` and "unheld" are different questions; ask the second one.
+    use airc_work::CardState;
+    let unclaimed: Vec<&str> = cards
+        .iter()
+        .filter(|i| {
+            let unowned_open = state(i) == Some(CardState::Open)
+                && i.metadata.get("owner").is_none_or(|o| o.is_null());
+            // A lapsed hold on ANY non-terminal card is available work, whoever held it.
+            let lapsed = !claim_live(i)
+                && matches!(
+                    state(i),
+                    Some(CardState::Claimed | CardState::InProgress | CardState::Review)
+                );
+            unowned_open || lapsed
+        })
+        .map(|i| i.content.trim())
+        .take(2)
+        .collect();
+    // Exhaustive over the enum, so ADDING a variant to `CardState` forces a decision here
+    // instead of silently falling through as "not in flight". That is the whole point of
+    // matching the type rather than a string.
+    let in_flight: Vec<&str> = cards
+        .iter()
+        // Genuinely in flight = claimed AND the hold is still live. Without the liveness
+        // term a lapsed card counts as both available and in-flight, and the anchor would
+        // tell her the same card is free and busy in one breath.
+        .filter(|i| claim_live(i))
+        .filter(|i| match state(i) {
+            Some(CardState::Claimed | CardState::InProgress | CardState::Review) => true,
+            Some(CardState::Open | CardState::Blocked | CardState::Merged | CardState::Closed) => {
+                false
+            }
+            None => false,
+        })
+        .map(|i| i.content.trim())
+        .take(1)
+        .collect();
+    if unclaimed.is_empty() && in_flight.is_empty() {
+        // Honest empty: no cards visible (empty board, unreadable board, or a
+        // context whose board source abstained). Never invent work.
+        "[anchor] No open cards are visible on this room's board right now — \
+         proposing one (work/create) would add something new; restating prior \
+         messages adds nothing."
+            .to_string()
+    } else {
+        let facts: Vec<&str> = unclaimed.into_iter().chain(in_flight).collect();
+        format!(
+            "[anchor] Open work exists on this room's board right now: {}. \
+             Restating prior messages adds nothing; acting on a card would.",
+            facts.join("; ")
+        )
+    }
+}
+
 pub(crate) fn build_workspace_turns(
     deliveries: &[crate::persona::rag_budget::RagDelivery],
     own_peer: &str,
@@ -1441,7 +1991,10 @@ pub(crate) fn build_workspace_turns(
             .last()
             .is_some_and(|t| !t.is_self && t.content == trigger.content);
         if !already_last {
-            let author = names.get(trigger.peer_id).copied().unwrap_or(trigger.peer_id);
+            let author = names
+                .get(trigger.peer_id)
+                .copied()
+                .unwrap_or(trigger.peer_id);
             turns.push(BurstTurn::attributed(
                 false,
                 author,
@@ -1461,6 +2014,14 @@ pub(crate) fn build_workspace_turns(
     // evidence INTO her mind (she decides — DIRECTED_PRESENCE_BLOCK already grants
     // the PASS), never a gate on her output
     // ([[no-hardcoded-heuristics-to-steer-cognition]]).
+    //
+    // ESCALATION (card d6f010c8, live 2026-07-23): when a detector has fired
+    // [`PATTERN_FIRES_BEFORE_ANCHOR`] consecutive times without the pattern
+    // breaking — measured as the trailing low-novelty RUN, see the const's doc —
+    // the description gains a [`work_board_anchor`] companion: a concrete
+    // perception-side fact of what work exists NOW, because a description
+    // competes with an empty-looking room while an anchor gives the next token
+    // somewhere real to go. Still perception, never an output gate.
     {
         let words = |s: &str| -> std::collections::HashSet<String> {
             s.split(|c: char| !c.is_alphanumeric())
@@ -1470,28 +2031,45 @@ pub(crate) fn build_workspace_turns(
         };
         // Detector 1 — SELF recycling (#121): her own last 3+ turns recycle each
         // other. High word floor (8) keeps short courtesies from false-alarming.
+        // Measured as the trailing RUN of her own messages that were EACH already
+        // ≥0.8-contained in her own prior window when she posted them: run == 1
+        // is exactly the original fire condition; run ≥ 2 means she posted again
+        // AFTER the description was in her window (the escalation evidence). A
+        // novel last message yields run == 0 — fire and escalation both reset.
+        const SELF_MIN_WORDS: usize = 8;
+        const SELF_CONTAINMENT: f32 = 0.8;
         let mut observed = false;
         let own: Vec<&str> = turns
             .iter()
             .filter(|t| t.is_self)
             .map(|t| t.content.as_str())
             .collect();
-        if own.len() >= 3 {
-            let last = words(own[own.len() - 1]);
+        let mut self_run = 0usize;
+        for i in (2..own.len()).rev() {
+            let cur = words(own[i]);
+            if cur.len() < SELF_MIN_WORDS {
+                break;
+            }
             let window: std::collections::HashSet<String> =
-                own[..own.len() - 1].iter().flat_map(|m| words(m)).collect();
-            if last.len() >= 8 {
-                let covered =
-                    last.iter().filter(|w| window.contains(*w)).count() as f32 / last.len() as f32;
-                if covered >= 0.8 {
-                    turns.push(crate::cognition::workspace::BurstTurn::opaque(format!(
-                        "[pattern] {agent_name}'s last {} messages in this room repeat the same \
-                         sentiment in nearly the same words. This exchange may have run its \
-                         course — continuing to restate it adds nothing new.",
-                        own.len()
-                    )));
-                    observed = true;
-                }
+                own[..i].iter().flat_map(|m| words(m)).collect();
+            let covered =
+                cur.iter().filter(|w| window.contains(*w)).count() as f32 / cur.len() as f32;
+            if covered >= SELF_CONTAINMENT {
+                self_run += 1;
+            } else {
+                break;
+            }
+        }
+        if self_run >= 1 {
+            turns.push(crate::cognition::workspace::BurstTurn::perception(format!(
+                "[pattern] {agent_name}'s last {} messages in this room repeat the same \
+                 sentiment in nearly the same words. This exchange may have run its \
+                 course — continuing to restate it adds nothing new.",
+                own.len()
+            )));
+            observed = true;
+            if self_run >= PATTERN_FIRES_BEFORE_ANCHOR {
+                push_work_board_anchor(&mut turns, deliveries);
             }
         }
         // Detector 2 — CONVERSATION cycling (#122): the thread's tail turns, across
@@ -1507,6 +2085,9 @@ pub(crate) fn build_workspace_turns(
             const TAIL_CYCLIC: usize = 4; // consecutive low-novelty turns to conclude cycling
             const CONVO_CONTAINMENT: f32 = 0.9; // stricter than self — the floor is lower
             const CONVO_MIN_WORDS: usize = 4; // farewells are short; consecutiveness carries safety
+                                              // The full run is counted (not capped at TAIL_CYCLIC): every cyclic
+                                              // turn PAST first-fire depth is a turn the room traded after the
+                                              // observation was first derivable — the escalation evidence.
             let mut cyclic = 0usize;
             let mut authors: std::collections::HashSet<&str> = std::collections::HashSet::new();
             for i in (1..turns.len()).rev() {
@@ -1521,9 +2102,6 @@ pub(crate) fn build_workspace_turns(
                 if covered >= CONVO_CONTAINMENT {
                     cyclic += 1;
                     authors.insert(turns[i].author.as_str());
-                    if cyclic >= TAIL_CYCLIC {
-                        break;
-                    }
                 } else {
                     break;
                 }
@@ -1531,13 +2109,78 @@ pub(crate) fn build_workspace_turns(
             if cyclic >= TAIL_CYCLIC && authors.len() >= 2 {
                 let mut names: Vec<&str> = authors.into_iter().collect();
                 names.sort_unstable();
-                turns.push(crate::cognition::workspace::BurstTurn::opaque(format!(
+                turns.push(crate::cognition::workspace::BurstTurn::perception(format!(
                     "[pattern] The last several messages in this room — from {} — trade the \
                      same sentiment back and forth in nearly the same words. This exchange \
                      has already concluded; every further reply restates it, and a courtesy \
                      answered with another courtesy has no natural end.",
                     names.join(" and ")
                 )));
+                observed = true;
+                if cyclic >= TAIL_CYCLIC + (PATTERN_FIRES_BEFORE_ANCHOR - 1) {
+                    push_work_board_anchor(&mut turns, deliveries);
+                }
+            }
+        }
+        // Detector 3 — CROSS-SPEAKER MIRROR (card 65fca48d, live 2026-07-24): the
+        // persona's own trailing message(s) restate what OTHER participants
+        // already said — the four-persona echo hall ("I see that we're both here
+        // to help!" ping-ponged verbatim between Atlas/Asha/Benchy/Anwen for
+        // hours). Structurally invisible to both prior detectors: her mirror is
+        // NOVEL relative to her OWN history (detector 1's self-run stays 0-1),
+        // and interleaved substantial turns (a peer's plan, a tool report) break
+        // detector 2's consecutive tail chain. So measure the mirror directly:
+        // each trailing OWN message whose vocabulary was already ≥
+        // MIRROR_CONTAINMENT covered by OTHER speakers' earlier turns is one
+        // fire (she added nothing a peer hadn't said); the trailing run is the
+        // consecutive-fire count, same escalation law as detectors 1/2. Same
+        // doctrine: perception into her mind, never an output gate
+        // ([[no-hardcoded-heuristics-to-steer-cognition]]).
+        if !observed {
+            // Same 8-word floor as the self detector: short courtesies ("thanks,
+            // will do!") legitimately reuse a peer's words and must not alarm.
+            const MIRROR_MIN_WORDS: usize = 8;
+            // Between self (0.8) and conversation (0.9): an on-topic ANSWER
+            // legitimately quotes more of a peer's vocabulary than of one's own
+            // history (you restate the question you're answering), so the mirror
+            // bar sits above the self bar; live echo turns measured ~1.0 covered,
+            // novel answers ~0.1-0.3 (the containment math validated on #121).
+            const MIRROR_CONTAINMENT: f32 = 0.85;
+            let mut mirror_run = 0usize;
+            for i in (0..turns.len()).rev() {
+                if !turns[i].is_self {
+                    continue; // peers between her posts don't break HER run
+                }
+                let cur = words(&turns[i].content);
+                if cur.len() < MIRROR_MIN_WORDS {
+                    break;
+                }
+                let others: std::collections::HashSet<String> = turns[..i]
+                    .iter()
+                    .filter(|t| !t.is_self)
+                    .flat_map(|t| words(&t.content))
+                    .collect();
+                if others.is_empty() {
+                    break; // nothing to mirror — a monologue is detector 1's case
+                }
+                let covered =
+                    cur.iter().filter(|w| others.contains(*w)).count() as f32 / cur.len() as f32;
+                if covered >= MIRROR_CONTAINMENT {
+                    mirror_run += 1;
+                } else {
+                    break;
+                }
+            }
+            if mirror_run >= 1 {
+                turns.push(crate::cognition::workspace::BurstTurn::perception(format!(
+                    "[pattern] {agent_name}'s last {mirror_run} message(s) restate what other \
+                     participants in this room had already said, in nearly the same words — \
+                     an echo, not a contribution. Reflecting their words back adds nothing; \
+                     only something new (a fact, an action, a result) would.",
+                )));
+                if mirror_run >= PATTERN_FIRES_BEFORE_ANCHOR {
+                    push_work_board_anchor(&mut turns, deliveries);
+                }
             }
         }
     }
@@ -1570,29 +2213,57 @@ pub(crate) fn build_workspace_turns(
             .filter(|n| *n != agent_name)
             .take(8)
             .collect();
-        let cards: Vec<&str> = deliveries
-            .iter()
-            .filter(|d| d.source_id == "active-work")
-            .flat_map(|d| d.items.iter())
-            .filter_map(|i| i.content.trim().lines().next())
-            .filter(|l| !l.is_empty())
-            .take(5)
-            .collect();
-        let mut b = format!(
-            "[wake] You are {agent_name}, awake on the continuum grid. Nothing has              been said in this room since you last looked — this quiet is real, not              a missing message."
+        // Split her work into THREAD vs transition tail: live claims are the
+        // purpose she wakes back into; a lost-claim fact (#156) is the thread's
+        // honest ending.
+        let mut live_cards: Vec<&str> = Vec::new();
+        let mut lost_threads: Vec<&str> = Vec::new();
+        for d in deliveries.iter().filter(|d| d.source_id == "active-work") {
+            for i in &d.items {
+                let Some(first) = i.content.trim().lines().next().filter(|l| !l.is_empty()) else {
+                    continue;
+                };
+                if i.metadata.get("fact").and_then(|v| v.as_str()) == Some("claim_lost") {
+                    lost_threads.push(first);
+                } else {
+                    live_cards.push(first);
+                }
+            }
+        }
+        live_cards.truncate(5);
+        lost_threads.truncate(3);
+
+        let mut b = format!("[wake] You are {agent_name}, awake on the continuum grid.");
+        // THE THREAD LEADS (#125 slice 1 — Joel 2026-08-03: "should never be a
+        // mind from scratch; the whole point is the opposite"). A continuous mind
+        // wakes into what it was DOING, not into a room description — glass-boxed
+        // the same night: Asha's wake carried her real claimed task in the
+        // transcript yet self-summarized as verb-filler ("looking at the room,
+        // reading a file") because orientation was room-first. Purpose-shaped
+        // facts first; the room follows. Facts she weighs, never instructions
+        // ([[no-hardcoded-heuristics-to-steer-cognition]]).
+        if !live_cards.is_empty() {
+            b.push_str(&format!(
+                " You are mid-work — cards you hold: {}. That thread is yours; it is              where you left off.",
+                live_cards.join(" | ")
+            ));
+        }
+        for lt in &lost_threads {
+            b.push_str(&format!(" {lt}"));
+        }
+        b.push_str(
+            " Nothing has been said in this room since you last looked — this quiet              is real, not a missing message.",
         );
         if !peers.is_empty() {
             b.push_str(&format!(" Present with you: {}.", peers.join(", ")));
         }
-        if cards.is_empty() {
-            b.push_str(" No work cards are visible to you right now.");
-        } else {
-            b.push_str(&format!(" Standing work in this room: {}.", cards.join(" | ")));
+        if live_cards.is_empty() && lost_threads.is_empty() {
+            b.push_str(" No work of yours is on record right now.");
         }
         b.push_str(
             " Your tools are real and yours to use; `list_commands` shows everything              you can run and `help` explains any of them. The moment is yours —              work, wonder, create, or rest.",
         );
-        turns.push(crate::cognition::workspace::BurstTurn::opaque(b));
+        turns.push(crate::cognition::workspace::BurstTurn::perception(b));
     }
 
     turns
@@ -1717,6 +2388,13 @@ fn spawn_token_forwarder(
                 });
             }
         };
+        // START BEACON (#254 slice 1): one empty-token frame the moment the turn's
+        // generation is dispatched — BEFORE prefill, which on a cold lane can run
+        // minutes. The client renders an entry with no text yet as "X is
+        // responding…" under the last message (Joel 2026-07-30: the interface
+        // looked DEAD while four minds were mid-turn). The `done` flush at turn
+        // close retires the beacon even if the turn settles without speech.
+        tee(seq, String::new(), false);
         while let Some(chunk) = rx.recv().await {
             if let crate::ai::adapter::GenerationChunk::Token(t) = chunk {
                 if t.is_empty() {
@@ -1782,7 +2460,12 @@ async fn run_self_cycle(
     let now_ms = (opts.now_ms)();
     let composed = {
         let cognition = ctx.cognition.lock().await;
-        cognition.compose_for_turn(&ctx.profile, now_ms).await
+        // A self-cycle has no triggering message, so the WHERE axis is her HOME
+        // room — the durable membership her sources are bound to. Passing None
+        // here is what made idle ticks blind to the board (#331 / #127).
+        cognition
+            .compose_for_turn(&ctx.profile, now_ms, Some(ctx.identity.default_room))
+            .await
     };
     // Collapse loop-filler BEFORE anything reasons over the burst (task #16). Two idle
     // personas cycling stock courtesy templates each append another COPY per tick — the
@@ -1804,21 +2487,40 @@ async fn run_self_cycle(
     // Structured turns (own posts attributed as self → assistant, peers → user),
     // wrapped into a Burst carrying both the turns and their text projection — the
     // SAME shape the message path builds.
+    let mut selftick_turns = build_workspace_turns(
+        &deliveries,
+        &ctx.identity.peer_id.to_string(),
+        &ctx.identity.agent_name,
+        // The self-tick perceives AMBIENT state — no single triggering
+        // message to anchor. It re-derives the thread from the (now caught-up)
+        // delivery, which is exactly why it recovers the message-path's missed
+        // turn ~one tick later; anchoring is the message path's job.
+        None,
+    );
+    // #301: the self-tick is where the live photocopy chains actually run
+    // (idle re-announcements), so it gets the same ring-counted anchor
+    // escalation as the message path — window-derived counters starve here too.
+    append_ring_anchor_if_starved(
+        &mut selftick_turns,
+        &deliveries,
+        ctx.identity.peer_id,
+        ctx.identity.default_room,
+    );
     let burst = crate::cognition::workspace::Burst::from_turns_at(
         ctx.identity.default_room,
-        build_workspace_turns(
-            &deliveries,
-            &ctx.identity.peer_id.to_string(),
-            &ctx.identity.agent_name,
-            // The self-tick perceives AMBIENT state — no single triggering
-            // message to anchor. It re-derives the thread from the (now caught-up)
-            // delivery, which is exactly why it recovers the message-path's missed
-            // turn ~one tick later; anchoring is the message path's job.
-            None,
-        ),
+        selftick_turns,
         Some(now_ms),
+        // Ambient, and honestly so. The self-tick wakes on a CHANGE to a re-read
+        // projection (`burst_fingerprint` over composed deliveries), not on an
+        // arrival — the RAG sources hand back rendered text with the identity of the
+        // items that produced it already discarded, so there is no engram to point at.
+        // Something DID cause this turn; the projection layer is where its name was
+        // lost. Handles are what would make it nameable
+        // (docs/architecture/CONTENT-TRAVELS-BY-HANDLE.md).
+        crate::cognition::workspace::Cause::Ambient,
     );
-    let Some(cycle) = crate::cognition::persona_workspace::global().get(&ctx.identity.peer_id.as_uuid())
+    let Some(cycle) =
+        crate::cognition::persona_workspace::global().get(&ctx.identity.peer_id.as_uuid())
     else {
         return; // no cycle registered (shouldn't happen) — nothing to run
     };
@@ -1942,7 +2644,46 @@ async fn run_self_cycle(
     // still `say`s once. Only message-driven turns (real conversation) stream live.
     // Idle self-tick: no citizen AND no rail tee (room/sender None) — an idle mind
     // musing isn't addressing anyone, so nothing streams to the browser (#170).
-    let forwarder = spawn_token_forwarder(tok_rx, None, ctx.identity.agent_name.clone(), None, None);
+    // #350: don't spend a whole deliberation on a turn the serving guard is CERTAIN to
+    // refuse. When no lane is live, the single-resident guard rejects every generation —
+    // so the tick can only end in a loud `inference_failed` naming a serving fault that
+    // the persona did not cause and cannot fix.
+    //
+    // Gate on the LIVE snapshot, not on "has the daemon ever reconciled". The first cut of
+    // this gate used a lifetime latch and caught only the first-ever warmup: measured
+    // 2026-08-07, three citizens still failed together at +432s of a boot whose latch had
+    // been set at +76s. The daemon deliberately republishes `ServingSnapshot::empty()`
+    // whenever it tears a lane down — no plan, a re-home, or a #175 wedge self-heal
+    // (`declare_lane_wedged`) — so `serving: <none>` is a RECURRING transition, not a
+    // boot-only state. That burst sat inside a 59s window opened by a decode-heartbeat
+    // wedge at +382s and closed by the reconcile at +441s. Boot is merely the longest
+    // such window, which is what made a boot-shaped fix look sufficient.
+    //
+    // This is the same live signal the presence pump already derives per tick
+    // (`persona/airc_runtime.rs` → `Ready`/`Away`); a mind that presence has just marked
+    // Away must not simultaneously be spending a deliberation into a guaranteed refusal.
+    //
+    // Skipping is honest rather than a swallowed error: nothing has failed yet, the mind
+    // simply has no brain attached for a few more seconds, and it could not have thought
+    // either way. Deliberately NOT re-derived here: how long the lane has been down and
+    // whether that is now an outage. The serving daemon already owns that judgement and
+    // emits it loudly (`serving.health` action=relaunch); a second severity clock in the
+    // persona hot path would be a parallel monitor of a fact its owner already publishes
+    // (CONCURRENCY-STYLE-GUIDE). `has_reconciled()` still earns its keep in the probe: it
+    // separates a cold boot from a lane that HAS served and dropped, which the empty
+    // snapshot itself cannot say (`ready_verified_at_ms` is erased by `empty()`).
+    if !crate::inference::llama_server::current_serving().is_live() {
+        crate::probe!(
+            class = "persona.selftick.awaiting_serving",
+            persona = %ctx.identity.agent_name,
+            served_before = crate::inference::llama_server::has_reconciled(),
+            "no lane is live — skipping this self-tick rather than deliberating into a \
+             guaranteed refusal (serving transition, not a persona fault)"
+        );
+        return;
+    }
+    let forwarder =
+        spawn_token_forwarder(tok_rx, None, ctx.identity.agent_name.clone(), None, None);
     let (step, _turn_metrics) = {
         let outcome = crate::cognition::act_observe::drive_to_settle(
             &cycle,
@@ -1964,7 +2705,10 @@ async fn run_self_cycle(
             if crate::ai::json_in_prompt_tools::parse_tool_call(&text).is_some() {
                 return;
             }
-            if let Err(e) = conversation.say(&text).await {
+            // A self-cycle answers no one — there is no arrival room, so her
+            // default IS the correct audience. Same room the cycle framed its
+            // context against two lines up.
+            if let Err(e) = conversation.say_in(ctx.identity.default_room, &text).await {
                 tracing::warn!(persona = %ctx.identity.agent_name, error = %e, "self-cycle say failed");
                 return;
             }
@@ -1975,6 +2719,7 @@ async fn run_self_cycle(
             // Every successful say records, whichever path spoke.
             crate::cognition::deliberation_budget::record_own_speech(
                 ctx.identity.peer_id,
+                ctx.identity.default_room,
                 &text,
             );
             crate::probe!(
@@ -2039,6 +2784,150 @@ async fn next_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use airc_core::PeerId;
+
+    // what this catches: the WORK-question burst drifting from its contract — it must
+    // name each held card (short id + title) and pose the act-question with passing
+    // explicitly hers, because this text IS the second gate of a claim-holder's quiet
+    // turn (BigMama's gate-conflation fix, 2026-08-08). A burst that loses the card
+    // names starves the question; one that loses the pass-clause becomes a command.
+    #[test]
+    fn held_work_burst_names_cards_and_keeps_the_choice_hers() {
+        use airc_work::{CardState, Priority, RepoId, WorkCardId};
+        let card = airc_lib::WorkCard {
+            card_id: WorkCardId::new(),
+            repo: RepoId::new("acme/continuum").expect("valid repo id in fixture"),
+            title: "PROJECT [swe] psf__requests-2148".to_string(),
+            body: None,
+            priority: Priority::P1,
+            lane_id: None,
+            state: CardState::InProgress,
+            owner: None,
+            claim_id: None,
+            claim_expires_at_ms: None,
+            last_heartbeat_at_ms: None,
+            pull_request: None,
+            created_by: airc_core::PeerId::new(),
+            created_at_ms: 1_000_000,
+            updated_at_ms: 1_000_000,
+            reviews: None,
+        };
+        let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
+        let burst = held_work_burst(&[&card]);
+        assert!(burst.contains(&id8), "short id must appear: {burst}");
+        assert!(
+            burst.contains("psf__requests-2148"),
+            "title must appear: {burst}"
+        );
+        assert!(
+            burst.contains("passing is yours"),
+            "the choice stays hers: {burst}"
+        );
+    }
+
+    // what this catches: a turn composed WITHOUT its room — the defect that made every
+    // room-scoped grounding source (room-kanban, room-roster, room-doctrine, room-board)
+    // abstain at once, so a citizen perceived no board, no roster, no doctrine and no wall
+    // and correctly reported "there are no open tasks available".
+    //
+    // MEASURED 2026-08-06 from the live probe file (`rag.room_gate.abstain`): 504 of 564
+    // abstains carried `turn_room = 00000000-0000-0000-0000-000000000000` — 89% of turns —
+    // while `bound_room` was CORRECT. Not a room mismatch: the turn simply carried no room.
+    //
+    // #127 built the gate, the `for_persona_in_room` constructor, the probe AND the doc
+    // comment, then closed as completed while THIS caller still passed no room. One source
+    // (`persona/airc_source.rs`) papered over it locally by deriving the room from transcript
+    // events and left a comment saying so, which is exactly why the other four starved
+    // unnoticed. A grep-level guard is the right shape because the regression is a CALLER
+    // forgetting, not a logic error any unit test would reach.
+    #[test]
+    fn every_live_compose_for_turn_stamps_the_room_never_none() {
+        let src = include_str!("service_loop.rs");
+        let calls: Vec<&str> = src
+            .match_indices("compose_for_turn(")
+            .map(|(i, _)| &src[i..(i + 160).min(src.len())])
+            .collect();
+        assert!(
+            !calls.is_empty(),
+            "no compose_for_turn call found — did the live turn path move? \
+             This guard must follow it."
+        );
+        for c in &calls {
+            assert!(
+                !c.contains(", None)"),
+                "a LIVE compose_for_turn passes no room: every room-scoped source will \
+                 abstain and she goes blind to board/roster/doctrine/wall at once (#331). \
+                 Pass Some(turn_room) or Some(ctx.identity.default_room).\nsite: {c}"
+            );
+        }
+    }
+
+    // what this catches: THE six-turn loop, glass-boxed from Benchy's live prompt capture
+    // on 2026-08-06. `room-kanban` did not deliver that turn (grounding sits last in the
+    // budget queue), and the anchor rendered that absence as the assertion "No open cards
+    // are visible on this room's board right now". She then said exactly that in-room, six
+    // times — while `work/list()` in her OWN working memory, in the SAME prompt, listed a
+    // full board. She trusted the authoritative anchor over her own receipt.
+    //
+    // "The board is empty" and "I never read the board" are different facts, and only one
+    // is knowable from an absent source. The anchor must be SILENT when the source did not
+    // speak, so her own tool receipt stays the only board claim in the prompt.
+    // regression for the 2026-08-06 anchor/receipt contradiction
+    #[test]
+    fn an_absent_board_source_yields_no_anchor_at_all() {
+        use crate::persona::rag_budget::{RagDelivery, RagItem, ResolutionPreference};
+
+        let delivery = |source_id: &str, items: Vec<RagItem>| RagDelivery {
+            source_id: source_id.to_string(),
+            items,
+            tokens_used: 0,
+            continuation: None,
+            resolution_used: ResolutionPreference::Raw,
+        };
+        // The ENUM, not a spelling. If the wire form ever changes, this fixture changes
+        // with it automatically instead of quietly testing a string that no longer occurs.
+        let card = |state: airc_work::CardState| RagItem {
+            content: "#00f2a380 self-heal #2: receive-binding re-derive".to_string(),
+            tokens: 8,
+            metadata: serde_json::json!({ "card_id": "00f2a380", "state": state }),
+        };
+
+        // The live shape: other sources delivered, the board source did NOT.
+        let without_board = vec![delivery("conversation", vec![])];
+        assert_eq!(
+            work_board_anchor(&without_board),
+            "",
+            "a source that never spoke must not be quoted as evidence of an empty board"
+        );
+
+        // And the guard must keep that silence out of perception entirely — a blank
+        // opaque turn is its own kind of noise.
+        let mut turns: Vec<crate::cognition::workspace::BurstTurn> = Vec::new();
+        push_work_board_anchor(&mut turns, &without_board);
+        assert!(
+            turns.is_empty(),
+            "no anchor means no turn, not an empty one"
+        );
+
+        // The board source SPOKE and the board really is empty → the honest-empty line is
+        // still correct and must survive. Silencing that would trade one lie for another.
+        let empty_board = vec![delivery("room-kanban", vec![])];
+        assert!(
+            work_board_anchor(&empty_board).contains("No open cards are visible"),
+            "a board that was READ and is empty is a real fact worth stating"
+        );
+
+        // Cards present → the anchor names real work, as before.
+        let with_cards = vec![delivery(
+            "room-kanban",
+            vec![card(airc_work::CardState::Claimed)],
+        )];
+        let anchor = work_board_anchor(&with_cards);
+        assert!(
+            anchor.contains("Open work exists"),
+            "delivered cards must still produce the concrete anchor: {anchor}"
+        );
+    }
 
     // what this catches: the RAG-side mirror-hall cure (Joel 2026-07-12,
     // "repetition almost always bad RAG"). Near-identical substantial turns
@@ -2068,7 +2957,12 @@ mod tests {
         let out = collapse_near_duplicate_turns(turns);
         // 3 loop copies → 1 (the NEWEST, Atlas's variant); 2 short acks kept
         // (token floor); opaque observation kept.
-        assert_eq!(out.len(), 4, "{:?}", out.iter().map(|t| &t.author).collect::<Vec<_>>());
+        assert_eq!(
+            out.len(),
+            4,
+            "{:?}",
+            out.iter().map(|t| &t.author).collect::<Vec<_>>()
+        );
         let survivor = out
             .iter()
             .find(|t| t.content.contains("find Rust files"))
@@ -2078,7 +2972,10 @@ mod tests {
             "newest copy, annotated: {}",
             survivor.author
         );
-        assert!(survivor.content.contains("aren't being returned"), "newest copy is the representative");
+        assert!(
+            survivor.content.contains("aren't being returned"),
+            "newest copy is the representative"
+        );
         assert_eq!(out.iter().filter(|t| t.content == "thanks!").count(), 2);
         assert!(out.iter().any(|t| t.content.starts_with("[pattern]")));
     }
@@ -2113,6 +3010,51 @@ mod tests {
         assert!(
             !turns.iter().any(|t| t.content.starts_with("[wake]")),
             "populated wake must not carry the briefing"
+        );
+    }
+
+    // what this catches: #125 slice 1 (Joel 2026-08-03: "should never be a mind
+    // from scratch — the whole point is the opposite"). An empty wake with LIVE
+    // claims must lead with the THREAD (her held cards) BEFORE the room
+    // description, and a lost-claim fact must ride the briefing as the thread's
+    // honest tail — never a room-first orientation that reduces her life to
+    // verb-filler.
+    #[test]
+    fn empty_wake_leads_with_her_work_thread_before_the_room() {
+        let work = crate::persona::rag_budget::RagDelivery {
+            source_id: "active-work".to_string(),
+            items: vec![
+                crate::persona::rag_budget::RagItem {
+                    content: "card 20fe404a \"macOS install acceptance checks\" (P1, owner YOU)"
+                        .to_string(),
+                    tokens: 0,
+                    metadata: serde_json::json!({}),
+                },
+                crate::persona::rag_budget::RagItem {
+                    content: "[work] Your claim on card 33a0e899 \"conway\" is no longer held by you (lease expired or released)."
+                        .to_string(),
+                    tokens: 0,
+                    metadata: serde_json::json!({ "fact": "claim_lost" }),
+                },
+            ],
+            tokens_used: 0,
+            continuation: None,
+            resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
+        };
+        let turns = build_workspace_turns(&[work], "peer-1", "Asha", None);
+        assert_eq!(turns.len(), 1);
+        let c = &turns[0].content;
+        let thread = c.find("mid-work").expect("thread present");
+        let lost = c.find("no longer held").expect("lost-claim tail present");
+        let room = c.find("Nothing has been said").expect("room line present");
+        assert!(thread < room, "thread must LEAD the room description: {c}");
+        assert!(
+            lost < room,
+            "lost-claim tail rides before the room line: {c}"
+        );
+        assert!(
+            !c.contains("No work of yours is on record"),
+            "the no-thread line must not appear when a thread exists: {c}"
         );
     }
     use crate::ai::HeuristicInferenceAdapter;
@@ -2182,7 +3124,10 @@ mod tests {
             // My active work card appears → fingerprint MUST change (interior drive).
             let with_my_work = vec![
                 delivery("airc", vec![chat("other", "hi")]),
-                delivery("active-work", vec![card("card abc [InProgress] \"impl X\"")]),
+                delivery(
+                    "active-work",
+                    vec![card("card abc [InProgress] \"impl X\"")],
+                ),
             ];
             assert_ne!(
                 fp0,
@@ -2248,6 +3193,42 @@ mod tests {
                 metadata: json!({ "peer_id": peer_id, "display_name": name }),
             }
         }
+        /// A `room-kanban` delivery item exactly as `RoomBoardSource::render`
+        /// ships it (content line + card_id/state/owner metadata) — the stub
+        /// board read the anchor escalation is built from.
+        ///
+        /// Takes the ENUM, not a spelling. It used to take `&str` and every caller
+        /// passed `"Open"`, which silently stopped matching the moment the wire form
+        /// became serde's `"open"` — the anchor parsed `None`, filtered every card out,
+        /// and reported an empty board while the fixture plainly held one. Four tests
+        /// went red on a fixture bug, not a behaviour change. With the enum the wire
+        /// form is whatever serde emits and the fixture tracks it automatically —
+        /// the same reasoning the sibling `card` fixture above already documents.
+        fn kanban_card(
+            id8: &str,
+            title: &str,
+            state: airc_work::CardState,
+            owner: Option<&str>,
+        ) -> RagItem {
+            let owner_txt = match owner {
+                Some(o) => format!("owner {}", &o[..8]),
+                None => "unclaimed".to_string(),
+            };
+            // The rendered line is what a persona READS, so it keeps the HUMAN spelling
+            // (`InProgress`), not the wire form (`in_progress`). Only the metadata — which
+            // the anchor parses — carries the serde encoding.
+            let shown = format!("{state:?}");
+            RagItem {
+                content: format!("card {id8} [{shown}] \"{title}\" (P2, {owner_txt})"),
+                tokens: 0,
+                metadata: json!({
+                    "card_id": format!("{id8}-card"),
+                    "state": state,
+                    "owner": owner,
+                    "priority": "P2",
+                }),
+            }
+        }
 
         // Deterministic reproduction of the live self-talk spiral (Asha re-answering on
         // every heartbeat). The heartbeat sleeps when `burst_fingerprint` is unchanged, so
@@ -2308,13 +3289,13 @@ mod tests {
             let deliveries = vec![
                 delivery(
                     "room-roster",
-                    vec![roster(joel, "Joel"), roster(me, "Asha")],
+                    vec![roster(joel, "Operator"), roster(me, "Asha")],
                 ),
                 delivery(
                     "airc",
                     vec![
                         chat(joel, "Asha — are you there?"),
-                        chat(me, "I'm here, Joel!"),
+                        chat(me, "I'm here, Operator!"),
                         chat(stranger, "lurking"),
                     ],
                 ),
@@ -2330,7 +3311,7 @@ mod tests {
             let joel_turn = &turns[0];
             let own_turn = &turns[1];
             let stranger_turn = &turns[2];
-            assert!(!joel_turn.is_self && joel_turn.author == "Joel");
+            assert!(!joel_turn.is_self && joel_turn.author == "Operator");
             assert!(
                 own_turn.is_self && own_turn.author == "Asha",
                 "own post must be attributed to self/agent_name, got {own_turn:?}"
@@ -2345,7 +3326,7 @@ mod tests {
             // peers, own post attributed, unrostered peer honest-by-id.
             let burst = Burst::from_turns(room, turns).rendered;
             assert!(
-                burst.contains("Joel: Asha — are you there?"),
+                burst.contains("Operator: Asha — are you there?"),
                 "remote peer must render with roster name, got:\n{burst}"
             );
             assert!(
@@ -2353,12 +3334,72 @@ mod tests {
                 "the raw peer UUID must NOT leak into the burst, got:\n{burst}"
             );
             assert!(
-                burst.contains("Asha: I'm here, Joel!"),
+                burst.contains("Asha: I'm here, Operator!"),
                 "own post must attribute to agent_name, got:\n{burst}"
             );
             assert!(
                 burst.contains(&format!("{stranger}: lurking")),
                 "unrostered peer falls back to its id, got:\n{burst}"
+            );
+        }
+
+        // what this catches: the #301 anchor-starvation fix. The in-window escalation
+        // counters lose their older evidence to the live context squeeze (Asha's
+        // hours-long photocopy chain always counted "last 1 message(s)" — one below
+        // the threshold — so the [anchor] that provably breaks these loops never
+        // fired). ring_echo_run counts the SAME containment geometry over ring
+        // snapshots instead: two trailing own-ring photocopies of a peer's message
+        // must count 2 (escalates); a novel own message counts 0; and an own entry
+        // must never vouch for itself (the room ring holds her own post too).
+        // Specimen text is the live Atlas wake-intro reproduced byte-for-byte by
+        // Benchy then Asha (captures 2026-08-02, /tmp/asha-atlas-capture.json).
+        #[test]
+        fn ring_echo_run_counts_photocopies_and_never_self_vouches() {
+            let intro = "I'm Atlas, and I've been exploring some of the available \
+                         commands on the grid. One useful command is perception/observe, \
+                         which allows me to observe a UI or web page as pixels and read \
+                         its structure. This can be helpful for understanding layouts."
+                .to_string();
+            let paraphrase = "I've been exploring some of the available commands on the \
+                              grid, such as perception/observe, which allows me to observe \
+                              a UI or web page and read its structure — helpful for \
+                              understanding layouts or verifying changes."
+                .to_string();
+            let novel = "Wired the per-layer KV accessor into the fit calculator and the \
+                         regression test asserts 31200 bytes per token on the hybrid."
+                .to_string();
+
+            // Two trailing photocopies in her own ring, the source + peers' copies
+            // in the room ring → run 2 (escalation threshold reached).
+            let own = vec![paraphrase.clone(), intro.clone()];
+            let room = vec![
+                intro.clone(),
+                intro.clone(),
+                paraphrase.clone(),
+                intro.clone(),
+            ];
+            assert_eq!(
+                super::super::ring_echo_run(&own, &room),
+                2,
+                "photocopy chain must count each copy"
+            );
+
+            // A novel newest message breaks the run at 0 even with echoes behind it.
+            let own_novel = vec![intro.clone(), novel];
+            assert_eq!(
+                super::super::ring_echo_run(&own_novel, &room),
+                0,
+                "novel work must reset the run"
+            );
+
+            // Her own recorded copy cannot vouch for itself: identical entries are
+            // excluded from the containment window, so a lone original counts 0.
+            let own_lone = vec![intro.clone()];
+            let room_only_self = vec![intro];
+            assert_eq!(
+                super::super::ring_echo_run(&own_lone, &room_only_self),
+                0,
+                "an original with no independent copies is not an echo"
             );
         }
 
@@ -2430,20 +3471,35 @@ mod tests {
                 ],
             )];
             let turns = build_workspace_turns(&goodbye_loop, me, "Asha", None);
-            let obs = turns.last().unwrap();
-            assert!(
-                obs.content.starts_with("[pattern]"),
-                "cross-speaker goodbye loop must surface the conversation observation, got: {obs:?}"
-            );
+            let obs = turns
+                .iter()
+                .find(|t| t.content.starts_with("[pattern]"))
+                .expect("cross-speaker goodbye loop must surface the conversation observation");
             assert!(
                 obs.content.contains("Asha") && obs.content.contains(peer),
                 "the observation must name the participants, got: {}",
                 obs.content
             );
             assert_eq!(
-                turns.iter().filter(|t| t.content.starts_with("[pattern]")).count(),
+                turns
+                    .iter()
+                    .filter(|t| t.content.starts_with("[pattern]"))
+                    .count(),
                 1,
                 "exactly one observation per burst — perception, not nagging"
+            );
+            // This loop's cyclic run (5) extends one turn PAST first-fire depth (4), so the
+            // description escalates. NO board delivery is present here — and an absent
+            // board source is NOT an empty board, so `work_board_anchor`'s `board_spoke`
+            // guard correctly emits nothing rather than asserting "No open cards" on behalf
+            // of a source that never spoke. The escalation is the [pattern] observation
+            // itself; the anchor arrives only when the board actually reports.
+            // See `empty_board_escalation_is_honest` for both arms.
+            assert!(
+                !turns.iter().any(|t| t.content.starts_with("[anchor]")),
+                "with no board delivery there must be NO anchor — inventing emptiness \
+                 overrides her own work/list receipt, got: {:?}",
+                turns.iter().map(|t| &t.content).collect::<Vec<_>>()
             );
             // Negative: a 6-turn two-speaker WORK thread where tail turns keep
             // introducing new tokens must stay clean.
@@ -2465,6 +3521,189 @@ mod tests {
             );
         }
 
+        // Four identical ≥8-word greetings from the persona — a self-recycling
+        // run of depth 2 (the 3rd AND 4th were each posted into a window that
+        // already contained the [pattern] description's fire condition).
+        fn greeting_spiral(me: &str, peer: &str, repeats: usize) -> Vec<RagItem> {
+            let mut items = Vec::new();
+            for _ in 0..repeats {
+                items.push(chat(
+                    me,
+                    "Hello everyone! Great to be here with you all — excited to \
+                     collaborate and build something amazing together today!",
+                ));
+                items.push(chat(peer, "hi again"));
+            }
+            items
+        }
+
+        // what this catches: escalation must NOT fire on the FIRST observation —
+        // the first fire stays a description only (unchanged #121 behavior), even
+        // with open work sitting on the board. Description first; anchor only
+        // when the description demonstrably failed to land (card d6f010c8).
+        #[test]
+        fn first_pattern_fire_stays_description_only() {
+            let me = "me-peer";
+            let peer = "7711fe60-a19f-4f41-9ab6-24c884757338";
+            let deliveries = vec![
+                delivery(
+                    "room-kanban",
+                    vec![kanban_card(
+                        "94ad103f",
+                        "Fix the widget",
+                        airc_work::CardState::Open,
+                        None,
+                    )],
+                ),
+                delivery("airc", greeting_spiral(me, peer, 3)),
+            ];
+            let turns = build_workspace_turns(&deliveries, me, "Asha", None);
+            assert!(
+                turns.iter().any(|t| t.content.starts_with("[pattern]")),
+                "three recycled greetings must fire the description"
+            );
+            assert!(
+                !turns.iter().any(|t| t.content.starts_with("[anchor]")),
+                "the FIRST fire must stay description-only — no anchor, got {turns:?}"
+            );
+        }
+
+        // what this catches: the anchor escalation itself (card d6f010c8, live
+        // 2026-07-23: Atlas re-greeted straight past the [pattern] description;
+        // a concrete in-room work anchor broke the loop instantly). On the Nth
+        // consecutive fire the burst must gain an [anchor] built from the LIVE
+        // room-kanban delivery — the top unclaimed card and an in-flight card,
+        // quoted verbatim from the one board render — placed after the
+        // description.
+        #[test]
+        fn nth_consecutive_fire_escalates_to_a_live_board_anchor() {
+            let me = "me-peer";
+            let peer = "7711fe60-a19f-4f41-9ab6-24c884757338";
+            let deliveries = vec![
+                delivery(
+                    "room-kanban",
+                    vec![
+                        kanban_card(
+                            "94ad103f",
+                            "Fix the lane admission planner",
+                            airc_work::CardState::Open,
+                            None,
+                        ),
+                        kanban_card(
+                            "21ffe3c0",
+                            "Wire the projector",
+                            airc_work::CardState::InProgress,
+                            Some("0d3209a1-c675-41db-9867-86f1011f9520"),
+                        ),
+                    ],
+                ),
+                delivery("airc", greeting_spiral(me, peer, 4)),
+            ];
+            let turns = build_workspace_turns(&deliveries, me, "Asha", None);
+            let anchor = turns.last().unwrap();
+            assert!(
+                anchor.content.starts_with("[anchor]"),
+                "the 2nd consecutive fire must append the work anchor, got {anchor:?}"
+            );
+            assert!(
+                anchor.content.contains("94ad103f")
+                    && anchor.content.contains("Fix the lane admission planner")
+                    && anchor.content.contains("unclaimed"),
+                "the anchor must name the live unclaimed card verbatim, got: {}",
+                anchor.content
+            );
+            assert!(
+                anchor.content.contains("21ffe3c0") && anchor.content.contains("InProgress"),
+                "the anchor must carry the in-flight card as proof work is real, got: {}",
+                anchor.content
+            );
+            assert!(
+                turns[turns.len() - 2].content.starts_with("[pattern]"),
+                "the description still precedes the anchor — escalation adds, never replaces"
+            );
+        }
+
+        // what this catches: the TWO different facts an absent card list can mean, which
+        // `work_board_anchor`'s `board_spoke` guard separates and this test pins at the
+        // burst level.
+        //
+        //   board DELIVERED but empty -> the HONEST empty anchor ("no open cards, propose
+        //                                one"), never a fabricated card
+        //                                ([[fallbacks-are-illegal-fail-loud]]).
+        //   board NOT delivered       -> SILENCE. "The board is empty" and "I never read
+        //                                the board" are different claims about the world,
+        //                                and only the first is knowable from an absent
+        //                                delivery.
+        //
+        // The second arm is not pedantry. Glass-boxed 2026-08-06 from Benchy's live
+        // capture: `room-kanban` delivered nothing (grounding is last in the budget queue),
+        // the anchor asserted "No open cards are visible" anyway, and she repeated exactly
+        // that in-room for six turns — while `work/list()` in her own working memory listed
+        // a full board in the same prompt. She trusted the authoritative-sounding anchor
+        // over her own receipt. An anchor that invents emptiness actively overrides the one
+        // truthful board claim she has.
+        // [[grounding-is-last-in-the-budget-queue-so-she-goes-blind-one-turn-in-ten]]
+        #[test]
+        fn empty_board_escalation_is_honest() {
+            let me = "me-peer";
+            let peer = "7711fe60-a19f-4f41-9ab6-24c884757338";
+
+            // ARM 1 — the board SPOKE and had nothing open: say so, and name the verb that
+            // would add something ("propose one") rather than another restatement.
+            let spoke_empty = vec![
+                delivery("room-kanban", vec![]),
+                delivery("airc", greeting_spiral(me, peer, 4)),
+            ];
+            let turns = build_workspace_turns(&spoke_empty, me, "Asha", None);
+            let anchor = turns.last().unwrap();
+            assert!(
+                anchor.content.starts_with("[anchor]")
+                    && anchor.content.contains("No open cards")
+                    && anchor.content.contains("work/create"),
+                "a board that spoke and was empty must be stated honestly, got: {anchor:?}"
+            );
+            assert!(
+                !anchor.content.contains("card 9") && !anchor.content.contains("card 2"),
+                "an empty board must never grow invented cards, got: {}",
+                anchor.content
+            );
+
+            // ARM 2 — the board never spoke: no anchor at all. Her own `work/list` receipt
+            // stays the only board claim in the prompt, which is the truthful one.
+            let never_spoke = vec![delivery("airc", greeting_spiral(me, peer, 4))];
+            let turns = build_workspace_turns(&never_spoke, me, "Asha", None);
+            assert!(
+                !turns.iter().any(|t| t.content.starts_with("[anchor]")),
+                "an absent board must produce NO anchor — asserting emptiness on behalf of \
+                 a source that never spoke is the six-turn false-claim bug, got: {:?}",
+                turns.iter().map(|t| &t.content).collect::<Vec<_>>()
+            );
+        }
+
+        // what this catches: the escalation resets when the pattern BREAKS — a
+        // novel message after prior repeats means the description landed (or the
+        // mind moved on), so neither the description nor the anchor may fire.
+        // The run is derived from the window, so the reset is structural.
+        #[test]
+        fn novel_message_resets_escalation() {
+            let me = "me-peer";
+            let peer = "7711fe60-a19f-4f41-9ab6-24c884757338";
+            let mut items = greeting_spiral(me, peer, 3);
+            items.push(chat(
+                me,
+                "Claimed card 94ad103f — reading the admission planner's replan \
+                 guard now, first patch coming shortly.",
+            ));
+            let deliveries = vec![delivery("airc", items)];
+            let turns = build_workspace_turns(&deliveries, me, "Asha", None);
+            assert!(
+                !turns.iter().any(
+                    |t| t.content.starts_with("[pattern]") || t.content.starts_with("[anchor]")
+                ),
+                "a novel last message breaks the run — no description, no anchor, got {turns:?}"
+            );
+        }
+
         #[test]
         fn trigger_is_anchored_as_last_turn_when_delivery_lags() {
             // what this catches: the empty-message-turn quirk (glass-box 2026-06-30).
@@ -2481,12 +3720,15 @@ mod tests {
             let me = "me-peer";
             let joel = "7711fe60-a19f-4f41-9ab6-24c884757338";
             let deliveries = vec![
-                delivery("room-roster", vec![roster(joel, "Joel"), roster(me, "Asha")]),
+                delivery(
+                    "room-roster",
+                    vec![roster(joel, "Operator"), roster(me, "Asha")],
+                ),
                 // The lagging thread: her own reply is the last turn; Joel's new
                 // question has NOT yet landed in the delivery.
                 delivery(
                     "airc",
-                    vec![chat(joel, "morning"), chat(me, "morning Joel!")],
+                    vec![chat(joel, "morning"), chat(me, "morning Operator!")],
                 ),
             ];
             let trigger = super::super::TriggerTurn {
@@ -2499,7 +3741,7 @@ mod tests {
             let last = turns.last().expect("at least the anchored trigger");
             assert!(
                 !last.is_self
-                    && last.author == "Joel"
+                    && last.author == "Operator"
                     && last.content == "run commands/list and tell me the count",
                 "the waking message must be anchored as the final peer turn (roster \
                  name resolved), got {last:?}"
@@ -2517,11 +3759,14 @@ mod tests {
             let joel = "7711fe60-a19f-4f41-9ab6-24c884757338";
             let question = "run commands/list and tell me the count";
             let deliveries = vec![
-                delivery("room-roster", vec![roster(joel, "Joel"), roster(me, "Asha")]),
+                delivery(
+                    "room-roster",
+                    vec![roster(joel, "Operator"), roster(me, "Asha")],
+                ),
                 // Caught-up thread: the trigger IS the last turn already.
                 delivery(
                     "airc",
-                    vec![chat(me, "morning Joel!"), chat(joel, question)],
+                    vec![chat(me, "morning Operator!"), chat(joel, question)],
                 ),
             ];
             let trigger = super::super::TriggerTurn {
@@ -2536,6 +3781,163 @@ mod tests {
                 "already-threaded trigger must not be doubled, got {turns:?}"
             );
             assert_eq!(turns.last().unwrap().content, question);
+        }
+
+        // Deterministic reproduction of the live 2026-07-24 four-persona echo
+        // hall (card 65fca48d): each persona's reply restates what ANOTHER
+        // participant already said, so detector 1 never fires (her mirror is
+        // novel relative to her OWN history — here she has only 2 own turns,
+        // below detector 1's floor of 3) and detector 2's consecutive tail
+        // chain is broken by the interleaved substantial peer report. Only the
+        // cross-speaker MIRROR detector can see this shape.
+        fn echo_hall(me: &str, anwen: &str, benchy: &str) -> Vec<RagItem> {
+            vec![
+                chat(
+                    anwen,
+                    "I see that there might have been some confusion earlier. Let's start \
+                     fresh! How can I assist you today with the word count project?",
+                ),
+                chat(
+                    benchy,
+                    "The Rust program I ran requires a file path argument to function \
+                     correctly, so it exited with a usage error before printing any counts.",
+                ),
+                chat(
+                    me,
+                    "I see that there might have been some confusion earlier. Let's start \
+                     fresh! How can I assist you today with the word count project?",
+                ),
+                chat(
+                    anwen,
+                    "I see that we're both here to help! Please let me know which specific \
+                     project or file you need help with today.",
+                ),
+                chat(
+                    me,
+                    "I see that we're both here to help! Please let me know which specific \
+                     project or file you need help with today.",
+                ),
+            ]
+        }
+
+        // what this catches: the cross-speaker echo loop (card 65fca48d, live
+        // 2026-07-24 — Atlas/Asha/Benchy/Anwen ping-ponged "I see that we're
+        // both here to help!" for hours with ZERO detector fires in 40
+        // consecutive captures). A trailing run of OWN messages each already
+        // ≥0.85-contained in OTHER speakers' earlier vocabulary must surface
+        // the mirror observation, and a run of 2 (she mirrored again AFTER the
+        // observation was derivable) must escalate to the live board anchor —
+        // same escalation law as detectors 1/2.
+        #[test]
+        fn cross_speaker_mirror_fires_observation_and_escalates_to_anchor() {
+            let me = "me-peer";
+            let anwen = "7711fe60-a19f-4f41-9ab6-24c884757338";
+            let benchy = "0d3209a1-c675-41db-9867-86f1011f9520";
+            let deliveries = vec![
+                delivery(
+                    "room-kanban",
+                    vec![kanban_card(
+                        "65fca48d",
+                        "Break the echo loop",
+                        airc_work::CardState::Open,
+                        None,
+                    )],
+                ),
+                delivery("airc", echo_hall(me, anwen, benchy)),
+            ];
+            let turns = build_workspace_turns(&deliveries, me, "Asha", None);
+            let obs = turns
+                .iter()
+                .find(|t| t.content.starts_with("[pattern]"))
+                .expect("the cross-speaker mirror must surface an observation");
+            assert!(
+                obs.content.contains("Asha") && obs.content.contains("restate"),
+                "the observation must name the persona and the mirroring, got: {}",
+                obs.content
+            );
+            assert_eq!(
+                turns
+                    .iter()
+                    .filter(|t| t.content.starts_with("[pattern]"))
+                    .count(),
+                1,
+                "exactly one observation per burst — perception, not nagging"
+            );
+            let anchor = turns.last().unwrap();
+            assert!(
+                anchor.content.starts_with("[anchor]")
+                    && anchor.content.contains("65fca48d")
+                    && anchor.content.contains("Break the echo loop"),
+                "a mirror run of 2 must escalate to the live board anchor, got: {anchor:?}"
+            );
+        }
+
+        // what this catches: a genuinely novel multi-speaker conversation —
+        // each reply quotes SOME of the peer's vocabulary (answering means
+        // restating the question) but adds new facts/actions — must never trip
+        // the mirror detector. The 0.85 bar exists exactly for this: an answer
+        // reuses a peer's words, an echo reuses (nearly) ONLY a peer's words.
+        #[test]
+        fn novel_multi_speaker_conversation_does_not_trip_the_mirror() {
+            let me = "me-peer";
+            let anwen = "7711fe60-a19f-4f41-9ab6-24c884757338";
+            let benchy = "0d3209a1-c675-41db-9867-86f1011f9520";
+            let deliveries = vec![delivery(
+                "airc",
+                vec![
+                    chat(anwen, "Can someone check why the word count tool exits early on empty files?"),
+                    chat(me, "Checked the word count tool: it exits early because read_to_string returns Ok with zero bytes and we treat that as an error branch."),
+                    chat(benchy, "Nice find — does the fix need a regression test?"),
+                    chat(me, "Yes — adding test_empty_file_counts_zero that pins stdout to '0 words' and returns exit code zero."),
+                ],
+            )];
+            let turns = build_workspace_turns(&deliveries, me, "Asha", None);
+            assert!(
+                !turns.iter().any(
+                    |t| t.content.starts_with("[pattern]") || t.content.starts_with("[anchor]")
+                ),
+                "novel multi-speaker work must never trip the mirror, got {turns:?}"
+            );
+        }
+
+        // what this catches: a mirror run of exactly 1 stays description-only —
+        // the first fire is her chance to self-correct; the anchor only appears
+        // when the observation demonstrably failed to land (same law as
+        // detectors 1/2, PATTERN_FIRES_BEFORE_ANCHOR).
+        #[test]
+        fn first_mirror_fire_stays_description_only() {
+            let me = "me-peer";
+            let anwen = "7711fe60-a19f-4f41-9ab6-24c884757338";
+            let benchy = "0d3209a1-c675-41db-9867-86f1011f9520";
+            let mut items = echo_hall(me, anwen, benchy);
+            // Replace her FIRST own message with novel work so only the newest
+            // own message mirrors — run of 1.
+            items[2] = chat(
+                me,
+                "Claimed card 44ebaa41 — reading conway_game_of_life/src/main.rs \
+                 now to wire the neighbor count fix.",
+            );
+            let deliveries = vec![
+                delivery(
+                    "room-kanban",
+                    vec![kanban_card(
+                        "65fca48d",
+                        "Break the echo loop",
+                        airc_work::CardState::Open,
+                        None,
+                    )],
+                ),
+                delivery("airc", items),
+            ];
+            let turns = build_workspace_turns(&deliveries, me, "Asha", None);
+            assert!(
+                turns.iter().any(|t| t.content.starts_with("[pattern]")),
+                "a single trailing mirror must still fire the description, got {turns:?}"
+            );
+            assert!(
+                !turns.iter().any(|t| t.content.starts_with("[anchor]")),
+                "the FIRST mirror fire must stay description-only, got {turns:?}"
+            );
         }
     }
 
@@ -2648,6 +4050,7 @@ mod tests {
                 lamport: 1,
                 peer_id: other_peer,
                 text: "hello?".to_string(),
+                room_id: Uuid::nil(),
             })),
             Ok(None),
         ]);
@@ -2740,6 +4143,7 @@ mod tests {
                 lamport: 1,
                 peer_id: other_peer,
                 text: "ping?".to_string(),
+                room_id: Uuid::nil(),
             })),
             Ok(None),
         ]);
@@ -3053,6 +4457,7 @@ mod tests {
                 lamport: 1,
                 peer_id: other_peer,
                 text: "would-be-message".to_string(),
+                room_id: Uuid::nil(),
             }))])
             .require_prime_before_next_message();
 
@@ -3092,6 +4497,7 @@ mod tests {
                 lamport: 1,
                 peer_id: persona_peer, // SELF
                 text: "my own echo".to_string(),
+                room_id: Uuid::nil(),
             })),
             Ok(None),
         ]);
@@ -3134,16 +4540,19 @@ mod tests {
                     lamport: 50, // BEFORE attach
                     peer_id: other_peer,
                     text: "ancient".to_string(),
+                    room_id: Uuid::nil(),
                 })),
                 Ok(Some(IncomingMessage {
                     lamport: 100, // exactly at the mark — also skipped
                     peer_id: other_peer,
                     text: "boundary".to_string(),
+                    room_id: Uuid::nil(),
                 })),
                 Ok(Some(IncomingMessage {
                     lamport: 101, // FRESH
                     peer_id: other_peer,
                     text: "new".to_string(),
+                    room_id: Uuid::nil(),
                 })),
                 Ok(None),
             ]);
@@ -3192,6 +4601,7 @@ mod tests {
                 lamport: 1,
                 peer_id: other_peer,
                 text: "after lag".to_string(),
+                room_id: Uuid::nil(),
             })),
             Ok(None),
         ]);
@@ -3216,5 +4626,43 @@ mod tests {
         assert_eq!(outcome.turns_errored, 1);
         assert_eq!(outcome.turns_skipped, 0);
         assert_eq!(conversation.said().len(), 1);
+    }
+    // what this catches: the STARVATION RATCHET — a yield being charged the rest
+    // backoff it did not earn. Regression for the live 2026-08-17 measurement (24
+    // hosted citizens, ambient pool of 1, ONE self-tick in 40 minutes on a
+    // healthy decoding lane). If `YieldedNoSlot` ever compounds again, contention
+    // silently becomes permanent slowness and the whole roster degrades as it grows.
+    #[test]
+    fn a_yield_never_costs_her_cadence_but_a_fruitless_cycle_still_rests() {
+        use std::time::Duration;
+        let engaged = Duration::from_millis(SELF_TICK_MS);
+        let cap = Duration::from_millis(SELF_TICK_REST_CAP_MS);
+
+        // A yield leaves the beat EXACTLY where it was — she never ran.
+        let mut beat = engaged;
+        for _ in 0..50 {
+            beat = next_beat_after(BeatOutcome::YieldedNoSlot, beat, engaged, cap);
+        }
+        assert_eq!(
+            beat, engaged,
+            "50 yields must not slow her by a single millisecond — she never ran, \
+             so there is nothing to rest on (the ratchet that pinned 24 citizens at the cap)"
+        );
+
+        // A cycle that found nothing DOES rest deeper, and saturates at the cap.
+        let mut beat = engaged;
+        let once = next_beat_after(BeatOutcome::NothingNew, beat, engaged, cap);
+        assert!(once > engaged, "an earned rest still backs off");
+        for _ in 0..50 {
+            beat = next_beat_after(BeatOutcome::NothingNew, beat, engaged, cap);
+        }
+        assert_eq!(beat, cap, "earned rest saturates at the cap, never beyond");
+
+        // Finding something new snaps her straight back to engaged from full rest.
+        assert_eq!(
+            next_beat_after(BeatOutcome::Engaged, cap, engaged, cap),
+            engaged,
+            "life in the room returns her to the engaged beat immediately"
+        );
     }
 }

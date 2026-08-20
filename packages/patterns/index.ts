@@ -21,6 +21,53 @@
  * grounding are ONE projection that cannot drift.
  */
 
+// The persona home's neutral Content body (`purpose === PERSONA_PURPOSE`) — the
+// profile/brain surface as a purpose-dispatched activity, never a special view.
+export { PERSONA_PURPOSE } from './personaContent';
+
+// The live call face's neutral Content body (`purpose === LIVE_PURPOSE`) — a
+// room's call grid as a purpose-dispatched activity, never a special view.
+export { LIVE_PURPOSE } from './liveContent';
+
+// The benchmark arena's neutral Content body (`purpose === ARENA_PURPOSE`) —
+// leaderboards + live-run strip from REAL eval ledger rows, never a mockup.
+export { ARENA_PURPOSE } from './arenaContent';
+export type {
+  ArenaContentBody,
+  ArenaResultRowVM,
+  ArenaBoardVM,
+  ArenaLiveRunVM,
+} from './arenaContent';
+
+// The serving-ops CONSOLE's neutral Content body (`purpose === SERVING_PURPOSE`)
+// — per-node control-loop panels, center-stage full view (console doctrine).
+export { SERVING_PURPOSE } from './servingContent';
+export type { ServingContentBody, ServingNodeVM } from './servingContent';
+
+// The GRID's neutral Content body (`purpose === GRID_PURPOSE`) — the NODES
+// strip's full activity: every node's resources + serving, SCADA-style.
+export { GRID_PURPOSE } from './gridContent';
+export type { GridContentBody, GridNodeVM } from './gridContent';
+
+// The Academy's live BENCHMARK BOARD (`purpose === BENCH_PURPOSE`) — one row
+// per run (operator + citizen-claimed), progress-not-liveness (#374/#329).
+export { BENCH_PURPOSE } from './benchContent';
+export type { BenchContentBody, BenchRunVM, BenchRunState, BenchVerdictVM } from './benchContent';
+export type {
+  LiveContentBody,
+  LiveParticipantVM,
+  LiveCaptionVM,
+  LiveControlsVM,
+} from './liveContent';
+export type {
+  PersonaContentBody,
+  PersonaBrainRegionVM,
+  PersonaRegionFact,
+  PersonaPathwayVM,
+  PersonaClaimVM,
+  PersonaWritingVM,
+} from './personaContent';
+
 // ── Listing ────────────────────────────────────────────────────────────────
 
 /** Presence/liveness of a listing cell, when it has one (a member is active/idle;
@@ -39,12 +86,29 @@ export interface ListingCell {
   readonly subtitle?: string;
   /** Optional leading glyph — an emoji/icon token (the avatar in a people listing). */
   readonly glyph?: string;
+  /** Optional avatar/thumbnail IMAGE URL (or data URI) for this item — a persona's
+   *  stored portrait, a model's card art. The glyph remains the fallback a target
+   *  draws when the image is absent or fails to load — honest-absent, never a
+   *  broken-image box ([[fallbacks-are-illegal-fail-loud]] applies to fabrication,
+   *  not to degrading to the glyph the cell already carries). */
+  readonly image?: string;
   /** Optional short tags (kind, runtime, provider) — the target styles them. */
   readonly badges?: readonly string[];
   /** Optional presence/liveness; `'none'` draws no status indicator. */
   readonly status?: CellStatus;
+  /** Optional attention count (a room's unread, a board's open cards) — a target
+   *  draws it as a badge pill (web) or `(3 new)` (RAG/terminal). Absent or 0 =
+   *  no badge. Numeric so every surface formats its own idiom — the same
+   *  lossless-enrichment path `meters` took. */
+  readonly count?: number;
   /** Optional grouping/category key (the "bookmarked menus + categories" axis). */
   readonly group?: string;
+  /** Optional longer description of the item — a citizen's published BIO, a
+   *  model's card description, a room's charter line. The prose sibling of
+   *  `subtitle` (one line vs a sentence); a target surfaces it as hover text
+   *  or a detail pane. Absent = none published — honest-absent, never a
+   *  fabricated blurb (#262). */
+  readonly detail?: string;
   /** Optional named gauges (0–100), drawn as bars/meters by a target — a member's
    *  genome-energy vitals, a model's download %, a room's activity. Keeps the neutral
    *  cell LOSSLESS so rich rows (the roster's ACT meters) survive the projection instead
@@ -55,6 +119,17 @@ export interface ListingCell {
    *  `meters` are 0–100 gauges, a loadout is capability text/counts. Absent = none
    *  reported (a human, a room, a model-less row) — the target draws no strip. */
   readonly loadout?: CellLoadout;
+  /** Optional recency fact — WHEN this item was last active (epoch ms, the raw
+   *  `last_seen_ms` presence signal). RAW so every surface formats its own idiom
+   *  (`"55m ago"` on web, `(55m)` in RAG). Absent or 0 = unknown — the target
+   *  draws no stamp, never a fabricated recency. */
+  readonly lastActiveMs?: number;
+  /** Optional NAMES of the item's loaded skill overlays (a persona's paged-in
+   *  LoRA genes), in load order — the label half of a `meters.genome` count, so
+   *  a target names each lit genome segment (tooltip) instead of drawing an
+   *  anonymous chip. Absent/empty = none loaded/reported — honest-absent,
+   *  never fabricated labels. */
+  readonly genes?: readonly string[];
 }
 
 /** A roster cell's model loadout — the display facts of an AI member's backend. RAW
@@ -99,6 +174,10 @@ export interface ContentView<Body = unknown> {
  *  kinds join this union as they land. */
 export interface ContextPanelView {
   readonly listings: readonly ListingView[];
+  /** Activity-scoped widgets for the contextual rail (the bench board on an
+   *  academy room, #329) — heterogeneous like the left rail, dispatched by
+   *  `kind` through the same WidgetRegistry. Absent = listings only. */
+  readonly widgets?: readonly PanelWidget<unknown>[];
 }
 
 // ── PanelWidget (the left rail's global widget stack) ────────────────────────
@@ -155,6 +234,113 @@ export interface MetricsView {
   readonly spark?: readonly number[];
 }
 
+/** One named series of a `gauge` widget — a rolling 0..=100 window plus the
+ *  display-ready current reading. The projection owns normalization AND
+ *  formatting; a target draws a polyline (web), block bars (terminal), or the
+ *  `CPU 58% · MEM 25/32G` grounding line (RAG) from the same fields. */
+export interface GaugeSeries {
+  /** Short uppercase-able label ("CPU", "MEM", "GPU"). */
+  readonly label: string;
+  /** Rolling normalized samples 0..=100, oldest → newest (bounded upstream). */
+  readonly points: readonly number[];
+  /** Pre-formatted current reading ("58%", "25.3/32G"). */
+  readonly current: string;
+}
+
+/** The `gauge` widget body — a multi-series live graph (brick 2 of
+ *  POSITRON-WIDGET-SOPHISTICATION.md: the old sidebar's SYS sparkline). A
+ *  sibling of `MetricsView`: metrics is a stat ROW, gauge is a windowed GRAPH. */
+export interface GaugeView {
+  readonly series: readonly GaugeSeries[];
+  /** Sample cadence (ms) — lets a target label the window span from data. */
+  readonly sampleIntervalMs?: number;
+}
+
+/** The `system` widget body — the rail's TWO-FACED system panel (the old
+ *  sidebar's SYS|AI header): the node's resource gauge (SYS face) and the live
+ *  team-cognition stats (AI face) as one widget, so a target can draw a real
+ *  toggle between them instead of stacking two half-panels. `gauge` is honestly
+ *  absent until the node's metrics feed delivers; `stats` derives from state the
+ *  surface already holds. Which face shows is renderer state (a lens), never
+ *  projection state. */
+export interface SystemPanelView {
+  /** The node's resource window (CPU/MEM/GPU) — the SYS face. Absent = the
+   *  feed hasn't delivered; a target disables that face, honestly. */
+  readonly gauge?: GaugeView;
+  /** The live team-cognition stat row — the AI face. */
+  readonly stats: MetricsView;
+  /** The serving summary — the SRV face of the HUD (compact; the FULL view
+   *  is the serving console activity, which this face is the portal to).
+   *  Absent = no serving feed; the face disables, honestly. */
+  readonly serving?: ServingPanelView;
+}
+
+/** One bandit arm of the `serving` widget — the pager's learned-decay dial. */
+export interface ServingArm {
+  /** Arm label (the decay constant, "0.99"…"0.00"). */
+  readonly label: string;
+  /** EMA reward 0..=1 — the bandit's belief for this arm. */
+  readonly reward: number;
+  /** True for the arm currently serving predictions. */
+  readonly chosen: boolean;
+}
+
+/** One pager event card of the `serving` widget — a discrete control-loop
+ *  moment (serve start, decay switch, residency shift) rendered as an
+ *  activity card. */
+export interface ServingEvent {
+  /** Decode-token index the event fired at. */
+  readonly atToken: number;
+  /** Event class slug ("serve-start" | "decay-switch" | "residency-shift"). */
+  readonly kind: string;
+  /** Human one-liner, formatted at the source. */
+  readonly detail: string;
+}
+
+/** The `serving` widget body — the node's live inference glass box: what model
+ *  is up, and when the MoE pager streams, the control loop itself (hit rate /
+ *  tok-s / fetch series, bandit arms, event cards). Every section honestly
+ *  absent until its feed delivers — a header-only body is a plain
+ *  serving-health widget, never a fabricated gauge. */
+export interface ServingPanelView {
+  /** Serving header line. Absent = the daemon has not published yet. */
+  readonly header?: {
+    readonly model?: string;
+    readonly ready: boolean;
+    readonly lanes: number;
+    readonly contextWindow: number;
+    readonly degradedReason?: string;
+  };
+  /** Pager time-series (hit %, tok/s, fetch). Absent = no capture feed. */
+  readonly gauge?: GaugeView;
+  /** Bandit arm beliefs; empty until the decision feed carries them. */
+  readonly arms: readonly ServingArm[];
+  /** Recent pager event cards, oldest → newest, bounded upstream. */
+  readonly events: readonly ServingEvent[];
+}
+
+/** The `continuon` widget body — the rail's identity header (the top-left mark of
+ *  POSITRON-PURE-ROOMS-BRIEF.md: "alive — a slow-breathing mark"). Wordmark + an
+ *  optional version badge + a compact live-activity ticker. The projection owns the
+ *  ticker's formatting (digested, newest last); a target only paints — web draws a
+ *  breathing dot + scrolling mono lines, terminal a title line, RAG nothing (no
+ *  grounding value). Every field honest: no ticker lines yet = a quiet header,
+ *  never fabricated activity. */
+export interface ContinuonView {
+  /** The product wordmark ("continuum"). */
+  readonly wordmark: string;
+  /** Optional strapline under the wordmark. */
+  readonly tagline?: string;
+  /** Optional version badge ("v0.1.0") — from a REAL version source (a package
+   *  manifest, a core build stamp), never a hardcoded literal in a renderer. */
+  readonly version?: string;
+  /** Compact live-activity lines (newest last, already digested/truncated by the
+   *  projection). Empty = nothing observed yet — honest quiet. */
+  readonly ticker: readonly string[];
+  /** Whether the substrate feed is live — drives the breathing mark's state. */
+  readonly alive: boolean;
+}
+
 /** Wrap a `ListingView` as a `kind:'listing'` `PanelWidget` — the common case (the
  *  roster, a rooms list). Keeps constructors terse and single-sources the wrapping so
  *  the widget id/title default to the listing's own ([[compression]]). */
@@ -187,6 +373,21 @@ export interface WorkspaceView {
   readonly context: ContextPanelView;
 }
 
+/** Per-user workspace LAYOUT state — the citizen's arrangement of the shell,
+ *  designed ONCE for every pointer-capable target (desktop web, iPad, a future
+ *  native shell all render the same drag affordances from this one shape).
+ *  Presentation state, not domain truth: a host persists it per user (today a
+ *  local store; the airc per-(user,scope) state row when the layout verbs land
+ *  — same migration path as the nav focus store) and re-applies it on mount.
+ *  Grows widget order/heights/collapse (task #185) without a shape break. */
+export interface WorkspaceLayout {
+  /** Left rail width in px; absent = the target's default. Targets clamp to
+   *  their own sane min/max — the value is intent, not law. */
+  readonly whoWidth?: number;
+  /** Right context-panel width in px; absent = the target's default. */
+  readonly contextWidth?: number;
+}
+
 // ── RenderTarget — the consumer-neutral render contract ──────────────────────
 
 /** A per-purpose content renderer: given the `ContentView.body` and its purpose,
@@ -199,6 +400,17 @@ export type ContentRenderer<Out, Body = unknown> = (body: Body, purpose: string)
 export interface ContentRegistry<Out> {
   register<Body>(purpose: string, renderer: ContentRenderer<Out, Body>): void;
   render(view: ContentView): Out;
+}
+
+/** Target-native fragments the HOST composes into the workspace shell. The
+ *  compose bar (and its error strips) is host-owned — it needs the input state
+ *  and send handler the pure projection can't hold — but it BELONGS inside the
+ *  center column (the Discord geometry: full-height rails, center-scoped
+ *  header/transcript/composer). This slot lets the host hand that fragment to
+ *  the target, which places it; a target with no such slot ignores it. */
+export interface WorkspaceChrome<Out> {
+  /** Bottom of the center column — the compose bar + transient error strips. */
+  readonly centerFooter?: Out;
 }
 
 /** A consumer that renders the patterns to its own output type `Out` — web
@@ -214,7 +426,7 @@ export interface RenderTarget<Out> {
    *  `WidgetRegistry` — the panel-stack analogue of `content` dispatching by purpose.
    *  Adding a rail widget is registering a renderer, never a new target method. */
   widget(view: PanelWidget): Out;
-  workspace(view: WorkspaceView): Out;
+  workspace(view: WorkspaceView, chrome?: WorkspaceChrome<Out>): Out;
 }
 
 // ── WidgetRegistry — the left-rail dispatch table (mirrors ContentRegistry) ───

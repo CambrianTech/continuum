@@ -444,6 +444,8 @@ fn timeline_event_to_memory_record(
         last_accessed_at: None,
         layer: Some(layer.into()),
         relevance_score,
+        origin_node: None,
+        origin_seq: None,
     }
 }
 

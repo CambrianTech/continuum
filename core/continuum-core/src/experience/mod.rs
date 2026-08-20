@@ -66,9 +66,11 @@ use ts_rs::TS;
 use crate::modules::grid::acl::required_trust;
 use crate::modules::grid::node::TrustLevel;
 
+pub mod binding;
 pub mod membership;
 pub mod recipe;
 pub mod source;
+pub mod standing;
 
 pub use membership::project_membership;
 pub use recipe::{AffordanceRecipe, ExperienceRecipe};
@@ -82,7 +84,10 @@ pub use source::{ExperienceSource, RecipeExperienceSource, SharedExperienceSourc
 /// at both extremes, every other experience (profile, settings, a live video call,
 /// med-bay, a game world) is an interpolation — a point between these anchors.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/experience/Experience.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/experience/Experience.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct Experience {
     /// The activity nature — the content-dispatch key (`"chat"`, `"benchmark/hard-rs"`,
@@ -126,7 +131,10 @@ impl Experience {
 /// HTML/React/SwiftUI/TUI are compile targets a renderer maps this onto — never
 /// embedded here (that would couple the contract to one surface).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/experience/Layout.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/experience/Layout.ts"
+)]
 #[serde(tag = "container", rename_all = "lowercase")]
 pub enum Layout {
     /// Leaf: the region with this `name`.
@@ -138,7 +146,10 @@ pub enum Layout {
     /// Children z-stacked / overlaid (last on top).
     Stack { children: Vec<LayoutChild> },
     /// Children flowed into `cols` columns.
-    Grid { cols: u32, children: Vec<LayoutChild> },
+    Grid {
+        cols: u32,
+        children: Vec<LayoutChild>,
+    },
     /// Children as tabs — one visible at a time.
     Tabs { children: Vec<LayoutChild> },
 }
@@ -146,7 +157,10 @@ pub enum Layout {
 /// A child in a [`Layout`] with its relative sizing weight (flex-like share of the
 /// parent, never pixels). `weight: None` = an equal share.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/experience/LayoutChild.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/experience/LayoutChild.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct LayoutChild {
     /// The nested container or region leaf.
@@ -160,14 +174,22 @@ pub struct LayoutChild {
 impl LayoutChild {
     /// A leaf child naming a region, with an optional weight — the common builder call.
     pub fn region(name: &str, weight: Option<f32>) -> Self {
-        Self { node: Layout::Region { name: name.to_string() }, weight }
+        Self {
+            node: Layout::Region {
+                name: name.to_string(),
+            },
+            weight,
+        }
     }
 }
 
 /// A view-intent: one surface of the room bound to a live payload `kind`. Carries
 /// *where it belongs* and *how central it is* — never how it looks.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/experience/Region.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/experience/Region.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct Region {
     /// Stable region name within the room (`"scoreboard"`, `"messages"`, `"roster"`).
@@ -203,7 +225,10 @@ pub struct Region {
 /// ignore scope and drive purely off [`Experience::layout`]. The 3-pane form is one
 /// renderer's choice, never the contract's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/experience/RegionScope.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/experience/RegionScope.ts"
+)]
 #[serde(rename_all = "lowercase")]
 pub enum RegionScope {
     /// App-wide, the same across every room (rooms list, live activities, identity).
@@ -214,7 +239,10 @@ pub enum RegionScope {
 
 /// How central a region is within its zone — drives emphasis, not size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/experience/RegionRole.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/experience/RegionRole.ts"
+)]
 #[serde(rename_all = "lowercase")]
 pub enum RegionRole {
     /// The thing the room is *for* (the message stream; the score + its provenance).
@@ -229,7 +257,10 @@ pub enum RegionRole {
 /// artifact the renderer shows, so trust is a spine through the contract, never a
 /// layer bolted on after.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/experience/Affordance.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/experience/Affordance.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct Affordance {
     /// The user-facing verb (`"observe"`, `"post"`, `"quiesce"`).
@@ -270,7 +301,10 @@ impl Affordance {
 /// `IntegrityAttestation`/`AlloyReceipt` for [`ProofSpec::Attestation`]) and get
 /// bound in a follow-up slice. Settlement/invoice remain forge-alloy aspiration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/experience/ProofSpec.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/experience/ProofSpec.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub enum ProofSpec {
     /// No attestation — an ordinary action.
@@ -285,12 +319,16 @@ pub enum ProofSpec {
 
 /// A participant and their structural standing in the room.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/experience/Member.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/experience/Member.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct Member {
     /// The canonical who — the airc `PeerId`, stringified for the wire
     /// (`[[identity-context-session-three-axes]]`).
-    pub peer_id: String,
+    #[ts(type = "string")]
+    pub peer_id: crate::identity::PeerId,
     /// This participant's structural role in *this* room.
     pub standing: Standing,
 }
@@ -300,7 +338,10 @@ pub struct Member {
 /// recipe-defined string), standing is a small closed set of structural join-roles.
 /// New type-space: no `Standing` exists anywhere in airc today.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/experience/Standing.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/experience/Standing.ts"
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Standing {
     /// Owns the room (the human host; creator).
@@ -324,12 +365,21 @@ pub enum Standing {
 /// examinee/owner roster. `who_may` on the observe affordance is COMPUTED from the
 /// ACL at projection, never authored. This is the "manifests are recipe content"
 /// property — the builder is a thin roster-hydrator, not a hand-authored manifest.
-pub fn benchmark_experience(examinee_peer_id: &str, owner_peer_id: &str) -> Experience {
+pub fn benchmark_experience(
+    examinee_peer_id: crate::identity::PeerId,
+    owner_peer_id: crate::identity::PeerId,
+) -> Experience {
     recipe::ExperienceRecipe::from_json(include_str!("recipes/benchmark.json"))
         .expect("embedded benchmark recipe must be valid JSON")
         .project(vec![
-            Member { peer_id: examinee_peer_id.to_string(), standing: Standing::Examinee },
-            Member { peer_id: owner_peer_id.to_string(), standing: Standing::Owner },
+            Member {
+                peer_id: examinee_peer_id,
+                standing: Standing::Examinee,
+            },
+            Member {
+                peer_id: owner_peer_id,
+                standing: Standing::Owner,
+            },
         ])
 }
 
@@ -342,18 +392,28 @@ pub fn benchmark_experience(examinee_peer_id: &str, owner_peer_id: &str) -> Expe
 /// `StateEnvelope` payload it points at. Chat's send verb routes through airc (no
 /// `chat/*` command exists in continuum-core), so the recipe declares no affordance
 /// yet — the airc-routed post affordance is added when that command surfaces here.
-pub fn chat_experience(owner_peer_id: &str, member_peer_id: &str) -> Experience {
+pub fn chat_experience(
+    owner_peer_id: crate::identity::PeerId,
+    member_peer_id: crate::identity::PeerId,
+) -> Experience {
     recipe::ExperienceRecipe::from_json(include_str!("recipes/chat.json"))
         .expect("embedded chat recipe must be valid JSON")
         .project(vec![
-            Member { peer_id: owner_peer_id.to_string(), standing: Standing::Owner },
-            Member { peer_id: member_peer_id.to_string(), standing: Standing::Member },
+            Member {
+                peer_id: owner_peer_id,
+                standing: Standing::Owner,
+            },
+            Member {
+                peer_id: member_peer_id,
+                standing: Standing::Member,
+            },
         ])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use airc_core::PeerId;
 
     // what this catches: the outlier validation itself — if a future change makes
     // the Join Contract fit chat but not benchmark (or vice versa), one of these
@@ -362,8 +422,14 @@ mod tests {
     // is the proof every other experience is interpolation.
     #[test]
     fn both_outliers_fit_one_contract() {
-        let bench = benchmark_experience("examinee-1", "joel");
-        let chat = chat_experience("joel", "asha");
+        let bench = benchmark_experience(
+            crate::identity::PeerId::new(),
+            crate::identity::PeerId::new(),
+        );
+        let chat = chat_experience(
+            crate::identity::PeerId::new(),
+            crate::identity::PeerId::new(),
+        );
 
         // Benchmark: structured, its primary surface is the score — activity-scoped,
         // slotted as context (the desktop shell routes that to the right inspector),
@@ -373,26 +439,36 @@ mod tests {
             && r.scope == RegionScope::Activity
             && r.slot.as_deref() == Some("context")
             && r.role == RegionRole::Primary));
-        assert!(bench.membership.iter().any(|m| m.standing == Standing::Examinee));
+        assert!(bench
+            .membership
+            .iter()
+            .any(|m| m.standing == Standing::Examinee));
         // Benchmark opts into explicit composition (level 3); chat does not (level 2).
-        assert!(bench.layout.is_some(), "benchmark declares an explicit layout tree");
-        assert!(chat.layout.is_none(), "chat relies on organic semantic placement");
+        assert!(
+            bench.layout.is_some(),
+            "benchmark declares an explicit layout tree"
+        );
+        assert!(
+            chat.layout.is_none(),
+            "chat relies on organic semantic placement"
+        );
 
         // Chat: social, its primary surface is the message stream in the activity zone.
         assert_eq!(chat.purpose, "chat");
-        assert!(chat
-            .regions
-            .iter()
-            .any(|r| r.name == "messages"
-                && r.scope == RegionScope::Activity
-                && r.role == RegionRole::Primary));
+        assert!(chat.regions.iter().any(|r| r.name == "messages"
+            && r.scope == RegionScope::Activity
+            && r.role == RegionRole::Primary));
         // Region kinds bind to their live ViewStates (path-3 per-region decomposition):
         // messages → ChatViewState::KIND, roster → RosterViewState::KIND. Single-sourced
         // from the payload consts, never literals.
-        assert!(chat.regions.iter().any(|r| r.name == "messages"
-            && r.kind == continuum_positron::ChatViewState::KIND));
-        assert!(chat.regions.iter().any(|r| r.name == "roster"
-            && r.kind == continuum_positron::RosterViewState::KIND));
+        assert!(chat
+            .regions
+            .iter()
+            .any(|r| r.name == "messages" && r.kind == continuum_positron::ChatViewState::KIND));
+        assert!(chat
+            .regions
+            .iter()
+            .any(|r| r.name == "roster" && r.kind == continuum_positron::RosterViewState::KIND));
 
         // Both are the SAME type — the whole point.
         for exp in [&bench, &chat] {
@@ -446,7 +522,10 @@ mod tests {
     // the ACL maps to Provisional; if that mapping regresses, this fails.
     #[test]
     fn observe_affordance_authz_tracks_the_real_acl() {
-        let bench = benchmark_experience("examinee-1", "joel");
+        let bench = benchmark_experience(
+            crate::identity::PeerId::new(),
+            crate::identity::PeerId::new(),
+        );
         let observe = bench
             .affordances
             .iter()

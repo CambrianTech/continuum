@@ -223,7 +223,10 @@ mod tests {
             *counts.entry(g).or_default() += 1;
         }
         // All three appear — Neutral is present, not absent.
-        assert!(counts.contains_key(&AvatarGender::Female), "no Female drawn");
+        assert!(
+            counts.contains_key(&AvatarGender::Female),
+            "no Female drawn"
+        );
         assert!(counts.contains_key(&AvatarGender::Male), "no Male drawn");
         assert!(
             counts.contains_key(&AvatarGender::Neutral),

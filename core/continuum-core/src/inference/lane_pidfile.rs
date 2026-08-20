@@ -58,9 +58,6 @@ use std::time::{Duration, Instant};
 /// socket, bounded so a wedged kill can't hang serving-daemon init forever.
 const PORT_RELEASE_BUDGET: Duration = Duration::from_secs(5);
 
-/// Poll cadence while waiting for the port to free after a kill.
-const PORT_RELEASE_POLL: Duration = Duration::from_millis(100);
-
 /// The canonical pidfile path: `~/.continuum/run/llama-lane.pid`. Under
 /// `~/.continuum/run` so it lives with the core's other per-user runtime state
 /// (not `/tmp`, which other users and other tools share). `None` only if there is
@@ -125,6 +122,20 @@ fn write_at(path: &Path, pid: u32) -> io::Result<()> {
     std::fs::write(path, pid.to_string())
 }
 
+/// The pid this machine's CANONICAL live lane was last recorded at, if any.
+///
+/// This file is the authority on **which** lane is the live one — the lane registry
+/// holds a record per lane and cannot answer "which is current" by itself (its
+/// `read_dir` order is arbitrary, and a crashed generation can leave several).
+/// Callers that need the live lane's SHAPE pair this pid with its registry record.
+///
+/// `None` = no file, unparseable, or no lane recorded. NOT a liveness claim: the pid
+/// may be dead or REUSED, so a caller acting on it must identity-verify with
+/// [`crate::inference::lane_process::is_llama_server`] exactly as [`reclaim`] does.
+pub fn read() -> Option<u32> {
+    read_at(&pidfile_path()?)
+}
+
 /// Read and parse the pid at `path`. `None` for an absent or unparseable file.
 fn read_at(path: &Path) -> Option<u32> {
     std::fs::read_to_string(path)
@@ -159,7 +170,7 @@ async fn reclaim_at(path: &Path, port: u16) -> ReclaimOutcome {
     match super::lane_process::command_name(pid) {
         Some(comm) if comm.contains("llama-server") => {
             super::lane_process::kill9(pid);
-            let freed = wait_port_free(port, PORT_RELEASE_BUDGET).await;
+            let freed = super::lane_process::wait_port_free(port, PORT_RELEASE_BUDGET).await;
             clear_at(path);
             if freed {
                 ReclaimOutcome::Reclaimed { pid }
@@ -174,21 +185,6 @@ async fn reclaim_at(path: &Path, port: u16) -> ReclaimOutcome {
                 comm: other.unwrap_or_default(),
             }
         }
-    }
-}
-
-/// Poll until the local `port` is bindable (the orphan released its socket) or the
-/// budget expires. A successful bind-then-drop proves the port is free.
-async fn wait_port_free(port: u16, budget: Duration) -> bool {
-    let deadline = Instant::now() + budget;
-    loop {
-        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
-            return true;
-        }
-        if Instant::now() >= deadline {
-            return false;
-        }
-        tokio::time::sleep(PORT_RELEASE_POLL).await;
     }
 }
 

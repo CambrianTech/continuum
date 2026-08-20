@@ -54,7 +54,10 @@ pub struct DynamicAvatarModel {
 
 /// Avatar art style categories.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/voice/AvatarStyle.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/voice/AvatarStyle.ts"
+)]
 #[serde(rename_all = "snake_case")]
 pub enum AvatarStyle {
     /// Anime VRoid-style (high detail, full blend shapes, 35-50k triangles)
@@ -106,7 +109,10 @@ pub enum PitchRange {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/voice/AvatarGender.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/voice/AvatarGender.ts"
+)]
 #[serde(rename_all = "snake_case")]
 pub enum AvatarGender {
     Male,
@@ -170,9 +176,11 @@ impl From<&DynamicAvatarModel> for AvatarCatalogEntry {
 pub struct AvatarPreference {
     /// Preferred art style (None = any)
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub style: Option<AvatarStyle>,
     /// Preferred specific model ID (highest priority if set)
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub model_id: Option<String>,
     /// Exclude these tags
     #[serde(default)]

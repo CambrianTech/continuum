@@ -89,3 +89,162 @@ impl TierDownPolicy for DeclineTierDown {
         None
     }
 }
+
+/// One servable model as the tier-down ranker sees it, at the CURRENT serving shape
+/// (window × lanes): its id, how capable it is, and the total bytes it would be
+/// resident at if serving re-homed to it. Decoupled from `serving_plan::ModelFootprint`
+/// so this policy module owns no footprint math — the daemon computes `resident_bytes`
+/// with its one footprint authority and hands the ranker the finished numbers.
+#[derive(Debug, Clone)]
+pub struct TierCandidate {
+    pub model_id: String,
+    /// Higher = more capable. The ranker keeps the MOST capable model that still frees
+    /// enough — never sheds more capability than the pressure demands.
+    pub capability_rank: u8,
+    /// Total resident bytes (weights + per-lane KV × lanes) at the ctx's window/lanes.
+    pub resident_bytes: u64,
+}
+
+/// Provider of the live servable-model candidates AT a given serving shape. The daemon
+/// wires this from its `live_candidates()` (suppress/pin/eligibility already applied) ×
+/// `ModelFootprint::resident_bytes(window, lanes)`, so the ranker sees exactly the models
+/// the autonomic plan could serve, sized to what serving is running right now.
+pub type TierCandidatesFn = std::sync::Arc<dyn Fn(u32, u32) -> Vec<TierCandidate> + Send + Sync>;
+
+/// The first real tier-down intelligence (outlier A — a heuristic ladder, the
+/// substrate-doctrine "mechanism, not policy" note above). Under a VRAM reclaim ask
+/// (a game grabbed the GPU, a peer needs the bytes), instead of declining → full unload
+/// (serving goes dark), re-home to the MOST CAPABLE smaller model that still frees enough
+/// to clear the ask. "Use the memory that's available; when it's taken, take our own
+/// capacity down to yield — but keep answering, just smaller." When pressure clears, the
+/// autonomic plan grows back up on its own (it always picks the most capable model that
+/// fits the now-larger budget). Declines (→ full unload, the honest max lever) only when
+/// no smaller model frees enough. A later `PersonaTierDownPolicy` / `MlTierDownPolicy`
+/// drops in here unchanged.
+pub struct CatalogTierDownPolicy {
+    candidates: TierCandidatesFn,
+}
+
+impl CatalogTierDownPolicy {
+    pub fn new(candidates: TierCandidatesFn) -> Self {
+        Self { candidates }
+    }
+}
+
+impl TierDownPolicy for CatalogTierDownPolicy {
+    fn choose(&self, ctx: &TierDownContext) -> Option<TierDown> {
+        // The most bytes we may still hold after the swap and STILL satisfy the ask:
+        // free `target_bytes`, i.e. land at or below `current − target`. Saturating so a
+        // request for more than we hold demands we shed everything (→ nothing qualifies →
+        // decline → full unload, correct: no smaller model frees THAT much).
+        let max_resident_after = ctx.current_bytes.saturating_sub(ctx.request.target_bytes);
+        let lanes = ctx.lanes.max(1);
+        (self.candidates)(ctx.served_window, lanes)
+            .into_iter()
+            .filter(|c| c.model_id != ctx.active_model) // re-home to a DIFFERENT model
+            .filter(|c| c.resident_bytes < ctx.current_bytes) // a genuine shrink
+            .filter(|c| c.resident_bytes <= max_resident_after) // frees enough to clear the ask
+            // Keep the MOST capable qualifying model; tie-break toward the one using the
+            // most of the freed budget (most capability per byte kept).
+            .max_by(|a, b| {
+                a.capability_rank
+                    .cmp(&b.capability_rank)
+                    .then(a.resident_bytes.cmp(&b.resident_bytes))
+            })
+            .map(|c| TierDown {
+                target_model: c.model_id,
+                resident_after: c.resident_bytes,
+            })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::resources::{ReclaimReason, ReclaimRequest, ResourceKind};
+
+    fn ctx_asking<'a>(
+        active: &'a str,
+        current_bytes: u64,
+        req: &'a ReclaimRequest,
+    ) -> TierDownContext<'a> {
+        TierDownContext {
+            active_model: active,
+            current_bytes,
+            served_window: 8192,
+            lanes: 2,
+            request: req,
+        }
+    }
+
+    fn req(target_bytes: u64) -> ReclaimRequest {
+        ReclaimRequest {
+            kind: ResourceKind::Vram,
+            target_bytes,
+            deadline_ms: 0,
+            reason: ReclaimReason::Pressure,
+        }
+    }
+
+    fn cands(list: &[(&str, u8, u64)]) -> TierCandidatesFn {
+        let v: Vec<TierCandidate> = list
+            .iter()
+            .map(|(id, rank, bytes)| TierCandidate {
+                model_id: id.to_string(),
+                capability_rank: *rank,
+                resident_bytes: *bytes,
+            })
+            .collect();
+        std::sync::Arc::new(move |_w, _l| v.clone())
+    }
+
+    // what this catches: the core tier-down choice — under a reclaim ask, re-home to the
+    // MOST CAPABLE smaller model that still frees enough, never shedding more than needed.
+    #[test]
+    fn picks_the_most_capable_model_that_frees_enough() {
+        // Running a 24GB model; a game wants 8GB back. Land at ≤ 16GB.
+        let policy = CatalogTierDownPolicy::new(cands(&[
+            ("big-30b", 9, 24 * GB), // the current model (excluded)
+            ("mid-14b", 6, 15 * GB), // fits (≤16), most capable qualifier → WINNER
+            ("small-7b", 4, 8 * GB), // fits but less capable
+            ("tiny-3b", 2, 4 * GB),  // fits but least capable
+        ]));
+        let r = req(8 * GB);
+        let td = policy
+            .choose(&ctx_asking("big-30b", 24 * GB, &r))
+            .expect("a smaller model frees enough");
+        assert_eq!(
+            td.target_model, "mid-14b",
+            "most-capable model that clears the ask"
+        );
+        assert_eq!(td.resident_after, 15 * GB);
+    }
+
+    // what this catches: a harder ask than any smaller model can satisfy → decline, so the
+    // consumer falls through to a full unload (the honest max lever), never a fake shrink.
+    #[test]
+    fn declines_when_no_smaller_model_frees_enough() {
+        let policy = CatalogTierDownPolicy::new(cands(&[
+            ("big-30b", 9, 24 * GB),
+            ("mid-14b", 6, 20 * GB), // only frees 4GB — not enough
+        ]));
+        // Need 8GB back → must land ≤ 16GB; nothing qualifies.
+        let r = req(8 * GB);
+        assert!(policy.choose(&ctx_asking("big-30b", 24 * GB, &r)).is_none());
+    }
+
+    // what this catches: never "shrink" to something at or above the current residency
+    // (that frees nothing) even if it's a different model.
+    #[test]
+    fn never_re_homes_to_a_non_shrink() {
+        let policy = CatalogTierDownPolicy::new(cands(&[
+            ("big-30b", 9, 24 * GB),
+            ("other-big", 8, 26 * GB), // bigger, not a shrink
+        ]));
+        assert!(policy
+            .choose(&ctx_asking("big-30b", 24 * GB, &req(1 * GB)))
+            .is_none());
+    }
+
+    const GB: u64 = 1024 * 1024 * 1024;
+}

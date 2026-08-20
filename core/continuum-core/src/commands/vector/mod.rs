@@ -4,7 +4,7 @@
 //! These once lived ONLY in [`DataModule::handle_command`](crate::modules::data)'s
 //! stringly `match` (the `vector/` prefix arms) — dispatchable, but with no descriptor
 //! in the registry, so invisible to the persona tool surface, the grid ACL, codegen,
-//! and `cu`. As typed commands they get a descriptor AND route through the O(1)
+//! and `uu`. As typed commands they get a descriptor AND route through the O(1)
 //! lock-free typed object map. The wire name mirrors the file path —
 //! `commands/vector/search.rs` ⟺ `vector/search`.
 //!
@@ -40,10 +40,18 @@ use stats::VectorStatsCommand;
 /// legacy `vector/` prefix arm (now deleted).
 pub fn command_objects(state: Arc<DataState>) -> Vec<Arc<dyn DynCommand>> {
     vec![
-        Arc::new(VectorSearch { state: state.clone() }),
-        Arc::new(VectorIndex { state: state.clone() }),
-        Arc::new(VectorStatsCommand { state: state.clone() }),
-        Arc::new(VectorInvalidateCache { state: state.clone() }),
+        Arc::new(VectorSearch {
+            state: state.clone(),
+        }),
+        Arc::new(VectorIndex {
+            state: state.clone(),
+        }),
+        Arc::new(VectorStatsCommand {
+            state: state.clone(),
+        }),
+        Arc::new(VectorInvalidateCache {
+            state: state.clone(),
+        }),
         Arc::new(VectorBackfill { state }),
     ]
 }

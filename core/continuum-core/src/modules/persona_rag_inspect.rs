@@ -97,17 +97,23 @@ pub trait PersonaResolver: Send + Sync {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct RagInspectParams {
+    /// Which persona's RAG pipeline to introspect — her name or id (full or the
+    /// short form shown in rosters).
     pub persona: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub context_window: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub airc_floor: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub airc_max: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub airc_fetch_limit: Option<u32>,
     /// Optional absolute path for the JSONL capture trace. When set,
@@ -120,6 +126,7 @@ pub struct RagInspectParams {
     /// reasons against. Default: substrate's current wall-clock.
     /// Set this for deterministic replay tests.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub now_ms: Option<u64>,
     /// When true, chain through inference: assemble delivered items
@@ -373,18 +380,11 @@ impl ServiceModule for PersonaRagInspectModule {
         }
     }
 
-    async fn initialize(
-        &self,
-        _ctx: &crate::runtime::ModuleContext,
-    ) -> Result<(), String> {
+    async fn initialize(&self, _ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
         Ok(())
     }
 
-    async fn handle_command(
-        &self,
-        command: &str,
-        _params: Value,
-    ) -> Result<CommandResult, String> {
+    async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
         // `persona/rag-inspect` is a migrated, typed `ActionCommand` that routes via
         // `route_object` (dep-holding — it captures this module's resolver; see
         // `crate::commands::persona::rag_inspect`). Reaching this legacy path means a
@@ -424,10 +424,12 @@ pub(crate) async fn inspect_persona(
             "{COMMAND_RAG_INSPECT}: persona name is required (got empty string)"
         ));
     }
-    let resolution = resolver
-        .resolve(&params.persona)
-        .await
-        .map_err(|e| format!("{COMMAND_RAG_INSPECT}: resolve persona '{}': {e}", params.persona))?;
+    let resolution = resolver.resolve(&params.persona).await.map_err(|e| {
+        format!(
+            "{COMMAND_RAG_INSPECT}: resolve persona '{}': {e}",
+            params.persona
+        )
+    })?;
 
     let now_ms = params.now_ms.unwrap_or_else(now_ms_default);
     let mut request =
@@ -505,7 +507,14 @@ mod tests {
             if *self.fail.lock().unwrap() {
                 return Err(AircError::UnknownPeer(PeerId::new()));
             }
-            Ok(self.events.lock().unwrap().iter().take(limit).cloned().collect())
+            Ok(self
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .take(limit)
+                .cloned()
+                .collect())
         }
     }
 
@@ -570,7 +579,7 @@ mod tests {
             reader,
             valid_names: vec!["Paige".to_string(), "Pax".to_string()],
             inference_adapter: Some(
-                Arc::new(HeuristicInferenceAdapter::new()) as Arc<dyn AIProviderAdapter>,
+                Arc::new(HeuristicInferenceAdapter::new()) as Arc<dyn AIProviderAdapter>
             ),
         });
         PersonaRagInspectModule::new(resolver)
@@ -589,11 +598,14 @@ mod tests {
     #[tokio::test]
     async fn empty_persona_name_returns_typed_error() {
         let m = module_with(vec![]);
-        let result = inspect_persona(&m.resolver, RagInspectParams {
+        let result = inspect_persona(
+            &m.resolver,
+            RagInspectParams {
                 persona: "".to_string(),
                 ..Default::default()
-            })
-            .await;
+            },
+        )
+        .await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("persona name is required"));
@@ -602,11 +614,14 @@ mod tests {
     #[tokio::test]
     async fn unknown_persona_surfaces_resolver_error() {
         let m = module_with(vec![]);
-        let result = inspect_persona(&m.resolver, RagInspectParams {
+        let result = inspect_persona(
+            &m.resolver,
+            RagInspectParams {
                 persona: "Unknown".to_string(),
                 ..Default::default()
-            })
-            .await;
+            },
+        )
+        .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not found in stub resolver"));
     }
@@ -614,13 +629,16 @@ mod tests {
     #[tokio::test]
     async fn known_persona_with_empty_room_returns_zero_items_but_satisfied_allocation() {
         let m = module_with(vec![]);
-        let result = inspect_persona(&m.resolver, RagInspectParams {
+        let result = inspect_persona(
+            &m.resolver,
+            RagInspectParams {
                 persona: "Paige".to_string(),
                 now_ms: Some(1_000_000),
                 ..Default::default()
-            })
-            .await
-            .unwrap();
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(result.persona_name, "Paige");
         assert_eq!(result.persona_id, persona_uuid());
         // Allocator gives the airc source its full max (default 20k);
@@ -639,13 +657,16 @@ mod tests {
             make_event(Some("hello world"), 1, 900_000),
             make_event(Some("second message"), 2, 950_000),
         ]);
-        let result = inspect_persona(&m.resolver, RagInspectParams {
+        let result = inspect_persona(
+            &m.resolver,
+            RagInspectParams {
                 persona: "Paige".to_string(),
                 now_ms: Some(1_000_000),
                 ..Default::default()
-            })
-            .await
-            .unwrap();
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(result.deliveries[0].items.len(), 2);
         let first = &result.deliveries[0].items[0];
         assert_eq!(first.content_preview, "hello world");
@@ -658,14 +679,17 @@ mod tests {
     #[tokio::test]
     async fn context_window_override_threads_through() {
         let m = module_with(vec![make_event(Some("hi"), 1, 990_000)]);
-        let result = inspect_persona(&m.resolver, RagInspectParams {
+        let result = inspect_persona(
+            &m.resolver,
+            RagInspectParams {
                 persona: "Pax".to_string(),
                 context_window: Some(8_192),
                 now_ms: Some(1_000_000),
                 ..Default::default()
-            })
-            .await
-            .unwrap();
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(result.context_window, 8_192);
     }
 
@@ -716,13 +740,16 @@ mod tests {
         // chain_inference omitted/false → no model_response in result
         // (even when the resolver could supply an adapter).
         let m = module_with_inference(vec![make_event(Some("hi"), 1, 999_000)]);
-        let result = inspect_persona(&m.resolver, RagInspectParams {
+        let result = inspect_persona(
+            &m.resolver,
+            RagInspectParams {
                 persona: "Paige".to_string(),
                 now_ms: Some(1_000_000),
                 ..Default::default()
-            })
-            .await
-            .unwrap();
+            },
+        )
+        .await
+        .unwrap();
         assert!(result.model_response.is_none());
     }
 
@@ -732,14 +759,17 @@ mod tests {
             make_event(Some("first message"), 1, 999_000),
             make_event(Some("second message"), 2, 999_500),
         ]);
-        let result = inspect_persona(&m.resolver, RagInspectParams {
+        let result = inspect_persona(
+            &m.resolver,
+            RagInspectParams {
                 persona: "Paige".to_string(),
                 now_ms: Some(1_000_000),
                 chain_inference: Some(true),
                 ..Default::default()
-            })
-            .await
-            .unwrap();
+            },
+        )
+        .await
+        .unwrap();
         let mr = result.model_response.expect("expected model_response");
         assert_eq!(mr.adapter_id, "heuristic");
         assert!(mr.response_text.starts_with("[heuristic:"));
@@ -754,14 +784,17 @@ mod tests {
         // chain_inference=true but resolver returns no adapter — the
         // inspection silently degrades to RAG-only (no model_response).
         let m = module_with(vec![make_event(Some("hi"), 1, 999_000)]);
-        let result = inspect_persona(&m.resolver, RagInspectParams {
+        let result = inspect_persona(
+            &m.resolver,
+            RagInspectParams {
                 persona: "Paige".to_string(),
                 now_ms: Some(1_000_000),
                 chain_inference: Some(true),
                 ..Default::default()
-            })
-            .await
-            .unwrap();
+            },
+        )
+        .await
+        .unwrap();
         // Resolver returned None for inference_adapter; chain skipped.
         assert!(result.model_response.is_none());
     }

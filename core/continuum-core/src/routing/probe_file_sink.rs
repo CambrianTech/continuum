@@ -219,9 +219,11 @@ impl JsonlProbeFileSink {
     /// fmt-layer rolling uses (`tracing_appender::rolling::Builder`
     /// in `routing/tracing_init.rs`).
     ///
-    /// Files land at `<dir>/continuum-probes.YYYY-MM-DD`. The current
-    /// day's file is the one being written; older days are kept up to
-    /// `max_log_files` and then pruned automatically.
+    /// Files land at `<dir>/continuum-probes.jsonl`, with older
+    /// generations beside it as `.1`, `.2`, … up to `max_log_files`.
+    /// Rotation is by SIZE, not by date: the probe stream's volume is
+    /// driven by decision rate, not by the clock, so a per-day file
+    /// has no bound at all.
     pub fn new_rolling<P: AsRef<Path>>(
         dir: P,
         allowed_classes: HashSet<String>,
@@ -232,18 +234,21 @@ impl JsonlProbeFileSink {
             path: dir.clone(),
             source,
         })?;
-        let appender = tracing_appender::rolling::Builder::new()
-            .rotation(tracing_appender::rolling::Rotation::DAILY)
-            .filename_prefix("continuum-probes")
-            .filename_suffix("jsonl")
-            .max_log_files(max_log_files)
-            .build(&dir)
-            .map_err(|e| ProbeFileSinkError::OpenFailed {
-                path: dir.clone(),
-                // tracing_appender's InitError doesn't impl io::Error;
-                // wrap its Display the same way tracing_init.rs does.
-                source: std::io::Error::other(e.to_string()),
-            })?;
+        // Size-rotated, not clock-rotated — see [`crate::routing::capped_appender`]. The
+        // probe stream is the HIGHEST-volume writer in the substrate (one JSON line per
+        // load-bearing decision across every tokio task), so a clock-based "bound" is even
+        // less of one here than for the fmt log. `max_log_files` keeps its meaning: how many
+        // generations survive. What changes is that a generation now has a size.
+        let appender = crate::routing::capped_appender::CappedAppender::with_limits(
+            &dir,
+            "continuum-probes.jsonl",
+            crate::routing::capped_appender::MAX_LOG_BYTES,
+            max_log_files,
+        )
+        .map_err(|source| ProbeFileSinkError::OpenFailed {
+            path: dir.clone(),
+            source,
+        })?;
         Ok(Self {
             target: dir,
             writer: Mutex::new(Box::new(BufWriter::new(appender))),
@@ -398,9 +403,7 @@ where
         // Class filter applies to timing spans just as it does to
         // event-shape probes; an operator filtering to
         // `persona.render.exit` shouldn't see timing noise.
-        if !self.allowed_classes.is_empty()
-            && !self.allowed_classes.contains(&probe_event.class)
-        {
+        if !self.allowed_classes.is_empty() && !self.allowed_classes.contains(&probe_event.class) {
             return;
         }
 
@@ -444,7 +447,10 @@ pub(crate) fn class_passes_filter(class: &str, filter: &HashSet<String>) -> bool
         return true;
     }
     filter.iter().any(|f| {
-        class == f || (class.len() > f.len() + 1 && class.starts_with(f) && class[f.len()..].starts_with('.'))
+        class == f
+            || (class.len() > f.len() + 1
+                && class.starts_with(f)
+                && class[f.len()..].starts_with('.'))
     })
 }
 
@@ -554,7 +560,10 @@ mod tests {
         assert_eq!(lines.len(), 2);
 
         let classes: Vec<&str> = lines.iter().map(|l| l["class"].as_str().unwrap()).collect();
-        assert_eq!(classes, vec!["persona.render.exit", "cognition.analyze.cache_hit"]);
+        assert_eq!(
+            classes,
+            vec!["persona.render.exit", "cognition.analyze.cache_hit"]
+        );
 
         // The first line should preserve the message + fields the
         // probe! call carried, so an operator reading the log can
@@ -588,9 +597,12 @@ mod tests {
         });
 
         let lines = read_jsonl(&path);
-        assert_eq!(lines.len(), 2, "namespace prefix must drop both non-matching classes");
-        let kept_classes: Vec<&str> =
-            lines.iter().map(|l| l["class"].as_str().unwrap()).collect();
+        assert_eq!(
+            lines.len(),
+            2,
+            "namespace prefix must drop both non-matching classes"
+        );
+        let kept_classes: Vec<&str> = lines.iter().map(|l| l["class"].as_str().unwrap()).collect();
         assert!(kept_classes.contains(&"persona.turn.spoke"));
         assert!(kept_classes.contains(&"persona.response.render.prompt"));
     }

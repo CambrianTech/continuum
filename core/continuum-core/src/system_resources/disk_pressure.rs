@@ -87,8 +87,7 @@ use crate::{clog_info, clog_warn};
 /// Bulk-write subsystems (model download, fixture archive, probe JSONL
 /// spool) should check this before allocating large chunks. Same shape
 /// as `is_memory_gate_closed`.
-static DISK_GATE_CLOSED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static DISK_GATE_CLOSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Global atomic level — updated every poll. Lock-free reads anywhere.
 static CURRENT_DISK_LEVEL: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
@@ -171,7 +170,10 @@ impl std::fmt::Display for DiskPressureLevel {
 
 /// One path's self-reported disk usage.
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/system/DiskPathReport.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/system/DiskPathReport.ts"
+)]
 pub struct DiskPathReport {
     /// Identifier (e.g., "cargo-target", "continuum-cache", "model-registry").
     pub name: String,
@@ -466,7 +468,8 @@ impl DiskPressureMonitor {
             let level = DiskPressureLevel::from_pressure(pressure);
 
             // Atomic publish — lock-free reads from anywhere.
-            self.current_pressure.store(pressure.to_bits(), Ordering::Relaxed);
+            self.current_pressure
+                .store(pressure.to_bits(), Ordering::Relaxed);
             CURRENT_DISK_LEVEL.store(level.to_u8(), Ordering::Relaxed);
 
             // Hysteresis.
@@ -490,7 +493,15 @@ impl DiskPressureMonitor {
                 .map(|(i, e)| (i, e.reporter.clone()))
                 .collect();
 
-            (total, available, used, pressure, level, consecutive_at_level, live)
+            (
+                total,
+                available,
+                used,
+                pressure,
+                level,
+                consecutive_at_level,
+                live,
+            )
         };
 
         // --- Phase 2: off-lock fan-out — each reporter on the blocking pool
@@ -784,14 +795,20 @@ mod tests {
         // contract — if someone reorders the variants and breaks the
         // u8 assignment, this test catches it.
         CURRENT_DISK_LEVEL.store(0, Ordering::Relaxed);
-        assert_eq!(DiskPressureMonitor::current_level(), DiskPressureLevel::Normal);
+        assert_eq!(
+            DiskPressureMonitor::current_level(),
+            DiskPressureLevel::Normal
+        );
         CURRENT_DISK_LEVEL.store(1, Ordering::Relaxed);
         assert_eq!(
             DiskPressureMonitor::current_level(),
             DiskPressureLevel::Warning
         );
         CURRENT_DISK_LEVEL.store(2, Ordering::Relaxed);
-        assert_eq!(DiskPressureMonitor::current_level(), DiskPressureLevel::High);
+        assert_eq!(
+            DiskPressureMonitor::current_level(),
+            DiskPressureLevel::High
+        );
         CURRENT_DISK_LEVEL.store(3, Ordering::Relaxed);
         assert_eq!(
             DiskPressureMonitor::current_level(),

@@ -90,8 +90,7 @@ pub fn rank_pages_for_eviction(pages: &[ResidentPage], policy: &EvictionPolicy) 
         // `DemandAlignedWithRefinedPreference` shares this order at the
         // ResidentPage level (see fn doc); the refined-vs-imported preference
         // is layered on by the TierStore.
-        EvictionPolicy::LfuPlusRecency
-        | EvictionPolicy::DemandAlignedWithRefinedPreference => {
+        EvictionPolicy::LfuPlusRecency | EvictionPolicy::DemandAlignedWithRefinedPreference => {
             candidates.sort_by(|a, b| {
                 a.access_count_window
                     .cmp(&b.access_count_window)
@@ -113,7 +112,12 @@ mod tests {
 
     /// Build a resident page with a distinct `PageRef` (keyed off `tag`) and
     /// the given eviction-relevant metadata.
-    fn page(tag: u128, last_access_ms: u64, access_count_window: u32, pinned: bool) -> ResidentPage {
+    fn page(
+        tag: u128,
+        last_access_ms: u64,
+        access_count_window: u32,
+        pinned: bool,
+    ) -> ResidentPage {
         ResidentPage {
             page: PageRef {
                 kind: PageKind::LoRALayer,
@@ -181,10 +185,8 @@ mod tests {
             page(3, 200, 1, false),
         ];
         let lfu = rank_pages_for_eviction(&pages, &EvictionPolicy::LfuPlusRecency);
-        let demand = rank_pages_for_eviction(
-            &pages,
-            &EvictionPolicy::DemandAlignedWithRefinedPreference,
-        );
+        let demand =
+            rank_pages_for_eviction(&pages, &EvictionPolicy::DemandAlignedWithRefinedPreference);
         assert_eq!(lfu, demand);
     }
 
@@ -204,7 +206,11 @@ mod tests {
             EvictionPolicy::LruAcrossTurns { window_turns: 4 },
         ] {
             let order = rank_pages_for_eviction(&pages, &policy);
-            assert_eq!(order, vec![ref_of(2)], "{policy:?} must skip the pinned page");
+            assert_eq!(
+                order,
+                vec![ref_of(2)],
+                "{policy:?} must skip the pinned page"
+            );
         }
     }
 
@@ -233,7 +239,10 @@ mod tests {
         ] {
             let forward = rank_pages_for_eviction(&[a.clone(), b.clone()], &policy);
             let reverse = rank_pages_for_eviction(&[b.clone(), a.clone()], &policy);
-            assert_eq!(forward, reverse, "{policy:?}: tie order must ignore input order");
+            assert_eq!(
+                forward, reverse,
+                "{policy:?}: tie order must ignore input order"
+            );
             assert_eq!(forward, vec![ref_of(10), ref_of(20)], "{policy:?}");
         }
     }
@@ -247,7 +256,10 @@ mod tests {
             EvictionPolicy::LfuPlusRecency,
             EvictionPolicy::AppendOnlyGcOnSleep,
         ] {
-            assert!(rank_pages_for_eviction(&[], &policy).is_empty(), "{policy:?}");
+            assert!(
+                rank_pages_for_eviction(&[], &policy).is_empty(),
+                "{policy:?}"
+            );
         }
     }
 }

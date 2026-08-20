@@ -1,7 +1,7 @@
 //! `commands/help` — the AI-paradigm manual: how to CALL a command, in the exact
 //! tool-call format the caller is expected to emit.
 //!
-//! Symmetry with the CLI: `cu <command> --help` renders the SAME single schema as
+//! Symmetry with the CLI: `continuum <command> --help` renders the SAME single schema as
 //! bash flags ("the manual matches the paradigm"); this renders it as the canonical
 //! tool-call envelope a persona emits. One source (`command_registry()` + the
 //! command's `params_schema`), two paradigms. So when a persona is unsure HOW to
@@ -26,6 +26,10 @@ use crate::routing::grid_trust_policy::caller_trust;
 use crate::sdk_codegen::{command_registry, AccessLevel, ActionCommand, CommandError, Ctx};
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/help/CommandsHelpParams.ts"
+)]
 pub struct CommandsHelpParams {
     /// The command to explain, e.g. `code/read`. OMIT it to get an INDEX of every
     /// command you can call (name + one-line description) — your starting point when
@@ -63,6 +67,10 @@ pub(crate) fn did_you_mean<'a>(query: &str, authorized: &[&'a str]) -> Vec<&'a s
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/help/CommandsHelpResult.ts"
+)]
 pub struct CommandsHelpResult {
     pub name: String,
     pub description: String,
@@ -89,7 +97,10 @@ pub(crate) fn render_ai_help(name: &str, description: &str, schema: &Value) -> S
     if let Some(props) = props {
         for (key, spec) in props {
             let req = required.contains(key.as_str());
-            let doc = spec.get("description").and_then(Value::as_str).unwrap_or("");
+            let doc = spec
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("");
             // Resolve the param's real shape — a scalar `type`, OR an enum (`oneOf`/
             // `anyOf`, possibly behind a `$ref`/`allOf`) whose variants we EXPAND into
             // a hint + a concrete example. Without this, a complex param (e.g. an
@@ -100,7 +111,11 @@ pub(crate) fn render_ai_help(name: &str, description: &str, schema: &Value) -> S
             arg_lines.push(format!(
                 "- {key} ({ty}, {}){}",
                 if req { "required" } else { "optional" },
-                if doc.is_empty() { String::new() } else { format!(" — {doc}") },
+                if doc.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — {doc}")
+                },
             ));
         }
     }
@@ -151,9 +166,16 @@ fn param_shape(spec: &Value, root: &Value) -> (String, Value) {
     let spec = resolve_ref(spec, root);
     if let Some(ty) = spec.get("type").and_then(Value::as_str) {
         if let Some(en) = spec.get("enum").and_then(Value::as_array) {
-            let opts: Vec<String> = en.iter().filter_map(Value::as_str).map(str::to_string).collect();
+            let opts: Vec<String> = en
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect();
             if !opts.is_empty() {
-                return (format!("one of: {}", opts.join(" | ")), Value::String(opts[0].clone()));
+                return (
+                    format!("one of: {}", opts.join(" | ")),
+                    Value::String(opts[0].clone()),
+                );
             }
         }
         return (ty.to_string(), json!(format!("<{ty}>")));
@@ -256,7 +278,7 @@ mod param_shape_tests {
 
     // what this catches: an externally-tagged enum param (code/edit's EditMode) is EXPANDED
     // into its variants + a concrete example instead of collapsing to a useless "any" — the
-    // invisible-contract bug I hit firsthand taking the SWE-bench test through cu (a model
+    // invisible-contract bug I hit firsthand taking the SWE-bench test through continuum (a model
     // literally could not tell what edit_mode wanted). Fixture mirrors schemars output
     // ($ref → definitions with a oneOf of {Variant:{fields}}).
     #[test]
@@ -277,12 +299,24 @@ mod param_shape_tests {
             ]}}
         });
         let out = render_ai_help("code/edit", "edit a file", &schema);
-        assert!(out.contains("search_replace{"), "variant NAME (not field) + fields shown: {out}");
-        assert!(out.contains("search") && out.contains("replace"), "variant fields shown: {out}");
+        assert!(
+            out.contains("search_replace{"),
+            "variant NAME (not field) + fields shown: {out}"
+        );
+        assert!(
+            out.contains("search") && out.contains("replace"),
+            "variant fields shown: {out}"
+        );
         assert!(out.contains("append"), "second variant shown: {out}");
-        assert!(!out.contains("edit_mode (any"), "no longer collapses to any: {out}");
+        assert!(
+            !out.contains("edit_mode (any"),
+            "no longer collapses to any: {out}"
+        );
         // the example is a FLAT object carrying the discriminator — the shape that actually works
-        assert!(out.contains("\"type\"") && out.contains("\"search_replace\""), "flat tagged example: {out}");
+        assert!(
+            out.contains("\"type\"") && out.contains("\"search_replace\""),
+            "flat tagged example: {out}"
+        );
     }
 
     // what this catches: a plain scalar param still renders as before (no regression).
@@ -302,6 +336,8 @@ pub struct CommandsHelp;
 #[async_trait]
 impl ActionCommand for CommandsHelp {
     const NAME: &'static str = "commands/help";
+    const ALIASES: &'static [&'static str] = &["help"];
+    const NATIVE: bool = true; // discovery pair — the on-demand "how do I call this?" tool
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "Show how to CALL a command: the exact tool-call format to emit + its arguments. \
@@ -309,7 +345,11 @@ impl ActionCommand for CommandsHelp {
     type Params = CommandsHelpParams;
     type Output = CommandsHelpResult;
 
-    async fn run(&self, ctx: &Ctx, p: CommandsHelpParams) -> Result<CommandsHelpResult, CommandError> {
+    async fn run(
+        &self,
+        ctx: &Ctx,
+        p: CommandsHelpParams,
+    ) -> Result<CommandsHelpResult, CommandError> {
         let trust = caller_trust(ctx.caller.as_ref());
         // Everything THIS caller could actually run — the universe for both the index
         // and did-you-mean (never leak commands above the caller's access).
@@ -385,7 +425,10 @@ mod tests {
             "required": ["file_path"]
         });
         let manual = render_ai_help("code/read", "Read a file.", &schema);
-        assert!(manual.contains("\"tool_call\""), "shows the envelope: {manual}");
+        assert!(
+            manual.contains("\"tool_call\""),
+            "shows the envelope: {manual}"
+        );
         assert!(manual.contains("\"name\": \"code/read\""));
         assert!(manual.contains("file_path"));
         assert!(manual.contains("(string, required)"));

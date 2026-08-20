@@ -44,8 +44,7 @@ use super::code::CodeState;
 use crate::code::shell_types::{ShellExecuteResponse, ShellExecutionStatus};
 use crate::code::types::{
     DirEntry, ExistsResult, FsEntryKind, GlobResult, ListResult, ReadResult, SearchMatch,
-    SearchResult, TreeResult,
-    WriteResult,
+    SearchResult, TreeResult, WriteResult,
 };
 use crate::code::{search, tree, EditMode, FileEngine, PathSecurity, ShellSession};
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand};
@@ -62,7 +61,7 @@ pub(crate) fn caller_id(ctx: &Ctx) -> String {
 }
 
 /// The caller id assigned when a command arrives with NO peer identity — the
-/// substrate-local operator (cu CLI, boot plumbing). The ONE caller whose
+/// substrate-local operator (uu CLI, boot plumbing). The ONE caller whose
 /// workspace is the core's own cwd; every identified peer gets a layer.
 pub(crate) const LOCAL_OWNER: &str = "local-owner";
 
@@ -97,10 +96,35 @@ pub(crate) fn citizen_layer_path(peer: &str) -> Result<std::path::PathBuf, Comma
         .ok()
         .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))
         .ok_or_else(|| CommandError::Internal("no home dir for citizen layer".into()))?;
-    Ok(home.join("citizens").join("peers").join(peer).join("workspace"))
+    Ok(home
+        .join("citizens")
+        .join("peers")
+        .join(peer)
+        .join("workspace"))
 }
 
 pub(crate) fn ensure_citizen_layer(peer: &str) -> Result<std::path::PathBuf, CommandError> {
+    // The shared base is the core's cwd — OUR checkout. Resolve it ONCE here, then
+    // hand the provisioning body a concrete base so it is a pure function of
+    // (peer, base). That seam is why the citizen-layer test can inject a fake base
+    // WITHOUT mutating the process-global cwd: a test that chdir'd raced every
+    // parallel ts-rs `export_bindings_*` write (each resolves its relative
+    // `export_to` against the same process cwd, so a mid-run chdir sent those
+    // writes to `/protocol/...` and panicked the whole suite). #191.
+    let base = std::env::current_dir()
+        .map_err(|e| CommandError::Internal(format!("shared base unavailable: {e}")))?;
+    ensure_citizen_layer_from_base(peer, &base)
+}
+
+/// Provision (or refresh) a peer's citizen layer, cloning from `base` — the shared
+/// checkout. Split out from [`ensure_citizen_layer`] so the base is an explicit
+/// argument (production passes the core's cwd; tests pass a scoped temp dir) rather
+/// than an implicit read of the process-global cwd. See the note above on why that
+/// matters for the parallel test suite.
+fn ensure_citizen_layer_from_base(
+    peer: &str,
+    base: &std::path::Path,
+) -> Result<std::path::PathBuf, CommandError> {
     let layer = citizen_layer_path(peer)?;
     if layer.is_dir() {
         // Self-heal the stale-clone bug ([[citizen-workspaces-are-stale-one-time-
@@ -111,49 +135,58 @@ pub(crate) fn ensure_citizen_layer(peer: &str) -> Result<std::path::PathBuf, Com
         // autocommits + merges, shared wins framework conflicts). Non-fatal: a sync
         // that fails logs LOUD but still returns the usable (if stale) workspace
         // rather than denying the persona her hands.
-        if let Ok(base) = std::env::current_dir() {
-            match crate::code::git_bridge::git_sync_from_shared(&layer, &base) {
-                Ok(report) if report.synced => {
-                    write_workspace_sync_note(&layer, &report.summary);
-                    crate::probe!(
-                        class = "workspace.layer.sync",
-                        peer = %peer,
-                        summary = %report.summary,
-                        "citizen workspace refreshed from shared — persona work preserved"
-                    );
-                }
-                Ok(_) => {} // already current — nothing to notify.
-                Err(e) => tracing::warn!(
+        match crate::code::git_bridge::git_sync_from_shared(&layer, base) {
+            Ok(report) if report.synced => {
+                write_workspace_sync_note(&layer, &report.summary);
+                crate::probe!(
+                    class = "workspace.layer.sync",
                     peer = %peer,
-                    error = %e,
-                    "citizen workspace sync from shared failed — persona continues on existing workspace"
-                ),
+                    summary = %report.summary,
+                    "citizen workspace refreshed from shared — persona work preserved"
+                );
             }
+            Ok(_) => {} // already current — nothing to notify.
+            Err(e) => tracing::warn!(
+                peer = %peer,
+                error = %e,
+                "citizen workspace sync from shared failed — persona continues on existing workspace"
+            ),
         }
         return Ok(layer);
     }
-    let base = std::env::current_dir()
-        .map_err(|e| CommandError::Internal(format!("shared base unavailable: {e}")))?;
     let parent = layer
         .parent()
         .ok_or_else(|| CommandError::Internal("citizen layer has no parent".into()))?;
     std::fs::create_dir_all(parent)
         .map_err(|e| CommandError::Internal(format!("citizen layer mkdir failed: {e}")))?;
     let started = std::time::Instant::now();
-    let out = std::process::Command::new("cp")
-        .arg("-cR")
-        .arg(&base)
-        .arg(&layer)
-        .output()
-        .map_err(|e| CommandError::Internal(format!("citizen layer clone spawn failed: {e}")))?;
+    // Copy-on-write clone of the shared base → the peer's layer via the platform's
+    // reflink-capable `cp`. macOS APFS uses `-c` (clonefile); GNU coreutils uses
+    // `--reflink=auto` — reflink where the filesystem supports it (btrfs/XFS), a plain
+    // recursive copy otherwise, never failing for lack of CoW. `-cR` is macOS-ONLY (GNU
+    // cp rejects `-c`), which silently broke citizen provisioning on every Linux deploy
+    // until #191 surfaced it. `cfg!` (not `#[cfg]`) so BOTH branches compile and
+    // type-check on every platform — a Linux-only arm must never escape a macOS build.
+    let mut clone = std::process::Command::new("cp");
+    if cfg!(target_os = "macos") {
+        clone.arg("-cR");
+    } else {
+        clone.args(["--reflink=auto", "-R"]);
+    }
+    let out =
+        clone.arg(base).arg(&layer).output().map_err(|e| {
+            CommandError::Internal(format!("citizen layer clone spawn failed: {e}"))
+        })?;
     if !out.status.success() {
         // Never leave a half-materialized layer for the next call to mistake
         // for a real one.
         let _ = std::fs::remove_dir_all(&layer);
         return Err(CommandError::Internal(format!(
             "citizen layer CoW clone failed for peer {peer} (base {}): {}. \
-             The base and <continuum home> must be on the same APFS volume — \
-             copy-on-write is the contract, a silent full copy per peer is not.",
+             Copy-on-write is the intent (APFS clonefile on macOS, reflink on Linux \
+             btrfs/XFS); cp falls back to a full recursive copy on a non-CoW filesystem \
+             rather than failing, so a hard error here means the base is missing or \
+             unreadable, not a missing reflink.",
             base.display(),
             String::from_utf8_lossy(&out.stderr).trim()
         )));
@@ -298,8 +331,13 @@ pub struct CodeReadParams {
 #[async_trait]
 impl ActionCommand for CodeRead {
     const NAME: &'static str = "code/read";
+    const ALIASES: &'static [&'static str] = &["read_file", "view", "cat", "open_file"];
+    const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
-        "Read a file from the workspace, optionally a line range. Returns content plus line metadata.";
+        "Read a file from the workspace, optionally a line range. Content comes back with \
+         each line NUMBERED (`   12 | text`) — those numbers are the same ones code/edit's \
+         line_range and insert_at address, so you never have to count. The `N | ` gutter is \
+         display, not file content: never write it back into a file.";
     type Params = CodeReadParams;
     type Output = ReadResult;
 
@@ -332,6 +370,8 @@ pub struct CodeWriteParams {
 #[async_trait]
 impl ActionCommand for CodeWrite {
     const NAME: &'static str = "code/write";
+    const ALIASES: &'static [&'static str] = &["write_file", "create_file", "save_file"];
+    const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
         "Create or overwrite a file with new content. Tracked in the change history (undoable).";
     type Params = CodeWriteParams;
@@ -339,9 +379,34 @@ impl ActionCommand for CodeWrite {
 
     async fn run(&self, ctx: &Ctx, p: CodeWriteParams) -> Result<WriteResult, CommandError> {
         let engine = engine!(self, ctx);
-        engine
+        // THE WRITE PATH IS WHERE SOLVED WORK DIES (#: flask-4045 was solved and then
+        // destroyed TWICE, and both times we diagnosed it from PROSE — the persona's own
+        // account of what she did — rather than from what actually hit disk. This probe
+        // is the receipt: sizes before/after and whether the file already existed, so a
+        // patch that lands wrong is visible AT THE MOMENT IT LANDS.
+        //
+        // `existed` + `before_bytes` are the load-bearing pair: an overwrite of a large
+        // existing file with a tiny body is the exact shape of "solved, then destroyed"
+        // (the model re-emits a stub or a fragment over a working file). A count alone
+        // could never show that.
+        let before = std::fs::metadata(engine.workspace_root().join(&p.file_path))
+            .ok()
+            .map(|m| m.len());
+        let out = engine
             .write(&p.file_path, &p.content, p.description.as_deref())
-            .map_err(|e| CommandError::Internal(e.to_string()))
+            .map_err(|e| CommandError::Internal(e.to_string()));
+        crate::probe!(
+            class = "code.write.landed",
+            path = %p.file_path,
+            existed = before.is_some(),
+            before_bytes = before.unwrap_or(0),
+            after_bytes = p.content.len() as u64,
+            shrank = before.is_some_and(|b| (p.content.len() as u64) < b / 2),
+            ok = out.is_ok(),
+            "a file write reached disk — before/after sizes so a destructive overwrite is \
+             visible without reconstructing it from the persona's account"
+        );
+        out
     }
 }
 
@@ -376,9 +441,15 @@ pub struct CodeEditParams {
     // flat-call shape a model reaches for instead of the nested tagged object.
     #[serde(default)]
     pub content: Option<String>,
-    #[serde(default)]
+    // `old_string`/`new_string` (Claude Code / most agents) and `old_str`/`new_str` are the
+    // UNIVERSAL edit idiom every citizen — persona, Claude, or human-over-Positron — reaches for
+    // first. Dogfooded 2026-08-09: a bare `code/edit old_string=… new_string=…` was refused
+    // ("could not determine the edit mode") because these weren't fields. Serde aliases map them
+    // straight onto search/replace at the shared handler, so search_replace is INFERRED and the
+    // edit lands first-try for everyone. [[dogfood-the-continuum-command-surface]]
+    #[serde(default, alias = "old_string", alias = "old_str")]
     pub search: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "new_string", alias = "new_str")]
     pub replace: Option<String>,
     #[serde(default)]
     pub new_content: Option<String>,
@@ -412,12 +483,21 @@ fn normalize_edit_mode(p: &CodeEditParams) -> Result<EditMode, CommandError> {
     }
     // A field pulled from top-level OR from an untyped edit_mode object (flat call shapes).
     let s = |top: &Option<String>, key: &str| -> Option<String> {
-        top.clone()
-            .or_else(|| p.edit_mode.get(key).and_then(|v| v.as_str().map(str::to_string)))
+        top.clone().or_else(|| {
+            p.edit_mode
+                .get(key)
+                .and_then(|v| v.as_str().map(str::to_string))
+        })
     };
     let content = s(&p.content, "content");
-    let search = s(&p.search, "search");
-    let replace = s(&p.replace, "replace");
+    // Top-level old_string/new_string land on p.search/p.replace via serde aliases above; this
+    // also accepts them NESTED inside an untyped `edit_mode:{old_string:…,new_string:…}` object.
+    let search = s(&p.search, "search")
+        .or_else(|| s(&None, "old_string"))
+        .or_else(|| s(&None, "old_str"));
+    let replace = s(&p.replace, "replace")
+        .or_else(|| s(&None, "new_string"))
+        .or_else(|| s(&None, "new_str"));
     let new_content = s(&p.new_content, "new_content");
     // Numeric fields, pulled from top-level OR the nested untyped edit_mode object.
     // Live glass-box (2026-07-14): Devstral emitted `edit_mode:{end_line:65535,
@@ -449,7 +529,8 @@ fn normalize_edit_mode(p: &CodeEditParams) -> Result<EditMode, CommandError> {
             None
         }
     });
-    let miss = |what: &str| CommandError::Invalid(format!("code/edit: needs `{what}`. {EDIT_MODE_HELP}"));
+    let miss =
+        |what: &str| CommandError::Invalid(format!("code/edit: needs `{what}`. {EDIT_MODE_HELP}"));
     match mode.as_deref().map(|m| m.trim().to_lowercase()).as_deref() {
         Some("search_replace") => Ok(EditMode::SearchReplace {
             search: search.ok_or_else(|| miss("search"))?,
@@ -506,6 +587,9 @@ fn reject_placeholder_path(file_path: &str) -> Result<(), CommandError> {
 #[async_trait]
 impl ActionCommand for CodeEdit {
     const NAME: &'static str = "code/edit";
+    const ALIASES: &'static [&'static str] =
+        &["edit_file", "str_replace", "apply_patch", "replace_in_file"];
+    const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
         "Edit an existing file: line-range replace, search/replace, insert-at, or append. Undoable.";
     type Params = CodeEditParams;
@@ -541,6 +625,8 @@ pub struct CodeListParams {
 #[async_trait]
 impl ActionCommand for CodeList {
     const NAME: &'static str = "code/list";
+    const ALIASES: &'static [&'static str] = &["list_files", "list_dir", "glob", "ls"];
+    const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
         "List a directory (flat, non-recursive): names, kinds, and sizes. Use code/tree for recursion.";
     type Params = CodeListParams;
@@ -747,6 +833,8 @@ pub struct CodeTreeParams {
 #[async_trait]
 impl ActionCommand for CodeTree {
     const NAME: &'static str = "code/tree";
+    const ALIASES: &'static [&'static str] = &["file_tree", "directory_tree", "tree"];
+    const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
         "Print a recursive directory tree (bounded depth) — the project's structure at a glance.";
     type Params = CodeTreeParams;
@@ -805,6 +893,8 @@ pub struct CodeSearchParams {
 #[async_trait]
 impl ActionCommand for CodeSearch {
     const NAME: &'static str = "code/search";
+    const ALIASES: &'static [&'static str] = &["grep", "search_files", "ripgrep", "rg", "search"];
+    const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
         "Search file contents for a pattern across the workspace (grep). Returns file:line matches.";
     type Params = CodeSearchParams;
@@ -914,7 +1004,7 @@ impl ActionCommand for CodeSearch {
             error = Some(format!(
                 "{total_matches} matches across {files_total} file(s) — too many to list \
                  line-by-line, so this shows ONE representative match per file for the top \
-                 {} file(s) by match count: [{}]. Next: read the most relevant file \
+                 {} file(s) by match count: [{}]. Next: read the hottest file listed first above \
                  (code/read file_path=...) or narrow the search (more specific `pattern`, \
                  or `file_glob` limiting which files).",
                 matches.len(),
@@ -1012,8 +1102,16 @@ fn shell_response(s: &crate::code::shell_session::ExecutionState) -> ShellExecut
 #[async_trait]
 impl ActionCommand for CodeShell {
     const NAME: &'static str = "code/shell";
-    // Privileged → Trusted tier: arbitrary execution is for high-trust local
-    // citizens (a local persona / a trusted node), never a Provisional remote peer.
+    const ALIASES: &'static [&'static str] = &[
+        "bash",
+        "shell",
+        "run_terminal_cmd",
+        "execute_command",
+        "run_command",
+    ];
+    const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
+                               // Privileged → Trusted tier: arbitrary execution is for high-trust local
+                               // citizens (a local persona / a trusted node), never a Provisional remote peer.
     const ACCESS: AccessLevel = AccessLevel::Privileged;
     const DESCRIPTION: &'static str =
         "Run a shell command (bash) in your persistent workspace session. Waits inline up to \
@@ -1022,7 +1120,11 @@ impl ActionCommand for CodeShell {
     type Params = CodeShellParams;
     type Output = ShellExecuteResponse;
 
-    async fn run(&self, ctx: &Ctx, p: CodeShellParams) -> Result<ShellExecuteResponse, CommandError> {
+    async fn run(
+        &self,
+        ctx: &Ctx,
+        p: CodeShellParams,
+    ) -> Result<ShellExecuteResponse, CommandError> {
         let who = caller_id(ctx);
         ensure_shell(&self.state, &who)?;
 
@@ -1030,11 +1132,9 @@ impl ActionCommand for CodeShell {
         // DashMap ref before awaiting — never hold a lock across `.await` (the
         // bounded wait below blocks the turn, not the shard). [[concurrency-style-guide]]
         let state_arc = {
-            let mut shell = self
-                .state
-                .shell_sessions
-                .get_mut(&who)
-                .ok_or_else(|| CommandError::Internal("shell vanished after provisioning".into()))?;
+            let mut shell = self.state.shell_sessions.get_mut(&who).ok_or_else(|| {
+                CommandError::Internal("shell vanished after provisioning".into())
+            })?;
             let exec_id = shell
                 .execute(&p.cmd, p.timeout_ms, &self.state.rt_handle)
                 .map_err(CommandError::Internal)?;
@@ -1046,7 +1146,8 @@ impl ActionCommand for CodeShell {
         // BOUNDED inline wait: return the moment it completes, or hand back the
         // handle when the window elapses — never block past wait_ms. No DashMap
         // lock held across the await.
-        let deadline = Instant::now() + Duration::from_millis(p.wait_ms.unwrap_or(DEFAULT_SHELL_WAIT_MS));
+        let deadline =
+            Instant::now() + Duration::from_millis(p.wait_ms.unwrap_or(DEFAULT_SHELL_WAIT_MS));
         loop {
             let notify = {
                 let s = state_arc
@@ -1094,7 +1195,11 @@ impl ActionCommand for CodeShellPoll {
     type Params = CodeShellPollParams;
     type Output = ShellExecuteResponse;
 
-    async fn run(&self, ctx: &Ctx, p: CodeShellPollParams) -> Result<ShellExecuteResponse, CommandError> {
+    async fn run(
+        &self,
+        ctx: &Ctx,
+        p: CodeShellPollParams,
+    ) -> Result<ShellExecuteResponse, CommandError> {
         let who = caller_id(ctx);
         let shell = self
             .state
@@ -1138,7 +1243,11 @@ impl ActionCommand for CodeShellKill {
     type Params = CodeShellKillParams;
     type Output = CodeShellKillResult;
 
-    async fn run(&self, ctx: &Ctx, p: CodeShellKillParams) -> Result<CodeShellKillResult, CommandError> {
+    async fn run(
+        &self,
+        ctx: &Ctx,
+        p: CodeShellKillParams,
+    ) -> Result<CodeShellKillResult, CommandError> {
         let who = caller_id(ctx);
         let shell = self
             .state
@@ -1331,6 +1440,26 @@ pub struct CodeCreateWorkspaceParams {
     /// a shared dependency tree). Omit for a write-only-within-root sandbox.
     #[serde(default)]
     pub read_roots: Vec<String>,
+    /// Directories to PREPEND to `PATH` for this caller's shell.
+    ///
+    /// Why this exists: the SWE harness provisions an era-matched interpreter per
+    /// instance (`uv venv --python 3.9|3.11`) and used it ONLY for grading. Her hands
+    /// got the bare inherited PATH — so `python` did not exist for her at all.
+    /// Glass-boxed on sympy-21379: she wrote a correct reproduction script, ran it,
+    /// and got `bash: python: command not found` (exit 127). A persona who cannot
+    /// EXECUTE cannot verify a fix, which makes the whole iterate-and-observe loop
+    /// impossible on any Python repo — and silently scores it as a capability failure.
+    ///
+    /// Environment, not steering: it grants the interpreter the task already implies.
+    #[serde(default)]
+    pub path_prepend: Vec<String>,
+    /// Harden this workspace for a SCORED run: an edit whose inserted code would land inside a
+    /// string literal is REFUSED instead of warned (#317). Default `false` — a living citizen
+    /// writes code as text all the time (docstring examples, fixtures, quoted snippets) and the
+    /// warning on the success path already tells her it will not execute. Only a measurement,
+    /// whose deliverable IS an executing patch, has no such ambiguity.
+    #[serde(default)]
+    pub refuse_inert_edits: bool,
 }
 
 /// What `code/create-workspace` established.
@@ -1366,7 +1495,10 @@ impl ActionCommand for CodeCreateWorkspace {
         let who = caller_id(ctx);
         let root = std::path::Path::new(&p.workspace_root);
         let mut security = PathSecurity::new(root).map_err(|e| {
-            CommandError::Invalid(format!("invalid workspace root '{}': {e}", p.workspace_root))
+            CommandError::Invalid(format!(
+                "invalid workspace root '{}': {e}",
+                p.workspace_root
+            ))
         })?;
         for rr in &p.read_roots {
             security
@@ -1377,9 +1509,51 @@ impl ActionCommand for CodeCreateWorkspace {
         // provisioned for this caller (its doc reserves this override path). Keyed by
         // caller, so each peer's change-DAG stays isolated — exactly like the migrated
         // read/write/edit siblings, and never on a spoofable persona_id param.
-        self.state
-            .file_engines
-            .insert(who.clone(), FileEngine::new(&who, security));
+        let policy = if p.refuse_inert_edits {
+            crate::code::file_engine::WritePolicy::RefuseInert
+        } else {
+            crate::code::file_engine::WritePolicy::Warn
+        };
+        self.state.file_engines.insert(
+            who.clone(),
+            FileEngine::new(&who, security).with_write_policy(policy),
+        );
+        // DROP the caller's shell session so it is re-created at the NEW root.
+        // `ensure_shell` early-returns when a session exists, so without this a
+        // re-root moved her FILE engine and left her SHELL in the old directory —
+        // the two halves of her hands pointing at different workspaces.
+        self.state.shell_sessions.remove(&who);
+        if !p.path_prepend.is_empty() {
+            ensure_shell(&self.state, &who)?;
+            if let Some(mut shell) = self.state.shell_sessions.get_mut(&who) {
+                let prepend = p.path_prepend.join(":");
+                // Hand the per-task prefix to the shell as CONTINUUM_PATH_PREPEND, NOT as a
+                // reconstructed PATH. The shell runs as the user's LOGIN shell
+                // (shell_session.rs), which already carries the user's full toolchain and
+                // re-sets PATH from the profile — so an inherited PATH override is clobbered.
+                // The shell prepends this prefix AFTER the profile loads (like `activate`), so
+                // the era venv layers on top of the user's real environment. No hand-rolled PATH.
+                shell.set_env("CONTINUUM_PATH_PREPEND".to_string(), prepend.clone());
+                // HER TREE MUST WIN THE IMPORT (due-diligence find, 2026-08-08,
+                // gold-through-her-hands on sympy-24066): the era venv's package is
+                // `pip install -e` bound to the GRADER'S work repo, so `import sympy`
+                // from her python loaded the pristine grader tree and HER EDITS WERE
+                // INVISIBLE TO HER OWN TEST RUNS — anti-verification: a perfect fix
+                // still "failed" when she checked it. Positive-control proven both
+                // ways: with PYTHONPATH at her workspace the issue repro fails
+                // pre-fix and passes post-fix through her exact edit semantics.
+                // PYTHONPATH precedes the venv's .pth entries, so her tree wins.
+                shell.set_env("PYTHONPATH".to_string(), p.workspace_root.clone());
+                crate::probe!(
+                    class = "code.workspace.path_prepend",
+                    caller = who.as_str(),
+                    prepend = prepend.as_str(),
+                    pythonpath = p.workspace_root.as_str(),
+                    "granted the caller's shell an era PATH prefix + PYTHONPATH at her \
+                     workspace so her edits are what her interpreter imports"
+                );
+            }
+        }
         Ok(CreateWorkspaceResult {
             created: true,
             workspace_root: p.workspace_root,
@@ -1416,21 +1590,51 @@ crate::register_command!(CodeCreateWorkspace);
 /// prefix → `handle_command` arm, which is deleted for these commands.
 pub fn command_objects(state: Arc<CodeState>) -> Vec<Arc<dyn DynCommand>> {
     vec![
-        Arc::new(CodeRead { state: state.clone() }),
-        Arc::new(CodeWrite { state: state.clone() }),
-        Arc::new(CodeEdit { state: state.clone() }),
-        Arc::new(CodeList { state: state.clone() }),
-        Arc::new(CodeExists { state: state.clone() }),
-        Arc::new(CodeGlob { state: state.clone() }),
-        Arc::new(CodeTree { state: state.clone() }),
-        Arc::new(CodeSearch { state: state.clone() }),
-        Arc::new(CodeShell { state: state.clone() }),
-        Arc::new(CodeShellPoll { state: state.clone() }),
-        Arc::new(CodeShellKill { state: state.clone() }),
-        Arc::new(CodeDelete { state: state.clone() }),
-        Arc::new(CodeDiff { state: state.clone() }),
-        Arc::new(CodeUndo { state: state.clone() }),
-        Arc::new(CodeHistory { state: state.clone() }),
+        Arc::new(CodeRead {
+            state: state.clone(),
+        }),
+        Arc::new(CodeWrite {
+            state: state.clone(),
+        }),
+        Arc::new(CodeEdit {
+            state: state.clone(),
+        }),
+        Arc::new(CodeList {
+            state: state.clone(),
+        }),
+        Arc::new(CodeExists {
+            state: state.clone(),
+        }),
+        Arc::new(CodeGlob {
+            state: state.clone(),
+        }),
+        Arc::new(CodeTree {
+            state: state.clone(),
+        }),
+        Arc::new(CodeSearch {
+            state: state.clone(),
+        }),
+        Arc::new(CodeShell {
+            state: state.clone(),
+        }),
+        Arc::new(CodeShellPoll {
+            state: state.clone(),
+        }),
+        Arc::new(CodeShellKill {
+            state: state.clone(),
+        }),
+        Arc::new(CodeDelete {
+            state: state.clone(),
+        }),
+        Arc::new(CodeDiff {
+            state: state.clone(),
+        }),
+        Arc::new(CodeUndo {
+            state: state.clone(),
+        }),
+        Arc::new(CodeHistory {
+            state: state.clone(),
+        }),
         Arc::new(CodeCreateWorkspace { state }),
     ]
 }
@@ -1447,33 +1651,44 @@ mod tests {
     // MISSING required field fails loud NAMING it (never a silent no-op that scores false-zero).
     #[test]
     fn code_edit_normalizes_forgiving_shapes_and_fails_loud() {
-        let mk = |v: serde_json::Value| serde_json::from_value::<CodeEditParams>(v).expect("params");
+        let mk =
+            |v: serde_json::Value| serde_json::from_value::<CodeEditParams>(v).expect("params");
         // (1) strict tagged object — unchanged
         let m = normalize_edit_mode(&mk(serde_json::json!({
             "file_path": "a.py", "edit_mode": {"type":"append","content":"X"}
-        }))).unwrap();
+        })))
+        .unwrap();
         assert!(matches!(m, EditMode::Append { content } if content == "X"));
         // (2) bare mode string + top-level content
         let m = normalize_edit_mode(&mk(serde_json::json!({
             "file_path": "a.py", "edit_mode": "append", "content": "Y"
-        }))).unwrap();
+        })))
+        .unwrap();
         assert!(matches!(m, EditMode::Append { content } if content == "Y"));
         // (3) bare "search_replace" + top-level fields
         let m = normalize_edit_mode(&mk(serde_json::json!({
             "file_path": "a.py", "edit_mode": "search_replace", "search": "old", "replace": "new"
-        }))).unwrap();
-        assert!(matches!(m, EditMode::SearchReplace { search, replace, .. } if search=="old" && replace=="new"));
+        })))
+        .unwrap();
+        assert!(
+            matches!(m, EditMode::SearchReplace { search, replace, .. } if search=="old" && replace=="new")
+        );
         // (4) inferred from present fields (no edit_mode at all)
         let m = normalize_edit_mode(&mk(serde_json::json!({
             "file_path": "a.py", "search": "o", "replace": "n"
-        }))).unwrap();
+        })))
+        .unwrap();
         assert!(matches!(m, EditMode::SearchReplace { .. }));
         // (5) bare "append" with NO content → loud error naming the missing field (the exact
         //     glass-boxed failure: edit_mode:"append", no content).
         let err = normalize_edit_mode(&mk(serde_json::json!({
             "file_path": "a.py", "edit_mode": "append"
-        }))).unwrap_err();
-        assert!(format!("{err}").contains("content"), "names the missing field: {err}");
+        })))
+        .unwrap_err();
+        assert!(
+            format!("{err}").contains("content"),
+            "names the missing field: {err}"
+        );
     }
 
     // what this catches: THE live edit-stall (2026-07-14). Devstral personas
@@ -1485,15 +1700,21 @@ mod tests {
     // nested numbers must resolve and the missing start_line must default to 1.
     #[test]
     fn code_edit_forgives_nested_lines_and_the_reflexive_whole_file_shape() {
-        let mk = |v: serde_json::Value| serde_json::from_value::<CodeEditParams>(v).expect("params");
+        let mk =
+            |v: serde_json::Value| serde_json::from_value::<CodeEditParams>(v).expect("params");
 
         // (a) nested end_line + new_content, no start_line → LineRange{1, 65535, …}
         let m = normalize_edit_mode(&mk(serde_json::json!({
             "file_path": "src/main.rs",
             "edit_mode": {"end_line": 65535, "new_content": "fn main() {}"}
-        }))).unwrap();
+        })))
+        .unwrap();
         match m {
-            EditMode::LineRange { start_line, end_line, new_content } => {
+            EditMode::LineRange {
+                start_line,
+                end_line,
+                new_content,
+            } => {
                 assert_eq!(start_line, 1);
                 assert_eq!(end_line, 65535);
                 assert_eq!(new_content, "fn main() {}");
@@ -1504,9 +1725,14 @@ mod tests {
         // (b) ONLY new_content (no lines at all) → whole-file replace: start 1, end MAX
         let m = normalize_edit_mode(&mk(serde_json::json!({
             "file_path": "src/main.rs", "new_content": "whole new file"
-        }))).unwrap();
+        })))
+        .unwrap();
         match m {
-            EditMode::LineRange { start_line, end_line, .. } => {
+            EditMode::LineRange {
+                start_line,
+                end_line,
+                ..
+            } => {
                 assert_eq!(start_line, 1);
                 assert_eq!(end_line, u32::MAX);
             }
@@ -1516,14 +1742,19 @@ mod tests {
         // (c) nested line for insert_at resolves from inside edit_mode too
         let m = normalize_edit_mode(&mk(serde_json::json!({
             "file_path": "a.py", "edit_mode": {"line": 3, "content": "x"}
-        }))).unwrap();
+        })))
+        .unwrap();
         assert!(matches!(m, EditMode::InsertAt { line, .. } if line == 3));
 
         // (d) still loud when there's genuinely nothing to write
         let err = normalize_edit_mode(&mk(serde_json::json!({
             "file_path": "a.py", "edit_mode": {"end_line": 10}
-        }))).unwrap_err();
-        assert!(format!("{err}").contains("new_content"), "names missing field: {err}");
+        })))
+        .unwrap_err();
+        assert!(
+            format!("{err}").contains("new_content"),
+            "names missing field: {err}"
+        );
     }
 
     // what this catches: the code/list glob-recovery (#160). A model that reflexively
@@ -1551,9 +1782,15 @@ mod tests {
         let listing = list_result_from_glob("**/*.rs", glob);
         assert!(listing.success);
         assert_eq!(listing.total_count, 2);
-        assert_eq!(listing.directory_path, "glob:**/*.rs", "records the glob provenance");
+        assert_eq!(
+            listing.directory_path, "glob:**/*.rs",
+            "records the glob provenance"
+        );
         assert_eq!(listing.entries[0].name, "main.rs", "name is the basename");
-        assert_eq!(listing.entries[0].path, "core/main.rs", "path stays workspace-relative");
+        assert_eq!(
+            listing.entries[0].path, "core/main.rs",
+            "path stays workspace-relative"
+        );
         assert!(matches!(listing.entries[0].kind, FsEntryKind::File));
     }
 
@@ -1562,11 +1799,28 @@ mod tests {
     // path passes untouched (no false positives on ordinary filenames).
     #[test]
     fn code_edit_rejects_placeholder_paths_but_passes_real_ones() {
-        for ph in ["<path_to_blueprints.py>", "path_to_file.py", "/path/to/x.py", "<file>", "your_file.rs"] {
-            assert!(reject_placeholder_path(ph).is_err(), "should reject placeholder: {ph}");
+        for ph in [
+            "<path_to_blueprints.py>",
+            "path_to_file.py",
+            "/path/to/x.py",
+            "<file>",
+            "your_file.rs",
+        ] {
+            assert!(
+                reject_placeholder_path(ph).is_err(),
+                "should reject placeholder: {ph}"
+            );
         }
-        for real in ["src/flask/blueprints.py", "core/continuum-core/src/lib.rs", "a.py", "example.py"] {
-            assert!(reject_placeholder_path(real).is_ok(), "should accept real path: {real}");
+        for real in [
+            "src/flask/blueprints.py",
+            "core/continuum-core/src/lib.rs",
+            "a.py",
+            "example.py",
+        ] {
+            assert!(
+                reject_placeholder_path(real).is_ok(),
+                "should accept real path: {real}"
+            );
         }
     }
 
@@ -1577,11 +1831,30 @@ mod tests {
     // flask SWE 0-edit search-loop.
     #[test]
     fn glob_shaped_search_patterns_detected_content_regexes_spared() {
-        for g in ["**/*.py", "*.rs", "src/**/*.js", "**/blueprints.py", "*.{rs,py}"] {
-            assert!(looks_like_file_glob(g), "should be treated as a file glob: {g}");
+        for g in [
+            "**/*.py",
+            "*.rs",
+            "src/**/*.js",
+            "**/blueprints.py",
+            "*.{rs,py}",
+        ] {
+            assert!(
+                looks_like_file_glob(g),
+                "should be treated as a file glob: {g}"
+            );
         }
-        for r in ["Blueprint", "foo.*bar", "fn .*Params", "self.name = name", "TODO", "raise ValueError"] {
-            assert!(!looks_like_file_glob(r), "must NOT be treated as a glob (real content pattern): {r}");
+        for r in [
+            "Blueprint",
+            "foo.*bar",
+            "fn .*Params",
+            "self.name = name",
+            "TODO",
+            "raise ValueError",
+        ] {
+            assert!(
+                !looks_like_file_glob(r),
+                "must NOT be treated as a glob (real content pattern): {r}"
+            );
         }
     }
 
@@ -1603,7 +1876,10 @@ mod tests {
 
         let security = PathSecurity::new(&dir).expect("temp subdir is a valid root");
         let file_engines = Arc::new(DashMap::new());
-        file_engines.insert("local-owner".to_string(), FileEngine::new("local-owner", security));
+        file_engines.insert(
+            "local-owner".to_string(),
+            FileEngine::new("local-owner", security),
+        );
         let state = Arc::new(CodeState::new(
             file_engines,
             Arc::new(DashMap::new()),
@@ -1680,11 +1956,18 @@ mod tests {
 
         let err = teach_layout_on_miss(&engine, "src/persona.rs", "no such file or directory");
         let msg = err.to_string();
-        assert!(msg.contains("apps") && msg.contains("core") && msg.contains("docs"),
-            "enumerates the real top-level dirs so the persona self-corrects: {msg}");
-        assert!(msg.contains("src/persona.rs"), "names what was actually missed: {msg}");
-        assert!(msg.contains("don't assume source lives under `src/`"),
-            "carries the same anti-assumption teaching as the workspace-map: {msg}");
+        assert!(
+            msg.contains("apps") && msg.contains("core") && msg.contains("docs"),
+            "enumerates the real top-level dirs so the persona self-corrects: {msg}"
+        );
+        assert!(
+            msg.contains("src/persona.rs"),
+            "names what was actually missed: {msg}"
+        );
+        assert!(
+            msg.contains("don't assume source lives under `src/`"),
+            "carries the same anti-assumption teaching as the workspace-map: {msg}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1701,7 +1984,10 @@ mod tests {
         std::fs::write(dir.join("core/main.rs"), "fn main() {}").unwrap();
         let security = PathSecurity::new(&dir).expect("temp subdir is a valid root");
         let file_engines = Arc::new(DashMap::new());
-        file_engines.insert("local-owner".to_string(), FileEngine::new("local-owner", security));
+        file_engines.insert(
+            "local-owner".to_string(),
+            FileEngine::new("local-owner", security),
+        );
         let state = Arc::new(CodeState::new(
             file_engines,
             Arc::new(DashMap::new()),
@@ -1711,18 +1997,39 @@ mod tests {
 
         // A glob that matches no files → empty entries + a teaching note.
         let out = cmd
-            .run(&Ctx::default(), CodeListParams { path: Some("**/*.nonexistent".to_string()), include_hidden: None })
+            .run(
+                &Ctx::default(),
+                CodeListParams {
+                    path: Some("**/*.nonexistent".to_string()),
+                    include_hidden: None,
+                },
+            )
             .await
             .expect("a zero-match glob is not an error");
         assert!(out.entries.is_empty(), "no files match the glob");
         let note = out.error.expect("zero-match glob carries a teaching note");
-        assert!(note.contains("NOT an empty workspace"), "corrects the confabulation: {note}");
-        assert!(note.contains("apps") && note.contains("core"), "names the real dirs: {note}");
-        assert!(note.contains("code/tree"), "points at the recursive view: {note}");
+        assert!(
+            note.contains("NOT an empty workspace"),
+            "corrects the confabulation: {note}"
+        );
+        assert!(
+            note.contains("apps") && note.contains("core"),
+            "names the real dirs: {note}"
+        );
+        assert!(
+            note.contains("code/tree"),
+            "points at the recursive view: {note}"
+        );
 
         // A glob that DOES match keeps working (no false note).
         let hit = cmd
-            .run(&Ctx::default(), CodeListParams { path: Some("**/*.rs".to_string()), include_hidden: None })
+            .run(
+                &Ctx::default(),
+                CodeListParams {
+                    path: Some("**/*.rs".to_string()),
+                    include_hidden: None,
+                },
+            )
             .await
             .expect("glob runs");
         assert!(!hit.entries.is_empty(), "the .rs glob finds main.rs");
@@ -1765,7 +2072,10 @@ mod tests {
             CodeUndo::ACCESS,
             CodeHistory::ACCESS,
         ] {
-            assert!(matches!(access, AccessLevel::AiSafe), "file-op hands are AiSafe");
+            assert!(
+                matches!(access, AccessLevel::AiSafe),
+                "file-op hands are AiSafe"
+            );
         }
     }
 
@@ -1793,7 +2103,10 @@ mod tests {
         assert!(out.nodes.is_empty(), "no changes recorded yet");
         let json = serde_json::to_value(&out).unwrap();
         assert!(json["nodes"].is_array(), "nodes is the wire array");
-        assert!(json["total_count"].is_number(), "total_count present on the wire");
+        assert!(
+            json["total_count"].is_number(),
+            "total_count present on the wire"
+        );
     }
 
     // what this catches: the four hands are contributed to the module object map via
@@ -1806,7 +2119,10 @@ mod tests {
             .map(|c| c.name())
             .collect();
         for n in ["code/delete", "code/diff", "code/undo", "code/history"] {
-            assert!(names.contains(&n), "command_objects missing {n}; got {names:?}");
+            assert!(
+                names.contains(&n),
+                "command_objects missing {n}; got {names:?}"
+            );
         }
     }
 
@@ -1822,15 +2138,20 @@ mod tests {
     fn identified_peer_roots_at_citizen_layer_never_shared_cwd() {
         // Scoped homes so the test never touches the real ~/.continuum. A tiny
         // base dir keeps the CoW clone instant.
+        //
+        // The base is passed EXPLICITLY via `ensure_citizen_layer_from_base` — this
+        // test used to `set_current_dir(base)` to steer the clone source, but process
+        // cwd is global: while it was pointed at this temp dir, every parallel ts-rs
+        // `export_bindings_*` test resolved its relative `export_to` against it and
+        // panicked trying to write outside the tree. Injecting the base keeps the
+        // clone exercised end-to-end with zero global-cwd mutation. #191.
         let base = tempfile::tempdir().expect("base");
         std::fs::write(base.path().join("Cargo.toml"), "[workspace]\n").unwrap();
         let home = tempfile::tempdir().expect("home");
-        let old_cwd = std::env::current_dir().unwrap();
-        std::env::set_current_dir(base.path()).unwrap();
         std::env::set_var("CONTINUUM_HOME", home.path());
 
         let peer = "test-peer-1234";
-        let layer = ensure_citizen_layer(peer).expect("layer provisions");
+        let layer = ensure_citizen_layer_from_base(peer, base.path()).expect("layer provisions");
         assert!(
             layer.starts_with(home.path()),
             "layer lives under CONTINUUM_HOME: {layer:?}"
@@ -1852,7 +2173,7 @@ mod tests {
             "the shared base is untouched by layer writes"
         );
         // Idempotent: second call reuses the existing layer (her diff survives).
-        let again = ensure_citizen_layer(peer).expect("layer reused");
+        let again = ensure_citizen_layer_from_base(peer, base.path()).expect("layer reused");
         assert_eq!(again, layer);
         assert_eq!(
             std::fs::read_to_string(again.join("Cargo.toml")).unwrap(),
@@ -1861,6 +2182,5 @@ mod tests {
         );
 
         std::env::remove_var("CONTINUUM_HOME");
-        std::env::set_current_dir(old_cwd).unwrap();
     }
 }

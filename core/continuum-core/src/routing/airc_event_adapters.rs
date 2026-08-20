@@ -142,8 +142,16 @@ impl EventSubscribeAdapter {
     /// Replace the auth policy. Operators wire their substrate
     /// gate here at boot. Returns `Arc<Self>` for chaining with
     /// the airc adapter registry.
-    pub fn with_policy(airc: Arc<Airc>, state: Arc<EventPublisherState>, policy: Arc<dyn AuthPolicy>) -> Arc<Self> {
-        Arc::new(Self { airc, state, policy })
+    pub fn with_policy(
+        airc: Arc<Airc>,
+        state: Arc<EventPublisherState>,
+        policy: Arc<dyn AuthPolicy>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            airc,
+            state,
+            policy,
+        })
     }
 
     /// Process a parsed subscribe envelope: GATE the caller via
@@ -395,8 +403,8 @@ mod tests {
     use crate::routing::{
         AircEventPublish, AircEventPublishAck, AircEventSubscribe, AircEventSubscribeAck,
         AircEventUnsubscribe, AircEventUnsubscribeAck, ClosurePolicy, ForbiddenReason,
-        HEADER_CONTINUUM_BODY_HINT, HEADER_EVENT_KIND, HEADER_EVENT_SUBSCRIPTION_ID,
-        HEADER_EVENT_TOPIC, EVENT_ACK_BODY_HINT,
+        EVENT_ACK_BODY_HINT, HEADER_CONTINUUM_BODY_HINT, HEADER_EVENT_KIND,
+        HEADER_EVENT_SUBSCRIPTION_ID, HEADER_EVENT_TOPIC,
     };
     use airc_core::PeerId;
     use std::sync::{Arc as StdArc, Mutex};
@@ -433,7 +441,10 @@ mod tests {
         assert_eq!(state.len(), 1);
 
         // Headers must be the ack shape.
-        assert_eq!(headers.get(HEADER_EVENT_KIND).map(String::as_str), Some("ack"));
+        assert_eq!(
+            headers.get(HEADER_EVENT_KIND).map(String::as_str),
+            Some("ack")
+        );
         assert_eq!(
             headers.get(HEADER_CONTINUUM_BODY_HINT).map(String::as_str),
             Some(EVENT_ACK_BODY_HINT)
@@ -508,12 +519,10 @@ mod tests {
 
         // lookup_matching with the info payload should match;
         // with the warn payload should not.
-        let matched_info =
-            state.lookup_matching("events", &serde_json::json!({"level": "info"}));
+        let matched_info = state.lookup_matching("events", &serde_json::json!({"level": "info"}));
         assert_eq!(matched_info.len(), 1, "filter accepts info payload");
 
-        let matched_warn =
-            state.lookup_matching("events", &serde_json::json!({"level": "warn"}));
+        let matched_warn = state.lookup_matching("events", &serde_json::json!({"level": "warn"}));
         assert_eq!(matched_warn.len(), 0, "filter rejects warn payload");
     }
 
@@ -561,7 +570,10 @@ mod tests {
         let (headers, body) =
             EventUnsubscribeAdapter::process_unsubscribe(&state, &unsubscribe).expect("unsub");
 
-        assert_eq!(headers.get(HEADER_EVENT_KIND).map(String::as_str), Some("ack"));
+        assert_eq!(
+            headers.get(HEADER_EVENT_KIND).map(String::as_str),
+            Some("ack")
+        );
         let ack: AircEventUnsubscribeAck = serde_json::from_value(match body {
             Body::Json(v) => v,
             other => panic!("expected Json, got {other:?}"),
@@ -745,9 +757,7 @@ mod tests {
     fn process_subscribe_refuses_when_policy_forbids() {
         let policy = ClosurePolicy::new("forbid-everything", |_decision, _caller| {
             Verdict::Forbidden {
-                reason: ForbiddenReason::NoPermissionForUri(
-                    "events/internal/subscribe".into(),
-                ),
+                reason: ForbiddenReason::NoPermissionForUri("events/internal/subscribe".into()),
             }
         });
 
@@ -811,9 +821,13 @@ mod tests {
             },
         };
 
-        let _ = EventSubscribeAdapter::process_subscribe(&state, &policy, &parsed)
-            .expect("subscribe");
-        let path = observed.lock().unwrap().clone().expect("policy saw a Local decision");
+        let _ =
+            EventSubscribeAdapter::process_subscribe(&state, &policy, &parsed).expect("subscribe");
+        let path = observed
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("policy saw a Local decision");
         assert_eq!(
             path, "events/cognition/score/persona-scored/subscribe",
             "URI shape must be events/<topic>/subscribe so policies can match \
@@ -956,7 +970,11 @@ mod tests {
         };
 
         EventPublishAdapter::gate_publish(&policy, &parsed).expect("allowed");
-        let path = observed.lock().unwrap().clone().expect("policy saw a Local decision");
+        let path = observed
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("policy saw a Local decision");
         assert_eq!(
             path, "events/cognition/score/persona-scored/publish",
             "URI shape must be events/<topic>/publish — the WRITE twin of \
@@ -972,7 +990,10 @@ mod tests {
     fn build_publish_ack_carries_topic_and_delivered_count() {
         let (headers, body) = build_publish_ack("metrics/cpu", 3).expect("ack");
 
-        assert_eq!(headers.get(HEADER_EVENT_KIND).map(String::as_str), Some("ack"));
+        assert_eq!(
+            headers.get(HEADER_EVENT_KIND).map(String::as_str),
+            Some("ack")
+        );
         assert_eq!(
             headers.get(HEADER_EVENT_TOPIC).map(String::as_str),
             Some("metrics/cpu")

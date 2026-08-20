@@ -208,10 +208,10 @@ impl EpochWatermarkStore for SqliteEpochWatermark {
             if current.is_some() && epoch < current_epoch {
                 return Ok(WatermarkDecision::Superseded);
             }
-            let epoch_i64 = i64::try_from(epoch)
-                .map_err(|_| format!("epoch {epoch} exceeds i64 range"))?;
-            let now_i64 = i64::try_from(now_ms)
-                .map_err(|_| format!("now_ms {now_ms} exceeds i64 range"))?;
+            let epoch_i64 =
+                i64::try_from(epoch).map_err(|_| format!("epoch {epoch} exceeds i64 range"))?;
+            let now_i64 =
+                i64::try_from(now_ms).map_err(|_| format!("now_ms {now_ms} exceeds i64 range"))?;
             tx.execute(
                 "INSERT INTO grant_epoch_watermark (grantee, epoch, updated_at_ms) \
                  VALUES (?1, ?2, ?3) \

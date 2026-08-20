@@ -357,6 +357,8 @@ mod tests {
             last_accessed_at: None,
             layer: None,
             relevance_score: None,
+            origin_node: None,
+            origin_seq: None,
         }
     }
 

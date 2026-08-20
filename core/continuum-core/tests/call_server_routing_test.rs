@@ -20,17 +20,20 @@ async fn test_call_manager_tracks_model_capabilities() {
     // Human joins
     let human_join = manager
         .join_call(call_id, "user-1", "test-user", false)
-        .await;
+        .await
+        .expect("join_call must succeed");
 
     // GPT-4o joins (audio-native)
     let gpt_join = manager
         .join_call_with_model(call_id, "ai-gpt", "GPT-4o", "gpt-4o-realtime")
-        .await;
+        .await
+        .expect("join_call must succeed");
 
     // Claude joins (text-only)
     let claude_join = manager
         .join_call_with_model(call_id, "ai-claude", "Claude", "claude-3-sonnet")
-        .await;
+        .await
+        .expect("join_call must succeed");
 
     // Verify participants are tracked
     // (This test documents the expected API - implementation follows)
@@ -50,17 +53,20 @@ async fn test_audio_routes_to_capable_participants() {
     // Human joins
     let human_join = manager
         .join_call(call_id, "user-1", "test-user", false)
-        .await;
+        .await
+        .expect("join_call must succeed");
 
     // GPT-4o joins (should receive audio)
     let gpt_join = manager
         .join_call_with_model(call_id, "ai-gpt", "GPT-4o", "gpt-4o-realtime")
-        .await;
+        .await
+        .expect("join_call must succeed");
 
     // Claude joins (should NOT receive raw audio, only transcription)
     let claude_join = manager
         .join_call_with_model(call_id, "ai-claude", "Claude", "claude-3-sonnet")
-        .await;
+        .await
+        .expect("join_call must succeed");
 
     // Human speaks - push some audio
     let test_audio = vec![100i16; 512]; // One frame
@@ -88,12 +94,14 @@ async fn test_tts_routes_to_audio_native_models() {
     // GPT-4o joins (should hear Claude's TTS)
     let gpt_join = manager
         .join_call_with_model(call_id, "ai-gpt", "GPT-4o", "gpt-4o-realtime")
-        .await;
+        .await
+        .expect("join_call must succeed");
 
     // Claude joins
     let claude_join = manager
         .join_call_with_model(call_id, "ai-claude", "Claude", "claude-3-sonnet")
-        .await;
+        .await
+        .expect("join_call must succeed");
 
     // Claude speaks via TTS - inject TTS audio
     let tts_audio = vec![50i16; 16000]; // 1 second

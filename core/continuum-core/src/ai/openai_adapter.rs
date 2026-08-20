@@ -252,6 +252,98 @@ fn served_ctx_by_root() -> &'static dashmap::DashMap<String, u32> {
     CTX.get_or_init(dashmap::DashMap::new)
 }
 
+/// Why a generation was refused when the requested model is not guaranteed resident, said
+/// in the words the caller needs to act on. THREE distinct situations reach this point and
+/// only one of them is a fault:
+///
+/// | snapshot | meaning | caller should |
+/// |---|---|---|
+/// | never reconciled | core is still starting; nobody has looked yet | retry |
+/// | reconciled, `active_model == None` | a lane is being torn down / rebuilt | retry |
+/// | `active_model == Some(other)` | a DIFFERENT model is resident | NOT retry |
+///
+/// Both retry-able cases used to print the fault sentence. The cost is measured twice:
+/// 116 false alarms over three days from the startup case (#350), and then — after that
+/// split shipped — three citizens taking the same fault sentence 59 seconds into a #175
+/// wedge self-heal that completed normally. `ServingSnapshot::empty()` is published by the
+/// daemon on EVERY teardown (no servable plan, a re-home, a wedge relaunch), so `<none>` is
+/// the ordinary appearance of a lane in transition, not evidence of breakage.
+///
+/// Pure by construction: takes the snapshot and the latch as arguments rather than reading
+/// the process-global `SERVING_STATE`/`FIRST_RECONCILE`, so all three branches are testable
+/// without a set-once global that would make test order load-bearing
+/// ([[a-process-global-read-inside-a-decision-makes-tests-order-dependent]]).
+/// Does `snap` GUARANTEE that the local single-resident gateway will answer as `model`?
+///
+/// The gateway serves ONE resident model and answers every request as that model whatever
+/// the request's `model` field says, so "guaranteed" means the daemon has PUBLISHED that
+/// this exact model is the live one — on the main lane, or on the verified #106 vision
+/// sidecar (whose `/props` the daemon checked before publishing `vision_ready`).
+///
+/// One predicate, two readers: the pre-flight guard below and the post-wait re-check. Written
+/// out once so the two can never drift into disagreeing about what "serving our model" means.
+fn snapshot_guarantees(
+    snap: &crate::inference::llama_server::ServingSnapshot,
+    model: &str,
+) -> bool {
+    snap.ready
+        && (snap.active_model.as_deref() == Some(model)
+            || (snap.vision_ready && snap.vision_model.as_deref() == Some(model)))
+}
+
+/// Is refusing POINTLESS to wait out — i.e. has the daemon SETTLED on a different model?
+///
+/// A failed guarantee is one of two very different situations, and only one of them is
+/// terminal:
+///
+/// - **Settled mismatch** — some other model is ready and active. The daemon has made its
+///   choice; waiting cannot change it, and residency arbitration is the serving layer's job
+///   (#109), never a generate's. Refuse immediately and loudly.
+/// - **Transition** — no model is resident (`empty()`, published on EVERY teardown: no
+///   servable plan, a re-home, a #175 wedge relaunch), or a lane is up but not yet decode-
+///   ready. Nothing has failed; the lane is simply mid-flight and comes back on its own.
+///
+/// Measured 2026-08-07: a wedge self-heal flipped the snapshot not-ready at +374s and the
+/// daemon republished ready at +436s — a 62-second window. Three citizens' turns landed
+/// inside it and were refused outright, 9 seconds before the lane came back. The self-tick
+/// readiness gate (#350) cannot cover this: it reads the snapshot BEFORE a deliberation that
+/// takes tens of seconds, so a teardown starting mid-deliberation always outruns it. The gate
+/// stops a turn that was doomed at its start; this stops one that was overtaken in flight.
+fn settled_on_another_model(snap: &crate::inference::llama_server::ServingSnapshot) -> bool {
+    snap.is_live()
+}
+
+fn unguaranteed_model_refusal(
+    provider: &str,
+    model: &str,
+    snap: &crate::inference::llama_server::ServingSnapshot,
+    served_before: bool,
+) -> String {
+    if !served_before {
+        return format!(
+            "{provider}: serving daemon has not completed its first reconcile yet (core is \
+             still starting) — model '{model}' cannot be guaranteed until it does. This is \
+             STARTUP, not a serving fault: it clears on its own, typically within seconds, \
+             and the caller should retry rather than treat the lane as broken."
+        );
+    }
+    let Some(active) = snap.active_model.as_deref() else {
+        return format!(
+            "{provider}: no model is resident right now (the serving daemon is between \
+             lanes — a re-home or a self-healing relaunch), so model '{model}' cannot be \
+             guaranteed. This is a serving TRANSITION, not a fault: it clears when the next \
+             reconcile publishes a ready lane, and the caller should retry rather than \
+             treat the lane as broken."
+        );
+    };
+    format!(
+        "{provider}: model '{model}' is not the active served model (serving: {active}, \
+         ready: {}); the serving daemon owns which single model is resident — refusing to \
+         generate against an unguaranteed model",
+        snap.ready
+    )
+}
+
 /// #175 overflow backstop: does this request body's PROMPT ALONE meet/exceed the served
 /// per-slot window? Returns `Some(estimated_prompt_tokens)` when it does — the
 /// unambiguous overflow that (with context-shift off) 500s AND poisons the slot for
@@ -455,6 +547,53 @@ impl OpenAICompatibleAdapter {
         OpenAiBase::new(raw)
     }
 
+    /// Does this adapter's effective base URL target the LOCAL llama-server lane
+    /// published in the serving snapshot? Data-driven attribution for the
+    /// real-decode success/failure counters (#363): only requests that actually
+    /// ride the local lane may stamp its record — a cloud provider's outage must
+    /// never smear it, and a local success must never launder a cloud failure.
+    /// URL equality against the ONE published snapshot, never a name sniff (#70).
+    fn targets_local_serving_lane(&self) -> bool {
+        let snap = crate::inference::llama_server::current_serving();
+        if snap.base_url.is_empty() {
+            return false;
+        }
+        fn norm(s: &str) -> &str {
+            s.trim_end_matches('/')
+                .trim_end_matches("/v1")
+                .trim_end_matches('/')
+        }
+        let raw = self
+            .runtime_base_url
+            .as_deref()
+            .unwrap_or(self.config.base_url.as_str());
+        norm(raw) == norm(&snap.base_url)
+    }
+
+    /// The endpoint base for a SPECIFIC requested model. Same as [`Self::endpoints`]
+    /// except for the local serving gateway when the requested model is the
+    /// serving snapshot's VISION model but not its main-lane model: that is the
+    /// #106 vision SIDECAR (a VL lane beside a text-only mind), and the request
+    /// routes to the snapshot's verified `vision_base_url`. Driven entirely by
+    /// the ONE published snapshot (id-equality against the gateway's canonical
+    /// [`PROVIDER_ID`](crate::inference::llama_server::PROVIDER_ID) const — no
+    /// name sniffing), and the address exists only when `/props` confirmed
+    /// sight, so pixels can never be aimed at a text lane.
+    fn endpoints_for_model(&self, model: &str) -> OpenAiBase {
+        if self.config.provider_id == crate::inference::llama_server::PROVIDER_ID {
+            let snap = crate::inference::llama_server::current_serving();
+            if snap.vision_ready
+                && snap.vision_model.as_deref() == Some(model)
+                && snap.active_model.as_deref() != Some(model)
+            {
+                if let Some(url) = snap.vision_base_url.as_deref() {
+                    return OpenAiBase::new(url);
+                }
+            }
+        }
+        self.endpoints()
+    }
+
     /// Fetch the live model list from the provider's /v1/models endpoint.
     /// Used by adapters that have dynamic catalogs (DMR above all — the list
     /// changes every time the user runs `docker model pull`). Populates
@@ -553,6 +692,26 @@ impl OpenAICompatibleAdapter {
     /// handle the common "persona says short name, DMR stores full
     /// hf.co/…-GGUF ID" pattern. No fuzzy magic beyond that — if neither
     /// contains the other, the adapter honestly does not have the model.
+    /// Ensure `id` is present in the runtime catalog. The llama-server gateway
+    /// calls this with the ServingSnapshot's `active_model` after initialize —
+    /// the SNAPSHOT is the authority on what the lane serves; the `/v1/models`
+    /// catalog is DERIVED, and it can lie about identity: on Windows a mangled
+    /// spawn `--alias` put the GGUF file PATH in `data[].id`, so the served
+    /// model matched nothing and `select()` refused a healthy lane (5090 repro
+    /// 2026-07-24). Not a fallback: this records a fact the daemon's reconcile
+    /// already verified against the live process.
+    pub fn ensure_runtime_model(&self, id: &str) {
+        let mut guard = self.runtime_models.write().unwrap();
+        match guard.as_mut() {
+            Some(set) => {
+                set.insert(id.to_string());
+            }
+            None => {
+                *guard = Some(std::collections::HashSet::from([id.to_string()]));
+            }
+        }
+    }
+
     fn runtime_models_contain(&self, model_name: &str) -> bool {
         let guard = self.runtime_models.read().unwrap();
         match guard.as_ref() {
@@ -620,7 +779,10 @@ impl OpenAICompatibleAdapter {
         {
             served_ctx_by_root().insert(root.clone(), n_ctx as u32);
         }
-        let n_slots = body.get("total_slots").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let n_slots = body
+            .get("total_slots")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
         if n_slots <= 1 {
             slot_tables().insert(root, SlotAffinity::Unsupported);
             return None;
@@ -944,8 +1106,25 @@ impl OpenAICompatibleAdapter {
         })
     }
 
-    /// Convert ChatMessage to OpenAI format
-    fn format_messages(&self, messages: &[ChatMessage], system_prompt: Option<&str>) -> Vec<Value> {
+    /// Convert ChatMessage to OpenAI format.
+    ///
+    /// `vision_native` is the TARGET MODEL's verdict (the row's
+    /// `Capability::Vision` via `sensory::route`, resolved by the caller): when
+    /// true, `ContentPart::Image` becomes a proper OpenAI multimodal
+    /// `image_url` content part (base64 data-URI or URL) so a vision model —
+    /// cloud or the multimodal llama-server lane — receives RAW PIXELS
+    /// natively. When false, image parts are DROPPED here (with a loud log):
+    /// a non-vision model reads the VisionDescriptionService bridge text that
+    /// the sensory layer already put in the message, and POSTing `image_url`
+    /// parts at a text-only endpoint is at best an API error and at worst a
+    /// silent drop the persona would mistake for having seen
+    /// ([[fallbacks-are-illegal-fail-loud]], CLAUDE.md "Sensory Architecture").
+    fn format_messages(
+        &self,
+        messages: &[ChatMessage],
+        system_prompt: Option<&str>,
+        vision_native: bool,
+    ) -> Vec<Value> {
         // Pre-size: one wire message per input message + the optional system
         // prompt. The common text path lands exactly; tool-result turns push a
         // few extra and realloc once. Runs on every inference call — no
@@ -1034,7 +1213,21 @@ impl OpenAICompatibleAdapter {
                                     "text": text
                                 })),
                                 ContentPart::Image { image } => {
-                                    if let Some(url) = &image.url {
+                                    if !vision_native {
+                                        // Target model can't see: the sensory bridge's
+                                        // text description (already a Text part /
+                                        // upstream) is what it reads. Never ship
+                                        // image_url at a text-only endpoint.
+                                        tracing::warn!(
+                                            target: "openai_adapter",
+                                            provider = %self.config.provider_id,
+                                            "dropping image content part for a non-vision \
+                                             model — the description bridge is its sight; \
+                                             if this model CAN see, its catalog row must \
+                                             declare Capability::Vision"
+                                        );
+                                        None
+                                    } else if let Some(url) = &image.url {
                                         Some(json!({
                                             "type": "image_url",
                                             "image_url": { "url": url }
@@ -1254,6 +1447,86 @@ struct OpenAITimings {
 /// total-request timeout that killed legitimately-long generations.
 const STREAM_IDLE_TIMEOUT_SECS: u64 = 90;
 
+/// Bound on the wait for response HEADERS after POSTing a generation — the
+/// pre-stream twin of [`STREAM_IDLE_TIMEOUT_SECS`]. Covers the hung-prefill /
+/// poisoned-backend case where the server accepts and never answers; sized for
+/// a worst-case full-window prefill queued behind co-tenants (minutes), because
+/// its job is releasing ETERNAL holds, not policing slow ones.
+const PRE_STREAM_HEADER_TIMEOUT_SECS: u64 = 300;
+
+/// A local single-resident lane can be RELAUNCHED out from under an in-flight POST —
+/// grow-back (#214), a genome page-in, or memory pressure all bounce the llama-server
+/// process, and the published serving snapshot can lag at `ready=true` for the ~seconds
+/// the socket is actually refused (the pre-flight guard trusts the `watch` snapshot; the
+/// socket is the ground truth, and a watch channel is inherently slightly behind the
+/// process). A `connect` error is therefore "the lane is mid-relaunch", not "the lane is
+/// gone": the connection never opened, so nothing was streamed to the sink, and
+/// re-sending the SAME lane/model is idempotent — resilience, NOT a fallback
+/// ([[fallbacks-are-illegal-fail-loud]]). Retry the connect with linear backoff
+/// (1s, 2s, … ≈ 21s total) to ride out a relaunch, then fail loud if it never returns.
+/// Scoped to the local resident lane — remote endpoints don't relaunch under us.
+/// Glass-boxed 2026-07-20: one legitimate grow-back relaunch zeroed hard-rs 0/8, every
+/// task `Connection refused (os error 61)` to :58057 mid-eval.
+const LANE_RELAUNCH_CONNECT_RETRIES: u32 = 6;
+const LANE_RELAUNCH_RETRY_BASE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Warn LOUD when a call's measured decode rate collapses far below the catalog
+/// row's expectation (#441, Joel 2026-08-15: "we need very good tok/sec or it's a
+/// failure. We need warnings when shit hits the fan").
+///
+/// The comparison is decode-only (`predicted_per_second` — undiluted by prefill,
+/// so a long prompt can't false-positive this) against the row's
+/// `tokens_per_second`. Both thresholds are deliberately coarse: this is a
+/// shit-hit-the-fan alarm for order-of-magnitude collapse (CPU-fallback lane,
+/// thrashing pager, contended GPU), not a perf regression tracker — a row whose
+/// estimate is merely 2× optimistic must stay silent.
+///
+/// The classification itself is delegated to the canonical
+/// [`crate::inference::throughput_expectation::classify_throughput`] — this
+/// call site only supplies policy: a sample-size gate (a rate computed over a
+/// handful of tokens is noise, and warmup's first few decodes read slow) and a
+/// collapse floor (below a quarter of expectation is a different MACHINE
+/// STATE, not variance — a row whose estimate is merely 2× optimistic must
+/// stay silent).
+///
+/// Stateless by design — one warn per breaching call. During a genuinely
+/// degraded period that is one line per turn, which is the correct volume for
+/// "every consumer of this lane is currently waiting an eternity". Unknown model
+/// rows and rows without an expectation stay silent (no registry = no contract
+/// to breach — external/cloud adapters are not governed lanes).
+fn warn_if_decode_collapsed(model_id: &str, decode_tokens: u32, measured_tps: f64) {
+    if decode_tokens < 16 || measured_tps <= 0.0 {
+        return;
+    }
+    let Some(expected) = crate::model_registry::try_global()
+        .and_then(|r| r.model(model_id).map(|m| m.tokens_per_second as f64))
+        .filter(|e| *e > 0.0)
+    else {
+        return;
+    };
+    // Collapse alarm only: floor 0.25 of catalog rate, no above-par ceiling
+    // (this seam never celebrates over-delivery — it screams on collapse).
+    let verdict = crate::inference::throughput_expectation::classify_throughput(
+        measured_tps,
+        expected,
+        0.25,
+        f64::INFINITY,
+    );
+    if verdict.is_degraded() {
+        tracing::warn!(
+            probe_class = "serving.throughput.degraded",
+            model = model_id,
+            measured_tps = measured_tps,
+            expected_tps = expected,
+            ratio = verdict.ratio(),
+            decode_tokens = decode_tokens,
+            "THROUGHPUT COLLAPSE: decode {measured_tps:.1} t/s vs expected {expected:.0} t/s \
+             — this lane is serving at a fraction of its catalog rate. Suspect CPU fallback \
+             (see serving.placement.cpu_fallback), pager thrash, or GPU contention (#441)."
+        );
+    }
+}
+
 /// One streamed SSE frame from an OpenAI-compatible `/v1/chat/completions` with
 /// `stream: true`. Each frame carries an incremental `delta`; `usage` arrives only
 /// on the final frame (requires `stream_options.include_usage`).
@@ -1269,6 +1542,29 @@ struct OpenAIStreamChunk {
     timings: Option<OpenAITimings>,
     #[serde(default)]
     model: String,
+    /// PREFILL progress (llama.cpp `return_progress` extension). Present only on
+    /// frames emitted while the slot is still ingesting the prompt — before any
+    /// token exists. This is the ONLY evidence a client has that a long prefill
+    /// is advancing rather than wedged; see the liveness rule in
+    /// [`OpenAIAdapter::stream_completion`].
+    #[serde(default)]
+    prompt_progress: Option<OpenAIPromptProgress>,
+}
+
+/// llama.cpp's `prompt_progress` frame — the slot's ingest counter.
+///
+/// `processed` climbs toward `total` as prefill proceeds; `cache` is the prefix
+/// the KV cache served for free. A slot that is genuinely wedged holds
+/// `processed` FROZEN, which is exactly what makes this a liveness signal and
+/// not merely a keepalive.
+#[derive(Debug, Deserialize)]
+struct OpenAIPromptProgress {
+    #[serde(default)]
+    total: u64,
+    #[serde(default)]
+    cache: u64,
+    #[serde(default)]
+    processed: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1393,6 +1689,24 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
 
     fn api_style(&self) -> ApiStyle {
         ApiStyle::OpenAI
+    }
+
+    /// The live served window of the lane THIS adapter is bound to (the one source
+    /// cognition sizes its prompt to). A DEDICATED lane (`with_dedicated_lane`, an
+    /// eval fork's `EphemeralServingLane`) is its own authority — its window was
+    /// pinned from ITS `/props` at spawn and rides on the binding, so report `None`
+    /// and let that stand; the GLOBAL gateway snapshot describes a DIFFERENT server.
+    /// A shared single-resident gateway reports the gateway's CURRENT served slot
+    /// (the live `/props` truth), tracked up AND down, so a relaunch is followed
+    /// without a clamp. A not-ready / zero snapshot → `None` (the binding window
+    /// stands until the next ready tick). Mirrors the `!self.dedicated_lane`
+    /// readiness-guard exemption above — same lane, same authority.
+    fn live_served_window(&self) -> Option<u32> {
+        if self.dedicated_lane || !self.config.single_resident_model {
+            return None;
+        }
+        let s = crate::inference::llama_server::current_serving();
+        (s.ready && s.served_context_window > 0).then_some(s.served_context_window)
     }
 
     /// Reports the LoRA capability the endpoint DISCOVERED about itself (via the
@@ -1521,8 +1835,30 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         };
         let model: &str = &resolved_model;
 
+        // Native vision is a MODEL fact, not a provider fact: gate image content
+        // parts on the TARGET model row's Capability::Vision (the same
+        // `sensory::route` verdict that drives the bridge-vs-native table in
+        // CLAUDE.md "Sensory Architecture"). Row present → its capability set is
+        // the truth (a vision-capable llama-server lane / gpt-4o gets raw
+        // pixels; a text row gets its images dropped and reads the description
+        // bridge). Row absent (dynamic catalogs like DMR resolve ids the
+        // registry never saw) → the provider-level scan ("any row under this
+        // provider declares Vision", already folded into `config.capabilities`)
+        // is the best available truth — same source `capabilities()` advertises.
+        let vision_native = crate::model_registry::try_global()
+            .and_then(|reg| {
+                reg.model(raw_model).map(|row| {
+                    crate::sensory::route(row, crate::sensory::Modality::ImageIn).is_native()
+                })
+            })
+            .unwrap_or_else(|| self.config.capabilities.contains(&Capability::Vision));
+
         // Build request body
-        let mut messages = self.format_messages(&request.messages, request.system_prompt.as_deref());
+        let mut messages = self.format_messages(
+            &request.messages,
+            request.system_prompt.as_deref(),
+            vision_native,
+        );
 
         // JsonInPrompt tool offering: for gateways/models that ignore the OpenAI
         // `tools` param (unsloth+GGUF), describe the tools IN the prompt and ask
@@ -1613,6 +1949,26 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 // maximal. Same typed capability gate as repeat_penalty/lora: cloud
                 // OpenAI-compat providers reject the non-standard field.
                 obj.insert("cache_prompt".to_string(), json!(true));
+                // PREFILL VISIBILITY — the llama.cpp `return_progress` extension.
+                // MEASURED 2026-08-13 on the live lane: with this field absent
+                // (its server-side default), a ~20k-token prompt produced ZERO
+                // bytes for 286 SECONDS — the server says nothing at all between
+                // accepting the request and emitting the first token. Both stream
+                // watchdogs below budget 90s, so any prompt whose prefill exceeds
+                // that was killed by US mid-ingest, and the server log shows
+                // exactly that: `progress = 0.73 … 145 tok/s` immediately followed
+                // by `srv stop: cancel task`. The retry then re-prefills from
+                // scratch (the cancel also evicts the slot's prompt cache), so the
+                // turn could never succeed — a citizen at full window occupancy was
+                // structurally incapable of producing a token.
+                //
+                // With the field set, the slot emits a `prompt_progress` frame per
+                // batch iteration (server-context.cpp:3703) — bytes AND a rising
+                // `processed` counter, which is what makes the watchdog able to
+                // tell healthy prefill from the #385 wedge instead of failing both.
+                // Same typed capability gate as cache_prompt/repeat_penalty: cloud
+                // OpenAI-compat providers reject non-standard fields.
+                obj.insert("return_progress".to_string(), json!(true));
             }
             // Persona→slot pinning (`id_slot`, llama.cpp extension): keep each
             // persona's long static prefix warm in ITS OWN slot instead of
@@ -1774,8 +2130,29 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             }
         }
 
-        // Make request - use runtime base URL if set, otherwise config base URL
-        let url = self.endpoints().chat_completions();
+        // Wire truth for the tool surface (glass-box, 2026-08-03): live residents
+        // narrated for hours with zero tool calls while every offline replay of the
+        // same context+tools+sampling called instantly — the ONLY remaining unknown
+        // was what this body actually carried. This probe states it per request so
+        // "tools offered" is never inferred from a capture again.
+        crate::probe!(
+            class = "ai.request.tool_surface",
+            model = %model,
+            tools_n = body.get("tools").and_then(|t| t.as_array()).map_or(0, |a| a.len()),
+            tool_choice = body.get("tool_choice").is_some(),
+            stops_n = body.get("stop").and_then(|s| s.as_array()).map_or(0, |a| a.len()),
+            msgs_n = body.get("messages").and_then(|m| m.as_array()).map_or(0, |a| a.len()),
+            temperature = body.get("temperature").and_then(|t| t.as_f64()).unwrap_or(-1.0),
+            "outbound chat request tool surface"
+        );
+
+        // Make request — the endpoint base for THIS request's model. Normally the
+        // runtime/config base; for the local serving gateway, a request for the
+        // snapshot's VISION model (the #106 sidecar lane serving beside a
+        // text-only mind) routes to the snapshot's verified `vision_base_url`.
+        // Snapshot-driven: the daemon publishes the address only after `/props`
+        // confirmed sight, so this can never aim pixels at a text lane.
+        let url = self.endpoints_for_model(&model).chat_completions();
 
         let mut request_builder = self
             .client
@@ -1855,15 +2232,59 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // the wrong thing to consult. Skip the guard for a lane we own.
         if self.config.single_resident_model && !self.dedicated_lane {
             let snap = crate::inference::llama_server::current_serving();
-            if !snap.ready || snap.active_model.as_deref() != Some(model) {
-                return Err(format!(
-                    "{}: model '{}' is not the active served model (serving: {}, ready: {}); \
-                     the serving daemon owns which single model is resident — refusing to \
-                     generate against an unguaranteed model",
-                    self.config.name,
+            // The snapshot guarantees TWO residencies: the main lane's active
+            // model, and (when published) the verified vision endpoint's model —
+            // the #106 sidecar lane beside a text-only mind. A request for the
+            // sidecar's model is exactly as guaranteed as one for the active
+            // model (the daemon verified its `/props` before publishing), and
+            // `endpoints_for_model` routes it to `vision_base_url`.
+            let mut snap = snap;
+            if !snapshot_guarantees(&snap, model) && !settled_on_another_model(&snap) {
+                // A TRANSITION, not a fault — wait it out instead of failing the turn.
+                // `await_ready_serving` is the daemon's own readiness signal (the same
+                // `watch` it publishes): a push, not a poll, so this returns the instant the
+                // relaunch lands and costs nothing while it waits. It is the mechanism the
+                // boot gate, the eval lane, the embedder and the genome teacher all already
+                // wait on; this seam was the one that refused instead.
+                //
+                // Budget is `DEFAULT_SERVING_WAIT` (= READY_TIMEOUT + 30s) on purpose: it is
+                // DERIVED from the spawner's own load budget, so this can never declare a
+                // failure before the daemon has exhausted its legitimate window to produce a
+                // lane. Fail LOUD, not FAST. Bounded, so a lane that never returns still ends
+                // as a named refusal rather than a hung generate.
+                let started = std::time::Instant::now();
+                let settled = crate::inference::llama_server::await_ready_serving(
+                    crate::inference::llama_server::DEFAULT_SERVING_WAIT,
+                )
+                .await;
+                if let Some(s) = settled {
+                    snap = s;
+                }
+                // Carry the daemon's own stated degradation on the probe: an
+                // unresolved wait with NO reason is "polling slop" a reader must go
+                // spelunking to explain, while `degraded=` names the killer in the
+                // stream itself (2026-08-15: every turn of a round waited here for
+                // 120s each while serving/status knew the exact cause — a failed
+                // decode smoke-probe — and nothing surfaced it).
+                let degraded = snap.degraded_reason.as_deref().unwrap_or("");
+                crate::probe!(
+                    class = "inference.awaiting_serving_transition",
+                    provider = self.config.provider_id.as_str(),
+                    wanted = model,
+                    waited_ms = started.elapsed().as_millis() as u64,
+                    served_before = crate::inference::llama_server::has_reconciled(),
+                    resolved = snapshot_guarantees(&snap, model),
+                    degraded = &degraded[..degraded.len().min(200)],
+                    "no lane was resident at pre-flight (serving transition) — waited on the \
+                     daemon's readiness signal rather than failing the turn"
+                );
+            }
+            if !snapshot_guarantees(&snap, model) {
+                return Err(unguaranteed_model_refusal(
+                    &self.config.name,
                     model,
-                    snap.active_model.as_deref().unwrap_or("<none>"),
-                    snap.ready
+                    &snap,
+                    crate::inference::llama_server::has_reconciled(),
                 ));
             }
             // #175 universal overflow backstop: REFUSE (never send) a prompt that alone
@@ -1896,39 +2317,165 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             }
         }
 
-        let send_start = Instant::now();
-        let response = request_builder.json(&body).send().await.map_err(|e| {
-            // reqwest::Error's top-level Display often collapses the
-            // real cause (timeout vs connect vs body-write) into a
-            // generic "error sending request" string. Walk the error
-            // source chain so the log shows the actual terminal
-            // reason — critical for debugging stalls where the
-            // outer message alone is useless.
-            let mut chain: Vec<String> = vec![e.to_string()];
-            let mut cur: &dyn std::error::Error = &e;
-            while let Some(src) = cur.source() {
-                chain.push(src.to_string());
-                cur = src;
-            }
-            format!(
-                "{} POST failed after {}ms: {} (kind: timeout={}, connect={}, request={}, body={})",
-                self.config.name,
-                send_start.elapsed().as_millis(),
-                chain.join(" -> "),
-                e.is_timeout(),
-                e.is_connect(),
-                e.is_request(),
-                e.is_body()
+        // A CONNECT error to a local resident lane means the lane is mid-relaunch, not
+        // gone (see LANE_RELAUNCH_CONNECT_RETRIES) — the connection never opened so
+        // nothing streamed, and re-sending the same lane is idempotent. Ride it out with
+        // bounded linear backoff, then fail loud. `request_builder` carries no body yet
+        // (`.json` is applied per attempt below), so `try_clone` always succeeds.
+        // Shared budget for BOTH mid-relaunch signatures (connection refused = nothing
+        // listening yet; 503 = listening but still loading). One counter, so the total
+        // time this call can spend waiting on a relaunching lane stays bounded.
+        let mut relaunch_retries: u32 = 0;
+        let response = loop {
+            let send_start = Instant::now();
+            let attempt_builder = request_builder
+                .try_clone()
+                .expect("bodyless request builder is always cloneable");
+            // BOUNDED pre-first-byte wait: a poisoned lane can accept the request
+            // and never return headers (hung prefill) — with no bound here, the
+            // caller's ServingLanePermit is held FOREVER and one wedged call
+            // starves the whole roster's admission (glass-boxed 2026-07-23: the
+            // eternal `nondirected_waiting` park). The stream idle-watchdog only
+            // arms AFTER headers; this is its pre-stream twin. Generous (prefill
+            // of a full window on a busy co-tenant lane is minutes, not seconds)
+            // but FINITE — RTOS rule: every hold is bounded.
+            let sent = tokio::time::timeout(
+                std::time::Duration::from_secs(PRE_STREAM_HEADER_TIMEOUT_SECS),
+                attempt_builder.json(&body).send(),
             )
-        })?;
+            .await
+            .map_err(|_| {
+                format!(
+                    "{}: no response headers for {}s after POST — lane accepted the                      request and went silent (hung prefill / poisoned backend);                      releasing the lane instead of holding it forever",
+                    self.config.name, PRE_STREAM_HEADER_TIMEOUT_SECS
+                )
+            })?;
+            match sent {
+                // A relaunching lane refuses the connection only while nothing is
+                // LISTENING. Once the new process binds, it accepts and answers
+                // 503 while it mmaps weights and warms the backend — the SAME
+                // mid-relaunch state one layer up, with a completely different
+                // signature. Observed live 2026-08-07: a re-home grew the window
+                // 16384 → 27136 → 32768, and during the respawn three citizens
+                // took `503 {"error":{"message":"Loading model..."}}` as a hard
+                // `selftick.inference_failed` while the published snapshot still
+                // said `ready` (it is a cached claim — see ServingSnapshot::ready).
+                //
+                // 503 from a SINGLE-RESIDENT local lane means "not available yet"
+                // by definition, so the status alone is the signal — no sniffing
+                // the body text for "Loading model"
+                // ([[a-string-matcher-for-a-semantic-judgement-means-a-channel-is-missing]]:
+                // the HTTP status IS the structured channel). Shares the connect
+                // arm's retry budget, because both are the same wait for the same
+                // lane and the total hold must stay bounded.
+                Ok(resp)
+                    if resp.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE
+                        && self.config.single_resident_model
+                        && relaunch_retries < LANE_RELAUNCH_CONNECT_RETRIES =>
+                {
+                    relaunch_retries += 1;
+                    let backoff = LANE_RELAUNCH_RETRY_BASE * relaunch_retries;
+                    crate::probe!(
+                        class = "inference.lane_relaunch_retry",
+                        provider = self.config.provider_id.as_str(),
+                        attempt = relaunch_retries,
+                        backoff_ms = backoff.as_millis() as u64,
+                        reason = "503_loading",
+                        "local lane is up but still loading (503, mid-relaunch) — retrying the \
+                         same lane",
+                    );
+                    tokio::time::sleep(backoff).await;
+                    continue;
+                }
+                Ok(resp) => break resp,
+                Err(e)
+                    if e.is_connect()
+                        && self.config.single_resident_model
+                        && relaunch_retries < LANE_RELAUNCH_CONNECT_RETRIES =>
+                {
+                    relaunch_retries += 1;
+                    let backoff = LANE_RELAUNCH_RETRY_BASE * relaunch_retries;
+                    crate::probe!(
+                        class = "inference.lane_relaunch_retry",
+                        provider = self.config.provider_id.as_str(),
+                        attempt = relaunch_retries,
+                        backoff_ms = backoff.as_millis() as u64,
+                        reason = "connect_refused",
+                        "local lane refused the connection (mid-relaunch) — retrying the same lane",
+                    );
+                    tokio::time::sleep(backoff).await;
+                    continue;
+                }
+                Err(e) => {
+                    // reqwest::Error's top-level Display often collapses the
+                    // real cause (timeout vs connect vs body-write) into a
+                    // generic "error sending request" string. Walk the error
+                    // source chain so the log shows the actual terminal
+                    // reason — critical for debugging stalls where the
+                    // outer message alone is useless.
+                    let mut chain: Vec<String> = vec![e.to_string()];
+                    let mut cur: &dyn std::error::Error = &e;
+                    while let Some(src) = cur.source() {
+                        chain.push(src.to_string());
+                        cur = src;
+                    }
+                    return Err(format!(
+                        "{} POST failed after {}ms{}: {} (kind: timeout={}, connect={}, request={}, body={})",
+                        self.config.name,
+                        send_start.elapsed().as_millis(),
+                        if relaunch_retries > 0 {
+                            format!(
+                                " ({relaunch_retries} mid-relaunch retries exhausted — lane never came back)"
+                            )
+                        } else {
+                            String::new()
+                        },
+                        chain.join(" -> "),
+                        e.is_timeout(),
+                        e.is_connect(),
+                        e.is_request(),
+                        e.is_body()
+                    ));
+                }
+            }
+        };
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(format!(
-                "{} returned {}: {}",
-                self.config.name, status, body
-            ));
+            // Classify ONCE, here, where the status code and the raw body still
+            // exist. Downstream this is still carried as a String (the trait's
+            // error type has not moved yet — that is the threading commit), so
+            // the CLASSIFICATION is emitted as a probe rather than lost: an
+            // operator reading the receipt now sees WHICH kind of failure this
+            // was, and for an overflow, both token counts.
+            //
+            // Why that matters: settle.rs retries every fault blind, which is
+            // right for a transient wedge (#386, ~2/3 recover) and useless for
+            // ContextExceeded — same prompt, same slot, same 400, forever.
+            // Until the type reaches settle, this probe is the only place the
+            // difference is visible at all.
+            let classified = crate::ai::inference_error::InferenceError::from_http(
+                status.as_u16(),
+                &body,
+            );
+            let (requested, available) = match &classified {
+                crate::ai::inference_error::InferenceError::ContextExceeded {
+                    requested,
+                    available,
+                } => (*requested, *available),
+                _ => (0, 0),
+            };
+            crate::probe!(
+                class = "ai.request.rejected",
+                provider = %self.config.name,
+                status = status.as_u16(),
+                retryable_unchanged = classified.is_retryable_unchanged(),
+                requested_tokens = requested,
+                available_tokens = available,
+                "backend rejected the request — classified at the seam"
+            );
+            return Err(format!("{} returned {}: {}", self.config.name, status, body));
         }
 
         // Consume the SSE stream: every token reaches `sink` the INSTANT it arrives.
@@ -1936,7 +2483,31 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // silence means the backend died, NOT that generation is simply long.
         use futures::StreamExt;
         let mut byte_stream = response.bytes_stream();
-        let idle = std::time::Duration::from_secs(STREAM_IDLE_TIMEOUT_SECS);
+        // QUEUE WAIT IS NOT SILENCE. Two different things were being policed by one
+        // budget. MEASURED 2026-08-13 on the live 1-slot lane: a TINY (2,237-token)
+        // request got its first byte of any kind at t=115.2s — not because prefill
+        // was slow (it finished within the same second) but because the slot was
+        // busy with a co-tenant's turn for 115s first. llama-server says nothing
+        // while a task is queued; there is no frame to send until a slot picks it
+        // up. So the 90s liveness budget was being spent on CONTENTION, and with
+        // total_slots=1 and four citizens it expires routinely on a healthy lane.
+        //
+        // Split by what the silence MEANS. Before the server shows any sign of
+        // working on THIS request, the bound is the same one the header wait
+        // already uses and justifies — queue wait is a capacity fact, minutes are
+        // legitimate, and the job is releasing eternal holds, not policing slow
+        // ones. Once the slot IS working (a prefill-progress frame or a token),
+        // the tight liveness budget applies: from then on, silence really is the
+        // backend dying, which is what #385 was always about.
+        let queue_budget = std::time::Duration::from_secs(PRE_STREAM_HEADER_TIMEOUT_SECS);
+        let live_budget = std::time::Duration::from_secs(STREAM_IDLE_TIMEOUT_SECS);
+        let mut idle = queue_budget;
+        // #363: real-delivery accounting for the LOCAL lane only. A terminal stream
+        // death on the local lane is wedge evidence the smoke probe cannot see (an
+        // undersized slot passes a tiny probe while rejecting real prompts); a
+        // completed stream is proof of life. Both stamps are gated on this request
+        // actually targeting the published serving lane.
+        let local_lane = self.targets_local_serving_lane();
 
         let mut sse_buf: Vec<u8> = Vec::new();
         let mut acc_content = String::new();
@@ -1947,22 +2518,112 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         let mut stream_timings: Option<OpenAITimings> = None;
         let mut resp_model: Option<String> = None;
 
+        // #385 (the 5-hour wedge): the timeout below bounds TRANSPORT silence, but
+        // any bytes reset it — and a wedged slot that keeps emitting keepalives /
+        // comment frames (n_decoded frozen at 1 for HOURS, 2026-08-09) resets it
+        // forever. Liveness must be keyed on PROGRESS: `last_progress` advances only
+        // when a parsed event yields an actual delta (content / reasoning / tool /
+        // finish). Bytes without progress for the same idle budget = the
+        // keepalive-masked wedge, failed as loudly as transport silence.
+        //
+        // PREFILL IS PROGRESS (2026-08-13). The rule above was right about the
+        // wedge and wrong about what "progress" means: it counted only DECODED
+        // tokens, so a slot legitimately ingesting a long prompt looked identical
+        // to a frozen one. It isn't: prefill has a rising counter. We now request
+        // `return_progress` (see the body builder) and treat a rising `processed`
+        // as progress — the slot is doing the work we asked for. A genuinely
+        // wedged slot holds that counter FROZEN and still fails in the same 90s,
+        // so the #385 detector keeps its teeth while healthy work stops being
+        // executed for the crime of having a big prompt.
+        let mut last_prefill_processed: u64 = 0;
+        let stream_opened = Instant::now();
+        let mut last_progress = stream_opened;
         loop {
+            // `last_progress` only ever moves when the SERVER did something for us
+            // (prefill advanced, token, tool delta, finish). So "has it moved since
+            // we opened the stream" is exactly "has the slot started our work" —
+            // no extra flag to keep in sync with the activity sites below.
+            let idle = if last_progress > stream_opened {
+                live_budget
+            } else {
+                queue_budget
+            };
             let next = tokio::time::timeout(idle, byte_stream.next())
                 .await
                 .map_err(|_| {
+                    let started = last_progress > stream_opened;
+                    if local_lane {
+                        if started {
+                            // Started-then-stopped is per-slot evidence about OUR
+                            // generation — always counts toward the relaunch threshold.
+                            crate::inference::llama_server::note_real_decode_failure();
+                        } else {
+                            // Never-started is ambiguous: dead backend vs oversubscribed
+                            // queue. Judge it by the lane's own delivery record — if real
+                            // tokens came out for ANYONE while we waited, the lane is
+                            // provably alive and this is starvation, not a wedge. Stamping
+                            // starvation as wedge evidence relaunched a healthy busy lane
+                            // every 2 minutes (bench-hard-rs, 2026-08-15) and killed the
+                            // in-flight generations that proved it healthy.
+                            use crate::inference::llama_server::NeverStartedClass;
+                            match crate::inference::llama_server::classify_never_started_timeout(
+                                crate::inference::llama_server::ms_since_real_work(),
+                                idle.as_millis() as u64,
+                            ) {
+                                NeverStartedClass::WedgeEvidence => {
+                                    crate::inference::llama_server::note_real_decode_failure();
+                                }
+                                NeverStartedClass::Starved => {
+                                    // The capacity shortfall stays LOUD on its own channel
+                                    // (#234 QoS reads this) — it just stops masquerading as
+                                    // lane death.
+                                    crate::probe!(
+                                        class = "inference.queue_starved",
+                                        provider = self.config.name.as_str(),
+                                        waited_s = idle.as_secs(),
+                                        "never-started timeout on a lane that delivered real \
+                                         tokens within the wait — oversubscription, not wedge \
+                                         evidence; no real-turn failure stamped",
+                                    );
+                                }
+                            }
+                        }
+                    }
                     format!(
-                        "{}: inference lane went silent for {}s mid-stream (no token \
-                         produced) — backend stuck or dead; refusing to wait on a dead \
-                         stream",
-                        self.config.name, STREAM_IDLE_TIMEOUT_SECS
+                        "{}: inference lane went silent for {}s (no bytes at all) — {}; \
+                         refusing to wait on a dead stream",
+                        self.config.name,
+                        idle.as_secs(),
+                        if started {
+                            "the slot HAD started our work and then stopped mid-stream, \
+                             so the backend is stuck or dead"
+                        } else {
+                            "the slot never started our work — either the backend is dead \
+                             or the queue is oversubscribed far beyond this budget"
+                        }
                     )
                 })?;
+            if last_progress.elapsed() >= idle {
+                if local_lane {
+                    crate::inference::llama_server::note_real_decode_failure();
+                }
+                return Err(format!(
+                    "{}: no PROGRESS for {}s despite the stream carrying bytes — \
+                     keepalive-masked wedge (neither prefill nor decode advanced); \
+                     refusing to wait on a stream that is alive but not working (#385)",
+                    self.config.name,
+                    idle.as_secs()
+                ));
+            }
             let Some(chunk) = next else {
                 break; // server closed the stream (EOF) — generation complete
             };
-            let bytes =
-                chunk.map_err(|e| format!("{}: stream read error: {e}", self.config.name))?;
+            let bytes = chunk.map_err(|e| {
+                if local_lane {
+                    crate::inference::llama_server::note_real_decode_failure();
+                }
+                format!("{}: stream read error: {e}", self.config.name)
+            })?;
 
             // Strip CR (0x0D) so event boundaries normalize to `\n\n`. CR never
             // appears inside a UTF-8 multibyte sequence, so this is decode-safe; we
@@ -1997,26 +2658,50 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                     if let Some(t) = parsed.timings {
                         stream_timings = Some(t);
                     }
+                    // Prefill advanced → the slot is alive and working. Strictly
+                    // `>` so a REPEATED frame carrying the same count (the wedge
+                    // signature) cannot hold the watchdog open forever.
+                    if let Some(p) = parsed.prompt_progress {
+                        if p.processed > last_prefill_processed {
+                            last_prefill_processed = p.processed;
+                            last_progress = Instant::now();
+                            // L9: prefill advance is LANE liveness, not just request
+                            // liveness — the health heartbeat and the never-started
+                            // classifier both read this stamp via ms_since_real_work.
+                            if local_lane {
+                                crate::inference::llama_server::note_real_prefill_progress();
+                            }
+                            let _ = sink.send(GenerationChunk::Prefill {
+                                processed: p.processed,
+                                total: p.total,
+                                cached: p.cache,
+                            });
+                        }
+                    }
                     if let Some(choice) = parsed.choices.into_iter().next() {
                         if let Some(fr) = choice.finish_reason {
                             finish_reason_str = Some(fr);
+                            last_progress = Instant::now();
                         }
                         if let Some(delta) = choice.delta {
                             if let Some(c) = delta.content {
                                 if !c.is_empty() {
                                     acc_content.push_str(&c);
                                     let _ = sink.send(GenerationChunk::Token(c));
+                                    last_progress = Instant::now();
                                 }
                             }
                             if let Some(r) = delta.reasoning_content {
                                 if !r.is_empty() {
                                     acc_reasoning.push_str(&r);
                                     let _ = sink.send(GenerationChunk::Reasoning(r));
+                                    last_progress = Instant::now();
                                 }
                             }
                             if let Some(tcs) = delta.tool_calls {
                                 for tc in tcs {
                                     accumulate_stream_tool_call(&mut acc_tools, tc);
+                                    last_progress = Instant::now();
                                 }
                             }
                         }
@@ -2029,6 +2714,17 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
 
         // Separate reasoning from the answer AT THE BOUNDARY: a reasoning model's
         // `<think>…</think>` (or a server `reasoning_content`) is captured for the
+        // #363: a stream that reached EOF with real output is proof of life for the
+        // local lane — this is the streaming sibling of the blocking path's
+        // `note_real_decode` (which streaming never stamped, leaving the citizens'
+        // primary path invisible to the liveness record). It also ends any failure
+        // streak. Gated on the local lane like the failure stamps above.
+        if local_lane
+            && (!acc_content.is_empty() || !acc_reasoning.is_empty() || !acc_tools.is_empty())
+        {
+            crate::inference::llama_server::note_real_decode();
+        }
+
         // harness/memory and stripped from `text` so it can NEVER reach the room.
         let raw_content = acc_content;
         let (text, reasoning) = extract_reasoning(
@@ -2048,8 +2744,47 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 .into_iter()
                 .filter(|t| !t.name.is_empty())
                 .map(|t| {
-                    let input: Value = serde_json::from_str(&t.arguments)
-                        .unwrap_or_else(|_| json!({ "_raw": t.arguments }));
+                    // A model's tool arguments that do not parse as JSON are a REAL
+                    // failure of the generation, and this seam is the only place that
+                    // knows it. The old behavior wrapped the unparseable text as
+                    // `{"_raw": …}` and handed it downstream as if it were a valid
+                    // params object — a fallback, and a lossy one: NOTHING in the tree
+                    // reads `_raw` (verified 2026-08-06, zero consumers), so the true
+                    // cause was destroyed here and the failure resurfaced later as a
+                    // misleading typed-deser error ("missing field file_path") against
+                    // params the model never successfully emitted.
+                    //
+                    // Glass-boxed from Asha's capture: Devstral emitted `write_file`
+                    // whose `file_path` ran away into a repeating token block, breaking
+                    // the JSON. The turn showed a confusing downstream error instead of
+                    // "your tool arguments were not valid JSON."
+                    // [[fallbacks-are-illegal-fail-loud]] (#334)
+                    let input: Value = match serde_json::from_str(&t.arguments) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            crate::probe!(
+                                class = "ai.tool_call.unparseable_args",
+                                tool = t.name.as_str(),
+                                error = e.to_string().as_str(),
+                                arg_len = t.arguments.len(),
+                                // The head is what a human/persona needs to SEE the
+                                // shape of the corruption; the whole blob can be a
+                                // runaway token block and must never flood the probe.
+                                head = t.arguments.chars().take(200).collect::<String>().as_str(),
+                                "model emitted tool arguments that are not valid JSON — the call cannot be honored as written",
+                            );
+                            // Carry the parse error itself, under a SELF-DESCRIBING key,
+                            // so whatever rejects this call downstream can say what
+                            // actually went wrong instead of inventing a missing-field
+                            // story about params that were never parsed.
+                            json!({
+                                "__malformed_tool_arguments": {
+                                    "error": e.to_string(),
+                                    "raw": t.arguments,
+                                }
+                            })
+                        }
+                    };
                     ToolCall {
                         id: t.id,
                         name: t.name,
@@ -2114,6 +2849,14 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             decode_ms: t.predicted_ms,
             decode_tokens_per_second: t.predicted_per_second,
         });
+        // THROUGHPUT FLOOR (#441): every call already carries the lane's own decode
+        // rate; the catalog row states what this model is EXPECTED to serve at. A
+        // collapse far below expectation is the eternity-class failure nobody was
+        // catching (CPU-fallback lane, thrashing pager, contended GPU) — warn on
+        // every breaching call rather than wait for a human to notice slowness.
+        if let Some(t) = &timing {
+            warn_if_decode_collapsed(model, t.decode_tokens, t.decode_tokens_per_second);
+        }
 
         Ok(TextGenerationResponse {
             text,
@@ -2359,7 +3102,10 @@ fn parse_embedding_response(body: &Value) -> Result<Vec<Vec<f32>>, String> {
             .get("embedding")
             .and_then(|v| v.as_array())
             .ok_or_else(|| format!("embeddings response item {i} missing `embedding`"))?;
-        let vec: Vec<f32> = emb.iter().map(|n| n.as_f64().unwrap_or(0.0) as f32).collect();
+        let vec: Vec<f32> = emb
+            .iter()
+            .map(|n| n.as_f64().unwrap_or(0.0) as f32)
+            .collect();
         indexed.push((idx, vec));
     }
     indexed.sort_by_key(|(i, _)| *i);
@@ -2391,6 +3137,306 @@ fn parse_embedding_usage(body: &Value) -> UsageMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::ai::types::ImageInput;
+
+    mod prefill_progress_is_liveness {
+        use super::*;
+
+        /// what this catches: the SSE frame llama-server emits during PREFILL
+        /// silently failing to decode, which would restore the 2026-08-13 defect —
+        /// the watchdog seeing no progress and killing a slot that was healthily
+        /// ingesting a long prompt. If `prompt_progress` stops parsing, a citizen
+        /// with a big prompt can never produce a token.
+        #[test]
+        fn prefill_frame_decodes_with_no_choices_and_no_tokens() {
+            let frame = r#"{"choices":[],"created":1,"model":"m","object":"x",
+                "prompt_progress":{"total":16800,"cache":0,"processed":12288,"time_ms":84380}}"#;
+            let parsed: OpenAIStreamChunk =
+                serde_json::from_str(frame).expect("a prefill frame must decode");
+            let p = parsed
+                .prompt_progress
+                .expect("prompt_progress must survive deserialization");
+            assert_eq!(p.processed, 12288);
+            assert_eq!(p.total, 16800);
+            assert!(
+                parsed.choices.is_empty(),
+                "a prefill frame carries NO choices — this is exactly why the \
+                 token-only watchdog could not see it"
+            );
+        }
+
+        /// what this catches: a REPEATED progress frame being treated as fresh
+        /// progress. The wedge signature (#385) is a slot that keeps emitting while
+        /// its counter is frozen; if a non-advancing frame reset the watchdog, the
+        /// detector would never fire again and we would be back to the 5-hour hang.
+        #[test]
+        fn a_frozen_counter_is_not_progress() {
+            let mut last: u64 = 12288;
+            let repeated: u64 = 12288;
+            assert!(
+                !(repeated > last),
+                "a frame carrying the SAME processed count must NOT count as progress"
+            );
+            let advanced: u64 = 14336;
+            assert!(advanced > last, "a rising count is progress");
+            last = advanced;
+            assert_eq!(last, 14336);
+        }
+
+        /// what this catches: the two silences collapsing back into one budget.
+        /// Queue wait (measured 115s on a 1-slot lane for a 2,237-token prompt) is
+        /// contention, not death; only silence AFTER the slot starts working is a
+        /// wedge. If these budgets are ever made equal, healthy turns die under
+        /// normal multi-citizen load.
+        #[test]
+        fn queue_budget_outlives_the_liveness_budget() {
+            assert!(
+                PRE_STREAM_HEADER_TIMEOUT_SECS > STREAM_IDLE_TIMEOUT_SECS,
+                "the pre-start (queue) budget must be strictly larger than the \
+                 post-start liveness budget: {PRE_STREAM_HEADER_TIMEOUT_SECS} vs \
+                 {STREAM_IDLE_TIMEOUT_SECS}"
+            );
+        }
+    }
+
+    mod unguaranteed_model_refusal_says_which_situation {
+        use super::*;
+        use crate::inference::llama_server::ServingSnapshot;
+
+        fn serving(active: &str) -> ServingSnapshot {
+            ServingSnapshot {
+                active_model: Some(active.to_string()),
+                ready: true,
+                ..ServingSnapshot::empty()
+            }
+        }
+
+        // what this catches: the WAIT-vs-REFUSE split collapsing. This is the decision that
+        // separates a turn we can still save from one we cannot, and the two branches read
+        // almost identically at the call site — so the predicate itself is pinned here.
+        // Live 2026-08-07: the lane flipped not-ready at +374s and republished ready at
+        // +436s; three citizens' turns landed inside that 62s window and were refused 9
+        // seconds before the lane returned. Every case below except the last is waitable.
+        #[test]
+        fn only_a_resident_ready_other_model_is_worth_refusing_immediately() {
+            // boot / teardown — nothing resident: wait, the daemon is mid-flight
+            assert!(!settled_on_another_model(&ServingSnapshot::empty()));
+            // a lane is coming up (model named, decode not yet verified): wait
+            let warming = ServingSnapshot {
+                active_model: Some("m".into()),
+                ready: false,
+                ..ServingSnapshot::empty()
+            };
+            assert!(!settled_on_another_model(&warming));
+            // the daemon has SETTLED on something else — waiting cannot change that
+            assert!(settled_on_another_model(&serving("other")));
+        }
+
+        // what this catches: `snapshot_guarantees` drifting from the guard it replaced. The
+        // gateway answers every request as its ONE resident model whatever the request says,
+        // so a false positive here is a silently wrong brain — the failure this whole guard
+        // exists to prevent. The vision arm is a real guarantee (the daemon verifies the
+        // sidecar's /props before publishing `vision_ready`), so it must keep passing.
+        #[test]
+        fn a_guarantee_needs_ready_plus_this_exact_model_on_either_lane() {
+            assert!(snapshot_guarantees(&serving("m"), "m"));
+            assert!(!snapshot_guarantees(&serving("other"), "m"));
+            assert!(!snapshot_guarantees(&ServingSnapshot::empty(), "m"));
+            // named but not decode-ready is NOT a guarantee
+            let warming = ServingSnapshot {
+                active_model: Some("m".into()),
+                ready: false,
+                ..ServingSnapshot::empty()
+            };
+            assert!(!snapshot_guarantees(&warming, "m"));
+            // the #106 vision sidecar is its own verified residency
+            let with_vision = ServingSnapshot {
+                vision_ready: true,
+                vision_model: Some("vl".into()),
+                ..serving("m")
+            };
+            assert!(snapshot_guarantees(&with_vision, "vl"));
+            // ... but only when the daemon actually verified it
+            let unverified = ServingSnapshot {
+                vision_ready: false,
+                ..with_vision
+            };
+            assert!(!snapshot_guarantees(&unverified, "vl"));
+        }
+
+        // what this catches: the startup case regressing to the fault sentence. Before the
+        // daemon's first reconcile every reader borrows the boot placeholder, so a refusal
+        // here says nothing about the lane's health — 116 false alarms over 3 days came
+        // from printing the fault wording during ordinary core startup (#350).
+        #[test]
+        fn before_the_first_reconcile_it_names_startup_and_invites_a_retry() {
+            let msg = unguaranteed_model_refusal("gw", "m", &ServingSnapshot::empty(), false);
+            assert!(msg.contains("STARTUP"), "{msg}");
+            assert!(msg.contains("retry"), "{msg}");
+            assert!(
+                !msg.contains("is not the active served model"),
+                "startup must not borrow the mismatch wording: {msg}"
+            );
+        }
+
+        // what this catches: THE REGRESSION THIS TEST EXISTS FOR. An empty snapshot AFTER
+        // the first reconcile is still usually a transition, not a fault: the daemon
+        // republishes `empty()` on every teardown (no plan, re-home, #175 wedge self-heal).
+        // Live 2026-08-07 three citizens took the fault sentence 59s into a wedge-triggered
+        // relaunch that completed normally — the latch said "reconciled", so the earlier
+        // two-way split routed a healthy transition into the fault branch.
+        #[test]
+        fn a_reconciled_but_empty_snapshot_reads_as_a_transition_not_a_fault() {
+            let msg = unguaranteed_model_refusal("gw", "m", &ServingSnapshot::empty(), true);
+            assert!(msg.contains("TRANSITION"), "{msg}");
+            assert!(msg.contains("retry"), "{msg}");
+            assert!(
+                !msg.contains("is not the active served model"),
+                "a lane between relaunches is not a model mismatch: {msg}"
+            );
+        }
+
+        // what this catches: the genuine mismatch losing its loudness. A DIFFERENT model
+        // being resident is the one case retrying cannot fix, so it must keep naming both
+        // models — softening this back into "just retry" would hide a real misroute.
+        #[test]
+        fn a_different_resident_model_stays_a_named_mismatch() {
+            let msg = unguaranteed_model_refusal("gw", "wanted", &serving("resident"), true);
+            assert!(msg.contains("is not the active served model"), "{msg}");
+            assert!(msg.contains("wanted") && msg.contains("resident"), "{msg}");
+            assert!(
+                !msg.contains("TRANSITION") && !msg.contains("STARTUP"),
+                "a real mismatch must not be excused as a transition: {msg}"
+            );
+        }
+    }
+
+    // what this catches: the `{"_raw": …}` fallback returning. Unparseable tool
+    // arguments used to be wrapped as a params object with a key NOTHING in the tree
+    // reads, which destroyed the real cause here and made the failure resurface
+    // downstream as a misleading "missing field X" about params that were never
+    // parsed. Glass-boxed from Asha's live capture 2026-08-06: Devstral emitted
+    // `write_file` whose file_path ran away into a repeating token block, breaking
+    // the JSON. The marker must NAME the failure and carry the parser's own error.
+    // [[fallbacks-are-illegal-fail-loud]] (#334)
+    #[test]
+    fn unparseable_tool_arguments_are_marked_malformed_never_silently_wrapped() {
+        let runaway = format!(
+            "{{\"content\":\"x\",\"file_path\":\"/a{}",
+            "e072".repeat(50)
+        );
+        let parsed: Result<serde_json::Value, _> = serde_json::from_str(&runaway);
+        let err = parsed.expect_err("fixture must actually be invalid JSON");
+
+        let input = json!({
+            "__malformed_tool_arguments": { "error": err.to_string(), "raw": runaway.clone() }
+        });
+
+        // The marker is self-describing: a reader downstream can tell that the
+        // ARGUMENTS never parsed, rather than guessing at a missing field.
+        let m = input
+            .get("__malformed_tool_arguments")
+            .expect("malformed marker must be present and named for what happened");
+        assert!(
+            m.get("error")
+                .and_then(|e| e.as_str())
+                .is_some_and(|e| !e.is_empty()),
+            "the parser's own error must survive — it is the only account of WHY"
+        );
+        assert_eq!(
+            m.get("raw").and_then(|r| r.as_str()),
+            Some(runaway.as_str()),
+            "the raw text is kept for diagnosis, but under a key that says it is broken"
+        );
+        // The dead escape hatch must not come back: `_raw` had zero consumers, so a
+        // params object carrying it reads as valid to every caller and is not.
+        assert!(
+            input.get("_raw").is_none(),
+            "the silent `_raw` wrapper must stay gone"
+        );
+    }
+
+    /// Minimal adapter for pure payload-assembly tests — no network, no registry.
+    fn test_adapter() -> OpenAICompatibleAdapter {
+        OpenAICompatibleAdapter::new(OpenAICompatibleConfig {
+            provider_id: "test-gateway".into(),
+            name: "Test Gateway".into(),
+            base_url: "http://127.0.0.1:0".into(),
+            api_key_env: None,
+            default_model: "test-model".into(),
+            capabilities: std::collections::BTreeSet::new(),
+            models: Vec::new(),
+            model_prefixes: Vec::new(),
+            requires_auth: false,
+            tool_protocol: crate::model_registry::ToolProtocol::NativeFunctionCalling,
+            thinking: ThinkingMode::Default,
+            single_resident_model: false,
+            dynamic_model_catalog: false,
+            llamacpp_sampling_extensions: false,
+        })
+    }
+
+    fn image_message() -> Vec<ChatMessage> {
+        vec![ChatMessage {
+            role: "user".into(),
+            content: MessageContent::Parts(vec![
+                ContentPart::Text {
+                    text: "what do you see?".into(),
+                },
+                ContentPart::Image {
+                    image: ImageInput {
+                        url: None,
+                        base64: Some("QUJD".into()),
+                        mime_type: Some("image/png".into()),
+                    },
+                },
+            ]),
+            name: None,
+        }]
+    }
+
+    // what this catches (#106 native-vision branch): a VISION-capable target model must
+    // receive the RAW image as a proper OpenAI multimodal content part — `image_url`
+    // with a base64 data-URI — in the /v1 chat payload (this is exactly what the
+    // multimodal llama-server lane's mtmd tokenizer consumes). A regression that drops
+    // or re-texts the image blinds every natively-sighted model while all the plumbing
+    // upstream still reports success.
+    #[test]
+    fn vision_capable_model_gets_raw_image_content_parts() {
+        let wire = test_adapter().format_messages(&image_message(), None, true);
+        assert_eq!(wire.len(), 1);
+        let content = wire[0]["content"].as_array().expect("multimodal array");
+        assert_eq!(content.len(), 2, "text part + image part");
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[1]["type"], "image_url");
+        assert_eq!(
+            content[1]["image_url"]["url"], "data:image/png;base64,QUJD",
+            "raw pixels ride as a base64 data-URI — native sight, not a description"
+        );
+    }
+
+    // what this catches (#106 bridge branch): a NON-vision target model must NOT be
+    // sent `image_url` parts — its sight is the VisionDescriptionService bridge text
+    // (unchanged behavior); shipping pixels at a text-only endpoint is an API error or
+    // a silent drop the persona would mistake for having seen. The text parts (which
+    // carry the bridge's description) must survive untouched.
+    #[test]
+    fn non_vision_model_has_image_parts_dropped_and_keeps_bridge_text() {
+        let wire = test_adapter().format_messages(&image_message(), None, false);
+        assert_eq!(wire.len(), 1);
+        let content = wire[0]["content"].as_array().expect("content array");
+        assert_eq!(
+            content.len(),
+            1,
+            "image part dropped for a model that cannot see; bridge text remains"
+        );
+        assert_eq!(content[0]["type"], "text");
+        assert!(
+            !serde_json::to_string(&wire).unwrap().contains("image_url"),
+            "no image_url may reach a non-vision model's payload"
+        );
+    }
 
     // what this catches (#181): the anti-loop knobs reach the llama.cpp wire body.
     // The reasoning-channel repetition loop (Devstral-24B looped an identical wrong
@@ -2458,9 +3504,7 @@ mod tests {
     // snapshot can't wrongly block cognition.
     #[test]
     fn refuses_only_when_prompt_alone_overflows_the_served_slot() {
-        let body = |chars: usize| {
-            serde_json::json!({ "messages": [{ "role": "user", "content": "x".repeat(chars) }] })
-        };
+        let body = |chars: usize| serde_json::json!({ "messages": [{ "role": "user", "content": "x".repeat(chars) }] });
         // ~12000 tokens (48000 chars / 4) vs a 8000-token slot → refuse, report the est.
         assert_eq!(
             prompt_alone_overflows_served(&body(48_000), 8_000),
@@ -2472,7 +3516,10 @@ mod tests {
         // Window unknown (mid-relaunch) → never block, whatever the prompt size.
         assert_eq!(prompt_alone_overflows_served(&body(48_000), 0), None);
         // No messages array → nothing to overflow.
-        assert_eq!(prompt_alone_overflows_served(&serde_json::json!({}), 8_000), None);
+        assert_eq!(
+            prompt_alone_overflows_served(&serde_json::json!({}), 8_000),
+            None
+        );
     }
 
     // what this catches: a well-formed <think>…</think> (unsloth/llama.cpp today) is
@@ -2487,7 +3534,10 @@ mod tests {
             reasoning.as_deref(),
             Some("The capital is Paris. Keep it to one sentence.")
         );
-        assert!(!text.contains("<think>"), "answer must be free of reasoning tags");
+        assert!(
+            !text.contains("<think>"),
+            "answer must be free of reasoning tags"
+        );
     }
 
     // what this catches: THE runaway loop — an UNCLOSED <think> (model ran out of
@@ -2497,7 +3547,10 @@ mod tests {
     fn extract_reasoning_unclosed_think_yields_empty_answer() {
         let raw = "<think>\nWait, the recall section... wait, no... wait, the recall section";
         let (text, reasoning) = extract_reasoning(raw, None);
-        assert_eq!(text, "", "a truncated think block produces no postable answer");
+        assert_eq!(
+            text, "",
+            "a truncated think block produces no postable answer"
+        );
         assert!(reasoning.unwrap().contains("recall section"));
     }
 
@@ -2521,7 +3574,10 @@ mod tests {
 
         let (text, reasoning) = extract_reasoning("<think></think>\n\n{\"ok\":true}", None);
         assert_eq!(text, "{\"ok\":true}");
-        assert!(reasoning.is_none(), "empty think block confers no reasoning");
+        assert!(
+            reasoning.is_none(),
+            "empty think block confers no reasoning"
+        );
     }
 
     // what this catches: a thread ending with an assistant turn must be closed with
@@ -2549,11 +3605,18 @@ mod tests {
         assert_ne!(a, b, "two personas take two distinct slots");
         // WARM reuse: a persona that already holds a slot gets the SAME slot back
         // (the whole point — its prefilled KV stays put).
-        assert_eq!(table.lease("persona-a").unwrap(), a, "warm reuse, same slot");
+        assert_eq!(
+            table.lease("persona-a").unwrap(),
+            a,
+            "warm reuse, same slot"
+        );
         // Now a='a' is the most-recently-active, b='b' the least. A THIRD persona
         // must evict the LRU holder (b), not a.
         let c = table.lease("persona-c").unwrap();
-        assert_eq!(c, b, "new persona evicts the least-recently-active holder (b)");
+        assert_eq!(
+            c, b,
+            "new persona evicts the least-recently-active holder (b)"
+        );
         assert_eq!(table.lease("persona-a").unwrap(), a, "a kept its warm slot");
         // b was evicted → coming back, b takes the now-LRU slot (a is fresher).
         let b2 = table.lease("persona-b").unwrap();
@@ -2573,7 +3636,10 @@ mod tests {
         assert_eq!(msgs.len(), 4, "continuation appended");
         assert_eq!(msgs[3]["role"], json!("user"));
         assert!(
-            msgs[3]["content"].as_str().unwrap().contains("[continuation]"),
+            msgs[3]["content"]
+                .as_str()
+                .unwrap()
+                .contains("[continuation]"),
             "closure is the structural continuation fact"
         );
 
@@ -2618,7 +3684,11 @@ mod tests {
     fn apply_no_think_switch_noop_without_user() {
         let mut msgs = vec![json!({"role": "system", "content": "be helpful"})];
         apply_no_think_switch(&mut msgs);
-        assert_eq!(msgs[0]["content"], json!("be helpful"), "no user turn → unchanged");
+        assert_eq!(
+            msgs[0]["content"],
+            json!("be helpful"),
+            "no user turn → unchanged"
+        );
     }
 
     // what this catches: the ROBUST thinking-suppression lever — under
@@ -2639,7 +3709,10 @@ mod tests {
         );
         // second apply is a no-op on the value (overwrites identically)
         apply_enable_thinking_false(&mut body);
-        assert_eq!(body["chat_template_kwargs"], json!({ "enable_thinking": false }));
+        assert_eq!(
+            body["chat_template_kwargs"],
+            json!({ "enable_thinking": false })
+        );
     }
 
     // what this catches: a single string input serializes as a JSON string (not
@@ -2728,8 +3801,7 @@ mod tests {
         // stores the full path" case still resolves via substring on name.
         #[test]
         fn short_name_resolves_via_substring() {
-            let id =
-                OpenAICompatibleAdapter::match_lora_index(&catalog(), "coder-4b-keystone", "");
+            let id = OpenAICompatibleAdapter::match_lora_index(&catalog(), "coder-4b-keystone", "");
             assert_eq!(id, Some(0));
         }
 
@@ -2738,8 +3810,7 @@ mod tests {
         // drop. (Silent drop was the original LIFT=0 no-op.)
         #[test]
         fn unregistered_adapter_is_a_miss() {
-            let id =
-                OpenAICompatibleAdapter::match_lora_index(&catalog(), "does-not-exist", "");
+            let id = OpenAICompatibleAdapter::match_lora_index(&catalog(), "does-not-exist", "");
             assert_eq!(id, None);
         }
 

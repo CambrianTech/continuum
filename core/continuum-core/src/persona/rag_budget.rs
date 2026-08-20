@@ -184,13 +184,21 @@ impl RagContext {
 /// (`None`, legacy/test construction) and an unstamped ctx (`airc_room: None`,
 /// background consolidation) both keep pre-gate behavior. One logical decision,
 /// one place (the compression law); every abstain emits a probe naming both
-/// rooms so a mis-binding is diagnosable from the log, never a silent blank
-/// grounding block. [[identity-context-session-three-axes]]
+/// rooms so a mis-binding is diagnosable from the PROBE STREAM, never a silent
+/// blank grounding block. [[identity-context-session-three-axes]]
+///
+/// `probe!`, not `tracing::info!(probe_class = …)`. Glass-boxed 2026-08-14
+/// chasing the anchor_silent cascade (#346/#353/#264): this abstain WAS a bare
+/// `tracing::info!` carrying a `probe_class` field, which is the "tracing
+/// masquerading as a probe" move the concurrency guide forbids — it never
+/// reaches `~/.continuum/probes/`, so querying the probe stream for it returned
+/// a confident zero that meant nothing at all. An absence is only evidence when
+/// the instrument can produce a presence; this one couldn't.
 pub fn room_scope_allows(bound: Option<uuid::Uuid>, ctx: &RagContext, source_id: &str) -> bool {
     match (bound, ctx.airc_room.as_ref()) {
         (Some(b), Some(t)) if t.as_uuid() != b => {
-            tracing::info!(
-                probe_class = "rag.room_gate.abstain",
+            crate::probe!(
+                class = "rag.room_gate.abstain",
                 source = %source_id,
                 bound_room = %b,
                 turn_room = %t.as_uuid(),
@@ -294,6 +302,41 @@ pub struct ReservedTokens {
 impl ReservedTokens {
     pub fn total(self) -> u32 {
         self.system.saturating_add(self.completion)
+    }
+
+    /// THE window-scaled reservation shape (#424 dedup — this derivation was
+    /// byte-identical in `unified.rs` and `rag_inspect.rs`; one logical
+    /// decision lives in one place). Reservations scale as a percentage of
+    /// the window per [[intent-driven-api-not-hot-patches]]: a 2048-window
+    /// persona can't reserve a flat 4000 for completion (negative headroom →
+    /// all sources get 0 → cognition fires with no RAG content → LLM defaults
+    /// to the grammar-shortest "will_respond=false" attractor), while an
+    /// M-series 32k persona shouldn't be pinned to Compat-tier crumbs.
+    ///
+    /// - system: 10% of window, clamped [128, 512]
+    /// - completion: 25% of window, clamped [256, 4_000]
+    ///
+    /// This is a FALLBACK shape, not a budgeter: the substrate's real
+    /// budgeter (profile/model-characteristic driven) can override via a
+    /// richer reservation API. NOTE the 4_000 completion ceiling is the RAG
+    /// *reservation* only — the generation ceiling itself is deliberately
+    /// uncapped (`llm_deliberation_faculty::completion_budget_for`, Joel
+    /// 2026-07-13: stop choking context); whether this reservation should
+    /// follow it up on large windows is an open budgeting question, not a
+    /// dedup question.
+    pub fn scaled_for_window(context_window: u32) -> Self {
+        Self {
+            system: (context_window / 10).clamp(128, 512),
+            completion: (context_window / 4).clamp(256, 4_000),
+        }
+    }
+
+    /// Tokens left for sources after this reservation, floored at 512 so a
+    /// tiny window still delivers *some* context instead of zeroing every
+    /// source. Sibling of [`Self::scaled_for_window`] — both call sites
+    /// computed this identically too.
+    pub fn headroom_within(self, context_window: u32) -> u32 {
+        context_window.saturating_sub(self.total()).max(512)
     }
 }
 
@@ -430,6 +473,50 @@ pub struct RagDelivery {
 pub trait RagSource: Send + Sync {
     fn source_id(&self) -> &'static str;
 
+    /// The verb that yields THIS source's content in full, for when the prompt
+    /// budget could only fit part of it.
+    ///
+    /// A truncated grounding block has to tell the reader two things: that it is
+    /// truncated, and **exactly how to see the rest**. "The full list is available
+    /// from the matching command" fails the second half — a citizen cannot run a
+    /// description. It has to be the real verb, spelled the way she would type it,
+    /// because a name she has to guess is a name she gets wrong
+    /// ([[command-names-must-be-accurate]]).
+    ///
+    /// `None` is a legitimate answer for a source with genuinely nothing more to
+    /// show (a one-shot fact, a stub). It is NOT the answer for "I didn't think
+    /// about it" — which is why there is no default impl: every source decides,
+    /// the same forcing function as [`super::room_board_source::RoomBoardReader::peer_names`].
+    fn expand_command(&self) -> Option<&'static str>;
+
+    /// The cost, in tokens, of the SMALLEST COMPLETE STATEMENT this source can
+    /// make — its first atomic unit, not its comfortable size.
+    ///
+    /// This is the allocator's floor for the source, and the allocator's rule
+    /// for a floor that doesn't fit is to drop the source ENTIRELY. So this
+    /// number decides, alone, whether a citizen under budget pressure hears
+    /// anything at all from this source.
+    ///
+    /// ### The defect this exists to kill (measured 2026-08-06)
+    ///
+    /// Every source was assigned a hardcoded floor of **500** tokens by
+    /// `unified.rs`, a number unrelated to any of them. Their real first units,
+    /// measured off a live prompt: room 6, board 26, workspace-map 32,
+    /// recall 40 — about **104 tokens for one complete unit from all six**.
+    /// On a node whose grounding budget measured 0..214, every source was
+    /// dropped on 100% of turns (137 of 137 for one citizen, 132 of 132 for
+    /// another) while asking for 12-80x more than it needed to say something
+    /// true. That is what made grounding all-or-nothing instead of degrading:
+    /// a source that could have delivered a complete 26-token headline was
+    /// never asked for it.
+    ///
+    /// So: answer with what your FIRST unit actually costs. Not what you'd
+    /// like. `0` is legitimate and means "I have no floor — give me whatever is
+    /// left over" (the lightweight roster/doctrine shape). There is no default
+    /// impl on purpose: a default would let a new source silently inherit
+    /// someone else's appetite, which is exactly how the 500 got everywhere.
+    fn floor_tokens(&self) -> u32;
+
     /// Deliver as many complete atomic units as fit within `budget`.
     /// The source decides what counts as complete; allocator only
     /// trusts that `delivery.tokens_used <= budget`.
@@ -553,7 +640,11 @@ impl RagBudgetAdapter for FlexboxRagBudgetAdapter {
         // deterministic tie-break — the boot-time output should
         // not depend on slice ordering or hashmap iteration.
         let mut sorted: Vec<&RagSourceBudget> = sources.iter().collect();
-        sorted.sort_by(|a, b| b.priority.cmp(&a.priority).then(a.source_id.cmp(&b.source_id)));
+        sorted.sort_by(|a, b| {
+            b.priority
+                .cmp(&a.priority)
+                .then(a.source_id.cmp(&b.source_id))
+        });
 
         // Working allocation: source_id -> tokens. Use a Vec parallel
         // to sorted for cache-locality + deterministic iteration.
@@ -627,11 +718,16 @@ impl RagBudgetAdapter for FlexboxRagBudgetAdapter {
         // ---- Pass 2: min — top up to min_tokens for sources we
         // haven't dropped, in priority order ----
         for (i, source) in sorted.iter().enumerate() {
-            if matches!(state[i], AllocationState::Dropped | AllocationState::UnderProvisioned) {
+            if matches!(
+                state[i],
+                AllocationState::Dropped | AllocationState::UnderProvisioned
+            ) {
                 continue;
             }
             let needed = source.min_tokens.saturating_sub(alloc[i]);
-            let granted = needed.min(remaining).min(source.max_tokens.saturating_sub(alloc[i]));
+            let granted = needed
+                .min(remaining)
+                .min(source.max_tokens.saturating_sub(alloc[i]));
             alloc[i] += granted;
             remaining -= granted;
             if alloc[i] >= source.min_tokens {
@@ -649,8 +745,10 @@ impl RagBudgetAdapter for FlexboxRagBudgetAdapter {
                 .iter()
                 .enumerate()
                 .filter(|(i, s)| {
-                    !matches!(state[*i], AllocationState::Dropped | AllocationState::UnderProvisioned)
-                        && alloc[*i] < s.max_tokens
+                    !matches!(
+                        state[*i],
+                        AllocationState::Dropped | AllocationState::UnderProvisioned
+                    ) && alloc[*i] < s.max_tokens
                 })
                 .map(|(i, _)| i)
                 .collect();
@@ -663,7 +761,8 @@ impl RagBudgetAdapter for FlexboxRagBudgetAdapter {
             }
             let mut moved = 0u32;
             for &i in &active {
-                let share = ((remaining as u64) * (sorted[i].priority as u64) / (priority_sum as u64)) as u32;
+                let share = ((remaining as u64) * (sorted[i].priority as u64)
+                    / (priority_sum as u64)) as u32;
                 let headroom = sorted[i].max_tokens - alloc[i];
                 let grant = share.min(headroom);
                 if grant > 0 {
@@ -689,8 +788,10 @@ impl RagBudgetAdapter for FlexboxRagBudgetAdapter {
 
         // Build result in input order (NOT sorted order) for caller
         // ergonomics.
-        let mut allocations_by_id: std::collections::HashMap<String, (u32, AllocationState, &RagSourceBudget)> =
-            std::collections::HashMap::new();
+        let mut allocations_by_id: std::collections::HashMap<
+            String,
+            (u32, AllocationState, &RagSourceBudget),
+        > = std::collections::HashMap::new();
         for (i, source) in sorted.iter().enumerate() {
             allocations_by_id.insert(source.source_id.clone(), (alloc[i], state[i], *source));
         }
@@ -701,6 +802,30 @@ impl RagBudgetAdapter for FlexboxRagBudgetAdapter {
                 .remove(&src.source_id)
                 .expect("every source must appear in the working alloc");
             total_allocated = total_allocated.saturating_add(tokens);
+            // The allocator decided how much of her mind each source gets, and
+            // until now said NOTHING. So when a grounding block failed to
+            // appear, "the source abstained" and "the source was granted zero"
+            // were indistinguishable from outside — which is exactly the
+            // ambiguity that survived the #331 room fix: gate passing, board
+            // non-empty, block still absent, no way to tell why.
+            //
+            // Emitted per source per allocation: what it ASKED for and what it
+            // GOT. A source at allocated=0 (or below its own floor) is a
+            // faculty the persona cannot hear this turn, and that must be a
+            // readable fact, not an inference. [[observability-as-substrate]]
+            if tokens == 0 || tokens < src.floor_tokens {
+                tracing::info!(
+                    probe_class = "rag.budget.starved",
+                    source = %src.source_id,
+                    granted = tokens,
+                    floor = src.floor_tokens,
+                    min = src.min_tokens,
+                    max = src.max_tokens,
+                    state = ?st,
+                    context_window,
+                    "source granted less than its own floor — this faculty is silent this turn"
+                );
+            }
             allocations.push(SourceAllocation {
                 source_id: src.source_id.to_string(),
                 allocated_tokens: tokens,
@@ -788,6 +913,17 @@ impl StubRagSource {
 impl RagSource for StubRagSource {
     fn source_id(&self) -> &'static str {
         self.source_id
+    }
+
+    fn expand_command(&self) -> Option<&'static str> {
+        // Test/stub source — nothing further to fetch.
+        None
+    }
+
+    /// Test/stub source — floorless, so allocator tests exercise the grow pass
+    /// rather than accidentally encoding a production floor.
+    fn floor_tokens(&self) -> u32 {
+        0
     }
 
     async fn deliver(
@@ -1053,7 +1189,7 @@ mod tests {
         let tiny = alloc_for(&result, "tiny");
         let big = alloc_for(&result, "big");
         assert_eq!(tiny.allocated_tokens, 100); // capped
-        // Big should absorb whatever the priority-10 cap left behind.
+                                                // Big should absorb whatever the priority-10 cap left behind.
         assert!(big.allocated_tokens >= 5000);
         assert!(big.allocated_tokens <= 9_000);
     }
@@ -1125,7 +1261,10 @@ mod tests {
         let first = source.deliver(&ctx(), 20, ResolutionPreference::Raw).await;
         assert_eq!(first.items.len(), 2);
         let cursor = first.continuation.unwrap();
-        let second = source.deliver_continuation(&ctx(), cursor, 100).await.unwrap();
+        let second = source
+            .deliver_continuation(&ctx(), cursor, 100)
+            .await
+            .unwrap();
         assert_eq!(second.items.len(), 2);
         assert!(second.continuation.is_none());
     }
@@ -1169,23 +1308,17 @@ mod tests {
         let pax_ctx = RagContext::for_persona(pax, 1_000_000);
         let maya_ctx = RagContext::for_persona(maya, 1_000_000);
 
-        let pax_source = StubRagSource::new(
-            "stub",
-            pax,
-            vec![item("a", 10), item("b", 10)],
-        );
-        let pax_first = pax_source.deliver(&pax_ctx, 15, ResolutionPreference::Raw).await;
+        let pax_source = StubRagSource::new("stub", pax, vec![item("a", 10), item("b", 10)]);
+        let pax_first = pax_source
+            .deliver(&pax_ctx, 15, ResolutionPreference::Raw)
+            .await;
         let pax_cursor = pax_first.continuation.unwrap();
         assert_eq!(pax_cursor.persona_id, pax);
 
         // Maya's source must refuse Pax's cursor — both because the
         // cursor's persona_id doesn't match Maya's binding AND because
         // the source verifies its own persona_id against ctx.persona_id.
-        let maya_source = StubRagSource::new(
-            "stub",
-            maya,
-            vec![item("x", 10), item("y", 10)],
-        );
+        let maya_source = StubRagSource::new("stub", maya, vec![item("x", 10), item("y", 10)]);
         let cross = maya_source
             .deliver_continuation(&maya_ctx, pax_cursor, 100)
             .await;
@@ -1200,9 +1333,7 @@ mod tests {
             source_id: "memories".to_string(),
             opaque: serde_json::json!({ "next": 0 }),
         };
-        let cross = source
-            .deliver_continuation(&ctx(), alien_cursor, 100)
-            .await;
+        let cross = source.deliver_continuation(&ctx(), alien_cursor, 100).await;
         assert!(cross.is_none(), "wrong-source cursor must be refused");
     }
 
@@ -1215,9 +1346,91 @@ mod tests {
         let maya = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000def").unwrap();
         let pax_source = StubRagSource::new("stub", pax, vec![item("a", 10)]);
         let maya_ctx = RagContext::for_persona(maya, 1_000_000);
-        let delivery = pax_source.deliver(&maya_ctx, 100, ResolutionPreference::Raw).await;
+        let delivery = pax_source
+            .deliver(&maya_ctx, 100, ResolutionPreference::Raw)
+            .await;
         assert_eq!(delivery.items.len(), 0);
         assert_eq!(delivery.resolution_used, ResolutionPreference::Placeholder);
+    }
+
+    // what this catches (#338, measured live 2026-08-06): a source being dropped
+    // WHOLE because its declared floor was its COMFORTABLE size rather than the
+    // cost of its first complete unit.
+    //
+    // Every grounding source declared floor=min=500 (a hardcoded number in
+    // unified.rs, unrelated to any of them) while their real first units measured
+    // 6..40 tokens — about 104 for one unit from all six. On a node whose
+    // grounding budget measured 0..214, that made the allocator drop EVERY source
+    // on 100% of turns (137/137 and 132/132 for two citizens), so a citizen who
+    // could have been told "you hold 0 cards; 59 claimable" in 26 tokens was told
+    // nothing and reported she had no work. Grounding was all-or-nothing when it
+    // should have degraded.
+    //
+    // The invariant: at a budget that fits the FLOORS but not the comfortable
+    // sizes, every source still speaks. Floor is survival; min is appetite.
+    #[test]
+    fn sources_survive_at_their_first_unit_when_budget_wont_fit_their_appetite() {
+        let adapter = FlexboxRagBudgetAdapter::new();
+        // Real measured first units; 500 is the comfortable target each would
+        // like. Total floors = 104, total appetites = 2000.
+        let sources = [
+            budget("room", 10, 6, 500, 2000, false),
+            budget("room-kanban", 10, 26, 500, 2000, false),
+            budget("workspace-map", 10, 32, 500, 2000, false),
+            budget("recall", 10, 40, 500, 2000, false),
+        ];
+        // 214 tokens — the live starved budget. Fits all four floors (104),
+        // fits not even ONE comfortable size.
+        let alloc = adapter.allocate(
+            &RagContext::for_persona(uuid::Uuid::nil(), 0),
+            214,
+            ReservedTokens {
+                system: 0,
+                completion: 0,
+            },
+            &sources,
+        );
+        for (i, s) in sources.iter().enumerate() {
+            assert!(
+                alloc.allocations[i].allocated_tokens >= s.floor_tokens,
+                "`{}` must survive at its first unit ({} tokens) on a starved budget — \
+                 got {}. A source dropped here is a citizen told nothing at all.",
+                s.source_id,
+                s.floor_tokens,
+                alloc.allocations[i].allocated_tokens,
+            );
+            assert!(
+                !matches!(alloc.allocations[i].state, AllocationState::Dropped),
+                "`{}` was DROPPED at a budget that fits its floor — this is the #338 defect",
+                s.source_id,
+            );
+        }
+    }
+
+    /// What this catches: the window-scaled reservation stays ONE derivation
+    /// with the documented shape — a second hand-copied variant (the exact
+    /// duplication this replaced across unified.rs / rag_inspect.rs) shows up
+    /// as a drift here. Also pins the headroom floor: a tiny window must
+    /// still deliver ≥512 tokens to sources, never zero. regression for #424
+    #[test]
+    fn reserved_tokens_scaled_shape_is_the_one_derivation() {
+        // Compat-tier 2048: percentages, floors active.
+        let small = ReservedTokens::scaled_for_window(2048);
+        assert_eq!(small.system, 204); // 10%, inside [128, 512]
+        assert_eq!(small.completion, 512); // 25%, inside [256, 4_000]
+        assert_eq!(small.headroom_within(2048), 2048 - 204 - 512);
+
+        // M-series 32k: both ceilings engage.
+        let big = ReservedTokens::scaled_for_window(32_768);
+        assert_eq!(big.system, 512);
+        assert_eq!(big.completion, 4_000);
+        assert_eq!(big.headroom_within(32_768), 32_768 - 4_512);
+
+        // Degenerate window: floors dominate, headroom floor holds — sources
+        // still get 512, never zero (the zero-budget annihilation class, #259).
+        let tiny = ReservedTokens::scaled_for_window(256);
+        assert_eq!((tiny.system, tiny.completion), (128, 256));
+        assert_eq!(tiny.headroom_within(256), 512);
     }
 }
 

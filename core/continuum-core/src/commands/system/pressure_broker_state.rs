@@ -7,7 +7,7 @@
 //! Migrated off the module's legacy `handle_command` arm (#62). Returns the same typed
 //! [`BrokerSnapshot`](crate::paging::BrokerSnapshot) the legacy handler did — its
 //! camelCase serde + ts-rs export (`protocol/typescript/paging/BrokerSnapshot.ts`) is
-//! the wire contract the TS mixin and `cu`/status row consume, preserved byte-identical.
+//! the wire contract the TS mixin and `uu`/status row consume, preserved byte-identical.
 //!
 //! ## Gating
 //!
@@ -76,7 +76,10 @@ mod tests {
         assert!(json["globalTier"].is_string(), "globalTier missing");
         assert!(json["pools"].is_array(), "pools missing");
         assert!(json["evictionsFired"].is_number(), "evictionsFired missing");
-        assert!(json["bytesFreedTotal"].is_number(), "bytesFreedTotal missing");
+        assert!(
+            json["bytesFreedTotal"].is_number(),
+            "bytesFreedTotal missing"
+        );
         // globalTier pins the PressureTier enum's lowercase wire form.
         let tier = json["globalTier"].as_str().unwrap();
         assert!(

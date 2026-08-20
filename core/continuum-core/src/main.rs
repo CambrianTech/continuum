@@ -7,9 +7,15 @@
 // muzzy_decay_ms=2000 (return muzzy pages after 2s instead of default 10s).
 // On a 32GB machine with 15 bursty personas, the default 10s window accumulates
 // 3-5GB of "owned unmapped memory" that inflates RSS.
+// Gated off windows-msvc: jemalloc-sys's autotools `configure` can't build
+// there, so Windows uses the system allocator. jemalloc stays on the
+// Linux/macOS serving nodes where the Bevy/persona fragmentation above bites
+// (Windows here is a dev/serving-via-Docker host, not the fragmentation case).
+#[cfg(not(target_env = "msvc"))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+#[cfg(not(target_env = "msvc"))]
 #[allow(non_upper_case_globals)]
 #[unsafe(export_name = "malloc_conf")]
 pub static malloc_conf: &[u8] = b"dirty_decay_ms:1000,muzzy_decay_ms:2000\0";
@@ -55,31 +61,86 @@ use tracing::info;
 /// The `Drop` impls remain correct for normal lifetime — model unload,
 /// context swap, etc. We're only short-circuiting the process-exit path.
 fn install_shutdown_handlers() {
-    // SIGTERM (from npm stop / kill / system-stop.sh)
-    tokio::spawn(async {
-        if let Ok(mut sig) =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        {
-            sig.recv().await;
-            eprintln!("[continuum-core] SIGTERM — killing sentinel process groups");
-            continuum_core::modules::sentinel::shutdown_all_sentinels();
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            unsafe { libc::_exit(0) };
-        }
-    });
+    // Unix: SIGTERM (npm stop / kill / system-stop.sh) + SIGINT (Ctrl+C).
+    // Windows has neither as a POSIX signal — its shutdown edges are Ctrl+C,
+    // console-window close (the WM_CLOSE that `taskkill` and the npm-stop path
+    // deliver), and system shutdown/logoff, exposed via tokio::signal::windows.
+    // Both platforms get identical treatment: tear down sentinel process groups,
+    // then fast-`_exit` to skip llama.cpp's C++ static destructors (see the
+    // double-free note above). `libc::_exit` exists on windows-msvc too.
+    #[cfg(unix)]
+    {
+        // SIGTERM (from npm stop / kill / system-stop.sh)
+        tokio::spawn(async {
+            if let Ok(mut sig) =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            {
+                sig.recv().await;
+                eprintln!("[continuum-core] SIGTERM — killing sentinel process groups");
+                continuum_core::modules::sentinel::shutdown_all_sentinels();
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                unsafe { libc::_exit(0) };
+            }
+        });
 
-    // SIGINT (Ctrl+C)
-    tokio::spawn(async {
-        if let Ok(mut sig) =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
-        {
-            sig.recv().await;
-            eprintln!("[continuum-core] SIGINT — killing sentinel process groups");
+        // SIGINT (Ctrl+C)
+        tokio::spawn(async {
+            if let Ok(mut sig) =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+            {
+                sig.recv().await;
+                eprintln!("[continuum-core] SIGINT — killing sentinel process groups");
+                continuum_core::modules::sentinel::shutdown_all_sentinels();
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                unsafe { libc::_exit(0) };
+            }
+        });
+    }
+
+    #[cfg(windows)]
+    {
+        tokio::spawn(async {
+            // Ctrl+C is the required edge; console-close + system-shutdown are
+            // best-effort (a failed install parks that arm forever so select!
+            // still waits on the others).
+            let mut ctrl_c = match tokio::signal::windows::ctrl_c() {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("[continuum-core] could not install Ctrl+C handler: {e}");
+                    return;
+                }
+            };
+            let mut ctrl_close = tokio::signal::windows::ctrl_close().ok();
+            let mut ctrl_shutdown = tokio::signal::windows::ctrl_shutdown().ok();
+
+            let close_fut = async {
+                match ctrl_close.as_mut() {
+                    Some(s) => {
+                        s.recv().await;
+                    }
+                    None => std::future::pending::<()>().await,
+                }
+            };
+            let shutdown_fut = async {
+                match ctrl_shutdown.as_mut() {
+                    Some(s) => {
+                        s.recv().await;
+                    }
+                    None => std::future::pending::<()>().await,
+                }
+            };
+
+            tokio::select! {
+                _ = ctrl_c.recv() => {}
+                _ = close_fut => {}
+                _ = shutdown_fut => {}
+            }
+            eprintln!("[continuum-core] shutdown signal — killing sentinel process groups");
             continuum_core::modules::sentinel::shutdown_all_sentinels();
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             unsafe { libc::_exit(0) };
-        }
-    });
+        });
+    }
 }
 
 /// Short human-readable description of each `BootMode` — surfaces
@@ -97,9 +158,7 @@ fn register_bevy_reporter(
         Some(b) => b,
         None => {
             // Ready edge fired but renderer absent — race during shutdown.
-            tracing::warn!(
-                "🧠 Bevy ready edge fired but try_get returned None; skipping reporter"
-            );
+            tracing::warn!("🧠 Bevy ready edge fired but try_get returned None; skipping reporter");
             return;
         }
     };
@@ -133,6 +192,16 @@ fn boot_mode_description(mode: continuum_core::runtime::BootMode) -> &'static st
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Deploy-verification (#194). `continuum-core-server --build-sha` prints the git commit
+    // THIS binary was built from and exits immediately (before any tracing/socket/side-effect),
+    // so `continuum reboot` can prove the running core is the freshly-built one — not a stale cached
+    // binary that answered on the same socket and reported success. A reboot that silently runs
+    // old code is a lie; this makes it impossible.
+    if std::env::args().nth(1).as_deref() == Some("--build-sha") {
+        println!("{}", env!("CONTINUUM_BUILD_GIT_SHA"));
+        return Ok(());
+    }
+
     // Substrate-canonical tracing stack: UriCapture + ProbeRouter +
     // optional JsonlProbeFileSink + fmt-to-stderr governed by
     // RUST_LOG (default `info`). See
@@ -141,15 +210,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Env-coupling lives at exactly one seam: `from_env(...)`. The
     // installer takes only typed values — tests construct config
     // directly without racing `std::env::set_var`. Setting
-    // `CONTINUUM_PROBE_DIR=/tmp/probes.jsonl` lights up the JSONL
-    // sink with zero binary changes; the boot log below reports
-    // the path so the operator sees it landed.
+    // `CONTINUUM_PROBE_DIR=/tmp/probes` lights up the JSONL sink
+    // with zero binary changes; the boot log below reports the
+    // directory so the operator sees it landed. A DIRECTORY, not a
+    // file — the sink owns the file name because it rotates by size
+    // (#341).
     let probe_install = install_probe_tracing(ProbeTracingConfig::from_env("info"))?;
     if let Some(ref path) = probe_install.probe_log_path {
         // Use println so it appears even when RUST_LOG filters out
         // info-level tracing events — the operator who just set the
         // env var SHOULD see this confirmation.
-        eprintln!("[continuum-core-server] probes landing at {}", path.display());
+        eprintln!(
+            "[continuum-core-server] probes landing at {}/continuum-probes.jsonl (size-rotated)",
+            path.display()
+        );
     }
     // Per `[[never-redirect-substrate-stderr]]`: the substrate now
     // owns its tracing fmt-layer log persistence via a rolling-file
@@ -159,8 +233,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `npm start 2>&1 | tee /tmp/server.log` pattern.
     if let Some(ref dir) = probe_install.log_dir {
         eprintln!(
-            "[continuum-core-server] logs landing at {}/continuum-core-server.YYYY-MM-DD.log (rolling daily, retention 7)",
-            dir.display()
+            "[continuum-core-server] logs landing at {}/continuum-core-server.log \
+             (size-rotated at {} MB, {} generations kept — max {} MB total)",
+            dir.display(),
+            continuum_core::routing::capped_appender::MAX_LOG_BYTES / (1024 * 1024),
+            continuum_core::routing::capped_appender::KEEP,
+            continuum_core::routing::capped_appender::MAX_LOG_BYTES
+                * (continuum_core::routing::capped_appender::KEEP as u64 + 1)
+                / (1024 * 1024)
         );
     }
     // CRITICAL: hold the non-blocking writer's WorkerGuard for the
@@ -202,7 +282,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.len() >= 2 {
         match args[1].as_str() {
             "-V" | "--version" | "version" => {
-                println!("continuum-core-server {}", env!("CARGO_PKG_VERSION"));
+                // Number + sha together, always (Joel 2026-08-08): the number
+                // orders two builds at a glance, the sha names the source.
+                println!(
+                    "continuum-core-server {} build {} ({}) built {}",
+                    env!("CARGO_PKG_VERSION"),
+                    env!("CONTINUUM_BUILD_NUMBER"),
+                    env!("CONTINUUM_BUILD_GIT_SHA"),
+                    env!("CONTINUUM_BUILD_AT"),
+                );
                 std::process::exit(0);
             }
             "-h" | "--help" | "help" => {
@@ -215,7 +303,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  -h, --help       Print this help and exit");
                 println!();
                 println!("Modes:");
-                println!("  full-citizen     (default) hosts personas via AIRC; requires AIRC Healthy");
+                println!(
+                    "  full-citizen     (default) hosts personas via AIRC; requires AIRC Healthy"
+                );
                 println!("  inference-only   no persona hosting; allows degraded AIRC");
                 println!("  fail-fast        strictest; refuses any degraded capability");
                 std::process::exit(0);
@@ -223,18 +313,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => {}
         }
     }
-    if args.len() < 2 {
-        eprintln!("Usage: {} [--mode=<MODE>] <socket-path>", args[0]);
-        eprintln!("Example: {} /tmp/continuum-core.sock", args[0]);
-        eprintln!("Try `{} --help` for more.", args[0]);
-        std::process::exit(1);
-    }
-
-    let socket_path = args[1].clone();
+    // argv[1] wins; otherwise resolve the socket the SAME way every client does.
+    //
+    // This binary used to be the one component in the tree that hand-rolled its own
+    // socket resolution — argv or die — while `continuum`, `continuum-mcp` and every
+    // library caller went through `endpoint_paths::core_socket_path()` (which honours
+    // `CONTINUUM_CORE_SOCKET`, then the platform default). That disagreement is not
+    // cosmetic: `launch_core` communicated the socket over exactly that env var and
+    // omitted the positional, so the server exited 1 with its usage text ~2s into every
+    // `start`/`reboot` on a machine with an installed binary. The launcher's bug is
+    // fixed on its side too, but a resolver that everyone else shares and this process
+    // ignores is a standing invitation to the same defect.
+    let socket_path = match args.get(1) {
+        Some(explicit) => explicit.clone(),
+        None => continuum_core::ipc::endpoint_paths::core_socket_path(),
+    };
 
     info!("🦀 Continuum Core Server starting...");
     info!("   IPC Socket: {socket_path}");
-    info!("   Boot mode:  {} ({})", boot_mode.label(), boot_mode_description(boot_mode));
+    info!(
+        "   Boot mode:  {} ({})",
+        boot_mode.label(),
+        boot_mode_description(boot_mode)
+    );
 
     // Create LiveKit agent manager — routes audio/video through LiveKit WebRTC SFU.
     // Handles speak-in-call, inject-audio, ambient, and video track publishing.
@@ -247,26 +348,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize Hippocampus memory subsystem (task #40). Embedding is async +
     // adapter-routed (never an in-process ONNX model). The GLOBAL manager here
-    // bootstraps with the LEXICAL embedder — instant, no network on the boot
-    // critical path. This is non-negotiable per the concurrency guide: NOTHING
-    // may gate the IPC socket bind on a gateway probe (a hanging `/v1/models`
-    // call here previously wedged boot before the socket bound). The LIVE
-    // per-persona recall path resolves its own NEURAL embedder lazily on spawn
-    // (`supervisor` → `cognition::embedding::resolve_recall_embedder`) and logs
-    // gateway availability there — that is where real semantic recall lives.
-    // The lexical embedder is an explicit, logged, non-neural relevance embedder
-    // (allowed; NOT a silent ONNX fallback). Wiring neural embedding for the
-    // global manager (against the dedicated embed server, not the chat gateway)
-    // is a separate addressing follow-up.
+    // now holds the LAZY recall embedder: still constructed with ZERO boot-path
+    // cost (no GPU/gateway probe), but on the FIRST real recall it resolves the
+    // dedicated in-process NEURAL embedder (Qwen3-Embedding-0.6B GGUF) via
+    // `resolve_recall_embedder_local` — probe-gated, process-stable, LOUD if it
+    // has to fall to the lexical floor. This is non-negotiable per the
+    // concurrency guide: NOTHING may gate the IPC socket bind on a gateway probe
+    // (a hanging `/v1/models` call here previously wedged boot before the socket
+    // bound) — the lazy embedder keeps that guarantee while giving the
+    // agent-memory bridge + hydrated corpora real SEMANTIC recall, not the
+    // lexical word-overlap floor they were silently stuck on. (This is the
+    // "separate addressing follow-up" the old comment promised.) The per-persona
+    // recall path still resolves its own neural embedder on spawn.
     info!(
-        "🧠 Initializing Hippocampus (lexical bootstrap embedder; per-persona recall \
-         resolves neural on spawn) — no gateway probe on the boot path"
+        "🧠 Initializing Hippocampus (lazy neural recall embedder; resolves \
+         in-process Qwen3-Embedding on first recall) — no gateway probe on the boot path"
     );
     let embedding_provider: Arc<dyn continuum_core::memory::EmbeddingProvider> =
-        Arc::new(continuum_core::cognition::embedding::CachingEmbeddingProvider::new(
-            Arc::new(continuum_core::cognition::embedding::LexicalEmbedder::new()),
-        ));
+        Arc::new(continuum_core::cognition::embedding::LazyRecallEmbedder::new());
     let memory_manager = Arc::new(PersonaMemoryManager::new(embedding_provider));
+
+    // Persist the process-global embedding cache across restarts. This is the ONE
+    // cache every persona AND agent shares — their recall embedders all wrap
+    // `global_embedding_cache()` — so warming it here brings back the whole
+    // citizenry's vectors at once: each unique content embeds ONCE, ever, instead
+    // of re-embedding (and re-fighting the serving lane for VRAM) on every boot.
+    // Own background task, snapshot on a slow cadence, best-effort (a lost snapshot
+    // just re-embeds). Off the boot critical path — the load is a fast file read,
+    // no gateway/GPU probe.
+    if let Some(home) = dirs::home_dir() {
+        let cache_path = home
+            .join(".continuum")
+            .join("cache")
+            .join("embedding-cache.bin");
+        continuum_core::cognition::embedding::spawn_embedding_cache_persistence(
+            continuum_core::cognition::embedding::global_embedding_cache(),
+            cache_path,
+        );
+    }
 
     // Capture tokio runtime handle for async operations from IPC thread
     let rt_handle = tokio::runtime::Handle::current();
@@ -379,7 +498,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     };
-    if tokio::time::timeout(boot_deadline, wait_ready).await.is_err() {
+    if tokio::time::timeout(boot_deadline, wait_ready)
+        .await
+        .is_err()
+    {
         // eprintln! alongside tracing: libc::_exit(1) skips the async appender
         // flush, so the raw stderr write is what the operator/service log sees.
         let m = format!(

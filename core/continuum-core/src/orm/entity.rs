@@ -139,7 +139,10 @@ impl OrmEntityRegistry {
     pub fn register<E: OrmEntity>(&self) -> Result<(), RegistrationError> {
         let schema = E::collection_schema();
         let collection = schema.collection.clone();
-        let mut map = self.schemas.write().expect("OrmEntityRegistry lock poisoned");
+        let mut map = self
+            .schemas
+            .write()
+            .expect("OrmEntityRegistry lock poisoned");
         match map.get(&collection) {
             Some(existing) if schemas_equivalent(existing, &schema) => Ok(()),
             Some(_) => Err(RegistrationError::SchemaConflict {
@@ -156,14 +159,20 @@ impl OrmEntityRegistry {
     /// Returns `None` when the collection isn't registered here; the
     /// caller falls back to `entity_schemas.json`.
     pub fn resolve(&self, collection: &str) -> Option<CollectionSchema> {
-        let map = self.schemas.read().expect("OrmEntityRegistry lock poisoned");
+        let map = self
+            .schemas
+            .read()
+            .expect("OrmEntityRegistry lock poisoned");
         map.get(collection).cloned()
     }
 
     /// All registered collection names. Useful for diagnostics and the
     /// `data/list-collections` path.
     pub fn collection_names(&self) -> Vec<String> {
-        let map = self.schemas.read().expect("OrmEntityRegistry lock poisoned");
+        let map = self
+            .schemas
+            .read()
+            .expect("OrmEntityRegistry lock poisoned");
         map.keys().cloned().collect()
     }
 

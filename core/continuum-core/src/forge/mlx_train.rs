@@ -227,6 +227,30 @@ pub fn build_train_args(spec: &MlxTrainSpec, config_path: &Path) -> Vec<String> 
     args
 }
 
+/// The spawn argv: [`build_train_args`]'s `python -m mlx_lm lora …` when uncapped,
+/// or — when the governor sized the job — a `-c` preamble that pins the Metal
+/// allocator to the granted footprint BEFORE `mlx_lm.lora.main()` runs, passing
+/// the CLI args through `sys.argv`. Pure + testable like its sibling.
+pub fn build_train_argv(
+    spec: &MlxTrainSpec,
+    config_path: &Path,
+    memory_cap_bytes: Option<u64>,
+) -> Vec<String> {
+    let base = build_train_args(spec, config_path);
+    let Some(cap) = memory_cap_bytes else {
+        return base;
+    };
+    let wrapper = format!(
+        "import sys; import mlx.core as mx; mx.set_memory_limit({cap}); \
+from mlx_lm import lora; sys.argv = ['mlx_lm.lora'] + sys.argv[1:]; lora.main()"
+    );
+    // base = ["-m","mlx_lm","lora", <cli…>] — the wrapper replaces the module
+    // dispatch and consumes the same CLI tail.
+    let mut argv = vec!["-c".to_string(), wrapper];
+    argv.extend(base.into_iter().skip(3));
+    argv
+}
+
 /// Apply the EXPLICIT, caller-supplied [`MlxBasePrep`] normalizations to an HF
 /// base dir in place, idempotently. Returns the list of changes made (empty when
 /// the base was already mlx-ready) so the caller can log/inspect what it touched.
@@ -241,10 +265,10 @@ pub fn prepare_base_for_mlx(
     // 1. model_type dispatch rewrite (e.g. qwen3_5_text → qwen3_5).
     if let Some(want) = &prep.model_type_override {
         let path = base_model_dir.join("config.json");
-        let text = std::fs::read_to_string(&path)
-            .map_err(|e| format!("read {}: {e}", path.display()))?;
-        let mut cfg: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|e| format!("parse {}: {e}", path.display()))?;
+        let text =
+            std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        let mut cfg: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| format!("parse {}: {e}", path.display()))?;
         let cur = cfg
             .get("model_type")
             .and_then(|v| v.as_str())
@@ -253,8 +277,7 @@ pub fn prepare_base_for_mlx(
             cfg["model_type"] = serde_json::Value::String(want.clone());
             let pretty = serde_json::to_string_pretty(&cfg)
                 .map_err(|e| format!("serialize config.json: {e}"))?;
-            std::fs::write(&path, pretty)
-                .map_err(|e| format!("write {}: {e}", path.display()))?;
+            std::fs::write(&path, pretty).map_err(|e| format!("write {}: {e}", path.display()))?;
             changes.push(format!(
                 "config.json model_type {:?} → {:?}",
                 cur.as_deref().unwrap_or("(absent)"),
@@ -266,10 +289,10 @@ pub fn prepare_base_for_mlx(
     // 2. chat_template — only ADD when absent (never overwrite a real template).
     if let Some(template) = &prep.chat_template {
         let path = base_model_dir.join("tokenizer_config.json");
-        let text = std::fs::read_to_string(&path)
-            .map_err(|e| format!("read {}: {e}", path.display()))?;
-        let mut cfg: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|e| format!("parse {}: {e}", path.display()))?;
+        let text =
+            std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        let mut cfg: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| format!("parse {}: {e}", path.display()))?;
         let has = cfg
             .get("chat_template")
             .map(|v| !v.is_null())
@@ -278,13 +301,125 @@ pub fn prepare_base_for_mlx(
             cfg["chat_template"] = serde_json::Value::String(template.clone());
             let pretty = serde_json::to_string_pretty(&cfg)
                 .map_err(|e| format!("serialize tokenizer_config.json: {e}"))?;
-            std::fs::write(&path, pretty)
-                .map_err(|e| format!("write {}: {e}", path.display()))?;
+            std::fs::write(&path, pretty).map_err(|e| format!("write {}: {e}", path.display()))?;
             changes.push("tokenizer_config.json: added chat_template".to_string());
         }
     }
 
     Ok(changes)
+}
+
+/// Generous wall-clock TTL for the training job's governed VRAM/UMA lease (#56/G2).
+/// A LoRA forge can run many minutes to hours; the RAII guard releases the moment
+/// `run_mlx_train` returns (the child has exited by then). This TTL is ONLY the
+/// self-healing backstop that returns the reservation to the board if the whole
+/// PROCESS is SIGKILLed mid-train without running `Drop`.
+const FORGE_TRAIN_LEASE_TTL_MS: u64 = 6 * 60 * 60 * 1000;
+
+/// Derive a training job's peak UMA footprint from its OWN parameters — a sum of
+/// named terms, not a multiplier ([[no-hardcoded-heuristics]]; the ×1.3-then-×2.0
+/// factor era ended 2026-07-23 when ×1.3 granted a Devstral-24B job that Metal
+/// OOM'd at `Calculating loss 0%`, dragging the live serving lane into a 503):
+///
+///   weights   — sum of the base dir's `*.safetensors` bytes (resident, mmap'd)
+///   logits    — `batch × seq_len × vocab × 4B × 2` (fwd f32 logits + grad; the
+///               dominant term on long-trajectory corpora and the exact
+///               allocation that killed the receipt job)
+///   slop      — weights/8: allocator fragmentation + KV/rotary scratch, named
+///               and bounded rather than folded into a magic factor
+///
+/// `vocab_size` comes from the base's own `config.json`. `None` when the dir has
+/// no safetensors or no readable vocab — the caller treats that as "can't size,
+/// proceed ungoverned" (probed loud) rather than blocking an unsizable job.
+fn derive_train_footprint_bytes(
+    base_model_dir: &std::path::Path,
+    batch_size: u32,
+    max_seq_length: u32,
+) -> Option<u64> {
+    let mut weight_bytes = 0u64;
+    for entry in std::fs::read_dir(base_model_dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("safetensors") {
+            if let Ok(meta) = std::fs::metadata(&path) {
+                weight_bytes = weight_bytes.saturating_add(meta.len());
+            }
+        }
+    }
+    if weight_bytes == 0 {
+        return None;
+    }
+    let config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(base_model_dir.join("config.json")).ok()?)
+            .ok()?;
+    let vocab = config.get("vocab_size").and_then(|v| v.as_u64())?;
+    let logits_bytes = (batch_size as u64)
+        .saturating_mul(max_seq_length as u64)
+        .saturating_mul(vocab)
+        .saturating_mul(4)
+        .saturating_mul(2);
+    Some(weight_bytes + logits_bytes + weight_bytes / 8)
+}
+
+/// Ask the ONE resource authority for a training job's VRAM/UMA slot (#56/G2), the
+/// forge sibling of the eval lane's `acquire_eval_lane_slot`. A `mlx_lm.lora` job
+/// loads the FULL base into unified memory — on a UMA box that is VRAM contention
+/// with the live persona lanes, and it used to launch with ZERO governor check
+/// (invisible pressure that could OOM a live video-chat mid-forge). Now it leases:
+///   granted  → hold the guard for the whole run so serving sees the bytes as taken
+///   refused  → fail LOUD with the governed numbers (a background forge must not OOM
+///              the machine — retry when pressure clears; the L3 flywheel re-attempts)
+///   unsized / ungoverned → proceed unleased (can't size, or no daemon on this node)
+fn acquire_train_slot(
+    footprint: Option<u64>,
+    base_model_dir: &std::path::Path,
+) -> Result<Option<crate::resources::LeaseGuard>, String> {
+    use crate::resources::{LeaseError, LeaseRequest, ReclaimPolicy, ResourceDaemon, ResourceKind};
+    let Some(daemon) = ResourceDaemon::global() else {
+        return Ok(None); // ungoverned node — proceed unleased, behavior unchanged
+    };
+    let Some(footprint) = footprint else {
+        crate::probe!(
+            class = "forge.mlx_train.govern",
+            base = %base_model_dir.display(),
+            "could not size training footprint (no safetensors / unreadable vocab) — proceeding UNGOVERNED"
+        );
+        return Ok(None);
+    };
+    let req = LeaseRequest {
+        consumer_id: "forge-train".to_string(),
+        kind: ResourceKind::Vram,
+        bytes: footprint,
+        ttl_ms: FORGE_TRAIN_LEASE_TTL_MS,
+        // A bare lease with no preemption handler must stay Pinned: the RAII guard is
+        // the real release, so the board must never free the accounting while the
+        // subprocess still holds the UMA. Real yield-under-pressure (checkpoint + pause
+        // the forge when live serving needs the bytes) is the piece-3 follow-up.
+        reclaim_policy: ReclaimPolicy::Pinned,
+    };
+    match daemon.acquire_guarded(&req) {
+        Ok(guard) => {
+            crate::probe!(
+                class = "forge.mlx_train.govern",
+                footprint_bytes = footprint,
+                "governor granted a training lease"
+            );
+            Ok(Some(guard))
+        }
+        Err(LeaseError::InsufficientCapacity {
+            available,
+            requested,
+            ..
+        }) => Err(format!(
+            "governor refused the training lease: needs {requested}B of VRAM/UMA but only \
+             {available}B is available (live serving + other consumers hold the rest). \
+             Refusing to launch mlx_lm.lora rather than OOM the machine mid-forge — free \
+             VRAM (quit a game, let a benchmark lane finish) and retry."
+        )),
+        Err(e) => Err(format!(
+            "governor lease error acquiring a training slot ({e:?}) — refusing to launch \
+             ungoverned rather than risk an OOM"
+        )),
+    }
 }
 
 /// Run the native MLX LoRA trainer end-to-end: validate the env + IO contract,
@@ -360,12 +495,27 @@ pub fn run_mlx_train(
     std::fs::write(&config_path, build_lora_config_yaml(spec))
         .map_err(|e| format!("write MLX train config {}: {e}", config_path.display()))?;
 
+    // --- ask the ONE governor for this job's VRAM/UMA slot BEFORE spawning (#56/G2) ---
+    // A `mlx_lm.lora` job loads the full base into unified memory; on a UMA box that is
+    // real contention with the live persona lanes. Held for the WHOLE run (dropped when
+    // this fn returns, AFTER `child.wait()` below — free the process, then the accounting)
+    // so a concurrent serving tick sees the training bytes as taken and won't tier up into
+    // them. Fails LOUD if the governor can't fit it — never OOM a live video-chat mid-forge.
+    let footprint =
+        derive_train_footprint_bytes(&spec.base_model_dir, spec.batch_size, spec.max_seq_length);
+    let _train_lease = acquire_train_slot(footprint, &spec.base_model_dir)?;
+
     // --- spawn the trainer, STREAMING stdout for live progress ---
     // mlx_lm.lora prints `Iter N: Train loss X, …` lines as it trains; we parse them
     // and publish step/loss to `on_progress` so `forge/train-status` shows the gene
     // forming in real time (the "watch it learn" glass box). stderr is drained on a
     // side thread (avoids a pipe-full deadlock) and kept for the failure message.
-    let args = build_train_args(spec, &config_path);
+    // Enforce the grant AT THE ALLOCATOR: the trainer subprocess gets
+    // `mx.set_memory_limit(footprint)` before mlx_lm runs, so if reality exceeds
+    // the estimate the job fails INSIDE its own cap — the live serving lane never
+    // feels it. Estimation accuracy is no longer safety-critical; the lease is a
+    // contract, not advice. Unsized/ungoverned → uncapped, exactly as before.
+    let args = build_train_argv(spec, &config_path, footprint);
     let mut child = std::process::Command::new(&env.python)
         .args(&args)
         .stdout(std::process::Stdio::piped())
@@ -385,7 +535,10 @@ pub fn run_mlx_train(
 
     if let Some(stdout) = child.stdout.take() {
         use std::io::BufRead;
-        for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+        for line in std::io::BufReader::new(stdout)
+            .lines()
+            .map_while(Result::ok)
+        {
             if let Some((step, loss)) = parse_mlx_progress(&line) {
                 on_progress(step, loss);
             }
@@ -455,6 +608,68 @@ mod tests {
         );
         assert_eq!(parse_mlx_progress("Starting training..."), None);
         assert_eq!(parse_mlx_progress("Iter oops: Train loss 1.0"), None);
+    }
+
+    // what this catches: #56/G2 — a training job's governed footprint is a SUM OF
+    // DERIVED TERMS (weights + batch×seq×vocab×4×2 logits + weights/8 slop), never a
+    // magic multiplier — regression for the 2026-07-23 receipt where a factor-sized
+    // job was granted, Metal OOM'd at the loss step (the logits allocation), and the
+    // live serving lane was dragged into a 503. No safetensors OR no readable
+    // vocab_size → None ("can't size, proceed ungoverned" — probed, never blocking).
+    #[test]
+    fn train_footprint_is_a_sum_of_derived_terms() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().expect("tmp");
+        let mut a = std::fs::File::create(dir.path().join("model-00001.safetensors")).unwrap();
+        a.write_all(&vec![0u8; 1000]).unwrap();
+        let mut b = std::fs::File::create(dir.path().join("model-00002.safetensors")).unwrap();
+        b.write_all(&vec![0u8; 3000]).unwrap();
+        std::fs::write(dir.path().join("config.json"), br#"{"vocab_size": 1000}"#).unwrap();
+        let est = derive_train_footprint_bytes(dir.path(), 2, 128).expect("sizes");
+        // weights 4000 + logits 2×128×1000×4×2 + slop 4000/8
+        assert_eq!(
+            est,
+            4000 + 2 * 128 * 1000 * 4 * 2 + 500,
+            "sum of named terms"
+        );
+
+        // vocab missing → None (can't derive the dominant term → ungoverned, probed).
+        std::fs::write(dir.path().join("config.json"), b"{}").unwrap();
+        assert_eq!(derive_train_footprint_bytes(dir.path(), 2, 128), None);
+
+        // No safetensors → None.
+        let empty = tempfile::tempdir().unwrap();
+        std::fs::write(empty.path().join("config.json"), br#"{"vocab_size": 1000}"#).unwrap();
+        assert_eq!(derive_train_footprint_bytes(empty.path(), 2, 128), None);
+    }
+
+    // what this catches: the allocator-enforcement contract — a governor-sized job's
+    // argv pins `mx.set_memory_limit(<grant>)` BEFORE mlx_lm runs (the lease is a
+    // contract, not advice: an under-estimated job dies inside its own cap instead of
+    // OOMing the live serving lane), while an unsized job spawns the plain module
+    // dispatch unchanged.
+    #[test]
+    fn capped_argv_pins_the_allocator_to_the_grant() {
+        let cfg = PathBuf::from("/out/cfg.yaml");
+        let plain = build_train_argv(&spec(), &cfg, None);
+        assert_eq!(
+            &plain[..3],
+            &["-m".to_string(), "mlx_lm".into(), "lora".into()]
+        );
+
+        let capped = build_train_argv(&spec(), &cfg, Some(12_345_678));
+        assert_eq!(capped[0], "-c");
+        assert!(
+            capped[1].contains("mx.set_memory_limit(12345678)"),
+            "wrapper must pin the granted bytes: {}",
+            capped[1]
+        );
+        assert!(
+            capped[1].contains("lora.main()"),
+            "wrapper delegates to mlx_lm.lora"
+        );
+        // The CLI tail is identical to the plain form's (everything after `lora`).
+        assert_eq!(&capped[2..], &plain[3..], "same CLI args reach the trainer");
     }
 
     fn spec() -> MlxTrainSpec {
@@ -566,7 +781,9 @@ mod tests {
         let cfg = PathBuf::from("/out/mlx_train_config.yaml");
         let mut off = spec();
         off.grad_checkpoint = false;
-        assert!(!build_train_args(&off, &cfg).iter().any(|a| a == "--grad-checkpoint"));
+        assert!(!build_train_args(&off, &cfg)
+            .iter()
+            .any(|a| a == "--grad-checkpoint"));
         let mut on = spec();
         on.grad_checkpoint = true;
         let on_args = build_train_args(&on, &cfg);
@@ -594,10 +811,7 @@ mod tests {
     // on a second pass (idempotent) while never clobbering an existing template.
     #[test]
     fn prepare_base_normalizes_model_type_and_adds_chat_template() {
-        let dir = std::env::temp_dir().join(format!(
-            "mlx_prep_test_{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("mlx_prep_test_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("config.json"),
@@ -615,7 +829,11 @@ mod tests {
             chat_template: Some("{{ TEMPLATE }}".into()),
         };
         let changes = prepare_base_for_mlx(&dir, &prep).unwrap();
-        assert_eq!(changes.len(), 2, "expected both normalizations: {changes:?}");
+        assert_eq!(
+            changes.len(),
+            2,
+            "expected both normalizations: {changes:?}"
+        );
 
         let cfg: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap())

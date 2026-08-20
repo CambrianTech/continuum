@@ -4,4 +4,4 @@ import type { StepResult } from "./StepResult";
 /**
  * Result of pipeline execution
  */
-export type PipelineResult = { handle: string, success: boolean, totalDurationMs: bigint, stepsCompleted: number, stepsTotal: number, stepResults: Array<StepResult>, error: string | null, };
+export type PipelineResult = { handle: string, success: boolean, totalDurationMs: bigint, stepsCompleted: number, stepsTotal: number, stepResults: Array<StepResult>, error?: string, };

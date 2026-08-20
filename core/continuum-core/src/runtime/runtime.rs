@@ -53,7 +53,14 @@ impl Runtime {
         Self {
             registry: Arc::new(ModuleRegistry::new()),
             bus: Arc::new(MessageBus::new()),
-            compute: Arc::new(SharedCompute::new()),
+            // Adopt the ONE process-global compute-once/share-many cache (not a
+            // private instance) so a module reaching it via `ModuleContext.compute`
+            // and a persona's `MediaPerceptionSource` reaching it via
+            // `shared_compute::global()` share the SAME derivatives — the media
+            // ingest that warms a frame and the perception source that reads it
+            // cannot diverge. Content-addressed + pure, so one shared cache is
+            // correct ([[media-is-compute-once-zero-copy-hardware-grade]]).
+            compute: super::shared_compute::global(),
             concurrency_limits: Arc::new(DashMap::new()),
             provider_registry: Arc::new(super::ProviderRegistry::new()),
         }
@@ -152,6 +159,23 @@ impl Runtime {
         let modules = self.registry.list_modules();
         info!("Initializing {} modules...", modules.len());
 
+        // Dispatch-parity audit (see [`ModuleRegistry::dispatch_orphans`]): every
+        // advertised command must be routable NOW, before any client can be told
+        // it exists. ERROR (not panic) so a drift is loud on the first boot that
+        // ships it without bricking the substrate; promote to a boot refusal once
+        // the count holds at zero across the fleet.
+        let orphans = self.registry.dispatch_orphans();
+        if !orphans.is_empty() {
+            tracing::error!(
+                probe_class = "registry.dispatch_parity",
+                orphans = ?orphans,
+                count = orphans.len(),
+                "ADVERTISED-BUT-UNDISPATCHABLE commands: these appear in help, \
+                 suggestions, and the persona tool offer but cannot route — add each \
+                 to its module's commands() vec (the work/list class, #309)"
+            );
+        }
+
         // Per-module init deadline. A module's `initialize()` is meant to be fast
         // (in-memory wiring; heavy work is detached / tick-driven), so 60s is a
         // wedged-init backstop, NOT a normal budget — it bounds the airc-120s-hang
@@ -166,7 +190,8 @@ impl Runtime {
         let mut failures: Vec<String> = Vec::new();
         for name in &modules {
             if let Some(module) = self.registry.get_by_name(name) {
-                match tokio::time::timeout(PER_MODULE_INIT_DEADLINE, module.initialize(&ctx)).await {
+                match tokio::time::timeout(PER_MODULE_INIT_DEADLINE, module.initialize(&ctx)).await
+                {
                     Ok(Ok(_)) => {
                         info!("  {} initialized", name);
                     }
@@ -245,9 +270,8 @@ impl Runtime {
         crate::probe!(class = "ready.awaiting", module = module_name);
         loop {
             if rx.changed().await.is_err() {
-                let err = format!(
-                    "module '{module_name}' ready watch closed before publishing ready"
-                );
+                let err =
+                    format!("module '{module_name}' ready watch closed before publishing ready");
                 crate::probe!(class = "ready.watch_closed", module = module_name);
                 return Err(err);
             }
@@ -339,9 +363,18 @@ impl Runtime {
         params: serde_json::Value,
         caller: Option<crate::routing::CallerIdentity>,
     ) -> Option<Result<CommandResult, String>> {
+        // Meet the caller's dialect: a socket client (uu / IPC / MCP) may reach for
+        // a command's trained alias (`read_file`), former name, or charset-legal
+        // form (`code_read`). Resolve to the canonical name through the SAME
+        // tool_dialect section the persona path uses, so every surface accepts the
+        // same vocabulary. Idempotent on an already-canonical name — a no-op for the
+        // common case. Non-recording (the persona path owns the tool-usage tally).
+        let resolved = crate::cognition::tool_dialect::resolve_wire_name(command);
+        let command = resolved.as_str();
+
         // Typed path wins: a registered DynCommand object routes DIRECTLY (O(1),
         // lock-free), ahead of the prefix table — same precedence the
-        // CommandExecutor uses. This is the live socket route (cu / IPC), so the
+        // CommandExecutor uses. This is the live socket route (uu / IPC), so the
         // consult must live here too until the dispatch paths are unified.
         // See docs/architecture/COMMAND-ORGANIZATION.md.
         //
@@ -366,7 +399,7 @@ impl Runtime {
         // Provided commands (perception/observe, interface/screenshot) have NO
         // ServiceModule — the headless substrate can't render/capture them. Route
         // through the ONE Provided decision shared with the CommandExecutor's
-        // interceptor, so the SOCKET route (cu / IPC / MCP) reaches the eye-node by
+        // interceptor, so the SOCKET route (uu / IPC / MCP) reaches the eye-node by
         // the SAME infrastructure the in-process persona route uses — no path gains
         // a capability another lacks. Guard on the cheap set lookup so `params` is
         // moved (not cloned) on the common non-Provided path.
@@ -430,6 +463,12 @@ impl Runtime {
         params: serde_json::Value,
         rt_handle: &tokio::runtime::Handle,
     ) -> Option<Result<CommandResult, String>> {
+        // Same dialect resolution as the async route (see route_command): a socket
+        // client's trained alias / former name / charset-legal form maps to the
+        // canonical command before any registry lookup. Idempotent, non-recording.
+        let resolved = crate::cognition::tool_dialect::resolve_wire_name(command);
+        let command = resolved.as_str();
+
         // Typed path wins (see route_command). Bridge the async object dispatch
         // onto rt_handle with the same 60s safety-net timeout the module path uses.
         if let Some(cmd) = self.registry.route_object(command) {
@@ -477,8 +516,7 @@ impl Runtime {
                 },
                 None => None,
             };
-            let result =
-                dispatch_with_panic_guard(&module, &full_cmd, params, module_name).await;
+            let result = dispatch_with_panic_guard(&module, &full_cmd, params, module_name).await;
             drop(permit);
             let _ = tx.send(result);
         });
@@ -834,7 +872,10 @@ pub(crate) async fn dispatch_object_with_panic_guard(
         Ok(r) => r,
         Err(panic) => {
             let panic_msg = panic_message(&*panic);
-            error!("Command '{}' panicked in DynCommand object: {}", name, panic_msg);
+            error!(
+                "Command '{}' panicked in DynCommand object: {}",
+                name, panic_msg
+            );
             crate::probe!(
                 class = "command.dispatch.panicked",
                 command = name,
@@ -943,17 +984,37 @@ pub const MODULES: &[ModuleSpec] = &[
     ModuleSpec::new("data", ServiceGroup::RuntimeShell, ModuleCategory::Core),
     // ResourceGov — hardware governance
     ModuleSpec::new("gpu", ServiceGroup::ResourceGov, ModuleCategory::Core),
-    ModuleSpec::new("resource-broker", ServiceGroup::ResourceGov, ModuleCategory::Core),
-    ModuleSpec::new("pressure-broker", ServiceGroup::ResourceGov, ModuleCategory::Core),
+    ModuleSpec::new(
+        "resource-broker",
+        ServiceGroup::ResourceGov,
+        ModuleCategory::Core,
+    ),
+    ModuleSpec::new(
+        "pressure-broker",
+        ServiceGroup::ResourceGov,
+        ModuleCategory::Core,
+    ),
     // Inference — the engine. (The bare `inference` shell module was deleted in
     // 89519a899 when its sole command `inference/capacity` became a stateless
     // self-routing command; this MODULES entry is dropped to match — leaving it
     // made `required_modules()` demand a module that no longer registers, which
     // hard-failed boot with "missing [inference]". The engine is now carried by
     // the coordinator / handle / llm / ai_provider modules below.)
-    ModuleSpec::new("inference-coordinator", ServiceGroup::Inference, ModuleCategory::Core),
-    ModuleSpec::new("ai-inference-handle", ServiceGroup::Inference, ModuleCategory::Core),
-    ModuleSpec::new("inference-llm", ServiceGroup::Inference, ModuleCategory::Core),
+    ModuleSpec::new(
+        "inference-coordinator",
+        ServiceGroup::Inference,
+        ModuleCategory::Core,
+    ),
+    ModuleSpec::new(
+        "ai-inference-handle",
+        ServiceGroup::Inference,
+        ModuleCategory::Core,
+    ),
+    ModuleSpec::new(
+        "inference-llm",
+        ServiceGroup::Inference,
+        ModuleCategory::Core,
+    ),
     ModuleSpec::new("ai_provider", ServiceGroup::Inference, ModuleCategory::Core),
     ModuleSpec::new("embedding", ServiceGroup::Inference, ModuleCategory::Core),
     // (`search` was retired here: its commands migrated onto the DynCommand
@@ -963,7 +1024,11 @@ pub const MODULES: &[ModuleSpec] = &[
     // made `required_modules()` demand a module that no longer registers, which
     // hard-failed boot with "missing [search]" — the same trap as the retired
     // `inference` shell above.)
-    ModuleSpec::new("tool-parsing", ServiceGroup::Inference, ModuleCategory::Core),
+    ModuleSpec::new(
+        "tool-parsing",
+        ServiceGroup::Inference,
+        ModuleCategory::Core,
+    ),
     ModuleSpec::new("vision", ServiceGroup::Inference, ModuleCategory::Core),
     ModuleSpec::new("models", ServiceGroup::Inference, ModuleCategory::Core),
     // Cognition — the brain (always-built modules + the persona-host conditionals)
@@ -971,7 +1036,11 @@ pub const MODULES: &[ModuleSpec] = &[
     ModuleSpec::new("rag", ServiceGroup::Cognition, ModuleCategory::Core),
     ModuleSpec::new("cognition", ServiceGroup::Cognition, ModuleCategory::Core),
     ModuleSpec::new("channel", ServiceGroup::Cognition, ModuleCategory::Core),
-    ModuleSpec::new("persona_allocator", ServiceGroup::Cognition, ModuleCategory::Core),
+    ModuleSpec::new(
+        "persona_allocator",
+        ServiceGroup::Cognition,
+        ModuleCategory::Core,
+    ),
     ModuleSpec::new("agent", ServiceGroup::Cognition, ModuleCategory::Core),
     // Cognition — AIRC-Healthy-conditional persona hosting (registers only when
     // discovery succeeded across all four sub-steps)
@@ -1313,7 +1382,11 @@ mod conditional_modules_tests {
             ServiceGroup::ResourceGov,
         ] {
             for name in modules_in_group(g) {
-                assert!(!req.contains(&name), "excluded {:?} module {name:?} must NOT be hosted", g);
+                assert!(
+                    !req.contains(&name),
+                    "excluded {:?} module {name:?} must NOT be hosted",
+                    g
+                );
             }
         }
     }
@@ -1340,7 +1413,10 @@ mod conditional_modules_tests {
         assert!(p.hosts(ServiceGroup::RuntimeShell)); // always
         assert!(!p.hosts(ServiceGroup::Live));
 
-        assert_eq!(ServiceProfile::from_str("all").unwrap(), ServiceProfile::all());
+        assert_eq!(
+            ServiceProfile::from_str("all").unwrap(),
+            ServiceProfile::all()
+        );
         assert_eq!(ServiceProfile::from_str("").unwrap(), ServiceProfile::all());
 
         let err = ServiceProfile::from_str("grid,bogus").unwrap_err();
@@ -1379,10 +1455,16 @@ mod conditional_modules_tests {
             "group sizes must sum to the total — every module grouped exactly once"
         );
         for name in all_known_modules() {
-            assert!(group_of(name).is_some(), "module {name:?} has no ServiceGroup");
+            assert!(
+                group_of(name).is_some(),
+                "module {name:?} has no ServiceGroup"
+            );
         }
         for g in all_groups {
-            assert!(!modules_in_group(g).is_empty(), "ServiceGroup {g:?} is empty");
+            assert!(
+                !modules_in_group(g).is_empty(),
+                "ServiceGroup {g:?} is empty"
+            );
         }
     }
 
@@ -1397,7 +1479,10 @@ mod conditional_modules_tests {
             "auth", "data", "events", "health", "logger", "mcp", "runtime", "system",
         ];
         expected.sort();
-        assert_eq!(shell, expected, "RuntimeShell must be exactly the addressable core");
+        assert_eq!(
+            shell, expected,
+            "RuntimeShell must be exactly the addressable core"
+        );
     }
 
     /// Live = Bevy render + LiveKit SFU — the CO-LOCATED group (must share the
@@ -1406,7 +1491,11 @@ mod conditional_modules_tests {
     fn live_group_is_the_colocated_gpu_pair() {
         let mut live = modules_in_group(ServiceGroup::Live);
         live.sort();
-        assert_eq!(live, vec!["avatar", "live"], "Live = the co-located Bevy+LiveKit pair");
+        assert_eq!(
+            live,
+            vec!["avatar", "live"],
+            "Live = the co-located Bevy+LiveKit pair"
+        );
     }
 
     /// ServiceGroup (concern) and ModuleCategory (conditionality) are
@@ -1415,7 +1504,10 @@ mod conditional_modules_tests {
     #[test]
     fn group_and_category_are_orthogonal() {
         let cognition = modules_in_group(ServiceGroup::Cognition);
-        assert!(cognition.contains(&"cognition"), "Cognition holds the always-on brain");
+        assert!(
+            cognition.contains(&"cognition"),
+            "Cognition holds the always-on brain"
+        );
         assert!(
             cognition.contains(&"persona_instance_manager"),
             "Cognition also holds the PersonaHosting-conditional modules"
@@ -1853,7 +1945,7 @@ mod piece_2_pr3_dispatch_tests {
         assert_eq!(b_keys, vec!["paging/broker.snapshot".to_string()]);
     }
 
-    // what this catches: the SOCKET route (`route_command`, used by cu / IPC / MCP)
+    // what this catches: the SOCKET route (`route_command`, used by uu / IPC / MCP)
     // reaches a connected Provided-command provider through the SAME
     // `provider_registry` the in-process persona route uses via the interceptor —
     // no dispatch path can gain (or lack) a capability the other has. Both call the
@@ -1906,9 +1998,14 @@ mod piece_2_pr3_dispatch_tests {
         {
             Some(Ok(CommandResult::Json(v))) => {
                 assert_eq!(v["success"], true);
-                assert_eq!(v["echoedTarget"], "https://x", "forwarded params reached the eye-node");
+                assert_eq!(
+                    v["echoedTarget"], "https://x",
+                    "forwarded params reached the eye-node"
+                );
             }
-            _ => panic!("the socket route must forward a Provided command to its connected provider"),
+            _ => {
+                panic!("the socket route must forward a Provided command to its connected provider")
+            }
         }
     }
 }
@@ -1999,10 +2096,12 @@ mod ready_edge_tests {
     async fn default_ready_edge_resolves_immediately() {
         let runtime = Runtime::new();
         runtime.register(ReadyModule::without_ready_edge("no-edge"));
-        let result =
-            tokio::time::timeout(std::time::Duration::from_millis(50), runtime.wait_for_ready("no-edge"))
-                .await
-                .expect("default ready_edge must NOT block");
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            runtime.wait_for_ready("no-edge"),
+        )
+        .await
+        .expect("default ready_edge must NOT block");
         assert!(result.is_ok());
     }
 

@@ -14,22 +14,91 @@
  */
 
 export { CHAT_KIND, chatStateFromEnvelope } from './ChatState';
+export { NAV_KIND, navStateFromEnvelope } from './NavState';
+export { SYSTEM_METRICS_KIND, systemMetricsFromEnvelope } from './SystemMetricsState';
+export { SERVING_KIND, servingFromEnvelope } from './ServingState';
+export { BENCH_KIND, benchFromEnvelope } from './BenchState';
+export { benchContentBody, benchWidget } from './benchProjections';
+export { KANBAN_KIND, kanbanStateFromEnvelope } from './KanbanState';
 export type { ChatState } from './ChatState';
 
 export { chatViewModel, formatTimeOfDay } from './chatViewModel';
+export { historyRowsFromPoll } from './historyProjections';
 export type {
   ChatViewModel,
   MemberKind,
   RosterMemberVM,
   LoadoutVM,
   MessageRowVM,
+  ActReceiptVM,
+  ActGroupVM,
+  TranscriptRowVM,
 } from './chatViewModel';
+export { actSummaryLine } from './chatViewModel';
+
+// The transcript's digest tier ([[perception-resolution-contract]]): mechanical
+// head + tail-summary + repetition-histogram classification of over-threshold
+// message bodies, so no message can flood a renderer — human or persona.
+export {
+  messageDigest,
+  DIGEST_OVER_CHARS,
+  DIGEST_OVER_LINES,
+  DIGEST_HEAD_LINES,
+  DIGEST_HEAD_CHARS,
+} from './messageDigest';
+export type { MessageDigestVM } from './messageDigest';
 
 // The chat activity expressed on the consumer-neutral pattern primitives
 // (ACTIVITY-ROOM-PATTERNS.md): the roster IS the `Listing`, and the whole room
 // composes into a `Workspace` (nav + left + purpose-keyed content + context).
-export { rosterListing, roomsListing, chatWorkspace } from './patternProjections';
-export type { ChatContentBody } from './patternProjections';
+export {
+  rosterListing,
+  roomsListing,
+  roomsListingFromNav,
+  systemGaugeWidget,
+  systemPanelWidget,
+  nodesWidget,
+  servingWidget,
+  continuonWidget,
+  roomInfoListing,
+  chatWorkspace,
+} from './patternProjections';
+export type { ChatContentBody, WorkspaceLive } from './patternProjections';
+
+// The persona HOME projections — the profile/brain surface as a purpose-
+// dispatched activity (PERSONA_PURPOSE), lit from the SAME live pulse the
+// roster tiles draw. `chatWorkspace` dispatches to it off the focused tab's
+// kind; these are exported for renderers/tests that build the pieces directly.
+export {
+  focusedPersonaTab,
+  personaContentBody,
+  brainRegions,
+  personaPathways,
+  personaClaims,
+  personaFactsListing,
+  agoText,
+} from './personaProjections';
+
+// The LIVE call-face projections — a room's call grid as a purpose-dispatched
+// activity (LIVE_PURPOSE), lit from the SAME StreamDelta token rail the roster's
+// speaking ring draws. `chatWorkspace` dispatches to it off the room recipe's
+// purpose / a live tab / the Go-live overlay; exported for renderers/tests.
+export {
+  focusedLiveTab,
+  liveFaceOpen,
+  liveContentBody,
+  liveParticipants,
+  liveCaption,
+  liveControls,
+  captionTail,
+  CAPTION_TAIL_CHARS,
+} from './liveProjections';
+export type { LiveCallOverlay } from './liveProjections';
+
+// Arena projections — real eval-ledger rows → ranked leaderboards + live-run
+// strip (the benchmarks-are-the-show face).
+export { ARENA_KIND, arenaBoards, arenaContentBody } from './arenaProjections';
+export type { ArenaLedgerRow, ArenaViewState } from './arenaProjections';
 
 // The chat activity as a positron app, defined ONCE — mount it on any RenderTarget
 // (web/mobile/terminal/RAG). The first real `defineApp` consumer.

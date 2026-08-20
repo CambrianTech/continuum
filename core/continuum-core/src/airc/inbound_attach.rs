@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use airc_core::{RoomId, TranscriptKind};
-use airc_ipc::{codec::read_frame, AttachRequest, AttachStart, DaemonClient, Response};
+use airc_ipc::{codec::read_frame, AttachRequest, AttachStart, DaemonClient, IpcCursor, Response};
 use airc_lib::decode_wire_event;
 use tracing::warn;
 
@@ -71,12 +71,77 @@ pub fn spawn_daemon_attach(
     });
 }
 
+/// Where the per-channel attach watermark persists — the CONSUMER CURSOR
+/// (task #242). One tiny JSON file per channel under the user's continuum
+/// state dir: the [`IpcCursor`] this process has caught up to, threaded back
+/// as [`AttachStart::After`] on the next attach so a core reboot resumes at
+/// the gap instead of replaying the room's entire history into the UI and
+/// every persona's perception (glass-boxed three times on 2026-07-30 — each
+/// reboot re-fed days of transcript as fresh inbox to every mind).
+fn cursor_path(channel: &RoomId) -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home)
+        .join(".continuum/state")
+        .join(format!("airc-attach-cursor-{}.json", channel.as_uuid()))
+}
+
+fn load_cursor(channel: &RoomId) -> Option<IpcCursor> {
+    let raw = std::fs::read_to_string(cursor_path(channel)).ok()?;
+    // A corrupt watermark degrades to first-attach semantics (one full seed) —
+    // annoying, never wrong. It is presentation-adjacent state, not truth: the
+    // durable transcript is the storage of record either way.
+    serde_json::from_str(&raw).ok()
+}
+
+fn persist_cursor(channel: &RoomId, cursor: &IpcCursor) {
+    let path = cursor_path(channel);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    match serde_json::to_string(cursor) {
+        Ok(json) => {
+            if let Err(error) = std::fs::write(&path, json) {
+                warn!(
+                    "failed to persist airc attach cursor to {}: {error}",
+                    path.display()
+                );
+            }
+        }
+        Err(error) => warn!("failed to serialize airc attach cursor: {error}"),
+    }
+}
+
+/// One page of recent room history on a first-ever attach (Joel, 2026-08-01:
+/// "When you join a Discord channel do you read the whole history from 10
+/// years back? No — one page"). The daemon streams the newest
+/// `FIRST_ATTACH_PAGE` backlog events at the catch-up seam and coalesces
+/// everything older into the watermark summary (airc PR #1312).
+const FIRST_ATTACH_PAGE: u32 = 32;
+
+/// Build the attach request for this consumer's cursor state (#295).
+///
+/// A persisted watermark resumes strictly after it, streaming the gap
+/// event-by-event (those events were live while we were down — the
+/// transcript writer and perception both want them). No watermark means
+/// first-ever attach: start from the transcript head for cursor
+/// correctness, coalesce the deep backlog into one summary frame so history
+/// never floods the bus, the personas, or the CPU — but keep one page of
+/// recent tail so the room isn't a void on join.
+fn attach_request_for_cursor(channel: RoomId, cursor: Option<IpcCursor>) -> AttachRequest {
+    match cursor {
+        Some(cursor) => AttachRequest::new(channel, AttachStart::After(cursor)),
+        None => AttachRequest::new(channel, AttachStart::FromTranscriptStart)
+            .with_coalesced_backlog()
+            .with_backlog_tail(FIRST_ATTACH_PAGE),
+    }
+}
+
 pub async fn run_daemon_attach(
     socket_path: PathBuf,
     channel: RoomId,
     bus: Arc<MessageBus>,
 ) -> Result<(), String> {
-    let client = DaemonClient::new(socket_path);
+    let client = DaemonClient::new(socket_path.clone());
     // Owner-core model (airc-daemon/src/server.rs:274): the router
     // subscribes per channel — no global fan-out table. AttachRequest
     // MUST carry `channel: Some(_)` or the daemon responds
@@ -86,15 +151,41 @@ pub async fn run_daemon_attach(
     // Multi-room scopes will spawn one daemon_attach task per channel
     // they care about — single-attach today, per-room fan-out as a
     // follow-up when continuum rooms become first-class.
-    // airc#1222 bump: AttachRequest dropped Default for explicit
-    // builders. The prior `..default()` was `from_now: false` —
-    // FromTranscriptStart per airc-ipc's own "legacy meaning" doc — so
-    // preserve full-backlog semantics rather than silently switching to
-    // live-only (which would skip events on attach).
+    //
+    // CONSUMER CURSOR (#242): consumers resume from durable cursors over
+    // durable storage, never from zero. A persisted watermark resumes
+    // strictly after it (gap replay only, no duplicates at the seam —
+    // the AttachStart::After contract).
+    //
+    // BOUNDED FIRST ATTACH (#295): the FIRST-EVER attach (no watermark on
+    // disk) must NOT stream the room's full history into live perception —
+    // on a long-lived room that is thousands of events decoded, published,
+    // and serviced as if they were happening now (BigMama's Windows node
+    // pegged 24 cores for ~45min on exactly this). AttachStart's own doc
+    // marks FromTranscriptStart "audit/replay tools only". Instead the
+    // first attach coalesces the backlog daemon-side (airc card 7d5b6a65)
+    // into ONE AttachCursorAdvanced summary frame at the live seam; the
+    // handler below persists it, so every later attach resumes After(_).
+    // The room starts at join for a fresh node — personas perceive the
+    // room AS IT IS NOW (#131), and deep history is #249's bounded
+    // durable-transcript hydration, never a perception replay.
+    let request = attach_request_for_cursor(channel, load_cursor(&channel));
     let mut stream = client
-        .attach(AttachRequest::new(channel, AttachStart::FromTranscriptStart))
+        .attach(request)
         .await
         .map_err(|error| format!("failed to attach to airc daemon: {error}"))?;
+
+    // WATERMARK DISCIPLINE (#261, both PR #2057 review findings): the attach
+    // NEVER pre-persists the room tip. The old tip-probe persisted a cursor
+    // for events not yet processed — a daemon Error frame or transport read
+    // error mid-backlog then resumed PAST the tip, permanently SKIPPING the
+    // unprocessed remainder from live perception (the one failure worse than
+    // redelivery). The daemon's cursor HEARTBEAT (airc 9390c32e8) is now the
+    // sole advance source: an `AttachCursorAdvanced` frame rides live
+    // streaming at most once per second, always pointing at an ALREADY
+    // DELIVERED event — so the persisted watermark can only ever resume
+    // at-or-before what this consumer actually processed. No skip, and the
+    // redelivery window shrinks from the whole session to ≤1s of events.
 
     loop {
         let response = read_frame::<_, Response>(&mut stream)
@@ -103,6 +194,22 @@ pub async fn run_daemon_attach(
         let Some(response) = response else {
             return Ok(());
         };
+        // The daemon's cursor-advance frames (seam summary + the 1/s live
+        // HEARTBEAT, airc 9390c32e8) are the authoritative watermark. The
+        // probe makes every advance VISIBLE — 2026-07-30's verification found
+        // a silently-stale watermark with no way to tell whether frames never
+        // arrived or the persist failed quietly ([[glass-box]]: success needs
+        // receipts too, not only failures).
+        if let Response::AttachCursorAdvanced { advanced_to, .. } = &response {
+            tracing::info!(
+                room = %channel,
+                epoch = advanced_to.epoch,
+                counter = advanced_to.counter,
+                probe_class = "airc.cursor.advanced",
+                "attach watermark advanced (daemon heartbeat) — persisting"
+            );
+            persist_cursor(&channel, advanced_to);
+        }
         handle_attach_response(response, &bus).await?;
     }
 }
@@ -164,6 +271,13 @@ pub async fn publish_transcript_event(
                     event_id = %event.event_id.as_uuid(),
                     "plain airc message projected to chat:posted for positron"
                 );
+                // #264: room-speech ring — recorded ONCE here (the single
+                // seam every room message crosses), so restatement knowledge
+                // never depends on any persona's workspace budget.
+                crate::cognition::deliberation_budget::record_room_speech(
+                    event.room_id.as_uuid(),
+                    payload["content"].as_str().unwrap_or_default(),
+                );
                 bus.publish_async_only(name, payload);
             } else if let Some((name, payload)) = wall_changed_from_event(event) {
                 bus.publish_async_only(name, payload);
@@ -198,11 +312,8 @@ pub async fn publish_transcript_event(
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        let is_new = crate::capacity::gossip::global_ledger().hear(
-            event.peer_id.as_uuid(),
-            offer,
-            now_ms,
-        );
+        let is_new =
+            crate::capacity::gossip::global_ledger().hear(event.peer_id.as_uuid(), offer, now_ms);
         if is_new {
             crate::probe!(
                 class = "grid.capacity.heard",
@@ -219,6 +330,11 @@ pub async fn publish_transcript_event(
             room_id = %event.room_id.as_uuid(),
             event_id = %event.event_id.as_uuid(),
             "chat_transcript envelope projected to chat:posted for positron"
+        );
+        // #264: room-speech ring — same single-seam record as the plain arm.
+        crate::cognition::deliberation_budget::record_room_speech(
+            event.room_id.as_uuid(),
+            payload["content"].as_str().unwrap_or_default(),
         );
         bus.publish_async_only(name, payload);
     }
@@ -281,7 +397,9 @@ fn capacity_offer_from_envelope(
     if payload.schema != crate::airc::realtime::AircRealtimeSchema::GridCapacity {
         return None;
     }
-    serde_json::from_value(payload.inline.clone()?).ok()
+    // Borrow-decode: this runs per inbound event, and `.clone()?` copied the
+    // whole inline payload just to hand `from_value` an owned Value.
+    serde::Deserialize::deserialize(payload.inline.as_ref()?).ok()
 }
 
 /// Project a plain airc chat message into the THIN `chat:posted` bus
@@ -373,6 +491,42 @@ mod tests {
     use serde_json::json;
     use tokio::time::{timeout, Duration};
     use uuid::Uuid;
+
+    // what this catches: #295 — the first-ever attach (no persisted watermark)
+    // used bare FromTranscriptStart, streaming a long-lived room's ENTIRE
+    // history into live perception (BigMama's fresh Windows node pegged 24
+    // cores ~45min servicing days of backlog as fresh events). First attach
+    // must coalesce backlog into one summary frame; a resumed attach must
+    // stream its gap uncoalesced (those events are owed to the transcript
+    // writer + perception).
+    #[test]
+    fn first_attach_coalesces_backlog_resume_streams_gap() {
+        let channel = RoomId::from_u128(7);
+
+        let first = attach_request_for_cursor(channel, None);
+        assert_eq!(first.start(), AttachStart::FromTranscriptStart);
+        assert!(
+            first.coalesces_backlog(),
+            "first-ever attach must not replay full room history into live perception"
+        );
+        assert_eq!(
+            first.backlog_tail(),
+            Some(FIRST_ATTACH_PAGE),
+            "join shows one page back, not a void (airc PR #1312)"
+        );
+
+        let cursor = IpcCursor {
+            epoch: 3,
+            counter: 42,
+            event_id: EventId::from_u128(9),
+        };
+        let resumed = attach_request_for_cursor(channel, Some(cursor));
+        assert_eq!(resumed.start(), AttachStart::After(cursor));
+        assert!(
+            !resumed.coalesces_backlog(),
+            "gap replay after a watermark feeds the transcript writer — never coalesced"
+        );
+    }
 
     fn transcript_event(body: Option<Body>, headers: airc_core::Headers) -> TranscriptEvent {
         TranscriptEvent {

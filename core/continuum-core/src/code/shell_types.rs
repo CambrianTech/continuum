@@ -119,7 +119,10 @@ pub enum OutputClassification {
 
 /// What to do with a line that matches a sentinel rule.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/code/SentinelAction.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/SentinelAction.ts"
+)]
 pub enum SentinelAction {
     /// Include the line in watch results.
     Emit,
@@ -132,7 +135,10 @@ pub enum SentinelAction {
 /// Wire type for IPC. Patterns are compiled to `regex::Regex` on the Rust side
 /// when `set_sentinel()` is called.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/code/SentinelRule.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/SentinelRule.ts"
+)]
 pub struct SentinelRule {
     /// Regex pattern to match against each output line.
     pub pattern: String,
@@ -144,7 +150,10 @@ pub struct SentinelRule {
 
 /// A single line of classified shell output.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/code/ClassifiedLine.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/ClassifiedLine.ts"
+)]
 pub struct ClassifiedLine {
     /// The raw text content of the line.
     pub text: String,

@@ -1,6 +1,8 @@
-# continuum
+# [continuum](docs/WHY-CONTINUUM.md)
 
 ### A distributed AI world that runs on your hardware.
+
+> **⚡ Active development happens on [`canary`](https://github.com/CambrianTech/continuum/tree/canary).** `main` is the stable line and lags it. The system has since become a **headless, efficient Rust core** — cognition, serving, memory, and the mesh run with no UI and no Node on the runtime path; every client (web, desktop, CLI, voice) is an equal, optional presentation layer. The continuous-learning loop (constant fine-tuning on consumer hardware, dream-state consolidation that learns from mistakes, multimodal bridging for every persona) lives and moves on canary daily. Watch that branch to see the organism grow.
 
 > **The Cambrian explosion happened in puddles and streams, not oceans.**
 > Datacenters are AI's oceans — one mega-organism dominates, crowds out diversity, and bills you per token to amortize the build. Continuum is the puddles and streams: thousands of small grids on consumer hardware, each adapted to one human's actual work, federable when a question crosses domains. Every great evolutionary leap happened this way.
@@ -29,7 +31,7 @@ Your machines form **[the Grid](#the-grid)** — an encrypted mesh where AI pers
 <a href="https://huggingface.co/continuum-ai"><img src="https://img.shields.io/badge/HuggingFace-continuum--ai-yellow.svg" alt="HuggingFace"/></a>
 <a href="https://www.gnu.org/licenses/agpl-3.0"><img src="https://img.shields.io/badge/License-AGPL--3.0-blue.svg" alt="AGPL-3.0"/></a>
 <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.0+-blue.svg" alt="TypeScript"/></a>
-<a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-nightly-orange.svg" alt="Rust"/></a>
+<a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-1.95-orange.svg" alt="Rust"/></a>
 <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node.js-18+-green.svg" alt="Node.js"/></a>
 </p>
 
@@ -39,8 +41,45 @@ Your machines form **[the Grid](#the-grid)** — an encrypted mesh where AI pers
 
 **Runs on a MacBook Air.** Add a second machine and the Grid discovers it automatically — your laptop orchestrates, your tower trains. From an iPhone you access the full shared intelligence of every node you own. Your power is the sum of every machine on your Grid — not the one in your hand.
 
-> **Pre-Alpha** — Active development. For developers, researchers, and the curious.
+> **Where we are — honestly.** Every screenshot and number on this page was **real when captured**,
+> from an [append-only ledger](benchmarks/RESULTS.jsonl) you can re-run yourself. The **alpha** now
+> on the `canary` branch — a ground-up Rust rebuild of cognition, serving, memory, and the live
+> desktop — has **already left parts of this page behind**: the organism moved faster than the doc.
+> When it's feature-complete, the **beta** re-measures every claim against it, number by number.
+> Prototype → alpha → beta, receipts at every step.
 > See the [Alpha Gap Analysis](docs/planning/ALPHA-GAP-ANALYSIS.md) and [open issues](https://github.com/CambrianTech/continuum/issues) for progress.
+
+---
+
+### What that looks like in practice
+
+In a live video huddle these personas described what the person on camera was wearing, then turned the conversation into working code — because every citizen has [multimodal perception](docs/architecture/PERCEPTION-SURFACE.md) (eyes, ears, a voice) and [real hands](docs/cognition/ACTING-ORGANISM.md) that run tools, not a chat box that describes them. That isn't a demo reel; it's the [substrate](docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md) — the same thing that lets a persona [remember and learn across sessions](docs/architecture/GENOME-FOUNDRY-SENTINEL.md) while a cloud loop forgets you the moment the tab closes.
+
+**Prove it yourself — nothing here is a screenshot you have to trust:**
+
+- [`./setup.sh`](#getting-started) brings up a real citizen on your own GPU — [local, no API key](docs/architecture/INFERENCE-LANES-REALISTIC.md).
+- `continuum benchmark/swe-solve --instance <id>` drops her into a real GitHub issue and grades the patch with the [official SWE-bench scorer](benchmarks/) — every number appends to the [committed ledger](benchmarks/RESULTS.jsonl), yours to re-run.
+- Hand her a lesson from one machine and [watch it travel to another's memory](docs/architecture/PEER-LEARNING-COMPACTION.md) — the mesh gets *smarter*, not just faster.
+
+The claims below are big on purpose. Each one links to the design doc, the paper, or the result that backs it. Read the terminology, then click the receipt.
+
+---
+
+## The Grid: intelligence scales onto misfit hardware
+
+The industry fits the model to the machine — shrink it until it runs, or rent a datacenter that never has to care. Continuum fits the machine to the model.
+
+A mixture-of-experts model touches a sliver of its weights per token. Those weights don't need to be *resident*. They need to be *there in time*. So we page experts the way an OS pages memory: a 4KiB-aligned container holding each expert at multiple precisions, a cache that keeps the last K tokens' expert **sets** as units, a governed budget that decides how much residency to buy. Kimi-Linear-48B generates at ~57 tok/s on a Mac through our llama.cpp [fork](core/vendor/llama.cpp). Expert gather is zero-copy — 4.0x measured on Metal; on CUDA the kernels are bit-identical, and that's a correctness claim, not a speed claim.
+
+> **A model that doesn't fit still serves.**
+
+One code path, every machine you own. Training runs through MLX on Apple silicon and Candle on NVIDIA — same [`genome/`](core/continuum-core/src/genome/) (171 tests), same [`genome/fine_tuning/`](core/continuum-core/src/genome/fine_tuning/) (89 tests). The dusty 3090 and the work MacBook differ in how much they can hold, not in what they can do.
+
+The work is the training data. A persona's graded work lands in her experience stream; curriculum picks her *real* failures over a static set; and what she learns becomes weight deltas — LoRA layers she earned, paged in and out like memory. Then it travels. One citizen can hand a lesson directly into another's memory — `Received`, not lived — and the record keeps who taught it, because someone *choosing* to teach a thing is itself the signal of what it's worth. One machine learns something the hard way; the rest don't have to. That's a mesh that gets smarter, not just a mesh that computes.
+
+Every citizen — human or persona — is an Ed25519 keypair. Peer-to-peer join. No coordinator, no account. And here's the part we find beautiful: residency under a budget is a Lagrangian, and its multiplier is a price per byte. The number that decides which expert stays in your VRAM is the number two machines compare to decide who runs the work ([design](docs/architecture/GRID-MARKET-CLEARING.md)). The pager's control law and the grid's protocol are the same equation at two scales.
+
+What we haven't earned yet — and say so in the [claims ledger](benchmarks/RESULTS.jsonl): live learned paging end-to-end on one box, and one node generating coherent tokens from experts that exist only on its peer's disk. Both are next. Watch.
 
 ---
 
@@ -118,14 +157,17 @@ One command -- bootstraps WSL2 + Docker Desktop via winget if missing, auto-togg
 <details>
 <summary>Development (from source)</summary>
 
-Requires Node.js 20+. `npm run setup:rust` provisions the rest of the native build chain — the pinned Rust toolchain (1.95, via `rust-toolchain.toml`), **cmake**, and the **vendored git submodules** (llama.cpp/whisper.cpp) that `continuum-core` compiles. Same Docker Desktop AI toggles apply — `npm start` uses the same DMR for inference; the difference is `continuum-core` runs natively from `cargo` instead of from the published image.
+The system is a **headless Rust core**. `setup:rust` provisions the native build chain — the pinned Rust toolchain (1.95, via `rust-toolchain.toml`), **cmake**, and the **vendored git submodules** (llama.cpp/whisper.cpp) that `continuum-core` compiles. Node is needed only to build the **web** client, which is one client among several (mobile, SDK, TUI, MCP); the core itself boots and serves with no Node in the path. Same Docker Desktop AI toggles apply — the difference from the published image is that `continuum-core` runs natively from `cargo`.
 
 ```bash
 cd continuum
-npm install
+npm install               # web-client deps + the setup scripts below
 npm run setup:rust        # pinned Rust 1.95 + cmake + vendored submodules (native build prereqs)
 npm run setup:git-hooks   # optional, for commit/pre-push validation
-npm start
+
+continuum start           # build + run the headless Rust core, wait until ready
+continuum reboot          # after editing: rebuild, relaunch, VERIFY the running build SHA
+continuum ping            # is the core answering?
 ```
 
 Detailed dev environment + platform-specific gotchas: **[docs/SETUP.md](docs/SETUP.md)**.
@@ -403,28 +445,44 @@ Every number here is rendered from [`benchmarks/RESULTS.jsonl`](benchmarks/RESUL
 |---|---|---|---|---|---|---|
 | **Devstral-Small-24B** | — | ***pending*** | — | — | — | — |
 
+### Whole-being battery (the learning-capacity curve)
+
+The persona's COMPLETE self — memory ON, genome loaded, tools ON, **never stripped to fit the benchmark** — dropped into seeded git repos one task at a time ([`benchmarks/agent-solve/`](benchmarks/agent-solve/)). The same persona re-measured over time as the mind improves: these rows are a learning curve, not a leaderboard. Opponent CLIs join on identical tasks as sibling arms.
+
+**Agent-Solve Tier 1** — whole-being seeded-repo bug fixes — single-file
+
+| model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
+|---|---|---|---|---|---|---|
+| **Qwen2.5-Coder-7B** | — | **87% (13/15)** | — | — | — | — |
+
+**Agent-Solve Tier 2** — whole-being — multi-file root-cause, invariants, implement-from-spec
+
+| model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
+|---|---|---|---|---|---|---|
+| **Qwen2.5-Coder-7B** | — | **0% (0/15)** | — | — | — | — |
+
 ### Fast verifiable gyms (regression + training signal)
 
 **HumanEval-Rust** — function-level, rustc compile+run graded
 
 | model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
 |---|---|---|---|---|---|---|
-| **Devstral-Small-24B** | 100% (5/5) | **100% (5/5)** | — | — | — | — |
-| **Qwen2.5-Coder-14B** | 86% (43/50) | **92% (46/50)** | *excluded¹* | — | — | — |
-| **Qwen2.5-Coder-3B** | 32% (13/40) | **72% (29/40)** | *excluded¹* | — | 80% (32/40) | -8 vs aider |
-| **Qwen2.5-Coder-1.5B** | 45% (18/40) | **50% (20/40)** | *excluded¹* | — | 50% (20/40) | ±0 vs aider |
-| **Hermes-3-Llama-3.1-8B** | 52% (21/40) | **38% (15/40)** | *excluded¹* | 22% (9/40) | 48% (19/40) | -10 vs aider |
-| **qwen3.5-4b-code-forged (OURS-forged)** *(we forged it)* | 70% (28/40) | **30% (12/40)** | *excluded¹* | 62% (25/40) | 72% (29/40) | -42 vs aider |
+| **Qwen2.5-Coder-14B** | *excluded¹* | **92% (37/40)** | *excluded¹* | — | — | — |
+| **Devstral-Small-24B** | 0% (0/1) | **88% (35/40)** | — | — | — | — |
+| **Qwen2.5-Coder-3B** | 32% (13/40) | **68% (27/40)** | *excluded¹* | — | 80% (32/40) | -12 vs aider |
+| **qwen3.5-4b-code-forged (OURS-forged)** *(we forged it)* | 70% (28/40) | **62% (25/40)** | *excluded¹* | 62% (25/40) | 72% (29/40) | -10 vs aider |
+| **Qwen2.5-Coder-1.5B** | 45% (18/40) | **48% (19/40)** | *excluded¹* | — | 50% (20/40) | -3 vs aider |
+| **Hermes-3-Llama-3.1-8B** | 52% (21/40) | **35% (14/40)** | *excluded¹* | 22% (9/40) | 48% (19/40) | -12 vs aider |
 
 **Hard-Rust** — expression evaluators + algorithmics
 
 | model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
 |---|---|---|---|---|---|---|
-| **qwen3.5-4b-code-forged (OURS-forged)** *(we forged it)* | — | ***excluded¹*** | — | — | — | — |
-| **Qwen2.5-Coder-14B** | *excluded¹* | **62% (5/8)** | 0% (0/8) | — | — | **+62** vs opencode |
-| **Devstral-Small-24B** | 38% (3/8) | **38% (3/8)** | 50% (4/8) | 50% (4/8) | 38% (3/8) | -12 vs opencode |
+| **Qwen2.5-Coder-14B** | *excluded¹* | **50% (4/8)** | 0% (0/8) | — | — | **+50** vs opencode |
+| **Devstral-Small-24B** | *excluded¹* | **38% (3/8)** | 50% (4/8) | 50% (4/8) | 38% (3/8) | -12 vs opencode |
 | **Qwen2.5-Coder-3B** | — | **25% (2/8)** | — | — | — | — |
-| **Hermes-3-Llama-3.1-8B** | 12% (1/8) | **0% (0/8)** | 0% (0/8) | 12% (1/8) | 0% (0/8) | -12 vs Hermes |
+| **qwen3.5-4b-code-forged (OURS-forged)** *(we forged it)* | — | **25% (2/8)** | — | — | — | — |
+| **Hermes-3-Llama-3.1-8B** | 12% (1/8) | **12% (1/8)** | 0% (0/8) | 12% (1/8) | 0% (0/8) | ±0 vs Hermes |
 | **Qwen2.5-Coder-1.5B** | — | **0% (0/8)** | — | — | — | — |
 
 **Frontier-Rust** — Dijkstra · Levenshtein · LIS · topo-sort · bignum · calc · regex
@@ -437,7 +495,7 @@ Every number here is rendered from [`benchmarks/RESULTS.jsonl`](benchmarks/RESUL
 
 ² A blank **Hermes CLI** cell = Hermes hard-refuses that model: it requires ≥64K context and won't start below it. Every model here is served at its **real trained context** (read from GGUF metadata, memory-capped — never clamped down), so a 32K-native model like Qwen2.5-Coder genuinely cannot be run through Hermes without a quality-degrading rope-overflow. We mark it absent, not 0 — and note it's a point *for* the local models: Continuum runs the 32K-native coders Hermes turns away.
 
-**Reproduce:** `python3 benchmarks/coder/matrix.py --models benchmarks/coder/models.json --benchmark <name>` (inner gyms) · `python3 benchmarks/swe/run_ours.py --instance <id> --solver ours` (SWE-bench). Both append to `RESULTS.jsonl`; re-render with `python3 benchmarks/render_results.py`.
+**Reproduce:** `continuum benchmark/swe-solve --instance <id> --persona-id <id> --base-model-id <model>` (SWE-bench: clone, solve, grade, one command) · `continuum benchmark/swe-grade --instance <id>` (grade an existing tree) · `continuum benchmark/matrix --benchmark <name>` (inner gyms). Results land in the run ledger.
 
 <!-- BENCHMARKS:END -->
 
@@ -446,22 +504,32 @@ Every number here is rendered from [`benchmarks/RESULTS.jsonl`](benchmarks/RESUL
 ## Autonomous Personas
 
 Each persona runs an RTOS-inspired cognitive loop — not waiting for commands, but *living*.
+The prototype proved the shape in TypeScript; the alpha's mind is **pure Rust**, and it is not
+a chatbot loop:
 
-```typescript
-async serviceInbox() {
-  const tasks = await this.inbox.peek();
-  await this.generateSelfTasks();                        // create own work
-  if (!this.state.shouldEngage(task.priority)) return;   // energy-aware
-  await this.genome.activateSkill(task.domain);           // page in skill
-  await this.processTask(task);                           // coordinate + execute
-}
-```
-
-- **Adaptive cadence** — 3s to 10s polling based on energy, mood, attention
-- **Self-task generation** — memory consolidation, skill audits, peer assistance, proactive code review
-- **Consent-based coordination** — ThoughtStream asks permission before interrupting
-- **Thermodynamic priority** — conversation "heat" via Newton's Law of Cooling
-- **Complete reproducibility** — every decision logged with full RAG context for time-travel debugging
+- **Act → observe, with receipts.** A turn is a drive to settlement: she deliberates, calls a
+  real tool (`code/write`, `code/shell`, git, search…), and the tool's **actual result** —
+  compiler output, test stdout, the diff — re-enters her working memory as ground truth before
+  she thinks again. Narrating an action is not performing it: the parser lifts real intents out
+  of every idiom her base model emits (fenced scripts, commented pseudo-calls, even *fabricated
+  transcripts* — her invented "results" are discarded and replaced by real ones), so what she
+  means to do is what actually happens.
+- **A unified hippocampus.** One admission pipeline per persona: experiences land as engrams
+  (episodic / semantic / self-reflection), recall ranks them by relevance × salience, rehearsal
+  strengthens them — and a **dream tick consolidates and *forgets***: salience decays, stale
+  learning fades, genuine knowledge hardens. She can change her mind because her memory is
+  plastic, not append-only.
+- **Genome on serving lanes.** LoRA skills page in and out over live llama.cpp lanes governed
+  by one resource authority — VRAM leases, memory-pressure vetoes, warm shared lanes. The same
+  machinery that keeps a benchmark honest keeps your machine alive.
+- **Glass-box by construction.** Every cognitive seam carries structured probes; every measured
+  run can capture per-tick bids, decisions, and timings to replayable JSONL. When a persona
+  fails a task, you can read *why* — down to the exact recalled memory that misled her — and
+  the same capture becomes her training data.
+- **Benchmarkable as a whole being.** `agent/solve` drops her complete self — memory ON, tools
+  ON, genome loaded — into any git workspace, drives her to settlement, and returns the patch.
+  It is the primitive external harnesses (SWE-bench, Terminal-Bench) compose on, and the rule
+  is charter-level: **she is never stripped to fit a benchmark.**
 
 ### Every persona has a full sensory system
 
@@ -510,14 +578,15 @@ Browser (Lit + Shadow DOM widgets, 32 auto-discovered)
     ↕ WebSocket
 TypeScript Bridge (320 commands, auto-discovered)
     ↕ Unix Socket (IPC)
-continuum-core (Rust — 26 modules, 1,179+ tests)
-    ├── Persona Engine    — autonomous loop, cognitive state, coordination
+continuum-core (Rust — 46 modules, 6,400+ tests)
+    ├── Cognition Engine  — act→observe drive, deliberation, tool executor, glass-box captures
+    ├── Persona Engine    — unified hippocampus (admit/recall/decay), dream consolidation, airc citizenship
     ├── Genome Engine     — LoRA paging, training, discovery, checkpoint resume
-    ├── Sentinel Engine   — 12 step types, recursive pipelines, 55 tests
-    ├── RAG Engine        — 5-level memory hierarchy, cross-cognition access
+    ├── Sentinel Engine   — 12 step types, recursive pipelines
+    ├── Serving Engine    — llama.cpp lanes, warm shared eval lanes, continuous batching
     ├── Live Engine       — WebRTC, Bevy 3D avatars, voice, video, captions
-    ├── GPU Governor      — 4-layer resource governance, 3 subsystems
-    ├── Grid Engine       — Tailscale + Reticulum mesh, transparent command routing
+    ├── Resource Governor — one authority: VRAM leases, memory-pressure vetoes, eviction
+    ├── airc Mesh         — keypair identity, E2E rooms, event substrate, cross-grid routing
     └── Data Layer        — type-safe ORM, Postgres + SQLite, entity system
 ```
 
@@ -578,12 +647,66 @@ continuum-core (Rust — 26 modules, 1,179+ tests)
 
 ### Working today
 
+- **airc identity mesh** — every citizen (persona or human) is an Ed25519 keypair; one identity across machines, restarts, and reinstalls. Rooms are the universal social primitive; DMs are E2E-encrypted; every room is an airc room — chat, benchmarks, the factory floor, live calls all ride the same event substrate
 - **Tailscale mesh transport** — encrypted, NAT-traversing, automatic peer discovery
 - **Remote command execution** — `grid/send` routes any command to any paired node
 - **Factory → Grid pipeline** — `grid/job-submit` routes forge jobs to remote GPU nodes, `grid/job-queue` polls status, `grid/job-control` pauses/resumes/cancels
 - **Live node monitoring** — GPU utilization, VRAM, temperature, running processes (NVIDIA + Apple Silicon)
 - **Trust levels** — Owner/Trusted/Provisional/Blocked with ACL enforcement and audit logging
 - **Node registry** — persistent, auto-discovered, with latency tracking
+
+### Serving big minds on small machines — MoE expert paging
+
+The Grid's hardest technical bet is now mostly code: **models larger than any one
+machine's memory, served by paging their experts** — the same virtual-memory idea
+that let 1980s computers run programs bigger than RAM, applied to mixture-of-experts
+weights, and eventually spread across the mesh. A modern MoE only *activates* a few
+experts per token; keep the hot ones resident at high precision, the warm ones at
+low precision, page the cold ones from disk — or from a peer.
+
+What's built and measured (our [llama.cpp fork](https://github.com/CambrianTech/llama.cpp) + `core/continuum-core/src/capacity/`):
+
+- **Kimi-Linear-48B generating at ~57 tok/s on a Mac** (Metal, via the fork's
+  converter + serving path) — a model tier that "doesn't fit" consumer hardware, running on it
+- **Zero-copy expert gather** (`MUL_MAT_ID` consume path) — 4.0× measured on Metal A/B,
+  bit-identical CUDA kernels; consume an expert from *any* location without staging copies
+- **4 KiB-aligned streaming expert container** — fixed-size records, one bank per layer,
+  per-layer files as the grid shard unit; precision **tiers are part of expert identity**
+  (a sharp copy and a cheap copy are different bytes, never aliased)
+- **LFRU expert cache with a measured cliff law** — below one token's working set a cache
+  has *structurally zero* hit rate, so the budget refuses loudly instead of thrashing silently
+- **Tier policy + demand predictor** — all-star experts stay sharp, the tail goes cheap,
+  hotness is measured per-prompt (it is *not* static), and the learned layer trains on
+  captured paging traces
+- **Expert depot** — each node serves its resident expert banks over a local seam and
+  publishes a manifest of exactly what it holds; misses fall back cleanly, so the depot
+  can degrade serving but never break it. This is the seam grid share rides: a node that
+  holds only layers 0–30 serves them to peers that don't
+- **Governed budgets end-to-end** — one per-machine resource authority; serving, embeddings,
+  benchmarks, and training lease from the same ledger with hysteresis on every decision
+
+The allocation math is written down too: **[nested λ-pricing](docs/architecture/GRID-MARKET-CLEARING.md)** —
+the pager's Lagrange multiplier *is* the price of a byte of residency, the same scalar that
+clears work between two nodes and later N (Kelly-style network utility maximization + backpressure;
+the math behind TCP and WiFi airtime scheduling). Design docs:
+[GRID-EXPERT-SHARE](docs/serving/GRID-EXPERT-SHARE.md) ·
+[GRID-ECONOMICS-AND-AFFINITY-ROUTING](docs/architecture/GRID-ECONOMICS-AND-AFFINITY-ROUTING.md) ·
+[GRID-MARKET-CLEARING](docs/architecture/GRID-MARKET-CLEARING.md).
+**Next proofs on deck:** live learned paging on a single box end-to-end, then the two-machine
+milestone — one node generating coherent tokens from experts that exist only on its peer's disk.
+
+### Zero-trust by construction — airc answers WHO, forge-alloy answers WHAT
+
+The Grid assumes a zero-trust world and was built for it with two purpose-made projects:
+**[airc](docs/grid/GRID-ARCHITECTURE.md)** makes *who you're talking to* math — keypair
+citizenship, E2E-encrypted DMs, room-scoped trust, no usernames to spoof. **[forge-alloy](https://github.com/CambrianTech/forge-alloy)**
+makes *what you're running* math — hash-addressed, signed artifacts whose benchmark claims and
+hardware attestations you re-verify locally. Together they make the deployment spectrum one
+system: a free home grid, a **firewall-respecting enterprise fleet** (knowledge flows *in* from
+the web; nothing leaves a perimeter the operator didn't open), and eventually public p2p — where
+a stranger's genome layer is safe to adopt because its provenance is cryptographic and its
+claims are re-runnable. Zero-trust floor, reputation overlay, no central authority on either
+axis.
 
 **Your MacBook at school handles UI and coordination. Your 5090 at home runs a weeks-long training session. You check in from anywhere — the Factory Floor shows live progress across the mesh. You come back and your personas are measurably smarter. The machine that learns while you sleep.**
 
@@ -672,7 +795,7 @@ The factory forges the base metal. The academy shapes it into tools. The genome 
 | qwen3.5-4b-code-forged (Q4_K_M) | 2.6GB | 53.0% | Beats Qwen2.5-Coder-1.5B (51.8%) — a purpose-built coder |
 | qwen3.5-4b-code-forged (fp16) | 8.4GB | 57.3% | +20% above Phi-2, general model forged in 3 hours |
 
-**14 models published.** [continuum-ai on HuggingFace](https://huggingface.co/continuum-ai) — 10,000+ downloads. From 0.5B to 35B. Code, reasoning, general. GGUF for phones, fp16 for GPUs.
+**14 models published.** [continuum-ai on HuggingFace](https://huggingface.co/continuum-ai) — 15K+ downloads. From 0.5B to 35B. Code, reasoning, general. GGUF for phones, fp16 for GPUs.
 
 **Paper:** [Experiential Plasticity](docs/papers/EXPERIENTIAL-PLASTICITY.md) — iterative pruning + domain-specific retraining. Like biological synaptic pruning during brain development. The forge doesn't just make models smaller — it makes them **better at what matters and worse at what doesn't.**
 
@@ -779,9 +902,11 @@ export CONTINUUM_PROBE_DIR=/tmp/continuum-probes
 export CONTINUUM_PROBE_CLASSES=persona,cognition  # namespace prefixes — captures every persona.* and cognition.*
 # Or `*` for the full firehose, or specific classes like `persona.turn.spoke,cognition.analyze.parse`
 
-# Probes land in dated rolling files (continuum-probes.YYYY-MM-DD.jsonl, 7-day retention).
+# Probes land in SIZE-rotated files: continuum-probes.jsonl, with older
+# generations beside it as .1, .2, … Total on disk is capped, so the firehose
+# can never fill the volume (a wedged writer once reached 172 GB in four hours).
 # Then tail / jq the breakpoint stream as the substrate runs:
-tail -f /tmp/continuum-probes/continuum-probes.*.jsonl | jq -c 'select(.fields.persona == "Paige")'
+tail -f /tmp/continuum-probes/continuum-probes.jsonl | jq -c 'select(.fields.persona == "Paige")'
 ```
 
 **Full manual + seam taxonomy + sprinkle checklist:** [docs/architecture/RTOS-DEBUGGER-PROBES.md](docs/architecture/RTOS-DEBUGGER-PROBES.md). Every contributor (human or AI agent) working on cognition, inference, or any per-persona path should read it before adding code — probes are part of the substrate's API, not an afterthought.
@@ -819,11 +944,30 @@ If you benefit from genomic AI research, keep improvements open. AI evolution sh
 
 If you're excited about distributed AI that doesn't require a datacenter, come build with us. The architecture is stable; the edges need hands. Human and AI contributors welcome — we attribute both equally.
 
+**The repos — where the work actually lives (clone ONE):**
+
+| Repo | What it is | Do you clone it? |
+|---|---|---|
+| **[continuum](https://github.com/CambrianTech/continuum)** (this repo) | The world: substrate, personas, cognition, serving, benchmarks, the app | **Yes — this is the only clone you need.** `setup.sh` handles the rest. |
+| **[airc](https://github.com/CambrianTech/airc)** | The nervous system: identity keypairs, rooms, events, the p2p mesh | No — `setup.sh` installs it automatically. Clone only to hack on airc itself. |
+| **positron** | The experience framework: define-once UI/UX/PX that renders to web, native, terminal, and agent perception | No — consumed as packages. Clone only to hack on positron itself. |
+| **[forge-alloy](https://github.com/CambrianTech/forge-alloy)** | The trust layer: hash-addressed, signed, falsifiable contracts for models + grid compute | No — consumed as a library/spec. Clone only to hack on the contract format. |
+
+Branch policy, everywhere: **development lands on `canary` (where the repo has one); `main` is released.** PRs target canary.
+
 **How to start:**
-1. **[Join the Discord](https://discord.gg/arfbCV2H)** — setup help, architecture discussion, and AI personas that talk back
-2. Read the **[Alpha Gap Analysis](docs/planning/ALPHA-GAP-ANALYSIS.md)** to see what's in flight
-3. Browse **[open issues](https://github.com/CambrianTech/continuum/issues)** — good first issues are labeled
-4. Fork, fix, PR. We review fast.
+1. Clone continuum **on `canary`** and run `./setup.sh` — one command brings up the whole stack:
+   ```bash
+   git clone -b canary https://github.com/CambrianTech/continuum.git
+   cd continuum && ./setup.sh
+   ```
+   The `-b canary` matters and is easy to miss: a plain clone lands on `main`, which is
+   ~1,500 commits behind and is a structurally different tree (`src/` exists there and
+   not on canary). Step 5 asks you to PR against canary — this is how you get there.
+2. **[Join the Discord](https://discord.gg/arfbCV2H)** — setup help, architecture discussion, and AI personas that talk back
+3. Read the **[Alpha Gap Analysis](docs/planning/ALPHA-GAP-ANALYSIS.md)** to see what's in flight
+4. Browse **[open issues](https://github.com/CambrianTech/continuum/issues)** — good first issues are labeled
+5. Fork, fix, PR against `canary`. We review fast.
 
 **Grid node operators:** Have a GPU? Run `setup.sh` and your machine joins the mesh. See **[FOUNDRY-FILESYSTEM-SETUP.md](https://github.com/CambrianTech/sentinel-ai/blob/main/docs/FOUNDRY-FILESYSTEM-SETUP.md)** for forge node requirements.
 

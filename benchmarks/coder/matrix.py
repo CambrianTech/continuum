@@ -25,7 +25,23 @@ models.json row schema (all fields optional except label):
 Usage:
   python3 matrix.py --models models.json --benchmark humaneval-rs --limit 40 --out MATRIX.md
 """
-import argparse, json, os, subprocess, sys, tempfile
+import argparse, json, os, shutil, subprocess, sys, tempfile
+
+def _resolve_cli():
+    """Locate the continuum CLI.
+
+    `uu` is THE official short alias (the double-U of contin-UU-m). `uu` is
+    /usr/bin/cu (UUCP) on every Unix and was never ours — a default pointing at a
+    `uu` binary resolved to a file that does not exist, so the harness failed at
+    the first invocation instead of running. Prefer what is actually installed on
+    PATH; fall back to the release build.
+    """
+    for name in ("uu", "continuum"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return os.path.expanduser("~/.continuum/cache/cargo-target/release/continuum")
+
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 H2H = os.path.join(HERE, "headtohead.py")
@@ -38,7 +54,7 @@ def h2h(row, args, tmp):
     out = os.path.join(tmp, f"{_slug(row['label'])}.json")
     cmd = [sys.executable, H2H, "--label", row["label"], "--benchmark", args.benchmark,
            "--gym", args.gym, "--limit", str(args.limit),
-           "--cu", args.cu, "--out", out]
+           "--uu", args.uu, "--out", out]
     if args.persona_id:
         cmd += ["--persona-id", args.persona_id]
     if row.get("base_model_id"):
@@ -149,7 +165,7 @@ def main():
     ap.add_argument("--limit", type=int, default=40)
     ap.add_argument("--persona-id", default=None,
                     help="resident persona UUID; omitted -> headtohead resolves live from the core")
-    ap.add_argument("--cu", default=os.path.expanduser("~/.continuum/cache/cargo-target/debug/cu"))
+    ap.add_argument("--uu", default=_resolve_cli())
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
     if not args.gym:

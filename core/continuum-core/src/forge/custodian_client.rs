@@ -97,8 +97,8 @@ pub trait ForgeCustodian: Send + Sync {
 /// defaulting to [`DEFAULT_CUSTODIAN_ADDR`]. One place, mirroring where the
 /// custodian binary binds.
 pub fn custodian_base_url() -> String {
-    let addr =
-        config_env::read("FORGE_CUSTODIAN_ADDR").unwrap_or_else(|| DEFAULT_CUSTODIAN_ADDR.to_string());
+    let addr = config_env::read("FORGE_CUSTODIAN_ADDR")
+        .unwrap_or_else(|| DEFAULT_CUSTODIAN_ADDR.to_string());
     // Allow a fully-qualified override (someone may set a full URL); otherwise
     // prefix http:// for the bare host:port the binary binds.
     if addr.starts_with("http://") || addr.starts_with("https://") {
@@ -230,7 +230,10 @@ mod tests {
                 unreachable!("must not dispatch on a version mismatch")
             }
         }
-        let err = WrongVersion.ensure_contract().await.expect_err("must refuse");
+        let err = WrongVersion
+            .ensure_contract()
+            .await
+            .expect_err("must refuse");
         match err {
             ForgeCustodianError::Api(m) => assert!(m.contains("version mismatch"), "got: {m}"),
             other => panic!("expected Api mismatch, got {other:?}"),
@@ -254,7 +257,10 @@ mod tests {
                 unreachable!()
             }
         }
-        let h = RightVersion.ensure_contract().await.expect("matching version passes");
+        let h = RightVersion
+            .ensure_contract()
+            .await
+            .expect("matching version passes");
         assert_eq!(h.contract_version, CONTRACT_VERSION);
     }
 

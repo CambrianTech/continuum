@@ -9,7 +9,7 @@ import type { StepResult } from "./StepResult";
 /**
  * Durable checkpoint for pipeline resume after restart
  */
-export type PipelineCheckpoint = { sentinelHandle: string, pipelineName: string | null, 
+export type PipelineCheckpoint = { sentinelHandle: string, pipelineName?: string, 
 /**
  * Resume from this step index (next step to execute)
  */
@@ -33,4 +33,4 @@ workingDir: string,
 /**
  * Escalation metadata for persona routing on resume
  */
-escalation: SentinelEscalation | null, };
+escalation?: SentinelEscalation, };

@@ -50,6 +50,7 @@ import type { ServerMessage } from './generated/positron/ServerMessage';
 import type { StateEnvelope } from './generated/positron/StateEnvelope';
 import type { StateLayer } from './generated/positron/StateLayer';
 import type { KindRevision } from './generated/positron/KindRevision';
+import type { StateStorageAdapter } from './StateStorage';
 
 /**
  * Receives successive {@link StateEnvelope}s for ONE widget `kind` — the
@@ -115,7 +116,99 @@ export interface StateConnectOptions {
   layers?: StateLayer[];
 }
 
+/**
+ * The feed's lifecycle, surfaced so a renderer can show ONE status chip and
+ * otherwise keep painting last-known state (the Twitter model). Loud, never
+ * silent: `reconnecting` is visible for as long as the core is away, so a
+ * self-healing feed can never mask a persistently-dead core.
+ *
+ *   `cached`       — hydrated from local storage; live socket not yet up.
+ *   `connecting`   — first connection attempt in flight.
+ *   `live`         — connected and the state stream is flowing.
+ *   `reconnecting` — feed dropped (or connect failed); retrying on a capped
+ *                    backoff ladder. Last-known state stays on screen.
+ *   `closed`       — the APP closed the feed intentionally; no retry.
+ */
+export type StateFeedStatus = 'cached' | 'connecting' | 'live' | 'reconnecting' | 'closed';
+
+/** Notified on every {@link StateFeedStatus} transition. */
+export type StateFeedStatusSink = (status: StateFeedStatus, detail?: string) => void;
+
+/**
+ * Construction options — the positron-inherent resilience contract. Durability
+ * and reconnection live HERE, in the SDK, so every renderer (web, desktop,
+ * mobile, headless observer) inherits them; apps never hand-roll caches or
+ * retry loops ([[one-logical-decision-one-place]]).
+ */
+export interface StateConnectionOptions {
+  /**
+   * Durable local state (see `StateStorage`). When present: `connect()` first
+   * hydrates every registered kind from cache (instant last-known paint, even
+   * offline), and each live envelope is written through. Platform adapters:
+   * `IndexedDbStateStorage` (browser), `MemoryStateStorage` (tests/ephemeral).
+   */
+  storage?: StateStorageAdapter;
+  /**
+   * Cache partition. Defaults to the connect URL — which carries `?me=<citizen>`,
+   * so one citizen+endpoint never bleeds into another.
+   */
+  scope?: string;
+  /**
+   * Self-heal the feed (default true). The core reboots routinely; a dropped
+   * socket retries on a capped backoff ladder (1s→10s) while the UI keeps
+   * last-known state under a visible `reconnecting` status. Set false for
+   * one-shot consumers (probes, tests) that want the legacy fail-loud connect.
+   */
+  reconnect?: boolean;
+}
+
 const ALL_LAYERS: StateLayer[] = ['ephemeral', 'session', 'persistent', 'semantic'];
+
+/** Reconnect backoff ladder: 1s, 2s, 4s, 8s, then 10s forever. */
+const reconnectDelayMs = (attempt: number): number =>
+  Math.min(1000 * 2 ** Math.min(attempt - 1, 3), 10_000);
+
+/**
+ * How long the cache gets to answer before boot proceeds live-only.
+ *
+ * Generous against a real local read (IndexedDB answers in single-digit ms) and
+ * far under any human patience threshold, because a MISSED cache costs only
+ * first-paint latency — the substrate re-sends every kind's full snapshot on
+ * subscribe, so nothing is lost but a head start.
+ */
+const HYDRATE_BUDGET_MS = 1_500;
+
+/**
+ * How long a WS handshake gets to complete (`open` or `error`) before the
+ * attempt is treated as failed and handed to the retry ladder. Generous
+ * against a healthy local core (measured 14 ms to first state envelope), and
+ * strict enough that a silently-unresponsive ingress costs one visible retry,
+ * never a hung boot.
+ */
+const OPEN_BUDGET_MS = 5_000;
+
+/**
+ * Resolve `work`, or REJECT at `budgetMs` — the piece a bare try/catch cannot
+ * supply. `catch` covers a promise that rejects; a promise that never settles
+ * has no failure to catch, so the awaiting code waits forever. Any await on an
+ * external resource inside a boot path needs one of these.
+ *
+ * The timer is always cleared, so a slow-but-successful `work` leaves nothing
+ * pending (a dangling handle would keep a node process alive at exit).
+ */
+async function withTimeout<T>(work: Promise<T>, budgetMs: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), budgetMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
 
 export class StateConnection {
   private readonly ctor: WebSocketCtor;
@@ -136,6 +229,17 @@ export class StateConnection {
   /** Sink for the ephemeral token rail (#170); undefined = no one is rendering
    *  live typing, so `stream_delta` frames are dropped (cheap, cosmetic). */
   private onStreamDeltaCb?: StreamDeltaSink;
+  /** Positron-inherent resilience (see {@link StateConnectionOptions}). */
+  private readonly storage?: StateStorageAdapter;
+  private readonly scope: string;
+  private readonly reconnect: boolean;
+  private onStatusCb?: StateFeedStatusSink;
+  private status?: StateFeedStatus;
+  private hydrated = false;
+  private reconnectAttempt = 0;
+  private reconnectTimer?: ReturnType<typeof setTimeout>;
+  /** True once the APP called close() — stops the retry ladder for good. */
+  private closedIntentionally = false;
 
   /**
    * @param url the core's WS endpoint, e.g. `ws://127.0.0.1:<CONTINUUM_CORE_WS>`.
@@ -147,6 +251,7 @@ export class StateConnection {
   constructor(
     private readonly url: string,
     wsImpl?: WebSocketCtor,
+    options?: StateConnectionOptions,
   ) {
     const globalWs = (globalThis as { WebSocket?: WebSocketCtor }).WebSocket;
     const impl = wsImpl ?? globalWs;
@@ -157,6 +262,83 @@ export class StateConnection {
       );
     }
     this.ctor = impl;
+    this.storage = options?.storage;
+    this.scope = options?.scope ?? url;
+    this.reconnect = options?.reconnect ?? true;
+  }
+
+  /** Notified on every feed-status transition — render ONE chip from this. */
+  onStatus(cb: StateFeedStatusSink): void {
+    this.onStatusCb = cb;
+    if (this.status) cb(this.status);
+  }
+
+  private setStatus(status: StateFeedStatus, detail?: string): void {
+    if (this.status === status && !detail) return;
+    this.status = status;
+    this.onStatusCb?.(status, detail);
+  }
+
+  /**
+   * Instant last-known paint: deliver each cached envelope to its registered
+   * sink BEFORE the socket opens. Cached revisions are deliberately NOT fed
+   * into `lastSeen` — the substrate still sends fresh snapshots on subscribe,
+   * so the live stream always supersedes the cache (correctness first; the
+   * skip-redundant-snapshot optimization can adopt cached revisions later).
+   */
+  private async hydrateFromStorage(): Promise<void> {
+    if (!this.storage || this.hydrated) return;
+    this.hydrated = true;
+    try {
+      // BOUNDED, not just try/caught. A `catch` covers a load that REJECTS; it
+      // cannot cover one that never SETTLES, and a never-settling load is not
+      // hypothetical — it took the whole web client down on 2026-08-14 (blank
+      // page, banner frozen pre-connect, no diagnostic reachable because the
+      // boot watchdog was armed after this await). Storage is declared an
+      // ACCELERANT, never a dependency (see StateStorage.ts header); a bound is
+      // what makes that declaration TRUE rather than aspirational. On timeout we
+      // proceed live-only — the substrate re-sends full snapshots on subscribe,
+      // so a skipped cache costs first-paint latency and nothing else.
+      const rows = await withTimeout(
+        this.storage.load(this.scope),
+        HYDRATE_BUDGET_MS,
+        `storage.load did not answer in ${HYDRATE_BUDGET_MS}ms`,
+      );
+      let delivered = 0;
+      for (const row of rows) {
+        const sink = this.sinks.get(row.envelope.kind);
+        if (sink) {
+          sink(row.envelope);
+          delivered += 1;
+        }
+      }
+      if (delivered > 0) this.setStatus('cached', `${delivered} kinds from cache`);
+    } catch (err) {
+      // Cache is an accelerant, never a dependency — log and proceed live-only.
+      console.warn('StateConnection: hydrate from storage failed (continuing live-only):', err);
+    }
+  }
+
+  /** Retry the feed on the capped ladder. Loud (status) and unstoppable until
+   *  the app intentionally close()s or the socket comes back. */
+  private scheduleReconnect(why: string): void {
+    if (!this.reconnect || this.closedIntentionally || this.reconnectTimer) return;
+    this.reconnectAttempt += 1;
+    const delay = reconnectDelayMs(this.reconnectAttempt);
+    this.setStatus('reconnecting', `${why} — retry #${this.reconnectAttempt} in ${Math.round(delay / 1000)}s`);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
+      void (async () => {
+        try {
+          const socket = await this.ensureConnected();
+          this.sendSubscribe(socket);
+          // `live` is declared when the first state frame lands (onMessage),
+          // not here — an open socket with no data is not "live".
+        } catch (err) {
+          this.scheduleReconnect(err instanceof Error ? err.message : String(err));
+        }
+      })();
+    }, delay);
   }
 
   /**
@@ -214,17 +396,45 @@ export class StateConnection {
       }
       this.layers = options.layers;
     }
-    const socket = await this.ensureConnected();
+    this.closedIntentionally = false;
+    // Durable-first: cached state paints before the network is even attempted
+    // (the Twitter model — instant UI, live reconciles). Awaited ONLY when an
+    // adapter is present: without one, connect() constructs the socket
+    // synchronously exactly as before (no gratuitous microtask boundary).
+    if (this.storage) await this.hydrateFromStorage();
+    if (this.status !== 'cached') this.setStatus('connecting');
+    let socket: WebSocketLike;
+    try {
+      socket = await this.ensureConnected();
+    } catch (err) {
+      if (this.reconnect) {
+        // Self-healing feed: a failed first connect (core still booting) rides
+        // the same retry ladder as a drop. Cached state stays on screen under a
+        // visible `reconnecting` status — resolve, don't throw.
+        this.scheduleReconnect(err instanceof Error ? err.message : String(err));
+        return;
+      }
+      throw err;
+    }
+    // Config errors (e.g. no registered kinds) stay FAIL-LOUD — they are the
+    // caller's bug, not a network condition, and must never enter the retry ladder.
     this.sendSubscribe(socket);
   }
 
-  /** Close the socket. Registered sinks are kept — a later {@link connect}
-   *  re-subscribes them (with `last_seen` replay). */
+  /** Close the socket and STOP the retry ladder (intentional shutdown).
+   *  Registered sinks are kept — a later {@link connect} re-subscribes them
+   *  (with `last_seen` replay). */
   close(): void {
+    this.closedIntentionally = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
     const socket = this.socket;
     this.socket = undefined;
     this.connecting = undefined;
     if (socket) socket.close();
+    this.setStatus('closed');
   }
 
   private buildSubscribe(): ClientMessage {
@@ -260,23 +470,40 @@ export class StateConnection {
 
     this.connecting = new Promise<WebSocketLike>((resolve, reject) => {
       const socket = new this.ctor(this.url);
+      // BOUNDED handshake — the hydrate lesson (2026-08-14), one seam over. A
+      // socket that errors feeds the retry ladder; a socket that answers with
+      // SILENCE (ingress accepted TCP but never completes the WS upgrade —
+      // measured live: `last feed status: connecting`, boot hung, 1-in-5 boots)
+      // fires neither `open` nor `error`, and an unbounded wait hangs connect()
+      // forever. On timeout: reject like any handshake failure, so the same
+      // ladder retries and the UI stays painted under a loud `reconnecting`.
+      const openTimer = setTimeout(() => {
+        this.connecting = undefined;
+        reject(new Error(`StateConnection: ${this.url} did not complete the WS handshake in ${OPEN_BUDGET_MS}ms`));
+        socket.close();
+      }, OPEN_BUDGET_MS);
       socket.onopen = () => {
+        clearTimeout(openTimer);
         this.socket = socket;
         resolve(socket);
       };
       socket.onerror = (ev) => {
         // Before open → connect failure; after open → onclose handles teardown.
         // Reject the handshake either way (a settled promise ignores a 2nd reject).
+        clearTimeout(openTimer);
         this.connecting = undefined;
         reject(new Error(`StateConnection: connection to ${this.url} failed: ${String(ev)}`));
       };
       socket.onclose = () => {
         this.socket = undefined;
         this.connecting = undefined;
-        // Surface, never swallow: a dropped feed leaves the UI stale. The app
-        // decides whether to reconnect (StateConnection does not auto-reconnect
-        // — a silent reconnect would mask a persistently-dead core).
+        // Surface, never swallow: a dropped feed leaves the UI stale. Then
+        // self-heal — the retry ladder is LOUD (status stays `reconnecting`
+        // the whole time the core is away), so recovery can never mask a
+        // persistently-dead core; it just stops a routine core reboot from
+        // orphaning every open tab.
         this.onCloseCb?.(`StateConnection: connection to ${this.url} closed`);
+        this.scheduleReconnect('socket closed');
       };
       socket.onmessage = (ev) => { this.onMessage(ev.data); };
     });
@@ -322,6 +549,12 @@ export class StateConnection {
         if (envelope.revision !== undefined) {
           this.lastSeen.set(envelope.kind, envelope.revision);
         }
+        // Live data is flowing — the feed is healthy; reset the retry ladder.
+        this.reconnectAttempt = 0;
+        this.setStatus('live');
+        // Write-through: the durable cache always holds the newest snapshot per
+        // kind (fire-and-forget — cache trouble must never stall the feed).
+        if (this.storage) void this.storage.save(this.scope, envelope);
         const sink = this.sinks.get(envelope.kind);
         if (!sink) {
           // The substrate only sends kinds we subscribed to, so a kind with no

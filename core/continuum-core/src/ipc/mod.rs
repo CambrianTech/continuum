@@ -48,6 +48,10 @@ use crate::{log_debug, log_error, log_info};
 use dashmap::DashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+// Unix-domain socket is the primary IPC transport on Unix. On Windows there is
+// no Unix socket; the server binds ONLY the TCP loopback listener (below) and
+// local callers connect over TCP. These imports are Unix-only.
+#[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::Arc;
@@ -79,6 +83,7 @@ trait IpcStream: Read + Write + Send + Sized + 'static {
     fn peer_addr_str(&self) -> String;
 }
 
+#[cfg(unix)]
 impl IpcStream for UnixStream {
     fn try_clone_stream(&self) -> std::io::Result<Self> {
         self.try_clone()
@@ -107,16 +112,59 @@ impl IpcStream for TcpStream {
 // here so existing call sites resolve unchanged.
 
 pub mod diagnostics;
+pub mod endpoint_paths;
 pub mod experience_resolver;
+pub mod positron_bench_source;
 pub mod positron_dispatch;
 pub mod positron_foundry_source;
 pub mod positron_kanban_source;
+pub mod positron_live_source;
+pub mod positron_metrics_source;
 pub mod positron_nav_source;
 pub mod positron_presence;
+pub mod positron_serving_source;
 pub mod positron_source;
 pub mod positron_wall_source;
 pub mod protocol;
 pub mod provider_bridge;
+pub mod recipe_room_purpose;
+
+/// THE per-room substrate registry for this process (#408).
+///
+/// A process-global `OnceLock`, the same shape as
+/// [`positron_nav_source::global_nav_focus`] and the channel-bookmarks singleton —
+/// because the WRITER (the chat projection, in the WS boot block) and the READERS
+/// (a persona's grounding, bound at spawn in `persona::supervisor`) are constructed
+/// in different places and must land on ONE registry. Two registries would be two
+/// stores, which is the exact defect this repair exists to remove.
+///
+/// It is a registry of `Arc`-shared substrates, so this is a handle lookup, not a
+/// cache: cloning it clones `Arc`s.
+pub fn global_room_substrates() -> std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates> {
+    use std::sync::OnceLock;
+    static G: OnceLock<std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates>> =
+        OnceLock::new();
+    G.get_or_init(|| std::sync::Arc::new(continuum_positron::scoping::PerRoomSubstrates::new()))
+        .clone()
+}
+
+/// The ONE substrate a citizen's mind reads the benchmark board from — the
+/// mind-side render target of the SAME `BenchViewState` fold the browser rail
+/// renders (kind="bench").
+///
+/// Unlike the roster (whose view differs per room, hence `PerRoomSubstrates`),
+/// the bench board is ONE global fold, so its mind-side handle is a single
+/// substrate. The emitter dual-publishes into this AND the websocket substrate;
+/// `supervisor` binds a `ViewStateRagSource::<BenchViewState>` over it at
+/// persona boot (task #426). Without this handle the bench renderable was
+/// implemented and never reachable by any mind — citizens could only learn run
+/// state via a command that scrapes the progress dir, which fails the doctrine's
+/// acceptance test ([[benchmarks-must-be-positronic-activities-not-a-parallel-subsystem]]).
+pub fn global_bench_substrate() -> continuum_positron::Substrate {
+    use std::sync::OnceLock;
+    static G: OnceLock<continuum_positron::Substrate> = OnceLock::new();
+    G.get_or_init(continuum_positron::Substrate::new).clone()
+}
 pub mod room_purpose;
 pub mod stream_rail;
 pub mod vitals_emitter;
@@ -803,6 +851,7 @@ mod tests {
 
     #[test]
     #[ignore] // Requires running continuum-core server
+    #[cfg(unix)] // dials the unix IPC socket; even #[ignore] must compile (#304)
     fn test_ipc_health_check_live() {
         use std::io::Write;
         use std::os::unix::net::UnixStream;
@@ -835,6 +884,7 @@ mod tests {
 
     #[test]
     #[ignore] // Requires running continuum-core server with Kokoro model
+    #[cfg(unix)] // dials the unix IPC socket; even #[ignore] must compile (#304)
     fn test_ipc_voice_synthesize_binary_live() {
         use std::io::Write;
 
@@ -971,13 +1021,42 @@ pub fn start_server(
     // and a missing config is a boot-order / packaging bug, not a runtime
     // condition we can recover from.
     match crate::model_registry::init_global() {
-        Ok(reg) => log_info!(
-            "ipc",
-            "server",
-            "model_registry loaded: {} models across {} providers",
-            reg.models().count(),
-            reg.providers().count()
-        ),
+        Ok(reg) => {
+            log_info!(
+                "ipc",
+                "server",
+                "model_registry loaded: {} models across {} providers",
+                reg.models().count(),
+                reg.providers().count()
+            );
+            // A degraded model is REPORTED, never silent (#63). Boot survives a bad
+            // artifact now, so the only way an operator learns their model is unusable is
+            // if we say it — once per model, with the parser's own words, at the seam that
+            // decided it. Silence here would trade a loud crash for a quiet lie.
+            // NOT log_warn! — this line fires BEFORE any ServiceModule exists (see the
+            // comment above: the registry loads first on purpose), and every file-logging
+            // path is dead at that instant. Measured, three silent drops deep:
+            //   1. `log_*` needs LOGGER, whose only production initializer is ffi/mod.rs
+            //      (the legacy Node-embedding entry) — never called on the native server.
+            //   2. `clog_*`/`write_log_direct` needs GLOBAL_LOG_SENDER, set by
+            //      LoggerModule::new() — which has not been constructed yet here.
+            //   3. even once set, `queue_log` try_sends into a bounded channel and drops
+            //      silently when full.
+            // I wrote this warning with log_warn!, could not find it anywhere, and only
+            // then learned the whole chain was dark. A degradation nobody can see is
+            // exactly the bug this fix exists to kill, so it uses the sink that needs no
+            // initialization and demonstrably reaches the log file at boot.
+            for (id, why) in reg.unhydratable() {
+                tracing::warn!(
+                    model_id = %id,
+                    reason = %why,
+                    probe_class = "registry.model.unhydratable",
+                    "model is UNAVAILABLE — its artifact did not hydrate. The core is up \
+                     and every other model is usable; this one cannot be served or planned \
+                     against until the artifact or the reader is fixed."
+                );
+            }
+        }
         Err(e) => panic!("failed to load model_registry: {e}"),
     }
 
@@ -1047,6 +1126,23 @@ pub fn start_server(
     // real foundry executor.
     runtime.register(Arc::new(ForgeModule::new()));
 
+    // GeneratorModule — hosts `generate/module` (scaffold a fresh ServiceModule).
+    //
+    // This was the ONE REAL ORPHAN the dispatch-parity audit had been reporting all
+    // along, invisible under two false positives until `dispatch_orphans` stopped
+    // counting adapter-served `Provided` commands (#325). Nothing was wrong with the
+    // command: `GenerateModule` is a correct dep-holding typed command and IS in
+    // `GeneratorModule::commands()`. The module itself was simply never registered —
+    // it appeared in the codebase only in doc comments — so `generate/module` was
+    // advertised in `commands/help`, did-you-mean suggestions, and the persona tool
+    // offer while nothing on the runtime could route it. Exactly the #309 class, still
+    // live, and the reason the audit exists.
+    //
+    // Background priority, no dedicated thread, `generate/` prefix — see its
+    // `ModuleConfig`. Privileged: it writes Rust source into the workspace tree, so it
+    // is not on the persona toolbelt.
+    runtime.register(Arc::new(crate::modules::generator::GeneratorModule::new()));
+
     // EventsModule (L1-1 — event-class declaration registry).
     // Spec: GRID-BUS-ARCHITECTURE §2.2 (continuum#1439).
     // Exposes events/declare-class, events/get-class, events/list-classes,
@@ -1104,6 +1200,9 @@ pub fn start_server(
     let resource_daemon = {
         let _rt_guard = rt_handle.enter();
         let mut capacity_sources: Vec<Arc<dyn crate::resources::CapacitySource>> = Vec::new();
+        // Some(gpu working-set hint) when the detected GPU shares the host's memory — the
+        // signal that memory must be governed as ONE pool rather than two ledgers.
+        let mut unified_gpu_hint: Option<u64> = None;
         match crate::gpu::monitor::detect() {
             Some(monitor) => {
                 log_info!(
@@ -1113,10 +1212,28 @@ pub fn start_server(
                     monitor.platform(),
                     monitor.device_name()
                 );
-                capacity_sources.push(Arc::new(crate::resources::GpuCapacitySource::new(
-                    monitor,
-                    GPU_SAFETY_RESERVE_BYTES,
-                )));
+                // Feed the SAME detected monitor to the system-resource snapshot
+                // so the holistic SYS view (and the Positron SYS gauge) carries
+                // live GPU stats next to cpu+mem — one probe, reused, never a
+                // second `gpu::monitor::detect()`.
+                system_monitor.attach_gpu_monitor(monitor.clone());
+                unified_gpu_hint = match monitor.memory_mode() {
+                    // UMA (Apple Silicon): VRAM and RAM are ONE physical pool. Registering
+                    // a GPU source here would create the second independent ledger that
+                    // `ResourceKind::Vram`'s doc forbids ("the authority's scan layer is
+                    // responsible for not double-counting") — measured live as VRAM
+                    // advertising 16.9 GB while RAM correctly reported 0. Both axes come
+                    // from UnifiedMemoryPool below instead.
+                    crate::gpu::monitor::MemoryMode::Unified => Some(monitor.total_bytes()),
+                    // Discrete: the axes really are separate pools. Unchanged.
+                    crate::gpu::monitor::MemoryMode::Discrete => {
+                        capacity_sources.push(Arc::new(crate::resources::GpuCapacitySource::new(
+                            monitor,
+                            GPU_SAFETY_RESERVE_BYTES,
+                        )));
+                        None
+                    }
+                };
             }
             None => {
                 // GpuMemoryManager::detect() already panics on a truly GPU-less host,
@@ -1134,6 +1251,58 @@ pub fn start_server(
                 );
             }
         }
+        // HOST MEMORY (#56). Until 2026-08-19 this vec held ONLY the GPU source, so
+        // `capacity(Ram)` was 0 and therefore `available_for(_, Ram)` returned 0 for every
+        // consumer, permanently — the whole RAM half of the governor was structurally
+        // unreachable while looking finished. Nothing noticed because serving/Bevy/voice
+        // lease VRAM; the first consumer to plan against RAM (benchmark staging) was refused
+        // on a box with tens of gigabytes free. Unlike the GPU there is no detect() that can
+        // fail: every host has RAM, so memory is governed unconditionally.
+        //
+        // WHICH shape depends on the hardware, which is why the GPU arm above reports its
+        // memory_mode rather than the boot path guessing from target_os.
+        match unified_gpu_hint {
+            Some(gpu_hint) => {
+                // UMA: ONE pool, two views. Honors the contract in `ResourceKind::Vram`'s
+                // own doc — "the authority's scan layer is responsible for not
+                // double-counting" — which was written, assigned here, and never built.
+                let pool = Arc::new(crate::resources::UnifiedMemoryPool::with_default_reserve(
+                    crate::resources::LiveHostMemory::new(),
+                    gpu_hint,
+                ));
+                let views = pool.views();
+                log_info!(
+                    "ipc",
+                    "server",
+                    "ResourceGovernor: UNIFIED memory — VRAM and RAM are ONE pool, \
+                     ceiling {} MB (GPU working-set hint {} MB); both axes report one \
+                     measured usage so neither can grant into the other's bytes",
+                    views
+                        .iter()
+                        .map(|v| v.ceiling_bytes())
+                        .max()
+                        .unwrap_or(0)
+                        / (1024 * 1024),
+                    gpu_hint / (1024 * 1024)
+                );
+                capacity_sources.extend(views);
+            }
+            None => {
+                // Discrete (or no GPU): RAM is its own pool, VRAM registered above if present.
+                let host_ram = crate::resources::HostRamCapacitySource::with_default_reserve(
+                    crate::resources::LiveHostMemory::new(),
+                );
+                log_info!(
+                    "ipc",
+                    "server",
+                    "ResourceGovernor: host RAM governed — ceiling {} MB \
+                     (reserve held back for the OS); VRAM is a separate pool",
+                    crate::resources::CapacitySource::ceiling_bytes(&host_ram) / (1024 * 1024)
+                );
+                capacity_sources.push(Arc::new(host_ram));
+            }
+        }
+
         crate::resources::ResourceDaemon::start(
             capacity_sources,
             Vec::new(),
@@ -1147,6 +1316,17 @@ pub fn start_server(
         resource_daemon.clone(),
         model_catalog.clone(),
     ));
+    // DECLARE OURSELVES TO THE AUTHORITY BEFORE THE PLANNER CAN TICK (#438). The authority
+    // budgets serving via `budget_for_replacing` — available PLUS serving's own residency —
+    // and that add-back is keyed on serving being a registered consumer. Attaching the planner
+    // first left a window where a plan could run with serving unregistered, so its OWN resident
+    // model counted as an external squeeze: `usable_gb = 0` on a 53 GiB board. See
+    // `declare_to_memory_authority`. These two lines are ORDER-DEPENDENT; do not swap them.
+    serving_daemon.declare_to_memory_authority();
+    // The lane plan is a MEMORY decision, so it runs on the ONE memory authority's tick,
+    // not serving's own (MEMORY-AUTHORITY-DAEMON slice 1b). Serving's tick only reconciles
+    // the llama-server to the authority-published plan.
+    serving_daemon.register_planner_on_authority_tick();
     runtime.register(serving_daemon.clone());
 
     // #79: expose the one per-machine resource authority's accounting board as a typed
@@ -1223,6 +1403,76 @@ pub fn start_server(
                 "server",
                 "CargoTargetPool registered with PressureBroker (budget-capped, flock-guarded)"
             );
+        }
+
+        // Rotation-generation eviction owners (2026-08-06): the
+        // substrate's own `logs` + `probes` dirs. These were the two
+        // directories continuum writes to most continuously and the
+        // only ones with no governed owner at all — `capped_appender`
+        // bounded itself with a private constant, which is a bound but
+        // not an authority: the broker could not reclaim a byte of it
+        // under real disk pressure, and the probe sink on the actual
+        // boot path wasn't even rotating. Eviction is safe by
+        // construction here (rotated `.N` generations only, never the
+        // live file), so this class is OWNED rather than deferred.
+        for class in ["logs", "probes"] {
+            if let Some(dir) = crate::system_resources::tracked_dir(class) {
+                broker.register(Arc::new(crate::system_resources::RotationLogPool::new(
+                    dir,
+                    crate::routing::capped_appender::rotation_budget_bytes(),
+                ))
+                    as Arc<dyn crate::paging::pool::ResourcePool>);
+                log_info!(
+                    "ipc",
+                    "server",
+                    "RotationLogPool registered with PressureBroker (class={class}, \
+                     oldest-generation-first, live file never evicted)"
+                );
+            }
+        }
+
+        // NVMe serving-tier eviction owner (#302): the genome-models class
+        // holds the HOT per-token-paged serving set (served GGUFs, expert
+        // containers, device-fit overrides). Capacity derives from the
+        // volume (total − governed reserve, #287-style); relief MIGRATES
+        // frozen artifacts to the detected COLD drive (verified copy
+        // before delete, never the actively-paged artifact, never a blind
+        // delete). No cold drive ⇒ the pool refuses loudly — models are
+        // re-fetch-hours, not derived artifacts.
+        if let Some(models_dir) = crate::system_resources::tracked_dir("genome-models") {
+            use crate::capacity::system_profile::{detect_drives, DriveRole};
+            let drives = detect_drives();
+            // The volume holding the hot tier: longest mount-point prefix.
+            let volume_total = drives
+                .iter()
+                .filter(|d| models_dir.path().starts_with(&d.mount))
+                .max_by_key(|d| d.mount.as_os_str().len())
+                .map(|d| d.total_bytes);
+            let cold_root = drives
+                .iter()
+                .find(|d| d.role == DriveRole::Cold)
+                .map(|d| d.mount.join("continuum-cold").join("models"));
+            if let Some(volume_total) = volume_total {
+                broker.register(Arc::new(crate::system_resources::NvmeServingTierPool::new(
+                    models_dir,
+                    volume_total,
+                    cold_root.clone(),
+                    crate::system_resources::serving_active_artifacts(),
+                ))
+                    as Arc<dyn crate::paging::pool::ResourcePool>);
+                log_info!(
+                    "ipc",
+                    "server",
+                    "NvmeServingTierPool registered with PressureBroker (derived capacity, cold_root={:?})",
+                    cold_root
+                );
+            } else {
+                log_info!(
+                    "ipc",
+                    "server",
+                    "NvmeServingTierPool NOT registered — no volume matched the models dir (class stays report-only)"
+                );
+            }
         }
 
         // Wire the resource authority's per-kind lease pools onto the broker so
@@ -1465,12 +1715,88 @@ pub fn start_server(
     let rag_state = Arc::new(RagState::new(memory_manager.clone()));
     runtime.register(Arc::new(RagModule::new(rag_state)));
 
-    // Phase 3: VoiceModule (wraps VoiceService, CallManager, AudioBufferPool)
+    // The LIVE CALL media plane (finish-live-video, 2026-07-25): the WebSocket
+    // call server (mix-minus audio, STT, avatar-state fanout, video frames)
+    // was fully built and NEVER STARTED — the armed-but-idle pattern. Start it
+    // at boot on its own task; the browser's live face dials it on Go-live.
+    // Port from config.env CONTINUUM_CALL_WS (one owner, [[config-env-single-owner]]),
+    // default 8790. Bind failure is LOUD (a squatted port must surface), but
+    // non-fatal: the core serves without a media plane rather than dying —
+    // the live face shows its honest avatar-presence chip in that state.
     let voice_service = Arc::new(crate::live::session::voice_service::VoiceService::new());
+    // Handle for the live-call projection (#58). Taken HERE because the original is
+    // moved into the module registry below, and the emitter is a READER — it must not
+    // change who owns the service.
+    let voice_service_for_view = voice_service.clone();
+
+    // CORE-DRIVEN SESSION REGISTRATION (#58). Built mutable so the registrar can be
+    // installed BEFORE the Arc freezes it: joining a call now registers the session in
+    // the core itself, instead of waiting for whichever client happened to implement it.
+    // Exactly one ever did (Node, in legacy/, now retired), which is why iOS/Android/TUI
+    // citizens were structurally voiceless rather than merely buggy.
+    let call_manager = {
+        let mut mgr = crate::live::transport::call_server::CallManager::new();
+        let voice_for_join = voice_service.clone();
+        mgr.set_session_registrar(std::sync::Arc::new(
+            move |call_id: &str, user_id: &str, display_name: &str, is_ai: bool| {
+                let Ok(uid) = uuid::Uuid::parse_str(user_id) else {
+                    // A non-uuid participant id is a caller bug, not a runtime condition —
+                    // say so rather than registering a citizen nobody can address later.
+                    tracing::warn!(
+                        call_id = %call_id,
+                        user_id = %user_id,
+                        probe_class = "live.register.bad_user_id",
+                        "call join carried a non-uuid user id — session NOT registered for                          this participant; she will render as unregistered in the live view"
+                    );
+                    return;
+                };
+                let participant = crate::live::VoiceParticipant {
+                    user_id: uid,
+                    display_name: display_name.to_string(),
+                    participant_type: if is_ai {
+                        crate::live::SpeakerType::Persona
+                    } else {
+                        crate::live::SpeakerType::Human
+                    },
+                    expertise: Vec::new(),
+                    // Audio-native is a MODEL capability the transport cannot know. Left
+                    // false here and owned by whoever knows the model; claiming it from a
+                    // join flag would make a text persona silently miss transcriptions.
+                    is_audio_native: false,
+                };
+                if let Err(e) = voice_for_join.join_participant(call_id, participant) {
+                    tracing::warn!(
+                        call_id = %call_id,
+                        error = %e,
+                        probe_class = "live.register.failed",
+                        "core-driven session registration FAILED — the call is live and the                          core cannot route to this participant"
+                    );
+                }
+            },
+        ));
+        std::sync::Arc::new(mgr)
+    };
+    {
+        let port = crate::config_env::read("CONTINUUM_CALL_WS")
+            .and_then(|s| s.trim().parse::<u16>().ok())
+            .unwrap_or(8790);
+        let addr = format!("127.0.0.1:{port}");
+        let manager = call_manager.clone();
+        rt_handle.spawn(async move {
+            if let Err(e) =
+                crate::live::transport::call_server::start_call_server(&addr, manager).await
+            {
+                tracing::error!(addr = %addr, error = %e, "call server failed to start — live media plane unavailable (browser live face stays avatar-presence)");
+            }
+        });
+    }
+
+    // Phase 3: VoiceModule (wraps VoiceService, CallManager, AudioBufferPool)
     let audio_pool = Arc::new(crate::live::audio::buffer::AudioBufferPool::new());
     let voice_state = Arc::new(VoiceState::new(
         voice_service.clone(),
         livekit_manager.clone(),
+        call_manager.clone(),
         audio_pool.clone(),
     ));
     // Voice joins the resource authority as a peer consumer (#56): under VRAM
@@ -1492,6 +1818,29 @@ pub fn start_server(
         voice_state.resource_lifecycle.clone(),
         gpu_manager.clone(),
     )));
+    // Live-call perception joins as a peer consumer (#56): it holds RAM — the per-source
+    // frame rings every persona perceives from — read live from the process-global
+    // PerceptionRegistry. Under pressure it evicts oldest ring frames, always keeping each
+    // source's head so a live perceiver is never blinded (room-as-now survives a reclaim).
+    // The vision-describe it triggers is SERVING's VRAM, not perception's; this accounts
+    // only what perception owns.
+    resource_daemon.add_consumer(Arc::new(
+        crate::modules::perception_consumer::PerceptionConsumer::new(
+            crate::media::perception_registry(),
+        ),
+    ));
+    // Benchmark staging joins as a peer consumer (#56) — and it is the one that should ALWAYS
+    // lose. It holds host RAM only while a suite is being fetched and projected, and every row
+    // it holds is already on disk, so yielding costs a re-read and nothing a human or citizen
+    // can perceive. Where serving weighs a tier-down and bevy/voice REFUSE during a live call,
+    // staging releases unconditionally: it is the cheapest victim on the box and must be taken
+    // first. Until this existed, a benchmark and a live call simply raced `malloc` — which is
+    // exactly how staging OOMed this machine on 2026-08-19.
+    resource_daemon.add_consumer(Arc::new(
+        crate::cognition::bench_staging::StagingConsumer::new(
+            crate::cognition::bench_staging::staging_area(),
+        ),
+    ));
     runtime.register(Arc::new(VoiceModule::new(voice_state)));
 
     // Phase 3: CodeModule (wraps file engines and shell sessions per-persona)
@@ -1525,6 +1874,33 @@ pub fn start_server(
     // Phase 4a: LoggerModule (absorbs standalone logger worker)
     // Provides log/write, log/ping via main socket
     runtime.register(Arc::new(LoggerModule::new()));
+
+    // ProbeStreamModule: the LIVE glass-box stream — debug/probes/{open,next,close}
+    // over the ProbeRouterLayer fanout (the historical on-disk ledger is
+    // debug/probes/query, stateless, self-registered). #362: this module shipped
+    // 2026-07 and was registered NOWHERE — and the second half of the trap is that
+    // it MUST be built against the router installed in the global subscriber
+    // stack. `ProbeRouterLayer::new()` here would compile, register, route, and
+    // stream silence forever (per-instance Arc<RwLock<..>> state). The handle
+    // comes from install_probe_tracing via installed_probe_router(). Fail LOUD,
+    // not silent, when tracing was never installed — the stream API being absent
+    // is then a stated fact, not a mystery "Unknown command".
+    match crate::routing::installed_probe_router() {
+        Some(router) => {
+            runtime.register(Arc::new(
+                crate::modules::probe_stream::ProbeStreamModule::new(router),
+            ));
+        }
+        None => {
+            tracing::error!(
+                "debug/probes live stream UNAVAILABLE: install_probe_tracing never ran \
+                 in this process, so there is no ProbeRouterLayer to subscribe to — \
+                 debug/probes/{{open,next,close}} will not route. Production boots \
+                 install tracing in main.rs before start_server; only bare test \
+                 harnesses should ever see this."
+            );
+        }
+    }
 
     // search/* migrated to the DynCommand registry (commands/search/*) — the four
     // verbs self-register via inventory, no module registration needed here.
@@ -1625,17 +2001,65 @@ pub fn start_server(
         boot_status("airc", kind, &detail);
     }
     let airc_module = Arc::new(AircModule::from_discovery(&discovery));
-    let persona_bootstrap_deps = airc_module
-        .daemon_socket()
-        .map(|p| p.to_path_buf())
-        .zip(airc_module.default_room());
+    // #432 (was the vestigial gate): persona hosting needs the DAEMON SOCKET
+    // only — #298 removed the operator room from birth deps, but the zip here
+    // still required a discovered default room, so "no default room ⇒ no
+    // citizens, for no reason". The room stays a dep ONLY for the consumers
+    // that genuinely ride it: GridCapacityModule (gossip channel) and the
+    // node-level presence emitter.
+    let persona_bootstrap_deps = airc_module.daemon_socket().map(|p| p.to_path_buf());
+    let discovered_default_room = airc_module.default_room();
     let persona_bootstrap_room_name = airc_module.default_room_name().map(|s| s.to_string());
-    // The node-level presence emitter (WS seam below) needs the same
-    // (daemon_socket, default_room) the persona block consumes. Clone the
-    // deps here BEFORE that `if let Some(...)` moves them, so the emitter
-    // can attach a heartbeat-less node reader against the same daemon +
-    // room the citizens attach to.
-    let node_presence_deps = persona_bootstrap_deps.clone();
+    // The node-level presence emitter (WS seam below) needs BOTH the daemon
+    // socket and the default room. Build its pair here, BEFORE the persona
+    // block moves the socket, so the emitter can attach a heartbeat-less node
+    // reader against the same daemon + room the citizens attach to.
+    let node_presence_deps = persona_bootstrap_deps.clone().zip(discovered_default_room);
+
+    // AircInterceptor's late-bind Arc<Airc>: the interceptor is built ~800 lines
+    // below (inside the executor), synchronously, but `Airc::attach_as` is async and
+    // must not block the boot critical path. Create the cell HERE (where the daemon
+    // socket is in scope), spawn a task that attaches the interceptor's own handle —
+    // same daemon_socket + continuum_root the citizens use — and fills the cell, then
+    // hand the SAME cell to the interceptor at construction. Until it's filled an
+    // aircPeer-targeted command fails loud (never a silent fallthrough). Mirrors the
+    // node-presence reader's own attach.
+    let interceptor_airc_deps = persona_bootstrap_deps.clone();
+    let airc_interceptor_cell: Arc<tokio::sync::OnceCell<Arc<airc_lib::Airc>>> =
+        Arc::new(tokio::sync::OnceCell::new());
+    if let Some(interceptor_daemon_socket) = interceptor_airc_deps {
+        let cell = airc_interceptor_cell.clone();
+        let root = crate::modules::persona_instance_manager::resolve_continuum_root();
+        // `rt_handle.spawn`, NOT bare `tokio::spawn` — this runs in the SYNCHRONOUS boot
+        // region, AFTER the `rt_handle.enter()` guard (line ~1111) has dropped, so there is no
+        // ambient Tokio runtime here. Bare `tokio::spawn` panics "there is no reactor running"
+        // and kills the IPC listener thread → the socket never binds → the whole core is a
+        // zombie (regression from #2051's AircInterceptor block; every sibling spawn in this fn
+        // already uses `rt_handle.spawn`). Only reached when airc deps are present, so it broke
+        // boot on every airc-configured host.
+        rt_handle.spawn(async move {
+            match airc_lib::Airc::attach_as(
+                root,
+                "continuum-airc-interceptor",
+                interceptor_daemon_socket,
+            )
+            .await
+            {
+                Ok(airc) => {
+                    // attach_as yields an owned `Airc`; the interceptor + AircLiveTransport
+                    // share it as `Arc<Airc>`.
+                    let _ = cell.set(Arc::new(airc));
+                }
+                Err(err) => tracing::error!(
+                    error = %err,
+                    "airc interceptor: attach_as failed — aircPeer command routing stays \
+                     unavailable (commands with aircPeer will fail loud until a boot with a \
+                     reachable airc daemon)"
+                ),
+            }
+        });
+    }
+
     runtime.register(airc_module);
 
     // A.2 [[no-fallbacks-ever]]: in `FullCitizen` or `FailFast` mode,
@@ -1689,15 +2113,29 @@ pub fn start_server(
         tokio::sync::oneshot::Sender<Arc<crate::runtime::CommandExecutor>>,
     > = None;
 
-    if let Some((daemon_socket, default_room)) = persona_bootstrap_deps {
+    if let Some(daemon_socket) = persona_bootstrap_deps {
         // Grid capacity gossip (#56 step 4): this node offers its live capacity to
         // the grid on the module tick and hears every peer's offers (its own echo
         // included — the loopback proof) via inbound_attach → gossip::global_ledger.
-        // Rides the DISCOVERED default room, same dep the citizens attach to.
-        runtime.register(Arc::new(crate::modules::grid_capacity::GridCapacityModule::new(
-            resource_daemon.clone(),
-            default_room,
-        )));
+        // Rides the DISCOVERED default room — the ONE consumer in this block that
+        // genuinely needs it (#432: the room is a gossip channel, not a birth dep;
+        // citizens must come online whether or not a default room was discovered).
+        match discovered_default_room {
+            Some(default_room) => {
+                runtime.register(Arc::new(
+                    crate::modules::grid_capacity::GridCapacityModule::new(
+                        resource_daemon.clone(),
+                        default_room,
+                    ),
+                ));
+            }
+            None => {
+                tracing::warn!(
+                    "no default room discovered — grid capacity gossip is NOT \
+                     registered this run; citizens still boot (#432)"
+                );
+            }
+        }
         let continuum_root = crate::modules::persona_instance_manager::resolve_continuum_root();
         let daemon_socket_for_rag_inspect = daemon_socket.clone();
         let registry = crate::persona::PersonaAircRuntimeRegistry::new();
@@ -1718,6 +2156,28 @@ pub fn start_server(
         runtime.register(Arc::new(crate::modules::work::WorkModule::new(
             registry.clone(),
         )));
+        runtime.register(Arc::new(crate::modules::room::RoomModule::new(
+            registry.clone(),
+        )));
+        // activity/* (#274) — the verb that turns a recipe into a room. Same
+        // registry: creating a room acts as the CALLER's own airc identity, so the
+        // creator is a real peer rather than the substrate acting anonymously.
+        runtime.register(Arc::new(crate::modules::activity::ActivityModule::new(
+            registry.clone(),
+        )));
+        // Event-driven SWE grade-on-done — the REACT half of the benchmark adapter,
+        // and the verb that actually CLOSES the kanban benchmark loop. Subscribes to
+        // work.card.state_changed (emitted by work/state) and, when a benchmark SWE
+        // card reaches a terminal state, grades the citizen's workspace diff against
+        // the HELD-OUT oracle in a fresh clone at base_commit (launder-proof) and posts
+        // the verdict into the room. No commands, no tick — a pure event subscriber
+        // ([[the-whole-system-is-event-based-not-polling]]). Registered here, at the
+        // real boot site, because `impl ServiceModule` registers nothing: until this
+        // line, the module existed but never reached dispatch, so grade-on-done never
+        // fired in production.
+        runtime.register(Arc::new(
+            crate::modules::benchmark_grade::BenchmarkGradeModule::new(registry.clone()),
+        ));
         // SubstrateGovernor — the deterministic cognitive-region scheduler daemon.
         // Schedules the ChannelDigestRegion: per live persona it pre-stages the
         // persona's current-channel digest into the SHARED digest buffer
@@ -1738,12 +2198,17 @@ pub fn start_server(
         // SelfReflection per dreaming tick — the first mind-wanderer. Hippocampus +
         // adapter resolve per tick from the live workspace registry (re-home-safe),
         // never a parallel persona→adapter map.
-        let dream_region: Arc<dyn crate::runtime::BrainRegion> = Arc::new(
+        let dream_region_concrete = Arc::new(
             crate::cognition::dream_consolidation::DreamConsolidationRegion::new(
                 crate::cognition::persona_workspace::global()
                     as Arc<dyn crate::cognition::dream_consolidation::PersonaReflectionSource>,
             ),
         );
+        // Install the flywheel handle: `cognition/dream-now` drives THIS region
+        // on demand (factory mode) — same instance the governor ticks, so the
+        // per-persona single-flight guard holds across both drivers.
+        crate::cognition::dream_consolidation::install_global(dream_region_concrete.clone());
+        let dream_region: Arc<dyn crate::runtime::BrainRegion> = dream_region_concrete;
         // Wire the live memory-pressure feed (R4 slice 3): each pass sizes its slice
         // budget to the host's current memory band so a society of inference-bearing
         // background regions can't stampede the model backend under load. A homeostatic
@@ -1762,8 +2227,6 @@ pub fn start_server(
             crate::modules::persona_instance_manager::PersonaInstanceManagerModule::new(
                 registry,
                 daemon_socket,
-                default_room,
-                persona_bootstrap_room_name.clone(),
                 continuum_root,
             ),
         );
@@ -1777,8 +2240,8 @@ pub fn start_server(
         log_info!(
             "ipc",
             "server",
-            "PersonaInstanceManagerModule registered — citizens can be bootstrapped via \
-             `persona/instances/bootstrap`"
+            "PersonaInstanceManagerModule registered — citizens can be spawned via \
+             `persona/spawn`"
         );
 
         // `grid/grant/issue`: the owner mints capability grants signed by a running
@@ -1947,7 +2410,7 @@ pub fn start_server(
         match &serving_plan {
             Some(p) if p.fits_on_gpu => {
                 tracing::info!(
-                    base_model = %p.base_model_id,
+                    base_model = %p.base_model.model_id,
                     lanes = p.lanes,
                     served_context_window = p.served_context_window,
                     resident = p.resident_models,
@@ -1971,8 +2434,34 @@ pub fn start_server(
         // signal (rooms → recorder → dataset → genome). Config-owned
         // ([[config-env-single-owner]]); once minted, citizens persist + resume
         // even if the floor is later lowered.
+        // #430: the resident roster is RECIPE DATA — the default experience's
+        // `citizens`, embedded floor + disk overlay. A malformed overlay file
+        // refuses loudly and the shipped floor still stands (same #432 arm as
+        // the positron projection); the author's actionable error surfaces at
+        // `activity/spawn`, which validates the same directory.
+        let resident_roles = {
+            use crate::experience::source::RecipeExperienceSource;
+            let overlay_dir = RecipeExperienceSource::overlay_dir(
+                &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            );
+            match RecipeExperienceSource::resident_roles(&overlay_dir) {
+                Ok(roles) => roles,
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        dir = %overlay_dir.display(),
+                        "recipe overlay REFUSED while reading the resident \
+                         roster — hosting the EMBEDDED default recipe's \
+                         citizens until the named file is fixed or removed \
+                         (#430)"
+                    );
+                    RecipeExperienceSource::resident_roles_embedded()
+                }
+            }
+        };
         let supervisor = crate::persona::host::PersonaSpawnSupervisor::new(
             crate::persona::spawner_module::PersonaSpawnerModule::new(hw_cap, tier_cat)
+                .with_citizens(resident_roles)
                 .with_serving(serving_plan.as_ref())
                 .with_population(persona_floor),
             instance_manager.clone(),
@@ -2040,11 +2529,30 @@ pub fn start_server(
                             error = %e,
                             "ResumeOrMintProvider construction failed — server up, no \
                              citizens online. Resolve continuum_root permissions + \
-                             restart, or fire `persona/instances/bootstrap` manually."
+                             restart, or fire `persona/spawn` manually."
                         );
                         return;
                     }
                 };
+            // #432: size the roster plan to what the provider WILL yield —
+            // every resumed citizen, floored by the mint floor. Before this,
+            // plan slots == floor while the provider held all resumed seeds,
+            // so with 5 citizens on disk and floor=1 only the alphabetically
+            // first came online; the other four sat unhosted forever. The
+            // floor remains a MINT floor only ([[benchmarks-use-our-citizens-never-spawn-disposable-solvers]]:
+            // the durable population is the asset — leaving members unhosted
+            // on disk breaks the contract).
+            let mut supervisor = supervisor;
+            let population = provider.identities_available();
+            if population > persona_floor {
+                tracing::info!(
+                    resumed_plus_floor = population,
+                    persona_floor,
+                    "resumed citizens exceed the mint floor — plan re-sized so \
+                     EVERY citizen on disk comes online (#432)"
+                );
+            }
+            supervisor.set_population(population);
             // Event-driven spawn: the persona host reacts to the serving
             // daemon's published plan (its watch channel) instead of probing
             // the gateway once at boot. The serving daemon ticks every 5s; the
@@ -2062,13 +2570,30 @@ pub fn start_server(
             // follow-on; we break once a citizen is hosted to avoid
             // re-bootstrapping a live persona's airc identity.)
             let mut attempt = 0u32;
+            // #429: once boot composition succeeds, this task does NOT end —
+            // it becomes the standing HOSTING RECONCILER. `persona/spawn`
+            // births end at `registry.register` (identity only); hosting
+            // (adapter + cognition loop) is the supervisor's job, and before
+            // this flag existed it ran exactly once, so a command-born
+            // citizen was on airc, carded — and MUTE. Post-boot, each
+            // serving-plan edge drives `host_unattended`: registered
+            // citizens with no service loop get the same materialize +
+            // attach pipeline boot slots got.
+            let mut booted = false;
             loop {
                 let plan_ready = serving_plan_rx
                     .borrow()
                     .as_ref()
                     .map(|p| p.fits_on_gpu)
                     .unwrap_or(false);
-                if plan_ready {
+                // Lane-source-agnostic hosting (misfit / grid design): when the
+                // operator pinned an EXTERNAL OpenAI-compatible endpoint, there is
+                // no local lane to "fit on GPU" — enter the ready-check regardless
+                // of the local plan. `await_ready_serving` short-circuits to a
+                // direct decode-probe of the pinned endpoint (K3, a grid peer).
+                let external_lane =
+                    crate::inference::llama_server::external_serving_pin().is_some();
+                if plan_ready || external_lane {
                     // `fits_on_gpu` is a RESOURCE decision (the model fits VRAM) — it does
                     // NOT prove the lane can DECODE. A lane can fit yet fail EVERY
                     // generation with `500 "Compute error."` while `/health` still answers
@@ -2095,7 +2620,7 @@ pub fn start_server(
                              personas onto a lane that cannot generate; retrying on the \
                              next serving edge."
                         );
-                    } else {
+                    } else if !booted {
                         attempt += 1;
                         let summary = supervisor
                             .spawn_all(&mut provider, Some(tool_executor.clone()))
@@ -2106,26 +2631,62 @@ pub fn start_server(
                                 failed = summary.failed(),
                                 attempts = attempt,
                                 "🌐 Substrate boot composition complete (slice 13.5) — \
-                                 citizen(s) hosted, event-driven on serving-plan readiness"
+                                 citizen(s) hosted; supervisor stays resident as the \
+                                 hosting reconciler (#429)"
                             );
-                            break;
+                            booted = true;
+                        } else {
+                            tracing::warn!(
+                                failed = summary.failed(),
+                                attempt,
+                                "persona spawn found a decode-ready serving lane but no citizen \
+                                 materialized — will retry on the next serving-plan edge"
+                            );
                         }
-                        tracing::warn!(
-                            failed = summary.failed(),
-                            attempt,
-                            "persona spawn found a decode-ready serving lane but no citizen \
-                             materialized — will retry on the next serving-plan edge"
-                        );
+                    } else {
+                        // Post-boot reconcile (#429): a `persona/spawn` birth ends at
+                        // `registry.register`; the hosting half (adapter + cognition
+                        // loop) is ours. Each serving-plan edge, host any registered
+                        // citizen with no attached service loop — never re-running
+                        // `spawn_all` (which would re-bootstrap live airc identities).
+                        let summary = supervisor
+                            .host_unattended(Some(tool_executor.clone()))
+                            .await;
+                        if summary.hosted > 0 {
+                            tracing::info!(
+                                hosted = summary.hosted,
+                                failed = summary.failed(),
+                                "🌐 hosting reconciler: {} newborn citizen(s) hosted \
+                                 (persona/spawn → live mind)",
+                                summary.hosted
+                            );
+                        }
+                        for failure in &summary.failures {
+                            tracing::warn!(
+                                persona_id = ?failure.persona_id,
+                                reason = %failure.reason,
+                                "hosting reconciler: slot failed — will retry on the \
+                                 next serving-plan edge"
+                            );
+                        }
                     }
                 }
                 // Park until the serving daemon republishes (every tick, or
                 // sooner on a pressure edge). `changed()` errs only if the
                 // daemon is gone — then there is nothing left to react to.
                 if serving_plan_rx.changed().await.is_err() {
-                    tracing::warn!(
-                        "serving-daemon watch closed before any persona materialized \
-                         — no citizens online this run"
-                    );
+                    if booted {
+                        tracing::warn!(
+                            "serving-daemon watch closed — hosting reconciler exiting; \
+                             citizens already hosted stay live, but later persona/spawn \
+                             births will not be hosted this run (#429)"
+                        );
+                    } else {
+                        tracing::warn!(
+                            "serving-daemon watch closed before any persona materialized \
+                             — no citizens online this run"
+                        );
+                    }
                     break;
                 }
             }
@@ -2174,14 +2735,30 @@ pub fn start_server(
             // only on a SUBSEQUENT change — avoiding a wasteful boot-time adapter
             // rebuild + redundant swap.
             let mut bound: Option<String> = None;
+            // LEVEL-TRIGGERED retry (#368): edge-only waking is how 4 citizens
+            // stayed stranded on a torn-down model for 47 minutes — the adapter
+            // build failed ONCE during a wedge window, the "retry on the next
+            // snapshot edge" never came (the snapshot had already settled and
+            // never republished), and `bound != active` sat unreconciled forever.
+            // The interval turns that residual mismatch into a retried one: each
+            // tick re-reads the CURRENT snapshot, and the `bound == active` fast
+            // path below makes the steady-state tick free.
+            let mut retry = tokio::time::interval(std::time::Duration::from_secs(30));
+            retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
-                // Park until the daemon republishes its serving snapshot.
-                if serving_rx.changed().await.is_err() {
-                    tracing::info!(
-                        "serving-snapshot watch closed — served-model re-home reconciler \
-                         exiting (substrate shutdown)"
-                    );
-                    break;
+                // Wake on a snapshot edge OR the retry tick — never park solely
+                // on an edge that may already have passed.
+                tokio::select! {
+                    changed = serving_rx.changed() => {
+                        if changed.is_err() {
+                            tracing::info!(
+                                "serving-snapshot watch closed — served-model re-home \
+                                 reconciler exiting (substrate shutdown)"
+                            );
+                            break;
+                        }
+                    }
+                    _ = retry.tick() => {}
                 }
                 let snap = serving_rx.borrow_and_update().clone();
                 if !snap.ready {
@@ -2325,6 +2902,21 @@ pub fn start_server(
             "TrainingCompletionSentinel: registered (L3 train-done → eval → lift>0 → page-in)"
         );
 
+        // GenomeFitnessSentinel: the self-evolving genome's fitness daemon. On a slow
+        // (5-min) Background tick it measures each resident layer's value-density
+        // (lift/GB, from the manifest + eval ledger) and GLASS-BOXES the ranking +
+        // retire-candidates — OBSERVE-ONLY, no eviction (earn the emergent version:
+        // validate the fitness signal against ground truth before it ever evicts,
+        // SELF-EVOLVING-GENOME.md §5). Stateless; reads fresh each tick.
+        runtime.register(Arc::new(
+            crate::modules::genome_fitness_sentinel::GenomeFitnessSentinel::new(),
+        ));
+        log_info!(
+            "ipc",
+            "server",
+            "GenomeFitnessSentinel: registered (observe-only value-density fitness landscape, 5-min tick)"
+        );
+
         // TrainingTriggerModule: substrate-native batching coordinator
         // sitting between curriculum producers (teacher persona's
         // synthesis, hippocampus's noteworthy drain, operator submits)
@@ -2437,7 +3029,7 @@ pub fn start_server(
     // The ONE provider registry, OWNED by the Runtime so all three readers share
     // it: the ProvidedCommandInterceptor (in-process/persona route), the
     // connection layer (writer, via ServerState — binds an eye-node on connect),
-    // AND `Runtime::route_command` (the socket route: cu / IPC / MCP). An
+    // AND `Runtime::route_command` (the socket route: uu / IPC / MCP). An
     // eye-node's `provider/register` on any connection binds here; every dispatch
     // path routes perception/observe to it, or fails loud when none is connected.
     let provider_registry = runtime.provider_registry();
@@ -2450,7 +3042,9 @@ pub fn start_server(
             // event source and `message_bus()` is None — the boot-loud
             // panic the `CONTINUUM_CORE_WS` block asserts against.
             .with_message_bus(runtime.bus_arc())
-            .with_interceptor(Arc::new(crate::runtime::AircInterceptor::new()))
+            .with_interceptor(Arc::new(crate::runtime::AircInterceptor::with_airc_cell(
+                airc_interceptor_cell,
+            )))
             .with_interceptor(Arc::new(crate::runtime::GridInterceptor::new(grid_state)))
             // `provided` sits at the TAIL of the chain: airc/grid get first look
             // so an explicitly remote-targeted perception/observe still hops to a
@@ -2488,6 +3082,14 @@ pub fn start_server(
     // (LocalPersona → Trusted). Late-bound because the service loop has no
     // executor in scope; this is the one install site.
     crate::persona::training_producer::install_executor(Arc::clone(&executor));
+    // #249: the durable-transcript reader behind persona wake hydration shares
+    // the same substrate executor (one dispatch chain, no parallel query stack).
+    crate::persona::durable_history::install_executor(Arc::clone(&executor));
+    // Autonomic dream consolidation: the dream region dispatches `memory/consolidate`
+    // through the SAME wired executor, so a persona consolidates the lessons other agents
+    // taught her into her genome WHILE IDLE — the being-loop's received axis going
+    // autonomic. Same install site + same executor as the L2 producer above.
+    crate::cognition::dream_consolidation::install_consolidate_executor(Arc::clone(&executor));
 
     // Round-2 verifier fix on PR #1568: now that the executor is
     // installed on every module, release the persona-supervisor task
@@ -2502,6 +3104,10 @@ pub fn start_server(
         let _ = tx.send(Arc::clone(&executor));
     }
 
+    // Unix: bind the primary Unix-domain socket. On Windows this is skipped
+    // entirely — the server's primary IPC is the TCP loopback listener in the
+    // accept section below (Windows has no Unix-domain sockets).
+    #[cfg(unix)]
     let listener = UnixListener::bind(socket_path)?;
     // Make the socket world-rw so callers running under a different UID
     // than the server can connect. Concrete failure (#1008): on Windows
@@ -2515,6 +3121,7 @@ pub fn start_server(
     // would suppress the error; let it propagate) is intentional per
     // the global "evidence is for the debugger" rule. Caught live by
     // continuum-b69f 2026-05-02 during Carl-OOTB Windows Phase 4.
+    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o666))?;
@@ -2577,6 +3184,12 @@ pub fn start_server(
     // handshake for the TCP listener (and/or a sub-Provisional read-only ceiling)
     // before relying on a non-loopback bind — pairs with the airc↔grid per-peer
     // trust bridge. Until then: do NOT bind 0.0.0.0 on an untrusted network.
+    //
+    // Unix-only: this is the containerized-node-server-on-Mac path (Docker VM
+    // boundary crossing). On Windows the TCP listener is the PRIMARY IPC (bound
+    // in the accept section below), so gating this here prevents a double-bind
+    // of CONTINUUM_CORE_TCP.
+    #[cfg(unix)]
     if let Ok(tcp_port_str) = std::env::var("CONTINUUM_CORE_TCP") {
         if let Ok(port) = tcp_port_str.parse::<u16>() {
             if port > 0 {
@@ -2686,10 +3299,133 @@ pub fn start_server(
                     "CONTINUUM_CORE_WS is set but the command executor has no message bus — \
                      the positron chat projection has no airc source to subscribe to",
                 );
+                // Activity-purpose index (#6/#274/#329): resolve each room to the
+                // recipe it was spawned from, by READING the binding `activity/spawn`
+                // publishes to the room's wall. Until this existed, that binding had
+                // no reader anywhere and every room — benchmark, foundry, video-call
+                // — projected as a plain chat room to every renderer AND to the
+                // citizen standing inside it. Without a daemon (headless / no
+                // bootstrap room) the honest default stands: everything is chat.
+                let room_purpose: crate::ipc::room_purpose::SharedRoomPurpose =
+                    match node_presence_deps
+                        .clone()
+                        .zip(persona_bootstrap_room_name.clone())
+                    {
+                        Some(((socket, _room), room_name)) => {
+                            Arc::new(recipe_room_purpose::spawn_node_purpose_index(
+                                &state.rt_handle,
+                                projection_bus.clone(),
+                                socket,
+                                crate::modules::persona_instance_manager::resolve_continuum_root()
+                                    .join("citizens")
+                                    .join("node")
+                                    .join("purpose")
+                                    .join("airc"),
+                                room_name,
+                            ))
+                        }
+                        None => crate::ipc::room_purpose::default_source(),
+                    };
+
                 positron_source::spawn(
                     &state.rt_handle,
                     projection_bus.clone(),
                     ws_substrate.clone(),
+                    // Durable hydration seed: the bootstrap room's stored tail
+                    // fills the projection BEFORE live events fold, so a core
+                    // reboot never presents an empty room to any client.
+                    node_presence_deps
+                        .clone()
+                        .map(|(_socket, room)| (Arc::clone(&ws_executor), room.as_uuid())),
+                    room_purpose,
+                    // Per-room stores (#408): every per-room envelope is mirrored into
+                    // its OWN room's store, so a consumer that names its room (a
+                    // citizen's grounding) reads THAT room instead of whichever room
+                    // wrote last. The node substrate above still receives everything,
+                    // so the focused-room web session is unchanged.
+                    Some(global_room_substrates()),
+                );
+
+                // Per-citizen substrates for per-user views (nav): each connecting
+                // citizen (?me) reads its own nav from here, unioned with the node
+                // substrate for per-room views. Shared instance so the nav projector
+                // (write) and the session (read) agree on for_citizen(me).
+                let per_user =
+                    std::sync::Arc::new(continuum_positron::scoping::PerUserSubstrates::new());
+
+                // Nav wiring (nav slice 2, live): ONE room-set fold projecting the
+                // observed airc stream (seeded with the bootstrap room so the
+                // landing room exists before the first event), one live reader
+                // over it, and the registry the WS ingress asks to ensure a
+                // citizen's projector on first connection.
+                let nav_seed: Vec<(Uuid, String)> = node_presence_deps
+                    .clone()
+                    .zip(persona_bootstrap_room_name.clone())
+                    .map(|((_socket, room), name)| vec![(room.as_uuid(), name)])
+                    .unwrap_or_default();
+                let room_set = positron_nav_source::spawn_room_set_fold(
+                    &state.rt_handle,
+                    projection_bus.clone(),
+                    nav_seed,
+                    // #241: the durable membership registry — every subscribed
+                    // room lands in nav at boot, not on first traffic.
+                    node_presence_deps.clone().map(|(socket, _room)| socket),
+                );
+                // Member-name fold (the room fold's identity sibling): resolves a
+                // persona-kind tab's title from the same presence stream.
+                let member_set = positron_nav_source::spawn_member_set_fold(
+                    &state.rt_handle,
+                    projection_bus.clone(),
+                );
+                let nav_registry = Arc::new(positron_nav_source::NavProjectorRegistry::new(
+                    projection_bus.clone(),
+                    Arc::clone(&per_user),
+                    Arc::new(positron_nav_source::ChannelBookmarksNavReader::new(
+                        room_set, member_set,
+                    )),
+                ));
+
+                // SYS gauge source (brick 2): sample the ONE shared resource
+                // monitor into kind="system-metrics" on the served substrate —
+                // the old sidebar's CPU/MEM sparkline, core-carried window.
+                positron_metrics_source::spawn_system_metrics_emitter(
+                    &state.rt_handle,
+                    system_monitor.clone(),
+                    ws_substrate.clone(),
+                );
+
+                // Serving glass box (#141 slice 1): fold the daemon's serving
+                // snapshot + the MoE pager capture feed (when live) into
+                // kind="serving" — the beat-WASTE control loop on screen.
+                positron_serving_source::spawn_serving_emitter(
+                    &state.rt_handle,
+                    ws_substrate.clone(),
+                );
+
+                // Benchmark board (#329): fold the run-ledger projection into
+                // kind="bench" — the academy right-rail's live rows (who is
+                // solving what, attempt N/M, patch forming, verdicts). Dual-
+                // published: the websocket substrate for human eyes AND the
+                // global bench substrate for citizen minds (#426) — one
+                // definition, two render targets, same as the roster repair.
+                positron_bench_source::spawn_bench_emitter(
+                    &state.rt_handle,
+                    ws_substrate.clone(),
+                    global_bench_substrate(),
+                );
+
+                // Live-call glass box (#58): folds the TRANSPORT's calls against
+                // the ORCHESTRATOR's registered sessions. Their disagreement is
+                // the defect — a live call with no registration is why a persona
+                // sits present and silent while isInCall() returns false and her
+                // responses are dropped. Rendering it makes that a visible fact on
+                // web + iOS + Android + TUI at once, instead of a mystery each
+                // client rediscovers.
+                positron_live_source::spawn_live_call_emitter(
+                    &state.rt_handle,
+                    ws_substrate.clone(),
+                    call_manager.clone(),
+                    voice_service_for_view.clone(),
                 );
 
                 // Producer half of the same stream: attach a node-level
@@ -2791,19 +3527,14 @@ pub fn start_server(
                     }
                 }
 
-                // Per-citizen substrates for per-user views (nav): each connecting
-                // citizen (?me) reads its own nav from here, unioned with the node
-                // substrate for per-room views. Shared instance so the nav projector
-                // (write) and the session (read) agree on for_citizen(me).
-                let per_user =
-                    std::sync::Arc::new(continuum_positron::scoping::PerUserSubstrates::new());
                 state.rt_handle.spawn(async move {
-                    ws::serve(bind_addr, ws_executor, ws_substrate, per_user).await;
+                    ws::serve(bind_addr, ws_executor, ws_substrate, per_user, nav_registry).await;
                 });
             }
         }
     }
 
+    // (see detect_system_ram_mb below for how the guard's limit is derived)
     // Periodic memory leak reporter — logs RSS + top leakers every 10s
     // Also acts as OOM guard: exits gracefully before OOM kills us ungracefully.
     // Limit is 80% of system RAM (not a fixed 4GB) — scales from an 8GB MacBook
@@ -2813,34 +3544,25 @@ pub fn start_server(
     let mem_rt = state.rt_handle.clone();
     mem_rt.spawn(async {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
-        let system_ram_mb = {
-            #[cfg(target_os = "macos")]
-            {
-                use std::process::Command;
-                Command::new("sysctl")
-                    .args(["-n", "hw.memsize"])
-                    .output()
-                    .ok()
-                    .and_then(|o| String::from_utf8(o.stdout).ok())
-                    .and_then(|s| s.trim().parse::<u64>().ok())
-                    .map(|bytes| bytes / (1024 * 1024))
-                    .unwrap_or(8192) // fallback 8GB
-            }
-            #[cfg(target_os = "linux")]
-            {
-                std::fs::read_to_string("/proc/meminfo")
-                    .ok()
-                    .and_then(|s| {
-                        s.lines()
-                            .find(|l| l.starts_with("MemTotal:"))
-                            .and_then(|l| l.split_whitespace().nth(1))
-                            .and_then(|kb| kb.parse::<u64>().ok())
-                            .map(|kb| kb / 1024)
-                    })
-                    .unwrap_or(8192)
-            }
-            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-            { 8192u64 }
+        // Total RAM via sysinfo — already a direct dependency of this crate, described in
+        // Cargo.toml as "Cross-platform CPU, memory, system resource monitoring", and previously
+        // unused here.
+        //
+        // What it replaces: a `sysctl` shell-out for macOS, a /proc/meminfo parse for Linux, and
+        // — for every OTHER target, meaning Windows — the literal `8192`. Not a detection failure:
+        // there was no Windows arm at all. So on Windows this guard believed the machine had 8 GB
+        // and armed a FATAL self-exit at 6553 MB RSS, on hosts doing MoE serving where the host-side
+        // expert cache alone dwarfs that. The action here is `process::exit(1)`, so a wrong number
+        // does not degrade anything gracefully, it terminates the core.
+        //
+        // And when detection fails there is now NO invented number. A guessed-low limit is strictly
+        // worse than no limit, because the failure mode of guessing is killing a healthy process.
+        let Some(system_ram_mb) = crate::ipc::diagnostics::detect_system_ram_mb() else {
+            eprintln!(
+                "[MEMGUARD] could not determine system RAM — guard DISABLED. Running with no OOM \
+                 guard is safe; arming one against a guessed size is not (it self-exits)."
+            );
+            return;
         };
         // 80% of system RAM — aggressive enough to catch real leaks,
         // generous enough not to false-kill on big machines.
@@ -2865,14 +3587,17 @@ pub fn start_server(
         }
     });
 
-    // Accept connections (event-driven - sleeps until connection)
+    // Accept connections (event-driven - sleeps until connection).
+    //
+    // Unix: block on the Unix-domain socket accept loop. Unix socket = LOCAL
+    // caller (the operator on the box) → None = owner-by-locality.
+    #[cfg(unix)]
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
                 let state = state.clone();
 
-                // Spawn thread for concurrent handling. Unix socket = LOCAL caller
-                // (the operator on the box) → None = owner-by-locality.
+                // Spawn thread for concurrent handling.
                 std::thread::spawn(move || {
                     if let Err(e) = handle_client(stream, state, None) {
                         log_error!("ipc", "server", "Client error: {}", e);
@@ -2881,6 +3606,48 @@ pub fn start_server(
             }
             Err(e) => {
                 log_error!("ipc", "server", "Connection error: {}", e);
+            }
+        }
+    }
+
+    // Windows: no Unix-domain sockets. Bind a TCP loopback listener as the
+    // PRIMARY IPC and block on its accept loop. Loopback == the local operator,
+    // so callers are stamped `None` (owner-by-locality), mirroring the Unix
+    // socket's trust semantics — local jtag/SDK clients connect over
+    // 127.0.0.1:<port> and retain owner privileges. Host from CONTINUUM_CORE_BIND
+    // (default 127.0.0.1 — loopback only), port from CONTINUUM_CORE_TCP
+    // (default 9100). BEHAVIORAL NOTE: local Windows clients must connect over
+    // this TCP port instead of a Unix socket path.
+    #[cfg(windows)]
+    {
+        let bind_host =
+            std::env::var("CONTINUUM_CORE_BIND").unwrap_or_else(|_| "127.0.0.1".to_string());
+        let port: u16 = std::env::var("CONTINUUM_CORE_TCP")
+            .ok()
+            .and_then(|s| s.parse::<u16>().ok())
+            .filter(|p| *p > 0)
+            .unwrap_or(9100);
+        let bind_addr = format!("{bind_host}:{port}");
+        let listener = TcpListener::bind(&bind_addr)?;
+        log_info!(
+            "ipc",
+            "server",
+            "IPC server ready on TCP {} (Windows primary transport — no Unix-domain sockets)",
+            bind_addr
+        );
+        for stream in listener.incoming() {
+            match stream {
+                Ok(stream) => {
+                    let state = state.clone();
+                    std::thread::spawn(move || {
+                        if let Err(e) = handle_client(stream, state, None) {
+                            log_error!("ipc", "server", "Client error: {}", e);
+                        }
+                    });
+                }
+                Err(e) => {
+                    log_error!("ipc", "server", "Connection error: {}", e);
+                }
             }
         }
     }

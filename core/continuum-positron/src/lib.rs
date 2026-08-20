@@ -118,6 +118,7 @@
 //!    and call [`Substrate::store`] on each change, so the projection
 //!    tracks the airc-owned truth (see "State ownership" above).
 
+pub mod bench;
 pub mod broadcast;
 pub mod cache;
 pub mod chat;
@@ -125,11 +126,14 @@ pub mod connection;
 pub mod dispatch;
 pub mod foundry;
 pub mod kanban;
+pub mod live;
 pub mod nav;
 pub mod observer;
 pub mod revisions;
 pub mod scoping;
+pub mod serving;
 pub mod session;
+pub mod system_metrics;
 pub mod session_task;
 pub mod state;
 pub mod substrate;
@@ -138,13 +142,14 @@ pub mod wall;
 pub use broadcast::Broadcast;
 pub use cache::SubstrateStateCache;
 pub use chat::{
-    ChatMessageView, ChatViewState, Loadout, Provenance, RosterSlotView, RosterViewState,
+    ActReceiptView, ChatMessageView, ChatViewState, Loadout, Provenance, RosterSlotView,
+    RosterViewState,
     SenderKind,
 };
 pub use connection::Connection;
 pub use dispatch::{apply_command, CommandDispatch};
 pub use kanban::{
-    KanbanCardState, KanbanCardView, KanbanLaneState, KanbanLaneView, KanbanPriority,
+    KanbanCardState, KanbanCardView, KanbanHold, KanbanLaneState, KanbanLaneView, KanbanPriority,
     KanbanPullRequest, KanbanViewState,
 };
 pub use observer::{apply_observe, ObserverRegistration};

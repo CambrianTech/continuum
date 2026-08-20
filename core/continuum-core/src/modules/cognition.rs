@@ -189,7 +189,7 @@ impl ServiceModule for CognitionModule {
 
             // NOTE: `cognition/eval` (the test-graded coder gym) is now a typed,
             // registered, Privileged ActionCommand — see `cognition::eval::CognitionEval`.
-            // It dispatches via the central registry (so `cu` and every client can
+            // It dispatches via the central registry (so `uu` and every client can
             // reach it, and it's discoverable + gated), no longer a match-arm here.
             "cognition/calculate-priority" => {
                 let _timer = TimingGuard::new("module", "cognition_calculate_priority");
@@ -277,7 +277,7 @@ impl ServiceModule for CognitionModule {
             // stateless `ActionCommand`s in `crate::commands::cognition` (each calls
             // the same free fn — `evaluate_gating` / `evaluate_redundancy` — over its
             // typed request). `route_object` dispatches them via `command_registry()`,
-            // so they reach the ACL, codegen, `cu`, and grid routing. Both are
+            // so they reach the ACL, codegen, `uu`, and grid routing. Both are
             // `access: Internal`. No match arm here — a second registration would be
             // the only place they could collide, and there is none.
 
@@ -427,7 +427,6 @@ impl ServiceModule for CognitionModule {
             // `Arc<CognitionState>` and delegates to `get_or_create_persona` +
             // the per-persona `message_cache` / `content_dedup`). They reach the
             // registry via `CognitionModule::commands()`. All `access: Internal`.
-
             _ => Err(format!("Unknown cognition command: {command}")),
         }
     }
@@ -523,7 +522,7 @@ mod turn_frame_recording_tests {
             id: Uuid::new_v4(),
             room_id,
             sender_id: Uuid::new_v4(),
-            sender_name: "Joel".to_string(),
+            sender_name: "Operator".to_string(),
             sender_type: SenderType::Human,
             content: content.to_string(),
             timestamp,
@@ -541,9 +540,9 @@ mod turn_frame_recording_tests {
 
         assert_eq!(
             record.consolidated_inbox.transcript,
-            "Joel: record the frame"
+            "Operator: record the frame"
         );
-        assert_eq!(record.rag_seed.query_text, "Joel: record the frame");
+        assert_eq!(record.rag_seed.query_text, "Operator: record the frame");
         assert_eq!(record.inbox_frame.metrics.messages_drained, 1);
     }
 

@@ -422,13 +422,37 @@ fn persist_json_payload<T: Serialize>(dir: &Path, fname: &str, payload: &T) {
     trim_fifo(dir);
 }
 
+// Test-only per-thread overrides (#7). The recorder's tests used to mutate
+// process-global HOME/DISABLE env under a private lock — but that lock only
+// serialized RECORDER tests; every other test in the parallel suite that read
+// HOME (or triggered a recorder write) raced the swap window, and a parallel
+// write landing in the swapped tempdir broke this file's `len == 1` assertion.
+// A thread-local override is parallel-safe by construction: `record_turn` runs
+// on the caller's thread, so each test sees exactly its own root and the
+// process environment is never touched.
+#[cfg(test)]
+thread_local! {
+    static TEST_FIXTURE_ROOT: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+    static TEST_DISABLED: std::cell::RefCell<Option<bool>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 fn disabled() -> bool {
+    #[cfg(test)]
+    if let Some(v) = TEST_DISABLED.with(|d| *d.borrow()) {
+        return v;
+    }
     std::env::var(DISABLE_ENV)
         .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE"))
         .unwrap_or(false)
 }
 
 fn fixture_dir(relative: &str) -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(root) = TEST_FIXTURE_ROOT.with(|r| r.borrow().clone()) {
+        return Some(root.join(relative));
+    }
     std::env::var("HOME")
         .ok()
         .map(|h| PathBuf::from(h).join(relative))
@@ -519,7 +543,6 @@ mod tests {
     use crate::persona::response::PersonaResponse;
     use crate::persona::{InboxMessage, Modality, PersonaTurnFrame, SenderType};
     use std::collections::HashSet;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
     use tempfile::tempdir;
 
     fn fake_input() -> RespondInput {
@@ -564,7 +587,7 @@ mod tests {
                 id: Uuid::new_v4(),
                 room_id,
                 sender_id: Uuid::new_v4(),
-                sender_name: "Joel".to_string(),
+                sender_name: "Operator".to_string(),
                 sender_type: SenderType::Human,
                 content: "what changed?".to_string(),
                 timestamp: 10_000,
@@ -604,50 +627,29 @@ mod tests {
             .expect("fixture frame is non-empty")
     }
 
-    fn env_lock() -> MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("recorder env test lock poisoned")
-    }
-
-    struct EnvRestore {
-        home: Option<String>,
-        disabled: Option<String>,
-    }
+    /// Per-thread fixture-root override (#7): points THIS thread's recorder at
+    /// the test's tempdir (plus an optional disable flag) without touching the
+    /// process environment. The old HOME-swap under a private lock only
+    /// serialized recorder tests against each other — every other parallel
+    /// test reading HOME, or writing a fixture mid-swap, raced it. Same
+    /// `install(path, disabled)` shape as the env version it replaces.
+    struct EnvRestore;
 
     impl EnvRestore {
         fn install(home: &std::path::Path, disabled: Option<&str>) -> Self {
-            let restore = Self {
-                home: std::env::var("HOME").ok(),
-                disabled: std::env::var(DISABLE_ENV).ok(),
-            };
-            // Environment mutation is process-global. Tests using this helper
-            // hold `env_lock()`, so no other recorder env test runs concurrently.
-            unsafe {
-                std::env::set_var("HOME", home);
-                match disabled {
-                    Some(v) => std::env::set_var(DISABLE_ENV, v),
-                    None => std::env::remove_var(DISABLE_ENV),
-                }
-            }
-            restore
+            TEST_FIXTURE_ROOT.with(|r| *r.borrow_mut() = Some(home.to_path_buf()));
+            // None mirrors the old remove_var: an inherited process-level
+            // disable must not leak into a test that expects writes.
+            TEST_DISABLED
+                .with(|d| *d.borrow_mut() = Some(matches!(disabled, Some("1" | "true" | "TRUE"))));
+            Self
         }
     }
 
     impl Drop for EnvRestore {
         fn drop(&mut self) {
-            // See EnvRestore::install for the synchronization guarantee.
-            unsafe {
-                match &self.home {
-                    Some(v) => std::env::set_var("HOME", v),
-                    None => std::env::remove_var("HOME"),
-                }
-                match &self.disabled {
-                    Some(v) => std::env::set_var(DISABLE_ENV, v),
-                    None => std::env::remove_var(DISABLE_ENV),
-                }
-            }
+            TEST_FIXTURE_ROOT.with(|r| *r.borrow_mut() = None);
+            TEST_DISABLED.with(|d| *d.borrow_mut() = None);
         }
     }
 
@@ -727,7 +729,6 @@ mod tests {
     /// write, request echo, response, and trace in one artifact.
     #[test]
     fn record_turn_writes_fixture_json_under_home() {
-        let _lock = env_lock();
         let tmp = tempdir().expect("temp home");
         let _restore = EnvRestore::install(tmp.path(), None);
         let input = fake_input();
@@ -757,7 +758,6 @@ mod tests {
     /// writes, and the Rust recorder honors that without asking TS to help.
     #[test]
     fn record_turn_respects_disable_env() {
-        let _lock = env_lock();
         let tmp = tempdir().expect("temp home");
         let _restore = EnvRestore::install(tmp.path(), Some("true"));
 
@@ -774,7 +774,6 @@ mod tests {
     #[test]
     fn record_failed_turn_writes_error_with_partial_trace() {
         use crate::persona::trace::SEAM_ANALYZE;
-        let _lock = env_lock();
         let tmp = tempdir().expect("temp home");
         let _restore = EnvRestore::install(tmp.path(), None);
         let input = fake_input();
@@ -818,7 +817,6 @@ mod tests {
     /// and deterministic RAG seed in one parseable artifact.
     #[test]
     fn record_turn_frame_replay_writes_fixture_json_under_home() {
-        let _lock = env_lock();
         let tmp = tempdir().expect("temp home");
         let _restore = EnvRestore::install(tmp.path(), None);
         let record = fake_turn_frame_replay_record();
@@ -843,11 +841,11 @@ mod tests {
         assert_eq!(json["inboxFrame"]["metrics"]["messagesDrained"], 2);
         assert_eq!(
             json["consolidatedInbox"]["transcript"],
-            "Joel: what changed?\nMira: the frame records replay state"
+            "Operator: what changed?\nMira: the frame records replay state"
         );
         assert_eq!(
             json["ragSeed"]["queryText"],
-            "Joel: what changed?\nMira: the frame records replay state"
+            "Operator: what changed?\nMira: the frame records replay state"
         );
     }
 
@@ -856,7 +854,6 @@ mod tests {
     /// without branching in the caller.
     #[test]
     fn record_turn_frame_replay_respects_disable_env() {
-        let _lock = env_lock();
         let tmp = tempdir().expect("temp home");
         let _restore = EnvRestore::install(tmp.path(), Some("true"));
 
@@ -871,7 +868,6 @@ mod tests {
     /// duplicate derived fields validate against the raw inbox frame.
     #[test]
     fn load_turn_frame_replay_fixture_accepts_recorder_output() {
-        let _lock = env_lock();
         let tmp = tempdir().expect("temp home");
         let _restore = EnvRestore::install(tmp.path(), None);
         let record = fake_turn_frame_replay_record();

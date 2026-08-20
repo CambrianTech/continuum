@@ -22,6 +22,7 @@ pub mod downloader;
 pub mod fetch;
 pub mod model_catalog;
 pub mod model_source;
+pub mod placement_planner;
 pub mod provisioner;
 pub mod scaling;
 
@@ -30,10 +31,14 @@ pub use cache::{reconcile, CacheDecision, CacheEntry, ProvisionPlan};
 pub use downloader::{DownloadError, Downloader};
 pub use fetch::{fetch_and_place, FetchError};
 pub use model_catalog::{
-    budget_for_mode, parse_quant, plan_family_fetch, plan_model_fetch, select_best_fit, select_for_mode, serving_mode_for_pressure,
-    CatalogError, GgufCandidate, ModelFamily, ModelFetchPlan, PowerMode, ProvisionModelError, provision_model,
+    budget_for_mode, parse_quant, plan_family_fetch, plan_model_fetch, provision_model,
+    select_best_fit, select_for_mode, serving_mode_for_pressure, CatalogError, GgufCandidate,
+    ModelFamily, ModelFetchPlan, PowerMode, ProvisionModelError,
 };
 pub use model_source::ModelSource;
+pub use placement_planner::{
+    grid_has_fit, resolve_from_footprint, resolve_placement, PlacementResolution,
+};
 pub use provisioner::{EvictionReport, Provisioner};
 pub use scaling::{DefaultScalingPolicy, DemandContext, ScalingPolicy};
 

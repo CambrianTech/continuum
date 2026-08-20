@@ -40,6 +40,12 @@ BENCH_META = {
     "frontier-rs":  ("Frontier-Rust", "Dijkstra · Levenshtein · LIS · topo-sort · bignum · calc · regex", "inner"),
     "games-rs":     ("Games-Rust", "buildable game logic — Conway · win-checkers · 2048 merge · knight moves", "inner"),
     "swe-bench-lite":("SWE-bench Lite", "real GitHub issues in real repos, official swebench scorer", "outer"),
+    # The whole-being battery (benchmarks/agent-solve/): the persona's COMPLETE self —
+    # memory ON, genome loaded, tools ON, never stripped — dropped into seeded git repos
+    # via agent/solve, one task at a time, graded by the repo's own asserts. These rows
+    # are the LEARNING-CAPACITY curve: the same persona re-measured as the mind improves.
+    "agent-solve-t1": ("Agent-Solve Tier 1", "whole-being seeded-repo bug fixes — single-file", "being"),
+    "agent-solve-t2": ("Agent-Solve Tier 2", "whole-being — multi-file root-cause, invariants, implement-from-spec", "being"),
 }
 # The competing local coding CLIs people actually use. The Δ "sell" column is OURS minus the
 # BEST of these (same weights) — the strongest honest single claim: we beat the best rival CLI.
@@ -168,6 +174,13 @@ def render(by_bench, has_chart):
     out.append("- **Δ vs best rival CLI** — points OURS beats the *strongest* competing local coding CLI by, on identical weights. **This is the claim.**\n")
 
     for tier, title in [("outer", "### Lab-grade (the headline)"),
+                        ("being", "### Whole-being battery (the learning-capacity curve)\n\n"
+                                  "The persona's COMPLETE self — memory ON, genome loaded, tools ON, "
+                                  "**never stripped to fit the benchmark** — dropped into seeded git repos "
+                                  "one task at a time ([`benchmarks/agent-solve/`](benchmarks/agent-solve/)). "
+                                  "The same persona re-measured over time as the mind improves: these rows "
+                                  "are a learning curve, not a leaderboard. Opponent CLIs join on identical "
+                                  "tasks as sibling arms."),
                         ("inner", "### Fast verifiable gyms (regression + training signal)")]:
         benches = [b for b in BENCH_META if BENCH_META[b][2] == tier and b in by_bench]
         if not benches: continue

@@ -35,6 +35,25 @@ static THROTTLE: OnceLock<PrefillThrottle> = OnceLock::new();
 /// [[never-thrash-sticky-hysteresis-on-every-lane]]
 const GROW_STICKINESS_TICKS: usize = 3;
 
+/// Spikes of headroom a GROW must fit under, where holding/shrinking needs only ONE.
+///
+/// The deadband. Stickiness alone cannot stop a boundary oscillation, and live evidence
+/// 2026-08-13 says it didn't: the grant walked `1→4→4→1→1→4→4→1` with a ~20s period —
+/// exactly `GROW_STICKINESS_TICKS` ticks to climb, one tick to fall. Slowing the climb only
+/// sets the frequency; it cannot remove the flip, because grow and shrink were deciding
+/// against the SAME threshold, so a free-VRAM value resting on the fit boundary satisfies it
+/// one tick and fails it the next, forever.
+///
+/// A control loop that must not chatter needs its two directions to disagree about where the
+/// line is. Shrink keeps the tight margin (one spike — the safety direction is unchanged and
+/// still instant). Grow must clear a STRICTER bar: room for the target lanes plus a second
+/// spike. Between those two thresholds is a band where neither direction fires, and the
+/// measurement noise lives entirely inside it.
+///
+/// Expressed in spikes, not bytes, so it scales with whatever model is resident — the same
+/// unit `FitPolicy::safety_margin_bytes` already speaks. [[never-thrash]]
+const GROW_MARGIN_SPIKES: u64 = 2;
+
 pub struct PrefillThrottle {
     sem: Arc<tokio::sync::Semaphore>,
     /// Permits conceptually installed (a Semaphore only exposes AVAILABLE). Shrink debt is
@@ -55,15 +74,7 @@ fn throttle() -> &'static PrefillThrottle {
     THROTTLE.get_or_init(|| {
         // Boot fallback: before any plan publishes, gate at the same count the lane
         // semaphores use, so behavior is exactly pre-throttle until facts arrive.
-        let lanes = super::resource_admission::boot_lane_count();
-        PrefillThrottle {
-            sem: Arc::new(tokio::sync::Semaphore::new(lanes)),
-            installed: AtomicUsize::new(lanes),
-            spike_bytes: AtomicU64::new(0),
-            want_lanes: AtomicUsize::new(lanes),
-            grow_streak: AtomicUsize::new(0),
-            reconcile_lock: Mutex::new(()),
-        }
+        PrefillThrottle::with_lanes(super::resource_admission::boot_lane_count())
     })
 }
 
@@ -71,9 +82,7 @@ fn throttle() -> &'static PrefillThrottle {
 /// count. Called by the serving daemon on every plan publish, right where it publishes the
 /// lane count — ONE source of truth, no second path.
 pub fn publish_serving(spike_bytes: u64, lanes: usize) {
-    let t = throttle();
-    t.spike_bytes.store(spike_bytes, Ordering::Release);
-    t.want_lanes.store(lanes.max(1), Ordering::Release);
+    throttle().publish_serving(spike_bytes, lanes);
 }
 
 /// Re-derive the concurrent-prefill grant from LIVE free GPU bytes and apply it to the gate.
@@ -83,39 +92,139 @@ pub fn publish_serving(spike_bytes: u64, lanes: usize) {
 /// The fit rule is the SAME `capacity::FitPolicy` the simulator proves scenarios against —
 /// sim == prod at the policy seam. Safety margin: one spike of headroom, so measurement
 /// jitter of one lane never turns a fit into an overflow.
+/// The plan-published per-prefill spike bytes (0 = no plan yet). The SAME live
+/// value the throttle fits with — exposed so the lane decision (#108 step 2)
+/// prices "can local serve one more?" with one spike truth, never a second
+/// estimate ([[the compression principle]]).
+pub fn published_spike_bytes() -> u64 {
+    throttle().published_spike_bytes()
+}
+
 pub fn reconcile(gpu_free_bytes_live: u64) -> usize {
-    let t = throttle();
-    let spike = t.spike_bytes.load(Ordering::Acquire);
-    let want = t.want_lanes.load(Ordering::Acquire).max(1);
-    if spike == 0 {
-        // No plan published yet — no fit facts, hold at the lane count (pre-throttle behavior).
-        return t.apply(want);
-    }
-    let cap = DeviceCapacity {
-        // The fit rule only reads the live-free axis; the other axes are not sourced here.
-        gpu_total_bytes: 0,
-        gpu_free_bytes_live,
-        system_ram_free_bytes: 0,
-    };
-    let req = LeaseRequest {
-        consumer: "prefill".into(),
-        want_concurrency: want as u32,
-        spike_bytes: spike,
-    };
-    let grant = FitPolicy { safety_margin_bytes: spike }.grant(&cap, &req);
-    t.apply(grant.concurrency as usize)
+    throttle().reconcile(gpu_free_bytes_live)
 }
 
 impl PrefillThrottle {
+    /// An INDEPENDENT throttle over `lanes` permits.
+    ///
+    /// Production has exactly one (the process-global [`throttle`]) because the resource it
+    /// gates — one serving target's transient compute-buffer headroom — really is
+    /// process-global. Tests get their OWN, which is the entire point: the global is an
+    /// instance of this type, not the definition of it.
+    ///
+    /// Why this constructor exists (2026-08-06): every behavior below used to be a free
+    /// function reaching into a `OnceLock`, so the tests exercised shared state. The
+    /// `OnceLock` is initialized ONCE, by whichever test touches it first, with that
+    /// moment's `boot_lane_count()` — which made the suite ORDER-DEPENDENT. Adding unrelated
+    /// tests elsewhere shifted scheduling and `shrink_debt_drains_as_inflight_prefills_finish`
+    /// went red in the full suite while passing in isolation. That is not a flake: the
+    /// assertions are `assert_eq!` on integer permit counts, and a predicate with no clock in
+    /// it cannot fail from load. Second instance of this exact class in one day — the
+    /// heartbeat's `ms_since_real_decode` was the first — so the cure is the same one:
+    /// per-owner state, with the global as the production default.
+    pub fn with_lanes(lanes: usize) -> Self {
+        let lanes = lanes.max(1);
+        Self {
+            sem: Arc::new(tokio::sync::Semaphore::new(lanes)),
+            installed: AtomicUsize::new(lanes),
+            spike_bytes: AtomicU64::new(0),
+            want_lanes: AtomicUsize::new(lanes),
+            grow_streak: AtomicUsize::new(0),
+            reconcile_lock: Mutex::new(()),
+        }
+    }
+
+    /// See [`publish_serving`].
+    pub fn publish_serving(&self, spike_bytes: u64, lanes: usize) {
+        self.spike_bytes.store(spike_bytes, Ordering::Release);
+        self.want_lanes.store(lanes.max(1), Ordering::Release);
+    }
+
+    /// See [`published_spike_bytes`].
+    pub fn published_spike_bytes(&self) -> u64 {
+        self.spike_bytes.load(Ordering::Acquire)
+    }
+
+    /// See [`reconcile`] — the fit rule lives HERE so the global and a test instance can
+    /// never drift into two different policies.
+    pub fn reconcile(&self, gpu_free_bytes_live: u64) -> usize {
+        let spike = self.spike_bytes.load(Ordering::Acquire);
+        let want = self.want_lanes.load(Ordering::Acquire).max(1);
+        if spike == 0 {
+            // No plan published yet — no fit facts, hold at the lane count (pre-throttle).
+            // Both thresholds are the same number, so there is no deadband and the behaviour
+            // is exactly the pre-deadband one: settle on `want`.
+            return self.apply(want, want);
+        }
+        let cap = DeviceCapacity {
+            // The fit rule only reads the live-free axis; the others are not sourced here.
+            gpu_total_bytes: 0,
+            gpu_free_bytes_live,
+            system_ram_free_bytes: 0,
+        };
+        let req = LeaseRequest {
+            consumer: "prefill".into(),
+            want_concurrency: want as u32,
+            spike_bytes: spike,
+        };
+        // HOLD threshold — the tight margin. What we may keep running RIGHT NOW. Falling
+        // below this is the safety direction and still shrinks instantly, unchanged.
+        let hold = FitPolicy {
+            safety_margin_bytes: spike,
+        }
+        .grant(&cap, &req)
+        .concurrency as usize;
+        // GROW threshold — the strict margin, one extra spike of headroom. Clearing this is
+        // what it takes to ADD a permit. `hold >= grow` always, and the gap between them is
+        // the deadband that absorbs boundary noise instead of converting it into a flip.
+        let grow = FitPolicy {
+            safety_margin_bytes: spike.saturating_mul(GROW_MARGIN_SPIKES),
+        }
+        .grant(&cap, &req)
+        .concurrency as usize;
+
+        self.apply(hold, grow)
+    }
+
+    /// See [`acquire_prefill_slot`].
+    pub async fn acquire_prefill_slot(&self) -> tokio::sync::OwnedSemaphorePermit {
+        self.sem
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("prefill semaphore is never closed")
+    }
+
+    /// See [`installed_permits`].
+    pub fn installed_permits(&self) -> usize {
+        self.installed.load(Ordering::Acquire)
+    }
+
     /// Apply a target permit count, asymmetrically: SHRINK is instant (collect what's idle
     /// now, leave the rest as debt later reconciles drain as in-flight prefills finish);
     /// GROW only lands after [`GROW_STICKINESS_TICKS`] consecutive reconciles wanted it —
     /// sustained headroom, not one optimistic reading. Never blocks, never revokes running
     /// work, never thrashes on a boundary-riding live number.
-    fn apply(&self, target: usize) -> usize {
-        let target = target.max(1); // a resident model may always run ONE prefill (residency decision)
-        let _g = self.reconcile_lock.lock().expect("prefill reconcile lock never poisoned");
+    fn apply(&self, hold: usize, grow: usize) -> usize {
+        // a resident model may always run ONE prefill (residency decision)
+        let hold = hold.max(1);
+        let grow = grow.max(1);
+        let _g = self
+            .reconcile_lock
+            .lock()
+            .expect("prefill reconcile lock never poisoned");
         let installed = self.installed.load(Ordering::Acquire);
+        // THE DEADBAND, resolved against the authoritative `installed` under the lock — not
+        // against a value read before it, which would be a race the moment reconcile gains a
+        // second caller.
+        let target = if hold < installed {
+            hold // below what we may keep — shed now, tight margin, instant
+        } else {
+            // Safe to stay put. Climb only on the STRICT fit, and never propose fewer than we
+            // already hold — otherwise the strict threshold becomes a second shrink path and
+            // re-creates the very oscillation the deadband exists to remove.
+            grow.max(installed)
+        };
         if target > installed {
             // The recovery direction: deliberate. One tick of headroom is often UMA cache
             // wobble; demand the signal persist before paying the flap.
@@ -130,7 +239,8 @@ impl PrefillThrottle {
             if target < installed {
                 // The safety direction: instant, always.
                 let forgotten = self.sem.forget_permits(installed - target);
-                self.installed.store(installed - forgotten, Ordering::Release);
+                self.installed
+                    .store(installed - forgotten, Ordering::Release);
             }
         }
         let now = self.installed.load(Ordering::Acquire);
@@ -152,17 +262,12 @@ impl PrefillThrottle {
 /// Acquire one concurrent-prefill slot for the model-call window. Await under pressure —
 /// the call proceeds when a slot frees or reconcile grows the gate back.
 pub async fn acquire_prefill_slot() -> tokio::sync::OwnedSemaphorePermit {
-    throttle()
-        .sem
-        .clone()
-        .acquire_owned()
-        .await
-        .expect("prefill semaphore is never closed")
+    throttle().acquire_prefill_slot().await
 }
 
 /// Permits currently installed (post-debt) — for probes and tests.
 pub fn installed_permits() -> usize {
-    throttle().installed.load(Ordering::Acquire)
+    throttle().installed_permits()
 }
 
 #[cfg(test)]
@@ -171,23 +276,70 @@ mod tests {
 
     const GB: u64 = 1024 * 1024 * 1024;
 
-    /// These are the only tests that touch the process-global throttle, and they MUST NOT
-    /// run concurrently: both hold permits from the one semaphore, so test A's shrink can
-    /// steal the permits test B is awaiting → deadlock (observed live, exit 144). Each test
-    /// takes this lock first, then establishes its full state (publish + reconcile), so
-    /// order doesn't matter.
-    static TEST_SERIAL: Mutex<()> = Mutex::new(());
-
-    /// Force a known state regardless of sibling-test order: instant-shrink to the floor
-    /// (works because shrink has no hysteresis), then grow to `n` by sustaining headroom.
-    fn grow_to(n: usize, free: u64) -> usize {
-        assert_eq!(reconcile(0), 1, "floor reset is instant");
-        let mut last = 1;
+    /// Bring a FRESH throttle to `lanes` permits by sustaining headroom.
+    ///
+    /// No serialization lock and no floor-reset dance any more: each test owns its instance,
+    /// so there is no sibling to race and no prior state to undo. The lock this replaced
+    /// existed because both tests held permits from ONE process-global semaphore — test A's
+    /// shrink could steal the permits test B was awaiting, deadlocking the suite (observed
+    /// live, exit 144). Owning the state deletes that failure mode rather than scheduling
+    /// around it, and it also deletes the ORDER-DEPENDENCE that made
+    /// `shrink_debt_drains_as_inflight_prefills_finish` red in the full suite while green in
+    /// isolation on 2026-08-06.
+    fn grow_to(t: &PrefillThrottle, lanes: usize, free: u64) -> usize {
+        let mut last = t.installed_permits();
         for _ in 0..GROW_STICKINESS_TICKS {
-            last = reconcile(free);
+            last = t.reconcile(free);
         }
-        assert_eq!(last, n, "sustained headroom grows to the fit");
+        assert_eq!(last, lanes, "sustained headroom grows to the fit");
         last
+    }
+
+    // what this catches: THE DEADBAND — a boundary-riding free-VRAM reading must move the
+    // grant ZERO times, not once per wobble. Measured live 2026-08-13 with stickiness already
+    // in place: `1→4→4→1→1→4→4→1`, ~20s period (GROW_STICKINESS_TICKS up, ONE tick down).
+    // Stickiness sets the frequency of a flap; only two different thresholds can remove it.
+    // Here 11GB and 9GB straddle the 4-lane HOLD line (10GB) — pre-deadband that alternation
+    // is the flap itself, 11→4 then 9→3 forever. With grow needing 12GB the pair settles at 3
+    // and never moves again. If GROW_MARGIN_SPIKES is ever lowered to 1 this goes red.
+    #[tokio::test]
+    async fn a_wobble_narrower_than_one_spike_never_moves_the_grant() {
+        let t = PrefillThrottle::with_lanes(1);
+        t.publish_serving(2 * GB, 4); // spike 2GB, plan wants 4 lanes
+
+        // Settle under the STRICT fit: 11GB grants (11−4)/2 = 3, not the (11−2)/2 = 4 the
+        // hold line alone would have allowed. Climbing conservatively is the point.
+        let mut settled = 0;
+        for _ in 0..GROW_STICKINESS_TICKS {
+            settled = t.reconcile(11 * GB);
+        }
+        assert_eq!(settled, 3, "grow uses the strict margin: (11−4)/2 = 3");
+
+        // Now oscillate ACROSS the 4-lane hold boundary the old code flapped on. Every tick
+        // must be a no-op: 9GB still holds 3 ((9−2)/2 = 3), and 11GB still cannot reach 4.
+        for tick in 0..8 {
+            let free = if tick % 2 == 0 { 9 * GB } else { 11 * GB };
+            assert_eq!(
+                t.reconcile(free),
+                3,
+                "tick {tick} at {}GB moved the grant — the deadband leaks",
+                free / GB
+            );
+        }
+    }
+
+    // what this catches: the deadband must NOT blunt the safety direction. Real pressure —
+    // a drop below the HOLD line, not wobble around it — still sheds on the very next tick.
+    #[tokio::test]
+    async fn real_pressure_still_sheds_instantly_through_the_deadband() {
+        let t = PrefillThrottle::with_lanes(1);
+        t.publish_serving(2 * GB, 4);
+        grow_to(&t, 4, 13 * GB);
+        assert_eq!(
+            t.reconcile(7 * GB),
+            2,
+            "a genuine drop shrinks on the FIRST tick — (7−2)/2 = 2, tight margin, unchanged"
+        );
     }
 
     // what this catches: THE LIVE SAFETY VALVE — the exact 2026-07-16 OOM shape, gated, WITH
@@ -200,28 +352,38 @@ mod tests {
     // back; if grow loses its stickiness the thrash is back.
     #[tokio::test]
     async fn shrink_is_instant_grow_requires_sustained_headroom() {
-        let _serial = TEST_SERIAL.lock().unwrap_or_else(|p| p.into_inner());
-        publish_serving(2 * GB, 4);
-        grow_to(4, 13 * GB);
+        // OUR OWN throttle. No process-global, so these tests are order-INDEPENDENT and can
+        // run in parallel — the whole reason `with_lanes` exists.
+        let t = PrefillThrottle::with_lanes(1);
+        t.publish_serving(2 * GB, 4);
+        grow_to(&t, 4, 13 * GB);
 
         // Game opens: shrink lands on the FIRST reconcile that sees the pressure.
-        assert_eq!(reconcile(7 * GB), 2, "shrink is instant: (7−2)/2 = 2");
+        assert_eq!(t.reconcile(7 * GB), 2, "shrink is instant: (7−2)/2 = 2");
 
         // Game closes: one good reading does NOT regrow (boundary-riding wobble)…
-        assert_eq!(reconcile(13 * GB), 2, "one optimistic tick is not recovery");
-        assert_eq!(reconcile(13 * GB), 2, "nor two");
+        assert_eq!(
+            t.reconcile(13 * GB),
+            2,
+            "one optimistic tick is not recovery"
+        );
+        assert_eq!(t.reconcile(13 * GB), 2, "nor two");
         // …and a dip in between resets the streak — the signal must be SUSTAINED.
-        assert_eq!(reconcile(7 * GB), 2, "a relapse resets the grow streak");
-        assert_eq!(reconcile(13 * GB), 2);
-        assert_eq!(reconcile(13 * GB), 2);
-        assert_eq!(reconcile(13 * GB), 4, "three consecutive good ticks → regrown to demand");
+        assert_eq!(t.reconcile(7 * GB), 2, "a relapse resets the grow streak");
+        assert_eq!(t.reconcile(13 * GB), 2);
+        assert_eq!(t.reconcile(13 * GB), 2);
+        assert_eq!(
+            t.reconcile(13 * GB),
+            4,
+            "three consecutive good ticks → regrown to demand"
+        );
 
         // The applied grant is enforced, not advisory: under pressure only 2 slots grant.
-        assert_eq!(reconcile(7 * GB), 2);
-        let a = acquire_prefill_slot().await;
-        let b = acquire_prefill_slot().await;
+        assert_eq!(t.reconcile(7 * GB), 2);
+        let a = t.acquire_prefill_slot().await;
+        let b = t.acquire_prefill_slot().await;
         assert!(
-            throttle().sem.clone().try_acquire_owned().is_err(),
+            t.sem.clone().try_acquire_owned().is_err(),
             "a third concurrent prefill must wait while pressure holds"
         );
         drop((a, b));
@@ -234,25 +396,35 @@ mod tests {
     // too loose — both are real failures (starved serving / OOM window reopened).
     #[tokio::test]
     async fn shrink_debt_drains_as_inflight_prefills_finish() {
-        let _serial = TEST_SERIAL.lock().unwrap_or_else(|p| p.into_inner());
-        publish_serving(2 * GB, 4);
-        grow_to(4, 13 * GB);
+        // OUR OWN throttle. No process-global, so these tests are order-INDEPENDENT and can
+        // run in parallel — the whole reason `with_lanes` exists.
+        let t = PrefillThrottle::with_lanes(1);
+        t.publish_serving(2 * GB, 4);
+        grow_to(&t, 4, 13 * GB);
 
         // 3 prefills in flight; heavy pressure wants target 1.
-        let a = acquire_prefill_slot().await;
-        let b = acquire_prefill_slot().await;
-        let c = acquire_prefill_slot().await;
+        let a = t.acquire_prefill_slot().await;
+        let b = t.acquire_prefill_slot().await;
+        let c = t.acquire_prefill_slot().await;
         // (4−2)/2 = 1: only the 1 idle permit is collectable now → installed 4→3, debt 2.
-        assert_eq!(reconcile(4 * GB), 3, "collects the idle permit; in-flight can't be revoked");
+        assert_eq!(
+            t.reconcile(4 * GB),
+            3,
+            "collects the idle permit; in-flight can't be revoked"
+        );
 
         drop(a); // one prefill finishes → its permit returns → collectable
-        assert_eq!(reconcile(4 * GB), 2, "debt drains as calls finish");
+        assert_eq!(t.reconcile(4 * GB), 2, "debt drains as calls finish");
         drop(b);
-        assert_eq!(reconcile(4 * GB), 1, "down to the target — one lane always runs");
+        assert_eq!(
+            t.reconcile(4 * GB),
+            1,
+            "down to the target — one lane always runs"
+        );
 
         // Floor: even under absurd pressure the gate never goes below 1 (a resident model
         // may always run one prefill — going below is a residency decision, not admission).
         drop(c);
-        assert_eq!(reconcile(0), 1, "never below one");
+        assert_eq!(t.reconcile(0), 1, "never below one");
     }
 }

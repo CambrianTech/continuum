@@ -53,7 +53,7 @@ use crate::sdk_codegen::{command_registry, WireShape};
 /// this command client-fulfilled (an eye-node verb), not a substrate module?",
 /// shared by BOTH dispatch paths — the [`ProvidedCommandInterceptor`] (the
 /// in-process/persona route via `CommandExecutor`) and `Runtime::route_command`
-/// (the socket route: `cu`/IPC/MCP) — so they never disagree on what routes to a
+/// (the socket route: `uu`/IPC/MCP) — so they never disagree on what routes to a
 /// provider vs a `ServiceModule`.
 pub fn provided_command_names() -> &'static HashSet<&'static str> {
     static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
@@ -76,7 +76,7 @@ pub fn is_provided_command(name: &str) -> bool {
 /// (`perception/observe`, `interface/screenshot`) is routed to its connected
 /// provider or failed loud. BOTH dispatch paths call this and nothing else:
 /// the [`ProvidedCommandInterceptor`] (the in-process/persona route via
-/// `CommandExecutor`) and `Runtime::route_command` (the socket route: `cu` / IPC
+/// `CommandExecutor`) and `Runtime::route_command` (the socket route: `uu` / IPC
 /// / MCP). Commands are infinite and every caller — persona, CLI, MCP, benchmark
 /// — MUST reach a capability through the same infrastructure; a second copy of
 /// this logic is exactly how one path gains a command the other lacks.
@@ -141,7 +141,8 @@ impl ProviderRegistry {
     /// connection layer calls this when an eye-node connects.
     pub fn register(&self, commands: &[&str], provider: Arc<dyn ProvidedCommandProvider>) {
         for c in commands {
-            self.by_command.insert((*c).to_string(), Arc::clone(&provider));
+            self.by_command
+                .insert((*c).to_string(), Arc::clone(&provider));
         }
     }
 
@@ -232,8 +233,8 @@ impl CommandInterceptor for ProvidedCommandInterceptor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// A canned in-core eye-node: records how many times it was asked, and
     /// echoes a fixed observation. Stands in for the real Node adapter so the
@@ -265,11 +266,20 @@ mod tests {
     async fn routes_a_provided_command_to_its_connected_provider() {
         let registry = Arc::new(ProviderRegistry::new());
         let calls = Arc::new(AtomicUsize::new(0));
-        registry.register(&["perception/observe"], Arc::new(FakeEye { calls: calls.clone() }));
+        registry.register(
+            &["perception/observe"],
+            Arc::new(FakeEye {
+                calls: calls.clone(),
+            }),
+        );
 
         let interceptor = ProvidedCommandInterceptor::new(registry);
         let outcome = interceptor
-            .try_route("perception/observe", &json!({ "target": "https://x" }), None)
+            .try_route(
+                "perception/observe",
+                &json!({ "target": "https://x" }),
+                None,
+            )
             .await
             .expect("a connected provider must fulfill, not error");
 
@@ -281,7 +291,11 @@ mod tests {
             }
             other => panic!("expected Handled(Json), got {other:?}"),
         }
-        assert_eq!(calls.load(Ordering::SeqCst), 1, "provider must be invoked exactly once");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "provider must be invoked exactly once"
+        );
     }
 
     // what this catches: a Provided command with NO connected provider fails loud
@@ -291,11 +305,21 @@ mod tests {
     async fn provided_command_with_no_provider_fails_loud() {
         let interceptor = ProvidedCommandInterceptor::new(Arc::new(ProviderRegistry::new()));
         let err = interceptor
-            .try_route("perception/observe", &json!({ "target": "https://x" }), None)
+            .try_route(
+                "perception/observe",
+                &json!({ "target": "https://x" }),
+                None,
+            )
             .await
             .expect_err("no provider connected must surface an error, never a silent decline");
-        assert!(err.contains("perception/observe"), "names the command: {err}");
-        assert!(err.contains("eye-node"), "names the missing adapter kind: {err}");
+        assert!(
+            err.contains("perception/observe"),
+            "names the command: {err}"
+        );
+        assert!(
+            err.contains("eye-node"),
+            "names the missing adapter kind: {err}"
+        );
     }
 
     // what this catches: a NORMAL (non-Provided) command is untouched — the
@@ -305,7 +329,11 @@ mod tests {
     async fn declines_a_normal_command_so_local_dispatch_is_unchanged() {
         let interceptor = ProvidedCommandInterceptor::new(Arc::new(ProviderRegistry::new()));
         let outcome = interceptor
-            .try_route("code/read", &json!({ "path": "/tmp/x", "mode": "read" }), None)
+            .try_route(
+                "code/read",
+                &json!({ "path": "/tmp/x", "mode": "read" }),
+                None,
+            )
             .await
             .expect("a non-Provided command must not error");
         assert!(

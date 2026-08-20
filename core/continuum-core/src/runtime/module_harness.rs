@@ -61,14 +61,18 @@ impl ModuleHarness {
         );
         for name in registry.list_modules() {
             if let Some(module) = registry.get_by_name(name) {
-                module
-                    .initialize(&ctx)
-                    .await
-                    .unwrap_or_else(|e| panic!("ModuleHarness: module {name:?} failed to initialize: {e}"));
+                module.initialize(&ctx).await.unwrap_or_else(|e| {
+                    panic!("ModuleHarness: module {name:?} failed to initialize: {e}")
+                });
             }
         }
 
         let executor = Arc::new(CommandExecutor::new(registry.clone()));
+        // Same contract as `start_server`: fill every module's late-bound
+        // executor slot so cross-module dual-writes (chat→data, memory→data)
+        // work under test exactly as in production. `LateBound::install`
+        // no-ops when a test already injected its own executor.
+        registry.install_executor_on_all(executor.clone());
         Self { executor, registry }
     }
 
@@ -97,8 +101,9 @@ impl ModuleHarness {
         params: Value,
     ) -> Result<R, String> {
         let value = self.execute_json(command, params).await?;
-        serde_json::from_value(value)
-            .map_err(|e| format!("ModuleHarness: result of {command:?} did not match the expected type: {e}"))
+        serde_json::from_value(value).map_err(|e| {
+            format!("ModuleHarness: result of {command:?} did not match the expected type: {e}")
+        })
     }
 
     /// The registry, for assertions about what's hosted (e.g. command schemas).
@@ -114,12 +119,7 @@ impl ModuleHarness {
     /// Latency is wall-clock around the real dispatch (executor → module). It
     /// includes the harness's fixed dispatch overhead, which is constant per
     /// module — so it's sound for regression baselining a module against itself.
-    pub async fn measure(
-        &self,
-        command: &str,
-        params: Value,
-        runs: usize,
-    ) -> CommandBench {
+    pub async fn measure(&self, command: &str, params: Value, runs: usize) -> CommandBench {
         let mut latencies = Vec::with_capacity(runs);
         let mut errors = 0usize;
         for _ in 0..runs {
@@ -209,7 +209,11 @@ impl CommandBench {
     /// Project into a [`StandardVddRecord`] (execution_ms = p50) so the
     /// measurement persists for cross-run baselining + the `cargo-continuum-vdd`
     /// report/replay. Status reflects whether all runs succeeded.
-    pub fn to_vdd_record(&self, scenario: impl Into<String>, git_sha: impl Into<String>) -> StandardVddRecord {
+    pub fn to_vdd_record(
+        &self,
+        scenario: impl Into<String>,
+        git_sha: impl Into<String>,
+    ) -> StandardVddRecord {
         let mut rec = StandardVddRecord::minimal(scenario, self.command.clone(), git_sha);
         rec.execution_ms = Some(self.p50().as_millis() as u64);
         rec.error_count = self.errors as u32;
@@ -264,10 +268,17 @@ mod tests {
             self.initialized.store(true, Ordering::SeqCst);
             Ok(())
         }
-        async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
+        async fn handle_command(
+            &self,
+            command: &str,
+            params: Value,
+        ) -> Result<CommandResult, String> {
             match command {
                 "greet/hello" => {
-                    let who = params.get("who").and_then(|v| v.as_str()).unwrap_or("world");
+                    let who = params
+                        .get("who")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("world");
                     CommandResult::json(&Greeting {
                         hello: who.to_string(),
                     })
@@ -291,10 +302,21 @@ mod tests {
             initialized: flag.clone(),
         }))
         .await;
-        assert!(flag.load(Ordering::SeqCst), "module initialize must run in the harness");
+        assert!(
+            flag.load(Ordering::SeqCst),
+            "module initialize must run in the harness"
+        );
 
-        let g: Greeting = h.execute("greet/hello", json!({ "who": "tester" })).await.unwrap();
-        assert_eq!(g, Greeting { hello: "tester".into() });
+        let g: Greeting = h
+            .execute("greet/hello", json!({ "who": "tester" }))
+            .await
+            .unwrap();
+        assert_eq!(
+            g,
+            Greeting {
+                hello: "tester".into()
+            }
+        );
     }
 
     // what this catches: the typed execute deserializes the result; a refusal

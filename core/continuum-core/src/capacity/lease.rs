@@ -79,14 +79,18 @@ pub fn decide_lane(
 ) -> LaneDecision {
     // Gate 1 — the compute-lease boundary. Non-text work never leaves this node.
     if leasability == Leasability::LocalOnly {
-        return LaneDecision::Local { reason: LocalReason::NotLeasable };
+        return LaneDecision::Local {
+            reason: LocalReason::NotLeasable,
+        };
     }
 
     // Gate 2 — local-first. If our own live free GPU fits even one spike, serve here: a
     // network RTT is only worth paying when local genuinely can't.
     let local_fits = fits_one(&snapshot.local, req, safety_margin_bytes);
     if local_fits {
-        return LaneDecision::Local { reason: LocalReason::LocalFits };
+        return LaneDecision::Local {
+            reason: LocalReason::LocalFits,
+        };
     }
 
     // Gate 3 — lease the most-free REACHABLE peer that fits. Most-free-first keeps the busiest
@@ -101,8 +105,55 @@ pub fn decide_lane(
         Some(peer) => LaneDecision::Remote { peer: peer.peer },
         // Gate 4 — nobody fits. Serve local anyway (queue at our lane); NEVER block waiting
         // for grid capacity that may never come, NEVER strand on a peer that can't serve.
-        None => LaneDecision::Local { reason: LocalReason::NoPeerFits },
+        None => LaneDecision::Local {
+            reason: LocalReason::NoPeerFits,
+        },
     }
+}
+
+/// The ONE production entry to [`decide_lane`] (#108 step 2, contract stamped
+/// 2026-07-24): assemble the LIVE inputs — the governed VRAM board and the grid
+/// gossip ledger — and decide the lane for one persona render. The pure brain
+/// above stays sim-provable; this fn owns the impure gathering.
+///
+/// Missing inputs resolve to HONEST local decisions, never guesses:
+/// - no resource daemon / ungoverned VRAM → free = MAX → LocalFits (no
+///   scarcity signal = pre-grid single-machine behavior, unchanged);
+/// - unpublished plan spike (0) → the fit rule floors at "fits" → LocalFits;
+/// - empty gossip ledger → no peers → Local (NoPeerFits only after a real
+///   local-exhausted reading).
+///
+/// `own_peer` is nil until identity threads through (BigMama's step-1 gossip
+/// lane owns peer identity); nil only weakens self-exclusion from the heard
+/// set, and we do not currently hear our own offers.
+pub fn decide_render_lane(leasability: Leasability) -> LaneDecision {
+    let spike = crate::cognition::prefill_throttle::published_spike_bytes();
+    let free = crate::resources::ResourceDaemon::global()
+        .and_then(|d| {
+            d.board()
+                .kinds
+                .iter()
+                .find(|k| k.kind == crate::resources::ResourceKind::Vram)
+                .map(|k| k.available_bytes)
+        })
+        .unwrap_or(u64::MAX);
+    let local = DeviceCapacity {
+        gpu_total_bytes: 0,
+        gpu_free_bytes_live: free,
+        system_ram_free_bytes: 0,
+    };
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let snapshot = super::gossip::global_ledger().snapshot(uuid::Uuid::nil(), local, now_ms);
+    let req = LeaseRequest {
+        consumer: "persona-render".into(),
+        want_concurrency: 1,
+        spike_bytes: spike,
+    };
+    // One spike of headroom — the SAME margin the prefill throttle fits with.
+    decide_lane(&snapshot, &req, leasability, spike)
 }
 
 /// Does this device's live free GPU fit at least ONE spike of the request after the margin?
@@ -134,11 +185,21 @@ mod tests {
         }
     }
     fn req() -> LeaseRequest {
-        LeaseRequest { consumer: "serving".into(), want_concurrency: 1, spike_bytes: 2 * GB }
+        LeaseRequest {
+            consumer: "serving".into(),
+            want_concurrency: 1,
+            spike_bytes: 2 * GB,
+        }
     }
     // (constructor kept honest: CapacityOffer→capacity is the same shape the ledger folds)
     fn _offer_shape() -> DeviceCapacity {
-        CapacityOffer { gpu_total_bytes: 32 * GB, gpu_free_bytes_live: 7 * GB, system_ram_free_bytes: 16 * GB, at_ms: 0 }.capacity()
+        CapacityOffer {
+            gpu_total_bytes: 32 * GB,
+            gpu_free_bytes_live: 7 * GB,
+            system_ram_free_bytes: 16 * GB,
+            at_ms: 0,
+        }
+        .capacity()
     }
 
     // what this catches: THE COMPUTE-LEASE BOUNDARY. A request needing local state (a coding
@@ -148,10 +209,15 @@ mod tests {
     // ever routes LocalOnly work remote, the boundary is broken and personas lose their hands.
     #[test]
     fn local_only_work_never_leases_even_with_local_exhausted_and_peers_idle() {
-        let snap = GridSnapshot { local: dev(0), peers: vec![peer(1, 30, true)] };
+        let snap = GridSnapshot {
+            local: dev(0),
+            peers: vec![peer(1, 30, true)],
+        };
         assert_eq!(
             decide_lane(&snap, &req(), Leasability::LocalOnly, GB),
-            LaneDecision::Local { reason: LocalReason::NotLeasable },
+            LaneDecision::Local {
+                reason: LocalReason::NotLeasable
+            },
             "local-state work stays local no matter how starved we are or how idle the grid is"
         );
     }
@@ -162,10 +228,15 @@ mod tests {
     // perfectly capable machine (the single-machine-first invariant, violated).
     #[test]
     fn text_work_prefers_local_when_local_fits() {
-        let snap = GridSnapshot { local: dev(13), peers: vec![peer(1, 30, true)] };
+        let snap = GridSnapshot {
+            local: dev(13),
+            peers: vec![peer(1, 30, true)],
+        };
         assert_eq!(
             decide_lane(&snap, &req(), Leasability::TextOnly, GB),
-            LaneDecision::Local { reason: LocalReason::LocalFits },
+            LaneDecision::Local {
+                reason: LocalReason::LocalFits
+            },
         );
     }
 
@@ -181,7 +252,9 @@ mod tests {
         };
         assert_eq!(
             decide_lane(&snap, &req(), Leasability::TextOnly, GB),
-            LaneDecision::Remote { peer: PeerId::from_u128(2) },
+            LaneDecision::Remote {
+                peer: PeerId::from_u128(2)
+            },
             "the roomiest reachable peer takes the leased turn",
         );
     }
@@ -199,7 +272,9 @@ mod tests {
         };
         assert_eq!(
             decide_lane(&snap, &req(), Leasability::TextOnly, GB),
-            LaneDecision::Local { reason: LocalReason::NoPeerFits },
+            LaneDecision::Local {
+                reason: LocalReason::NoPeerFits
+            },
             "no reachable peer fits → serve local (queue), never strand on a dead/too-small peer",
         );
     }
@@ -209,10 +284,15 @@ mod tests {
     // loopback proves this shape live: before any peer joins, the ledger has only self.
     #[test]
     fn lone_node_with_no_peers_decides_local() {
-        let snap = GridSnapshot { local: dev(0), peers: vec![] };
+        let snap = GridSnapshot {
+            local: dev(0),
+            peers: vec![],
+        };
         assert_eq!(
             decide_lane(&snap, &req(), Leasability::TextOnly, GB),
-            LaneDecision::Local { reason: LocalReason::NoPeerFits },
+            LaneDecision::Local {
+                reason: LocalReason::NoPeerFits
+            },
         );
     }
 }

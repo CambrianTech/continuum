@@ -162,7 +162,10 @@ pub struct Engram {
 /// across kinds, and the discriminator is cheap. Per the airc design
 /// discussion 2026-05-13.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/EngramKind.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/EngramKind.ts"
+)]
 pub enum EngramKind {
     Episodic,
     Semantic,
@@ -211,6 +214,14 @@ pub enum EngramOrigin {
         #[ts(type = "string")]
         parent_engram_id: Uuid,
     },
+
+    /// Authored by an external agent (Claude Code, Codex, a peer node's model)
+    /// via the agent-memory bridge — the fix for agents re-forgetting because
+    /// their memory lived in flat `.md` files reloaded wholesale each session.
+    /// An agent is just a persona whose engrams now live on THIS substrate;
+    /// `AgentRef` carries the load-bearing provenance (which agent learned it).
+    /// See `docs/cognition/AGENT-MEMORY-BRIDGE.md`.
+    Agent(AgentRef),
 }
 
 /// Protocol-compatible reference to an AIRC-substrate event/message.
@@ -325,6 +336,38 @@ pub struct ToolInvocationRef {
     pub output_hash: String,
 }
 
+/// Provenance reference for an engram authored by an external agent (the
+/// agent-memory bridge). Mirrors the other origin refs: a typed reference
+/// whose load-bearing field is WHO authored the lesson, because in a shared
+/// multi-agent memory (BigMama + M5 + Codex all writing engrams) provenance-
+/// by-author is what lets recall weigh, trust, and attribute a lesson.
+///
+/// Minimal + honest by design — grows fields later without breaking the
+/// variant, same discipline as `Provenance`. See
+/// `docs/cognition/AGENT-MEMORY-BRIDGE.md`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/persona/AgentRef.ts")]
+pub struct AgentRef {
+    /// The authoring agent's airc peer id. REQUIRED — and the SAME seed the
+    /// agent's `persona_id` is derived from (`PeerId::as_uuid`, the canonical
+    /// derivation the live spawner uses), so origin and identity tie together
+    /// and an agent's engrams can never collide with a real persona's in the
+    /// shared corpus (distinct airc peers ⇒ distinct ids). NOT a locally-
+    /// invented hash — reuse airc's canonical id, never mint a rogue one.
+    #[ts(type = "string")]
+    pub agent_peer_id: Uuid,
+
+    /// The session/conversation that produced the lesson. Traceability only;
+    /// `None` for a migrated `.md` engram (there was no live session).
+    #[ts(optional)]
+    pub session: Option<String>,
+
+    /// Free-form provenance breadcrumb: the source `.md` path for a migrated
+    /// engram, a tool name, or `None`. Never load-bearing.
+    #[ts(optional)]
+    pub origin_hint: Option<String>,
+}
+
 //=============================================================================
 // ADMISSION OUTCOME
 //=============================================================================
@@ -367,6 +410,19 @@ pub enum AdmissionDecision {
 }
 
 impl AdmissionDecision {
+    /// The engram this decision actually formed, if any.
+    ///
+    /// `Some` only for [`Admit`](Self::Admit). A `Drop` (dedup / policy) and a
+    /// `Quarantine` did not put anything in the store the rest of the system may
+    /// point at — so callers wiring causal edges get `None` and record no edge,
+    /// rather than linking to something that was never admitted.
+    pub fn admitted_engram_id(&self) -> Option<Uuid> {
+        match self {
+            Self::Admit { engram, .. } => Some(engram.id),
+            Self::Drop { .. } | Self::Quarantine { .. } => None,
+        }
+    }
+
     /// Short funnel label for log lines + metrics. Lives next to the
     /// enum so adding a new variant is a compile-fail at this match
     /// rather than a silent fall-through (per claude-tab-2 review nit
@@ -486,7 +542,10 @@ pub enum AdmissionError {
 /// Ordered roughly from least to most trusted; `PartialOrd` derives so
 /// admission gates can compare `source_trust >= threshold` directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/TrustState.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/TrustState.ts"
+)]
 pub enum TrustState {
     /// Anonymous / unauthenticated — signature missing or fails.
     Untrusted,

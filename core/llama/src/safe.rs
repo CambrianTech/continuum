@@ -316,7 +316,13 @@ impl Model {
 
         let mut ffi_params = unsafe { sys::llama_model_default_params() };
         ffi_params.n_gpu_layers = params.n_gpu_layers;
-        ffi_params.use_mmap = params.use_mmap;
+        // Upstream 2026-07 replaced `use_mmap: bool` with the load_mode enum
+        // (NONE/MMAP/MLOCK/DIRECT_IO — DIRECT_IO is the future NVMe cold-expert read path).
+        ffi_params.load_mode = if params.use_mmap {
+            sys::llama_load_mode_LLAMA_LOAD_MODE_MMAP
+        } else {
+            sys::llama_load_mode_LLAMA_LOAD_MODE_NONE
+        };
 
         let raw = unsafe { sys::llama_model_load_from_file(c_path.as_ptr(), ffi_params) };
         let ptr = NonNull::new(raw)
@@ -371,6 +377,31 @@ impl Model {
         n.max(0) as u32
     }
 
+    /// Per-layer KV head count. `0` marks a recurrent (SSM/KDA) layer that
+    /// holds NO per-token KV cache. Hybrid models (kimi-linear, kimi-k3,
+    /// jamba) vary this per layer — sizing KV from the scalar [`n_head_kv`]
+    /// times [`n_layer`] overestimates them by orders of magnitude (kimi-k3:
+    /// 69 of 93 layers carry zero KV; the 24 MLA layers cache ONE compressed
+    /// head). Fork export `llama_model_n_head_kv_il` (continuum #238).
+    pub fn n_head_kv_il(&self, il: u32) -> u32 {
+        let n = unsafe { sys::llama_model_n_head_kv_il(self.ptr.as_ptr(), il as i32) };
+        n.max(0) as u32
+    }
+
+    /// Per-layer K-head width in elements — for MLA models this is the
+    /// COMPRESSED cache width (kimi-k3: 576 = kv_lora 512 + rope 64), which is
+    /// why deriving it as `n_embd / n_head` misprices them.
+    pub fn n_embd_head_k_il(&self, il: u32) -> u32 {
+        let n = unsafe { sys::llama_model_n_embd_head_k_il(self.ptr.as_ptr(), il as i32) };
+        n.max(0) as u32
+    }
+
+    /// Per-layer V-head width in elements (see [`n_embd_head_k_il`]).
+    pub fn n_embd_head_v_il(&self, il: u32) -> u32 {
+        let n = unsafe { sys::llama_model_n_embd_head_v_il(self.ptr.as_ptr(), il as i32) };
+        n.max(0) as u32
+    }
+
     /// Create an inference context.
     pub fn new_context(&self, params: ContextParams) -> Result<Context<'_>, String> {
         let mut ffi = unsafe { sys::llama_context_default_params() };
@@ -401,11 +432,26 @@ impl Model {
             PoolingType::Last => sys::llama_pooling_type_LLAMA_POOLING_TYPE_LAST,
         };
 
+        // OBSERVE seam: if an expert observer is set, register the ggml eval-callback that
+        // taps ffn_moe_topk. The bridge is boxed and owned by the returned Context, so its
+        // pointer (the callback's user_data) stays valid for the context's whole life
+        // (Box contents are address-stable across the move into Context) and is freed only
+        // after llama_free (Context::drop's body runs first).
+        let observer_bridge = params
+            .expert_observer
+            .map(|observer| Box::new(ExpertObserverBridge { observer }));
+        if let Some(bridge) = observer_bridge.as_ref() {
+            ffi.cb_eval = Some(expert_eval_cb);
+            ffi.cb_eval_user_data =
+                bridge.as_ref() as *const ExpertObserverBridge as *mut std::os::raw::c_void;
+        }
+
         let raw = unsafe { sys::llama_new_context_with_model(self.ptr.as_ptr(), ffi) };
         let ctx = NonNull::new(raw).ok_or_else(|| "failed to create context".to_string())?;
         Ok(Context {
             ptr: ctx,
             _model: PhantomData,
+            _observer: observer_bridge,
         })
     }
 
@@ -517,6 +563,71 @@ impl Model {
     pub fn as_ptr(&self) -> *mut sys::llama_model {
         self.ptr.as_ptr()
     }
+
+    /// K3 slice-2 (Model A — weight WRITE): replace expert `expert_index`'s weights in the
+    /// three resident stacked MoE projection tensors (`blk.{layer}.ffn_{gate,up,down}_exps`)
+    /// with `gate`/`up`/`down` bytes. This is weight-REPLACEMENT into a loaded model — the
+    /// per-expert genome path (specialize / compact an expert in place) — NOT paging: the
+    /// full tensor must be resident (all `n_expert` slots). True per-expert paging (a K-slot
+    /// tensor + a router logical→physical remap) is the separate Model-B fork.
+    ///
+    /// The byte offset for each projection is computed from the LIVE tensor's own `nb[2]`
+    /// (ggml's quant-aware stride of the expert dim — the outermost of `{n_embd, n_ff,
+    /// n_expert}`), so it is correct for any quantization with zero parsed-stride guessing.
+    /// Each slice must be exactly one expert's stride (`nb[2]`).
+    ///
+    /// Fail-loud (never a silent partial write): a projection tensor is absent (not an MoE
+    /// layer / wrong index), `expert_index` is out of range, or a byte length ≠ the live
+    /// per-expert stride. Behavioral validation is Gate B (needs a loaded MoE) — this is the
+    /// compile-validated mechanism; nothing calls it until the genome path (#226/#228) does.
+    pub fn upload_expert(
+        &self,
+        layer: u32,
+        expert_index: u32,
+        gate: &[u8],
+        up: &[u8],
+        down: &[u8],
+    ) -> Result<(), String> {
+        for (proj, bytes) in [("ffn_gate_exps", gate), ("ffn_up_exps", up), ("ffn_down_exps", down)] {
+            let name = std::ffi::CString::new(format!("blk.{layer}.{proj}"))
+                .map_err(|e| format!("upload_expert: bad tensor name: {e}"))?;
+            // SAFETY: `as_ptr` is a live model for its lifetime; the fork's accessor returns a
+            // tensor from `tensors_by_name` or null (never a dangling pointer).
+            let tensor = unsafe { sys::llama_model_get_tensor(self.as_ptr(), name.as_ptr()) };
+            if tensor.is_null() {
+                return Err(format!(
+                    "upload_expert: no tensor blk.{layer}.{proj} (not an MoE layer, or layer out of range)"
+                ));
+            }
+            // SAFETY: `tensor` is non-null and valid for the model's lifetime; reading its
+            // dims/strides is a plain field read.
+            let (n_expert, stride) = unsafe { ((*tensor).ne[2], (*tensor).nb[2]) };
+            if (expert_index as i64) >= n_expert {
+                return Err(format!(
+                    "upload_expert: expert {expert_index} out of range (blk.{layer}.{proj} has {n_expert})"
+                ));
+            }
+            if bytes.len() != stride {
+                return Err(format!(
+                    "upload_expert: {} bytes != live per-expert stride {stride} for blk.{layer}.{proj}",
+                    bytes.len()
+                ));
+            }
+            let offset = expert_index as usize * stride;
+            // SAFETY: offset + len == (expert_index+1)*stride ≤ n_expert*stride (the tensor's
+            // expert-dim extent, checked above), so the write stays in-bounds. The backend
+            // copies host→device (GPU) or host→host (CPU) transparently.
+            unsafe {
+                sys::ggml_backend_tensor_set(
+                    tensor,
+                    bytes.as_ptr() as *const std::os::raw::c_void,
+                    offset,
+                    bytes.len(),
+                );
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Drop for Model {
@@ -589,6 +700,98 @@ impl KvCacheType {
     }
 }
 
+// ─── MoE expert-selection observability (the OBSERVE half of the expert-affinity predictor) ───
+//
+// A ggml eval-callback taps the `ffn_moe_topk` node — llama.cpp's per-token, per-layer
+// expert selection (argsort-top-k of expert indices, I32 `[n_expert_used, n_tokens]`,
+// tagged `cb(selected_experts, "ffn_moe_topk", il)` in llama-graph.cpp). This is the
+// "measured beats predicted" PGO signal: which experts ACTUALLY fire, live. core/llama
+// stays generic — it emits `(layer, selected experts)` to a caller-provided
+// `ExpertObserver`; the residency + prediction brain lives in continuum-core.
+
+/// Sink for live MoE expert selections. `observe` is called from INSIDE the compute
+/// callback for every `ffn_moe_topk` node, so it MUST be cheap + non-blocking (tally into
+/// an atomic map — never lock, never do I/O). `Send + Sync` because the callback can run
+/// on a backend thread; `Debug` so `ContextParams` keeps its derive.
+pub trait ExpertObserver: Send + Sync + std::fmt::Debug {
+    /// `layer` = transformer block index; `experts` = the selected expert indices for the
+    /// tokens in this decode batch (flattened row-major `[n_expert_used, n_tokens]`);
+    /// `n_expert_used` = the row width, so a consumer can unpack `experts` into per-token
+    /// rows (`experts[t*n_expert_used .. (t+1)*n_expert_used]`) for cross-layer trajectory
+    /// capture. `hits`-only consumers ignore it and tally the flat slice.
+    fn observe(&self, layer: u32, experts: &[i32], n_expert_used: usize);
+}
+
+/// Parse the block index from a `ffn_moe_topk` node name. llama.cpp's graph callback
+/// formats per-layer tensors as `"<name>-<il>"` (`ggml_format_name`), so the eval callback
+/// sees `"ffn_moe_topk-<il>"`. `Some(layer)` for that shape; `None` for any other node
+/// (the callback fires for EVERY node — this is the cheap filter). Pure + unit-tested; the
+/// FFI callback is a thin wrapper over it.
+fn parse_moe_topk_layer(name: &str) -> Option<u32> {
+    let rest = name.strip_prefix("ffn_moe_topk")?;
+    // Bare "ffn_moe_topk" (no per-layer suffix) can't be attributed to a layer → skip.
+    rest.strip_prefix('-')?.parse::<u32>().ok()
+}
+
+/// Owns the caller's observer for the context's whole life; its raw pointer is the ggml
+/// callback's `user_data`. Freed only AFTER `llama_free` (Context::drop's body runs first,
+/// so no callback can fire after the context is gone) — see `Drop for Context`.
+#[derive(Debug)]
+struct ExpertObserverBridge {
+    observer: std::sync::Arc<dyn ExpertObserver>,
+}
+
+/// The ggml eval callback. Called twice per graph node: `ask=true` BEFORE compute (return
+/// true to be re-called after), `ask=false` AFTER compute (data resident). We read only on
+/// `ask=false`. Always returns `true` to keep the graph running — observation never
+/// perturbs inference (`prediction is a HINT, never a gate`).
+unsafe extern "C" fn expert_eval_cb(
+    t: *mut sys::ggml_tensor,
+    ask: bool,
+    user_data: *mut std::os::raw::c_void,
+) -> bool {
+    if ask || t.is_null() || user_data.is_null() {
+        return true;
+    }
+    // SAFETY: user_data is the &ExpertObserverBridge set in new_context; it outlives every
+    // callback (freed in Context::drop, after llama_free).
+    let bridge = &*(user_data as *const ExpertObserverBridge);
+
+    // Cheap name filter — only ffn_moe_topk-<il> nodes carry expert selections.
+    let name_ptr = sys::ggml_get_name(t);
+    if name_ptr.is_null() {
+        return true;
+    }
+    let Some(layer) = std::ffi::CStr::from_ptr(name_ptr)
+        .to_str()
+        .ok()
+        .and_then(parse_moe_topk_layer)
+    else {
+        return true;
+    };
+
+    // selected_experts is I32 `[n_expert_used, n_tokens]`. Guard the type defensively —
+    // never read a non-I32 tensor as i32.
+    let ty = (*t).type_;
+    let (ne0, ne1) = ((*t).ne[0], (*t).ne[1]);
+    if ty != sys::ggml_type_GGML_TYPE_I32 || ne0 <= 0 || ne1 <= 0 {
+        return true;
+    }
+    let count = (ne0 as usize).saturating_mul(ne1 as usize);
+    let mut buf = vec![0i32; count];
+    // Copy from the backend buffer (GPU or CPU) into host memory.
+    sys::ggml_backend_tensor_get(
+        t,
+        buf.as_mut_ptr() as *mut std::os::raw::c_void,
+        0,
+        count * std::mem::size_of::<i32>(),
+    );
+    // ne0 = n_expert_used (the row width); pass it so the observer can unpack per-token
+    // rows for cross-layer trajectory capture. ne0 > 0 guaranteed by the guard above.
+    bridge.observer.observe(layer, &buf, ne0 as usize);
+    true
+}
+
 /// Context parameters.
 #[derive(Debug, Clone)]
 pub struct ContextParams {
@@ -626,6 +829,11 @@ pub struct ContextParams {
     /// `Mean`. Retrieval embedders are trained for a specific pooling — set it to
     /// match the model (Qwen3-Embedding-0.6B uses last-token).
     pub pooling_type: PoolingType,
+    /// Optional live MoE expert-selection observer (the OBSERVE seam of the
+    /// expert-affinity predictor). When set, a ggml eval-callback taps the
+    /// `ffn_moe_topk` nodes and feeds every `(layer, selected experts)` to it. `None`
+    /// (default) registers NO callback — a non-MoE context pays exactly zero overhead.
+    pub expert_observer: Option<std::sync::Arc<dyn ExpertObserver>>,
 }
 
 /// Sequence-embedding pooling strategy — maps to `llama_pooling_type`. Set it to
@@ -657,6 +865,7 @@ impl Default for ContextParams {
             type_v: KvCacheType::F16,
             embeddings: false,
             pooling_type: PoolingType::Mean,
+            expert_observer: None,
         }
     }
 }
@@ -665,6 +874,10 @@ impl Default for ContextParams {
 pub struct Context<'m> {
     ptr: NonNull<sys::llama_context>,
     _model: PhantomData<&'m Model>,
+    /// Keeps the expert-observer bridge alive for the callback's `user_data` pointer.
+    /// Declared AFTER `ptr` so it drops after `Drop::drop`'s `llama_free` runs — no
+    /// callback can fire against a freed bridge. `None` when no observer was set.
+    _observer: Option<Box<ExpertObserverBridge>>,
 }
 
 impl<'m> Context<'m> {
@@ -1144,6 +1357,49 @@ impl SamplerChainBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// what this catches: the `ffn_moe_topk-<il>` name parse — the cheap per-node filter
+    /// that turns llama.cpp's graph-callback tensor name into a layer index. A regression
+    /// (matching the wrong node, or mis-parsing the suffix) either drops the PGO signal
+    /// silently or mis-attributes experts to the wrong layer. The FFI callback is a thin
+    /// wrapper over this pure fn.
+    #[test]
+    fn parse_moe_topk_layer_extracts_block_index() {
+        assert_eq!(parse_moe_topk_layer("ffn_moe_topk-0"), Some(0));
+        assert_eq!(parse_moe_topk_layer("ffn_moe_topk-31"), Some(31));
+        assert_eq!(parse_moe_topk_layer("ffn_moe_topk-895"), Some(895)); // K3 has ~896
+        // bare name (no per-layer suffix) → can't attribute a layer → skip
+        assert_eq!(parse_moe_topk_layer("ffn_moe_topk"), None);
+        // wrong node → None (the callback fires for EVERY node; only topk carries selection)
+        assert_eq!(parse_moe_topk_layer("ffn_moe_gate-3"), None);
+        assert_eq!(parse_moe_topk_layer("attn_norm-2"), None);
+        // malformed suffix → None, never a panic
+        assert_eq!(parse_moe_topk_layer("ffn_moe_topk-"), None);
+        assert_eq!(parse_moe_topk_layer("ffn_moe_topk-abc"), None);
+    }
+
+    /// what this catches: the `ExpertObserver` sink contract — the callback hands
+    /// `(layer, selected expert ids)` straight through. A `Send + Sync + Debug` mock
+    /// records them; this pins the trait shape the continuum-side residency tally consumes.
+    #[test]
+    fn expert_observer_receives_layer_and_selected_experts() {
+        use std::sync::Mutex;
+        #[derive(Debug, Default)]
+        struct RecordingObserver {
+            seen: Mutex<Vec<(u32, Vec<i32>)>>,
+        }
+        impl ExpertObserver for RecordingObserver {
+            fn observe(&self, layer: u32, experts: &[i32], _n_expert_used: usize) {
+                self.seen.lock().unwrap().push((layer, experts.to_vec()));
+            }
+        }
+        let obs = RecordingObserver::default();
+        // Two tokens, top-2 at layer 5 (experts [3,7] then [3,1], flattened), then layer 6.
+        obs.observe(5, &[3, 7, 3, 1], 2);
+        obs.observe(6, &[0, 2], 2);
+        let seen = obs.seen.lock().unwrap();
+        assert_eq!(seen.as_slice(), &[(5, vec![3, 7, 3, 1]), (6, vec![0, 2])]);
+    }
 
     #[test]
     fn sampler_greedy_builds_and_drops() {

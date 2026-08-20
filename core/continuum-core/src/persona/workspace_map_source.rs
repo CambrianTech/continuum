@@ -68,8 +68,28 @@ use crate::cognition::token_budget::estimate_prompt_tokens as estimate_tokens;
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkspaceLayout {
     pub root: PathBuf,
-    /// Non-hidden top-level directory names, sorted.
+    /// Top-level directory names, sorted. INCLUDES dot-directories — see
+    /// [`WorkspaceLayout::is_truly_empty`] for why that is load-bearing.
     pub top_level_dirs: Vec<String>,
+    /// How many top-level entries of ANY kind exist (files + dirs, hidden included).
+    /// Distinct from `top_level_dirs.len()` on purpose: a workspace holding only
+    /// `main.rs` has zero directories and is emphatically not empty.
+    pub top_level_entries: usize,
+}
+
+impl WorkspaceLayout {
+    /// The ONLY condition under which this source may claim the workspace is empty.
+    ///
+    /// Was `top_level_dirs.is_empty()`, which is a claim about DIRECTORIES wearing
+    /// the words "there are no files or directories here yet". Two live workspaces
+    /// falsify that reading: one whose files sit at the root with no subdirectory,
+    /// and one whose content lives in a dot-directory. Measured 2026-08-06 — a
+    /// persona sent to fix `.gymtool/solution.rs` was told, as a structural fact,
+    /// that her workspace was empty and that she should create files instead of
+    /// reading them. [[empty-workspace-is-a-confabulation-not-infra]] (#336)
+    pub fn is_truly_empty(&self) -> bool {
+        self.top_level_entries == 0
+    }
 }
 
 /// Abstract reader over the workspace layout. Production rides on the same
@@ -89,15 +109,20 @@ pub struct CwdWorkspaceLayoutReader;
 
 impl WorkspaceLayoutReader for CwdWorkspaceLayoutReader {
     fn layout(&self) -> Result<WorkspaceLayout, String> {
-        let root = std::env::current_dir().map_err(|e| format!("workspace root unavailable: {e}"))?;
+        let root =
+            std::env::current_dir().map_err(|e| format!("workspace root unavailable: {e}"))?;
         let security =
             PathSecurity::new(&root).map_err(|e| format!("workspace security init failed: {e}"))?;
         // Identity here is the reader, not a persona — this engine only LISTS the
         // root; the persona's own per-caller engine handles reads/edits.
         let engine = FileEngine::new(SOURCE_ID, security);
+        // `true` = INCLUDE HIDDEN. A dot-directory is a real part of the layout, and
+        // excluding it made this source assert an EMPTY workspace over one that held
+        // `.gymtool/solution.rs` — the exact file the persona had been sent to fix (#336).
         let listing = engine
-            .list_dir(".", false)
+            .list_dir(".", true)
             .map_err(|e| format!("workspace list failed: {e}"))?;
+        let top_level_entries = listing.entries.len();
         let mut top_level_dirs: Vec<String> = listing
             .entries
             .into_iter()
@@ -108,6 +133,7 @@ impl WorkspaceLayoutReader for CwdWorkspaceLayoutReader {
         Ok(WorkspaceLayout {
             root,
             top_level_dirs,
+            top_level_entries,
         })
     }
 }
@@ -118,27 +144,31 @@ impl WorkspaceLayoutReader for CwdWorkspaceLayoutReader {
 /// semantics of the tools — it never names which directory holds the answer.
 fn render_layout(layout: &WorkspaceLayout) -> String {
     let count = layout.top_level_dirs.len();
-    let dirs = if layout.top_level_dirs.is_empty() {
-        "(none)".to_string()
-    } else {
-        layout.top_level_dirs.join(", ")
-    };
-    // When the workspace HAS directories, explicitly refute the stale "workspace is
-    // empty" confabulation (glass-boxed 2026-07-14: a persona kept RECALLING a past
-    // "the workspace is empty" note and acting on it over this live ground truth,
-    // never re-checking). The map is the authority on workspace state; a memory that
-    // contradicts it is stale by definition. Silent when genuinely empty (never claim
-    // non-empty falsely). [[empty-workspace-is-a-confabulation-not-infra]]
-    let not_empty = if count > 0 {
-        format!(
-            "\nThis workspace is NOT empty: it has {count} top-level directories (above) \
-             and many files. If a memory or earlier note says the workspace is empty, that \
-             note is STALE — trust THIS live layout, and re-run code/list before concluding \
-             anything is missing."
-        )
-    } else {
-        String::new()
-    };
+
+    // EMPTY workspace: reading/listing/globbing an empty space finds nothing, yet a
+    // native-tool model reflexively reaches for `code/list`/`code/tree`/`read_file`
+    // and loops on the void instead of BUILDING (glass-boxed 2026-07-19: a from-scratch
+    // web-dev task scored 0 because the persona explored an empty tree and never wrote
+    // the file — the image-feedback loop can't start until the WRITE fires). Ground the
+    // truth of an empty space: there is nothing to read; produce first. Truthful, not
+    // steering — it says "write to create", never WHAT to build. [[empty-workspace-is-a-confabulation-not-infra]]
+    if layout.is_truly_empty() {
+        return format!(
+            "This workspace is rooted at: {root}\n\
+             It is EMPTY — there are no files or directories here yet. There is nothing \
+             to read, list, or search; `read_file`/`code/list`/`code/tree`/`grep` on an \
+             empty workspace return nothing. To build something, CREATE files directly \
+             with `code/write` (paths are relative to this root). Produce first, then read \
+             back or observe what you made.",
+            root = layout.root.display(),
+        );
+    }
+
+    let dirs = layout.top_level_dirs.join(", ");
+    // A NON-empty workspace: explicitly refute the stale "workspace is empty"
+    // confabulation (glass-boxed 2026-07-14: a persona kept RECALLING a past "the
+    // workspace is empty" note and acting on it over this live ground truth, never
+    // re-checking). The map is the authority; a memory that contradicts it is stale.
     format!(
         "This workspace is a real checkout rooted at: {root}\n\
          Top-level directories (the actual layout — ground truth): {dirs}\n\
@@ -146,7 +176,18 @@ fn render_layout(layout: &WorkspaceLayout) -> String {
          depth — e.g. `**/*.rs` finds files anywhere, regardless of which \
          directory holds them. Do NOT assume source lives under one particular \
          top-level directory (such as `src/`); check this layout, or drill in \
-         with code/list and code/tree.{not_empty}",
+         with code/list and code/tree.\n\
+         This workspace is NOT empty: it has {count} top-level directories (above) \
+         and many files. If a memory or earlier note says the workspace is empty, that \
+         note is STALE — trust THIS live layout, and re-run code/list before concluding \
+         anything is missing.\n\
+         This is YOUR OWN private workspace (a personal git layer over the team's \
+         shared base). Each teammate works in their own separate layer: files a \
+         teammate says they created exist in THEIR workspace, not necessarily in \
+         yours — and your files are invisible to them until shared. Never conclude a \
+         teammate is wrong (or that work is missing) because your own listing differs \
+         from theirs; your listings are of different places. Committing your work with \
+         the git tools is what makes it shareable.",
         root = layout.root.display(),
         dirs = dirs,
     )
@@ -161,31 +202,40 @@ fn render_layout(layout: &WorkspaceLayout) -> String {
 /// files the persona itself created. Now the map's root == the tools' root, and
 /// it updates as the persona shapes its own workspace.
 ///
-/// Read-only: resolves the layer PATH (no CoW provisioning — that's the hands'
-/// job on first write). If the layer isn't provisioned yet, it falls back to the
-/// shared base (the core cwd the layer will clone), whose top-level layout is
-/// identical — so the map is truthful either way, never empty, never a panic.
+/// PROVISION-AND-TELL (#49): provisions the layer through the SAME
+/// `ensure_citizen_layer` the hands use (including its sync-forward self-heal),
+/// so the map can never describe a root the tools don't act in. The old
+/// pre-provision fallback to the shared cwd created a mixed-truth window —
+/// perceive the shared layout, act in a fresh layer — that cost the residents a
+/// full evening of "I see it / mine is empty" contradictions (2026-08-02).
 pub struct CitizenLayerWorkspaceLayoutReader {
     peer: String,
 }
 
 impl WorkspaceLayoutReader for CitizenLayerWorkspaceLayoutReader {
     fn layout(&self) -> Result<WorkspaceLayout, String> {
-        let layer = crate::modules::code_commands::citizen_layer_path(&self.peer)
-            .map_err(|e| format!("citizen layer path unavailable: {e}"))?;
-        // Not yet provisioned → the shared base (cwd) has the same top-level
-        // layout the layer will clone; grounding stays truthful, never empty.
-        let root = if layer.is_dir() {
-            layer
-        } else {
-            std::env::current_dir().map_err(|e| format!("workspace root unavailable: {e}"))?
-        };
+        // PROVISION-AND-TELL (#49, glass-boxed 2026-08-02): the old fallback
+        // showed the SHARED cwd's layout when the layer wasn't provisioned yet
+        // — so a fresh persona PERCEIVED directories (conway_game_of_life…)
+        // that its first tool call, which provisions and acts in the layer,
+        // could not see. That mixed-truth window produced the live "I see it /
+        // my list is empty" contradiction and a full evening of workspace
+        // confusion between roommates. Now the map provisions the layer
+        // exactly as the hands would (same function, same sync-forward
+        // self-heal) — map and tools can never again describe different
+        // worlds. A provisioning failure degrades to no block, never a lie.
+        let root = crate::modules::code_commands::ensure_citizen_layer(&self.peer)
+            .map_err(|e| format!("citizen layer unavailable: {e}"))?;
         let security =
             PathSecurity::new(&root).map_err(|e| format!("workspace security init failed: {e}"))?;
         let engine = FileEngine::new(SOURCE_ID, security);
+        // `true` = INCLUDE HIDDEN. A dot-directory is a real part of the layout, and
+        // excluding it made this source assert an EMPTY workspace over one that held
+        // `.gymtool/solution.rs` — the exact file the persona had been sent to fix (#336).
         let listing = engine
-            .list_dir(".", false)
+            .list_dir(".", true)
             .map_err(|e| format!("workspace list failed: {e}"))?;
+        let top_level_entries = listing.entries.len();
         let mut top_level_dirs: Vec<String> = listing
             .entries
             .into_iter()
@@ -196,6 +246,52 @@ impl WorkspaceLayoutReader for CitizenLayerWorkspaceLayoutReader {
         Ok(WorkspaceLayout {
             root,
             top_level_dirs,
+            top_level_entries,
+        })
+    }
+}
+
+/// Reads the layout from a FIXED, explicitly-pinned root — used when an eval pins
+/// a `workspace_root` (a SWE-bench repo clone, or a clean-from-scratch build dir).
+/// The persona's HANDS get re-rooted there via `code/create-workspace`; this reader
+/// re-roots the `[workspace-map]` grounding to the SAME dir, so the map the persona
+/// reads matches the dir she acts in — otherwise her hands are in the pinned root
+/// while the map still describes the citizen-layer clone, and she reasons over a
+/// layout that isn't hers (a clean build dir reads as the big repo → she explores
+/// instead of building; #206). Same list machinery as the other readers.
+pub struct FixedRootWorkspaceLayoutReader {
+    root: PathBuf,
+}
+
+impl FixedRootWorkspaceLayoutReader {
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+}
+
+impl WorkspaceLayoutReader for FixedRootWorkspaceLayoutReader {
+    fn layout(&self) -> Result<WorkspaceLayout, String> {
+        let security = PathSecurity::new(&self.root)
+            .map_err(|e| format!("workspace security init failed for pinned root: {e}"))?;
+        let engine = FileEngine::new(SOURCE_ID, security);
+        // `true` = INCLUDE HIDDEN, same reason as the cwd reader (#336). This is the
+        // reader the CITIZEN layer actually uses, so it is the one that was lying to
+        // personas in the gym.
+        let listing = engine
+            .list_dir(".", true)
+            .map_err(|e| format!("pinned-root workspace list failed: {e}"))?;
+        let top_level_entries = listing.entries.len();
+        let mut top_level_dirs: Vec<String> = listing
+            .entries
+            .into_iter()
+            .filter(|e| e.kind == FsEntryKind::Directory)
+            .map(|e| e.name)
+            .collect();
+        top_level_dirs.sort();
+        Ok(WorkspaceLayout {
+            root: self.root.clone(),
+            top_level_dirs,
+            top_level_entries,
         })
     }
 }
@@ -219,12 +315,22 @@ impl WorkspaceMapSource {
 
     /// Construct rooted at the persona's own citizen layer — the live persona
     /// wiring, so the map matches the root the persona's hands act in (#49 swap).
-    pub fn for_peer_layer(persona_id: uuid::Uuid) -> Self {
+    pub fn for_peer_layer(peer_id: uuid::Uuid) -> Self {
+        Self::new(
+            peer_id,
+            Arc::new(CitizenLayerWorkspaceLayoutReader {
+                peer: peer_id.to_string(),
+            }),
+        )
+    }
+
+    /// Construct rooted at an explicitly-pinned workspace root — the eval path when a
+    /// `workspace_root` is set (create-workspace re-roots the hands there; this makes
+    /// the map match). See [`FixedRootWorkspaceLayoutReader`].
+    pub fn for_pinned_root(persona_id: uuid::Uuid, root: impl Into<PathBuf>) -> Self {
         Self::new(
             persona_id,
-            Arc::new(CitizenLayerWorkspaceLayoutReader {
-                peer: persona_id.to_string(),
-            }),
+            Arc::new(FixedRootWorkspaceLayoutReader::new(root)),
         )
     }
 
@@ -257,6 +363,16 @@ impl WorkspaceMapSource {
 impl RagSource for WorkspaceMapSource {
     fn source_id(&self) -> &'static str {
         SOURCE_ID
+    }
+
+    fn expand_command(&self) -> Option<&'static str> {
+        Some("code/tree")
+    }
+
+    /// MEASURED 32 tokens: the root line naming the workspace and its top-level
+    /// entry count — the unit that distinguishes "empty" from "I cannot see it".
+    fn floor_tokens(&self) -> u32 {
+        40
     }
 
     async fn deliver(
@@ -349,7 +465,58 @@ mod tests {
         WorkspaceLayout {
             root: PathBuf::from("/repo"),
             top_level_dirs: dirs.iter().map(|s| s.to_string()).collect(),
+            // Default fixture: entries == dirs. The tests that care about the
+            // difference (files-only, hidden-only) build the struct themselves.
+            top_level_entries: dirs.len(),
         }
+    }
+
+    // what this catches: the source telling a persona her workspace is EMPTY when it
+    // is not. The old gate was `top_level_dirs.is_empty()` — a claim about DIRECTORIES
+    // wearing the words "there are no files or directories here yet", plus a listing
+    // that excluded dotfiles. Measured live 2026-08-06: a persona sent to fix
+    // `.gymtool/solution.rs` (the shape EVERY tool-bugfix-rs task uses) was told, as a
+    // structural fact, that there was nothing to read and that she should CREATE files
+    // instead. She recovered by trusting the task text over her own grounding — but the
+    // grounding was a lie we authored. [[empty-workspace-is-a-confabulation-not-infra]]
+    #[test]
+    fn a_workspace_with_files_is_never_described_as_empty() {
+        // Only a dot-directory: zero non-hidden dirs, but emphatically not empty.
+        let hidden_only = WorkspaceLayout {
+            root: PathBuf::from("/repo"),
+            top_level_dirs: vec![".gymtool".into()],
+            top_level_entries: 1,
+        };
+        assert!(!hidden_only.is_truly_empty());
+        let body = render_layout(&hidden_only);
+        assert!(!body.contains("It is EMPTY"), "{body}");
+        assert!(
+            !body.contains(
+                "nothing \\
+             to read"
+            ),
+            "must never tell her reading cannot work here: {body}"
+        );
+
+        // Files at the root, no subdirectories at all — the OTHER shape the old
+        // dirs-only gate got wrong.
+        let files_only = WorkspaceLayout {
+            root: PathBuf::from("/repo"),
+            top_level_dirs: vec![],
+            top_level_entries: 3,
+        };
+        assert!(!files_only.is_truly_empty());
+        assert!(!render_layout(&files_only).contains("It is EMPTY"));
+
+        // A genuinely empty workspace still gets the build-first grounding, which is
+        // a real finding (#206) and must survive this fix.
+        let truly_empty = WorkspaceLayout {
+            root: PathBuf::from("/repo"),
+            top_level_dirs: vec![],
+            top_level_entries: 0,
+        };
+        assert!(truly_empty.is_truly_empty());
+        assert!(render_layout(&truly_empty).contains("It is EMPTY"));
     }
 
     struct StubReader {
@@ -395,8 +562,14 @@ mod tests {
         assert_eq!(delivery.items[0].metadata["top_level_dirs"][1], "core");
         // Explicitly refutes the recalled "workspace is empty" confabulation with a
         // concrete count, so live ground truth beats a stale memory.
-        assert!(content.contains("NOT empty"), "refutes the empty-belief: {content}");
-        assert!(content.contains("4 top-level directories"), "states the count: {content}");
+        assert!(
+            content.contains("NOT empty"),
+            "refutes the empty-belief: {content}"
+        );
+        assert!(
+            content.contains("4 top-level directories"),
+            "states the count: {content}"
+        );
     }
 
     // what this catches: we do NOT steer — the block never tells her which
@@ -440,14 +613,32 @@ mod tests {
         assert_eq!(delivery.resolution_used, ResolutionPreference::Placeholder);
     }
 
-    // what this catches: an empty workspace (no dirs) still renders a valid block
-    // that says "(none)" rather than an empty/garbled list.
+    // what this catches: an empty workspace grounds WRITE-FIRST — it states the space
+    // is empty, that reading/listing it finds nothing, and to CREATE with code/write.
+    // This counters the native-tool discovery-loop (explore-a-void instead of building)
+    // that scored a from-scratch web-dev task 0. Truthful (it IS empty) + non-steering
+    // (never says WHAT to build). Regression for #206.
     #[tokio::test]
-    async fn empty_layout_renders_none() {
+    async fn empty_layout_grounds_write_first() {
         let source = WorkspaceMapSource::new(persona(), Arc::new(StubReader::ok(&[])));
         let delivery = source.deliver(&ctx(), 512, ResolutionPreference::Raw).await;
         assert_eq!(delivery.items.len(), 1);
-        assert!(delivery.items[0].content.contains("(none)"));
+        let content = &delivery.items[0].content;
+        assert!(content.contains("EMPTY"), "states it's empty: {content}");
+        assert!(
+            content.contains("code/write"),
+            "points at creation, not exploration: {content}"
+        );
+        assert!(
+            content.contains("nothing to read"),
+            "explicitly counters the read-a-void reflex: {content}"
+        );
+        // Non-steering: it must not name WHAT to build.
+        let lc = content.to_lowercase();
+        assert!(
+            !lc.contains("index.html") && !lc.contains("login") && !lc.contains("button"),
+            "grounds the empty state, never dictates the artifact: {content}"
+        );
     }
 
     // what this catches: an absurdly tiny budget never overspends — either no
@@ -485,6 +676,53 @@ mod tests {
         assert_eq!(layout.top_level_dirs, sorted, "dirs must be sorted");
     }
 
+    // what this catches: the fixed-root reader (eval workspace_root pin) roots the
+    // MAP at the pinned dir — an EMPTY pinned dir renders write-first grounding, so a
+    // from-scratch build task's map matches its clean hands instead of describing the
+    // repo (#206). Regression for the map-follows-hands link.
+    #[test]
+    fn fixed_root_empty_dir_grounds_write_first() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let reader = FixedRootWorkspaceLayoutReader::new(dir.path());
+        let layout = reader.layout().expect("empty dir layout reads");
+        assert!(
+            layout.top_level_dirs.is_empty(),
+            "a fresh temp dir has no subdirs"
+        );
+        let body = render_layout(&layout);
+        assert!(
+            body.contains("EMPTY"),
+            "empty pinned root grounds write-first: {body}"
+        );
+        assert!(body.contains("code/write"), "points at creation: {body}");
+    }
+
+    // what this catches: a NON-empty pinned root (a SWE-bench repo clone) lists its
+    // real dirs — the map follows the pinned hands, correct for the existing
+    // workspace_root caller too, not just the clean-build case.
+    #[test]
+    fn fixed_root_with_dirs_lists_them() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        std::fs::create_dir(dir.path().join("tests")).unwrap();
+        let layout = FixedRootWorkspaceLayoutReader::new(dir.path())
+            .layout()
+            .expect("layout reads");
+        assert_eq!(
+            layout.top_level_dirs,
+            vec!["src".to_string(), "tests".to_string()]
+        );
+        let body = render_layout(&layout);
+        assert!(
+            body.contains("src") && body.contains("tests"),
+            "lists real dirs: {body}"
+        );
+        assert!(
+            body.contains("NOT empty"),
+            "refutes the empty-belief: {body}"
+        );
+    }
+
     // what this catches: the citizen-layer reader roots at the persona's OWN
     // workspace when it exists (the #49 swap — map root == the tools' root), and
     // falls back to the shared base (cwd) when the layer isn't provisioned yet —
@@ -492,14 +730,36 @@ mod tests {
     // (random id under a temp home), so the fallback path must yield the real cwd
     // layout rather than erroring.
     #[test]
-    fn citizen_layer_reader_falls_back_to_base_when_unprovisioned() {
+    fn citizen_layer_reader_provisions_and_tells_the_real_root() {
+        // what this catches (#49, the mixed-truth window): the map must NEVER
+        // describe the shared cwd while the tools act in the peer's layer. The
+        // reader now PROVISIONS the layer (same ensure the hands use) and
+        // reports THAT root — so root != cwd, and the layout it lists is the
+        // layer's own (a CoW clone of the base, hence non-empty). The old
+        // fallback-to-cwd behavior this replaces produced the live 2026-08-02
+        // "I see it / mine is empty" roommate contradictions.
+        let peer = "00000000-0000-0000-0000-0000000000ff";
         let reader = CitizenLayerWorkspaceLayoutReader {
-            peer: "00000000-0000-0000-0000-0000000000ff".to_string(),
+            peer: peer.to_string(),
         };
-        let layout = reader.layout().expect("unprovisioned layer falls back to base cwd");
+        let layout = reader.layout().expect("reader provisions the layer");
+        let cwd = std::env::current_dir().expect("cwd");
+        assert_ne!(
+            layout.root, cwd,
+            "map root must be the peer's OWN layer, never the shared cwd"
+        );
+        assert!(
+            layout.root.to_string_lossy().contains(peer),
+            "root is the peer's citizen layer: {}",
+            layout.root.display()
+        );
         assert!(
             !layout.top_level_dirs.is_empty(),
-            "fallback to base cwd yields the real checkout layout, never empty"
+            "the provisioned layer clones the base layout — never empty"
         );
+        // Clean up the throwaway peer's provisioned layer (CoW, but still dirs).
+        if let Some(peer_dir) = layout.root.parent() {
+            let _ = std::fs::remove_dir_all(peer_dir);
+        }
     }
 }

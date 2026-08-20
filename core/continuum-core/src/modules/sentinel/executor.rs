@@ -419,6 +419,12 @@ pub async fn execute_isolated(
             .kill_on_drop(true);
         // SAFETY: pre_exec runs in the forked child before exec.
         // setsid() creates a new session + process group. Simple, async-signal-safe.
+        // Unix-only: `pre_exec` + `setsid` put the child in its own session so
+        // `kill(-pgid)` reaps the whole tree. Windows has no setsid; process-tree
+        // teardown instead relies on `taskkill /T` in the kill helpers below.
+        // BEHAVIORAL GAP (Windows): no session/process-group isolation at spawn —
+        // job-object based grouping is a follow-up.
+        #[cfg(unix)]
         unsafe {
             cmd.pre_exec(|| {
                 libc::setsid();
@@ -753,21 +759,40 @@ pub async fn execute_isolated(
     }
 }
 
-/// Kill an entire process group via SIGTERM (graceful)
-fn kill_process_group(pid: Option<u32>) {
+/// Kill an entire process group / tree gracefully (SIGTERM on Unix).
+/// `pub(super)` so the sentinel shutdown path in `mod.rs` reuses this one
+/// definition instead of re-inlining the platform kill.
+pub(super) fn kill_process_group(pid: Option<u32>) {
     if let Some(pid) = pid {
-        // setsid() made the child its own session leader, so pid == pgid
+        #[cfg(unix)]
         unsafe {
+            // setsid() made the child its own session leader, so pid == pgid.
             libc::kill(-(pid as i32), libc::SIGTERM);
+        }
+        #[cfg(windows)]
+        {
+            // Windows has no process groups from setsid; `taskkill /T` ends the
+            // child tree. Without `/F` this requests graceful termination.
+            let _ = std::process::Command::new("taskkill")
+                .args(["/T", "/PID", &pid.to_string()])
+                .output();
         }
     }
 }
 
-/// Kill an entire process group via SIGKILL (forced)
-fn kill_process_group_force(pid: Option<u32>) {
+/// Kill an entire process group / tree forcibly (SIGKILL on Unix).
+pub(super) fn kill_process_group_force(pid: Option<u32>) {
     if let Some(pid) = pid {
+        #[cfg(unix)]
         unsafe {
             libc::kill(-(pid as i32), libc::SIGKILL);
+        }
+        #[cfg(windows)]
+        {
+            // `/F` force-terminates, `/T` walks the child tree.
+            let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/T", "/PID", &pid.to_string()])
+                .output();
         }
     }
 }
@@ -1215,9 +1240,15 @@ mod tests {
             inputs: HashMap::new(),
         };
 
-        let result =
-            execute_pipeline_direct(&logs_dir, "test-par", pipeline, Some(&bus), Some(&registry), None)
-                .await;
+        let result = execute_pipeline_direct(
+            &logs_dir,
+            "test-par",
+            pipeline,
+            Some(&bus),
+            Some(&registry),
+            None,
+        )
+        .await;
 
         assert!(result.success);
         assert_eq!(result.steps_total, 3);
@@ -1263,9 +1294,15 @@ mod tests {
             inputs: HashMap::new(),
         };
 
-        let result =
-            execute_pipeline_direct(&logs_dir, "test-ew", pipeline, Some(&bus), Some(&registry), None)
-                .await;
+        let result = execute_pipeline_direct(
+            &logs_dir,
+            "test-ew",
+            pipeline,
+            Some(&bus),
+            Some(&registry),
+            None,
+        )
+        .await;
 
         assert!(result.success);
     }
@@ -1376,9 +1413,15 @@ mod tests {
             inputs: HashMap::new(),
         };
 
-        let result =
-            execute_pipeline_direct(&logs_dir, "test-fwd", pipeline, Some(&bus), Some(&registry), None)
-                .await;
+        let result = execute_pipeline_direct(
+            &logs_dir,
+            "test-fwd",
+            pipeline,
+            Some(&bus),
+            Some(&registry),
+            None,
+        )
+        .await;
 
         assert!(result.success);
         assert_eq!(result.steps_completed, 2);
@@ -1442,7 +1485,8 @@ mod tests {
         };
 
         let result =
-            execute_pipeline_direct(&logs_dir, "test-noreg", pipeline, Some(&bus), None, None).await;
+            execute_pipeline_direct(&logs_dir, "test-noreg", pipeline, Some(&bus), None, None)
+                .await;
 
         assert!(!result.success);
         assert!(result.error.as_ref().unwrap().contains("registry"));

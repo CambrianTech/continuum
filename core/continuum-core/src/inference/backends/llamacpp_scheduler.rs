@@ -225,6 +225,9 @@ fn driver_loop(
         type_v: config.type_v,
         embeddings: false,
         pooling_type: llama::PoolingType::None,
+        // MoE expert-selection observer — None for now; the K3 serving path sets a
+        // LiveExpertObserver here to feed the residency PGO tally.
+        expert_observer: None,
     }) {
         Ok(c) => c,
         Err(e) => {
@@ -274,6 +277,7 @@ fn driver_loop(
     let mut sample_call_total = std::time::Duration::ZERO;
     let mut post_sample_total = std::time::Duration::ZERO;
     let mut tokens_sampled_window: u64 = 0;
+    // context-budget-exempt: how often the scheduler emits a throughput log line — a logging cadence
     const PERF_LOG_INTERVAL_TOKENS: u64 = 50;
     loop {
         // ── Phase 1: Accept new requests into free slots ──
@@ -714,8 +718,11 @@ fn lora_signature(loras: &[(String, Arc<LoraAdapter>, f32)]) -> String {
 
 fn start_request(model: &Model, _seq_id: i32, req: GenerationRequest) -> Result<ActiveSeq, String> {
     let lora_sig = lora_signature(&req.active_loras);
-    let active_loras: Vec<(Arc<LoraAdapter>, f32)> =
-        req.active_loras.into_iter().map(|(_, h, s)| (h, s)).collect();
+    let active_loras: Vec<(Arc<LoraAdapter>, f32)> = req
+        .active_loras
+        .into_iter()
+        .map(|(_, h, s)| (h, s))
+        .collect();
     // special=true so chat-template boundary markers (<|im_start|>,
     // <|im_end|>) are tokenized as the model's actual special token IDs
     // (151644/151645 for qwen3) rather than character-level text. With

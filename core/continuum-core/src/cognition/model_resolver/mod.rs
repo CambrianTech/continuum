@@ -272,6 +272,8 @@ mod tests {
         caps: &[Capability],
     ) -> Model {
         Model {
+            weights_bytes: None,
+            mmproj_bytes: None,
             id: id.into(),
             name: None,
             provider: provider.into(),

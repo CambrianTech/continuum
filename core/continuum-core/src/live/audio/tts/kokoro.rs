@@ -41,6 +41,7 @@ struct KokoroModel {
 }
 
 /// Max phoneme/token length for Kokoro v1.0
+// context-budget-exempt: Kokoro's own phoneme-token input limit (a fixed property of the model), not a text-context bound
 const MAX_TOKEN_LENGTH: usize = 510;
 
 /// Available Kokoro voices
@@ -85,21 +86,21 @@ impl KokoroTTS {
 
         let candidates = [
             // v1.0 q4 (smallest, fastest — ~40MB)
-            PathBuf::from("models/kokoro/kokoro-v1.0-q4.onnx"),
+            crate::live::audio::model_root::voice_model_path("kokoro/kokoro-v1.0-q4.onnx"),
             // v1.0 q4f16 hybrid (good quality/speed balance)
-            PathBuf::from("models/kokoro/kokoro-v1.0-q4f16.onnx"),
+            crate::live::audio::model_root::voice_model_path("kokoro/kokoro-v1.0-q4f16.onnx"),
             // v1.0 q8 (preferred quality — ~80MB)
-            PathBuf::from("models/kokoro/kokoro-v1.0-q8.onnx"),
+            crate::live::audio::model_root::voice_model_path("kokoro/kokoro-v1.0-q8.onnx"),
             // v1.0 fp16 (high quality)
-            PathBuf::from("models/kokoro/kokoro-v1.0-fp16.onnx"),
+            crate::live::audio::model_root::voice_model_path("kokoro/kokoro-v1.0-fp16.onnx"),
             // v1.0 full precision
-            PathBuf::from("models/kokoro/kokoro-v1.0.onnx"),
+            crate::live::audio::model_root::voice_model_path("kokoro/kokoro-v1.0.onnx"),
             // Generic names
-            PathBuf::from("models/kokoro/model_quantized.onnx"),
-            PathBuf::from("models/kokoro/model.onnx"),
-            PathBuf::from("models/kokoro/kokoro.onnx"),
+            crate::live::audio::model_root::voice_model_path("kokoro/model_quantized.onnx"),
+            crate::live::audio::model_root::voice_model_path("kokoro/model.onnx"),
+            crate::live::audio::model_root::voice_model_path("kokoro/kokoro.onnx"),
             // Legacy v0.19
-            PathBuf::from("models/kokoro/kokoro-v0_19.onnx"),
+            crate::live::audio::model_root::voice_model_path("kokoro/kokoro-v0_19.onnx"),
         ];
 
         candidates.into_iter().find(|path| path.exists())
@@ -108,8 +109,8 @@ impl KokoroTTS {
     /// Find voices directory
     fn find_voices_dir() -> Option<PathBuf> {
         let candidates = [
-            PathBuf::from("models/kokoro/voices"),
-            PathBuf::from("models/kokoro"),
+            crate::live::audio::model_root::voice_model_path("kokoro/voices"),
+            crate::live::audio::model_root::voice_model_path("kokoro"),
         ];
         candidates.into_iter().find(|path| path.is_dir())
     }
@@ -117,7 +118,8 @@ impl KokoroTTS {
     /// Load Kokoro vocab from tokenizer.json (HuggingFace format) or legacy vocab.json
     fn load_vocab() -> Result<HashMap<char, i64>, TTSError> {
         // Try tokenizer.json first (HuggingFace format, downloaded from ONNX community repo)
-        let tokenizer_path = PathBuf::from("models/kokoro/tokenizer.json");
+        let tokenizer_path =
+            crate::live::audio::model_root::voice_model_path("kokoro/tokenizer.json");
         if tokenizer_path.exists() {
             let content = std::fs::read_to_string(&tokenizer_path).map_err(TTSError::IoError)?;
 
@@ -154,7 +156,7 @@ impl KokoroTTS {
         }
 
         // Legacy fallback: standalone vocab.json
-        let vocab_path = PathBuf::from("models/kokoro/vocab.json");
+        let vocab_path = crate::live::audio::model_root::voice_model_path("kokoro/vocab.json");
         if !vocab_path.exists() {
             return Err(TTSError::ModelNotLoaded(
                 "Kokoro tokenizer not found at models/kokoro/tokenizer.json or models/kokoro/vocab.json".into(),
@@ -444,7 +446,7 @@ impl TextToSpeech for KokoroTTS {
         // Find voices directory
         let voices_dir = Self::find_voices_dir().unwrap_or_else(|| {
             clog_warn!("Kokoro voices directory not found, using models/kokoro/voices");
-            PathBuf::from("models/kokoro/voices")
+            crate::live::audio::model_root::voice_model_path("kokoro/voices")
         });
 
         // Load vocab
@@ -678,8 +680,8 @@ mod tests {
     /// Helper: resolve model directory (tests may run from different CWDs)
     fn find_models_dir() -> Option<PathBuf> {
         let candidates = [
-            PathBuf::from("models/kokoro"),          // from jtag/ CWD
-            PathBuf::from("../../models/kokoro"),    // from workers/continuum-core/
+            crate::live::audio::model_root::voice_model_path("kokoro"), // from jtag/ CWD
+            PathBuf::from("../../models/kokoro"), // from workers/continuum-core/
             PathBuf::from("../../../models/kokoro"), // from workers/continuum-core/src/
         ];
         candidates.into_iter().find(|p| p.is_dir())

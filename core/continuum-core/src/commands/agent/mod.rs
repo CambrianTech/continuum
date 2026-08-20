@@ -4,7 +4,7 @@
 //! These verbs once lived only in [`AgentModule::handle_command`](crate::modules::agent)'s
 //! stringly `match` — dispatchable, but with no descriptor in the registry, so a
 //! persona was never OFFERED them. As typed commands each gets a descriptor (so it
-//! appears in the persona tool surface, the grid ACL, codegen, `cu`) AND routes
+//! appears in the persona tool surface, the grid ACL, codegen, `uu`) AND routes
 //! through the O(1) lock-free typed path. The wire name mirrors the file path —
 //! `commands/agent/start.rs` ⟺ `agent/start`.
 //!
@@ -27,6 +27,13 @@ pub mod start;
 pub mod status;
 pub mod stop;
 pub mod wait;
+
+/// `agent/solve` — the headless single-task benchmark keystone. Unlike the dep-holding
+/// `start`/`stop`/… verbs above (which share `Arc<AgentService>`), `solve` is a stateless
+/// composition over the cognition-drive seams and self-registers via
+/// `register_stateless_command!` — it needs no `AgentService`, so it is NOT wired into the
+/// object map below.
+pub mod solve;
 
 use list::AgentList;
 use start::AgentStart;
@@ -62,7 +69,7 @@ mod tests {
     use crate::sdk_codegen::ActionCommand;
 
     // what this catches: the five agent commands carry their `agent/<verb>` wire
-    // names — the routing keys cu / the persona tool surface / the grid bind to. The
+    // names — the routing keys uu / the persona tool surface / the grid bind to. The
     // name mirrors the file path; drift silently breaks "the file tree IS the
     // namespace".
     #[test]

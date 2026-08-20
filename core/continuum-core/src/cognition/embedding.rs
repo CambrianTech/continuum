@@ -19,6 +19,7 @@
 //! prove the interface, let the strong backend slot in unchanged.
 
 use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -70,14 +71,38 @@ pub trait EmbeddingProvider: Send + Sync {
 /// deliberately diverse in topic, register, length AND LANGUAGE (an English-only
 /// null would mis-measure the space a multilingual room actually queries in).
 pub const CALIBRATION_PAIRS: &[(&str, &str)] = &[
-    ("the invoice for March is overdue", "a heron stood motionless in the shallows"),
-    ("fn main() { println!(\"hello\"); }", "she packed two sweaters for the trip north"),
-    ("die Sitzung wurde auf Donnerstag verschoben", "el río bajaba turbio después de la tormenta"),
-    ("our quarterly revenue grew eight percent", "the sonata's third movement is in A minor"),
-    ("git rebase rewrites commit history", "la soupe manque de sel et d'une feuille de laurier"),
-    ("降雨量は流域全体で予想を上回った", "the defendant waived the right to a jury"),
-    ("the cache invalidation bug ships tomorrow", "auf dem Bergrücken blühten die Wildblumen früh"),
-    ("please review the attached slide deck", "der Springer gabelte Dame und Turm"),
+    (
+        "the invoice for March is overdue",
+        "a heron stood motionless in the shallows",
+    ),
+    (
+        "fn main() { println!(\"hello\"); }",
+        "she packed two sweaters for the trip north",
+    ),
+    (
+        "die Sitzung wurde auf Donnerstag verschoben",
+        "el río bajaba turbio después de la tormenta",
+    ),
+    (
+        "our quarterly revenue grew eight percent",
+        "the sonata's third movement is in A minor",
+    ),
+    (
+        "git rebase rewrites commit history",
+        "la soupe manque de sel et d'une feuille de laurier",
+    ),
+    (
+        "降雨量は流域全体で予想を上回った",
+        "the defendant waived the right to a jury",
+    ),
+    (
+        "the cache invalidation bug ships tomorrow",
+        "auf dem Bergrücken blühten die Wildblumen früh",
+    ),
+    (
+        "please review the attached slide deck",
+        "der Springer gabelte Dame und Turm",
+    ),
 ];
 
 /// Measure an embedder's unrelated-cosine null distribution over
@@ -244,7 +269,9 @@ pub struct EmbeddingCache {
 
 impl Default for EmbeddingCache {
     fn default() -> Self {
-        Self { map: DashMap::new() }
+        Self {
+            map: DashMap::new(),
+        }
     }
 }
 
@@ -279,6 +306,143 @@ impl EmbeddingCache {
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
+
+    /// Serialize the cache to a compact, dep-free binary snapshot at `path`
+    /// (atomic: write a sibling temp file, then rename). This is what lets a
+    /// content's vector survive a core restart — the difference between
+    /// re-embedding 375 memories (and re-fighting for VRAM) on every boot and a
+    /// warm cache that embeds each unique content ONCE, ever. Format, all
+    /// little-endian: `[u64 count]` then per entry `[u64 key][u32 dim][dim × f32]`.
+    /// Best-effort: the caller treats a failure as a warn, never fatal — a lost
+    /// snapshot just means the cache rebuilds by re-embedding.
+    pub fn snapshot_to(&self, path: &std::path::Path) -> std::io::Result<usize> {
+        use std::io::Write;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let tmp = path.with_extension("bin.tmp");
+        let mut w = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+        // Snapshot the keys first so the count matches the bytes even if the map
+        // grows during the write (a concurrent insert simply lands in the next
+        // snapshot). Iterating clones under DashMap's per-shard locks — brief.
+        let entries: Vec<(u64, Vec<f32>)> = self
+            .map
+            .iter()
+            .map(|e| (*e.key(), e.value().clone()))
+            .collect();
+        w.write_all(&(entries.len() as u64).to_le_bytes())?;
+        for (key, vec) in &entries {
+            w.write_all(&key.to_le_bytes())?;
+            w.write_all(&(vec.len() as u32).to_le_bytes())?;
+            for f in vec {
+                w.write_all(&f.to_le_bytes())?;
+            }
+        }
+        w.flush()?;
+        drop(w);
+        std::fs::rename(&tmp, path)?;
+        Ok(entries.len())
+    }
+
+    /// Load a snapshot written by [`snapshot_to`] into the map (additive; honors
+    /// the [`EMBEDDING_CACHE_MAX`] cap; skips a truncated tail rather than
+    /// failing). A missing file is `Ok(0)` — first boot, nothing to warm from.
+    /// Returns the count loaded.
+    pub fn load_from(&self, path: &std::path::Path) -> std::io::Result<usize> {
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(e) => return Err(e),
+        };
+        let mut pos = 0usize;
+        let take = |pos: &mut usize, n: usize| -> Option<&[u8]> {
+            if *pos + n > bytes.len() {
+                return None;
+            }
+            let s = &bytes[*pos..*pos + n];
+            *pos += n;
+            Some(s)
+        };
+        let count = match take(&mut pos, 8) {
+            Some(b) => u64::from_le_bytes(b.try_into().unwrap()) as usize,
+            None => return Ok(0),
+        };
+        let mut loaded = 0usize;
+        for _ in 0..count {
+            if self.map.len() >= EMBEDDING_CACHE_MAX {
+                break;
+            }
+            let key = match take(&mut pos, 8) {
+                Some(b) => u64::from_le_bytes(b.try_into().unwrap()),
+                None => break, // truncated tail — keep what parsed
+            };
+            let dim = match take(&mut pos, 4) {
+                Some(b) => u32::from_le_bytes(b.try_into().unwrap()) as usize,
+                None => break,
+            };
+            let raw = match take(&mut pos, dim * 4) {
+                Some(b) => b,
+                None => break,
+            };
+            let vec: Vec<f32> = raw
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                .collect();
+            self.map.insert(key, vec);
+            loaded += 1;
+        }
+        Ok(loaded)
+    }
+}
+
+/// Cadence for the embedding-cache snapshot — a background consolidator, so the
+/// slower end of the ladder (concurrency guide: 30s–5min). A crash loses at most
+/// this window of newly-embedded vectors, which simply re-embed on next use.
+const EMBEDDING_CACHE_FLUSH_SECS: u64 = 60;
+
+/// Warm the process-global embedding cache from `path` NOW (boot warm-start), then
+/// snapshot it every [`EMBEDDING_CACHE_FLUSH_SECS`] on its OWN tokio task — the
+/// RTOS shape (own task + `tokio::time::interval`, off every hot path; the file
+/// write itself is `spawn_blocking`). Best-effort throughout: a failed load or
+/// flush is a warn, never fatal. Call once at boot, inside the tokio runtime.
+pub fn spawn_embedding_cache_persistence(cache: Arc<EmbeddingCache>, path: std::path::PathBuf) {
+    match cache.load_from(&path) {
+        Ok(n) => crate::probe!(
+            class = "embedding.cache.loaded",
+            vectors = n,
+            "warmed embedding cache from durable snapshot — no re-embed for cached content"
+        ),
+        Err(e) => tracing::warn!(
+            target = "embedding_cache",
+            "embedding cache warm-load failed ({e}) — starting cold, will re-embed on demand"
+        ),
+    }
+    tokio::spawn(async move {
+        let mut ticker =
+            tokio::time::interval(std::time::Duration::from_secs(EMBEDDING_CACHE_FLUSH_SECS));
+        ticker.tick().await; // consume the immediate first tick
+        loop {
+            ticker.tick().await;
+            let cache = cache.clone();
+            let path = path.clone();
+            let result = tokio::task::spawn_blocking(move || cache.snapshot_to(&path)).await;
+            match result {
+                Ok(Ok(n)) => crate::probe!(
+                    class = "embedding.cache.flushed",
+                    vectors = n,
+                    "snapshotted embedding cache to durable store"
+                ),
+                Ok(Err(e)) => tracing::warn!(
+                    target = "embedding_cache",
+                    "embedding cache flush failed ({e}) — cache stays in-memory, retries next tick"
+                ),
+                Err(join) => tracing::warn!(
+                    target = "embedding_cache",
+                    "embedding cache flush task panicked ({join}) — skipping this tick"
+                ),
+            }
+        }
+    });
 }
 
 /// Process-global content-addressed embedding cache — the one place a message's
@@ -303,10 +467,7 @@ impl CachingEmbeddingProvider {
     /// Wrap `inner`, sharing the process-global cache — what makes the
     /// compute-once-across-personas property hold in production.
     pub fn new(inner: Arc<dyn EmbeddingProvider>) -> Self {
-        Self {
-            inner,
-            cache: global_embedding_cache(),
-        }
+        Self::with_cache(inner, global_embedding_cache())
     }
 
     /// Wrap `inner` against a specific cache (tests / isolated benches).
@@ -349,8 +510,22 @@ impl EmbeddingProvider for CachingEmbeddingProvider {
         }
         // Bound memory: evict one arbitrary entry on overflow before inserting a
         // genuinely new key. Hot/recent content re-populates on its next miss.
+        //
+        // LOCK DISCIPLINE (#368-family stall, 2026-08-08): the victim key MUST be
+        // bound by its own `let` so the `iter()` guard (a shard READ lock) is
+        // dropped at that statement's end. The previous form put the iterator
+        // temporary inside an `if let` scrutinee, where it lives for the WHOLE
+        // block — so `remove` waited forever on the same shard's WRITE lock.
+        // Self-deadlock, reachable only when the cache is FULL, which is why it
+        // slept until the cache first hit EMBEDDING_CACHE_MAX in production:
+        // from then on every novel embed parked its task permanently, and since
+        // recall embeds inside every turn, the entire citizenry went silent one
+        // turn at a time (sampled live: 100% parked in lock_exclusive_slow under
+        // DashMap::remove). dashmap's own docs: never call `remove` while
+        // holding any reference into the map.
         if !self.cache.map.contains_key(&key) && self.cache.map.len() >= EMBEDDING_CACHE_MAX {
-            if let Some(victim) = self.cache.map.iter().next().map(|e| *e.key()) {
+            let victim = self.cache.map.iter().next().map(|e| *e.key());
+            if let Some(victim) = victim {
                 self.cache.map.remove(&victim);
             }
         }
@@ -492,14 +667,13 @@ fn local_embed_adapter() -> Option<(Arc<dyn AIProviderAdapter>, String)> {
     let model = reg
         .models_for_provider(crate::inference::llamacpp_adapter::LLAMACPP_PROVIDER_ID)
         .find(|m| {
-            m.capabilities.contains(&crate::model_registry::Capability::Embedding)
+            m.capabilities
+                .contains(&crate::model_registry::Capability::Embedding)
                 && m.gguf_local_path.as_ref().is_some_and(|p| p.exists())
         })?;
     let path = model.gguf_local_path.clone()?;
-    let adapter = crate::inference::llamacpp_adapter::LlamaCppAdapter::with_model_id(
-        path,
-        model.id.clone(),
-    );
+    let adapter =
+        crate::inference::llamacpp_adapter::LlamaCppAdapter::with_model_id(path, model.id.clone());
     Some((Arc::new(adapter), model.id.clone()))
 }
 
@@ -531,7 +705,93 @@ async fn try_neural_embedder(
         null_std = std,
         "measured unrelated-cosine null for the embedding space"
     );
+    // This node embeds — claim the embed lane's standing FLOOR on the resource
+    // board (#225, Joel 2026-08-08: "the budgeter just has all its parts figure
+    // it out"). The floor makes the ledger's `available_for` math hold the lane's
+    // working VRAM against every OTHER consumer, so the serving plan can no
+    // longer grow its window into the slice cognition needs every turn (measured
+    // the day this landed: 604 MiB governed-available vs the 1792 MiB need —
+    // embedding fully dead, every recall degraded to no-relevance). Reserved
+    // HERE, at successful resolve, so a node with no embed model wastes nothing.
+    // Idempotent: re-resolve re-states the same floor.
+    if let Some(daemon) = crate::resources::ResourceDaemon::global() {
+        use crate::inference::llamacpp_adapter::{EMBED_LANE_CONSUMER_ID, EMBED_LANE_VRAM_BYTES};
+        daemon.reserve(
+            EMBED_LANE_CONSUMER_ID,
+            crate::resources::ResourceKind::Vram,
+            EMBED_LANE_VRAM_BYTES,
+        );
+        crate::probe!(
+            class = "embed.vram.reserved",
+            consumer = EMBED_LANE_CONSUMER_ID,
+            bytes = EMBED_LANE_VRAM_BYTES,
+            "embed lane reserved its standing VRAM floor — serving's budget now plans around it"
+        );
+    }
     Some(Arc::new(CachingEmbeddingProvider::new(Arc::new(neural))) as Arc<dyn EmbeddingProvider>)
+}
+
+/// Process-global memo of rung 1 — the dedicated in-process embed model.
+///
+/// Glass-boxed live on BigMama's Windows node (2026-08-02): `resolve_recall_embedder`
+/// runs once per persona REGISTRATION, and registration re-runs on every respawn
+/// (node resilience). Before this memo, EVERY call built a fresh `LlamaCppAdapter`,
+/// loaded the ~1.2 GB embed GGUF into a NEW llama context, probed it, and burned
+/// ~16 calibration passes — nine personas meant nine resident embed contexts, and a
+/// respawn-churning node became a context-creation storm (102 llama_context
+/// creations × ~1200 MiB with ZERO IPC deltas) eating memory out from under the
+/// ResourceGovernor. The resolver's own contract ("embedded ONCE and shared across
+/// every persona") requires ONE shared provider; this state enforces it.
+///
+/// Semantics:
+/// - SUCCESS memoizes permanently. The async lock makes resolution single-flight:
+///   N concurrently-spawning personas produce exactly ONE model load; the rest
+///   wait and share the Arc.
+/// - FAILURE is never memoized permanently (the #71 lesson: a one-shot resolution
+///   must not blind a box whose embed model arrives late) — but re-attempts are
+///   rate-limited by [`RUNG1_RETRY_COOLDOWN`], so a box where the load or probe
+///   fails cannot re-enter the load-probe-fail storm.
+#[derive(Default)]
+struct Rung1State {
+    provider: Option<(Arc<dyn EmbeddingProvider>, String)>,
+    last_attempt: Option<Instant>,
+    /// Total real resolve attempts (loads) this process has made — the
+    /// observable invariant the storm regression test pins.
+    attempts: u32,
+}
+
+/// Cooldown between failed rung-1 resolve attempts. One knock per minute keeps
+/// late-arriving embed models recoverable (a boot-race registry, a mid-session
+/// model pull) while capping the worst case at ~1 model-load per minute instead
+/// of one per persona respawn.
+const RUNG1_RETRY_COOLDOWN: Duration = Duration::from_secs(60);
+
+fn rung1_cell() -> &'static tokio::sync::Mutex<Rung1State> {
+    static CELL: OnceLock<tokio::sync::Mutex<Rung1State>> = OnceLock::new();
+    CELL.get_or_init(|| tokio::sync::Mutex::new(Rung1State::default()))
+}
+
+/// The ONE shared in-process embedder (rung 1), or `None` if it isn't available
+/// right now. See [`Rung1State`] for the memo/single-flight/cooldown contract.
+/// Returns the provider and the resolved GGUF id (for the caller's probe line).
+async fn shared_in_process_embedder(model: &str) -> Option<(Arc<dyn EmbeddingProvider>, String)> {
+    // Holding the async lock across the load IS the single-flight: concurrent
+    // resolvers queue here and find `provider` populated when they wake.
+    let mut state = rung1_cell().lock().await;
+    if let Some((provider, gguf_id)) = &state.provider {
+        return Some((provider.clone(), gguf_id.clone()));
+    }
+    if let Some(last) = state.last_attempt {
+        if last.elapsed() < RUNG1_RETRY_COOLDOWN {
+            return None;
+        }
+    }
+    state.last_attempt = Some(Instant::now());
+    state.attempts += 1;
+    let (embed_adapter, gguf_id) = local_embed_adapter()?;
+    let provider = try_neural_embedder(embed_adapter, model).await?;
+    state.provider = Some((provider.clone(), gguf_id.clone()));
+    Some((provider, gguf_id))
 }
 
 /// Resolve the embedder for the live recall path. Tries, in order:
@@ -555,7 +815,9 @@ async fn try_neural_embedder(
 /// Always returns a usable embedder — never errors, never panics: a persona on a
 /// box with no embed model still gets real lexical relevance ("solve for public
 /// users" / degrade-not-panic).
-pub async fn resolve_recall_embedder(adapter: Arc<dyn AIProviderAdapter>) -> Arc<dyn EmbeddingProvider> {
+pub async fn resolve_recall_embedder(
+    adapter: Arc<dyn AIProviderAdapter>,
+) -> Arc<dyn EmbeddingProvider> {
     // The embedding-SPACE identity (cache key). Defaults to the canonical grid
     // embedder; an operator standardizing on a different embed model overrides it
     // so in-process and gateway vectors stay in one comparable space.
@@ -564,19 +826,18 @@ pub async fn resolve_recall_embedder(adapter: Arc<dyn AIProviderAdapter>) -> Arc
         .unwrap_or_else(|| CANONICAL_EMBED_MODEL.to_string());
 
     // 1. Preferred: the dedicated in-process embed model. Pinned independently of
-    //    the chat model, so changing Asha's brain never disturbs recall.
-    if let Some((embed_adapter, gguf_id)) = local_embed_adapter() {
-        if let Some(provider) = try_neural_embedder(embed_adapter, &model).await {
-            crate::probe!(
-                class = "recall.embedder.resolved",
-                kind = "neural",
-                source = "in-process-llamacpp",
-                model = %model,
-                gguf = %gguf_id,
-                "recall embedder = NEURAL (dedicated in-process Qwen3-Embedding)"
-            );
-            return provider;
-        }
+    //    the chat model, so changing Asha's brain never disturbs recall. ONE
+    //    shared instance process-wide — see [`Rung1State`].
+    if let Some((provider, gguf_id)) = shared_in_process_embedder(&model).await {
+        crate::probe!(
+            class = "recall.embedder.resolved",
+            kind = "neural",
+            source = "in-process-llamacpp",
+            model = %model,
+            gguf = %gguf_id,
+            "recall embedder = NEURAL (dedicated in-process Qwen3-Embedding, shared)"
+        );
+        return provider;
     }
 
     // 2. Fallback: the chat adapter's embeddings endpoint, for a gateway that
@@ -606,7 +867,106 @@ pub async fn resolve_recall_embedder(adapter: Arc<dyn AIProviderAdapter>) -> Arc
         model = %model,
         "recall embedder = LEXICAL — no neural embed model serving; semantic recall DEGRADED to word-overlap"
     );
-    Arc::new(CachingEmbeddingProvider::new(Arc::new(LexicalEmbedder::new())))
+    Arc::new(CachingEmbeddingProvider::new(Arc::new(
+        LexicalEmbedder::new(),
+    )))
+}
+
+/// Resolve the recall embedder WITHOUT a chat adapter — for the GLOBAL memory
+/// manager (agent-memory bridge + hydrated corpora), which has no per-persona
+/// chat gateway to offer. Tries the dedicated in-process embed model (GPU, no
+/// HTTP hop), then the lexical floor. Same process-stable, probe-gated,
+/// LOUD-on-degrade contract as [`resolve_recall_embedder`]; it simply omits the
+/// chat-adapter `/v1/embeddings` rung (rung 2) that only a persona's own adapter
+/// can provide. Always returns a usable embedder — never errors, never panics.
+pub async fn resolve_recall_embedder_local() -> Arc<dyn EmbeddingProvider> {
+    let model = crate::config_env::read("UNSLOTH_EMBED_MODEL")
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or_else(|| CANONICAL_EMBED_MODEL.to_string());
+
+    if let Some((provider, gguf_id)) = shared_in_process_embedder(&model).await {
+        crate::probe!(
+            class = "recall.embedder.resolved",
+            kind = "neural",
+            source = "in-process-llamacpp-global",
+            model = %model,
+            gguf = %gguf_id,
+            "global recall embedder = NEURAL (dedicated in-process Qwen3-Embedding, shared)"
+        );
+        return provider;
+    }
+
+    crate::probe!(
+        class = "recall.embedder.resolved",
+        kind = "lexical",
+        source = "fallback-global",
+        model = %model,
+        "global recall embedder = LEXICAL — no in-process embed model serving; semantic recall DEGRADED to word-overlap"
+    );
+    Arc::new(CachingEmbeddingProvider::new(Arc::new(
+        LexicalEmbedder::new(),
+    )))
+}
+
+/// A recall embedder that resolves its real backend LAZILY on first use, off the
+/// boot critical path. The global memory manager is constructed during boot,
+/// where NOTHING may gate the IPC socket bind on a GPU/gateway probe (the
+/// concurrency guide's non-negotiable — a probe here previously wedged boot).
+/// So the manager holds THIS: trivially cheap to construct, and on the first
+/// `embed` it resolves the dedicated in-process neural embedder via
+/// [`resolve_recall_embedder_local`] (probe-gated, LOUD-on-degrade), caches it
+/// **process-stably** (one embedding space for the whole process — a query and
+/// the stored vectors must live in the SAME space), and delegates. Every later
+/// call reuses the resolved provider; the resolution's cost (probe + ~16
+/// calibration embeds) is paid once, on the first real recall, never at boot.
+pub struct LazyRecallEmbedder {
+    resolved: tokio::sync::OnceCell<Arc<dyn EmbeddingProvider>>,
+}
+
+impl LazyRecallEmbedder {
+    pub fn new() -> Self {
+        Self {
+            resolved: tokio::sync::OnceCell::new(),
+        }
+    }
+
+    /// The resolved backend, resolving (once) on first call.
+    async fn backend(&self) -> &Arc<dyn EmbeddingProvider> {
+        self.resolved
+            .get_or_init(resolve_recall_embedder_local)
+            .await
+    }
+}
+
+impl Default for LazyRecallEmbedder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl EmbeddingProvider for LazyRecallEmbedder {
+    /// The resolved space id once known; a stable placeholder until first embed.
+    /// Only informational (degrade logging) — cache identity lives in the
+    /// resolved provider's own `CachingEmbeddingProvider`/`NeuralEmbeddingProvider`.
+    fn id(&self) -> &str {
+        self.resolved
+            .get()
+            .map(|p| p.id())
+            .unwrap_or("recall-embedder(resolving)")
+    }
+
+    fn dim(&self) -> usize {
+        self.resolved.get().map(|p| p.dim()).unwrap_or(0)
+    }
+
+    async fn embed(&self, text: &str) -> Vec<f32> {
+        self.backend().await.embed(text).await
+    }
+
+    fn unrelated_null(&self) -> Option<(f32, f32)> {
+        self.resolved.get().and_then(|p| p.unrelated_null())
+    }
 }
 
 #[cfg(test)]
@@ -614,13 +974,63 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    // what this catches: the lazy recall embedder is safe to CONSTRUCT at boot —
+    // no GPU/gateway probe fires until the first `embed` — and reports a stable
+    // "resolving" identity + dim 0 until then, so nothing on the boot path can
+    // wedge the IPC socket bind (the concurrency-guide non-negotiable this exists
+    // to honor). Resolution itself needs the model registry, exercised live.
+    #[test]
+    fn lazy_recall_embedder_is_boot_safe_before_resolution() {
+        let e = LazyRecallEmbedder::new();
+        assert_eq!(e.id(), "recall-embedder(resolving)");
+        assert_eq!(e.dim(), 0);
+        assert!(e.unrelated_null().is_none());
+    }
+
+    // what this catches: the persistent snapshot survives a "restart" — vectors
+    // written by snapshot_to load back byte-identical via load_from, so cached
+    // content never re-embeds (nor re-fights the serving lane for VRAM) across a
+    // core restart. A missing file warms as Ok(0), never an error (first boot).
+    #[test]
+    fn embedding_cache_snapshot_round_trips() {
+        let src = EmbeddingCache::new();
+        let ka = EmbeddingCache::key("qwen3-embedding-0.6b", "the deploy went red");
+        let kb = EmbeddingCache::key("qwen3-embedding-0.6b", "a heron in the shallows");
+        let va = vec![0.1f32, -0.2, 0.3, 0.4];
+        let vb = vec![1.0f32, 2.0, 3.0];
+        src.map.insert(ka, va.clone());
+        src.map.insert(kb, vb.clone());
+
+        let path = std::env::temp_dir().join("continuum-embcache-roundtrip.bin");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(src.snapshot_to(&path).unwrap(), 2);
+
+        // A fresh cache (the "restarted" process) warms from the snapshot.
+        let dst = EmbeddingCache::new();
+        assert_eq!(dst.load_from(&path).unwrap(), 2);
+        assert_eq!(dst.map.get(&ka).map(|e| e.clone()), Some(va));
+        assert_eq!(dst.map.get(&kb).map(|e| e.clone()), Some(vb));
+
+        // Missing file (first boot) → Ok(0), not an error.
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            dst.load_from(&path).unwrap(),
+            0,
+            "missing snapshot warms as Ok(0)"
+        );
+    }
+
     // what this catches: the cosine of identical text is ~1; orthogonal
     // (no shared vocabulary) is ~0. The relevance primitive is sane.
     #[tokio::test]
     async fn identical_text_is_maximally_similar() {
         let e = LexicalEmbedder::new();
-        let a = e.embed("the deploy pipeline went red after the migration").await;
-        let same = e.embed("the deploy pipeline went red after the migration").await;
+        let a = e
+            .embed("the deploy pipeline went red after the migration")
+            .await;
+        let same = e
+            .embed("the deploy pipeline went red after the migration")
+            .await;
         assert!(cosine_similarity(&a, &same) > 0.999);
     }
 
@@ -630,11 +1040,15 @@ mod tests {
     #[tokio::test]
     async fn relevant_text_outscores_unrelated_text() {
         let e = LexicalEmbedder::new();
-        let query = e.embed("what was our rollout plan for the auth flow?").await;
+        let query = e
+            .embed("what was our rollout plan for the auth flow?")
+            .await;
         let relevant = e
             .embed("we will ship the auth flow behind a feature flag and ramp the rollout to 10%")
             .await;
-        let unrelated = e.embed("lunch is at noon, someone booked the corner table").await;
+        let unrelated = e
+            .embed("lunch is at noon, someone booked the corner table")
+            .await;
         let rel = cosine_similarity(&query, &relevant);
         let unrel = cosine_similarity(&query, &unrelated);
         assert!(
@@ -793,7 +1207,10 @@ mod tests {
         assert!(!probe_indicates_usable(&[]), "empty = no signal");
         assert!(!probe_indicates_usable(&[0.0, 0.0]), "all-zero = no signal");
         assert!(!probe_indicates_usable(&[f32::NAN, 1.0]), "NaN = no signal");
-        assert!(!probe_indicates_usable(&[f32::INFINITY, 1.0]), "Inf = no signal");
+        assert!(
+            !probe_indicates_usable(&[f32::INFINITY, 1.0]),
+            "Inf = no signal"
+        );
     }
 
     /// Minimal adapter whose embeddings are configurable, to drive the resolver
@@ -940,7 +1357,11 @@ mod tests {
             0,
             "grid round-trip never fired — the local-cached vector was reused"
         );
-        assert_eq!(cache.len(), 1, "one entry: identity is the model, not the transport");
+        assert_eq!(
+            cache.len(),
+            1,
+            "one entry: identity is the model, not the transport"
+        );
     }
 
     // what this catches: the in-process neural embedder actually PRODUCES semantic
@@ -968,13 +1389,20 @@ mod tests {
             .await
             .expect("neural embedder probe must succeed with a real embed model on disk");
 
-        let anchor = embedder.embed("the deployment failed with a compile error").await;
+        let anchor = embedder
+            .embed("the deployment failed with a compile error")
+            .await;
         let similar = embedder
             .embed("the build broke because the code did not compile")
             .await;
-        let different = embedder.embed("she watered the tomato plants in the garden").await;
+        let different = embedder
+            .embed("she watered the tomato plants in the garden")
+            .await;
 
-        assert!(!anchor.is_empty(), "real embed must return a non-empty vector");
+        assert!(
+            !anchor.is_empty(),
+            "real embed must return a non-empty vector"
+        );
         eprintln!(
             "[embed-test] dim={} (canonical={})",
             anchor.len(),
@@ -990,5 +1418,77 @@ mod tests {
             "semantically similar text must rank above unrelated text: {sim} !> {dif}"
         );
         assert!(sim > 0.5, "similar pair should be clearly related: {sim}");
+    }
+
+    // what this catches: the rung-1 load-probe-fail storm (BigMama's Windows
+    // node, 2026-08-02 — 102 llama_context creations × ~1200 MiB, zero IPC).
+    // A failed shared resolve must consume exactly ONE attempt and every
+    // subsequent resolve inside the cooldown must return fast WITHOUT
+    // re-attempting a model load. Runs with no model registry installed, so
+    // rung 1 fails at `local_embed_adapter` — the cheap flavor of the same
+    // failure path the storm rode.
+    #[tokio::test]
+    async fn failed_rung1_resolve_does_not_reattempt_within_cooldown() {
+        let attempts_before = rung1_cell().lock().await.attempts;
+        let a = shared_in_process_embedder(CANONICAL_EMBED_MODEL).await;
+        let b = shared_in_process_embedder(CANONICAL_EMBED_MODEL).await;
+        let c = shared_in_process_embedder(CANONICAL_EMBED_MODEL).await;
+        let attempts_after = rung1_cell().lock().await.attempts;
+        // In a bare test process there is no registry → all resolves fail…
+        assert!(a.is_none() && b.is_none() && c.is_none());
+        // …and the cooldown means three resolves cost at most ONE attempt.
+        // (≤ rather than == : another test in the parallel suite may have
+        // burned the process-global attempt first — the invariant is "no
+        // storm", not "this test owns the counter".)
+        assert!(
+            attempts_after - attempts_before <= 1,
+            "three back-to-back failed resolves must not attempt more than one load \
+             (got {} new attempts)",
+            attempts_after - attempts_before
+        );
+    }
+
+    // what this catches (regression for the 2026-08-08 civilization-wide stall):
+    // CachingEmbeddingProvider's overflow eviction self-deadlocked — the
+    // `iter()` shard READ guard lived for the whole `if let` block (scrutinee
+    // temporary lifetime), so `remove` parked forever on the same shard's WRITE
+    // lock. Reachable ONLY when the cache is at EMBEDDING_CACHE_MAX, so it
+    // slept until production filled 20k entries — then every novel embed hung
+    // its task, recall embeds inside every turn, and all four citizens went
+    // silent (sampled live: 100% parked in lock_exclusive_slow). This test
+    // fills a PRIVATE cache to the cap and embeds one novel text under a
+    // timeout: pre-fix it deadlocks (timeout fires), post-fix it evicts and
+    // returns in microseconds.
+    #[tokio::test]
+    async fn full_cache_eviction_does_not_self_deadlock() {
+        struct Tiny;
+        #[async_trait::async_trait]
+        impl EmbeddingProvider for Tiny {
+            fn id(&self) -> &str {
+                "tiny-test-embedder"
+            }
+            fn dim(&self) -> usize {
+                2
+            }
+            async fn embed(&self, _text: &str) -> Vec<f32> {
+                vec![0.5, -0.5]
+            }
+        }
+        let cache = Arc::new(EmbeddingCache::new());
+        for i in 0..EMBEDDING_CACHE_MAX {
+            cache.map.insert(i as u64, vec![0.0, 0.0]);
+        }
+        let provider = CachingEmbeddingProvider::with_cache(Arc::new(Tiny), cache.clone());
+        let v = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            provider.embed("a text the full cache has never seen"),
+        )
+        .await
+        .expect("full-cache embed must not deadlock on its own eviction");
+        assert_eq!(v, vec![0.5, -0.5]);
+        assert!(
+            cache.map.len() <= EMBEDDING_CACHE_MAX,
+            "eviction kept the cache bounded"
+        );
     }
 }

@@ -13,7 +13,10 @@ use crate::modules::code::CodeState;
 
 /// `code/git/status` takes no input — it reports the caller's workspace.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/code/GitStatusParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/GitStatusParams.ts"
+)]
 pub struct GitStatusParams {}
 
 crate::action_command! {
@@ -23,6 +26,8 @@ crate::action_command! {
     pub struct CodeGitStatus { state: Arc<CodeState> }
     name: "code/git/status",
     access: AiSafe,
+    native: true,
+    aliases: &["git_status"],
     params: GitStatusParams,
     output: GitStatusInfo,
     run(this, ctx, _p) => {

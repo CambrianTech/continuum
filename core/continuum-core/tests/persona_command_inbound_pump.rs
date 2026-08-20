@@ -37,9 +37,7 @@ use airc_test_fixtures::TwoAircLoopback;
 use async_trait::async_trait;
 use continuum_core::ai::adapter::AIProviderAdapter;
 use continuum_core::ai::heuristic_adapter::HeuristicInferenceAdapter;
-use continuum_core::ai::types::{
-    ChatMessage, FinishReason, MessageContent, TextGenerationRequest,
-};
+use continuum_core::ai::types::{ChatMessage, FinishReason, MessageContent, TextGenerationRequest};
 use continuum_core::inference::airc_remote::{AircLiveTransport, AircRemoteInferenceAdapter};
 use continuum_core::persona::command_inbound_pump::PersonaCommandInboundPump;
 use continuum_core::runtime::command_executor::CommandExecutor;
@@ -185,10 +183,7 @@ async fn persona_command_pump_makes_persona_addressable_for_ai_generate() {
 
     // peer_b = a remote caller. The standard production-shape:
     //   AircRemoteInferenceAdapter(AircLiveTransport(peer_b, peer_a_id))
-    let transport = AircLiveTransport::new(
-        Arc::clone(loop_back.peer_b()),
-        loop_back.peer_a_id(),
-    );
+    let transport = AircLiveTransport::new(Arc::clone(loop_back.peer_b()), loop_back.peer_a_id());
     let adapter = AircRemoteInferenceAdapter::new(transport);
 
     let response = adapter

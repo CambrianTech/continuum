@@ -43,28 +43,127 @@ use crate::live::avatar::types::AvatarGender;
 /// they ARE real-sounding names — the Grid's polyglot community
 /// doesn't quarantine its sci-fi citizens.
 const FEMALE_NAMES: &[&str] = &[
-    "Maya", "Quorra", "Yori", "Camille", "Hisako", "Lila", "Idra", "Sara",
-    "Anwen", "Iris", "Asha", "Zara", "Mei", "Inara", "Saoirse", "Octavia",
-    "Ines", "Cyra", "Riva", "Tessa", "Jiya", "Nia", "Astra", "Lumen",
-    "Solenne", "Mira", "Tara", "Esi", "Yuki", "Aliya", "Eda", "Nori",
-    "Mathilde", "Vesna", "Liora", "Anya", "Sofia", "Aria", "Nova", "Vera",
-    "Pia", "Senna", "Aoi", "Nadia", "Renee", "Anais", "Tikva", "Mara",
-    "Paige", "Imani", "Sahar", "Daria", "Tova", "Suri", "Beck", "Niamh",
-    "Linnea", "Yael", "Anika", "Petra",
+    "Maya", "Quorra", "Yori", "Camille", "Hisako", "Lila", "Idra", "Sara", "Anwen", "Iris", "Asha",
+    "Zara", "Mei", "Inara", "Saoirse", "Octavia", "Ines", "Cyra", "Riva", "Tessa", "Jiya", "Nia",
+    "Astra", "Lumen", "Solenne", "Mira", "Tara", "Esi", "Yuki", "Aliya", "Eda", "Nori", "Mathilde",
+    "Vesna", "Liora", "Anya", "Sofia", "Aria", "Nova", "Vera", "Pia", "Senna", "Aoi", "Nadia",
+    "Renee", "Anais", "Tikva", "Mara", "Paige", "Imani", "Sahar", "Daria", "Tova", "Suri", "Beck",
+    "Niamh", "Linnea", "Yael", "Anika", "Petra",
+    // Widened pool (#200 follow-up): the name is a cosmetic projection of the unique
+    // peer_id — collisions are harmless, but a bigger pool makes births feel varied
+    // ([[persona-birth-is-a-first-class-handle-command]]). Kept disjoint from MALE_NAMES
+    // (a dual-pool name breaks `gender_from_name`) — pinned by `pools_are_disjoint`.
+    "Naima", "Freya", "Leila", "Priya", "Rania", "Suki", "Delia", "Marisol", "Chiara", "Noor",
+    "Amara", "Sinead", "Talia", "Rosa", "Ingrid", "Fatima", "Elodie", "Kira", "Sana", "Yara",
+    "Dalia", "Bruna", "Aiko", "Livia", "Neve", "Zuri", "Halima", "Ondine", "Mirela", "Saanvi",
+    "Thea", "Lucia", "Esme", "Runa", "Cleo", "Aisha", "Nyla", "Isolde", "Ambika", "Soraya",
 ];
 
 /// Male-tagged name pool. Same diversity criteria, same blending of
 /// Tron-flavored (Tron, Sark, Clu, Cyrus, Anon, Dyson) with everyone
 /// else.
 const MALE_NAMES: &[&str] = &[
-    "Niko", "Diego", "Tron", "Sark", "Idris", "Pravin", "Sami", "Kaito",
-    "Anders", "Sébastien", "Anil", "Tariq", "Davi", "Jules", "Kenji",
-    "Sigurd", "Casper", "Anwar", "Yusuf", "Mateo", "Caius", "Soren",
-    "Mathis", "Roan", "Cyrus", "Akira", "Levi", "Wren", "Anon", "Felix",
-    "Magnus", "Demetri", "Ozias", "Saul", "Edwin", "Quill", "Indra",
-    "Theo", "Zane", "Otto", "Rafe", "Aris", "Atlas", "Ivar", "Linus",
-    "Erik", "Solomon", "Yuto", "Clu", "Dyson", "Tomi", "Hiroshi", "Senan",
-    "Amari", "Bao", "Vidar", "Eitan", "Pax", "Rhys", "Tiago",
+    "Niko",
+    "Diego",
+    "Tron",
+    "Sark",
+    "Idris",
+    "Pravin",
+    "Sami",
+    "Kaito",
+    "Anders",
+    "Sébastien",
+    "Anil",
+    "Tariq",
+    "Davi",
+    "Jules",
+    "Kenji",
+    "Sigurd",
+    "Casper",
+    "Anwar",
+    "Yusuf",
+    "Mateo",
+    "Caius",
+    "Soren",
+    "Mathis",
+    "Roan",
+    "Cyrus",
+    "Akira",
+    "Levi",
+    "Wren",
+    "Anon",
+    "Felix",
+    "Magnus",
+    "Demetri",
+    "Ozias",
+    "Saul",
+    "Edwin",
+    "Quill",
+    "Indra",
+    "Theo",
+    "Zane",
+    "Otto",
+    "Rafe",
+    "Aris",
+    "Atlas",
+    "Ivar",
+    "Linus",
+    "Erik",
+    "Solomon",
+    "Yuto",
+    "Clu",
+    "Dyson",
+    "Tomi",
+    "Hiroshi",
+    "Senan",
+    "Amari",
+    "Bao",
+    "Vidar",
+    "Eitan",
+    "Pax",
+    "Rhys",
+    "Tiago",
+    // Widened pool (#200 follow-up) — see FEMALE_NAMES note. Disjoint from FEMALE_NAMES.
+    "Ravi",
+    "Bjorn",
+    "Dmitri",
+    "Hassan",
+    "Omar",
+    "Nikolai",
+    "Tobias",
+    "Emeka",
+    "Rashid",
+    "Lucas",
+    "Mikael",
+    "Arjun",
+    "Cormac",
+    "Dario",
+    "Elias",
+    "Finnian",
+    "Gideon",
+    "Hamza",
+    "Isamu",
+    "Joaquin",
+    "Kwame",
+    "Lorcan",
+    "Marek",
+    "Nestor",
+    "Osman",
+    "Pietro",
+    "Quinlan",
+    "Ronan",
+    "Silas",
+    "Taavi",
+    "Ulf",
+    "Viktor",
+    "Xavier",
+    "Yannick",
+    "Zoltan",
+    "Amadou",
+    "Ciaran",
+    "Desmond",
+    "Ephraim",
+    "Malik",
 ];
 
 /// Pick the persona's name from their identity.
@@ -90,8 +189,11 @@ pub fn agent_name_from_identity(identity: &str) -> &'static str {
         // name isn't locked to a binary presentation (a they/them persona can carry
         // any name). Stable per identity via the same salt.
         AvatarGender::Neutral => {
-            let combined: Vec<&'static str> =
-                FEMALE_NAMES.iter().chain(MALE_NAMES.iter()).copied().collect();
+            let combined: Vec<&'static str> = FEMALE_NAMES
+                .iter()
+                .chain(MALE_NAMES.iter())
+                .copied()
+                .collect();
             *deterministic_pick(identity, &combined, "agent_name")
         }
     }
@@ -99,11 +201,16 @@ pub fn agent_name_from_identity(identity: &str) -> &'static str {
 
 /// Resolve a persona's gender from its NAME — which gendered pool the name belongs
 /// to. This is the coherence ANCHOR ([[procedural-persona-genesis]]): a persona's
-/// name is chosen before its keypair exists and is the stable, persisted,
-/// user-visible truth, whereas the live `peer_id` is a random tag assigned later
-/// (`airc-identity` mints `PeerId::new()`, independent of the name). So the name —
-/// not the peer_id — is what avatar/voice must cohere WITH, or a feminine "Asha"
-/// ends up with a masculine face. Returns `None` for a name in BOTH pools (a
+/// name is the stable, persisted, user-visible truth (and, unlike gender, is
+/// self-editable), so the name — not the raw id — is what avatar/voice must cohere
+/// WITH, or a feminine "Asha" ends up with a masculine face.
+///
+/// Post-#199 Slice 1b a FRESHLY-born persona's `peer_id` IS the seed her name was
+/// derived from (continuum supplies `persona_id` to airc's mint as the peer_id via
+/// `attach_as_with_peer_id`), so for her the name and id agree by construction. But
+/// this name-anchor is still the right resolver: a persona may RENAME herself, and
+/// pre-Slice-1b / custom / imported names never derived from the id — so the name,
+/// not the id, remains authoritative. Returns `None` for a name in BOTH pools (a
 /// genuinely unisex draw, e.g. a Neutral persona) or NEITHER (custom/legacy name),
 /// letting the caller fall back to an id-hash gender for those.
 pub fn gender_from_name(name: &str) -> Option<AvatarGender> {
@@ -119,6 +226,7 @@ pub fn gender_from_name(name: &str) -> Option<AvatarGender> {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use std::collections::HashSet;
 
@@ -188,6 +296,31 @@ mod tests {
         }
     }
 
+    // what this catches: the two gender pools must be DEDUPED and DISJOINT. A name in
+    // both pools makes `gender_from_name` return `None` (ambiguous) — silently breaking
+    // the card's name↔gender coherence for that name. A dup within a pool skews the
+    // deterministic draw. This guards every future pool widening.
+    #[test]
+    fn pools_are_disjoint_and_deduped() {
+        let f: HashSet<&&str> = FEMALE_NAMES.iter().collect();
+        let m: HashSet<&&str> = MALE_NAMES.iter().collect();
+        assert_eq!(
+            f.len(),
+            FEMALE_NAMES.len(),
+            "duplicate name within FEMALE_NAMES"
+        );
+        assert_eq!(
+            m.len(),
+            MALE_NAMES.len(),
+            "duplicate name within MALE_NAMES"
+        );
+        let overlap: Vec<&&str> = FEMALE_NAMES.iter().filter(|n| m.contains(n)).collect();
+        assert!(
+            overlap.is_empty(),
+            "names in BOTH pools break gender_from_name coherence: {overlap:?}"
+        );
+    }
+
     #[test]
     fn no_default_no_helper_no_anonymous() {
         // The doctrine ([[personas-have-names-not-function-labels]])
@@ -195,9 +328,20 @@ mod tests {
         // compile-time-of-test, so future "let me just add a default"
         // PRs fail loud here.
         let forbidden = [
-            "helper", "Helper", "helper-ai", "teacher", "Teacher",
-            "assistant", "Assistant", "default", "Default", "anon",
-            "Anonymous", "Persona", "AI", "Bot",
+            "helper",
+            "Helper",
+            "helper-ai",
+            "teacher",
+            "Teacher",
+            "assistant",
+            "Assistant",
+            "default",
+            "Default",
+            "anon",
+            "Anonymous",
+            "Persona",
+            "AI",
+            "Bot",
         ];
         for name in FEMALE_NAMES.iter().chain(MALE_NAMES.iter()) {
             for bad in &forbidden {

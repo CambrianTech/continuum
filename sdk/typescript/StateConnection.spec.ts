@@ -205,13 +205,153 @@ describe('StateConnection', () => {
     expect(onClose.mock.calls[0][0]).toMatch(/closed/);
   });
 
-  // what this catches: a failed connection must REJECT connect(), never hang or
-  // resolve — a caller awaiting a dead core must see the failure.
-  it('rejects connect when the socket errors before open', async () => {
-    const conn = new StateConnection('ws://x', FakeWebSocket);
+  // what this catches: with reconnect OFF (one-shot consumers: probes, tests),
+  // a failed connection must REJECT connect(), never hang or resolve — a caller
+  // awaiting a dead core must see the failure.
+  it('rejects connect when the socket errors before open (reconnect: false)', async () => {
+    const conn = new StateConnection('ws://x', FakeWebSocket, { reconnect: false });
     conn.on('chat', () => { /* sink: this test asserts framing/routing/teardown, not payload delivery */ });
     const connected = conn.connect();
     lastSocket().fail('ECONNREFUSED');
     await expect(connected).rejects.toThrow(/failed/);
+  });
+
+  // what this catches: the DEFAULT contract is self-healing (positron-inherent
+  // resilience — glass-boxed 2026-07-29: a core reboot orphaned every open tab
+  // and four months of HUD looked "lost"). A failed first connect must RESOLVE,
+  // surface a loud `reconnecting` status, and keep retrying — never strand the
+  // renderer on a rejected boot promise.
+  it('resolves connect on socket error by default and surfaces reconnecting status', async () => {
+    const conn = new StateConnection('ws://x', FakeWebSocket);
+    const statuses: string[] = [];
+    conn.onStatus((s) => statuses.push(s));
+    conn.on('chat', () => { /* status-only test */ });
+    const connected = conn.connect();
+    lastSocket().fail('ECONNREFUSED');
+    await connected; // resolves — cached/last-known UI stays up, ladder runs
+    expect(statuses).toContain('reconnecting');
+    conn.close(); // stop the ladder so the test leaves no timer behind
+    expect(statuses[statuses.length - 1]).toBe('closed');
+  });
+
+  // what this catches: the Twitter model — with a storage adapter, cached
+  // envelopes must paint BEFORE the socket ever opens (instant last-known UI,
+  // even against a dead core), under a `cached` status.
+  it('hydrates cached envelopes to sinks before the socket opens', async () => {
+    const { MemoryStateStorage } = await import('./StateStorage');
+    const storage = new MemoryStateStorage();
+    await storage.save('scopeA', { kind: 'chat', revision: 7, layer: 'ephemeral', payload: { cached: true } });
+    const conn = new StateConnection('ws://x', FakeWebSocket, { storage, scope: 'scopeA' });
+    const seen: StateEnvelope[] = [];
+    const statuses: string[] = [];
+    conn.onStatus((s) => statuses.push(s));
+    conn.on('chat', (e) => seen.push(e));
+    FakeWebSocket.last = undefined; // storage-await defers ctor; don't grab a stale socket
+    const connected = conn.connect();
+    // Cached delivery happens during connect(), BEFORE the socket ever opens.
+    await vi.waitFor(() => expect(seen.length).toBeGreaterThanOrEqual(1));
+    expect(seen[0].payload).toEqual({ cached: true });
+    expect(statuses).toContain('cached');
+    await vi.waitFor(() => lastSocket());
+    lastSocket().open();
+    await connected;
+    conn.close();
+  });
+
+  // what this catches: write-through — every live envelope must land in the
+  // adapter so the NEXT boot hydrates the newest snapshot per kind; a feed that
+  // renders but forgets would make the cache silently stale.
+  it('writes each live envelope through to storage', async () => {
+    const { MemoryStateStorage } = await import('./StateStorage');
+    const storage = new MemoryStateStorage();
+    const conn = new StateConnection('ws://x', FakeWebSocket, { storage, scope: 'scopeB' });
+    conn.on('chat', () => { /* write-through test */ });
+    FakeWebSocket.last = undefined; // storage-await defers ctor; don't grab a stale socket
+    const connected = conn.connect();
+    await vi.waitFor(() => lastSocket());
+    lastSocket().open();
+    await connected;
+    lastSocket().deliver(stateFrame('chat', 3, { live: true }));
+    await Promise.resolve(); // let the fire-and-forget save settle (Memory adapter is sync-fast)
+    const rows = await storage.load('scopeB');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].envelope.payload).toEqual({ live: true });
+    conn.close();
+  });
+
+  // what this catches: a storage adapter that HANGS must not take the feed down.
+  // Regression for the 2026-08-14 blank-page incident: hydrateFromStorage awaited
+  // `storage.load()` guarded only by try/catch, which covers a promise that
+  // REJECTS and cannot cover one that never SETTLES. A hung IndexedDB read held
+  // connect() open forever, so the socket was never constructed and the web
+  // client painted nothing — the exact opposite of StateStorage.ts's declared
+  // contract ("storage is an ACCELERANT, not a dependency"). Without the bound
+  // this test does not fail fast, it TIMES OUT — which is how it presented live.
+  it('opens the socket anyway when storage.load never settles', async () => {
+    const hungStorage = {
+      load: () => new Promise<never>(() => { /* never resolves, never rejects */ }),
+      save: () => Promise.resolve(),
+      clear: () => Promise.resolve(),
+    };
+    // This test spans the hydrate bound (~1.5s), long enough for an EARLIER
+    // test's still-open reconnect ladder to construct sockets and clobber the
+    // shared `FakeWebSocket.last`. So capture THIS connection's own socket via a
+    // local ctor instead of the static — isolation by construction, not by luck.
+    let mine: FakeWebSocket | undefined;
+    const MineCtor = function (url: string) {
+      mine = new FakeWebSocket(url);
+      return mine;
+    } as unknown as typeof FakeWebSocket;
+
+    const conn = new StateConnection('ws://x', MineCtor, { storage: hungStorage, scope: 'scopeHung' });
+    conn.on('chat', () => { /* a registered kind — connect() fails loud with none */ });
+    const connected = conn.connect();
+    // The bound expires, boot proceeds live-only, and the socket finally appears.
+    await vi.waitFor(() => expect(mine).toBeDefined(), { timeout: 8000 });
+    mine?.open();
+    await connected;
+    expect(mine?.sent).toHaveLength(1);
+    expect(subOf(String(mine?.sent[0])).type).toBe('subscribe');
+    conn.close();
+    // Deliberately above vitest's 5s default: this test WAITS OUT the real
+    // hydrate bound rather than faking timers, so it proves the shipped budget.
+  }, 15_000);
+
+  // what this catches: a dropped socket must SELF-HEAL — reconnect constructs a
+  // fresh socket and re-sends Subscribe (with last_seen replay) so a routine
+  // core reboot never permanently orphans an open renderer. Status stays loud
+  // (`reconnecting` → `live`) the whole way.
+  it('reconnects and resubscribes after a socket drop', async () => {
+    vi.useFakeTimers();
+    try {
+      const conn = new StateConnection('ws://x', FakeWebSocket);
+      const statuses: string[] = [];
+      conn.onStatus((s) => statuses.push(s));
+      conn.on('chat', () => { /* reconnect test */ });
+      const connected = conn.connect();
+      const first = lastSocket();
+      first.open();
+      await connected;
+      first.deliver(stateFrame('chat', 1, {})); // live
+      expect(statuses).toContain('live');
+
+      first.close(); // simulate core reboot
+      expect(statuses[statuses.length - 1]).toBe('reconnecting');
+
+      await vi.advanceTimersByTimeAsync(1100); // ladder step 1 (1s)
+      const second = lastSocket();
+      expect(second).not.toBe(first);
+      second.open();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(second.sent.length).toBeGreaterThanOrEqual(1);
+      const sub = subOf(second.sent[0]);
+      expect(sub.kinds).toContain('chat');
+      expect(sub.last_seen).toEqual([{ kind: 'chat', revision: 1 }]);
+      second.deliver(stateFrame('chat', 2, {}));
+      expect(statuses[statuses.length - 1]).toBe('live');
+      conn.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

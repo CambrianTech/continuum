@@ -89,7 +89,7 @@ use tokio::sync::broadcast::error::RecvError;
 use uuid::Uuid;
 
 use continuum_positron::{
-    KanbanCardState, KanbanCardView, KanbanLaneState, KanbanLaneView, KanbanPriority,
+    KanbanCardState, KanbanCardView, KanbanHold, KanbanLaneState, KanbanLaneView, KanbanPriority,
     KanbanPullRequest, KanbanViewState, RosterSlotView, StateBuilder, Substrate,
 };
 use serde::Deserialize;
@@ -170,6 +170,31 @@ fn map_lane_state(state: LaneState) -> KanbanLaneState {
         LaneState::Blocked => KanbanLaneState::Blocked,
         LaneState::Landing => KanbanLaneState::Landing,
         LaneState::Done => KanbanLaneState::Done,
+    }
+}
+
+/// Map the SHARED holder projection's lease verdict → positron's mirrored
+/// [`KanbanHold`].
+///
+/// The verdict itself is NOT computed here: it comes from
+/// [`crate::persona::card_holder::hold_of`], the same call the persona's board
+/// line and `work/list` make. That is the point — the human's card and the
+/// citizen's board line cannot disagree about whether a claim is still good,
+/// because there is one predicate and this is only its projection.
+/// Exhaustive for the same reason as [`map_card_state`].
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn map_hold(hold: crate::persona::card_holder::Hold) -> KanbanHold {
+    use crate::persona::card_holder::Hold;
+    match hold {
+        Hold::Held => KanbanHold::Held,
+        Hold::Lapsed => KanbanHold::Lapsed,
+        Hold::Unclaimed => KanbanHold::Unclaimed,
     }
 }
 
@@ -283,6 +308,11 @@ impl KanbanProjection {
             provenance: creator.provenance,
             assignee_id,
             assignee_name,
+            // Read the clock per card rather than once per board: a lease
+            // boundary crossing mid-projection must not make one card claim a
+            // different "now" than the predicate that judged it. Cheap, and
+            // the projection is not a hot path.
+            hold: map_hold(crate::persona::card_holder::hold_of(card, now_unix_ms())),
             pull_request: card.pull_request.as_ref().map(|pr| KanbanPullRequest {
                 repo: pr.repo.to_string(),
                 number: pr.number,
@@ -314,8 +344,7 @@ impl KanbanProjection {
             lanes,
             cards,
         };
-        self.substrate
-            .store(self.builder.persistent(view));
+        self.substrate.store(self.builder.persistent(view));
     }
 }
 
@@ -499,10 +528,10 @@ pub fn spawn_node_kanban_projector(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ipc::positron_source::{test_presence_payload, test_roster_slot};
     use airc_core::{PeerId, RoomId};
     use airc_work::{LaneId, RepoId, WorkCardId};
     use async_trait::async_trait;
-    use crate::ipc::positron_source::{test_presence_payload, test_roster_slot};
     use continuum_positron::{Provenance, SenderKind};
     use serde_json::json;
     use std::sync::Mutex;
@@ -638,7 +667,13 @@ mod tests {
         let substrate = Substrate::new();
         let room = RoomId::new();
         let creator = PeerId::new();
-        let c = card(room, creator, "Wire the kanban projector", CardState::Open, None);
+        let c = card(
+            room,
+            creator,
+            "Wire the kanban projector",
+            CardState::Open,
+            None,
+        );
         let reader = StubReader::new(vec![c], vec![]);
         let mut p = KanbanProjection::new(substrate.clone(), room.as_uuid(), reader);
         p.reload().await;
@@ -678,7 +713,10 @@ mod tests {
         let reader = StubReader::new(vec![c], vec![]);
         let mut p = KanbanProjection::new(substrate.clone(), room.as_uuid(), reader);
         p.reload().await;
-        assert_eq!(current_kanban(&substrate).cards[0].creator_kind, SenderKind::Human);
+        assert_eq!(
+            current_kanban(&substrate).cards[0].creator_kind,
+            SenderKind::Human
+        );
 
         // Card arrives via presence: Agent named Asha carrying a badge.
         let presence = presence_one(room.as_uuid(), creator.as_uuid(), "Asha", "agent");
@@ -693,7 +731,10 @@ mod tests {
         assert_eq!(view.cards[0].creator_name, "Asha");
         assert_eq!(view.cards[0].creator_kind, SenderKind::Agent);
         assert_eq!(
-            view.cards[0].integrations.get("continuum.persona_id").map(String::as_str),
+            view.cards[0]
+                .integrations
+                .get("continuum.persona_id")
+                .map(String::as_str),
             Some("asha-1"),
             "opaque badge resolved from the card"
         );
@@ -728,6 +769,60 @@ mod tests {
         assert_eq!(view.cards[0].state, KanbanCardState::Claimed);
         assert_eq!(view.cards[0].assignee_id, Some(owner.as_uuid()));
         assert_eq!(view.cards[0].assignee_name.as_deref(), Some("BigMama"));
+    }
+
+    #[tokio::test]
+    async fn a_lapsed_lease_projects_as_takeable_even_though_the_column_still_says_claimed() {
+        // what this catches: the human board's half of the stale-lease defect.
+        // A claim is a LEASE; when it expires the holder stopped and the card
+        // is takeable — but `state` still reads Claimed, so a view carrying
+        // only the column shows dead work as active work. Measured 2026-08-06:
+        // 17 of 19 leases expired and six citizens reported nothing to do.
+        // The renderer can only grey a lapsed hold if the substrate SAYS it,
+        // and this asserts the substrate says it — through the SAME predicate
+        // the persona's board line uses, so the two cannot disagree.
+        let substrate = Substrate::new();
+        let room = RoomId::new();
+        let owner = PeerId::new();
+
+        let mut live = card(
+            room,
+            PeerId::new(),
+            "Live hold",
+            CardState::Claimed,
+            Some(owner),
+        );
+        live.claim_id = Some(airc_work::ClaimId::from_uuid(Uuid::new_v4()));
+        live.claim_expires_at_ms = Some(u64::MAX);
+
+        let mut lapsed = card(
+            room,
+            PeerId::new(),
+            "Lapsed hold",
+            CardState::Claimed,
+            Some(owner),
+        );
+        lapsed.claim_id = Some(airc_work::ClaimId::from_uuid(Uuid::new_v4()));
+        lapsed.claim_expires_at_ms = Some(1_000_000); // 1970-adjacent — long expired
+
+        let open = card(room, PeerId::new(), "Nobody's", CardState::Open, None);
+
+        let reader = StubReader::new(vec![live, lapsed, open], vec![]);
+        let mut p = KanbanProjection::new(substrate.clone(), room.as_uuid(), reader);
+        p.reload().await;
+        let view = current_kanban(&substrate);
+
+        // The column says Claimed for BOTH held cards — that is exactly why the
+        // column alone cannot carry the fact.
+        assert_eq!(view.cards[0].state, KanbanCardState::Claimed);
+        assert_eq!(view.cards[1].state, KanbanCardState::Claimed);
+        // The hold tells them apart.
+        assert_eq!(view.cards[0].hold, KanbanHold::Held);
+        assert_eq!(view.cards[1].hold, KanbanHold::Lapsed);
+        assert_eq!(view.cards[2].hold, KanbanHold::Unclaimed);
+        // And the lapsed card still names who held it, so the renderer can say
+        // whom to ask rather than who is busy.
+        assert_eq!(view.cards[1].assignee_id, Some(owner.as_uuid()));
     }
 
     #[tokio::test]
@@ -804,13 +899,21 @@ mod tests {
         let reader = StubReader::new(vec![c], vec![]);
         let mut p = KanbanProjection::new(substrate.clone(), room.as_uuid(), reader);
         p.reload().await;
-        let r1 = substrate.cache().get(KanbanViewState::KIND).unwrap().revision;
+        let r1 = substrate
+            .cache()
+            .get(KanbanViewState::KIND)
+            .unwrap()
+            .revision;
         // A presence fold re-projects → a second store, revision advances.
         let presence = presence_one(room.as_uuid(), creator.as_uuid(), "Asha", "agent");
         if let KanbanInput::Presence(_, roster) = classify(PRESENCE_UPDATED, &presence).unwrap() {
             p.apply_roster(roster);
         }
-        let r2 = substrate.cache().get(KanbanViewState::KIND).unwrap().revision;
+        let r2 = substrate
+            .cache()
+            .get(KanbanViewState::KIND)
+            .unwrap()
+            .revision;
         assert!(r2 > r1, "revision must advance: {r1:?} -> {r2:?}");
     }
 
@@ -861,12 +964,13 @@ mod tests {
         assert!(current_kanban(&substrate).cards.is_empty());
 
         // Board gains a card while the loop was behind; a Lagged arrives.
-        reader
-            .board
-            .lock()
-            .unwrap()
-            .cards
-            .push(card(room, creator, "caught up", CardState::Open, None));
+        reader.board.lock().unwrap().cards.push(card(
+            room,
+            creator,
+            "caught up",
+            CardState::Open,
+            None,
+        ));
         let step = fold_recv(&mut p, room.as_uuid(), Err(RecvError::Lagged(3))).await;
         assert_eq!(step, LoopStep::Continue);
         assert_eq!(

@@ -44,7 +44,10 @@ pub struct ChangeNode {
 /// File operation types.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 #[serde(rename_all = "snake_case")]
-#[ts(export, export_to = "../../../protocol/typescript/code/FileOperation.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/FileOperation.ts"
+)]
 pub enum FileOperation {
     Create,
     Write,
@@ -120,6 +123,25 @@ pub struct WriteResult {
     pub bytes_written: u64,
     #[ts(optional)]
     pub error: Option<String>,
+    /// The NUMBERED lines around where a line-addressed edit actually landed, read back
+    /// from the file AFTER writing. `None` for whole-file writes (nothing to locate).
+    ///
+    /// This exists because "success: true, bytes_written: N" is not feedback — it confirms
+    /// the write happened, never that it landed where the caller meant. Glass-boxed on the
+    /// M5, 2026-08-04: a persona ran `code/shell cat file` (output has NO line numbers),
+    /// then `insert_at line 28` — a number she had never seen — and dropped a guard clause
+    /// into the middle of a function's parameter list. Next act she replaced lines 62-65 of
+    /// a second file after reading from line 119, a region she had never looked at. Both
+    /// returned `success: true`. She spent her remaining acts flailing through discovery
+    /// tools because nothing in her working memory said the edits were wrong.
+    ///
+    /// A human editor shows you the result; the act→observe circuit only closes if the
+    /// receipt carries what a screen would ([[errors-as-data]], [[px-personas-experience-tools-as-good-ux]]).
+    /// So the receipt now carries the neighborhood, numbered — the same surface `code/read`
+    /// gives — and a misplaced edit becomes a visible fact on the next turn instead of a
+    /// silent success.
+    #[ts(optional)]
+    pub applied_context: Option<String>,
 }
 
 /// Result of a file read operation.
@@ -153,7 +175,10 @@ pub struct SearchMatch {
 
 /// Result of a code search operation.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/code/SearchResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/SearchResult.ts"
+)]
 pub struct SearchResult {
     pub success: bool,
     pub matches: Vec<SearchMatch>,
@@ -200,7 +225,10 @@ pub struct UndoResult {
 
 /// History query result.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/code/HistoryResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/HistoryResult.ts"
+)]
 pub struct HistoryResult {
     pub success: bool,
     pub nodes: Vec<ChangeNode>,
@@ -211,7 +239,10 @@ pub struct HistoryResult {
 
 /// Git status information.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/code/GitStatusInfo.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/GitStatusInfo.ts"
+)]
 pub struct GitStatusInfo {
     pub success: bool,
     #[ts(optional)]
@@ -253,7 +284,10 @@ pub enum FsEntryKind {
 /// `None` in that case. When `exists: true`, `kind` is always set
 /// (never `None`).
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/code/ExistsResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/ExistsResult.ts"
+)]
 pub struct ExistsResult {
     pub success: bool,
     pub exists: bool,

@@ -12,7 +12,10 @@ use crate::modules::code::CodeState;
 use crate::sdk_codegen::CommandError;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/code/GitDiffParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/GitDiffParams.ts"
+)]
 pub struct GitDiffParams {
     /// Show STAGED changes (`--cached`) instead of unstaged working-tree changes.
     #[serde(default)]
@@ -20,7 +23,10 @@ pub struct GitDiffParams {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/code/GitDiffResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/GitDiffResult.ts"
+)]
 pub struct GitDiffResult {
     /// The raw unified diff text.
     pub diff: String,
@@ -32,6 +38,8 @@ crate::action_command! {
     pub struct CodeGitDiff { state: Arc<CodeState> }
     name: "code/git/diff",
     access: AiSafe,
+    native: true,
+    aliases: &["git_diff"],
     params: GitDiffParams,
     output: GitDiffResult,
     run(this, ctx, p) => {

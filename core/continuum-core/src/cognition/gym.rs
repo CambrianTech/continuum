@@ -64,6 +64,17 @@ const EMBEDDED_GYMS: &[(&str, &str)] = &[
         include_str!("../../../../docs/genome/hard-rs.jsonl"),
     ),
     (
+        // hard-rs-big: the 44-task widening of hard-rs — the 8 originals plus 36 new hard
+        // algorithmic tasks (DP, two-pointer, sliding-window, matrix, string, graph-flood),
+        // every one reference-verified through rustc (a wrong test can't reach the exam) and
+        // zero fn-name overlap with the training pools. ±1/44 = ±0.023 resolution vs hard-rs's
+        // ±0.125, so a genome forge's small lift is finally legible. Embedded here so it
+        // resolves from any CWD / a deployed binary — the relative-path refusal (#194 sibling)
+        // that cost this session hours can't recur.
+        "hard-rs-big.jsonl",
+        include_str!("../../../../docs/genome/hard-rs-big.jsonl"),
+    ),
+    (
         // frontier-rs: the "strive-toward" tier — real algorithms (Levenshtein,
         // Dijkstra, O(n log n) LIS, topological sort, arbitrary-precision add, a
         // precedence-climbing calculator, `.`/`*` regex matching). Problems a small
@@ -92,6 +103,18 @@ const EMBEDDED_GYMS: &[(&str, &str)] = &[
         // rendered-UI facts as Claude. Proves images (perception) + code-dev in one benchmark.
         "webdev-rs.jsonl",
         include_str!("../../../../docs/genome/webdev-rs.jsonl"),
+    ),
+    (
+        // tool-bugfix-rs: the first TOOL-USING gym. Every other gym is spoken-graded
+        // codegen (no tools offered — needs_tools is false). Each task here seeds a
+        // BUGGY source file into the workspace (`setup_shell`) and grades the persona's
+        // EDITED file (`dod_shell` — a fresh cheat-proof harness that include!()s her
+        // file, asserts, compiles, runs), so she MUST read → edit → compile → run with
+        // her hands. That makes `needs_tools` true → the native tool surface is offered
+        // → this is the ONLY benchmark whose score depends on tool USE, the honest
+        // instrument for the offer-name A/B (#204) [[tool-naming-meet-their-training-alias-or-redirect]].
+        "tool-bugfix-rs.jsonl",
+        include_str!("../../../../docs/genome/tool-bugfix-rs.jsonl"),
     ),
 ];
 
@@ -201,7 +224,10 @@ mod tests {
         let err = resolve_gym("docs/genome/does-not-exist.jsonl")
             .expect_err("unknown gym must fail loud");
         assert!(err.contains("does-not-exist.jsonl"), "names the reference");
-        assert!(err.contains("coder-eval.jsonl"), "lists embedded candidates");
+        assert!(
+            err.contains("coder-eval.jsonl"),
+            "lists embedded candidates"
+        );
     }
 
     // what this catches: the `code` trait resolves to its measuring gym, an

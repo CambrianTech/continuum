@@ -15,4 +15,31 @@ model_id: string,
  * such tier rather than silently substituting another. When absent, a
  * balanced default ordering picks the tier.
  */
-quant?: string, };
+quant?: string, 
+/**
+ * Weight format to acquire: `gguf` (derived serving artifact), `safetensors` (the
+ * unquantized SOURCE weights — tuning and quantization input), or `auto`.
+ *
+ * Default `auto` prefers GGUF whenever the repo publishes one, so this parameter never
+ * changes what an existing call resolves to. It exists because GGUF is *derived*: you
+ * cannot LoRA-tune it, cannot re-quantize to an unpublished tier, and cannot forge a
+ * device-fit override from it. A repo that ships only safetensors used to be unacquirable
+ * through the governed path at all, which forced hand-rolled downloads — no ledger, no
+ * resume, no shared cache location.
+ */
+format?: string, 
+/**
+ * Fire-and-poll (mirrors `agent/solve --detach`, #86). A frontier GGUF is tens of
+ * GB and takes an HOUR — that MUST NOT hold the command socket. With `detach`, the
+ * call returns a handle NOW (`detached: true`, empty path/bytes) and the real report
+ * lands in `~/.continuum/progress/models-pull-<run_id>.json`. Progress is published
+ * on the bus as `models:pull:progress` per shard so the UI / a persona / Positron can
+ * watch it. Re-running the SAME pull is idempotent: the HF cache is content-addressed,
+ * so completed shards skip instantly and an interrupted pull resumes where it stopped.
+ */
+detach?: boolean, 
+/**
+ * Correlation id for a detached pull (echoed in the ack, the progress events and the
+ * result file). Omit → minted. Pass the SAME id to resume-and-watch one logical pull.
+ */
+run_id?: string, };

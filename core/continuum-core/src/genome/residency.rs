@@ -443,8 +443,12 @@ mod tests {
                 .unwrap_or_else(|| panic!("being {being} was starved — no working set"));
             // Isolation: her set holds exactly her overlay…
             assert_eq!(ws.pages.len(), 1, "being {being} holds one overlay");
-            let own = serde_json::to_string(&GenomeResidencyModule::persona_overlay(being)).unwrap();
-            assert!(ws.pages.contains_key(&own), "being {being} holds her OWN overlay");
+            let own =
+                serde_json::to_string(&GenomeResidencyModule::persona_overlay(being)).unwrap();
+            assert!(
+                ws.pages.contains_key(&own),
+                "being {being} holds her OWN overlay"
+            );
             // …and never a neighbor's (MMU compartmentalization).
             for &other in &society {
                 if other == being {

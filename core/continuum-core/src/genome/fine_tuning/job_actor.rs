@@ -220,7 +220,9 @@ pub fn spawn_job(req: SpawnJobRequest) -> Result<JobController, JobActorError> {
     // sequence_length would let a wire caller stall a tokio worker
     // on a multi-GB synchronous Tensor::rand alloc.
     if schedule.sequence_length == 0 || schedule.sequence_length > MAX_SEQUENCE_LENGTH {
-        return Err(JobActorError::InvalidSequenceLength(schedule.sequence_length));
+        return Err(JobActorError::InvalidSequenceLength(
+            schedule.sequence_length,
+        ));
     }
     if schedule.batch_size == 0 || schedule.batch_size > MAX_BATCH_SIZE {
         return Err(JobActorError::InvalidBatchSize(schedule.batch_size));

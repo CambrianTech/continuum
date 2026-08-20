@@ -8,56 +8,86 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-/// Get current process RSS in MB using macOS task_info API.
-/// Returns actual resident memory (not peak like getrusage ru_maxrss).
-#[cfg(target_os = "macos")]
+/// Current process RSS in MB — actual resident memory, not peak.
+///
+/// This was a mach `task_info` FFI block for macOS and, for EVERY other target, a stub returning
+/// literal `0`. So on Linux and Windows the per-command leak tracker recorded a 0MB delta for every
+/// command, and — worse — the OOM guard in `ipc/mod.rs` compared that constant 0 against its limit
+/// and therefore could never fire. Measured on Windows: the core sat at 27.6 GB RSS while its own
+/// reporter printed `RSS=0MB`.
+///
+/// That defect was hidden by a second one. The guard's limit fell back to a hardcoded 8192 MB off
+/// non-Unix, which on a 63 GB host would have armed a FATAL self-exit at 6.5 GB. The two cancelled:
+/// a limit far too low, against a reading that was always 0. Fixing either alone would have been
+/// worse than fixing neither, which is exactly why both move together.
+///
+/// One implementation for every platform via sysinfo (already a direct dependency, and already
+/// described in Cargo.toml as cross-platform memory monitoring), rather than one FFI block per OS
+/// plus a stub for whatever is left over — the stub is where the rot lives.
 pub(crate) fn current_rss_mb() -> u64 {
-    #[repr(C)]
-    struct MachTaskBasicInfo {
-        virtual_size: u64,
-        resident_size: u64,
-        resident_size_max: u64,
-        user_time_seconds: u32,
-        user_time_microseconds: u32,
-        system_time_seconds: u32,
-        system_time_microseconds: u32,
-        policy: i32,
-        suspend_count: i32,
-    }
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
-    extern "C" {
-        fn mach_task_self() -> u32;
-        fn task_info(
-            target_task: u32,
-            flavor: u32,
-            task_info: *mut MachTaskBasicInfo,
-            task_info_count: *mut u32,
-        ) -> i32;
-    }
+    let pid = Pid::from_u32(std::process::id());
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        true,
+        ProcessRefreshKind::nothing().with_memory(),
+    );
+    // sysinfo reports BYTES for process memory; 0 means "could not read", same as before.
+    sys.process(pid)
+        .map(|p| p.memory() / (1024 * 1024))
+        .unwrap_or(0)
+}
 
-    const MACH_TASK_BASIC_INFO: u32 = 20;
-
-    unsafe {
-        let mut info: MachTaskBasicInfo = std::mem::zeroed();
-        let mut count =
-            (std::mem::size_of::<MachTaskBasicInfo>() / std::mem::size_of::<u32>()) as u32;
-        let kr = task_info(
-            mach_task_self(),
-            MACH_TASK_BASIC_INFO,
-            &mut info,
-            &mut count,
-        );
-        if kr == 0 {
-            info.resident_size / (1024 * 1024)
-        } else {
-            0
-        }
+/// Total system RAM in MB, or None if it cannot be determined.
+///
+/// Extracted from the OOM guard so it is testable and has ONE definition. It previously shelled out
+/// to `sysctl` on macOS, parsed /proc/meminfo on Linux, and returned a hardcoded 8192 for anything
+/// else — not a detection failure on Windows, an absent branch. On this 63 GB host that made the
+/// guard arm a fatal self-exit at 6.5 GB.
+///
+/// Returns None rather than a guess: the caller's response to breach is `process::exit(1)`, so a
+/// fabricated size does not degrade gracefully, it kills a healthy process. No limit beats a
+/// made-up one.
+pub(crate) fn detect_system_ram_mb() -> Option<u64> {
+    let mut sys = sysinfo::System::new();
+    sys.refresh_memory();
+    match sys.total_memory() {
+        0 => None,
+        bytes => Some(bytes / (1024 * 1024)),
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-pub(crate) fn current_rss_mb() -> u64 {
-    0 // No-op on non-macOS
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches: the hardcoded 8192 fallback that Windows silently landed on. Any machine
+    // this runs on has more than 1 GB, and the value must track the real host — a constant would
+    // pass a ">0" check, so assert it is not the specific number that was being invented.
+    #[test]
+    fn system_ram_is_detected_not_assumed() {
+        let ram = detect_system_ram_mb().expect("total system RAM must be detectable");
+        assert!(ram > 1024, "implausible system RAM: {ram}MB");
+        // Not proof on a genuinely-8GB box, but on every other host this is the regression tripwire.
+        if ram == 8192 {
+            eprintln!("note: detected exactly 8192MB — verify this host really has 8GB");
+        }
+    }
+
+    // what this catches: the stub. current_rss_mb() returned a literal 0 on every non-macOS target,
+    // which silently disabled both the leak tracker and the OOM guard that consumes it. This process
+    // is running, so its resident set cannot be 0 on any platform we support.
+    #[test]
+    fn rss_is_actually_measured_on_this_platform() {
+        let rss = current_rss_mb();
+        assert!(
+            rss > 0,
+            "current_rss_mb() returned {rss}MB for a live process — the reading is stubbed or \
+             broken on this platform, which silently disables the OOM guard that compares it"
+        );
+    }
 }
 
 /// Periodic RSS reporter — logs every 10s so we can see growth trends.

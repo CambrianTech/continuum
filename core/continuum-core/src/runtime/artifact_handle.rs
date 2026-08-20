@@ -62,7 +62,10 @@ use ts_rs::TS;
 /// humans reading subscription lists, not the dispatcher.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(transparent)]
-#[ts(export, export_to = "../../../protocol/typescript/runtime/ArtifactKey.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/runtime/ArtifactKey.ts"
+)]
 pub struct ArtifactKey(pub String);
 
 impl ArtifactKey {

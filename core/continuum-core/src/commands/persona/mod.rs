@@ -19,19 +19,23 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::modules::persona_instance_manager::PersonaBirth;
 use crate::persona::PersonaAircRuntimeRegistry;
 use crate::runtime::{CommandExecutor, LateBound};
 use crate::sdk_codegen::DynCommand;
 
 pub mod allocate;
 pub mod catalog;
+pub mod identity;
 pub mod instances;
 pub mod rag_inspect;
 pub mod reassign_model;
+pub mod spawn;
 pub mod turn_frame;
 pub mod wall;
 
 use reassign_model::PersonaReassignModel;
+use spawn::PersonaSpawn;
 
 /// All dep-holding `persona/*` command objects the
 /// [`PersonaInstanceManagerModule`](crate::modules::persona_instance_manager::PersonaInstanceManagerModule)
@@ -43,12 +47,17 @@ pub fn command_objects(
     registry: PersonaAircRuntimeRegistry,
     continuum_root: PathBuf,
     executor: Arc<LateBound<CommandExecutor>>,
+    birth: Arc<PersonaBirth>,
 ) -> Vec<Arc<dyn DynCommand>> {
     let mut objects = instances::command_objects(registry.clone());
     objects.extend(wall::command_objects(registry));
     objects.push(Arc::new(PersonaReassignModel {
-        continuum_root,
+        continuum_root: continuum_root.clone(),
         executor,
     }));
+    // `persona/spawn` — on-demand birth over the SAME core as boot auto-seed.
+    objects.push(Arc::new(PersonaSpawn { birth }));
+    // `persona/identity/*` — the persona's self-authored, editable card.
+    objects.extend(identity::command_objects(continuum_root));
     objects
 }

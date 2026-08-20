@@ -17,7 +17,10 @@ use ts_rs::TS;
 /// An optional echo message round-trips so a caller can correlate.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/health/PingParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/health/PingParams.ts"
+)]
 pub struct PingParams {
     /// Optional message echoed back (for correlation / a hello).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -28,12 +31,32 @@ pub struct PingParams {
 /// Result of `ping` — the substrate is alive.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/health/PingResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/health/PingResult.ts"
+)]
 pub struct PingResult {
     /// Always true on a successful round-trip.
     pub ok: bool,
     /// Substrate-measured handling time in milliseconds.
     pub round_trip_ms: u32,
+    /// Git commit this RUNNING process was compiled from (deploy provenance, #194).
+    /// Self-reported by the live process image — unlike re-exec'ing the on-disk
+    /// binary at the process's path, this cannot be fooled by a rebuild that
+    /// swapped the file under a still-running old core. `"unknown"` only when the
+    /// server was built outside a git tree.
+    pub build_sha: String,
+    /// Auto-incrementing build number: the repo's commit count at compile time
+    /// (Joel, 2026-08-08: "versions must always increment and display along with
+    /// sha … stale binaries ruin you"). Monotonic per branch, so two nodes'
+    /// builds can be ORDERED at a glance — "is this node stale?" becomes
+    /// arithmetic instead of SHA archaeology. 0 only outside a git tree.
+    #[ts(type = "number")]
+    pub build_number: u32,
+    /// UTC timestamp this binary was compiled (third leg of the version trio:
+    /// number orders SOURCE, sha names it, built-at dates the BINARY — catching
+    /// a rebuild of old source after a fix landed, which number+sha both miss).
+    pub built_at: String,
 }
 
 /// `ping` — the canonical self-routing command. As an [`ActionCommand`] it gets
@@ -56,6 +79,9 @@ impl ActionCommand for PingCommand {
         Ok(PingResult {
             ok: true,
             round_trip_ms: 0,
+            build_sha: env!("CONTINUUM_BUILD_GIT_SHA").to_string(),
+            build_number: env!("CONTINUUM_BUILD_NUMBER").parse().unwrap_or(0),
+            built_at: env!("CONTINUUM_BUILD_AT").to_string(),
         })
     }
 }
@@ -196,6 +222,12 @@ mod tests {
             CommandResult::Json(v) => {
                 assert_eq!(v["ok"], true);
                 assert!(v.get("success").is_none(), "Bare wire — no envelope");
+                // what this catches (#194): ping is the deploy-provenance surface —
+                // the running core self-reports its compiled-in git SHA so
+                // `continuum reboot` can verify the swap actually shipped fresh code.
+                // A regression that drops buildSha turns reboot receipts back into lies.
+                let sha = v["buildSha"].as_str().expect("buildSha is a string");
+                assert!(!sha.is_empty(), "buildSha must never be empty");
             }
             other => panic!("expected Json, got {other:?}"),
         }

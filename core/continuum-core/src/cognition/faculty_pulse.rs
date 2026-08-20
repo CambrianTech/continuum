@@ -86,10 +86,17 @@ impl CognitionAxis {
 }
 
 /// How fast a bumped axis fades, in level-points per second. A full bump (100)
-/// decays to dark in ~2.5s — long enough that the 2s radiator sample catches the
+/// decays to dark in ~17s — an AFTERGLOW, not a flash. At the old 40/s a full
+/// pulse died in 2.5s: with the radiator sampling every ~2s and turns minutes
+/// apart, the compass read as permanently dark to anyone not staring at the
+/// exact turn instant (glass-boxed 2026-07-30: DOM probe caught Recall 80 for
+/// ONE sample, then black). The compass's job is "what has this mind been doing
+/// lately", so the glow now survives long enough to be seen — while an idle
+/// persona still fades honestly to dark well inside a minute. Still long enough
+/// that the 2s radiator sample catches the
 /// glow, short enough that the compass visibly settles between turns. Calibrated to
 /// the emit cadence, never guessed blind ([[never-blind-feedback-driven-iteration]]).
-const DECAY_PER_SEC: f32 = 40.0;
+const DECAY_PER_SEC: f32 = 6.0;
 
 /// One axis cell: its level at the last bump + when that bump happened, so the
 /// current level is derived by decay at read time (no background ticker needed).
@@ -120,8 +127,13 @@ impl Default for FacultyPulse {
 impl FacultyPulse {
     pub fn new() -> Self {
         let now = Instant::now();
-        let seed = Cell { level_at_bump: 0.0, bumped: now };
-        Self { cells: Mutex::new([seed; 4]) }
+        let seed = Cell {
+            level_at_bump: 0.0,
+            bumped: now,
+        };
+        Self {
+            cells: Mutex::new([seed; 4]),
+        }
     }
 
     /// Bump an axis toward `level` (0..=100). Takes the MAX of the current decayed
@@ -179,16 +191,32 @@ mod tests {
         assert_eq!(l[0] + l[2] + l[3], 0, "no other axis lit");
 
         // faculty → axis mapping the tick seam relies on
-        assert_eq!(CognitionAxis::of(&FacultyId::Recall), Some(CognitionAxis::Recall));
-        assert_eq!(CognitionAxis::of(&FacultyId::Deliberation), Some(CognitionAxis::Reason));
-        assert_eq!(CognitionAxis::of(&FacultyId::WorldModel), Some(CognitionAxis::Focus));
+        assert_eq!(
+            CognitionAxis::of(&FacultyId::Recall),
+            Some(CognitionAxis::Recall)
+        );
+        assert_eq!(
+            CognitionAxis::of(&FacultyId::Deliberation),
+            Some(CognitionAxis::Reason)
+        );
+        assert_eq!(
+            CognitionAxis::of(&FacultyId::WorldModel),
+            Some(CognitionAxis::Focus)
+        );
         assert_eq!(CognitionAxis::of(&FacultyId::Affect), None);
 
         // max-not-overwrite: a weaker note never dims a brighter live axis
         pulse.note(CognitionAxis::Reason, 20);
-        assert_eq!(pulse.levels()[1], 100, "weaker note does not dim the bright axis");
+        assert_eq!(
+            pulse.levels()[1],
+            100,
+            "weaker note does not dim the bright axis"
+        );
 
-        // decays toward dark: simulate elapsed time by seeding a past bump
+        // decays toward dark as an AFTERGLOW (~17s full fade at 6/s): still
+        // clearly lit shortly after the turn, honestly dark within a minute.
+        // The old 40/s flash died in 2.5s — invisible between 2s radiator
+        // samples with turns minutes apart (glass-boxed 2026-07-30).
         let past = FacultyPulse::new();
         {
             let mut cells = past.cells.lock().unwrap();
@@ -197,7 +225,23 @@ mod tests {
                 bumped: Instant::now() - Duration::from_secs(3),
             };
         }
-        assert_eq!(past.levels()[1], 0, "100 fades to 0 after ~3s at 40/s");
+        assert_eq!(
+            past.levels()[1],
+            82,
+            "100 eases to 82 after 3s at 6/s — visible afterglow"
+        );
+        {
+            let mut cells = past.cells.lock().unwrap();
+            cells[1] = Cell {
+                level_at_bump: 100.0,
+                bumped: Instant::now() - Duration::from_secs(20),
+            };
+        }
+        assert_eq!(
+            past.levels()[1],
+            0,
+            "fully dark by 20s — an idle mind reads as resting"
+        );
     }
 
     // what this catches: the vital-key vocabulary must match what the tile's

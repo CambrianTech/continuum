@@ -8,7 +8,10 @@ use ts_rs::TS;
 
 /// Sort direction
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq)]
-#[ts(export, export_to = "../../../protocol/typescript/orm/SortDirection.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/orm/SortDirection.ts"
+)]
 #[serde(rename_all = "lowercase")]
 pub enum SortDirection {
     Asc,
@@ -21,7 +24,10 @@ pub type ComparableValue = Value;
 /// Query operators for filtering
 /// Uses MongoDB-style $-prefixed operators to match TypeScript format directly
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/orm/QueryOperator.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/orm/QueryOperator.ts"
+)]
 pub enum QueryOperator {
     /// Equal to
     #[serde(rename = "$eq")]
@@ -100,7 +106,10 @@ pub struct Cursor {
 
 /// Cursor direction
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq)]
-#[ts(export, export_to = "../../../protocol/typescript/orm/CursorDirection.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/orm/CursorDirection.ts"
+)]
 #[serde(rename_all = "lowercase")]
 pub enum CursorDirection {
     Before,

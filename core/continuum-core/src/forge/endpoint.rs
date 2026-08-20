@@ -50,7 +50,10 @@ use crate::modules::grid::node::TrustLevel;
 /// `Node` is a custodian reachable over the grid transport at `node` — Pass 6
 /// resolves it to GRID-ADDRESSING-AND-ROUTING.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/forge/ForgeLocator.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/forge/ForgeLocator.ts"
+)]
 #[serde(tag = "where", rename_all = "lowercase")]
 pub enum ForgeLocator {
     /// Reach the custodian over HTTP at this base URL (this machine).
@@ -66,7 +69,10 @@ pub enum ForgeLocator {
 /// The custodian's routable health, as the fabric's scorer reads it. Derived from
 /// the Contract C [`HealthResponse`] + reachability — NOT self-declared.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/forge/ForgeHealth.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/forge/ForgeHealth.ts"
+)]
 #[serde(rename_all = "lowercase")]
 pub enum ForgeHealth {
     /// Reachable, ready, and has spare capacity — route here.
@@ -83,7 +89,10 @@ pub enum ForgeHealth {
 /// routes a forge need against. Discovered by probing ([`ForgeEndpoint::probe`]),
 /// never configured.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/forge/ForgeEndpoint.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/forge/ForgeEndpoint.ts"
+)]
 pub struct ForgeEndpoint {
     /// How to reach this custodian (local HTTP | grid peer).
     pub locator: ForgeLocator,
@@ -328,11 +337,23 @@ mod tests {
             .unwrap();
 
         // All gates pass: routable, same version, gguf-lora, trust >= Trusted.
-        assert!(can_accept_gguf_lora(&ep, CONTRACT_VERSION, TrustLevel::Trusted));
+        assert!(can_accept_gguf_lora(
+            &ep,
+            CONTRACT_VERSION,
+            TrustLevel::Trusted
+        ));
         // Version mismatch ⇒ refused (the handshake gate).
-        assert!(!can_accept_gguf_lora(&ep, CONTRACT_VERSION + 1, TrustLevel::Trusted));
+        assert!(!can_accept_gguf_lora(
+            &ep,
+            CONTRACT_VERSION + 1,
+            TrustLevel::Trusted
+        ));
         // Trust floor not met (Owner-only job, endpoint only Trusted) ⇒ refused.
-        assert!(!can_accept_gguf_lora(&ep, CONTRACT_VERSION, TrustLevel::Owner));
+        assert!(!can_accept_gguf_lora(
+            &ep,
+            CONTRACT_VERSION,
+            TrustLevel::Owner
+        ));
         // Wrong capability ⇒ refused.
         assert!(!ep.supports("train"));
     }
@@ -364,7 +385,10 @@ mod tests {
             TrustLevel::Owner,
             Err(ForgeCustodianError::Api("bad json".into())),
         );
-        assert!(broken.is_none(), "a broken custodian is declined, not advertised");
+        assert!(
+            broken.is_none(),
+            "a broken custodian is declined, not advertised"
+        );
     }
 
     // what this catches: a ForgeEndpoint round-trips JSON — it crosses the grid bus

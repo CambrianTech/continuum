@@ -81,7 +81,7 @@ progress on the bus ([[observability-as-substrate]]). Written once; every
 
 ### 4. `Provisioner` — the orchestrator + the single command
 ```rust
-// cu provision  (or the core self-provisions on launch)
+// uu provision  (or the core self-provisions on launch)
 fn provision(need: &ProvisionPlan) -> ProvisionReport {
     // 1. prerequisites: check all → fail-loud on missing with the remedy
     // 2. artifacts: for each needed {model per persona/tier, avatar, voice, bin}
@@ -128,7 +128,7 @@ is on disk, evicting unpinned cache as needed, refusing loudly if impossible.
    flaky per-artifact download logs + continues, never silently "works."
 4. **Resumable + verified** — a 9 GB model download survives an interrupt; a corrupt
    file is caught by checksum, not served as a broken brain.
-5. **One command** — `cu provision` (and the core self-provisions on launch); the
+5. **One command** — `uu provision` (and the core self-provisions on launch); the
    shell scripts become thin shims that call it, then get deleted.
 6. **Testable** — every piece is a Rust unit (mock source, mock downloader), unlike
    the untestable bash.
@@ -145,9 +145,9 @@ is on disk, evicting unpinned cache as needed, refusing loudly if impossible.
    logic into it; the two download-*.sh become one-line shims.
 4. **`Prerequisite` manifest** — cmake/rust/node/ffmpeg/llama-server as data; `check()`
    + fail-loud `install_hint()`; retire `preflight.sh` / `setup-rust.sh` check logic.
-5. **`Provisioner` + `cu provision`** — the orchestrator + the single command; the core
+5. **`Provisioner` + `uu provision`** — the orchestrator + the single command; the core
    self-provisions its `ProvisionPlan` on launch. `install.sh` collapses to: install
-   the ONE prerequisite (rust) → build → `cu provision` → launch.
+   the ONE prerequisite (rust) → build → `uu provision` → launch.
 6. **Reconcile + delete** — one `install.sh`; the download/setup scripts become shims
    or are deleted. The "single command launch" is now real and testable.
 

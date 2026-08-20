@@ -42,11 +42,27 @@ use ts_rs::TS;
 /// scores the text structure a non-visual model also reads).
 pub mod scoring;
 
+/// Static-HTML eye — parse a rendered `index.html` artifact into a [`ProbeNode`]
+/// tree so the HEADLESS eval core can grade structural `ui_checks` with no browser
+/// eye-node connected. `perception/observe` fails loud when no client provides it;
+/// but a static file's tags/roles/text/counts are a pure-parse question. The full
+/// browser eye stays the path for JS-rendered / dynamic pages (a persona's live
+/// seeing loop) — this is the deterministic grader's eye for a static artifact.
+pub mod static_html;
+
+/// `perception/look` — the LIVE-CALL VIDEO surface: a persona's own eyes on the
+/// call it is in (the observe-only sibling of `perception/observe`, reading the
+/// in-process [`PerceptionBuffer`](crate::media::PerceptionBuffer) à la carte).
+pub mod look;
+
 /// Render size for an observation, in the surface's pixels (CSS px for a UI,
 /// framebuffer px for a scene). Omit to use the adapter's current/default size.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/perception/ObserveViewport.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/perception/ObserveViewport.ts"
+)]
 pub struct ObserveViewport {
     #[ts(type = "number")]
     pub width: u32,
@@ -63,7 +79,10 @@ pub struct ObserveViewport {
 /// can ALL honor this.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/perception/ObserveParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/perception/ObserveParams.ts"
+)]
 pub struct ObserveParams {
     /// What to look at. A web adapter treats this as a URL to open; other adapters
     /// map it to their own surface path.
@@ -84,7 +103,10 @@ pub struct ObserveParams {
 /// surface (a DOM layout box, a scene node's projected screen rect).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/perception/ProbeBox.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/perception/ProbeBox.ts"
+)]
 pub struct ProbeBox {
     #[ts(type = "number")]
     pub x: f32,
@@ -103,7 +125,10 @@ pub struct ProbeBox {
 /// other at the boundary.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/perception/ProbeNode.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/perception/ProbeNode.ts"
+)]
 pub struct ProbeNode {
     /// Element tag / node type (`div`, `button`; a scene node's payload kind).
     pub tag: String,
@@ -137,7 +162,10 @@ pub struct ProbeNode {
 /// `ScreenshotResult`).
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/perception/ObservedImage.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/perception/ObservedImage.ts"
+)]
 pub struct ObservedImage {
     /// `data:` URL of the encoded frame (usually PNG), when returned inline.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -161,7 +189,10 @@ pub struct ObservedImage {
 /// `CommandResponse` envelope.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/perception/ObserveResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/perception/ObserveResult.ts"
+)]
 pub struct ObserveResult {
     /// Observation succeeded.
     pub success: bool,
@@ -198,6 +229,7 @@ pub struct ObserveCommand;
 impl crate::sdk_codegen::CommandSpec for ObserveCommand {
     const NAME: &'static str = "perception/observe";
     const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
+    const NATIVE: bool = true; // SEE + REASON — offered natively beside interface/screenshot
     const DESCRIPTION: &'static str =
         "Observe a UI or web page — SEE it as pixels AND read its STRUCTURE (the \
          tree of elements with their names, text, and on-screen boxes). Use it to \
@@ -241,7 +273,9 @@ mod tests {
             "observe is adapter-served (an eye-node), never a substrate ServiceModule"
         );
         assert!(
-            native_tool_specs().iter().any(|s| s.name == "perception/observe"),
+            native_tool_specs()
+                .iter()
+                .any(|s| s.name == "perception/observe"),
             "observe must be offered natively beside interface/screenshot"
         );
     }

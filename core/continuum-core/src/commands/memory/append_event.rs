@@ -21,7 +21,7 @@ use crate::sdk_codegen::CommandError;
 )]
 pub struct MemoryAppendEventParams {
     /// Which persona's corpus to append to.
-    pub persona_id: String,
+    pub persona_id: crate::identity::PersonaRef,
     /// The timeline event (with optional precomputed embedding) to append.
     pub event: CorpusTimelineEvent,
 }
@@ -29,6 +29,10 @@ pub struct MemoryAppendEventParams {
 crate::action_command! {
     /// Append a single timeline event to a persona's cached corpus (in-place O(1)
     /// write, trims to capacity). Records cross-context activity for consciousness.
+    /// Events stay CACHE-ONLY by design — the room transcript is the durable
+    /// record of activity ([[room-transcript-is-not-durable]] carves the split:
+    /// memories persist to longterm.db, session events don't) — but a missing
+    /// corpus still hydrates first so the event lands on top of history.
     pub struct MemoryAppendEvent { state: Arc<MemoryState> }
     name: "memory/append-event",
     access: Privileged,
@@ -36,6 +40,12 @@ crate::action_command! {
     output: AppendResult,
     run(this, _ctx, p) => {
         let _timer = TimingGuard::new("module", "memory_append_event");
+        if super::hydrate_corpus_if_missing(&this.state, &p.persona_id).await?.is_some() {
+            log_debug!(
+                "module", "memory_append_event",
+                "Hydrated corpus for {} from durable store", p.persona_id
+            );
+        }
         this.state
             .memory_manager
             .append_event(&p.persona_id, p.event)

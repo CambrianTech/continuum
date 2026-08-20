@@ -39,9 +39,14 @@ export type {
   StateSink,
   StateSubscription,
   StateConnectOptions,
+  StateConnectionOptions,
+  StateFeedStatus,
+  StateFeedStatusSink,
   StreamDelta,
   StreamDeltaSink,
 } from './StateConnection';
+export { MemoryStateStorage, IndexedDbStateStorage } from './StateStorage';
+export type { StateStorageAdapter, PersistedEnvelope } from './StateStorage';
 export type {
   StateLayer,
   KindRevision,
@@ -55,12 +60,32 @@ export type {
 export type {
   ChatViewState,
   ChatMessageView,
+  ActReceiptView,
   RosterSlotView,
   RosterViewState,
   SenderKind,
   Provenance,
   ForgeViewState,
   ForgeModelView,
+  NavViewState,
+  NavTab,
+  NavBookmark,
+  NavTargetKind,
+  SystemMetricsViewState,
+  MetricSeriesView,
+  ServingViewState,
+  ServingHeaderView,
+  ServingArmView,
+  ServingEventCard,
+  BenchViewState,
+  BenchRunRow,
+  KanbanViewState,
+  KanbanCardView,
+  KanbanLaneView,
+  KanbanCardState,
+  KanbanLaneState,
+  KanbanPriority,
+  KanbanPullRequest,
 } from './generated/views';
 // The Join Contract manifest closure — the room-level structure a renderer projects
 // into a Workspace (purpose / regions / affordances / membership / layout).

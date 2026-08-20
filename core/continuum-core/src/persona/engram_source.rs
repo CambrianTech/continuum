@@ -215,6 +215,17 @@ impl RagSource for EngramSource {
         SOURCE_ID
     }
 
+    fn expand_command(&self) -> Option<&'static str> {
+        Some("cognition/recall")
+    }
+
+    /// MEASURED 40 tokens: one recalled engram line. The heavyweight's
+    /// *comfortable* size is far larger and it still gets that through `min` +
+    /// the grow pass — this is only what it needs to say ONE true thing.
+    fn floor_tokens(&self) -> u32 {
+        48
+    }
+
     async fn deliver(
         &self,
         ctx: &RagContext,
@@ -233,8 +244,7 @@ impl RagSource for EngramSource {
         }
         let scored = self.rank_engrams(ctx.now_ms);
         let scored_len = scored.len();
-        let (items, tokens_used, next_rank) =
-            self.pack_from_rank(&scored, 0, budget, resolution);
+        let (items, tokens_used, next_rank) = self.pack_from_rank(&scored, 0, budget, resolution);
         self.build_delivery(items, tokens_used, next_rank, scored_len, resolution)
     }
 
@@ -344,7 +354,11 @@ mod tests {
         let (persona, state) = fixture(0, 1_000_000_000);
         let source = EngramSource::new(persona, state);
         let delivery = source
-            .deliver(&ctx_for(persona, 1_000_000_000), 1000, ResolutionPreference::Raw)
+            .deliver(
+                &ctx_for(persona, 1_000_000_000),
+                1000,
+                ResolutionPreference::Raw,
+            )
             .await;
         assert!(delivery.items.is_empty());
         assert_eq!(delivery.tokens_used, 0);
@@ -356,16 +370,17 @@ mod tests {
         let (persona, state) = fixture(1, 1_000_000_000);
         let source = EngramSource::new(persona, state);
         let delivery = source
-            .deliver(&ctx_for(persona, 1_000_000_000), 1000, ResolutionPreference::Raw)
+            .deliver(
+                &ctx_for(persona, 1_000_000_000),
+                1000,
+                ResolutionPreference::Raw,
+            )
             .await;
         assert_eq!(delivery.items.len(), 1);
         assert!(delivery.tokens_used > 0);
         assert!(delivery.continuation.is_none());
         // Metadata carries the engram id.
-        assert!(delivery.items[0]
-            .metadata
-            .get("engram_id")
-            .is_some());
+        assert!(delivery.items[0].metadata.get("engram_id").is_some());
     }
 
     #[tokio::test]
@@ -376,7 +391,11 @@ mod tests {
         // fit. Source returns 0 items + continuation so the caller
         // can retry with more budget OR drop the source.
         let delivery = source
-            .deliver(&ctx_for(persona, 1_000_000_000), 0, ResolutionPreference::Raw)
+            .deliver(
+                &ctx_for(persona, 1_000_000_000),
+                0,
+                ResolutionPreference::Raw,
+            )
             .await;
         assert_eq!(delivery.items.len(), 0);
         assert_eq!(delivery.tokens_used, 0);
@@ -401,7 +420,12 @@ mod tests {
         let scores: Vec<f64> = delivery
             .items
             .iter()
-            .map(|i| i.metadata.get("score").and_then(|s| s.as_f64()).unwrap_or(0.0))
+            .map(|i| {
+                i.metadata
+                    .get("score")
+                    .and_then(|s| s.as_f64())
+                    .unwrap_or(0.0)
+            })
             .collect();
         for w in scores.windows(2) {
             assert!(w[0] >= w[1], "scores not descending: {scores:?}");
@@ -416,7 +440,11 @@ mod tests {
         // Budget tight enough to force continuation — each engram body
         // is ~6 tokens, so budget 12 fits 2 of 4 and forces a cursor.
         let first = source
-            .deliver(&ctx_for(persona, 1_000_000_000), 12, ResolutionPreference::Raw)
+            .deliver(
+                &ctx_for(persona, 1_000_000_000),
+                12,
+                ResolutionPreference::Raw,
+            )
             .await;
         assert!(!first.items.is_empty());
         let cursor = first.continuation.expect("expected continuation");
@@ -446,7 +474,11 @@ mod tests {
         let source = EngramSource::new(persona, state);
         let other = Uuid::parse_str("00000000-0000-0000-0000-000000000bbb").unwrap();
         let delivery = source
-            .deliver(&ctx_for(other, 1_000_000_000), 1_000, ResolutionPreference::Raw)
+            .deliver(
+                &ctx_for(other, 1_000_000_000),
+                1_000,
+                ResolutionPreference::Raw,
+            )
             .await;
         assert!(delivery.items.is_empty());
         assert_eq!(delivery.resolution_used, ResolutionPreference::Placeholder);

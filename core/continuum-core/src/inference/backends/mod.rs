@@ -70,6 +70,7 @@ pub struct GenomeAdapter {
 const GPU_SYNC_INTERVAL: usize = 64;
 
 /// Check for NaN only on first N generated tokens.
+// context-budget-exempt: how many decoded tokens the NaN sanity probe inspects — a health check, not a budget
 const NAN_CHECK_TOKENS: usize = 3;
 
 /// Unified trait for ALL local model backends.
@@ -518,7 +519,10 @@ pub fn generate(
                 "  tok[{:>3}] id={:<6} {:>20} logits=[{:.1}..{:.1}]{}",
                 i,
                 next_token,
-                format!("{:?}", crate::utils::str_truncate::truncate_at_char_boundary(&decoded, 20)),
+                format!(
+                    "{:?}",
+                    crate::utils::str_truncate::truncate_at_char_boundary(&decoded, 20)
+                ),
                 min_logit,
                 max_logit,
                 eos_info
@@ -620,16 +624,15 @@ pub fn read_gguf_metadata(path: &Path) -> Result<GgufMetadata, String> {
     // garbage output or outright crash. Rule-2 violation (fallbacks are illegal)
     // fixed 2026-04-23. If a GGUF is missing this metadata, that's a broken file,
     // not a thing to paper over. Read via the ONE shared canonical-key reader.
-    let architecture = crate::inference_capability::gguf_keys::architecture(&content).ok_or_else(
-        || {
+    let architecture =
+        crate::inference_capability::gguf_keys::architecture(&content).ok_or_else(|| {
             format!(
                 "GGUF {} is missing required metadata key 'general.architecture' — cannot \
              determine backend. Silent fallback to 'llama' has been removed; fix the \
              GGUF file or re-export it with proper metadata.",
                 path.display()
             )
-        },
-    )?;
+        })?;
 
     // context_length via the shared reader: architecture-specific key first,
     // then the historical `llama.context_length` fallback — the ONE place that

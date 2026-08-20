@@ -68,6 +68,22 @@ use crate::persona::rag_budget::{
 /// `active-work` (own claims) and `room-board` (the wall).
 const SOURCE_ID: &str = "room-kanban";
 
+/// Most cards this source will render in full, per turn.
+///
+/// NOT a token budget — a RELEVANCE bound. The per-card loop below used to be limited only
+/// by whatever budget remained, so the board grew to fill the prompt: measured 2026-08-17,
+/// 38 cards / 9,284 chars / 49.7% of an 18,697-char system prompt on a routine ambient turn.
+/// That makes every citizen think slower as the backlog grows, which is exactly backwards
+/// for a work board.
+///
+/// Sized from what it MUST cover, not picked: the `[your work]` and `[available work]` leads
+/// each name up to 5 cards, so the detailed render must be able to carry both (10) or the
+/// summaries would promise cards the detail then omits — a citizen seeing "you hold 5" above
+/// a list of 3 would reasonably read the substrate as inconsistent. Two spare keeps a
+/// just-created card visible in the same turn it arrives. Ten is the floor this cannot go
+/// below without re-deriving the lead caps with it.
+const MAX_RENDERED_CARDS: usize = 12;
+
 /// Token estimate — the ONE canonical chars/4 estimator
 /// (`cognition::token_budget`), shared by every RAG source so the replay
 /// ledger's numbers match.
@@ -79,8 +95,43 @@ use crate::cognition::token_budget::estimate_prompt_tokens as estimate_tokens;
 /// pushed its creation event out of a transcript window); tests stub it.
 #[async_trait]
 pub trait RoomBoardReader: Send + Sync {
-    /// The current room's work board, folded by airc into a [`BoardSnapshot`].
-    async fn work_board(&self) -> Result<BoardSnapshot, AircError>;
+    /// The work board of `room` — folded by airc into a [`BoardSnapshot`].
+    ///
+    /// `room` is the id this source is BOUND to (`for_room`), i.e. the same
+    /// value [`crate::persona::rag_budget::room_scope_allows`] gates on. Passing
+    /// it is what makes gate and read one decision instead of two that merely
+    /// coincide: before 2026-08-07 the read resolved airc's `current_room()`
+    /// independently ("whatever my default subscription happens to be") while the
+    /// gate checked a bound id the read never consulted. They agreed only because
+    /// both were seeded from the same call at bootstrap — nothing prevented a gate
+    /// that passed for room A while the board came from room B, and no probe would
+    /// have fired.
+    ///
+    /// `None` means the caller genuinely has no binding and accepts the scope's
+    /// current room (the CLI's intent). A `Some(id)` that the scope is not
+    /// subscribed to is an ERROR, never a silent fall back to the default: handing
+    /// a citizen a different room's board is the failure this parameter exists to
+    /// make impossible.
+    async fn work_board(&self, room: Option<uuid::Uuid>) -> Result<BoardSnapshot, AircError>;
+
+    /// Published display names for the given peers — the DURABLE alias store,
+    /// not the room roster.
+    ///
+    /// Deliberately not presence-based: the card owner most worth naming is a
+    /// teammate who went down still holding a claim, and a presence roster
+    /// cannot name exactly that peer. Joel, 2026-08-06: *"a persona could go
+    /// down too. They should be able, like you are me, to claim a card,
+    /// diagnose etc."*
+    ///
+    /// No default impl on purpose — a default returning "no names" would let a
+    /// new reader silently render every teammate as hex, which is the defect
+    /// this method exists to kill. Every implementor decides explicitly; an
+    /// implementor with no alias store returns an empty map and the projection
+    /// falls back to short ids (addressable, unlike "someone").
+    async fn peer_names(
+        &self,
+        peers: &[airc_core::PeerId],
+    ) -> std::collections::HashMap<airc_core::PeerId, String>;
 }
 
 /// `airc_lib::Airc` satisfies the reader contract directly. Orphan rule OK —
@@ -89,23 +140,67 @@ pub trait RoomBoardReader: Send + Sync {
 /// makes; the shared truth is airc's fold, not a shared continuum trait.
 #[async_trait]
 impl RoomBoardReader for airc_lib::Airc {
-    async fn work_board(&self) -> Result<BoardSnapshot, AircError> {
-        let projection =
-            airc_lib::Airc::work_board_complete(self, airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
-                .await?;
+    async fn work_board(&self, room: Option<uuid::Uuid>) -> Result<BoardSnapshot, AircError> {
+        let projection = match room {
+            // BOUND: read exactly the room the gate approved. A miss is loud —
+            // `NotSubscribed` — never a quiet slide to the default room, because
+            // a citizen handed the wrong room's board cannot tell that from a
+            // board that is genuinely empty. That indistinguishability is the
+            // whole bug class ([[fail-loud-never-swallow]]).
+            Some(id) => {
+                let channel = airc_core::RoomId::from_uuid(id);
+                let Some(resolved) = airc_lib::Airc::room_by_channel(self, channel).await? else {
+                    return Err(AircError::NotSubscribed(format!(
+                        "work board requested for room {id}, which this scope is not \
+                         subscribed to — refusing to substitute the default room's board"
+                    )));
+                };
+                airc_lib::Airc::project_room_work_board(
+                    self,
+                    &resolved,
+                    airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE,
+                )
+                .await?
+            }
+            // UNBOUND: the caller genuinely means "my current room" (the CLI's
+            // intent). Same behaviour as before this parameter existed.
+            None => {
+                airc_lib::Airc::work_board_complete(self, airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
+                    .await?
+            }
+        };
         Ok(projection.snapshot())
+    }
+
+    /// One scan per distinct owner, exactly as `airc work board` resolves its
+    /// own board (work_commands.rs) — N is small (distinct owners on one
+    /// board), and `peer_alias` is page_recent-backed. A peer with no published
+    /// alias is simply absent from the map; the projection renders its short
+    /// id rather than inventing a name.
+    async fn peer_names(
+        &self,
+        peers: &[airc_core::PeerId],
+    ) -> std::collections::HashMap<airc_core::PeerId, String> {
+        let mut names = std::collections::HashMap::new();
+        for peer in peers {
+            if let Ok(Some(alias)) = airc_lib::Airc::peer_alias(self, *peer).await {
+                names.insert(*peer, alias);
+            }
+        }
+        names
     }
 }
 
 /// Persona-bound source reading the current room's whole work board.
 pub struct RoomBoardSource {
     persona_id: uuid::Uuid,
-    /// The room whose board this source grounds. The reader answers for the
-    /// persona's airc connection's room; this names it explicitly so delivery
-    /// can be scoped to the TURN'S context (the room gate in `deliver`). Bound
-    /// at assembly from the room the persona joined at bootstrap
-    /// (`identity.default_room`). `None` = unscoped (legacy/test construction):
-    /// deliver regardless of turn context, exactly the pre-gate behavior.
+    /// FALLBACK room for UNSTAMPED contexts only (#443). A context-stamped turn
+    /// reads the board of ITS OWN room (turn-parametric — see the room
+    /// resolution in `deliver`); this bound id answers only when the context
+    /// carries no room at all (background consolidation, legacy construction).
+    /// Bound at assembly from the room the persona joined at bootstrap
+    /// (`identity.default_room`). `None` = unscoped: an unstamped delivery
+    /// reads the scope's current room, exactly the pre-gate behavior.
     room_id: Option<uuid::Uuid>,
     reader: Arc<dyn RoomBoardReader>,
 }
@@ -144,34 +239,75 @@ impl RoomBoardSource {
     /// and owner (or `unclaimed`) — the shape a teammate reads off the board.
     /// The whole board carries all owners, so owner is always surfaced (unlike
     /// the active-work source, which is implicitly self-owned).
-    fn render(card: &airc_work::WorkCard, self_id: uuid::Uuid) -> String {
+    /// Holder resolution is NOT done here — it lives in
+    /// [`crate::persona::card_holder`], the ONE place every board surface
+    /// (this source, the service-loop anchor, `work/list`, the CLI) answers
+    /// "who holds this, is the hold live". Rendering it locally is what let
+    /// five surfaces disagree, and why a peer's card read as an 8-hex prefix
+    /// no teammate could recognize or reach out to.
+    fn render(
+        card: &airc_work::WorkCard,
+        self_id: uuid::Uuid,
+        now_ms: u64,
+        names: &dyn crate::persona::card_holder::PeerNames,
+    ) -> String {
         let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
-        let owner = match card.owner {
-            // Her OWN claim must read as HERS — glass-boxed 2026-07-11: cards she
-            // held rendered as `owner 90e758b2`, a hex prefix she cannot recognize
-            // as herself, so claimed work carried zero self-relevance and the room
-            // drifted to chatter over held cards. Identity is a structural fact
-            // the projection must carry (same law as (to you) addressing).
-            Some(o) if o.as_uuid() == self_id => "owner YOU".to_string(),
-            Some(o) => {
-                let o8: String = o.as_uuid().to_string().chars().take(8).collect();
-                format!("owner {o8}")
-            }
-            None => "unclaimed".to_string(),
-        };
+        let held = crate::persona::card_holder::holder(card, self_id, now_ms, names);
+        // The tag leads with what the card IS to someone deciding whether to take
+        // it, not with the column it happens to sit in — a lapsed claim is takeable
+        // work whose column still reads `Claimed`. See `CardHolder::state_tag`;
+        // found live by Benchy on a board of 61 cards, 0 in state Open, 59 leases
+        // stale — every available card read as taken.
+        let owner = held.render();
         format!(
-            "card {id8} [{state:?}] \"{title}\" ({prio:?}, {owner})",
-            state = card.state,
+            "card {id8} [{state}] \"{title}\" ({prio:?}, {owner})",
+            state = held.state_tag(card),
             title = card.title,
             prio = card.priority,
         )
     }
 }
 
+/// Mirror of airc-lib's `is_active_claim` (work_roster.rs) — the lease truth this
+/// projection must agree with. airc's roster already drops an expired lease from
+/// `active_claims` (that transition is what fires the #156 lost-claim fact), but
+/// this board view kept rendering the same card as HELD — so one perception said
+/// "your claim lapsed" while the next said "you HOLD it", and the residents
+/// re-oriented on dead work every wake, forever (glass-boxed 2026-08-03: all 17
+/// board claims stale, the conway/wordstats loop attractor). Duplicated rather
+/// than imported because continuum deps airc-protocol/-core, not airc-lib; the
+/// doc-link is the drift guard.
+///
+/// Now a one-line delegation to [`crate::persona::card_holder::hold_of`] — the
+/// predicate itself moved there so the anchor, `work/list`, and this source
+/// cannot drift apart on what "held" means. Kept as a named local so the
+/// call sites below read as liveness questions rather than enum matches.
+fn claim_is_live(card: &airc_work::WorkCard, now_ms: u64) -> bool {
+    crate::persona::card_holder::hold_of(card, now_ms) == crate::persona::card_holder::Hold::Held
+}
+
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 #[async_trait]
 impl RagSource for RoomBoardSource {
     fn source_id(&self) -> &'static str {
         SOURCE_ID
+    }
+
+    fn expand_command(&self) -> Option<&'static str> {
+        Some("work/list")
+    }
+
+    /// MEASURED 26 tokens: the `[board] you hold N card(s); M claimable.`
+    /// headline, which is deliberately the first unit precisely so a
+    /// prefix-take cannot halve it. 32 gives it headroom for larger counts.
+    fn floor_tokens(&self) -> u32 {
+        32
     }
 
     async fn deliver(
@@ -185,19 +321,45 @@ impl RagSource for RoomBoardSource {
         if ctx.persona_id != self.persona_id {
             return Self::empty();
         }
-        // Room-scoped: a context-stamped turn in a DIFFERENT context than the
-        // room this board belongs to gets nothing — room A's kanban must not
-        // ground a turn in room B, nor a synthetic context (the eval fork's nil
-        // room). The ONE shared gate (`room_scope_allows`) probes every abstain
-        // with both rooms named, so a mis-binding shows in the log instead of a
-        // silent blank grounding block. [[identity-context-session-three-axes]]
-        if !crate::persona::rag_budget::room_scope_allows(self.room_id, ctx, SOURCE_ID) {
-            return Self::empty();
-        }
+        // Room resolution — TURN-PARAMETRIC (#443, measured live 2026-08-15).
+        // This source used to be BOUND to the persona's bootstrap room and the
+        // gate abstained on any other stamped room — so a turn in a per-run
+        // bench room took a WORK turn with NO board surface: the kickoff said
+        // "card X is claimed for you" while the kanban block stayed silent
+        // (every turn of the round fired `rag.room_gate.abstain` with
+        // bound=academy, turn=bench-room). The board she needs is the board OF
+        // THE ROOM SHE IS STANDING IN, so the stamped turn room WINS; the
+        // bound room is only the fallback for UNSTAMPED contexts (background
+        // consolidation, legacy construction — pre-gate behavior, unchanged).
+        //
+        // The invariants the old gate protected, restated stronger:
+        //  - Cross-room leakage is impossible BY CONSTRUCTION: the reader
+        //    refuses (`NotSubscribed`, fail-loud) any room this persona's OWN
+        //    airc scope has not joined — enforced by the store, not by whoever
+        //    remembered to bind correctly.
+        //  - The eval fork's SYNTHETIC nil room still gets NOTHING, ever — an
+        //    exam context must not see any board (the exam-bleed pin), and it
+        //    must not fall back to the bound room either.
+        let turn_room = ctx.airc_room.as_ref().map(|r| r.as_uuid());
+        let effective_room = match turn_room {
+            Some(t) if t.is_nil() => {
+                crate::probe!(
+                    class = "rag.room_gate.abstain",
+                    source = SOURCE_ID,
+                    bound_room = ?self.room_id,
+                    turn_room = %t,
+                    persona_id = %ctx.persona_id,
+                    "synthetic nil-room context — no board, and no fallback to the bound room"
+                );
+                return Self::empty();
+            }
+            Some(t) => Some(t),
+            None => self.room_id,
+        };
 
-        // One airc call (the current room's complete board). Failure is
+        // One airc call (the effective room's complete board). Failure is
         // non-fatal — empty delivery, cognition stays up (good-citizen doctrine).
-        let board = match self.reader.work_board().await {
+        let board = match self.reader.work_board(effective_room).await {
             Ok(b) => b,
             Err(err) => {
                 tracing::warn!(
@@ -209,13 +371,31 @@ impl RagSource for RoomBoardSource {
             }
         };
         // Empty board → no block (normal: a room may have no cards yet).
+        //
+        // But SAY SO. "The board is empty" and "she never got a board" are
+        // different facts and only one is knowable from an absent block — the
+        // same law `room_scope_allows` follows, which is why the room gate was
+        // diagnosable in one grep and THIS exit cost a night of guessing
+        // (#331). A silent early-return in a grounding source is a hole in the
+        // glass box. [[observability-as-substrate]]
         if board.cards.is_empty() {
+            tracing::info!(
+                probe_class = "rag.board.empty",
+                source = SOURCE_ID,
+                persona_id = %self.persona_id,
+                bound_room = ?self.room_id,
+                turn_room = ?ctx.airc_room.as_ref().map(|r| r.as_uuid()),
+                "room-board delivered nothing: the READ SUCCEEDED and the board has zero cards"
+            );
             return Self::empty();
         }
 
         let mut items: Vec<RagItem> = Vec::new();
         let mut tokens_used: u32 = 0;
         let mut dropped: usize = 0;
+        // One clock reading per delivery — every lease judgment in this block
+        // (held / lapsed / available) agrees on the same instant.
+        let now_ms = now_unix_ms();
 
         // YOUR-WORK SALIENCE (2026-07-11, "did they wander off and forget they
         // can work on things?"): all three personas held claimed cards, zero
@@ -230,19 +410,90 @@ impl RagSource for RoomBoardSource {
             .iter()
             .filter(|c| {
                 c.owner.map(|o| o.as_uuid() == self.persona_id).unwrap_or(false)
+                    // Only a LIVE lease is "held" (see `claim_is_live`): a lapsed
+                    // claim rendered as held contradicts the #156 lost-claim fact
+                    // and is the stale-lease loop attractor (2026-08-03).
+                    && claim_is_live(c, now_ms)
                     && !matches!(
                         c.state,
                         airc_work::CardState::Merged | airc_work::CardState::Closed
                     )
             })
             .collect();
+        // AVAILABLE-WORK SALIENCE (#122): unclaimed cards are work waiting for
+        // someone to pick up. Computed here, before anything is rendered, because the
+        // HEADLINE below needs both counts — see its comment for why that matters.
+        let open: Vec<&airc_work::WorkCard> = board
+            .cards
+            .iter()
+            // Unclaimed-and-Open, OR a non-terminal card whose claim LAPSED — an
+            // expired lease is genuinely available work (claim-contention allows
+            // takeover), and before 2026-08-03 lapsed cards appeared in NEITHER
+            // "available" nor honestly-held: invisible as work, sticky as an
+            // attractor.
+            //
+            // The predicate itself lives in `card_holder` and is shared with
+            // `work/list` — this filter used to re-derive it here and excluded only
+            // Merged|Closed, so `Review` cards (which `work/claim` refuses) were
+            // advertised as available: 11 of the 58 offered on the live board
+            // 2026-08-07. One claimability decision, one place.
+            .filter(|c| crate::persona::card_holder::claimable_now(c, now_ms))
+            .collect();
+
+        // HEADLINE — the cheapest COMPLETE statement of this board's two facts, first,
+        // so a prefix-take can never deliver half of them.
+        //
+        // The defect this exists for, read out of Asha's own capture 2026-08-06: her
+        // window fit exactly ONE of 31 board units. Divisibility (b6429f583) meant she
+        // got the longest fitting PREFIX — which was "[your work] you HOLD 1 card" — and
+        // then "…30 more not shown". The "[available work] 8 card(s) are claimable" lead
+        // was unit two, and died. So she reported "no open tasks" and was CORRECT about
+        // what she could see, in a room where 8 cards were claimable. Four citizens spent
+        // the day in that loop.
+        //
+        // Ordering alone does not fix it — flipping the leads just severs the other half.
+        // Two facts that are only true TOGETHER have to be ONE unit, and that unit has to
+        // be small enough to survive any budget that delivers grounding at all (~25
+        // tokens, vs ~210 for the two detailed leads). Detail degrades; meaning does not.
+        if !mine.is_empty() || !open.is_empty() {
+            // "on THIS room's board", not "you hold" bare (glass-boxed 2026-08-11,
+            // Atlas's own capture): boards are per-room, but the bare phrasing
+            // presents a room-scoped count as a fact about HER. She held three
+            // live-leased cards on the academy board while a general-room turn
+            // told her "you hold 0 card(s)" — so on her own time she reasonably
+            // concluded she had no work and spoke yet another pass into the room
+            // (the pass-spam Joel called out was this line lying, not her mind).
+            // Three words scope the claim to what was actually read. The real fix
+            // — her holds as an IDENTITY-level fact folded across her subscribed
+            // rooms ([[personas-are-first-class-multi-room-subscribers]]) — needs
+            // a cross-room reader verb and is a separate slice; this stops the
+            // lie today without new reads.
+            let headline = format!(
+                "[board] this room only: you hold {held} card(s) here; {avail} claimable here.",
+                held = mine.len(),
+                avail = open.len(),
+            );
+            let headline_tokens = estimate_tokens(&headline);
+            if headline_tokens <= budget {
+                tokens_used += headline_tokens;
+                items.push(RagItem {
+                    content: headline,
+                    tokens: headline_tokens,
+                    metadata: json!({
+                        "kind": "board-headline",
+                        "held_count": mine.len(),
+                        "open_count": open.len(),
+                    }),
+                });
+            }
+        }
+
         if !mine.is_empty() {
             let titles = mine
                 .iter()
                 .take(5)
                 .map(|c| {
-                    let id8: String =
-                        c.card_id.as_uuid().to_string().chars().take(8).collect();
+                    let id8: String = c.card_id.as_uuid().to_string().chars().take(8).collect();
                     format!("  {id8}: \"{}\" [{:?}]", c.title, c.state)
                 })
                 .collect::<Vec<_>>()
@@ -264,29 +515,41 @@ impl RagSource for RoomBoardSource {
             }
         }
 
-        // AVAILABLE-WORK SALIENCE (#122): unclaimed cards are work waiting for
+        // The detailed available-work lead (#122): unclaimed cards are work waiting for
         // someone to pick up. Glass-boxed live 2026-07-10: with hands proven and an
         // open card sitting on the board, both personas drifted to identity-monologue
         // chatter instead of noticing the available work — an unclaimed card, flat in
-        // the list, out-salienced by nothing. Lead the delivery with the open cards
-        // as a distinct perceived FACT (their count + titles + how to pick one up), so
-        // available work is the first thing seen, not buried. A true structural fact
-        // she WEIGHS — it names what's available and how claiming works; it never says
-        // she must ([[no-hardcoded-heuristics-to-steer-cognition]]). Whole board still
-        // follows verbatim in airc's own order — this adds a salience lead, it does not
-        // re-rank or filter the board itself.
-        let open: Vec<&airc_work::WorkCard> = board
-            .cards
-            .iter()
-            .filter(|c| c.owner.is_none() && matches!(c.state, airc_work::CardState::Open))
-            .collect();
+        // the list, out-salienced by nothing. Names their count + titles + how to pick
+        // one up. A true structural fact she WEIGHS — it never says she must
+        // ([[no-hardcoded-heuristics-to-steer-cognition]]). Whole board still follows
+        // verbatim in airc's own order — this adds salience, it does not re-rank or
+        // filter the board itself.
         if !open.is_empty() {
-            let titles = open
+            // NEWEST FIRST, not board order (measured 2026-08-07).
+            //
+            // Only five titles are ever shown. Taken in board order, a card dispatched
+            // MINUTES AGO lands at the end and is structurally unshowable: the citizen reads
+            // an honest "N card(s) are claimable" above five titles that are all weeks old,
+            // and the work someone just handed her is not among them. Measured live — three
+            // freshly dispatched bench cards were in every citizen's board cache and in none
+            // of their prompt windows, while the count was correct the whole time. The count
+            // was never the lie; the sample was.
+            //
+            // Recency is the right key because a just-created card is the one most likely to
+            // be waiting on THIS citizen right now, and because it is the only ordering under
+            // which "someone dispatched you work" is reliably visible within one turn. Ties
+            // keep board order, so a static board renders exactly as before.
+            //
+            // Bounded-window eviction: a chatty writer pushes the signal out of a fixed-size
+            // view, and the diagnostic goes blind precisely when the board is busiest. The
+            // five-title cap is fine; taking the OLDEST five was not.
+            let mut newest: Vec<&&airc_work::WorkCard> = open.iter().collect();
+            newest.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
+            let titles = newest
                 .iter()
                 .take(5)
                 .map(|c| {
-                    let id8: String =
-                        c.card_id.as_uuid().to_string().chars().take(8).collect();
+                    let id8: String = c.card_id.as_uuid().to_string().chars().take(8).collect();
                     format!("  {id8}: \"{}\" ({:?})", c.title, c.priority)
                 })
                 .collect::<Vec<_>>()
@@ -298,10 +561,10 @@ impl RagSource for RoomBoardSource {
                 String::new()
             };
             let lead = format!(
-                "[available work] {n} card(s) on this board are unclaimed — open work \
-                 no one holds yet:\n{titles}{tail}\nA card is picked up with \
-                 `work/claim` (its id); once claimed it is yours to work with your \
-                 tools. Unclaimed work waits until someone chooses it.",
+                "[available work] {n} card(s) on this board are claimable — unclaimed, \
+                 or their holder's claim lease lapsed:\n{titles}{tail}\nA card is \
+                 picked up with `work/claim` (its id); once claimed it is yours to \
+                 work with your tools. Claimable work waits until someone chooses it.",
                 n = open.len(),
             );
             let lead_tokens = estimate_tokens(&lead);
@@ -315,9 +578,56 @@ impl RagSource for RoomBoardSource {
             }
         }
 
-        let mut cards_delivered = 0usize;
+        // Resolve every DISTINCT non-self owner on this board to a published
+        // name, in ONE pass, before rendering. Joel's rule (2026-08-06): a card
+        // must say WHO holds it — "someone" (or an 8-hex prefix that reads as
+        // one) leaves a citizen unable to reach out, which turns a coordination
+        // problem into a dead end. Owners with nothing published stay absent
+        // from the map and render as their short id, which is still addressable.
+        let mut owner_peers: Vec<airc_core::PeerId> = Vec::new();
         for card in &board.cards {
-            let content = Self::render(card, self.persona_id);
+            if let Some(o) = card.owner {
+                if o.as_uuid() != self.persona_id && !owner_peers.contains(&o) {
+                    owner_peers.push(o);
+                }
+            }
+        }
+        let names = self.reader.peer_names(&owner_peers).await;
+
+        // RELEVANCE ORDER + A HARD CAP, not "however many the budget happens to fit".
+        //
+        // Measured 2026-08-17 on a live ambient turn (capture 762a806b): this loop rendered
+        // 38 distinct cards into 9,284 chars — 49.7% of an 18,697-char system prompt, ~3,100
+        // of the turn's ~12,286 prefill tokens. Every citizen paid it on every self-tick.
+        //
+        // Two things make that wrong rather than merely expensive:
+        //
+        // 1. IT IS REDUNDANT. The `[board]` headline and the `[your work]` / `[available
+        //    work]` leads above already carry the counts and the top titles — and they were
+        //    ADDED because this dump is unreliable under budget (see the Asha 2026-08-06
+        //    note above). Rendering the summary AND the exhaustive list means the same facts
+        //    are paid for twice, and the expensive copy is the one that gets truncated.
+        // 2. IT SCALES THE WRONG WAY. Bounded only by remaining budget, the board grows to
+        //    fill the prompt, so every citizen thinks SLOWER as the backlog grows. A team
+        //    that accumulates work gets progressively less able to do it — the opposite of
+        //    what a work board is for.
+        //
+        // So: order by what she can act on (her own holds first, then newest claimable —
+        // the same recency argument the available-work lead already makes), take at most
+        // `MAX_RENDERED_CARDS`, and let the leads plus `work/list` carry the tail. Counts in
+        // the headline stay the TRUE totals; nothing here makes the board smaller than it is,
+        // only shorter than it was.
+        let mut ordered: Vec<&airc_work::WorkCard> = board.cards.iter().collect();
+        ordered.sort_by_key(|c| {
+            let mine_first = !(c.owner.map(|o| o.as_uuid()) == Some(self.persona_id));
+            // Negate for newest-first without needing a reversed comparator.
+            (mine_first, std::cmp::Reverse(c.created_at_ms))
+        });
+        let render_budget_cards = MAX_RENDERED_CARDS.min(ordered.len());
+
+        let mut cards_delivered = 0usize;
+        for card in ordered.into_iter().take(render_budget_cards) {
+            let content = Self::render(card, self.persona_id, now_ms, &names);
             let tokens = estimate_tokens(&content);
             if tokens_used.saturating_add(tokens) > budget {
                 // Budget exhausted — a truncated board is still truthful for the
@@ -326,6 +636,9 @@ impl RagSource for RoomBoardSource {
                 // Counted over CARDS, excluding the available-work lead item.
                 dropped = board.cards.len() - cards_delivered;
                 break;
+                // (unchanged: `dropped` is measured against the TRUE board size, so a
+                // budget-truncated render and a cap-truncated one report the same honest
+                // "how many did she not see".)
             }
             tokens_used += tokens;
             cards_delivered += 1;
@@ -334,12 +647,41 @@ impl RagSource for RoomBoardSource {
                 tokens,
                 metadata: json!({
                     "card_id": card.card_id.as_uuid().to_string(),
-                    "state": format!("{:?}", card.state),
+                    // Serde, NOT `format!("{:?}")`. Debug output is a developer convenience
+                    // with NO stability guarantee — renaming a variant silently changes it
+                    // and nothing fails to compile. It also gave the substrate TWO string
+                    // forms of one enum: `{:?}` wrote "Claimed" here while `work/list`'s
+                    // serde wrote "claimed", so a reader that guessed wrong compared against
+                    // a spelling that never occurs. Consumers parse this straight back into
+                    // `CardState` and match on VARIANTS, so the compiler owns the mapping.
+                    // Joel 2026-08-06: "use constants or enums so you can't make
+                    // capitalization type issues. Use rust as it is meant to be used, for
+                    // predictable behavior."
+                    "state": card.state,
                     "owner": card.owner.map(|o| o.as_uuid().to_string()),
-                    "priority": format!("{:?}", card.priority),
+                    // Is the hold STILL GOOD? `state` alone cannot answer it: a card sits in
+                    // `Claimed` forever while its lease quietly expires, so a consumer reading
+                    // only the state sees "taken" for work that is free to take. That is the
+                    // exact blindness that stalled every citizen on this node 2026-08-06 —
+                    // 19 cards, all Claimed, all leases stale, all held by the four residents,
+                    // and each of them read the board as "nothing available" and passed.
+                    //
+                    // Carried as a BOOLEAN FACT from the same `claim_is_live` the card line
+                    // renders from, so the anchor and the line can never disagree about whether
+                    // work is takeable. A consumer that wants "available" must not re-derive it
+                    // from a string.
+                    "claim_live": claim_is_live(card, now_ms),
+                    "priority": card.priority,
                     "lane_id": card.lane_id.map(|l| l.as_uuid().to_string()),
                 }),
             });
+        }
+
+        // Cap-truncation counts as dropped just like budget-truncation. Without this the
+        // debug line would report dropped=0 on a capped board and the shortening would be
+        // invisible in the one place an operator looks for it.
+        if dropped == 0 && cards_delivered < board.cards.len() {
+            dropped = board.cards.len() - cards_delivered;
         }
 
         // Budget too small to carry even one card → no block.
@@ -395,6 +737,11 @@ mod tests {
     }
 
     fn card(title: &str, state: CardState, owner: Option<airc_core::PeerId>) -> WorkCard {
+        // An OWNED fixture card carries a LIVE lease by default — matching how a
+        // real claim exists on the board (claim_id + unexpired claim_expires_at_ms).
+        // An owner with NO live lease is the LAPSED shape, built via
+        // `lapse(card(...))` below.
+        let claimed = owner.is_some();
         WorkCard {
             card_id: WorkCardId::new(),
             repo: RepoId::new("acme/continuum").expect("valid repo id in fixture"),
@@ -404,8 +751,8 @@ mod tests {
             lane_id: None,
             state,
             owner,
-            claim_id: None,
-            claim_expires_at_ms: None,
+            claim_id: claimed.then(|| airc_work::ClaimId::from_uuid(uuid::Uuid::new_v4())),
+            claim_expires_at_ms: claimed.then(|| now_unix_ms() + 60_000),
             last_heartbeat_at_ms: None,
             pull_request: None,
             created_by: airc_core::PeerId::new(),
@@ -413,6 +760,63 @@ mod tests {
             updated_at_ms: 1_000_000,
             reviews: None,
         }
+    }
+
+    /// Turn an owned fixture card into the stale-lease shape: claim still on the
+    /// card, lease long expired — what the live board showed for all 17 claims
+    /// on 2026-08-03.
+    fn lapse(mut c: WorkCard) -> WorkCard {
+        c.claim_expires_at_ms = Some(1_000_000); // 1970-adjacent — long expired
+        c
+    }
+
+    /// Stamp a fixture card's creation time — the ordering key the available-work
+    /// lead samples by, so a test can express "this one was dispatched just now".
+    fn created_at(mut c: WorkCard, ms: u64) -> WorkCard {
+        c.created_at_ms = ms;
+        c
+    }
+
+    // what this catches: a card dispatched MINUTES AGO being structurally unshowable.
+    // Only five titles are ever rendered; taken in board order a fresh card lands at the
+    // end and never appears, so the citizen reads an honest "N claimable" above five
+    // titles that are all old. Measured live 2026-08-07: three freshly dispatched bench
+    // cards sat in every citizen's board cache and in NONE of their prompt windows while
+    // the count was correct throughout — the count was never the lie, the sample was.
+    #[tokio::test]
+    async fn freshly_dispatched_work_is_shown_not_merely_counted() {
+        let mut cards: Vec<WorkCard> = (0..8)
+            .map(|i| {
+                created_at(
+                    card(&format!("old backlog card {i}"), CardState::Open, None),
+                    1_000_000 + i as u64,
+                )
+            })
+            .collect();
+        // Dispatched just now, and LAST in board order — the exact live shape.
+        cards.push(created_at(
+            card("bench coder-write-eval: sum_evens", CardState::Open, None),
+            9_000_000_000,
+        ));
+
+        let reader = Arc::new(StubReader::new(snapshot(cards)));
+        let source = RoomBoardSource::new(persona(), reader);
+        let delivery = source
+            .deliver(&ctx(), 4_000, ResolutionPreference::Raw)
+            .await;
+        let lead = delivery
+            .items
+            .iter()
+            .find(|i| i.metadata["kind"] == "available-work-lead")
+            .expect("available-work lead");
+
+        assert!(
+            lead.content.contains("bench coder-write-eval"),
+            "the just-dispatched card must be VISIBLE, not just counted:\n{}",
+            lead.content
+        );
+        // The count stays honest — it always was. This fix is about the sample.
+        assert_eq!(lead.metadata["open_count"], 9);
     }
 
     fn snapshot(cards: Vec<WorkCard>) -> BoardSnapshot {
@@ -431,6 +835,14 @@ mod tests {
     struct StubReader {
         board: BoardSnapshot,
         fail: Mutex<bool>,
+        /// Published aliases the stub knows, standing in for airc's durable
+        /// alias store. Empty by default — an owner with no published name
+        /// renders as its short id, the honest degradation.
+        names: std::collections::HashMap<airc_core::PeerId, String>,
+        /// The `room` param of the LAST `work_board` call — how the
+        /// turn-parametric tests (#443) assert WHICH room's board was read,
+        /// since the stub itself serves one board regardless.
+        last_room: Mutex<Option<Option<uuid::Uuid>>>,
     }
 
     impl StubReader {
@@ -438,7 +850,13 @@ mod tests {
             Self {
                 board,
                 fail: Mutex::new(false),
+                names: std::collections::HashMap::new(),
+                last_room: Mutex::new(None),
             }
+        }
+        fn with_name(mut self, peer: airc_core::PeerId, name: &str) -> Self {
+            self.names.insert(peer, name.to_string());
+            self
         }
         fn set_fail(&self, fail: bool) {
             *self.fail.lock().unwrap() = fail;
@@ -447,11 +865,22 @@ mod tests {
 
     #[async_trait]
     impl RoomBoardReader for StubReader {
-        async fn work_board(&self) -> Result<BoardSnapshot, AircError> {
+        async fn work_board(&self, room: Option<uuid::Uuid>) -> Result<BoardSnapshot, AircError> {
+            *self.last_room.lock().unwrap() = Some(room);
             if *self.fail.lock().unwrap() {
                 return Err(AircError::UnknownPeer(airc_core::PeerId::new()));
             }
             Ok(self.board.clone())
+        }
+
+        async fn peer_names(
+            &self,
+            peers: &[airc_core::PeerId],
+        ) -> std::collections::HashMap<airc_core::PeerId, String> {
+            peers
+                .iter()
+                .filter_map(|p| self.names.get(p).map(|n| (*p, n.clone())))
+                .collect()
         }
     }
 
@@ -459,6 +888,74 @@ mod tests {
     // renders into the [room-kanban] grounding block — every card with its
     // column, title, priority, and owner. This is the Observer perceiving the
     // board (task #117 O6), distinct from active-work's own-claims-only view.
+    // what this catches: THE BOARD EATING THE PROMPT. The per-card loop used to be bounded
+    // only by remaining budget, so it grew with the backlog — measured live 2026-08-17 at 38
+    // cards / 9,284 chars / 49.7% of an 18,697-char system prompt on a routine ambient turn,
+    // ~3,100 of ~12,286 prefill tokens, paid by every citizen on every self-tick. The
+    // property that makes it a defect and not just a cost: a team accumulating work gets
+    // progressively SLOWER at doing it.
+    //
+    // Pins all three halves of the fix — the cap holds, her OWN card survives the cut even
+    // when it is the oldest on the board (relevance order, not board order), and the headline
+    // still reports the TRUE totals so nothing is hidden, only shortened.
+    #[tokio::test]
+    async fn a_large_board_is_capped_and_keeps_her_own_card_first() {
+        let mut cards: Vec<WorkCard> = Vec::new();
+        // Hers, and DELIBERATELY the oldest — under the old board-order loop with a cap this
+        // would be the first thing cut, which is the worst possible card to lose.
+        let mut mine = card("MY held card", CardState::InProgress, Some(
+            airc_core::PeerId::from_uuid(persona()),
+        ));
+        mine.created_at_ms = 1; // oldest on the board
+        cards.push(mine);
+        for i in 0..40 {
+            let mut c = card(&format!("filler card {i}"), CardState::Open, None);
+            c.created_at_ms = 1_000_000 + i as u64; // all newer than hers
+            cards.push(c);
+        }
+        let total = cards.len();
+
+        let reader = Arc::new(StubReader::new(snapshot(cards)));
+        let source = RoomBoardSource::new(persona(), reader);
+        // A budget large enough that the CAP, not the budget, is what binds — otherwise this
+        // would pass for the old reason and prove nothing.
+        let delivery = source
+            .deliver(&ctx(), 100_000, ResolutionPreference::Raw)
+            .await;
+
+        let rendered: Vec<&RagItem> = delivery
+            .items
+            .iter()
+            .filter(|i| i.metadata.get("card_id").is_some())
+            .collect();
+        assert!(
+            rendered.len() <= MAX_RENDERED_CARDS,
+            "board must be capped at {MAX_RENDERED_CARDS}, rendered {} of {total} — \
+             an uncapped board grows into the prompt as the backlog grows",
+            rendered.len()
+        );
+        assert!(
+            rendered.len() >= 10,
+            "the cap must still cover both 5-card leads, got {}",
+            rendered.len()
+        );
+        assert!(
+            rendered[0].content.contains("MY held card"),
+            "her OWN card must survive the cut and lead, even as the oldest on the board: {}",
+            rendered[0].content
+        );
+        // Counts stay TRUE — shortening the render must never shrink the reported board.
+        let headline = &delivery.items[0];
+        assert_eq!(headline.metadata["kind"], "board-headline");
+        assert_eq!(headline.metadata["held_count"], 1);
+        assert_eq!(headline.metadata["open_count"], 40);
+        assert!(
+            headline.content.contains("40 claimable"),
+            "headline reports the real total, not the rendered slice: {}",
+            headline.content
+        );
+    }
+
     #[tokio::test]
     async fn whole_board_surfaces_with_owner_and_state() {
         let holder = airc_core::PeerId::new();
@@ -467,10 +964,13 @@ mod tests {
             card("Review the PR", CardState::Open, None),
         ])));
         let source = RoomBoardSource::new(persona(), reader);
-        let delivery = source.deliver(&ctx(), 1_000, ResolutionPreference::Raw).await;
-        // With one Open card, an available-work lead precedes the card list.
-        assert_eq!(delivery.items.len(), 3);
-        assert_eq!(delivery.items[0].metadata["kind"], "available-work-lead");
+        let delivery = source
+            .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
+            .await;
+        // Headline first, then the available-work lead, then the card list.
+        assert_eq!(delivery.items.len(), 4);
+        assert_eq!(delivery.items[0].metadata["kind"], "board-headline");
+        assert_eq!(delivery.items[1].metadata["kind"], "available-work-lead");
         let cards: Vec<&RagItem> = delivery
             .items
             .iter()
@@ -479,12 +979,106 @@ mod tests {
         assert_eq!(cards.len(), 2);
         assert!(cards[0].content.contains("Wire the projector"));
         assert!(cards[0].content.contains("[InProgress]"));
+        // No alias published for this holder → the short id, which is still
+        // addressable (work/claim and airc DM both take it). NEVER "someone".
         let owner8: String = holder.as_uuid().to_string().chars().take(8).collect();
         assert!(cards[0].content.contains(&owner8));
+        assert!(!cards[0].content.contains("someone"));
         // An unclaimed card is surfaced as such — all owners visible on the board.
         assert!(cards[1].content.contains("unclaimed"));
-        assert_eq!(cards[1].metadata["state"], "Open");
+        // serde, not Debug — one canonical wire form for the enum (see the json! above).
+        assert_eq!(cards[1].metadata["state"], "open");
         assert!(delivery.continuation.is_none());
+    }
+
+    // what this catches: the board's two facts getting SEVERED by a prefix-take.
+    // Read out of Asha's own capture 2026-08-06: her window fit exactly ONE of 31
+    // board units, divisibility handed her the longest fitting prefix — "[your work]
+    // you HOLD 1 card" — and "[available work] 8 claimable" was unit two and died.
+    // She then reported "no open tasks" and was CORRECT about what she could see,
+    // in a room with 8 claimable cards. Four citizens looped on that all day.
+    // The FIRST unit must therefore state BOTH counts, and be small enough to
+    // survive a budget that delivers grounding at all.
+    #[tokio::test]
+    async fn the_first_board_unit_states_both_counts_so_a_prefix_take_cannot_halve_it() {
+        let me = persona();
+        let mut held = card(
+            "The card I hold",
+            CardState::Claimed,
+            Some(airc_core::PeerId::from_uuid(me)),
+        );
+        held.claim_expires_at_ms = Some(now_unix_ms() + 60_000);
+        let open_a = card("Claimable one", CardState::Open, None);
+        let open_b = card("Claimable two", CardState::Open, None);
+
+        let reader = Arc::new(StubReader::new(snapshot(vec![held, open_a, open_b])));
+        let source = RoomBoardSource::new(me, reader);
+        let delivery = source
+            .deliver(&ctx(), 2_000, ResolutionPreference::Raw)
+            .await;
+
+        let first = &delivery.items[0];
+        assert_eq!(
+            first.metadata["kind"], "board-headline",
+            "the headline must LEAD"
+        );
+        assert!(first.content.contains("hold 1"), "{}", first.content);
+        assert!(first.content.contains("2 claimable"), "{}", first.content);
+        // Cheap enough that any budget delivering grounding at all delivers BOTH
+        // facts — the detailed leads are ~10x this and are what should degrade.
+        assert!(
+            first.tokens <= 32,
+            "headline must stay tiny, was {}",
+            first.tokens
+        );
+    }
+
+    // what this catches: THE rule Joel set on 2026-08-06 — "should never say
+    // taken by 'someone', tell them WHO, otherwise they can't reach out. And a
+    // persona could go down too." A peer-held card must render that peer's
+    // PUBLISHED NAME, and a peer whose lease lapsed must still be named so a
+    // citizen can coordinate instead of silently stealing the card. Board
+    // owners resolve through the durable alias store, NOT the presence roster,
+    // precisely so a teammate who went down still holding work stays nameable.
+    #[tokio::test]
+    async fn a_peers_card_names_the_peer_live_and_lapsed_never_bare_hex() {
+        let asha = airc_core::PeerId::new();
+        let mut live = card("Wire the projector", CardState::InProgress, Some(asha));
+        live.claim_expires_at_ms = Some(now_unix_ms() + 60_000);
+        let mut lapsed = card("Windows blocker #1", CardState::Claimed, Some(asha));
+        lapsed.claim_expires_at_ms = Some(1_000_000); // 1970-adjacent — long expired
+
+        let reader =
+            Arc::new(StubReader::new(snapshot(vec![live, lapsed])).with_name(asha, "Asha"));
+        let source = RoomBoardSource::new(persona(), reader);
+        let delivery = source
+            .deliver(&ctx(), 2_000, ResolutionPreference::Raw)
+            .await;
+        let cards: Vec<&RagItem> = delivery
+            .items
+            .iter()
+            .filter(|i| i.metadata.get("card_id").is_some())
+            .collect();
+        assert_eq!(cards.len(), 2);
+
+        let asha8: String = asha.as_uuid().to_string().chars().take(8).collect();
+        // Live hold: named, and the raw hex is GONE from the line.
+        assert!(
+            cards[0].content.contains("owner Asha"),
+            "{}",
+            cards[0].content
+        );
+        assert!(!cards[0].content.contains(&asha8), "{}", cards[0].content);
+        // Lapsed hold: still names WHO held it (so she can reach out) AND says
+        // it is takeable — the two facts that were missing while six citizens
+        // read stale claims as active work and announced "no open tasks".
+        assert!(cards[1].content.contains("Asha"), "{}", cards[1].content);
+        assert!(
+            cards[1].content.contains("claimable"),
+            "{}",
+            cards[1].content
+        );
+        assert!(!cards[1].content.contains(&asha8), "{}", cards[1].content);
     }
 
     // what this catches: the available-work salience lead (#122). Unclaimed cards
@@ -500,12 +1094,20 @@ mod tests {
             card("Already mine", CardState::InProgress, Some(holder)),
         ])));
         let source = RoomBoardSource::new(persona(), reader);
-        let d = source.deliver(&ctx(), 2_000, ResolutionPreference::Raw).await;
-        assert_eq!(d.items[0].metadata["kind"], "available-work-lead");
-        assert_eq!(d.items[0].metadata["open_count"], 2);
-        assert!(d.items[0].content.contains("[available work]"));
-        assert!(d.items[0].content.contains("Compile wordstats"));
-        assert!(d.items[0].content.contains("work/claim"));
+        let d = source
+            .deliver(&ctx(), 2_000, ResolutionPreference::Raw)
+            .await;
+        // Found by KIND, not by index: the headline now leads, and a test that
+        // pins position breaks every time the delivery grows a unit.
+        let lead = d
+            .items
+            .iter()
+            .find(|i| i.metadata["kind"] == "available-work-lead")
+            .expect("open cards must produce an available-work lead");
+        assert_eq!(lead.metadata["open_count"], 2);
+        assert!(lead.content.contains("[available work]"));
+        assert!(lead.content.contains("Compile wordstats"));
+        assert!(lead.content.contains("work/claim"));
 
         // A board with only claimed cards → no lead, just the card list.
         let claimed_only = Arc::new(StubReader::new(snapshot(vec![card(
@@ -525,7 +1127,9 @@ mod tests {
     async fn empty_board_delivers_nothing() {
         let reader = Arc::new(StubReader::new(snapshot(vec![])));
         let source = RoomBoardSource::new(persona(), reader);
-        let delivery = source.deliver(&ctx(), 1_000, ResolutionPreference::Raw).await;
+        let delivery = source
+            .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
+            .await;
         assert!(delivery.items.is_empty());
         assert_eq!(delivery.tokens_used, 0);
         assert!(delivery.continuation.is_none());
@@ -536,13 +1140,15 @@ mod tests {
     #[tokio::test]
     async fn read_error_returns_empty_no_panic() {
         let reader = Arc::new(StubReader::new(snapshot(vec![card(
-        "x",
+            "x",
             CardState::Open,
             None,
         )])));
         reader.set_fail(true);
         let source = RoomBoardSource::new(persona(), reader);
-        let delivery = source.deliver(&ctx(), 1_000, ResolutionPreference::Raw).await;
+        let delivery = source
+            .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
+            .await;
         assert!(delivery.items.is_empty());
         assert_eq!(delivery.resolution_used, ResolutionPreference::Placeholder);
     }
@@ -588,7 +1194,9 @@ mod tests {
         );
         let reader = Arc::new(StubReader::new(snapshot(vec![mine, theirs])));
         let source = RoomBoardSource::new(me, reader);
-        let delivery = source.deliver(&ctx(), 2_000, ResolutionPreference::Raw).await;
+        let delivery = source
+            .deliver(&ctx(), 2_000, ResolutionPreference::Raw)
+            .await;
         let all: String = delivery
             .items
             .iter()
@@ -611,6 +1219,54 @@ mod tests {
         );
     }
 
+    // what this catches: the stale-lease loop attractor (glass-boxed 2026-08-03:
+    // all 17 board claims stale, residents re-orienting on "held" conway/wordstats
+    // cards every wake forever). A card whose claim lease EXPIRED must (a) never
+    // count in "[your work] you HOLD", (b) surface as claimable in the
+    // available-work lead, and (c) render its lapsed state — agreeing with the
+    // #156 lost-claim fact instead of contradicting it every turn.
+    #[tokio::test]
+    async fn lapsed_lease_reads_claimable_not_held() {
+        let me = persona();
+        let stale_mine = lapse(card(
+            "conway game of life",
+            CardState::Claimed,
+            Some(airc_core::PeerId::from_uuid(me)),
+        ));
+        let live_mine = card(
+            "wordstats tests",
+            CardState::Claimed,
+            Some(airc_core::PeerId::from_uuid(me)),
+        );
+        let reader = Arc::new(StubReader::new(snapshot(vec![stale_mine, live_mine])));
+        let source = RoomBoardSource::new(me, reader);
+        let delivery = source
+            .deliver(&ctx(), 2_000, ResolutionPreference::Raw)
+            .await;
+        let all: String = delivery
+            .items
+            .iter()
+            .map(|i| i.content.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            all.contains("[your work] you HOLD 1 card(s)"),
+            "only the LIVE lease is held: {all}"
+        );
+        assert!(
+            all.contains("wordstats tests") && !all.contains("you HOLD 2"),
+            "the lapsed card must not count as held: {all}"
+        );
+        assert!(
+            all.contains("[available work] 1 card(s)"),
+            "the lapsed card is claimable work: {all}"
+        );
+        assert!(
+            all.contains("claim lapsed (was YOURS) — claimable"),
+            "the lapsed card renders its lapse honestly: {all}"
+        );
+    }
+
     // what this catches: a board too large for the budget truncates to the
     // cards that fit and NEVER overspends — a truncated board is truthful for
     // what it names, and truncation is bounded (no partial card, no overspend).
@@ -623,7 +1279,10 @@ mod tests {
         let reader = Arc::new(StubReader::new(snapshot(cards)));
         let source = RoomBoardSource::new(persona(), reader);
         let delivery = source.deliver(&ctx(), 40, ResolutionPreference::Raw).await;
-        assert!(!delivery.items.is_empty(), "at least one card fits budget 40");
+        assert!(
+            !delivery.items.is_empty(),
+            "at least one card fits budget 40"
+        );
         assert!(
             delivery.tokens_used <= 40,
             "overspent: {} > 40",
@@ -640,7 +1299,15 @@ mod tests {
     // work/claim invitations; the SAME room still delivers; an UNSTAMPED ctx
     // (None — background/legacy) keeps pre-gate behavior.
     #[tokio::test]
-    async fn room_bound_board_abstains_outside_its_room() {
+    async fn board_reads_are_turn_parametric_and_exam_contexts_get_nothing() {
+        // what this catches (#443, the round-killer's layer 6): a stamped turn
+        // must read the board OF ITS OWN ROOM — a citizen in a per-run bench
+        // room used to hit the bound-room abstain and take a work turn with NO
+        // board surface. Pins: (1) same-room turn reads the turn room; (2) a
+        // turn in a DIFFERENT room reads THAT room, never the bound one; (3)
+        // the eval fork's synthetic nil context gets NOTHING and never falls
+        // back to the bound room (the exam-bleed pin, unchanged); (4) an
+        // unstamped ctx keeps legacy behavior — bound-room fallback.
         let home = uuid::Uuid::new_v4();
         let p = persona();
         let reader = Arc::new(StubReader::new(snapshot(vec![card(
@@ -648,31 +1315,68 @@ mod tests {
             CardState::Open,
             None,
         )])));
-        let source = RoomBoardSource::new(p, reader).for_room(home);
+        let source = RoomBoardSource::new(p, Arc::clone(&reader) as Arc<dyn RoomBoardReader>)
+            .for_room(home);
 
-        // Turn stamped with the SAME room → delivers.
+        // (1) Turn stamped with the SAME room → delivers, read keyed on it.
         let same = RagContext::for_persona_in_room(p, 1_000, home);
         assert!(
-            !source.deliver(&same, 500, ResolutionPreference::Raw).await.items.is_empty(),
-            "same-room turn must still receive the board"
+            !source
+                .deliver(&same, 500, ResolutionPreference::Raw)
+                .await
+                .items
+                .is_empty(),
+            "same-room turn must receive the board"
         );
-        // Turn stamped with a DIFFERENT room → abstains.
-        let other = RagContext::for_persona_in_room(p, 1_000, uuid::Uuid::new_v4());
+        assert_eq!(*reader.last_room.lock().unwrap(), Some(Some(home)));
+
+        // (2) Turn stamped with a DIFFERENT room → delivers THAT room's board
+        // (the reader is asked for the TURN room; production's reader refuses
+        // rooms the scope has not joined, which is the leak guarantee).
+        let bench = uuid::Uuid::new_v4();
+        let other = RagContext::for_persona_in_room(p, 1_000, bench);
         assert!(
-            source.deliver(&other, 500, ResolutionPreference::Raw).await.items.is_empty(),
-            "another room's turn must NOT receive this room's board"
+            !source
+                .deliver(&other, 500, ResolutionPreference::Raw)
+                .await
+                .items
+                .is_empty(),
+            "a bench-room turn must receive a board — the bench room's own"
         );
-        // The eval fork's synthetic nil context → abstains (the exam-bleed fix).
+        assert_eq!(
+            *reader.last_room.lock().unwrap(),
+            Some(Some(bench)),
+            "the read must be keyed on the TURN room, never the bound one"
+        );
+
+        // (3) The eval fork's synthetic nil context → NOTHING, and the reader
+        // is never consulted (no bound-room fallback for an exam).
+        *reader.last_room.lock().unwrap() = None;
         let exam = RagContext::for_persona_in_room(p, 1_000, uuid::Uuid::nil());
         assert!(
-            source.deliver(&exam, 500, ResolutionPreference::Raw).await.items.is_empty(),
-            "a synthetic exam context must NOT receive the room board"
+            source
+                .deliver(&exam, 500, ResolutionPreference::Raw)
+                .await
+                .items
+                .is_empty(),
+            "a synthetic exam context must NOT receive any board"
         );
-        // Unstamped ctx (None) → pre-gate behavior (delivers).
+        assert_eq!(
+            *reader.last_room.lock().unwrap(),
+            None,
+            "an exam context must not even reach the reader"
+        );
+
+        // (4) Unstamped ctx (None) → pre-gate behavior: bound-room fallback.
         let unstamped = RagContext::for_persona(p, 1_000);
         assert!(
-            !source.deliver(&unstamped, 500, ResolutionPreference::Raw).await.items.is_empty(),
+            !source
+                .deliver(&unstamped, 500, ResolutionPreference::Raw)
+                .await
+                .items
+                .is_empty(),
             "an unstamped ctx keeps legacy behavior"
         );
+        assert_eq!(*reader.last_room.lock().unwrap(), Some(Some(home)));
     }
 }

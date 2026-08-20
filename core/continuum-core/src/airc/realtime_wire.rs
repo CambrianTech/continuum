@@ -4,6 +4,7 @@
 //! `forge.body_hint` contract has one definition.
 
 use airc_core::{Body, Headers, TranscriptEvent};
+use serde::Deserialize;
 use airc_protocol::{FrameKind, HEADER_FORGE_BODY_HINT};
 
 use crate::airc::realtime::{
@@ -74,7 +75,14 @@ pub fn envelope_from_event(
         return Ok(None);
     };
 
-    serde_json::from_value(value.clone())
+    // Borrow-decode: `&Value` is itself a Deserializer, so the envelope is read
+    // in place. The previous `from_value(value.clone())` deep-copied the WHOLE
+    // body first (`from_value` consumes by value, so the clone was reflexive) —
+    // paid per event PER PERSONA, since every citizen's subscribe stream sees
+    // every event. That is the same O(personas x payload) waste the stream-chunk
+    // header guard above exists to avoid; the header decides, the body is never
+    // copied to find out.
+    AircRealtimeEnvelope::deserialize(value)
         .map(Some)
         .map_err(|error| format!("failed to decode continuum airc envelope: {error}"))
 }
@@ -133,21 +141,55 @@ pub fn bus_event_from_envelope(envelope: &AircRealtimeEnvelope) -> Option<BusEve
 /// - `"envelope_decode_error"` — hint present, serde decode FAILED (wire drift);
 /// - `"non_chat_schema"` — a continuum envelope that is not a chat line
 ///   (presence, event-bridge, media-control) — a legit skip.
+/// - `"stream_chunk"` — a live streaming token fragment (`airc.stream.*`
+///   headers): typing-indicator-class traffic whose settled utterance arrives
+///   separately via `say()` — never a spoken line (card 65fca48d).
 ///
 /// Consumers: persona perception (`perceptual_from_event`), the digest element
 /// (`ChannelElement::new` — was the third text-only blind surface), and any
 /// future read surface. One decoder, every reader.
-pub fn room_turn_from_event(
-    event: &TranscriptEvent,
-) -> Result<(uuid::Uuid, String), &'static str> {
+/// Is this event a live streaming token fragment rather than a settled room line?
+///
+/// THE predicate for the stream-chunk contract, in one place, so a caller that needs to
+/// skip chunks BEFORE paying for a decode uses the same rule the decoder does. A chunk is
+/// never a spoken line: the settled utterance arrives separately via `say()`.
+///
+/// Why a caller would want it early: every persona's subscribe stream receives every OTHER
+/// persona's chunks. Measured live 2026-08-04 during a SWE solve — 2644 of 4776 filtered
+/// inbound events (55%) were stream chunks, fanned out identically to all four personas
+/// (1195 each) and decoded-then-discarded by each one independently. That is
+/// O(personas x tokens) of decode work in the attention path, and it made 65% of the probe
+/// stream noise. The earlier response to the same flood was to lower the LOG LEVEL, which
+/// hid it without stopping it ([[persona-cognition-symptoms-are-not-noise-to-suppress-fix-the-mind-or-ask]]).
+pub fn is_stream_chunk(event: &TranscriptEvent) -> bool {
+    event.headers.get(airc_lib::HEADER_STREAM_ID).is_some()
+}
+
+pub fn room_turn_from_event(event: &TranscriptEvent) -> Result<(uuid::Uuid, String), &'static str> {
+    // - `"stream_chunk"` — a live streaming token chunk (`airc.stream.*` headers,
+    //   published by `publish_stream_chunk` as typing-indicator-class traffic).
+    //   By the stream-chunk contract the settled utterance arrives separately via
+    //   `say()`; the chunk is NEVER a spoken room line. Live 2026-07-24 (card
+    //   65fca48d): the daemon publish path classified chunks Durable, so
+    //   `page_recent` returned hours of per-250ms fragments ("Anwen: I",
+    //   "Anwen: see that you're…") as transcript — they flooded every persona's
+    //   digest window (a 21-31 "message" window that was mostly shards of ONE
+    //   utterance), woke peers per fragment, leaked a streamed "PASS" sentinel
+    //   as room content, and starved the repetition detectors of judgeable
+    //   turns. The header check is the receive-side guard that holds regardless
+    //   of how the sender's delivery class was stamped.
+    if is_stream_chunk(event) {
+        return Err("stream_chunk");
+    }
     if let Some(text) = event.body.as_ref().and_then(|b| b.as_text()) {
         return Ok((event.peer_id.as_uuid(), text.to_string()));
     }
     match envelope_from_event(event) {
         Err(_) => Err("envelope_decode_error"),
         Ok(None) => Err("no_continuum_body_hint"),
-        Ok(Some(envelope)) => chat_transcript_message(&envelope, event.peer_id.as_uuid())
-            .ok_or("non_chat_schema"),
+        Ok(Some(envelope)) => {
+            chat_transcript_message(&envelope, event.peer_id.as_uuid()).ok_or("non_chat_schema")
+        }
     }
 }
 
@@ -210,7 +252,11 @@ mod tests {
 
         let (recovered, text) =
             chat_transcript_message(&envelope, relay).expect("chat_transcript must decode");
-        assert_eq!(recovered.to_string(), sender, "logical sender, not the relay");
+        assert_eq!(
+            recovered.to_string(),
+            sender,
+            "logical sender, not the relay"
+        );
         assert_eq!(text, "is anyone there?");
     }
 
@@ -238,7 +284,10 @@ mod tests {
 
         let (recovered, text) =
             chat_transcript_message(&envelope, relay).expect("chat_transcript must decode");
-        assert_eq!(recovered, relay, "omitted senderId recovers to the relay peer");
+        assert_eq!(
+            recovered, relay,
+            "omitted senderId recovers to the relay peer"
+        );
         assert_eq!(text, "hello");
     }
 

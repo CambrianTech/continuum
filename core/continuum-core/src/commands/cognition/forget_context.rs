@@ -20,7 +20,10 @@ use crate::modules::cognition::CognitionState;
 use crate::sdk_codegen::CommandError;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/ForgetContextParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/ForgetContextParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ForgetContextParams {
     /// Persona whose episode is being forgotten.
@@ -37,7 +40,10 @@ pub struct ForgetContextParams {
 
 /// How much was forgotten, and what remains.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/ForgetContextResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/ForgetContextResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ForgetContextResult {
     /// Engrams dropped (all tagged with the episode's context id).

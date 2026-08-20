@@ -31,7 +31,10 @@ fn default_limit() -> usize {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/RecallEngramsParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/RecallEngramsParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct RecallEngramsParams {
     /// Persona whose engram store is queried.
@@ -61,7 +64,10 @@ pub struct RecallEngramsParams {
 
 /// The recalled engrams and their count.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/RecallEngramsResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/RecallEngramsResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct RecallEngramsResult {
     pub engrams: Vec<Engram>,
@@ -123,10 +129,11 @@ crate::action_command! {
                     "airc" => EngramOriginKind::Airc,
                     "tool" => EngramOriginKind::Tool,
                     "self_reflection" => EngramOriginKind::SelfReflection,
+                    "agent" => EngramOriginKind::Agent,
                     other => {
                         return Err(CommandError::Invalid(format!(
                             "unknown origin kind '{other}'; expected one of: \
-                             chat, airc, tool, self_reflection"
+                             chat, airc, tool, self_reflection, agent"
                         )))
                     }
                 };

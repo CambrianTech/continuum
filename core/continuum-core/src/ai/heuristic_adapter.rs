@@ -51,9 +51,7 @@
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 
-use crate::ai::adapter::{
-    AIProviderAdapter, AdapterCapabilities, ApiStyle, InferenceDevice,
-};
+use crate::ai::adapter::{AIProviderAdapter, AdapterCapabilities, ApiStyle, InferenceDevice};
 use crate::ai::types::{
     ChatMessage, ContentPart, CostPer1kTokens, FinishReason, HealthState, HealthStatus,
     MessageContent, ModelInfo, TextGenerationRequest, TextGenerationResponse, UsageMetrics,
@@ -72,10 +70,12 @@ pub const HEURISTIC_DEFAULT_MODEL: &str = "heuristic-echo-v1";
 
 /// Echo length cap — last N chars of the most recent user message
 /// surfaces in the response.
+// context-budget-exempt: a TEST-ONLY canned adapter's echo width (gated behind test-fixtures); never a live bound
 const ECHO_CHARS: usize = 200;
 
 /// Char-to-token ratio (same rough heuristic the rest of the L1 RAG
 /// pipeline uses for cost estimation).
+// context-budget-exempt: a chars-per-token UNIT CONVERSION in the test fixture's fake token accounting
 const CHARS_PER_TOKEN: usize = 4;
 
 /// The adapter struct itself. No mutable state, no clock access, no
@@ -265,8 +265,14 @@ impl HeuristicInferenceAdapter {
     pub fn build_response_text(req: &TextGenerationRequest) -> String {
         let prefix = Self::determinism_prefix(req);
         let last = Self::last_user_text(&req.messages);
-        let echoed: String = last.chars().rev().take(ECHO_CHARS).collect::<String>()
-            .chars().rev().collect();
+        let echoed: String = last
+            .chars()
+            .rev()
+            .take(ECHO_CHARS)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
         let plain = if echoed.is_empty() {
             format!("[heuristic:{prefix}] ack: (no user text in prompt)")
         } else {
@@ -280,11 +286,8 @@ impl HeuristicInferenceAdapter {
             // the rag_inspect inference probe's JSON parser is
             // exercised end-to-end. `will_respond: true` keeps the
             // happy path going.
-            let inner =
-                serde_json::to_string(&plain).expect("plain string serializes");
-            return format!(
-                "{{\"will_respond\":true,\"response\":{inner}}}"
-            );
+            let inner = serde_json::to_string(&plain).expect("plain string serializes");
+            return format!("{{\"will_respond\":true,\"response\":{inner}}}");
         }
         plain
     }
@@ -312,7 +315,6 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
         false
     }
 
-
     fn capabilities(&self) -> AdapterCapabilities {
         // Heuristic adapter intentionally advertises only text I/O — tool
         // use, vision, embeddings, etc. are peer-adapter territory (per
@@ -323,8 +325,8 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
             // Local in the "no network, no GPU" sense.
             is_local: true,
             // Effectively unlimited — we never reject by length.
-            max_context_window: u32::MAX,
-            max_output_tokens: 4096,
+            max_context_window: Some(u32::MAX),
+            max_output_tokens: Some(4096),
             // Deterministic text-only adapter — no protocols beyond text I/O.
             tool_call_protocol: crate::model_registry::ToolProtocol::None,
             structured_output_protocol: crate::ai::adapter::StructuredOutputProtocol::None,
@@ -379,8 +381,7 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
         // future simulated-network adapters. Production callers use
         // `new()` with delay=0 and pay zero overhead.
         if self.inject_delay_ms > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(self.inject_delay_ms))
-                .await;
+            tokio::time::sleep(std::time::Duration::from_millis(self.inject_delay_ms)).await;
         }
         let model = request
             .model
@@ -626,7 +627,9 @@ mod tests {
     async fn usage_metrics_are_populated_and_nonzero_for_nonempty_prompt() {
         let adapter = HeuristicInferenceAdapter::new();
         let resp = adapter
-            .generate_text(req_with(vec![user_msg("a long-ish prompt here for token estimation")]))
+            .generate_text(req_with(vec![user_msg(
+                "a long-ish prompt here for token estimation",
+            )]))
             .await
             .unwrap();
         assert!(resp.usage.input_tokens > 0);
@@ -710,8 +713,7 @@ mod tests {
         use crate::genome::working_set::ArtifactId;
         use crate::identity::PeerId;
         use crate::inference::llm_module::{
-            CompositionPlan, GenerationBudget, InferenceRequest, InferenceRequestId,
-            SamplingParams,
+            CompositionPlan, GenerationBudget, InferenceRequest, InferenceRequestId, SamplingParams,
         };
         use crate::inference::llm_module_service::{InferenceLlmModule, COMMAND_REQUEST};
         use crate::runtime::service_module::{CommandResult, ServiceModule};

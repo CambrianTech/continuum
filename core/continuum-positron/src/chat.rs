@@ -353,6 +353,87 @@ pub struct RosterSlotView {
     #[serde(default)]
     #[ts(optional)]
     pub loadout: Option<Loadout>,
+    /// URL of this member's avatar IMAGE, when the producing node has one
+    /// stored (`~/.continuum/avatars/<peer-id>.png`, served under
+    /// `/avatars/…` by the client's static tier). Neutral like every other
+    /// slot field: positron transports the URL, never the pixels, and never
+    /// interprets it. `None` = no stored avatar — the renderer draws its
+    /// glyph fallback, never a broken image or a fabricated face
+    /// ([[fallbacks-are-illegal-fail-loud]]). `#[serde(default)]` so a slot
+    /// serialized before this field folds as absent, never dropped.
+    #[serde(default)]
+    #[ts(optional)]
+    pub avatar_url: Option<String>,
+    /// NAMES of the member's loaded skill overlays (a continuum persona's
+    /// paged-in LoRA genes), in load order — the label half of a `genome`
+    /// vital that carries only a normalized count. Transported, NOT
+    /// interpreted (same neutral discipline as `vitals`): the app decides how
+    /// to render them (segment tooltips). Empty = none loaded/reported —
+    /// honest-absent, never fabricated labels. `#[serde(default)]` so a slot
+    /// serialized before this field folds as empty, never dropped.
+    #[serde(default)]
+    pub genes: Vec<String>,
+    /// Pronouns from the member's published airc identity card (e.g. "she",
+    /// "they"). Transported verbatim, never derived by positron. `None` =
+    /// no card published — honest-absent (#262).
+    #[serde(default)]
+    #[ts(optional)]
+    pub pronouns: Option<String>,
+    /// One-tag role from the identity card (e.g. "continuum-persona-helper",
+    /// "continuum-substrate-eng", "human"). Free-form, transported verbatim —
+    /// distinct from the coarse styling `kind`. `None` = no card.
+    #[serde(default)]
+    #[ts(optional)]
+    pub role_label: Option<String>,
+    /// One-sentence bio from the identity card — the "who is this citizen"
+    /// line a roster hover / citizen page renders. Transported verbatim.
+    /// `None` = no card published; never a fabricated blurb.
+    #[serde(default)]
+    #[ts(optional)]
+    pub bio: Option<String>,
+}
+
+/// One tool ACT a room member performed — the transcript's collapsed-receipt
+/// row (the Claude-iOS pattern: "Ran 4 commands ›" between speech bubbles;
+/// web expands in place, mobile opens a sheet). The room IS the activity's
+/// full event stream, and speech-only transcripts hide the work.
+///
+/// Neutral like [`ChatMessageView`]: ANY adopter's agent acts. `tool` is an
+/// opaque verb name the producing substrate executed (`"code/read"`,
+/// `"code/shell"`, …) and `summary` a one-line human object the PRODUCER
+/// composed ("sympy/core/mul.py", "pytest -x") — positron transports both,
+/// never parses args. The renderer owns collapsing consecutive receipts by
+/// one actor into a single line; the wire stays one-row-per-act so every
+/// client (web / mobile / TUI / persona observer) folds the same facts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/positron/ActReceiptView.ts"
+)]
+pub struct ActReceiptView {
+    /// Unique id of this receipt (producer-minted; dedup key on redelivery).
+    #[ts(type = "string")]
+    pub id: Uuid,
+    #[ts(type = "string")]
+    pub room_id: Uuid,
+    /// The member whose hands acted — same id space as
+    /// [`RosterSlotView::member_id`] / [`ChatMessageView::sender_id`].
+    #[ts(type = "string")]
+    pub actor_id: Uuid,
+    /// Display name resolved at the substrate side (same contract as
+    /// `ChatMessageView.sender_name` — renderers never re-resolve).
+    pub actor_name: String,
+    /// Opaque tool/verb name as executed. Transported, not interpreted.
+    pub tool: String,
+    /// One-line human summary of the OBJECT acted on, producer-composed.
+    /// Empty = the producer had nothing legible to say beyond the verb —
+    /// honest-thin, never fabricated arguments.
+    pub summary: String,
+    /// Whether the act's execution succeeded (dispatch-level truth).
+    pub ok: bool,
+    /// Unix-ms substrate-local time of execution.
+    #[ts(type = "number")]
+    pub timestamp: u64,
 }
 
 /// Top-level state for the `"chat"` widget kind. Fills
@@ -398,6 +479,13 @@ pub struct ChatViewState {
     /// Members present in the room. Roster is bounded by presence —
     /// the substrate hosts at most a handful at a time.
     pub roster: Vec<RosterSlotView>,
+    /// Recent tool ACTS members performed in this room, oldest first —
+    /// the transcript's receipt stream, interleaved with `messages` by
+    /// timestamp at render time (#243: tool actions show IN chats).
+    /// Bounded like `messages`; `#[serde(default)]` so a snapshot minted
+    /// before this field folds as empty — honest-absent, never dropped.
+    #[serde(default)]
+    pub acts: Vec<ActReceiptView>,
 }
 
 /// `ChatViewState` IS a positron `ViewState` — the type-level bridge
@@ -577,6 +665,9 @@ mod tests {
         // message to the wrong origin.
         assert_eq!(Provenance::unresolved().runtime, "");
         let slot = RosterSlotView {
+            pronouns: None,
+            role_label: None,
+            bio: None,
             member_id: Uuid::from_u128(0xd),
             display_name: "Helper".into(),
             kind: SenderKind::Agent,
@@ -589,6 +680,8 @@ mod tests {
             last_seen_ms: 1_700_000_000_000,
             vitals: BTreeMap::new(),
             loadout: None,
+            avatar_url: None,
+            genes: Vec::new(),
         };
         let back: RosterSlotView =
             serde_json::from_str(&serde_json::to_string(&slot).unwrap()).unwrap();
@@ -637,6 +730,9 @@ mod tests {
                 timestamp: 1_700_000_000_000,
             }],
             roster: vec![RosterSlotView {
+            pronouns: None,
+            role_label: None,
+            bio: None,
                 member_id: Uuid::from_u128(0xd),
                 display_name: "Helper".into(),
                 kind: SenderKind::Agent,
@@ -649,7 +745,10 @@ mod tests {
                 last_seen_ms: 1_700_000_000_000,
                 vitals: BTreeMap::new(),
                 loadout: None,
+                avatar_url: None,
+            genes: Vec::new(),
             }],
+        acts: vec![],
         };
         let json = serde_json::to_string(&state).unwrap();
         let back: ChatViewState = serde_json::from_str(&json).unwrap();
@@ -677,6 +776,7 @@ mod tests {
             purpose: "chat".into(),
             messages: vec![],
             roster: vec![],
+        acts: vec![],
         };
         assert_eq!(state.kind(), "chat");
         assert_eq!(

@@ -18,7 +18,10 @@ use crate::persona::evaluator::{SleepMode, SleepState};
 use crate::sdk_codegen::CommandError;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/SetSleepModeParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/SetSleepModeParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct SetSleepModeParams {
     /// Persona whose attention mode is set.
@@ -36,7 +39,10 @@ pub struct SetSleepModeParams {
 }
 
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/SetSleepModeResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/SetSleepModeResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct SetSleepModeResult {
     pub set: bool,

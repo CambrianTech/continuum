@@ -157,70 +157,157 @@ pub fn produce(
             return;
         };
 
-        // The persona's own hands: a Connection carrying its LocalPersona identity
-        // through the wired executor, so the Privileged submit is gated AS the
-        // persona ([[persona-is-a-client]]). `persona_id` IS the airc `peer_id`
-        // (equal by invariant — see `PersonaInstanceInfo`, "the substrate's
-        // universal actor identifier per Slice 1B of #142"); the param is named
-        // `peer_id` because that's the cryptographic identity the gate routes on.
-        let conn = Connection::new(InProcessTransport::new(
+        // One submit path, N experience sources — the live turn is the "live-turn"
+        // provenance into the shared flywheel entry.
+        submit_plan(
+            persona_id,
+            persona_name,
+            base_model,
             executor,
-            Some(CallerIdentity::local_persona(
-                crate::identity::PeerId::from_uuid(persona_id),
-            )),
-        ));
+            plan,
+            "live-turn",
+        )
+        .await;
+    });
+}
 
-        let example = TrainingExample {
-            prompt: plan.prompt,
-            completion: plan.completion,
-            metadata: Some(json!({
-                "source": "live-turn",
-                "quality": plan.quality,
-                "domain": plan.trait_kind,
-            })),
-        };
-        // Wire form per genome/training-trigger/submit (camelCase). `source: raw`
-        // = unfiltered live capture (TrainingSource::Raw). minExamples omitted →
-        // DEFAULT_MIN_EXAMPLES; the trigger auto-fires job-create at the threshold.
-        //
-        // `evalSet` rides the recipe's {trait → gym} edge: the committed gym that
-        // MEASURES `plan.trait_kind`, looked up in `cognition::gym::gym_for_trait`.
-        // When the trait HAS a gym (e.g. `code`), it is declared so the L3 sentinel
-        // can A/B and adopt the auto-produced gene — this is what lets the AUTOMATIC
-        // loop close, not just a hand-dispatched job. When the trait has NO gym
-        // (e.g. `conversation`), the field is OMITTED (→ None) and the sentinel
-        // REFUSES to adopt the gene as unmeasurable rather than grading it against
-        // the wrong gym ([[fallbacks-are-illegal-fail-loud]]) — never paged into a
-        // live persona on a gym that doesn't measure its trait.
-        let mut params = json!({
-            "personaId": persona_id,
-            "personaName": persona_name,
-            "baseModel": base_model,
-            "traitKind": plan.trait_kind,
-            "examples": [example],
-            "source": "raw",
-        });
-        if let Some(eval_set) = crate::cognition::gym::gym_for_trait(&plan.trait_kind) {
-            if let serde_json::Value::Object(ref mut map) = params {
-                map.insert(
-                    "evalSet".into(),
-                    serde_json::Value::String(eval_set.to_string()),
-                );
-            }
-        }
+/// Plan a RECEIVED lesson (one another agent taught via `memory/share` #2025) for
+/// the SAME training flywheel — the efferent wiring for the being-loop's third axis
+/// ([[lived-and-eval-experience-are-one-stream-one-being]]). Pure: classify + package,
+/// no I/O.
+///
+/// Unlike [`plan`], there is **no `MIN_TRAINING_QUALITY` gate**: a received lesson's
+/// salience is its PROVENANCE — someone deliberately chose to teach it (`ReceivedSalience`,
+/// where provenance IS the signal), not a chat-interaction score designed for live
+/// `(stimulus → reply)` turns. A terse-but-important lesson must not be filtered by a
+/// heuristic built for a different shape. We DO classify the domain, so the lesson buckets
+/// into the gym that MEASURES its trait — the sentinel still refuses to page in a gene the
+/// benchmark-lift gate (#59) didn't clear, so unmeasurable lessons train but never adopt
+/// ([[fallbacks-are-illegal-fail-loud]]). `quality = 1.0`: the deliberate act of sharing.
+pub fn plan_received(classifier: &DomainClassifier, topic: &str, lesson: &str) -> SubmitPlan {
+    let domain = classifier.classify(&format!("{topic}\n{lesson}")).domain;
+    SubmitPlan {
+        trait_kind: domain,
+        prompt: topic.to_string(),
+        completion: lesson.to_string(),
+        quality: 1.0,
+    }
+}
 
-        if let Err(e) = conn
-            .commands()
-            .execute_value("genome/training-trigger/submit", params)
-            .await
-        {
-            tracing::warn!(
-                persona = %persona_id,
-                error = %e,
-                "training_producer: submit failed (best-effort, turn unaffected)"
+/// Submit ONE received lesson into the live training flywheel — the being-loop going
+/// live for the received axis. Best-effort and non-blocking (mirrors [`produce`]): a
+/// lesson one agent learned becomes another's trained-in capability, gated per-consolidation
+/// by whole-being benchmark lift (the trigger's gym-`evalSet` → the L3 sentinel). Quietly a
+/// no-op before the executor is installed (tests / early boot). `topic` frames the lesson
+/// (its scope); `lesson` is the deliberately-authored knowledge (the completion).
+pub fn produce_received(
+    persona_id: Uuid,
+    persona_name: String,
+    base_model: String,
+    topic: String,
+    lesson: String,
+) {
+    let Some(executor) = EXECUTOR.cloned() else {
+        tracing::debug!(
+            persona = %persona_id,
+            "training_producer: executor not installed yet — skipping received-lesson consolidation"
+        );
+        return;
+    };
+    tokio::spawn(async move {
+        let classifier = CLASSIFIER.get_or_init(DomainClassifier::new);
+        let plan = plan_received(classifier, &topic, &lesson);
+        submit_plan(
+            persona_id,
+            persona_name,
+            base_model,
+            executor,
+            plan,
+            "received-lesson",
+        )
+        .await;
+    });
+}
+
+/// Build the wire params for `genome/training-trigger/submit` from a plan — the ONE
+/// payload contract, pure + `pub` so a synchronous caller (`memory/consolidate`
+/// dispatching received lessons on demand) produces byte-identical params to the
+/// fire-and-forget producers. `source: raw` = unfiltered capture; minExamples omitted →
+/// DEFAULT_MIN_EXAMPLES (the trigger auto-fires job-create at the threshold). `evalSet`
+/// rides the {trait → gym} edge: the committed gym that MEASURES `plan.trait_kind`. When
+/// the trait HAS a gym it is declared so the L3 sentinel can A/B and adopt the gene; when
+/// it has NONE the field is OMITTED and the sentinel REFUSES to adopt as unmeasurable
+/// ([[fallbacks-are-illegal-fail-loud]]) — never paged into a live persona on a gym that
+/// doesn't measure its trait. `provenance` is metadata only (live-turn vs received-lesson).
+pub fn build_submit_params(
+    persona_id: Uuid,
+    persona_name: &str,
+    base_model: &str,
+    plan: &SubmitPlan,
+    provenance: &str,
+) -> serde_json::Value {
+    let example = TrainingExample {
+        prompt: plan.prompt.clone(),
+        completion: plan.completion.clone(),
+        metadata: Some(json!({
+            "source": provenance,
+            "quality": plan.quality,
+            "domain": plan.trait_kind,
+        })),
+    };
+    let mut params = json!({
+        "personaId": persona_id,
+        "personaName": persona_name,
+        "baseModel": base_model,
+        "traitKind": plan.trait_kind,
+        "examples": [example],
+        "source": "raw",
+    });
+    if let Some(eval_set) = crate::cognition::gym::gym_for_trait(&plan.trait_kind) {
+        if let serde_json::Value::Object(ref mut map) = params {
+            map.insert(
+                "evalSet".into(),
+                serde_json::Value::String(eval_set.to_string()),
             );
         }
-    });
+    }
+    params
+}
+
+/// The shared submit tail used by BOTH producers ([`produce`], [`produce_received`]):
+/// build the persona's identity-bearing `Connection`, package the plan via
+/// [`build_submit_params`], and dispatch `genome/training-trigger/submit`. Identical
+/// flywheel entry for a live turn and a received lesson — only the `provenance` label
+/// differs. One submit path, N experience sources.
+async fn submit_plan(
+    persona_id: Uuid,
+    persona_name: String,
+    base_model: String,
+    executor: Arc<CommandExecutor>,
+    plan: SubmitPlan,
+    provenance: &'static str,
+) {
+    // The persona's own hands: a Connection carrying its LocalPersona identity through
+    // the wired executor, so the Privileged submit is gated AS the persona
+    // ([[persona-is-a-client]]). `persona_id` IS the airc `peer_id` (equal by invariant).
+    let conn = Connection::new(InProcessTransport::new(
+        executor,
+        Some(CallerIdentity::local_persona(
+            crate::identity::PeerId::from_uuid(persona_id),
+        )),
+    ));
+    let params = build_submit_params(persona_id, &persona_name, &base_model, &plan, provenance);
+    if let Err(e) = conn
+        .commands()
+        .execute_value("genome/training-trigger/submit", params)
+        .await
+    {
+        tracing::warn!(
+            persona = %persona_id,
+            error = %e,
+            "training_producer: submit failed (best-effort, turn unaffected)"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -275,11 +362,43 @@ mod tests {
             the test passes against the typescript interface.";
         let p = plan(&classifier, "Why does my Rust function panic?", code_reply)
             .expect("a substantive code reply must clear the quality gate");
-        assert_eq!(p.trait_kind, "code", "a code turn must bucket as the code trait");
+        assert_eq!(
+            p.trait_kind, "code",
+            "a code turn must bucket as the code trait"
+        );
         assert_eq!(
             crate::cognition::gym::gym_for_trait(&p.trait_kind),
             Some("docs/genome/coder-eval.jsonl"),
             "the code trait must resolve to a measuring gym so the gene is adoptable"
+        );
+    }
+
+    // what this catches: the being-loop's THIRD axis reaching the live flywheel.
+    // plan_received returns a plan UNCONDITIONALLY — no chat-quality gate, because a
+    // deliberately-shared lesson's salience is its PROVENANCE (ReceivedSalience), not a
+    // score built for live (stimulus→reply) turns. It still classifies a domain (bucket
+    // non-empty) so the lesson lands in a gym that MEASURES it — the sentinel then adopts
+    // the auto-produced gene only if it lifts the benchmark (#59). This is telepathy
+    // reaching weights: a lesson one agent learns becomes another's trained capability.
+    #[test]
+    fn received_lesson_skips_chat_quality_gate_but_stays_classified() {
+        let classifier = DomainClassifier::new();
+
+        // A terse lesson — the kind the live-turn quality gate is designed to drop —
+        // still produces a plan, because plan_received returns SubmitPlan, not Option.
+        let p = plan_received(&classifier, "airc", "the call room IS the airc room");
+        assert_eq!(p.prompt, "airc", "the topic frames the lesson");
+        assert_eq!(
+            p.completion, "the call room IS the airc room",
+            "the lesson is the trained-in completion"
+        );
+        assert_eq!(
+            p.quality, 1.0,
+            "provenance IS the quality signal — a deliberately shared lesson is not gated"
+        );
+        assert!(
+            !p.trait_kind.is_empty(),
+            "still classified into a bucket so it maps to a measuring gym"
         );
     }
 }

@@ -288,14 +288,38 @@ macro_rules! declare_event_spec {
     };
 }
 
-declare_event_spec!(ContractProposedEvent, EVENT_CONTRACT_PROPOSED, ContractProposedPayload);
+declare_event_spec!(
+    ContractProposedEvent,
+    EVENT_CONTRACT_PROPOSED,
+    ContractProposedPayload
+);
 declare_event_spec!(ContractBidEvent, EVENT_CONTRACT_BID, ContractBidPayload);
-declare_event_spec!(ContractAcceptedEvent, EVENT_CONTRACT_ACCEPTED, ContractAcceptedPayload);
-declare_event_spec!(ContractExecutingEvent, EVENT_CONTRACT_EXECUTING, ContractExecutingPayload);
-declare_event_spec!(ContractDeliveredEvent, EVENT_CONTRACT_DELIVERED, ContractDeliveredPayload);
-declare_event_spec!(ContractVerifiedEvent, EVENT_CONTRACT_VERIFIED, ContractVerifiedPayload);
+declare_event_spec!(
+    ContractAcceptedEvent,
+    EVENT_CONTRACT_ACCEPTED,
+    ContractAcceptedPayload
+);
+declare_event_spec!(
+    ContractExecutingEvent,
+    EVENT_CONTRACT_EXECUTING,
+    ContractExecutingPayload
+);
+declare_event_spec!(
+    ContractDeliveredEvent,
+    EVENT_CONTRACT_DELIVERED,
+    ContractDeliveredPayload
+);
+declare_event_spec!(
+    ContractVerifiedEvent,
+    EVENT_CONTRACT_VERIFIED,
+    ContractVerifiedPayload
+);
 declare_event_spec!(ContractPaidEvent, EVENT_CONTRACT_PAID, ContractPaidPayload);
-declare_event_spec!(ContractDisputedEvent, EVENT_CONTRACT_DISPUTED, ContractDisputedPayload);
+declare_event_spec!(
+    ContractDisputedEvent,
+    EVENT_CONTRACT_DISPUTED,
+    ContractDisputedPayload
+);
 
 // ─── EventClass registration helper ───────────────────────────────────────
 

@@ -74,7 +74,10 @@ fn evict_amount_for(pool: &dyn ResourcePool) -> u64 {
 /// — operators can pattern-match without stringly-typed comparisons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
-#[ts(export, export_to = "../../../protocol/typescript/paging/PressureTier.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/paging/PressureTier.ts"
+)]
 pub enum PressureTier {
     /// All pools comfortably under their budgets.
     Normal,
@@ -408,7 +411,6 @@ impl PressureBroker {
             bytes_freed_total: *self.bytes_freed.lock(),
         }
     }
-
 }
 
 #[cfg(test)]

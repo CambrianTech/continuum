@@ -15,17 +15,32 @@
  * faithfully carries what the seam produced, without a browser.
  */
 
+// Time-of-day rendering is VIEWER-LOCAL by design, so the fixed HH:MM assertions
+// below need a pinned zone to be deterministic on any runner (PR #2057 review).
+// The pin lives in `vite.config.ts` under `test.env`, NOT here: `process` is a
+// node global, and this tier's tsconfig sets `"types": []` deliberately — it is
+// the browser tier, and admitting node globals would defeat that guard.
+
 import { describe, it, expect } from 'vitest';
-import { chatStateFromEnvelope, chatViewModel, CHAT_KIND } from '@continuum/chat-view';
+import { chatStateFromEnvelope, chatViewModel, roomsListingFromNav, CHAT_KIND } from '@continuum/chat-view';
+import { RoomsPanel } from '../render/RoomsPanel';
 import type { ChatViewModel } from '@continuum/chat-view';
 import type {
   ChatMessageView,
   ChatViewState,
+  NavViewState,
   RosterSlotView,
   SenderKind,
   StateEnvelope,
 } from '@continuum/sdk-typescript';
 import { renderChat } from './renderChat';
+import {
+  LISTING_SELECT,
+  avatarState,
+  navSelectTarget,
+  roomSelectTarget,
+  type ListingSelectDetail,
+} from '../render/parts';
 
 const kind = (k: SenderKind['kind']): SenderKind => ({ kind: k });
 
@@ -38,6 +53,7 @@ const member = (over: Partial<RosterSlotView> = {}): RosterSlotView => ({
   active: true,
   last_seen_ms: 0,
   vitals: {},
+  genes: [],
   ...over,
 });
 
@@ -56,8 +72,13 @@ const message = (over: Partial<ChatMessageView> = {}): ChatMessageView => ({
 
 /** Project a `ChatViewState` payload through the exact pipe apps/web's index.ts
  *  runs, so the renderer is fed what the seam actually produces. */
-const project = (payload: ChatViewState): ChatViewModel => {
-  const env: StateEnvelope = { kind: CHAT_KIND, revision: 1, layer: 'ephemeral', payload };
+const project = (payload: Omit<ChatViewState, 'acts'> & { acts?: ChatViewState['acts'] }): ChatViewModel => {
+  const env: StateEnvelope = {
+    kind: CHAT_KIND,
+    revision: 1,
+    layer: 'ephemeral',
+    payload: { acts: [], ...payload },
+  };
   return chatViewModel(chatStateFromEnvelope(env));
 };
 
@@ -148,7 +169,7 @@ describe('renderChat (Lit)', () => {
     const chunks = flatten(renderChat(withVitals));
     expect(chunks).toContain('SPD'); // the stat label (speed → SPD)
     expect(chunks).toContain('80'); // the fill width value (single member → unambiguous)
-    expect(markup(withVitals)).toContain('stat-fill'); // the meter bar rendered
+    expect(markup(withVitals)).toContain('meter-fill'); // the meter bar rendered
 
     // A member reporting no vitals → no meter markup at all.
     const noVitals = project({
@@ -158,7 +179,48 @@ describe('renderChat (Lit)', () => {
       roster: [member({ member_id: 'j', display_name: 'Joel', kind: kind('human'), vitals: {} })],
       messages: [],
     });
-    expect(markup(noVitals)).not.toContain('stat-fill');
+    expect(markup(noVitals)).not.toContain('meter-fill');
+  });
+
+  // what this catches: the QUE revival + the GENOME instrument panel. `queue`
+  // present-at-0 must still DRAW its labelled empty track (the reference tile's
+  // empty QUE row — an idle persona is visible, not blank); a member with live
+  // vitals draws the four-slot genome panel, and a radiated gene NAME reaches
+  // the lit slot's tooltip (real adapter names, never anonymous chips).
+  it('draws the QUE track at zero and names lit genome slots from genes', () => {
+    const view = project({
+      room_id: 'room-1',
+      room_name: 'general',
+      purpose: 'chat',
+      roster: [
+        member({
+          member_id: 'a',
+          display_name: 'Asha',
+          kind: kind('agent'),
+          vitals: { activity: 0, queue: 0 },
+          genes: ['rust-hands'],
+        }),
+      ],
+      messages: [],
+    });
+    const chunks = flatten(renderChat(view));
+    expect(chunks).toContain('QUE'); // the labelled track drew at 0
+    const html = markup(view);
+    expect(html).toContain('genome-panel');
+    expect(html).toContain('genome-slot'); // the four equipment slots
+    expect(html).toContain('rust-hands'); // the lit slot is NAMED by its gene
+  });
+
+  // what this catches: the avatar ring's state ladder — error outranks the live
+  // token rail's `speaking` overlay, which outranks the (2s-sampled) radiator
+  // thinking heuristic, which outranks bare presence. A mis-ranked ladder shows
+  // a green idle ring on a persona mid-sentence.
+  it('avatarState ranks error > speaking > thinking > presence', () => {
+    expect(avatarState({ error: 1, speaking: 100 }, true)).toBe('error');
+    expect(avatarState({ speaking: 100, reason: 90 }, true)).toBe('speaking');
+    expect(avatarState({ reason: 90 }, true)).toBe('thinking');
+    expect(avatarState({}, true)).toBe('active');
+    expect(avatarState({}, false)).toBe('idle');
   });
 
   // what this catches: a member's LOADOUT must DRAW the model·size·ctx strip with
@@ -204,6 +266,132 @@ describe('renderChat (Lit)', () => {
     const text = markup(vm);
     expect(text).toContain('No messages yet — say hello.');
     expect(text).not.toMatch(/error/i);
+  });
+
+  // what this catches: the TAB STRIP must render whenever the citizen's nav
+  // has ANY open activity — the focused room IS an open tab. The old `> 1`
+  // gate hid the whole bar on a one-room node (glass-boxed live 2026-07-29:
+  // nav delivered exactly [cambriantech] and the surface showed no tabs at
+  // all), which reads as "tabs don't exist", not "one tab is open".
+  it('renders the tab strip even when nav carries a single open room', () => {
+    const vm = project({ room_id: 'room-1', room_name: 'general', purpose: 'chat', roster: [], messages: [] });
+    const nav: NavViewState = {
+      user_id: 'me',
+      current_tab: 'room-1',
+      open_tabs: [{ id: 'room-1', title: 'general', kind: 'room', unread: 0, purpose: 'chat' }],
+      last_read: {},
+      bookmarks: [],
+    };
+    const text = flatten(renderChat(vm, { nav })).join('');
+    expect(text).toContain('tab-bar');
+  });
+
+  // what this catches: brick 1's remainder — the rooms-rail cells must be
+  // SELECTABLE: each cell carries a click handler that fires the composed
+  // LISTING_SELECT event with the ROOMS listing id + that cell's room id (the
+  // detail `roomSelectTarget` routes to `nav/select`). A regression here means
+  // clicking a room dispatches nothing, or dispatches the wrong room. DOM-free:
+  // the handlers are plucked from the template tree and invoked with a stub
+  // currentTarget capturing the dispatched CustomEvent.
+  it('rooms cells fire the select event with their room id when clicked', () => {
+    const nav: NavViewState = {
+      user_id: 'me',
+      current_tab: 'room-1',
+      open_tabs: [
+        { id: 'room-1', title: 'general', kind: 'room', unread: 0, purpose: 'chat' },
+        { id: 'room-2', title: 'code', kind: 'room', unread: 3, purpose: 'chat' },
+      ],
+      last_read: {},
+      bookmarks: [],
+    };
+    // The rooms cells render inside <rooms-panel> (the dense rooms section);
+    // its render() is a plain template — walk THAT tree for the handlers, the
+    // same structural pluck as before, no document mount needed.
+    const panel = new RoomsPanel();
+    panel.view = roomsListingFromNav(nav, 'room-1');
+    const handlers: ((e: Event) => void)[] = [];
+    const collect = (node: unknown): void => {
+      if (typeof node === 'function') {
+        handlers.push(node as (e: Event) => void);
+      } else if (Array.isArray(node)) {
+        for (const child of node as readonly unknown[]) collect(child);
+      } else if (typeof node === 'object' && node !== null && isTemplateLike(node)) {
+        for (const v of node.values) collect(v);
+      }
+    };
+    collect(panel.render());
+    expect(handlers.length).toBeGreaterThan(0);
+
+    // Invoke each handler with a stub currentTarget capturing what it fires.
+    // Keydown handlers no-op (the stub event carries no Enter key), the facet
+    // buttons' click handlers take no event and fire nothing here; the cell
+    // click handlers must each fire ONE ListingSelect for their own cell.
+    const fired: CustomEvent<ListingSelectDetail>[] = [];
+    const stubEvent = {
+      currentTarget: {
+        dispatchEvent: (ev: Event): boolean => {
+          fired.push(ev as CustomEvent<ListingSelectDetail>);
+          return true;
+        },
+      },
+    } as unknown as Event;
+    for (const handler of handlers) handler(stubEvent);
+
+    const selects = fired.filter((ev) => ev.type === LISTING_SELECT);
+    expect(selects.map((ev) => ev.detail)).toEqual([
+      { listingId: 'rooms', id: 'room-1', group: 'room' },
+      { listingId: 'rooms', id: 'room-2', group: 'room' },
+    ]);
+    // …and the widget-side router turns exactly the rooms detail into a switch
+    // target; a roster pick is NOT a room switch (it routes as a persona select).
+    expect(roomSelectTarget({ listingId: 'rooms', id: 'room-2', group: 'room' })).toBe('room-2');
+    expect(roomSelectTarget({ listingId: 'roster', id: 'asha' })).toBeNull();
+  });
+
+  // what this catches: the kind-aware select routing (`navSelectTarget`) — the
+  // ONE rule that decides what a listing pick dispatches. A rooms-rail pick
+  // routes by the cell's group (the nav tab's target kind): persona tabs open
+  // the persona HOME (kind 'persona'), room tabs switch rooms; a ROSTER pick
+  // (a citizen's tile) IS the persona select; content tabs and unknown listings
+  // stay inert. Regression here = a persona click hijacks the room, or a
+  // roster click goes dead.
+  it('navSelectTarget routes room picks to rooms and persona picks to the persona home', () => {
+    expect(navSelectTarget({ listingId: 'rooms', id: 'room-2', group: 'room' })).toEqual({
+      target: 'room-2',
+      kind: 'room',
+    });
+    expect(navSelectTarget({ listingId: 'rooms', id: 'asha', group: 'persona' })).toEqual({
+      target: 'asha',
+      kind: 'persona',
+    });
+    expect(navSelectTarget({ listingId: 'roster', id: 'asha' })).toEqual({
+      target: 'asha',
+      kind: 'persona',
+    });
+    expect(navSelectTarget({ listingId: 'rooms', id: 'doc-1', group: 'content' })).toBeNull();
+    expect(navSelectTarget({ listingId: 'nodes', id: 'local' })).toBeNull();
+  });
+
+  // what this catches: ELEMENT navigation (card 95844639) — a tile's compass
+  // routes to the persona home ANCHORED at the brain HUD, its genome block at
+  // the genome shelf; an unknown element degrades to the plain persona select
+  // (never a dead scroll target). The anchor is client presentation — kind and
+  // target stay the pure nav/select pair.
+  it('navSelectTarget anchors roster element picks into the persona home', () => {
+    expect(navSelectTarget({ listingId: 'roster', id: 'asha', element: 'brain' })).toEqual({
+      target: 'asha',
+      kind: 'persona',
+      anchor: 'brain',
+    });
+    expect(navSelectTarget({ listingId: 'roster', id: 'asha', element: 'genome' })).toEqual({
+      target: 'asha',
+      kind: 'persona',
+      anchor: 'genome',
+    });
+    expect(navSelectTarget({ listingId: 'roster', id: 'asha', element: 'wat' })).toEqual({
+      target: 'asha',
+      kind: 'persona',
+    });
   });
 
   // what this catches: a runtime badge must appear ONLY when the substrate

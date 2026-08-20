@@ -78,10 +78,10 @@ const RECALL_WINDOW_FRACTION: f32 = 0.10;
 fn recall_count_for_window(context_window: u32) -> usize {
     match context_window {
         0 => 5,
-        1..=8_191 => 3,           // ~4B served tight (e.g. 4096)
-        8_192..=32_767 => 5,      // mid (8–32k)
-        32_768..=131_071 => 8,    // large local (e.g. 14B @ 32k+)
-        _ => 12,                  // cloud-class windows
+        1..=8_191 => 3,        // ~4B served tight (e.g. 4096)
+        8_192..=32_767 => 5,   // mid (8–32k)
+        32_768..=131_071 => 8, // large local (e.g. 14B @ 32k+)
+        _ => 12,               // cloud-class windows
     }
 }
 
@@ -112,6 +112,7 @@ impl RecallBudget {
 
 /// Floor on the recall token ceiling so even a tiny served window fits at least a
 /// memory or two — below this, recall would be silently empty.
+// context-budget-exempt: a FLOOR under the recall allocation — it only ever raises a budget, never caps one, so a big window is never clamped by it
 const MIN_RECALL_TOKENS: usize = 256;
 
 /// Cheap token estimate for one surfaced memory: the body plus the `- …\n` list
@@ -353,11 +354,15 @@ fn strip_action_stamp(entry: &str) -> &str {
 /// conservative — genuinely distinct memories almost never share a 48-char identical head
 /// — so a distinct memory is never collapsed. Char-boundary safe (operates on chars,
 /// not bytes).
+// context-budget-exempt: length of a dedup KEY prefix (near-duplicate detection), never text shown to the model
 const NEAR_DUP_HEAD_CHARS: usize = 48;
 
 fn recall_near_duplicate(a: &str, b: &str) -> bool {
     fn norm(s: &str) -> String {
-        s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+        s.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
     }
     let (na, nb) = (norm(a), norm(b));
     if na.is_empty() || nb.is_empty() {
@@ -377,6 +382,7 @@ fn recall_near_duplicate(a: &str, b: &str) -> bool {
 /// trivially-short trace (e.g. an empty or one-token action) is too generic to safely
 /// prefix-match a distinct engram, so it never suppresses recall — only a substantive
 /// act head does.
+// context-budget-exempt: minimum body length for a dedup KEY to be meaningful, never text shown to the model
 const WM_DEDUP_MIN_BODY_CHARS: usize = 24;
 
 #[async_trait]
@@ -403,7 +409,9 @@ impl Faculty for RecallFaculty {
         // Over-fetch when re-ranking so a relevant-but-lower-salience memory can
         // still win.
         let fetch_n = if self.embedder.is_some() {
-            surface_count.saturating_mul(RERANK_CANDIDATE_MULTIPLIER).max(surface_count)
+            surface_count
+                .saturating_mul(RERANK_CANDIDATE_MULTIPLIER)
+                .max(surface_count)
         } else {
             surface_count
         };
@@ -429,10 +437,7 @@ impl Faculty for RecallFaculty {
         // in via [`with_ranker`](Self::with_ranker) and is A/B'd on the replay
         // bench against A before shipping. No embedder → no relevance signal →
         // everything passes (pure salience×recency, unchanged).
-        let null = self
-            .embedder
-            .as_ref()
-            .and_then(|e| e.unrelated_null());
+        let null = self.embedder.as_ref().and_then(|e| e.unrelated_null());
         let scored: Vec<(f32, Engram, f32, bool, f32)> = match &self.embedder {
             Some(embedder) => {
                 // Embed the query AND every candidate CONCURRENTLY. Each embed is an
@@ -442,7 +447,8 @@ impl Faculty for RecallFaculty {
                 // `join` races the query against the candidate batch as one organic
                 // unit; the cache still collapses repeats to a sync hit.
                 let query_fut = embedder.embed(focused_query(&ws.world_state));
-                let cand_futs = join_all(candidates.iter().map(|(e, _)| embedder.embed(&e.content)));
+                let cand_futs =
+                    join_all(candidates.iter().map(|(e, _)| embedder.embed(&e.content)));
                 let (query, cand_embeds) = join(query_fut, cand_futs).await;
                 // Rank + gate through the adapter (content never crosses the seam —
                 // embeddings and usage signals only, so no ranker CAN regress to
@@ -713,6 +719,16 @@ fn provenance_prefix(engram: &Engram, persona_id: Uuid, now_ms: u64) -> String {
         }
         EngramOrigin::Tool(_) => "you did",
         EngramOrigin::SelfReflection { .. } => "you reflected",
+        // An agent-authored lesson (agent-memory bridge): "you learned" for this
+        // agent's own memory, "learned" for a lesson another agent shared into the
+        // corpus. Not speech, so render_memory_line never quote-wraps it.
+        EngramOrigin::Agent(r) => {
+            if r.agent_peer_id == persona_id {
+                "you learned"
+            } else {
+                "learned"
+            }
+        }
     };
     format!("({who}, {age}) ")
 }
@@ -774,11 +790,17 @@ mod tests {
         // Same restated thought → near-duplicate.
         assert!(recall_near_duplicate(a, b));
         // Prefix relationship → near-duplicate.
-        assert!(recall_near_duplicate("I ran code/tree to explore", "I ran code/tree to explore the whole tree"));
+        assert!(recall_near_duplicate(
+            "I ran code/tree to explore",
+            "I ran code/tree to explore the whole tree"
+        ));
         // Genuinely different memory → NOT collapsed.
         assert!(!recall_near_duplicate(a, c));
         // Short shared lead only (< head window, no prefix) → NOT collapsed.
-        assert!(!recall_near_duplicate("the cat sat on the mat", "the cat ran up the wall today"));
+        assert!(!recall_near_duplicate(
+            "the cat sat on the mat",
+            "the cat ran up the wall today"
+        ));
         // Empty never collapses.
         assert!(!recall_near_duplicate("", a));
     }
@@ -1018,10 +1040,11 @@ mod tests {
             id: Uuid::new_v4(),
             room_id: Uuid::new_v4(),
             sender_id: Uuid::new_v4(),
-            sender_name: "Joel".to_string(),
+            sender_name: "Operator".to_string(),
             sender_type: SenderType::Human,
-            content: "We decided to ship the new auth flow behind a feature flag and ramp to 10% first."
-                .to_string(),
+            content:
+                "We decided to ship the new auth flow behind a feature flag and ramp to 10% first."
+                    .to_string(),
             timestamp: now1,
             priority: 0.8,
             source_modality: None,
@@ -1193,7 +1216,11 @@ mod tests {
                 );
             };
             // The RELEVANT fact — lower salience (it's not the loudest memory):
-            mk("the deploy codename for our next release is BLUEHERON-7", 0.4, 60_000);
+            mk(
+                "the deploy codename for our next release is BLUEHERON-7",
+                0.4,
+                60_000,
+            );
             // HIGH-salience distractors that match the burst's NOISE, not the question:
             mk("lunch is at noon, the corner table is booked", 0.9, 0);
             mk("the game last night was a great finish", 0.9, 0);
@@ -1286,7 +1313,9 @@ mod tests {
 
     // ---- The mind in action: real hippocampus → workspace → informed decision ----
 
-    use super::super::workspace::{Decision, NoopWorkspaceCaptureSink, WorkspaceCaptureSink, WorkspaceCycle, WorkspaceTrace};
+    use super::super::workspace::{
+        Decision, NoopWorkspaceCaptureSink, WorkspaceCaptureSink, WorkspaceCycle, WorkspaceTrace,
+    };
 
     /// A deliberation faculty that conditions its reply on what recall surfaced.
     struct DeliberateOnRecall;
@@ -1344,7 +1373,11 @@ mod tests {
             }
             println!("\n-- assembled context the decider SAW (context_broadcast) --");
             for c in &t.context_broadcast {
-                println!("  [{:<12}] {}", c.faculty.as_str(), c.content.replace('\n', " / "));
+                println!(
+                    "  [{:<12}] {}",
+                    c.faculty.as_str(),
+                    c.content.replace('\n', " / ")
+                );
             }
             println!("\n-- decision (output of deliberation over that context) --");
             println!("  {:?}", t.decision);
@@ -1366,10 +1399,14 @@ mod tests {
             Arc::new(RecallFaculty::new(persona, state).with_clock(Arc::new(move || now))),
             Arc::new(DeliberateOnRecall),
         ];
-        let ws = WorkspaceCycle::new(faculties, Arc::new(super::super::workspace::SalienceArbiter), 5)
-            .with_capture(Arc::new(PrintingSink))
-            .run("teammate asks: where did we land on the deploy?")
-            .await;
+        let ws = WorkspaceCycle::new(
+            faculties,
+            Arc::new(super::super::workspace::SalienceArbiter),
+            5,
+        )
+        .with_capture(Arc::new(PrintingSink))
+        .run("teammate asks: where did we land on the deploy?")
+        .await;
 
         match ws.decision() {
             Some(Decision::Speak { text }) => assert!(
@@ -1425,7 +1462,11 @@ mod tests {
                     },
                 );
             };
-            mk("ship the auth flow behind a feature flag and ramp the rollout to 10%", 0.4, 60_000);
+            mk(
+                "ship the auth flow behind a feature flag and ramp the rollout to 10%",
+                0.4,
+                60_000,
+            );
             mk("lunch is at noon, someone booked the corner table", 0.6, 0);
             state
         };
@@ -1548,11 +1589,23 @@ mod tests {
     // it can't juggle. `0` (window unknown) keeps the historical default of 5.
     #[test]
     fn recall_count_scales_with_context_window() {
-        assert_eq!(recall_count_for_window(0), 5, "unknown window → historical default");
-        assert_eq!(recall_count_for_window(4096), 3, "tight 4B window → fewer memories");
+        assert_eq!(
+            recall_count_for_window(0),
+            5,
+            "unknown window → historical default"
+        );
+        assert_eq!(
+            recall_count_for_window(4096),
+            3,
+            "tight 4B window → fewer memories"
+        );
         assert_eq!(recall_count_for_window(16384), 5);
         assert_eq!(recall_count_for_window(65536), 8);
-        assert_eq!(recall_count_for_window(262144), 12, "cloud-class window → more memories");
+        assert_eq!(
+            recall_count_for_window(262144),
+            12,
+            "cloud-class window → more memories"
+        );
         // Monotonic non-decreasing across KNOWN windows (0 is the unknown sentinel,
         // excluded — it deliberately returns the historical default, not the floor).
         let windows = [4096u32, 8192, 32768, 131072, 262144];
@@ -1614,7 +1667,10 @@ mod tests {
             .expect("relevant memories should surface");
         assert_eq!(
             // Count MEMORY lines (each starts with "- "), not the section frame header.
-            c.content.lines().filter(|l| l.trim_start().starts_with("- ")).count(),
+            c.content
+                .lines()
+                .filter(|l| l.trim_start().starts_with("- "))
+                .count(),
             3,
             "a 4096-token window caps recall at 3 memories; got:\n{}",
             c.content

@@ -1,0 +1,91 @@
+/**
+ * The `bench` activity's neutral `Content` body — the Academy's live benchmark
+ * board (#374/#329: a benchmark IS a live room; the run rows ARE the panel).
+ *
+ * One row per active or recently-graded run — operator-launched AND
+ * citizen-claimed on the SAME board (2026-08-08: an autonomous claim-run
+ * contended invisibly with two operator rounds for two lanes, and only probe
+ * archaeology surfaced it; on this board that hour is one glance). Each row
+ * carries PROGRESS, never just liveness ([[a-serving-health-status-signal-
+ * that-reports-liveness-instead-of-progress]] applied to benchmarks):
+ * generations completed, age of the last one, edit acts, patch bytes, and the
+ * verdict when graded — with a pass-to-pass REGRESSION rendered as the alarm
+ * it is, never folded into a count.
+ *
+ * Shapes only: consumer-neutral, DOM-free, ANSI-free. The web/tui/desktop
+ * renderers (and later every universe skin — the SCADA face is universe A)
+ * are pure functions of this body; the recorded-fixture specs regression-test
+ * exactly that seam.
+ */
+
+/** The `Content` purpose key the bench board dispatches on. A room recipe
+ *  declaring this purpose IS a benchmark room (academy/bench/<run>). */
+export const BENCH_PURPOSE = 'bench';
+
+/** A graded attempt's verdict — the teachable facts, not just the counts. */
+export interface BenchVerdictVM {
+  readonly resolved: boolean;
+  readonly f2pPassed: number;
+  readonly f2pTotal: number;
+  readonly p2pPassed: number;
+  readonly p2pTotal: number;
+  /** True when the patch broke previously-passing tests — the board renders
+   *  this as an ALARM (the hidden-collateral lesson: a regression buried in a
+   *  count taught "not fixed yet" when the truth was "destroyed the tree"). */
+  readonly regression: boolean;
+  /** Failed test NAMES (capped upstream) — a verdict that can teach. */
+  readonly failedTests: readonly string[];
+}
+
+/** How a run's row reads RIGHT NOW. `queued` and `working` are distinct on
+ *  purpose — the 2026-08-08 contention hour was 50 minutes of ambiguity
+ *  between exactly those two states. */
+export type BenchRunState =
+  | 'queued' // attempt started, no generation completed yet
+  | 'working' // generations flowing
+  | 'grading' // attempt ended, verdict pending
+  | 'resolved' // terminal: a graded attempt passed
+  | 'failed' // terminal: final attempt graded, not resolved
+  | 'stalled'; // watchdog fired — infra fault, never a capability verdict
+
+/** One benchmark run — one board row. */
+export interface BenchRunVM {
+  readonly runId: string;
+  /** Instance under test ("sympy__sympy-24066"). */
+  readonly instance: string;
+  /** The citizen working it ("Atlas") — the board shows WHO, always. */
+  readonly persona: string;
+  /** True when a citizen claimed this off the work board herself (vs an
+   *  operator launch) — self-directed study is marked, never hidden. */
+  readonly selfClaimed: boolean;
+  readonly attempt: number;
+  readonly maxAttempts: number;
+  readonly state: BenchRunState;
+  /** Full-generation acts completed this attempt. */
+  readonly generations: number;
+  /** Seconds since the last artifact write; null before the first —
+   *  renders as the honest "no generations yet", never a fabricated pulse. */
+  readonly lastGenAgeS: number | null;
+  /** Edit/write acts so far — the leading indicator a patch is forming.
+   *  Absent when the feed doesn't carry the edit/discovery split yet
+   *  (kind="bench" v1) — the row hides the count rather than showing a
+   *  fabricated 0. */
+  readonly editActs?: number;
+  /** Workspace diff size at last grading; null before any grade. */
+  readonly patchBytes: number | null;
+  /** Last graded attempt's verdict, when one exists. */
+  readonly verdict?: BenchVerdictVM;
+}
+
+/** The bench board's content body. */
+export interface BenchContentBody {
+  /** Rows, most recently active first. Empty = the awaiting frame (the frame
+   *  is the promise). */
+  readonly runs: readonly BenchRunVM[];
+  /** Lane pressure while runs contend — serving vs demanding lane counts from
+   *  the live plan; absent when no serving feed. */
+  readonly lanePressure?: { readonly serving: number; readonly demanding: number };
+  /** True only when a live probe stream is attached — a static projection
+   *  renders the honest "snapshot" banner (same contract as serving/arena). */
+  readonly feedLive: boolean;
+}

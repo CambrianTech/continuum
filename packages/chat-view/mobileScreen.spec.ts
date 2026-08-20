@@ -19,6 +19,7 @@ const member = (over: Partial<RosterSlotView> = {}): RosterSlotView => ({
   member_id: 'm-1', display_name: 'Asha', kind: kind('agent'), integrations: {},
   provenance: { runtime: 'persona' }, active: true, last_seen_ms: 0,
   vitals: { activity: 42 },
+  genes: [],
   loadout: { model: 'devstral-24b', params: 24_000_000_000, context_window: 32_768 },
   ...over,
 });
@@ -29,7 +30,7 @@ const message = (over: Partial<ChatMessageView> = {}): ChatMessageView => ({
 });
 const chatState = (over: Partial<ChatState> = {}): ChatState => ({
   kind: 'chat', revision: 3, room_id: 'room-1', room_name: 'general',
-  purpose: 'chat', messages: [], roster: [], ...over,
+  purpose: 'chat', messages: [], roster: [], acts: [], ...over,
 });
 
 describe('toMobileScreen — the mobile adaptation rule', () => {

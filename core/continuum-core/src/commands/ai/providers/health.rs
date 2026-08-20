@@ -10,7 +10,10 @@ use crate::commands::ai::AiRegistryQueryParams;
 /// Health snapshot for one provider.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/ai/ProviderHealth.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/ProviderHealth.ts"
+)]
 pub struct ProviderHealth {
     pub provider: String,
     pub name: String,
@@ -27,7 +30,10 @@ pub struct ProviderHealth {
 /// Result of `ai/providers/health`.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/ai/AiProvidersHealthResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/AiProvidersHealthResult.ts"
+)]
 pub struct AiProvidersHealthResult {
     pub providers: Vec<ProviderHealth>,
 }

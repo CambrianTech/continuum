@@ -17,6 +17,7 @@
 //!    sub-second changes only.
 //!
 //! The builder centralizes all three so substrate code calling
+//! `builder.session(ChatViewState { ...
 //! `builder.session(ChatViewState { ... })` can't accidentally
 //! re-stringify a kind or forget a revision bump.
 //!
@@ -202,6 +203,9 @@ mod tests {
             purpose: "chat".into(),
             messages: Vec::new(),
             roster: vec![RosterSlotView {
+            pronouns: None,
+            role_label: None,
+            bio: None,
                 member_id: Uuid::from_u128(1),
                 display_name: "Helper".into(),
                 kind: SenderKind::Agent,
@@ -214,7 +218,10 @@ mod tests {
                 last_seen_ms: 1_700_000_000_000,
                 vitals: BTreeMap::new(),
                 loadout: None,
+                avatar_url: None,
+                genes: Vec::new(),
             }],
+            acts: vec![],
         }
     }
 

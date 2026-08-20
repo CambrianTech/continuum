@@ -142,6 +142,19 @@ impl GridCapacityLedger {
     pub fn heard_count(&self) -> usize {
         self.heard.len()
     }
+
+    /// Every peer currently on the ledger with its latest offer — the auto-discovered,
+    /// PeerId-keyed capacity a capacity beacon self-registers here. The grid folds these into
+    /// the node registry so a beaconing peer becomes a routable node by its DURABLE identity,
+    /// with no manual pairing (#2228). A read, not a sweep: staleness is applied by
+    /// [`snapshot`](Self::snapshot)'s reachability window, so a briefly-silent peer is not
+    /// deregistered here.
+    pub fn heard_offers(&self) -> Vec<(Uuid, CapacityOffer)> {
+        self.heard
+            .iter()
+            .map(|r| (*r.key(), r.value().offer.clone()))
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -155,7 +168,7 @@ mod tests {
             gpu_total_bytes: 32 * GB,
             gpu_free_bytes_live: free_gb * GB,
             system_ram_free_bytes: 16 * GB,
-        at_ms,
+            at_ms,
         }
     }
     fn local() -> DeviceCapacity {
@@ -180,8 +193,16 @@ mod tests {
         ledger.hear(other, offer(7, 1_000), 1_000);
 
         let snap = ledger.snapshot(me, local(), 2_000);
-        assert_eq!(snap.local, local(), "local device is the LIVE reading, not the echo");
-        assert_eq!(snap.peers.len(), 1, "self excluded; the real peer projected");
+        assert_eq!(
+            snap.local,
+            local(),
+            "local device is the LIVE reading, not the echo"
+        );
+        assert_eq!(
+            snap.peers.len(),
+            1,
+            "self excluded; the real peer projected"
+        );
         assert_eq!(snap.peers[0].peer.as_uuid(), other);
         assert_eq!(snap.peers[0].capacity.gpu_free_bytes_live, 7 * GB);
         assert!(snap.peers[0].reachable);
@@ -208,17 +229,26 @@ mod tests {
         let t2 = FRESHNESS_WINDOW_MS + 1;
         let snap = ledger.snapshot(me, local(), t2);
         assert_eq!(snap.peers.len(), 1);
-        assert!(!snap.peers[0].reachable, "stale peer is present-but-unreachable");
+        assert!(
+            !snap.peers[0].reachable,
+            "stale peer is present-but-unreachable"
+        );
 
         // Silent past eviction: gone from the snapshot.
         let t3 = EVICTION_WINDOW_MS + 1;
-        assert!(ledger.snapshot(me, local(), t3).peers.is_empty(), "evicted after long silence");
+        assert!(
+            ledger.snapshot(me, local(), t3).peers.is_empty(),
+            "evicted after long silence"
+        );
 
         // The peer speaks again: instantly back, reachable — grow is first-class.
         ledger.hear(peer, offer(9, t3), t3);
         let snap = ledger.snapshot(me, local(), t3 + 1);
         assert_eq!(snap.peers.len(), 1);
-        assert!(snap.peers[0].reachable, "a returning peer is adopted on its first offer");
+        assert!(
+            snap.peers[0].reachable,
+            "a returning peer is adopted on its first offer"
+        );
         assert_eq!(snap.peers[0].capacity.gpu_free_bytes_live, 9 * GB);
     }
 
@@ -230,7 +260,10 @@ mod tests {
     fn offer_round_trips_through_json() {
         let o = offer(7, 123_456);
         let json = serde_json::to_value(o).unwrap();
-        assert!(json.get("gpuFreeBytesLive").is_some(), "camelCase wire naming: {json}");
+        assert!(
+            json.get("gpuFreeBytesLive").is_some(),
+            "camelCase wire naming: {json}"
+        );
         let back: CapacityOffer = serde_json::from_value(json).unwrap();
         assert_eq!(back, o);
     }

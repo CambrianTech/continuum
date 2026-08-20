@@ -249,6 +249,8 @@ mod tests {
 
     fn model_with(arch: Arch, context_window: u32, chat_template: Option<&str>) -> Model {
         Model {
+            weights_bytes: None,
+            mmproj_bytes: None,
             id: "test/model".into(),
             name: None,
             provider: "llamacpp-local".into(),

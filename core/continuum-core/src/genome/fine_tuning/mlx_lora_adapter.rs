@@ -176,10 +176,9 @@ impl FineTuningAdapter for MlxLoraFineTuner {
         // serving/eval). mlx_lm.lora needs the safetensors base instead, so
         // resolve the canonical id → the row's `hf_source` (fail loud if the
         // row declares no trainable base — see resolve_hf_source_for_model_id).
-        let train_base = crate::model_registry::artifacts::resolve_hf_source_for_model_id(
-            &request.base_model,
-        )
-        .map_err(FineTuningError::InvalidRequest)?;
+        let train_base =
+            crate::model_registry::artifacts::resolve_hf_source_for_model_id(&request.base_model)
+                .map_err(FineTuningError::InvalidRequest)?;
         // Prefer a LOCAL 4-bit MLX conversion of the base when one exists
         // (`<genome>/models/mlx-q4/<hf id with '/'→'_'>`). QLoRA on the
         // quantized base is how a 24B trains NEXT TO its own living serving
@@ -321,13 +320,7 @@ impl FineTuningAdapter for MlxLoraFineTuner {
         let model_id = format!("{PROVIDER_ID}:{}:{}", request.trait_kind, local_id);
         spawn_watcher(child, tx, cancel.clone(), adapter_dir, model_id);
 
-        self.jobs.insert(
-            local_id,
-            JobSlot {
-                status: rx,
-                cancel,
-            },
-        );
+        self.jobs.insert(local_id, JobSlot { status: rx, cancel });
 
         Ok(JobHandle {
             provider_id: PROVIDER_ID.to_string(),
@@ -479,13 +472,19 @@ async fn stream_trainer_pipe(
     use tokio::io::AsyncBufReadExt;
     let mut lines = tokio::io::BufReader::new(pipe).lines();
     while let Ok(Some(line)) = lines.next_line().await {
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+        {
             use std::io::Write;
             let _ = writeln!(f, "{line}");
         }
         if let Some((iter, kind, loss)) = parse_loss_line(&line) {
-            if let Ok(mut f) =
-                std::fs::OpenOptions::new().create(true).append(true).open(&loss_path)
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&loss_path)
             {
                 use std::io::Write;
                 let _ = writeln!(
@@ -550,7 +549,13 @@ fn job_dir_for(request: &TrainingJobRequest, local_id: Uuid) -> PathBuf {
 
 fn sanitize(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -633,15 +638,21 @@ fn write_mlx_dataset(
     // mlx_lm always needs a non-empty train file; mirror train into
     // valid when the split rounded to zero so --train doesn't choke on
     // an empty valid.jsonl.
-    let train_rows = if train.is_empty() { examples.as_slice() } else { train };
-    let valid_rows = if valid.is_empty() { &train_rows[..1] } else { valid };
+    let train_rows = if train.is_empty() {
+        examples.as_slice()
+    } else {
+        train
+    };
+    let valid_rows = if valid.is_empty() {
+        &train_rows[..1]
+    } else {
+        valid
+    };
 
-    std::fs::write(data_dir.join("train.jsonl"), to_jsonl(train_rows)?).map_err(|e| {
-        FineTuningError::LocalTrainerFailed(format!("write train.jsonl: {e}"))
-    })?;
-    std::fs::write(data_dir.join("valid.jsonl"), to_jsonl(valid_rows)?).map_err(|e| {
-        FineTuningError::LocalTrainerFailed(format!("write valid.jsonl: {e}"))
-    })?;
+    std::fs::write(data_dir.join("train.jsonl"), to_jsonl(train_rows)?)
+        .map_err(|e| FineTuningError::LocalTrainerFailed(format!("write train.jsonl: {e}")))?;
+    std::fs::write(data_dir.join("valid.jsonl"), to_jsonl(valid_rows)?)
+        .map_err(|e| FineTuningError::LocalTrainerFailed(format!("write valid.jsonl: {e}")))?;
     Ok(())
 }
 
@@ -650,10 +661,7 @@ fn write_mlx_dataset(
 /// smallest dataset split (mlx iterates BOTH splits at this batch size and
 /// hard-errors on a split smaller than one batch), floored at 1. Split sizing
 /// mirrors [`write_mlx_dataset`] exactly — one arithmetic, two readers.
-fn effective_batch_size(
-    request: &TrainingJobRequest,
-    schedule: &ScheduleParams,
-) -> u32 {
+fn effective_batch_size(request: &TrainingJobRequest, schedule: &ScheduleParams) -> u32 {
     let n = request.dataset.examples.len();
     let split = request.dataset.validation_split.clamp(0.0, 0.5);
     let n_valid = (((n as f32) * split).floor() as usize).min(n.saturating_sub(1));
@@ -707,12 +715,7 @@ fn default_lora() -> LoRAHyperparams {
 /// variable and changes nothing else about what the trainer touches.
 fn lora_config_yaml(lora: &LoRAHyperparams) -> String {
     let scale = lora.alpha as f64 / (lora.rank.max(1) as f64);
-    crate::forge::mlx_train::render_lora_parameters_yaml(
-        lora.rank,
-        scale,
-        lora.dropout as f64,
-        &[],
-    )
+    crate::forge::mlx_train::render_lora_parameters_yaml(lora.rank, scale, lora.dropout as f64, &[])
 }
 
 #[cfg(test)]
@@ -740,7 +743,11 @@ mod tests {
             "Loading pretrained model",
             "",
         ] {
-            assert_eq!(parse_loss_line(noise), None, "noise parsed as loss: {noise:?}");
+            assert_eq!(
+                parse_loss_line(noise),
+                None,
+                "noise parsed as loss: {noise:?}"
+            );
         }
     }
 
@@ -794,7 +801,10 @@ mod tests {
         assert!(cfg.contains("rank: 8"), "config: {cfg}");
         assert!(cfg.contains("scale: 2.0"), "config: {cfg}");
         // 20.0 is exactly the mlx default this config exists to override.
-        assert!(!cfg.contains("scale: 20"), "leaked mlx default scale: {cfg}");
+        assert!(
+            !cfg.contains("scale: 20"),
+            "leaked mlx default scale: {cfg}"
+        );
     }
 
     // what this catches: empty base / empty dataset are caller errors
@@ -866,9 +876,11 @@ mod tests {
         let r = req(vec![("the prompt", "the completion"), ("p2", "c2")]);
         write_mlx_dataset(&dir, &r, false).unwrap();
         let train = std::fs::read_to_string(dir.join("train.jsonl")).unwrap();
-        let first: serde_json::Value =
-            serde_json::from_str(train.lines().next().unwrap()).unwrap();
-        assert!(first.get("prompt").is_none(), "no chat schema without a template");
+        let first: serde_json::Value = serde_json::from_str(train.lines().next().unwrap()).unwrap();
+        assert!(
+            first.get("prompt").is_none(),
+            "no chat schema without a template"
+        );
         let text = first["text"].as_str().unwrap();
         assert!(text.contains("the prompt") && text.contains("the completion"));
         std::fs::remove_dir_all(&dir).ok();
@@ -902,8 +914,14 @@ mod tests {
             return;
         }
         let mut r = req(vec![
-            ("Write a Rust function that adds two i32.", "fn add(a: i32, b: i32) -> i32 { a + b }"),
-            ("Reverse a string in Rust.", "fn rev(s: &str) -> String { s.chars().rev().collect() }"),
+            (
+                "Write a Rust function that adds two i32.",
+                "fn add(a: i32, b: i32) -> i32 { a + b }",
+            ),
+            (
+                "Reverse a string in Rust.",
+                "fn rev(s: &str) -> String { s.chars().rev().collect() }",
+            ),
         ]);
         r.schedule = Some(ScheduleParams {
             epochs: 1,

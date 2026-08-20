@@ -1,50 +1,76 @@
-// live.dart — the Dart mirror of the web SDK's StateConnection. Opens a WebSocket to the
-// continuum core, subscribes to kind='chat', and maps each ChatViewState snapshot into a
-// MobileScreen. This is what makes the phone a REAL client of the live room, not a static
-// demo — the same positron state seam the web + terminal read, now on Android.
+// live.dart — the mobile app's wiring of positron's StateConnection (see
+// positron_state.dart, the Dart mirror of sdk/typescript). The app owns only
+// the MAPPING (ChatViewState → MobileScreen) and the status surface; durability
+// (cache-first boot, write-through) and self-healing (reconnect ladder) are
+// positron-inherent — this file holds ZERO resilience logic, exactly like the
+// web app after the same refactor ([[one-logical-decision-one-place]]).
 
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart' show Icons;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'main.dart';
+import 'positron_state.dart';
+
+/// Real socket over web_socket_channel — the production `StateSocket`.
+class _ChannelSocket implements StateSocket {
+  final WebSocketChannel _ch;
+  _ChannelSocket(this._ch);
+
+  static Future<StateSocket> open(String url) async {
+    final ch = WebSocketChannel.connect(Uri.parse(url));
+    await ch.ready; // fail-loud connect (the SDK's ladder handles retries)
+    return _ChannelSocket(ch);
+  }
+
+  @override
+  Stream<dynamic> get stream => _ch.stream;
+
+  @override
+  void send(String data) => _ch.sink.add(data);
+
+  @override
+  Future<void> close() async => _ch.sink.close();
+}
 
 class LiveConnection {
   final String url;
   final void Function(MobileScreen) onScreen;
-  WebSocketChannel? _ch;
 
-  LiveConnection(this.url, this.onScreen);
+  /// Optional status surface for the app chrome — mirrors the web banner:
+  /// `cached` / `connecting` / `live` / `reconnecting` / `closed`.
+  final void Function(StateFeedStatus status, String? detail)? onStatus;
+
+  /// Durable cache dir (the app's documents dir on device). Null = in-memory
+  /// (still hydrate semantics within the process; no cross-restart persistence).
+  final Directory? cacheDir;
+
+  StateConnection? _conn;
+
+  LiveConnection(this.url, this.onScreen, {this.onStatus, this.cacheDir});
 
   void connect() {
-    try {
-      final ch = WebSocketChannel.connect(Uri.parse(url));
-      _ch = ch;
-      ch.stream.listen(_onMessage, onError: (_) {}, onDone: () {});
-      // The subscribe frame — same shape as StateConnection.buildSubscribe().
-      ch.sink.add(jsonEncode({
-        'type': 'subscribe',
-        'kinds': ['chat'],
-        'layers': ['ephemeral', 'session', 'persistent', 'semantic'],
-        'last_seen': <dynamic>[],
-      }));
-    } catch (_) {
-      // No core reachable — the app stays on its sample data (honest offline).
-    }
+    final conn = StateConnection(
+      url,
+      socketFactory: _ChannelSocket.open,
+      storage: cacheDir != null ? FileStateStorage(cacheDir!) : MemoryStateStorage(),
+    );
+    _conn = conn;
+    if (onStatus != null) conn.onStatus(onStatus!);
+    conn.on('chat', (envelope) {
+      final p = envelope.payload;
+      if (p is Map<String, dynamic>) onScreen(_fromChat(p));
+    });
+    // Fire-and-forget: with reconnect (the default) connect() self-heals — a
+    // dead core means cached/sample data + a `reconnecting` status, never a
+    // crash or a silent dead screen.
+    unawaited(conn.connect());
   }
 
-  void dispose() => _ch?.sink.close();
-
-  void _onMessage(dynamic data) {
-    try {
-      final msg = jsonDecode(data as String) as Map<String, dynamic>;
-      if (msg['type'] != 'state' || msg['kind'] != 'chat') return;
-      onScreen(_fromChat(msg['payload'] as Map<String, dynamic>));
-    } catch (_) {
-      // A malformed frame has no room to render — drop it, keep the last good screen.
-    }
-  }
+  void dispose() => unawaited(_conn?.close() ?? Future<void>.value());
 
   MobileScreen _fromChat(Map<String, dynamic> p) {
     final messages = ((p['messages'] as List?) ?? const []).map((m) {

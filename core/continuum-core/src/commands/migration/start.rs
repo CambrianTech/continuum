@@ -13,11 +13,12 @@ fn default_throttle_ms() -> u64 {
 }
 
 /// Params for `migration/start`.
-#[derive(
-    Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/migration/MigrationStartParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/migration/MigrationStartParams.ts"
+)]
 pub struct MigrationStartParams {
     /// Source connection string to read from.
     pub source: String,

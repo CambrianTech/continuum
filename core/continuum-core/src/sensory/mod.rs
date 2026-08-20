@@ -145,6 +145,8 @@ mod tests {
     /// input `route` reads, so nothing else needs to be realistic.
     fn model_with_caps(caps: &[Capability]) -> Model {
         let mut m = Model {
+            weights_bytes: None,
+            mmproj_bytes: None,
             id: "test/model".into(),
             name: None,
             provider: "llamacpp-local".into(),

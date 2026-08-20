@@ -7,7 +7,7 @@
 //! The deliberation faculty reaches for it via `Decision::Act { calls: [code/run …] }`;
 //! the act→observe driver (step 3) runs it and re-admits the result as an Episodic
 //! engram, closing the causal loop (act → observe → re-perceive). Standalone it is also
-//! directly callable via `cu code/run` and every SDK — one file, zero wiring, AiSafe.
+//! directly callable via `uu code/run` and every SDK — one file, zero wiring, AiSafe.
 //!
 //! RUST ONLY. This organism builds the Rust substrate it runs on; its throwaway-snippet
 //! hand is `rustc`, never an interpreter. The persona hands a complete program (with its
@@ -36,7 +36,10 @@ const MAX_TIMEOUT_SECS: u64 = 60;
 /// Params for `code/run`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/code/CodeRunParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/CodeRunParams.ts"
+)]
 pub struct CodeRunParams {
     /// Language to run. `rust` (alias `rs`) only — any other value fails loud rather
     /// than guessing a toolchain. This is a Rust organism; its exec hand is `rustc`.
@@ -56,7 +59,10 @@ pub struct CodeRunParams {
 /// Result of `code/run` — the ground truth of what running the code produced.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/code/CodeRunResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/CodeRunResult.ts"
+)]
 pub struct CodeRunResult {
     /// Process exit code; `None` if the process was killed (timeout / signal).
     #[ts(optional)]
@@ -81,6 +87,8 @@ pub struct CodeRun;
 #[async_trait]
 impl ActionCommand for CodeRun {
     const NAME: &'static str = "code/run";
+    const ALIASES: &'static [&'static str] = &["run_code"];
+    const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
         "Compile and run a complete Rust program (lang \"rust\", code must have its own \
          `fn main`) and return its stdout, stderr, exit code, and duration. A compile \
@@ -95,15 +103,16 @@ impl ActionCommand for CodeRun {
         // never guesses a toolchain.
         match params.lang.as_str() {
             "rust" | "rs" => {}
-            other => {
-                return Err(CommandError::Invalid(format!(
-                    "code/run: unsupported lang '{other}' (Rust only — give a complete Rust program)"
-                )))
-            }
+            other => return Err(CommandError::Invalid(format!(
+                "code/run: unsupported lang '{other}' (Rust only — give a complete Rust program)"
+            ))),
         }
 
         let timeout = std::time::Duration::from_secs(
-            params.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS).clamp(1, MAX_TIMEOUT_SECS),
+            params
+                .timeout_secs
+                .unwrap_or(DEFAULT_TIMEOUT_SECS)
+                .clamp(1, MAX_TIMEOUT_SECS),
         );
 
         // Fresh temp dir per run, removed afterward. The code is written verbatim — no
@@ -112,8 +121,9 @@ impl ActionCommand for CodeRun {
         // the hand's — a hand that second-guesses its input is a heuristic steering
         // cognition).
         let dir = std::env::temp_dir().join(format!("cu-coderun-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| CommandError::Internal(format!("code/run: temp dir create failed: {e}")))?;
+        std::fs::create_dir_all(&dir).map_err(|e| {
+            CommandError::Internal(format!("code/run: temp dir create failed: {e}"))
+        })?;
 
         let result = compile_and_run_rust(&dir, &params.code, timeout).await;
         let _ = std::fs::remove_dir_all(&dir);
@@ -171,7 +181,10 @@ async fn compile_and_run_rust(
                 exit_code: None,
                 ok: false,
                 stdout: String::new(),
-                stderr: format!("rustc killed by safety timeout after {}s", timeout.as_secs()),
+                stderr: format!(
+                    "rustc killed by safety timeout after {}s",
+                    timeout.as_secs()
+                ),
                 duration_ms: started.elapsed().as_millis() as u64,
                 timed_out: true,
             })
@@ -259,7 +272,11 @@ mod tests {
             .expect("command itself succeeds even when the code panics");
         assert!(!out.ok, "code that panics is not ok");
         assert_ne!(out.exit_code, Some(0));
-        assert!(out.stderr.contains("panicked"), "the panic is visible: {}", out.stderr);
+        assert!(
+            out.stderr.contains("panicked"),
+            "the panic is visible: {}",
+            out.stderr
+        );
         assert!(out.stderr.contains("boom"));
     }
 
@@ -282,8 +299,15 @@ mod tests {
             .expect("a compile failure is a result, not a command error");
         assert!(!out.ok, "code that doesn't compile is not ok");
         assert_ne!(out.exit_code, Some(0), "rustc exits nonzero");
-        assert!(out.stderr.contains("error"), "rustc's diagnostics are visible: {}", out.stderr);
-        assert!(out.stdout.is_empty(), "the binary never ran, so no program stdout");
+        assert!(
+            out.stderr.contains("error"),
+            "rustc's diagnostics are visible: {}",
+            out.stderr
+        );
+        assert!(
+            out.stdout.is_empty(),
+            "the binary never ran, so no program stdout"
+        );
     }
 
     // what this catches: the safety timeout ACTUALLY kills the child process — not
@@ -306,7 +330,11 @@ mod tests {
         let out = CodeRun
             .run(
                 &Ctx::default(),
-                CodeRunParams { lang: "rust".into(), code, timeout_secs: Some(2) },
+                CodeRunParams {
+                    lang: "rust".into(),
+                    code,
+                    timeout_secs: Some(2),
+                },
             )
             .await
             .expect("timeout is a result, not an error");
@@ -337,7 +365,10 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
-        assert!(dead, "child pid {pid} survived the safety timeout — orphan leak regressed");
+        assert!(
+            dead,
+            "child pid {pid} survived the safety timeout — orphan leak regressed"
+        );
     }
 
     // what this catches: a non-Rust language fails LOUD (an error naming the cause),
@@ -356,6 +387,9 @@ mod tests {
             )
             .await
             .expect_err("must reject, not guess");
-        assert!(format!("{err:?}").contains("unsupported lang"), "names the cause: {err:?}");
+        assert!(
+            format!("{err:?}").contains("unsupported lang"),
+            "names the cause: {err:?}"
+        );
     }
 }

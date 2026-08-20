@@ -155,7 +155,11 @@ impl Screenshotter for WebShot {
                 // If the browser exited on its own (Chrome's path), one more
                 // settle poll then we're done regardless.
                 if matches!(child.try_wait(), Ok(Some(_))) {
-                    if std::fs::metadata(&req.out_path).map(|m| m.len()).unwrap_or(0) > 0 {
+                    if std::fs::metadata(&req.out_path)
+                        .map(|m| m.len())
+                        .unwrap_or(0)
+                        > 0
+                    {
                         return;
                     }
                 }

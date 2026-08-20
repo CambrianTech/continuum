@@ -18,6 +18,7 @@
 /// True if `pid` names a live process. `kill(pid, 0)` sends no signal: `0` = alive
 /// and ours; `EPERM` = alive but owned by another user (still alive); `ESRCH` =
 /// gone.
+#[cfg(unix)]
 pub fn is_alive(pid: u32) -> bool {
     let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
     if rc == 0 {
@@ -29,11 +30,33 @@ pub fn is_alive(pid: u32) -> bool {
     )
 }
 
+/// Windows: no `kill(pid, 0)`. Query the task table — a matching row means the
+/// pid is live. `tasklist` failing (unavailable / no permission) is treated as
+/// "not alive", matching the Unix path's conservative-on-error stance.
+#[cfg(windows)]
+pub fn is_alive(pid: u32) -> bool {
+    std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
+        .unwrap_or(false)
+}
+
 /// `SIGKILL` the pid. Best-effort: a race where it already exited is fine.
+#[cfg(unix)]
 pub fn kill9(pid: u32) {
     unsafe {
         let _ = libc::kill(pid as libc::pid_t, libc::SIGKILL);
     }
+}
+
+/// Windows: force-terminate the process (and its child tree) via `taskkill`.
+/// There is no SIGKILL; `/F /T` is the nearest equivalent. Best-effort.
+#[cfg(windows)]
+pub fn kill9(pid: u32) {
+    let _ = std::process::Command::new("taskkill")
+        .args(["/F", "/T", "/PID", &pid.to_string()])
+        .output();
 }
 
 /// The command name (basename) of `pid` via `ps -p <pid> -o comm=`. `None` if the
@@ -63,6 +86,42 @@ pub fn command_name(pid: u32) -> Option<String> {
 /// only a confirmed `llama-server` `comm` returns `true`.
 pub fn is_llama_server(pid: u32) -> bool {
     command_name(pid).is_some_and(|comm| comm.contains("llama-server"))
+}
+
+/// The pid LISTENING on local TCP `port`, via `lsof -ti tcp:<port> -sTCP:LISTEN`
+/// (macOS + Linux). `None` = nothing listening, or `lsof` unavailable — callers
+/// treat `None` as "unverifiable" and refuse to kill, same doctrine as
+/// [`command_name`]. This is the kill-VERIFY half of the 2026-07-23 flap case:
+/// a spawn must never race a port whose holder it can't name.
+pub fn pid_listening_on_port(port: u16) -> Option<u32> {
+    let out = std::process::Command::new("lsof")
+        .args(["-ti", &format!("tcp:{port}"), "-sTCP:LISTEN"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .and_then(|l| l.trim().parse::<u32>().ok())
+}
+
+/// Poll until local `port` is bindable (a successful bind-then-drop proves it) or
+/// `budget` expires. THE shared port-release verifier: the pidfile reclaim and the
+/// pre-spawn kill-verify gate both wait through this one primitive.
+pub async fn wait_port_free(port: u16, budget: std::time::Duration) -> bool {
+    const POLL: std::time::Duration = std::time::Duration::from_millis(100);
+    let deadline = std::time::Instant::now() + budget;
+    loop {
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(POLL).await;
+    }
 }
 
 #[cfg(test)]

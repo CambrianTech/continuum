@@ -186,11 +186,22 @@ pub struct AdapterCapabilities {
     pub capabilities: BTreeSet<Capability>,
     /// Inference runs on this host (provider kind == Local).
     pub is_local: bool,
-    /// Context window (input + output limit).
-    pub max_context_window: u32,
-    /// Maximum tokens the adapter will emit in a single response. Distinct
-    /// from `max_context_window`; used by cognition to bound the compose phase.
-    pub max_output_tokens: u32,
+    /// Context window (input + output limit) AS DECLARED BY THE ADAPTER.
+    ///
+    /// `None` means the adapter has not declared one — NOT "assume a small default". This
+    /// used to be a bare `u32` seeded from a `FLOOR_CONTEXT_WINDOW = 4096` constant, so any
+    /// adapter that didn't override reported 4096 as its ceiling. Nothing budgeted against it
+    /// yet, which is the only reason it hadn't already broken a 1M-context model — but the
+    /// obvious next use of this field (budgeting, which is exactly what #46 was about) would
+    /// have silently clamped every under-declaring adapter to 4k. Making "undeclared"
+    /// unrepresentable as a number closes that off by construction: a consumer must handle
+    /// `None` deliberately (ask the served lane) instead of inheriting a guess.
+    /// [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
+    pub max_context_window: Option<u32>,
+    /// Maximum tokens the adapter will emit in a single response, as declared. Distinct from
+    /// `max_context_window`. `None` = undeclared, same contract as above (#45: the adapter
+    /// owns generation length; nobody downstream invents a cap).
+    pub max_output_tokens: Option<u32>,
 
     /// Tool-calling protocol the adapter NATIVELY speaks. Cognition's tool
     /// loop routes through this. Default means prompt-text emulation in compose.
@@ -214,8 +225,9 @@ impl AdapterCapabilities {
     pub fn text_only() -> Self {
         Self {
             capabilities: BTreeSet::from([Capability::TextGeneration, Capability::Chat]),
-            max_context_window: Self::FLOOR_CONTEXT_WINDOW,
-            max_output_tokens: Self::FLOOR_OUTPUT_TOKENS,
+            // Undeclared, NOT a small default — see the field docs.
+            max_context_window: None,
+            max_output_tokens: None,
             // The floor has no ToolUse capability, so its protocol pair must be
             // None — set it explicitly, NOT via Default. `ToolProtocol::default()`
             // is `NativeFunctionCalling` (the right default for a registry Provider
@@ -227,12 +239,6 @@ impl AdapterCapabilities {
             ..Default::default()
         }
     }
-
-    /// Context/output ceilings the text-only floor reports when an adapter has
-    /// no model-declared number to project. Real adapters override from the
-    /// served model (#46) — these only apply to the floor.
-    const FLOOR_CONTEXT_WINDOW: u32 = 4096;
-    const FLOOR_OUTPUT_TOKENS: u32 = 2048;
 
     /// Fluent constructor seeded from the text-only floor. The codified
     /// projection every adapter's `capabilities()` builds through, so the next
@@ -288,13 +294,13 @@ impl AdapterCapabilitiesBuilder {
 
     /// Context window (input + output ceiling) — from the served model.
     pub fn context_window(mut self, n: u32) -> Self {
-        self.inner.max_context_window = n;
+        self.inner.max_context_window = Some(n);
         self
     }
 
     /// Maximum tokens emitted in a single response — from the served model.
     pub fn max_output_tokens(mut self, n: u32) -> Self {
-        self.inner.max_output_tokens = n;
+        self.inner.max_output_tokens = Some(n);
         self
     }
 
@@ -369,6 +375,19 @@ pub enum GenerationChunk {
     /// ever leaking chain-of-thought into the room — the answer/reasoning split is
     /// preserved on the stream, not just on the assembled response.
     Reasoning(String),
+    /// PREFILL advanced — the slot has ingested `processed` of `total` prompt
+    /// tokens (`cached` of them served free by the KV prefix cache). Emitted
+    /// BEFORE any token exists, so a consumer can show honest progress during
+    /// the long silence a big prompt buys ([[honest-presence-lifecycle]]).
+    ///
+    /// This is also the liveness signal the stream watchdog keys on: a healthy
+    /// prefill raises `processed`, a wedged slot freezes it. Consumers that only
+    /// care about text may ignore this variant.
+    Prefill {
+        processed: u64,
+        total: u64,
+        cached: u64,
+    },
 }
 
 /// The universal AI provider adapter trait
@@ -398,6 +417,31 @@ pub trait AIProviderAdapter: Send + Sync {
     /// with `OpenAI` / `Anthropic` / `Google`.
     fn api_style(&self) -> ApiStyle {
         ApiStyle::Local
+    }
+
+    /// The LIVE served context window (tokens) of the lane THIS adapter serves on,
+    /// or `None` when the adapter's own binding window is already authoritative.
+    ///
+    /// This is the single source of truth cognition budgets its prompt against — the
+    /// window of the persona's ACTUAL lane, read live, never a global snapshot and
+    /// never a post-hoc clamp ([[budget-at-assembly-never-clamp-the-prompt]],
+    /// [[no-hardcoded-context-numbers-derive-from-the-live-window]]). Each adapter
+    /// knows which lane it is bound to, so each answers for itself:
+    /// - shared single-resident gateway → the gateway's current served slot (the live
+    ///   `/props` truth for the one resident model), so a lane that relaunched
+    ///   smaller/larger is tracked in BOTH directions;
+    /// - a DEDICATED lane an adapter owns (an eval fork's `EphemeralServingLane`) →
+    ///   `None`: its window was pinned from ITS OWN `/props` at spawn and is carried on
+    ///   the binding; the global gateway snapshot describes a DIFFERENT server and must
+    ///   never be consulted for it (glass-boxed 2026-07-20: reading the global slot
+    ///   starved an eval fork's prompt to the live lane's per-slot window → webdev-rs
+    ///   0/6 while short coder prompts passed);
+    /// - cloud / in-process → `None`: the declared binding window stands.
+    ///
+    /// Default `None` — the binding window is authoritative unless an adapter has a
+    /// live lane to report.
+    fn live_served_window(&self) -> Option<u32> {
+        None
     }
 
     /// Get default model for this provider
@@ -663,10 +707,7 @@ impl std::fmt::Display for AdapterSelectionError {
                 registered_providers,
                 non_production_adapters_present,
             } => {
-                write!(
-                    f,
-                    "no production-capable adapter found for "
-                )?;
+                write!(f, "no production-capable adapter found for ")?;
                 if let Some(p) = preferred_provider {
                     write!(f, "preferred_provider='{}' ", p)?;
                 }
@@ -826,17 +867,14 @@ impl AdapterRegistry {
     /// layer's evaluate_response holds the Arc across the inference
     /// call so the read lock can drop). Cheap reference count bump.
     pub fn get_arc(&self, provider_id: &str) -> Option<Arc<dyn AIProviderAdapter>> {
-        self.adapters
-            .get(provider_id)
-            .cloned()
-            .or_else(|| {
-                self.priority_order.iter().find_map(|key| {
-                    self.adapters
-                        .get(key)
-                        .filter(|adapter| adapter.provider_id() == provider_id)
-                        .cloned()
-                })
+        self.adapters.get(provider_id).cloned().or_else(|| {
+            self.priority_order.iter().find_map(|key| {
+                self.adapters
+                    .get(key)
+                    .filter(|adapter| adapter.provider_id() == provider_id)
+                    .cloned()
             })
+        })
     }
 
     /// Get available adapters (those that initialized successfully)
@@ -1183,29 +1221,43 @@ mod tests {
     fn builder_seeds_floor_and_native_protocols_pair_coherently() {
         // builder() with no overrides == the text-only floor.
         let floor = AdapterCapabilities::builder().build();
-        assert_eq!(floor.capabilities, AdapterCapabilities::text_only().capabilities);
+        assert_eq!(
+            floor.capabilities,
+            AdapterCapabilities::text_only().capabilities
+        );
         assert!(floor.has(Capability::TextGeneration) && floor.has(Capability::Chat));
         assert!(!floor.has(Capability::ToolUse));
         assert!(!floor.is_local);
         assert_eq!(floor.tool_call_protocol, ToolProtocol::None);
-        assert_eq!(floor.structured_output_protocol, StructuredOutputProtocol::None);
+        assert_eq!(
+            floor.structured_output_protocol,
+            StructuredOutputProtocol::None
+        );
 
         // A rich declaration adds only the deltas on top of the floor.
         let rich = AdapterCapabilities::builder()
-            .capabilities([Capability::TextGeneration, Capability::Chat, Capability::ToolUse])
+            .capabilities([
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+            ])
             .local()
             .context_window(200_000)
             .max_output_tokens(8_192)
             .protocols(NativeProtocols::FunctionCalling)
             .build();
         assert!(rich.has(Capability::ToolUse) && rich.is_local);
-        assert_eq!(rich.max_context_window, 200_000);
-        assert_eq!(rich.max_output_tokens, 8_192);
+        assert_eq!(rich.max_context_window, Some(200_000));
+        assert_eq!(rich.max_output_tokens, Some(8_192));
 
         // Each protocol profile maps to its coherent pair — the whole point of
         // NativeProtocols (an incoherent combo is unrepresentable).
         for (profile, tool, structured) in [
-            (NativeProtocols::None, ToolProtocol::None, StructuredOutputProtocol::None),
+            (
+                NativeProtocols::None,
+                ToolProtocol::None,
+                StructuredOutputProtocol::None,
+            ),
             (
                 NativeProtocols::PromptEmulated,
                 ToolProtocol::None,

@@ -120,7 +120,6 @@ fn default_rules() -> &'static Vec<AccessRule> {
                 prefix: "ai/generate",
                 access: CommandAccess::Provisional,
             },
-
             // L3 genome convert: the training-completion sentinel converts a
             // persona's freshly-trained MLX adapter → GGUF-lora by dispatching
             // `forge/export` AS that persona (`CallerIdentity::local_persona`,
@@ -143,7 +142,6 @@ fn default_rules() -> &'static Vec<AccessRule> {
                 prefix: "forge/export",
                 access: CommandAccess::Trusted,
             },
-
             // Wildcard: owner-trust nodes can run anything.
             // This means our own towers have full access across the grid.
             AccessRule {
@@ -288,8 +286,14 @@ mod tests {
         // for the contracted grid: only the local operator may sell its personas'
         // compute. A remote peer must NEVER reach issuance (it would let a grantee
         // mint its own grants). Pins the property the GrantIssuanceModule relies on.
-        assert!(!is_command_authorized("grid/grant/issue", TrustLevel::Trusted));
-        assert!(!is_command_authorized("grid/grant/issue", TrustLevel::Provisional));
+        assert!(!is_command_authorized(
+            "grid/grant/issue",
+            TrustLevel::Trusted
+        ));
+        assert!(!is_command_authorized(
+            "grid/grant/issue",
+            TrustLevel::Provisional
+        ));
         assert!(is_command_authorized("grid/grant/issue", TrustLevel::Owner));
     }
 
@@ -300,7 +304,10 @@ mod tests {
     // still denied; a sibling sensitive command stays Owner-only.
     #[test]
     fn ai_generate_is_provisional_for_cross_grid_consumers() {
-        assert!(is_command_authorized("ai/generate", TrustLevel::Provisional));
+        assert!(is_command_authorized(
+            "ai/generate",
+            TrustLevel::Provisional
+        ));
         assert!(is_command_authorized("ai/generate", TrustLevel::Trusted));
         assert!(is_command_authorized("ai/generate", TrustLevel::Owner));
         assert!(!is_command_authorized("ai/generate", TrustLevel::Blocked));
@@ -308,8 +315,14 @@ mod tests {
         // genuinely unclassified op (genome/train → defaults to Owner): a non-AiSafe
         // sibling stays denied. (gpu/stats is itself declared AiSafe, so it IS
         // Provisional-authorized — it is not a valid "should be denied" example.)
-        assert!(!is_command_authorized("data/delete", TrustLevel::Provisional));
-        assert!(!is_command_authorized("genome/train", TrustLevel::Provisional));
+        assert!(!is_command_authorized(
+            "data/delete",
+            TrustLevel::Provisional
+        ));
+        assert!(!is_command_authorized(
+            "genome/train",
+            TrustLevel::Provisional
+        ));
     }
 
     // what this catches: THE reconciliation that lets a persona's hands work — a
@@ -323,10 +336,19 @@ mod tests {
         assert!(is_command_authorized("ping", TrustLevel::Provisional));
         assert!(is_command_authorized("data/list", TrustLevel::Provisional));
         // Owner-gated sensitive ops stay Owner-only even for a Provisional persona.
-        assert!(!is_command_authorized("data/delete", TrustLevel::Provisional));
-        assert!(!is_command_authorized(commands::TRUST, TrustLevel::Provisional));
+        assert!(!is_command_authorized(
+            "data/delete",
+            TrustLevel::Provisional
+        ));
+        assert!(!is_command_authorized(
+            commands::TRUST,
+            TrustLevel::Provisional
+        ));
         // Unclassified (not AiSafe, no explicit rule) defaults to Owner → denied.
-        assert!(!is_command_authorized("genome/train", TrustLevel::Provisional));
+        assert!(!is_command_authorized(
+            "genome/train",
+            TrustLevel::Provisional
+        ));
         // Blocked is denied even for AiSafe.
         assert!(!is_command_authorized("ping", TrustLevel::Blocked));
     }
@@ -341,7 +363,12 @@ mod tests {
     // Provisional-reachable. If that happens, THIS test trips in CI.
     #[test]
     fn destructive_data_commands_stay_owner_only() {
-        for cmd in ["data/delete", "data/update", "data/truncate", "data/clear-all"] {
+        for cmd in [
+            "data/delete",
+            "data/update",
+            "data/truncate",
+            "data/clear-all",
+        ] {
             assert!(
                 !is_command_authorized(cmd, TrustLevel::Provisional),
                 "{cmd} must NOT be reachable at Provisional — it's a destructive, \
@@ -418,12 +445,18 @@ mod tests {
         assert!(is_command_authorized("forge/export", TrustLevel::Trusted));
         assert!(is_command_authorized("forge/export", TrustLevel::Owner));
         // A Provisional remote peer must NOT spawn a python convert here.
-        assert!(!is_command_authorized("forge/export", TrustLevel::Provisional));
+        assert!(!is_command_authorized(
+            "forge/export",
+            TrustLevel::Provisional
+        ));
         assert!(!is_command_authorized("forge/export", TrustLevel::Blocked));
         // The scoping is exact: forge/publish (network-publishing) stays Owner-
         // only — the prefix rule must not leak access to other forge/* verbs.
         assert!(!is_command_authorized("forge/publish", TrustLevel::Trusted));
-        assert!(!is_command_authorized("forge/publish", TrustLevel::Provisional));
+        assert!(!is_command_authorized(
+            "forge/publish",
+            TrustLevel::Provisional
+        ));
     }
 
     #[test]

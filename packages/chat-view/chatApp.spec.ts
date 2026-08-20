@@ -34,6 +34,7 @@ const member = (over: Partial<RosterSlotView> = {}): RosterSlotView => ({
   active: true,
   last_seen_ms: 0,
   vitals: {},
+  genes: [],
   ...over,
 });
 
@@ -58,6 +59,7 @@ const chatState = (over: Partial<ChatState> = {}): ChatState => ({
   purpose: 'chat',
   messages: [],
   roster: [],
+  acts: [],
   ...over,
 });
 

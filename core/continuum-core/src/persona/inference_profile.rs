@@ -95,9 +95,18 @@ pub struct SamplingProfile {
     pub max_new_tokens: u32,
 }
 
-/// Response-length fallback (tokens) when the role doesn't specify a budget.
-/// A ROLE concern, not a model fact — so it lives here, not on `ModelSampling`.
-pub const DEFAULT_MAX_NEW_TOKENS: u32 = 512;
+/// Response-length fallback (tokens) when the role doesn't specify a budget. A ROLE concern,
+/// not a model fact — so it lives here, not on `ModelSampling`.
+///
+/// DERIVED from the live served window (an eighth of it), never a constant. This was
+/// `pub const DEFAULT_MAX_NEW_TOKENS: u32 = 512` — inert today (role-budget wiring is still
+/// reserved, see `profile_builder`) but it is the value that gets wired, and 512 tokens
+/// truncates a real answer on ANY model. The whole point of a misfit grid is that the machine
+/// decides how much room there is, not a literal.
+/// [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
+pub fn default_max_new_tokens() -> u32 {
+    crate::cognition::context_budget::ContextBudget::live_or_floor().default_response_tokens()
+}
 
 impl SamplingProfile {
     /// Project a persona sampling profile from the model's row-level decode
@@ -128,7 +137,7 @@ impl SamplingProfile {
     pub fn chat_defaults() -> Self {
         Self::from_model(
             &crate::model_registry::types::ModelSampling::default(),
-            DEFAULT_MAX_NEW_TOKENS,
+            default_max_new_tokens(),
         )
     }
 }
@@ -307,7 +316,9 @@ mod tests {
         assert_eq!(s.top_k, 40);
         assert_eq!(s.top_p, 0.95);
         assert_eq!(s.repeat_penalty, 1.1);
-        assert_eq!(s.max_new_tokens, 512);
+        // Derived from the live window now (see `default_max_new_tokens`), so assert the
+        // relationship rather than a literal that would re-pin the clamp this removed.
+        assert_eq!(s.max_new_tokens, default_max_new_tokens());
     }
 
     /// Round-trips through serde without dropping fields. camelCase on
@@ -384,10 +395,7 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("helper"), "names the role: {msg}");
         assert!(msg.contains("nonexistent/model"), "names the model: {msg}");
-        assert!(
-            msg.contains("catalog.rs"),
-            "points at the registry: {msg}"
-        );
+        assert!(msg.contains("catalog.rs"), "points at the registry: {msg}");
 
         let err = InferenceProfileError::NoLocalGguf {
             model_id: "continuum-ai/qwen2.5-0.5b".to_string(),

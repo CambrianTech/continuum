@@ -15,7 +15,10 @@ use uuid::Uuid;
 /// Type of entity sending a message
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
-#[ts(export, export_to = "../../../protocol/typescript/persona/SenderType.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/SenderType.ts"
+)]
 pub enum SenderType {
     Human,
     Persona,
@@ -88,7 +91,10 @@ impl Ord for InboxMessage {
 
 /// Task item for the persona inbox
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/InboxTask.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/InboxTask.ts"
+)]
 pub struct InboxTask {
     #[ts(type = "string")]
     pub id: Uuid,
@@ -130,7 +136,10 @@ impl Ord for InboxTask {
 /// Discriminated union of queue items
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "type")]
-#[ts(export, export_to = "../../../protocol/typescript/persona/QueueItem.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/QueueItem.ts"
+)]
 pub enum QueueItem {
     Message(InboxMessage),
     Task(InboxTask),

@@ -4,8 +4,9 @@
 # ┌───────────────────────────────────────────────────────────────────────┐
 # │  MOST USERS DO NOT RUN THIS. To just *use* Continuum, run the one-      │
 # │  command installer (pre-built Docker images, no compiler needed):      │
-# │    • Windows:      irm https://cambriantech.github.io/continuum/install.ps1 | iex
-# │    • Linux/macOS:  curl -fsSL https://cambriantech.github.io/continuum/install.sh | bash
+# │    • Windows:      irm https://raw.githubusercontent.com/CambrianTech/continuum/main/install.ps1 | iex
+# │    • Linux/macOS:  curl -fsSL https://raw.githubusercontent.com/CambrianTech/continuum/main/install.sh | bash
+# │  (the github.io URLs these replaced 404 — Pages is not published; verified 2026-08-07)
 # │  On Windows that handles WSL2 + Docker + GPU for you — no shell choice. │
 # └───────────────────────────────────────────────────────────────────────┘
 #
@@ -81,6 +82,12 @@ esac
 # them safe no-ops where they don't apply.
 mod_submodules_init
 mod_docker_wsl_integration
+
+# Cold storage: auto-detect a large drive and route models + build cache there
+# (migrating what's on the home fs) BEFORE any cargo build, so the build uses the
+# relocated CARGO_TARGET_DIR. No-op on single-drive machines. Reconfigurable via
+# ~/.continuum/config.env. (Windows twin: Mod-ColdStorage in win-modules.ps1.)
+mod_cold_storage
 
 # ============================================================================
 # GPU detection
@@ -735,7 +742,7 @@ if command -v tailscale &>/dev/null; then
 fi
 echo ""
 echo -e "  ${YELLOW}Start:${NC}  npm start"
-echo -e "  ${YELLOW}Test:${NC}   cu ping"
+echo -e "  ${YELLOW}Test:${NC}   continuum ping"
 echo -e "  ${YELLOW}Config:${NC} $CONFIG_FILE"
 echo ""
 

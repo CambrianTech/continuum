@@ -92,12 +92,12 @@ pub fn build_profile(
 ) -> Result<PersonaInferenceProfile, InferenceProfileError> {
     let _ = role_id; // see module docstring; reserved for cognition_defaults wiring
 
-    let model = registry.model(model_id).ok_or_else(|| {
-        InferenceProfileError::UnknownModel {
+    let model = registry
+        .model(model_id)
+        .ok_or_else(|| InferenceProfileError::UnknownModel {
             model_id: model_id.to_string(),
             role_id: role_id.to_string(),
-        }
-    })?;
+        })?;
 
     // Local-inference models MUST have a resolved gguf_local_path
     // here. Per [[no-fallbacks-ever]], we don't silently substitute a
@@ -110,22 +110,24 @@ pub fn build_profile(
         .map(|p| p.kind)
         .unwrap_or(crate::model_registry::types::ProviderKind::Cloud);
 
-    let gguf_local_path =
-        if matches!(provider_kind, crate::model_registry::types::ProviderKind::Local) {
-            match &model.gguf_local_path {
-                Some(p) => Some(p.clone()),
-                None => {
-                    return Err(InferenceProfileError::NoLocalGguf {
-                        model_id: model_id.to_string(),
-                        gguf_hint: model.gguf_hint.clone(),
-                    });
-                }
+    let gguf_local_path = if matches!(
+        provider_kind,
+        crate::model_registry::types::ProviderKind::Local
+    ) {
+        match &model.gguf_local_path {
+            Some(p) => Some(p.clone()),
+            None => {
+                return Err(InferenceProfileError::NoLocalGguf {
+                    model_id: model_id.to_string(),
+                    gguf_hint: model.gguf_hint.clone(),
+                });
             }
-        } else {
-            // Cloud-routed profiles (Anthropic, OpenAI, etc.) don't need a
-            // local path — the adapter wires to the cloud endpoint directly.
-            None
-        };
+        }
+    } else {
+        // Cloud-routed profiles (Anthropic, OpenAI, etc.) don't need a
+        // local path — the adapter wires to the cloud endpoint directly.
+        None
+    };
 
     // Context length: the model's OWN declared window. No per-tier integer
     // clamp — guessing a tier cap (the old 2048/4096/8192…) silently
@@ -191,7 +193,7 @@ pub fn build_profile(
     let stop_sequences = model.stop_sequences.clone();
     let sampling = SamplingProfile::from_model(
         &model.sampling,
-        crate::persona::inference_profile::DEFAULT_MAX_NEW_TOKENS,
+        crate::persona::inference_profile::default_max_new_tokens(),
     );
 
     Ok(PersonaInferenceProfile {
@@ -225,6 +227,7 @@ mod tests {
     /// Stand-in for whatever served window the ServingPlan computed for the
     /// host. The point under test is that `build_profile` passes THIS through
     /// for local models — not that it equals any particular constant.
+    // context-budget-exempt: a TEST fixture stating the window it measures against — the pattern this guard asks for, not a production bound
     const TEST_SERVE_WINDOW: u32 = 8192;
 
     /// Create a tempfile to stand in for the GGUF on disk. Registry's
@@ -270,6 +273,8 @@ mod tests {
             capabilities: crate::model_registry::types::ProviderCapabilities::default(),
         };
         let model = Model {
+            weights_bytes: None,
+            mmproj_bytes: None,
             id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
             name: Some("Qwen2.5 0.5B Instruct (LCD)".to_string()),
             provider: "llamacpp-local".to_string(),
@@ -298,8 +303,7 @@ mod tests {
             persona_serving_eligible: true,
         };
         Arc::new(
-            Registry::from_catalog(vec![model], vec![llamacpp_provider])
-                .expect("build registry"),
+            Registry::from_catalog(vec![model], vec![llamacpp_provider]).expect("build registry"),
         )
     }
 
@@ -377,7 +381,10 @@ mod tests {
             &registry,
         )
         .expect("build profile");
-        assert!((profile.sampling.temperature - 0.35).abs() < 1e-6, "row temperature reached the profile");
+        assert!(
+            (profile.sampling.temperature - 0.35).abs() < 1e-6,
+            "row temperature reached the profile"
+        );
         assert_eq!(profile.sampling.top_k, 20);
         assert!((profile.sampling.top_p - 0.9).abs() < 1e-6);
         assert!((profile.sampling.repeat_penalty - 1.15).abs() < 1e-6);
@@ -390,7 +397,7 @@ mod tests {
         // NOT carried from ModelSampling (which deliberately has no such field).
         assert_eq!(
             profile.sampling.max_new_tokens,
-            crate::persona::inference_profile::DEFAULT_MAX_NEW_TOKENS
+            crate::persona::inference_profile::default_max_new_tokens()
         );
     }
 

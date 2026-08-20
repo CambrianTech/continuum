@@ -27,8 +27,8 @@
 
 use super::arbiter::{LeaseArbiter, TieredArbiter};
 use super::consumer::{ConsumerFootprint, ReclaimOutcome, ReclaimReason, ReclaimRequest};
-use super::ledger::{LeaseBoard, ResourceLeaseLedger};
 use super::lease::{LeaseError, LeaseRequest, ReclaimPolicy, ResourceKind, ResourceLease};
+use super::ledger::{LeaseBoard, ResourceLeaseLedger};
 
 /// Policy values the governor applies — the dwell window that breaks reclaim
 /// thrash and the grace period a `Graceful` consumer gets to free on its own
@@ -166,13 +166,27 @@ impl ResourceGovernor {
         self.ledger.release(lease_id)
     }
 
-    pub fn reserve(
-        &mut self,
-        consumer_id: impl Into<String>,
-        kind: ResourceKind,
-        min_bytes: u64,
-    ) {
+    pub fn reserve(&mut self, consumer_id: impl Into<String>, kind: ResourceKind, min_bytes: u64) {
         self.ledger.reserve(consumer_id, kind, min_bytes);
+    }
+
+    /// Headroom THIS consumer may plan against — the ledger's
+    /// [`available_for`](super::ledger::LeaseLedger::available_for): global
+    /// available minus every OTHER consumer's unmet reservation floor. The
+    /// budget-side twin of the guard `acquire` already enforces: a consumer that
+    /// PLANS from this number never sizes itself into bytes it would then be
+    /// refused (#225 — serving planned from reservation-blind `available`, grew
+    /// its window over the embed lane's floor, and embedding went dead).
+    pub fn available_for(&self, consumer_id: &str, kind: ResourceKind) -> u64 {
+        self.ledger.available_for(consumer_id, kind)
+    }
+
+    /// The replace-myself budget — see
+    /// [`ResourceLeaseLedger::budget_for_replacing`](super::ledger::ResourceLeaseLedger::budget_for_replacing).
+    /// A consumer planning its own successor must not have its own residency counted
+    /// against it, or it can never choose anything as large as what it is running.
+    pub fn budget_for_replacing(&self, consumer_id: &str, kind: ResourceKind) -> u64 {
+        self.ledger.budget_for_replacing(consumer_id, kind)
     }
 
     // ---- the tick ----------------------------------------------------------
@@ -236,10 +250,14 @@ impl ResourceGovernor {
             if target == 0 {
                 continue;
             }
-            let Some(victims) =
-                self.ledger
-                    .select_to_reclaim(kind, target, now_ms, self.config.min_dwell_ms, self.arbiter.as_ref(), pressure(kind))
-            else {
+            let Some(victims) = self.ledger.select_to_reclaim(
+                kind,
+                target,
+                now_ms,
+                self.config.min_dwell_ms,
+                self.arbiter.as_ref(),
+                pressure(kind),
+            ) else {
                 // Over budget but nothing safe to take — leave it; the daemon
                 // escalates (refuse new demand) rather than breach a protection.
                 continue;
@@ -248,7 +266,8 @@ impl ResourceGovernor {
                 let Some(lease) = self.ledger.lease(&lease_id) else {
                     continue;
                 };
-                let deadline_ms = self.deadline_for(lease.reclaim_policy, lease.is_expired(now_ms), now_ms);
+                let deadline_ms =
+                    self.deadline_for(lease.reclaim_policy, lease.is_expired(now_ms), now_ms);
                 plans.push(PlannedReclaim {
                     lease_id: lease_id.clone(),
                     consumer_id: lease.consumer_id.clone(),
@@ -328,7 +347,13 @@ mod tests {
     use super::*;
     use crate::resources::consumer::ReclaimStatus;
 
-    fn req(consumer: &str, kind: ResourceKind, bytes: u64, ttl_ms: u64, policy: ReclaimPolicy) -> LeaseRequest {
+    fn req(
+        consumer: &str,
+        kind: ResourceKind,
+        bytes: u64,
+        ttl_ms: u64,
+        policy: ReclaimPolicy,
+    ) -> LeaseRequest {
         LeaseRequest {
             consumer_id: consumer.into(),
             kind,
@@ -360,9 +385,42 @@ mod tests {
 
         // bevy (render loop, pinned), serving (elastic inference, graceful),
         // livekit (live call, pinned) — together exactly fill 10GB.
-        let bevy = gov.acquire(&req("bevy", ResourceKind::Vram, 4_000, 60_000, ReclaimPolicy::Pinned), 100).unwrap();
-        let serving = gov.acquire(&req("serving", ResourceKind::Vram, 4_000, 60_000, ReclaimPolicy::Graceful), 100).unwrap();
-        let _livekit = gov.acquire(&req("livekit", ResourceKind::Vram, 2_000, 60_000, ReclaimPolicy::Pinned), 100).unwrap();
+        let bevy = gov
+            .acquire(
+                &req(
+                    "bevy",
+                    ResourceKind::Vram,
+                    4_000,
+                    60_000,
+                    ReclaimPolicy::Pinned,
+                ),
+                100,
+            )
+            .unwrap();
+        let serving = gov
+            .acquire(
+                &req(
+                    "serving",
+                    ResourceKind::Vram,
+                    4_000,
+                    60_000,
+                    ReclaimPolicy::Graceful,
+                ),
+                100,
+            )
+            .unwrap();
+        let _livekit = gov
+            .acquire(
+                &req(
+                    "livekit",
+                    ResourceKind::Vram,
+                    2_000,
+                    60_000,
+                    ReclaimPolicy::Pinned,
+                ),
+                100,
+            )
+            .unwrap();
 
         // reporting: full board, nothing free
         assert_eq!(gov.granted(ResourceKind::Vram), 10_000);
@@ -392,14 +450,27 @@ mod tests {
 
         // TWO-PHASE reclaim: serving downgrades its model rather than dying,
         // freeing exactly the 2GB asked (Partial), staying alive at 2GB.
-        let outcome = ReclaimOutcome { freed_bytes: 2_000, status: ReclaimStatus::Partial, detail: None };
-        let remaining = gov.apply_reclaim_outcome(&serving.lease_id, &outcome).unwrap();
-        assert_eq!(remaining, 2_000, "serving lives on at the smaller footprint");
+        let outcome = ReclaimOutcome {
+            freed_bytes: 2_000,
+            status: ReclaimStatus::Partial,
+            detail: None,
+        };
+        let remaining = gov
+            .apply_reclaim_outcome(&serving.lease_id, &outcome)
+            .unwrap();
+        assert_eq!(
+            remaining, 2_000,
+            "serving lives on at the smaller footprint"
+        );
 
         // accounting reconciled: back within the 8GB ceiling, serving still present
         assert_eq!(gov.granted(ResourceKind::Vram), 8_000);
         assert_eq!(gov.available(ResourceKind::Vram), 0);
-        assert!(gov.board().leases.iter().any(|l| l.lease_id == serving.lease_id));
+        assert!(gov
+            .board()
+            .leases
+            .iter()
+            .any(|l| l.lease_id == serving.lease_id));
     }
 
     // what this catches: expirations are driven even when we are UNDER budget.
@@ -411,18 +482,40 @@ mod tests {
         let mut gov = ResourceGovernor::with_default_arbiter(GovernorConfig::default());
         gov.set_capacity(ResourceKind::Ram, 10_000);
         // short-lived 3GB lease; lots of headroom (not over budget)
-        let cache = gov.acquire(&req("serving", ResourceKind::Ram, 3_000, 500, ReclaimPolicy::Graceful), 0).unwrap();
-        assert!(gov.reconcile(100, no_pressure).is_empty(), "still live → nothing to do");
+        let cache = gov
+            .acquire(
+                &req(
+                    "serving",
+                    ResourceKind::Ram,
+                    3_000,
+                    500,
+                    ReclaimPolicy::Graceful,
+                ),
+                0,
+            )
+            .unwrap();
+        assert!(
+            gov.reconcile(100, no_pressure).is_empty(),
+            "still live → nothing to do"
+        );
 
         // past its TTL (expired at 500): overdue even though 7GB is free
         let plan = gov.reconcile(1_000, no_pressure);
         assert_eq!(plan.len(), 1);
         assert_eq!(plan[0].lease_id, cache.lease_id);
-        assert_eq!(plan[0].request.deadline_ms, 1_000, "overdue → immediate deadline");
+        assert_eq!(
+            plan[0].request.deadline_ms, 1_000,
+            "overdue → immediate deadline"
+        );
 
         // consumer releases it fully → bytes freed, lease gone
-        let outcome = ReclaimOutcome { freed_bytes: 3_000, status: ReclaimStatus::Released, detail: None };
-        gov.apply_reclaim_outcome(&cache.lease_id, &outcome).unwrap();
+        let outcome = ReclaimOutcome {
+            freed_bytes: 3_000,
+            status: ReclaimStatus::Released,
+            detail: None,
+        };
+        gov.apply_reclaim_outcome(&cache.lease_id, &outcome)
+            .unwrap();
         assert_eq!(gov.granted(ResourceKind::Ram), 0);
         assert!(gov.board().leases.is_empty());
     }
@@ -438,7 +531,18 @@ mod tests {
             graceful_grace_ms: 0,
         });
         gov.set_capacity(ResourceKind::Vram, 4_000);
-        let lease = gov.acquire(&req("serving", ResourceKind::Vram, 4_000, 60_000, ReclaimPolicy::Graceful), 0).unwrap();
+        let lease = gov
+            .acquire(
+                &req(
+                    "serving",
+                    ResourceKind::Vram,
+                    4_000,
+                    60_000,
+                    ReclaimPolicy::Graceful,
+                ),
+                0,
+            )
+            .unwrap();
 
         // capacity collapses to 1GB → 3GB over budget
         gov.set_capacity(ResourceKind::Vram, 1_000);
@@ -446,8 +550,14 @@ mod tests {
         assert_eq!(plan.len(), 1);
 
         // consumer can't free yet → Deferred, 0 bytes
-        let deferred = ReclaimOutcome { freed_bytes: 0, status: ReclaimStatus::Deferred, detail: Some("draining".into()) };
-        let remaining = gov.apply_reclaim_outcome(&lease.lease_id, &deferred).unwrap();
+        let deferred = ReclaimOutcome {
+            freed_bytes: 0,
+            status: ReclaimStatus::Deferred,
+            detail: Some("draining".into()),
+        };
+        let remaining = gov
+            .apply_reclaim_outcome(&lease.lease_id, &deferred)
+            .unwrap();
         assert_eq!(remaining, 4_000, "still fully held — never yanked");
         assert_eq!(gov.granted(ResourceKind::Vram), 4_000);
 
@@ -469,11 +579,25 @@ mod tests {
             graceful_grace_ms: 0,
         });
         gov.set_capacity(ResourceKind::Vram, 8_000);
-        let lease = gov.acquire(&req("serving", ResourceKind::Vram, 8_000, 60_000, ReclaimPolicy::Graceful), 1_000).unwrap();
+        let lease = gov
+            .acquire(
+                &req(
+                    "serving",
+                    ResourceKind::Vram,
+                    8_000,
+                    60_000,
+                    ReclaimPolicy::Graceful,
+                ),
+                1_000,
+            )
+            .unwrap();
 
         // squeeze to 4GB at t=2000 (held only 1000ms < 5000ms dwell) → protected
         gov.set_capacity(ResourceKind::Vram, 4_000);
-        assert!(gov.reconcile(2_000, no_pressure).is_empty(), "within dwell → no thrash");
+        assert!(
+            gov.reconcile(2_000, no_pressure).is_empty(),
+            "within dwell → no thrash"
+        );
 
         // at t=6500 (held 5500ms ≥ dwell) → now eligible
         let plan = gov.reconcile(6_500, no_pressure);

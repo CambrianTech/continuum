@@ -80,7 +80,10 @@ mod tests {
             .run(&Ctx::default(), ServingPlanParams::default())
             .await
             .expect("plan read must succeed");
-        assert!(out.plan.is_none(), "no decision before the daemon computes one");
+        assert!(
+            out.plan.is_none(),
+            "no decision before the daemon computes one"
+        );
     }
 
     // what this catches: the body returns the published decision from the captured
@@ -88,9 +91,16 @@ mod tests {
     #[tokio::test]
     async fn returns_the_published_plan() {
         let plan = ServingPlan {
-            base_model_id: "qwen3-coder".into(),
+            base_model: crate::cognition::serving_plan::ModelFootprint {
+                model_id: "qwen3-coder".into(),
+                weights_bytes: 0,
+                kv_per_token: 0,
+                context_window: 32_768,
+                capability_rank: 0,
+            },
             served_context_window: 32_768,
             lanes: 2,
+            grid_overflow_lanes: 0,
             resident_models: 1,
             fits_on_gpu: true,
             rationale: "fits one lane on the budget".into(),
@@ -100,7 +110,7 @@ mod tests {
             .await
             .expect("plan read must succeed");
         assert_eq!(
-            out.plan.expect("plan present").base_model_id,
+            out.plan.expect("plan present").base_model.model_id,
             "qwen3-coder"
         );
     }

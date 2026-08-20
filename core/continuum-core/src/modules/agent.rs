@@ -63,7 +63,10 @@ pub const TOOL_NAMES: &[&str] = &[
 
 /// Agent execution status
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/agent/AgentStatus.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/agent/AgentStatus.ts"
+)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentStatus {
     Running,
@@ -74,7 +77,10 @@ pub enum AgentStatus {
 
 /// A single tool call made by the agent
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/agent/AgentToolCall.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/agent/AgentToolCall.ts"
+)]
 pub struct ToolCall {
     pub name: String,
     #[ts(type = "Record<string, unknown>")]
@@ -97,7 +103,10 @@ pub struct ToolResult {
 
 /// A single action taken by the agent
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/agent/AgentAction.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/agent/AgentAction.ts"
+)]
 pub struct AgentAction {
     pub timestamp: String,
     pub action_type: String,
@@ -1357,11 +1366,7 @@ impl ServiceModule for AgentModule {
         Ok(())
     }
 
-    async fn handle_command(
-        &self,
-        command: &str,
-        _params: Value,
-    ) -> Result<CommandResult, String> {
+    async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
         // MIGRATED: every `agent/*` verb is a typed command object (see
         // `crate::commands::agent`), contributed via `commands()` below and winning
         // at `route_object`. Nothing should reach here. Fail loud — this legacy

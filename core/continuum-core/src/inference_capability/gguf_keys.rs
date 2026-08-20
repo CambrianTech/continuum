@@ -28,7 +28,7 @@
 //! decision that lives with the enum (`model_registry::hydrate::
 //! arch_from_gguf_string`); this module only surfaces the raw string.
 
-use candle_core::quantized::gguf_file::Content;
+use candle_core::quantized::gguf_file::{Content, Value};
 
 /// `general.architecture` — the model's own declared architecture string
 /// (e.g. `"qwen3"`, `"llama"`). Required for correctness by most readers
@@ -71,6 +71,73 @@ pub fn context_length(ct: &Content, arch: &str) -> Option<u32> {
 pub fn block_count(ct: &Content, arch: &str) -> Option<u32> {
     ct.metadata
         .get(&format!("{arch}.block_count"))
+        .and_then(|v| v.to_u32().ok())
+}
+
+/// `{arch}.attention.head_count_kv` in its PER-LAYER array form — the
+/// artifact's own declaration of per-layer KV variance. `Some(vec)` only when
+/// the key is an ARRAY (hybrid recurrent models — kimi-linear, kimi-k3,
+/// jamba — where zeros mark recurrent layers with no per-token KV); `None`
+/// for the scalar form (uniform models) or a missing key. Callers must not
+/// fabricate a uniform vec from the scalar: scalar-vs-array IS the signal.
+/// A zero in this array is also the honest, name-free marker of a GDN/SSM
+/// hybrid whose fused ops cannot span CPU/GPU buffers (5090 issue 3, #238).
+pub fn attention_head_count_kv_per_layer(ct: &Content, arch: &str) -> Option<Vec<u32>> {
+    match ct
+        .metadata
+        .get(&format!("{arch}.attention.head_count_kv"))?
+    {
+        Value::Array(items) => items.iter().map(|v| v.to_u32().ok()).collect(),
+        _ => None,
+    }
+}
+
+/// `{arch}.expert_count` — the total number of routed experts in an MoE
+/// model (e.g. 896 for a K3-class model, 128 for a Qwen3-MoE). `None` on a
+/// dense model that never wrote the key — the caller's cue to treat the
+/// artifact as non-MoE and skip expert paging entirely. Keyed under the
+/// model's own architecture, like every other dimension; carries no
+/// family knowledge.
+pub fn expert_count(ct: &Content, arch: &str) -> Option<u32> {
+    ct.metadata
+        .get(&format!("{arch}.expert_count"))
+        .and_then(|v| v.to_u32().ok())
+}
+
+/// `{arch}.expert_used_count` — the number of experts activated per token
+/// (top-k routing; e.g. 16-of-896 for a K3-class model, 8-of-128 for a
+/// Qwen3-MoE). Present only on MoE artifacts; `None` on a dense model.
+/// Distinct from `expert_count`: this is the ACTIVE set size per forward
+/// pass — the number that sets the paging working-set floor, since at least
+/// this many experts must be resident to serve one token. The full
+/// `expert_count` is what the splitter carves onto the Frozen tier.
+pub fn expert_used_count(ct: &Content, arch: &str) -> Option<u32> {
+    ct.metadata
+        .get(&format!("{arch}.expert_used_count"))
+        .and_then(|v| v.to_u32().ok())
+}
+
+/// `{arch}.leading_dense_block_count` — the number of LEADING transformer
+/// blocks that are dense (no routed experts) in an otherwise-MoE model.
+/// DeepSeek-family models run their first few layers dense; Qwen3-MoE runs
+/// every layer routed and simply omits the key. `None` therefore means "the
+/// artifact declares no dense lead" — the arch's own self-description, not
+/// a guessed default. MoE layer count = `block_count − leading_dense`.
+pub fn leading_dense_block_count(ct: &Content, arch: &str) -> Option<u32> {
+    ct.metadata
+        .get(&format!("{arch}.leading_dense_block_count"))
+        .and_then(|v| v.to_u32().ok())
+}
+
+/// `{arch}.expert_shared_count` — always-active shared experts per MoE
+/// layer (DeepSeek/GLM style). Shared experts are RESIDENT weights: they
+/// run for every token, so they belong with the trunk, never in the routed
+/// expert cache or its working-set arithmetic. Absent (Qwen3-MoE, K3-class
+/// routed-only layouts) means zero shared experts by the artifact's own
+/// declaration.
+pub fn expert_shared_count(ct: &Content, arch: &str) -> Option<u32> {
+    ct.metadata
+        .get(&format!("{arch}.expert_shared_count"))
         .and_then(|v| v.to_u32().ok())
 }
 
@@ -174,5 +241,28 @@ mod tests {
         let ct = content_with(vec![("qwen3.block_count", Value::U32(64))]);
         assert_eq!(block_count(&ct, "qwen3"), Some(64));
         assert_eq!(block_count(&ct, "llama"), None, "wrong arch key → None");
+    }
+
+    // what this catches: the MoE layout the Seam-1 paging splitter reads — how
+    // many experts to carve onto the Frozen tier (expert_count) and how many
+    // must stay resident per token (expert_used_count, the working-set floor).
+    // Both keyed under the model's OWN arch (a K3-class 896/16 lives under the
+    // K3 arch string, a Qwen3-MoE's under its own), and BOTH absent on a dense
+    // model → None, which is the splitter's cue that there is nothing to page.
+    #[test]
+    fn expert_layout_is_keyed_under_arch_and_dense_is_none() {
+        let moe = content_with(vec![
+            ("qwen3moe.expert_count", Value::U32(896)),
+            ("qwen3moe.expert_used_count", Value::U32(16)),
+        ]);
+        assert_eq!(expert_count(&moe, "qwen3moe"), Some(896));
+        assert_eq!(expert_used_count(&moe, "qwen3moe"), Some(16));
+        assert_eq!(expert_count(&moe, "llama"), None, "wrong arch key → None");
+
+        // A dense model wrote neither key → None, never a guessed 0/1 — the
+        // splitter must distinguish "not MoE" from "MoE with zero experts".
+        let dense = content_with(vec![("llama.block_count", Value::U32(32))]);
+        assert_eq!(expert_count(&dense, "llama"), None);
+        assert_eq!(expert_used_count(&dense, "llama"), None);
     }
 }

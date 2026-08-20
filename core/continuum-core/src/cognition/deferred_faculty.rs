@@ -156,8 +156,7 @@ impl DeferredFaculty {
                     continue; // sentinel / not a real burst
                 }
                 let room_id = input.room_id;
-                let ws = Workspace::in_room(input.world_state, room_id)
-                    .with_cycle(input.cycle);
+                let ws = Workspace::in_room(input.world_state, room_id).with_cycle(input.cycle);
 
                 // The inner faculty's contribute is async (real inference/IPC).
                 // Catch a panic so a flawed backend degrades the lane to stale,
@@ -346,6 +345,40 @@ impl Faculty for DeferredFaculty {
 /// output-puppeteering — it does not read the deliberator's generated words.
 pub(crate) fn reproject_to_now(found: &StampedFinding, now: &Workspace) -> Contribution {
     let mut c = found.contribution.clone();
+
+    // STANDING FRAMING IS NOT A MEMORY — DO NOT RE-ANCHOR IT.
+    //
+    // The rule above is stated for findings whose truth is topic-relative ("a
+    // still-on-topic memory keeps its salience, an off-topic stale finding decays").
+    // A `stable` contribution is the opposite kind of thing: session-stable structural
+    // context (the work board, the room roster, the workspace map) whose entire
+    // contract is to be present REGARDLESS of what this turn happens to be about.
+    // `STANDING_FRAMING_SALIENCE` says so in as many words — "high enough that the
+    // top-k arbiter never truncates it under attention pressure".
+    //
+    // Multiplying that floor by a lexical ratio silently repealed the contract, and
+    // the ratio is length-biased against exactly the sources that need it most: the
+    // denominator is the FINDING'S OWN token count, so the bigger a block is, the
+    // lower its ceiling. Measured live 2026-08-07 — room-kanban (median offer 5,364
+    // tokens) bid 0.9 x 0.133 = **0.12** and lost to recall at 0.77, so a citizen
+    // holding a live, renewing card could not see the board she held it on. Roster
+    // (small) survived at 0.62; workspace-map bid its full 0.90 for the sole reason
+    // that it is not `defer_tolerant` and therefore never passed through here. Three
+    // sources, three numbers, one cause.
+    //
+    // Deferrability is documented as ORTHOGONAL to salience policy
+    // ([`crate::cognition::persona_workspace`]). This is what made it not so.
+    // Ambient staleness still shows in the reasoning; the BID is left alone.
+    if c.stable {
+        let age = now.cycle.0.saturating_sub(c.cycle.0);
+        c.reasoning = format!(
+            "{} [reprojected: {age} cycles stale, standing framing — salience {:.2} held \
+             (topic-independent by contract)]",
+            c.reasoning, c.salience
+        );
+        return c;
+    }
+
     let relevance = lexical_relevance(&c.content, &now.world_state);
     let age = now.cycle.0.saturating_sub(c.cycle.0);
     let original = c.salience;
@@ -444,7 +477,10 @@ mod tests {
         // finding; it also publishes it as last-good.
         let ws1 = Workspace::in_room("burst one", Uuid::nil()).with_cycle(CycleId(1));
         let r1 = deferred.contribute(&ws1).await;
-        assert!(r1.is_some(), "cold start self-warms: the first tick carries grounding");
+        assert!(
+            r1.is_some(),
+            "cold start self-warms: the first tick carries grounding"
+        );
 
         // Tick 2 immediately after (before the worker publishes anything): the
         // warm finding serves as last-good, NON-BLOCKING — the cold cost is
@@ -546,7 +582,11 @@ mod tests {
         let ws_a2 = Workspace::in_room("back in A", room_a).with_cycle(CycleId(3));
         let in_a = deferred.contribute(&ws_a2).await;
         let found = in_a.expect("the room-A finding is ours to serve back in room A");
-        assert_eq!(found.cycle, CycleId(1), "still stamped with its original cycle");
+        assert_eq!(
+            found.cycle,
+            CycleId(1),
+            "still stamped with its original cycle"
+        );
     }
 
     // what this catches: reproject-to-now (slice 3) — the cheap synchronous "bring
@@ -572,13 +612,17 @@ mod tests {
 
         // On-topic burst (shares "slow late recall finding") → high relevance, the
         // finding keeps most of its salience and is served, cycle preserved.
-        let on_topic =
-            Workspace::in_room("the slow late recall finding is relevant", room).with_cycle(CycleId(4));
+        let on_topic = Workspace::in_room("the slow late recall finding is relevant", room)
+            .with_cycle(CycleId(4));
         let kept = deferred
             .contribute(&on_topic)
             .await
             .expect("same-room finding is served");
-        assert_eq!(kept.cycle, CycleId(1), "reproject preserves the original cycle stamp");
+        assert_eq!(
+            kept.cycle,
+            CycleId(1),
+            "reproject preserves the original cycle stamp"
+        );
         assert!(
             kept.salience > 0.4,
             "on-topic reproject keeps salience high, got {}",

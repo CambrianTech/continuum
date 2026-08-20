@@ -12,6 +12,11 @@
 //! Run:
 //!   cargo test --release --test qwen35_chat_pipeline_full -- --ignored --nocapture
 
+// unix-only integration target (#304): dials the core UNIX IPC socket /
+// sends unix signals. Windows checks compile it to empty; the lib +
+// unit tests are the windows-supported surface today.
+#![cfg(unix)]
+
 use continuum_core::inference::backends::llamacpp::{LlamaCppBackend, LlamaCppConfig};
 use continuum_core::inference::backends::{SamplingConfig, JSON_GRAMMAR};
 use llama::{render_chat, ChatMsg, FlashAttn};
@@ -44,9 +49,7 @@ fn qwen35_persona_style_chat_produces_coherent_short_reply() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(32_768);
-    eprintln!(
-        "[full] backend config: n_gpu_layers={n_gpu_layers} context_length={context_length}"
-    );
+    eprintln!("[full] backend config: n_gpu_layers={n_gpu_layers} context_length={context_length}");
     let backend = LlamaCppBackend::load(LlamaCppConfig {
         model_path: PathBuf::from(model_path()),
         n_gpu_layers,

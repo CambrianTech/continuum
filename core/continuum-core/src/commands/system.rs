@@ -5,7 +5,7 @@
 //!
 //! `system/info` is the zero-ceremony stateless example (after `commands/list`): one
 //! file, one `run` body, `register_stateless_command!`, instantly callable via
-//! `cu system/info`, the persona's tools, and every SDK — derived param schema + ACL
+//! `continuum system/info`, the persona's tools, and every SDK — derived param schema + ACL
 //! gating, no wiring anywhere else. The resource reads are the dep-holding shape: they
 //! capture the module's [`SystemResourceService`] and are assembled by
 //! [`command_objects`].
@@ -34,7 +34,10 @@ pub mod resources;
 /// the six rather than six identical placeholder structs (compression principle).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/system/SystemQuery.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/system/SystemQuery.ts"
+)]
 pub struct SystemQuery {}
 
 /// Build the dep-holding `system/*` resource-read command objects over the shared
@@ -67,18 +70,24 @@ pub fn command_objects(service: Arc<SystemResourceService>) -> Vec<Arc<dyn DynCo
 /// a canonical, schema-able params type like every other command).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/system/SystemInfoParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/system/SystemInfoParams.ts"
+)]
 pub struct SystemInfoParams {}
 
 /// Result of `system/info` — what a client needs to confirm it's talking to a
 /// compatible, live substrate.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/system/SystemInfoResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/system/SystemInfoResult.ts"
+)]
 pub struct SystemInfoResult {
     /// The continuum-core crate version (`CARGO_PKG_VERSION`).
     pub version: String,
-    /// OS process id of the running core — handy for ops (`cu stop` targets it).
+    /// OS process id of the running core — handy for ops (`continuum stop` targets it).
     pub pid: u32,
 }
 

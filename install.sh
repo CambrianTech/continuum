@@ -1,6 +1,12 @@
 #!/bin/bash
 # Continuum — One-command installer
-# Usage: curl -fsSL https://cambriantech.github.io/continuum/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/CambrianTech/continuum/main/install.sh | bash
+#
+# NOTE (2026-08-07): this used to advertise https://cambriantech.github.io/continuum/install.sh.
+# That URL 404s — GitHub Pages is not published for this repo — so the ONE path we told
+# 'most users' to take piped a 9 KB GitHub 404 page into their shell. Verified with curl.
+# Points at the raw ref that actually serves. If Pages is ever published, change it back
+# HERE and in tools/scripts/install.sh, and verify with an HTTP status, not by reading.
 #
 # Docker-first: pulls pre-built images, no compilation needed.
 # Optional: Tailscale for mesh networking + TLS (voice/video).

@@ -115,9 +115,7 @@ impl LaneClass {
         match self {
             LaneClass::Realtime => ThroughputLeaseRevocationPolicy::Pinned,
             LaneClass::Interactive => ThroughputLeaseRevocationPolicy::Graceful,
-            LaneClass::Background | LaneClass::Sentinel => {
-                ThroughputLeaseRevocationPolicy::Hard
-            }
+            LaneClass::Background | LaneClass::Sentinel => ThroughputLeaseRevocationPolicy::Hard,
         }
     }
 
@@ -286,13 +284,22 @@ mod tests {
 
     #[test]
     fn voice_and_video_default_to_realtime() {
-        assert_eq!(LaneClass::default_for_task(TaskKind::VoiceChat), LaneClass::Realtime);
-        assert_eq!(LaneClass::default_for_task(TaskKind::VideoChat), LaneClass::Realtime);
+        assert_eq!(
+            LaneClass::default_for_task(TaskKind::VoiceChat),
+            LaneClass::Realtime
+        );
+        assert_eq!(
+            LaneClass::default_for_task(TaskKind::VideoChat),
+            LaneClass::Realtime
+        );
     }
 
     #[test]
     fn chat_and_npc_engaged_default_to_interactive() {
-        assert_eq!(LaneClass::default_for_task(TaskKind::Chat), LaneClass::Interactive);
+        assert_eq!(
+            LaneClass::default_for_task(TaskKind::Chat),
+            LaneClass::Interactive
+        );
         assert_eq!(
             LaneClass::default_for_task(TaskKind::GameNpcEngaged),
             LaneClass::Interactive
@@ -301,16 +308,34 @@ mod tests {
 
     #[test]
     fn coding_npc_idle_and_academy_default_to_background() {
-        assert_eq!(LaneClass::default_for_task(TaskKind::CodingSmall), LaneClass::Background);
-        assert_eq!(LaneClass::default_for_task(TaskKind::CodingLarge), LaneClass::Background);
-        assert_eq!(LaneClass::default_for_task(TaskKind::GameNpcIdle), LaneClass::Background);
-        assert_eq!(LaneClass::default_for_task(TaskKind::AcademyStudent), LaneClass::Background);
+        assert_eq!(
+            LaneClass::default_for_task(TaskKind::CodingSmall),
+            LaneClass::Background
+        );
+        assert_eq!(
+            LaneClass::default_for_task(TaskKind::CodingLarge),
+            LaneClass::Background
+        );
+        assert_eq!(
+            LaneClass::default_for_task(TaskKind::GameNpcIdle),
+            LaneClass::Background
+        );
+        assert_eq!(
+            LaneClass::default_for_task(TaskKind::AcademyStudent),
+            LaneClass::Background
+        );
     }
 
     #[test]
     fn sentinel_tasks_default_to_sentinel_class() {
-        assert_eq!(LaneClass::default_for_task(TaskKind::SentinelEasy), LaneClass::Sentinel);
-        assert_eq!(LaneClass::default_for_task(TaskKind::SentinelHard), LaneClass::Sentinel);
+        assert_eq!(
+            LaneClass::default_for_task(TaskKind::SentinelEasy),
+            LaneClass::Sentinel
+        );
+        assert_eq!(
+            LaneClass::default_for_task(TaskKind::SentinelHard),
+            LaneClass::Sentinel
+        );
     }
 
     // ── Lane field accessors ─────────────────────────────────────
@@ -329,17 +354,38 @@ mod tests {
 
     #[test]
     fn lane_seed_kv_tokens_match_recipe_budget_table() {
-        assert_eq!(lane_with(TaskKind::Chat, LaneClass::Interactive).seed_kv_tokens(), 8 * 1024);
-        assert_eq!(lane_with(TaskKind::VoiceChat, LaneClass::Realtime).seed_kv_tokens(), 8 * 1024);
-        assert_eq!(lane_with(TaskKind::GameNpcIdle, LaneClass::Background).seed_kv_tokens(), 4 * 1024);
-        assert_eq!(lane_with(TaskKind::CodingLarge, LaneClass::Background).seed_kv_tokens(), 128 * 1024);
+        assert_eq!(
+            lane_with(TaskKind::Chat, LaneClass::Interactive).seed_kv_tokens(),
+            8 * 1024
+        );
+        assert_eq!(
+            lane_with(TaskKind::VoiceChat, LaneClass::Realtime).seed_kv_tokens(),
+            8 * 1024
+        );
+        assert_eq!(
+            lane_with(TaskKind::GameNpcIdle, LaneClass::Background).seed_kv_tokens(),
+            4 * 1024
+        );
+        assert_eq!(
+            lane_with(TaskKind::CodingLarge, LaneClass::Background).seed_kv_tokens(),
+            128 * 1024
+        );
     }
 
     #[test]
     fn lane_max_kv_tokens_match_recipe_budget_table() {
-        assert_eq!(lane_with(TaskKind::Chat, LaneClass::Interactive).max_kv_tokens(), 16 * 1024);
-        assert_eq!(lane_with(TaskKind::CodingLarge, LaneClass::Background).max_kv_tokens(), 256 * 1024);
-        assert_eq!(lane_with(TaskKind::GameNpcIdle, LaneClass::Background).max_kv_tokens(), 8 * 1024);
+        assert_eq!(
+            lane_with(TaskKind::Chat, LaneClass::Interactive).max_kv_tokens(),
+            16 * 1024
+        );
+        assert_eq!(
+            lane_with(TaskKind::CodingLarge, LaneClass::Background).max_kv_tokens(),
+            256 * 1024
+        );
+        assert_eq!(
+            lane_with(TaskKind::GameNpcIdle, LaneClass::Background).max_kv_tokens(),
+            8 * 1024
+        );
     }
 
     // ── Pin / reclaim semantics ──────────────────────────────────

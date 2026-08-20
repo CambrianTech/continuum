@@ -56,6 +56,7 @@ use ts_rs::{Config, Dependency, TS};
 /// Nothing live consumes its output; the headless command framework below is
 /// always compiled. See the `ts-codegen` feature note in Cargo.toml.
 pub mod command;
+pub mod conformance;
 #[cfg(feature = "ts-codegen")]
 pub mod emit;
 pub mod events;
@@ -168,6 +169,22 @@ pub trait CommandSpec {
     /// TS emitter. Defaults to empty; the tool projection falls back to a
     /// name-based description when unset, so existing commands need no change.
     const DESCRIPTION: &'static str = "";
+    /// Whether this command joins the persona's NATIVE tool surface — the bounded set
+    /// handed to the model as first-class structured tool-call *schemas* every turn.
+    /// (Distinct from the compact catalog, which already lists EVERY authorized command
+    /// by name for on-demand `commands/help` expansion — awareness of all commands is
+    /// automatic regardless of this flag.) Declared HERE, by the command in its own
+    /// file, so a new command joins the native surface AUTOMATICALLY on registration —
+    /// never by editing a central list ([[commands-do-real-work-and-return-receipts-not-promise-slop]]).
+    /// Defaults `false` (catalog-only): the native set stays the small core agentic
+    /// working set so the schema payload never floods the window — the ~150-tool dump
+    /// muted personas (see [`native_tool_specs`](crate::cognition::persona_tools::native_tool_specs)).
+    const NATIVE: bool = false;
+    /// The trained/former/expected tool-call names this command ANSWERS TO (see
+    /// [`ActionCommand::ALIASES`](crate::sdk_codegen::command::ActionCommand)). Declared
+    /// by the command in its own file so it stays portable; aggregated into one
+    /// generated inverse index. Defaults to none.
+    const ALIASES: &'static [&'static str] = &[];
     /// The handler's ACTUAL wire convention — decides whether the generated
     /// surface is enveloped or bare. MUST match what the handler really does
     /// (a mismatch is a type that lies about the wire).
@@ -253,6 +270,15 @@ pub struct CommandDescriptor {
     pub description: &'static str,
     /// The handler's real wire convention (decides envelope wrapping).
     pub wire: WireShape,
+    /// Whether the command opts into the persona's native tool surface (from
+    /// [`CommandSpec::NATIVE`]). The projection [`native_tool_specs`] filters the
+    /// registry on this — so the native set is derived, never a hand-kept list.
+    pub native: bool,
+    /// The trained/former/expected tool-call names this command answers to (from
+    /// [`CommandSpec::ALIASES`]). Aggregated into the one generated inverse index
+    /// (`cognition::tool_dialect`) that maps a model's reflex name back to this
+    /// command. Empty for most commands.
+    pub aliases: &'static [&'static str],
     pub params: TypeRef,
     /// The params' JSON Schema (from [`CommandSpec::params_schema`]) — the
     /// canonical input contract every SDK/interface adapts from. `Null` when the
@@ -297,6 +323,8 @@ impl CommandDescriptor {
             access_level: C::ACCESS_LEVEL,
             description: C::DESCRIPTION,
             wire: C::WIRE,
+            native: C::NATIVE,
+            aliases: C::ALIASES,
             params,
             params_schema: C::params_schema(),
             result,
@@ -611,6 +639,8 @@ macro_rules! action_command {
         $vis:vis struct $cmd:ident;
         name: $name:expr,
         access: $access:ident,
+        $(native: $native:expr,)?
+        $(aliases: $aliases:expr,)?
         params: $params:ty,
         output: $output:ty,
         run($this:ident, $ctx:ident, $p:ident) => $body:block
@@ -618,7 +648,7 @@ macro_rules! action_command {
         $(#[doc = $doc])*
         #[derive(::std::default::Default)]
         $vis struct $cmd;
-        $crate::action_command!(@impl $cmd, $name, $access, [$($doc)*], $params, $output, $this, $ctx, $p, $body);
+        $crate::action_command!(@impl $cmd, $name, $access, [$($doc)*], [$($native)?], [$($aliases)?], $params, $output, $this, $ctx, $p, $body);
         $crate::register_stateless_command!($cmd);
     };
 
@@ -629,13 +659,15 @@ macro_rules! action_command {
         $vis:vis struct $cmd:ident { $($field:ident : $fty:ty),+ $(,)? }
         name: $name:expr,
         access: $access:ident,
+        $(native: $native:expr,)?
+        $(aliases: $aliases:expr,)?
         params: $params:ty,
         output: $output:ty,
         run($this:ident, $ctx:ident, $p:ident) => $body:block
     ) => {
         $(#[doc = $doc])*
         $vis struct $cmd { $(pub $field: $fty),+ }
-        $crate::action_command!(@impl $cmd, $name, $access, [$($doc)*], $params, $output, $this, $ctx, $p, $body);
+        $crate::action_command!(@impl $cmd, $name, $access, [$($doc)*], [$($native)?], [$($aliases)?], $params, $output, $this, $ctx, $p, $body);
         // Register the DESCRIPTOR (type-only — no instance needed) so the command
         // appears in `command_registry()`, the persona tool surface, the ACL, and
         // codegen. Its RUNTIME object is constructed with deps by the owning
@@ -644,7 +676,7 @@ macro_rules! action_command {
     };
 
     // ── Internal: the shared `ActionCommand` impl both forms expand to. ──
-    (@impl $cmd:ident, $name:expr, $access:ident, [$($doc:literal)*], $params:ty, $output:ty, $this:ident, $ctx:ident, $p:ident, $body:block) => {
+    (@impl $cmd:ident, $name:expr, $access:ident, [$($doc:literal)*], [$($native:expr)?], [$($aliases:expr)?], $params:ty, $output:ty, $this:ident, $ctx:ident, $p:ident, $body:block) => {
         #[::async_trait::async_trait]
         impl $crate::sdk_codegen::ActionCommand for $cmd {
             const NAME: &'static str = $name;
@@ -652,6 +684,14 @@ macro_rules! action_command {
             // Doc comment ⟹ model-facing DESCRIPTION. Each `///` line keeps its
             // leading space, so concatenation separates lines naturally; no docs ⇒ "".
             const DESCRIPTION: &'static str = ::std::concat!($($doc),*);
+            // Optional `native: <bool>,` clause ⟹ NATIVE; absent ⇒ false (catalog-only).
+            // `false || <expr>` when present, bare `false` when absent — const-valid, no
+            // unused bindings.
+            const NATIVE: bool = false $(|| $native)?;
+            // Optional `aliases: &[...],` clause ⟹ ALIASES (the trained/former names a
+            // model reaches for, resolved inbound by tool_dialect). Absent ⇒ the trait
+            // default (empty). Emitted only when present, so the default stands otherwise.
+            $(const ALIASES: &'static [&'static str] = $aliases;)?
             type Params = $params;
             type Output = $output;
             async fn run(
@@ -684,10 +724,9 @@ pub fn command_registry() -> Vec<CommandDescriptor> {
     static REGISTRY: std::sync::OnceLock<Vec<CommandDescriptor>> = std::sync::OnceLock::new();
     REGISTRY
         .get_or_init(|| {
-            let mut descriptors: Vec<CommandDescriptor> =
-                inventory::iter::<CommandRegistration>()
-                    .map(|reg| (reg.descriptor_fn)())
-                    .collect();
+            let mut descriptors: Vec<CommandDescriptor> = inventory::iter::<CommandRegistration>()
+                .map(|reg| (reg.descriptor_fn)())
+                .collect();
             descriptors.sort_by(|a, b| a.name.cmp(b.name));
             // Hard-fail on a duplicate command NAME. The "no central list" design
             // removes the human backstop that would otherwise catch a collision, so
@@ -704,6 +743,22 @@ pub fn command_registry() -> Vec<CommandDescriptor> {
             descriptors
         })
         .clone()
+}
+
+/// Is `name` declared in the descriptor registry?
+///
+/// The half of a command's declaration that codegen, the ACL, `commands/list` and the
+/// persona tool surface all read. `ModuleRegistry::register` asks this of every
+/// constructor a module contributes, so a command that declared only one half of its
+/// (descriptor, constructor) pair fails LOUD at boot instead of routing invisibly.
+///
+/// `command_registry()` sorts by name and panics on duplicates, so a binary search is
+/// exact — and it reads the SAME list every other consumer reads, which is the point:
+/// this must never become a second opinion about what commands exist.
+pub fn descriptor_exists(name: &str) -> bool {
+    command_registry()
+        .binary_search_by(|d| d.name.cmp(name))
+        .is_ok()
 }
 
 // No demo/fixture commands: the generator is validated against the REAL
@@ -765,6 +820,7 @@ mod tests {
     // A non-compliant tool fails THIS test — it cannot be merged, so it cannot exist.
     #[test]
     fn every_ai_facing_command_is_self_describing() {
+        // context-budget-exempt: a MINIMUM doc-length a command must meet to pass conformance — a quality bar on authored text, not a bound on anything the model reads
         const MIN_DESCRIPTION_CHARS: usize = 20;
         let offenders: Vec<String> = command_registry()
             .into_iter()
@@ -976,7 +1032,9 @@ mod tests {
             .filter(|d| !d.wire.is_enveloped())
             .collect();
         assert!(
-            bare_and_provided.iter().any(|d| d.wire == WireShape::Provided)
+            bare_and_provided
+                .iter()
+                .any(|d| d.wire == WireShape::Provided)
                 && bare_and_provided.iter().any(|d| d.wire == WireShape::Bare),
             "the sampling has both a Bare and a Provided command"
         );
@@ -989,8 +1047,7 @@ mod tests {
             "no envelope import when nothing is Enveloped:\n{out}"
         );
         assert!(
-            !out.contains("params: CommandRequest<")
-                && !out.contains("result: CommandResponse<"),
+            !out.contains("params: CommandRequest<") && !out.contains("result: CommandResponse<"),
             "no envelope wrapping in the map entries when nothing is Enveloped:\n{out}"
         );
     }
@@ -1007,7 +1064,10 @@ mod tests {
         );
         let mut sorted = names.clone();
         sorted.sort();
-        assert_eq!(names, sorted, "registry sorted by name (deterministic output)");
+        assert_eq!(
+            names, sorted,
+            "registry sorted by name (deterministic output)"
+        );
     }
 
     // what this catches: a real command round-trips to a descriptor at the type

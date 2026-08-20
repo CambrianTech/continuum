@@ -32,6 +32,8 @@ const VENDORED = [
   // chat widget closure (positron payloads → views)
   { src: 'positron', dest: 'views', name: 'ChatViewState' },
   { src: 'positron', dest: 'views', name: 'ChatMessageView' },
+  // ChatViewState.acts — the transcript's tool-act receipt stream (#243)
+  { src: 'positron', dest: 'views', name: 'ActReceiptView' },
   { src: 'positron', dest: 'views', name: 'RosterSlotView' },
   // RosterSlotView imports ./Loadout (the model·size·ctx strip, #186)
   { src: 'positron', dest: 'views', name: 'Loadout' },
@@ -42,6 +44,33 @@ const VENDORED = [
   { src: 'positron', dest: 'views', name: 'ForgeModelView' },
   // roster widget kind — path-3 per-region ViewState; imports ./RosterSlotView (views)
   { src: 'positron', dest: 'views', name: 'RosterViewState' },
+  // nav closure (kind="nav" — a citizen's open tabs / unread / bookmarks)
+  { src: 'positron', dest: 'views', name: 'NavViewState' },
+  { src: 'positron', dest: 'views', name: 'NavTab' },
+  { src: 'positron', dest: 'views', name: 'NavBookmark' },
+  { src: 'positron', dest: 'views', name: 'NavTargetKind' },
+  // system-metrics closure (kind="system-metrics" — the SYS gauge's series)
+  { src: 'positron', dest: 'views', name: 'SystemMetricsViewState' },
+  { src: 'positron', dest: 'views', name: 'MetricSeriesView' },
+  // serving closure (kind="serving" — the pager glass box, #141 slice 1)
+  { src: 'positron', dest: 'views', name: 'ServingViewState' },
+  { src: 'positron', dest: 'views', name: 'ServingHeaderView' },
+  { src: 'positron', dest: 'views', name: 'ServingArmView' },
+  { src: 'positron', dest: 'views', name: 'ServingEventCard' },
+  // bench closure (kind="bench" — the academy's live benchmark board, #329)
+  { src: 'positron', dest: 'views', name: 'BenchViewState' },
+  { src: 'positron', dest: 'views', name: 'BenchRunRow' },
+  // kanban closure (kind="kanban" — the work board; the persona home's claims
+  // feed renders cards by assignee). Vendored now that a widget renders it.
+  { src: 'positron', dest: 'views', name: 'KanbanViewState' },
+  { src: 'positron', dest: 'views', name: 'KanbanCardView' },
+  { src: 'positron', dest: 'views', name: 'KanbanLaneView' },
+  { src: 'positron', dest: 'views', name: 'KanbanCardState' },
+  { src: 'positron', dest: 'views', name: 'KanbanLaneState' },
+  { src: 'positron', dest: 'views', name: 'KanbanPriority' },
+  { src: 'positron', dest: 'views', name: 'KanbanPullRequest' },
+  // KanbanCardView imports ./KanbanHold (lease liveness, #321/#331)
+  { src: 'positron', dest: 'views', name: 'KanbanHold' },
   // Experience / Join Contract manifest closure — mirrored into experience/, keeps
   // its `./Sibling` + `../grid/TrustLevel` relative imports.
   { src: 'experience', dest: 'experience', name: 'Experience' },

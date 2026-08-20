@@ -125,7 +125,8 @@ impl PersonaAdapterFactory for ServedModelPersonaAdapterFactory {
                 .to_string()
         })?;
         let model = snap.active_model.clone().ok_or_else(|| {
-            "serving daemon reports ready but no active model (daemon invariant violated)".to_string()
+            "serving daemon reports ready but no active model (daemon invariant violated)"
+                .to_string()
         })?;
         crate::probe!(
             class = "persona.upstart.bind",
@@ -497,8 +498,7 @@ pub async fn materialize_adapters(
     // identity, so the `GridTrustAuthPolicy` ACL gates what its hands may touch.
     tool_executor_for: impl Fn(
         uuid::Uuid,
-    )
-        -> Option<Arc<dyn crate::cognition::tool_executor::ToolExecutor>>,
+    ) -> Option<Arc<dyn crate::cognition::tool_executor::ToolExecutor>>,
 ) -> Vec<Result<PersonaContext, SupervisorError>> {
     let mut out = Vec::with_capacity(plans.len());
     for (slot_index, plan) in plans.into_iter().enumerate() {
@@ -610,51 +610,60 @@ pub async fn materialize_adapters(
             identity.agent_name.clone(),
             rag_engine,
         );
-        let airc_source: Arc<dyn crate::persona::rag_budget::RagSource> = Arc::new(
-            crate::persona::airc_source::AircRagSource::new(
+        let airc_source: Arc<dyn crate::persona::rag_budget::RagSource> =
+            Arc::new(crate::persona::airc_source::AircRagSource::new(
                 identity.peer_id.as_uuid(),
                 runtime.clone(),
-            ),
-        );
+            ));
         cognition.set_airc_source(airc_source);
 
-        // Bind the room-roster source from the SAME runtime — it
-        // upcasts to `AircRosterReader` (a supertrait of AircCitizen)
-        // just as it does to `AircTranscriptReader` above. This is what
-        // grounds the persona in who else is present (and who is NOT
-        // itself). See docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md
-        // §5 slice 1.
+        // WHO IS PRESENT, read from the SAME `RosterViewState` the browser renders
+        // (#408 + the RenderTarget pattern). Her room's OWN store, so a citizen in
+        // room B is never handed room A's people and never handed nothing —
+        // `PerRoomSubstrates` keeps each room's view instead of one focused slot.
+        //
+        // This is the repair for the measured defect: a live peer's name appeared
+        // ZERO times in a citizen's prompt while the browser rendered that peer
+        // fine, because the two read different code
+        // ([[citizens-cannot-see-each-other-the-prompt-promises-presence-and-delivers-nothing]]).
+        // One definition, two render targets — eyes and mind cannot drift.
         let roster_source: Arc<dyn crate::persona::rag_budget::RagSource> =
-            Arc::new(crate::persona::room_roster_source::RoomRosterSource::new(
-                identity.peer_id.as_uuid(),
-                runtime.clone(),
-            )
-                // Bound to the room she joined at bootstrap — the room her airc
-                // connection (the reader) answers for. The room gate in deliver then
-                // keeps this grounding out of turns in OTHER contexts (another room,
-                // the eval fork's nil room) — the exam-bleed fix (#127).
-                .for_room(identity.default_room));
-        // Clone the Arc: the SAME source feeds both the legacy compose path
-        // (set_roster_source) and the brain (as a bridged grounding faculty,
-        // below). One source of truth, two consumers during the cutover
-        // transition — not a parallel allocator.
+            Arc::new(crate::persona::viewstate_rag::ViewStateRagSource::<
+                continuum_positron::RosterViewState,
+            >::new(
+                crate::ipc::global_room_substrates().for_room(identity.default_room),
+            ));
         cognition.set_roster_source(roster_source.clone());
+
+        // The benchmark board, read from the SAME `BenchViewState` fold the
+        // academy rail renders (#426) — the second RenderTarget of the bench
+        // outlier. The renderable existed with a comment promising exactly
+        // this and was never bound; without it a citizen's only route to run
+        // state was a command that scrapes the progress dir, which fails the
+        // doctrine's acceptance test
+        // ([[benchmarks-must-be-positronic-activities-not-a-parallel-subsystem]]).
+        // The board is ONE global fold (unlike the per-room roster), so the
+        // handle is the global bench substrate the emitter dual-publishes into.
+        let bench_source: Arc<dyn crate::persona::rag_budget::RagSource> =
+            Arc::new(crate::persona::viewstate_rag::ViewStateRagSource::<
+                continuum_positron::bench::BenchViewState,
+            >::new(crate::ipc::global_bench_substrate()));
+        cognition.set_bench_source(bench_source);
 
         // Bind the room-doctrine source from the same runtime (upcasts to
         // `AircDoctrineReader`). Grounds the persona in the room's nature
         // — the airc-published operating contract. Slice 2.
-        let doctrine_source: Arc<dyn crate::persona::rag_budget::RagSource> =
-            Arc::new(crate::persona::room_doctrine_source::RoomDoctrineSource::new(
+        let raw_doctrine: Arc<dyn crate::persona::rag_budget::RagSource> = Arc::new(
+            crate::persona::room_doctrine_source::RoomDoctrineSource::new(
                 identity.peer_id.as_uuid(),
                 runtime.clone(),
             )
-                // Bound to the room she joined at bootstrap — the room her airc
-                // connection (the reader) answers for. The room gate in deliver then
-                // keeps this grounding out of turns in OTHER contexts (another room,
-                // the eval fork's nil room) — the exam-bleed fix (#127).
-                .for_room(identity.default_room));
-        // Same dual-wire as the roster: one Arc, legacy path + brain faculty.
-        cognition.set_doctrine_source(doctrine_source.clone());
+            // Bound to the room she joined at bootstrap — the room her airc
+            // connection (the reader) answers for. The room gate in deliver then
+            // keeps this grounding out of turns in OTHER contexts (another room,
+            // the eval fork's nil room) — the exam-bleed fix (#127).
+            .for_room(identity.default_room),
+        );
 
         // Active-work source: grounds the persona in ITS OWN live work across all
         // rooms (claimed cards + states), read from airc's work roster. The dynamic
@@ -666,6 +675,11 @@ pub async fn materialize_adapters(
                 runtime.clone(),
             ));
 
+        // The persona's HANDS, built once here — consumed by the brain config
+        // below AND by the workspace-map cache wire (its command executor's bus
+        // is where write-completion events land).
+        let tool_executor = tool_executor_for(identity.peer_id.as_uuid());
+
         // Workspace map: grounds the persona in WHERE code lives — the real root
         // and top-level layout the code tools resolve against. NOT airc-backed
         // (reads the same cwd-rooted FileEngine as the persona's hands, so it
@@ -674,10 +688,35 @@ pub async fn materialize_adapters(
         // the layout was only ever an echoed error in recall, never standing
         // framing. Grounding, not steering — names the dirs, never which holds
         // the answer. Swaps to the airc-leased root when #49 lands.
-        let workspace_map_source: Arc<dyn crate::persona::rag_budget::RagSource> =
-            Arc::new(crate::persona::workspace_map_source::WorkspaceMapSource::for_peer_layer(
+        //
+        // Wrapped as an event-invalidated cache (#398): the dir re-walk ran on
+        // EVERY compose, so it serves last-good until a workspace-mutating
+        // command completes on the bus. No wrap without a wire — a speak-only
+        // persona (no hands → no bus) keeps the raw source, because her map
+        // can still be mutated by OTHERS' hands and an unwired cache would be
+        // stale forever.
+        let raw_workspace_map: Arc<dyn crate::persona::rag_budget::RagSource> = Arc::new(
+            crate::persona::workspace_map_source::WorkspaceMapSource::for_peer_layer(
                 identity.peer_id.as_uuid(),
-            ));
+            ),
+        );
+        let workspace_map_source: Arc<dyn crate::persona::rag_budget::RagSource> =
+            match tool_executor
+                .as_ref()
+                .and_then(|t| t.command_executor())
+                .and_then(|c| c.message_bus())
+            {
+                Some(bus) => {
+                    let (cached, dirty) =
+                        crate::persona::cached_source::CachedRagSource::new(raw_workspace_map);
+                    crate::persona::grounding_invalidation::spawn_workspace_invalidator(
+                        bus,
+                        dirty.downgrade(),
+                    );
+                    cached
+                }
+                None => raw_workspace_map,
+            };
 
         // Wall source: grounds the persona in the room's LIVING SHARED
         // DOCUMENTS — the airc-pinned plan, coding instructions, agenda,
@@ -690,16 +729,56 @@ pub async fn materialize_adapters(
         // active-work + workspace-map sources. See
         // docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5 and
         // [[airc-generic-per-user-room-state]].
-        let wall_source: Arc<dyn crate::persona::rag_budget::RagSource> =
-            Arc::new(crate::persona::wall_source::WallSource::new(
+        let raw_wall: Arc<dyn crate::persona::rag_budget::RagSource> = Arc::new(
+            crate::persona::wall_source::WallSource::new(
                 identity.peer_id.as_uuid(),
                 runtime.clone(),
             )
-                // Bound to the room she joined at bootstrap — the room her airc
-                // connection (the reader) answers for. The room gate in deliver then
-                // keeps this grounding out of turns in OTHER contexts (another room,
-                // the eval fork's nil room) — the exam-bleed fix (#127).
-                .for_room(identity.default_room));
+            // Bound to the room she joined at bootstrap — the room her airc
+            // connection (the reader) answers for. The room gate in deliver then
+            // keeps this grounding out of turns in OTHER contexts (another room,
+            // the eval fork's nil room) — the exam-bleed fix (#127).
+            .for_room(identity.default_room),
+        );
+
+        // Doctrine + wall as event-invalidated caches (#398): these are pure
+        // event-folds — their projections change ONLY when a peer publishes
+        // (TranscriptKind::DoctrinePublished / WallPostPublished), which is
+        // rare, yet doctrine was the ONE SYNCHRONOUS airc round-trip on every
+        // live compose (ColdStartCritical, never deferred). ONE subscribe
+        // stream per persona marks both caches; the invalidator holds weak
+        // handles and dies with them. No wrap without a wire: if subscribe
+        // fails, both stay raw (correct, just slow) and we log loud. NOTE the
+        // roster is deliberately NOT cached — room_roster(within=120s, …) is
+        // a recency projection that DECAYS with no event firing; a cached
+        // roster shows ghosts.
+        let (doctrine_source, wall_source): (
+            Arc<dyn crate::persona::rag_budget::RagSource>,
+            Arc<dyn crate::persona::rag_budget::RagSource>,
+        ) = match runtime.subscribe_all_rooms().await {
+            Ok(stream) => {
+                let (doctrine_cached, doctrine_dirty) =
+                    crate::persona::cached_source::CachedRagSource::new(raw_doctrine);
+                let (wall_cached, wall_dirty) =
+                    crate::persona::cached_source::CachedRagSource::new(raw_wall);
+                crate::persona::grounding_invalidation::spawn_publish_invalidator(
+                    stream,
+                    vec![doctrine_dirty.downgrade(), wall_dirty.downgrade()],
+                );
+                (doctrine_cached, wall_cached)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    persona = %identity.agent_name,
+                    error = %e,
+                    "doctrine/wall cache UNWIRED (subscribe failed) — serving raw \
+                     airc fetch per compose; slow but never stale"
+                );
+                (raw_doctrine, raw_wall)
+            }
+        };
+        // Same dual-wire as the roster: one Arc, legacy path + brain faculty.
+        cognition.set_doctrine_source(doctrine_source.clone());
 
         // Room-board source: grounds the persona in the CURRENT ROOM's WHOLE
         // work board — every card, its column, priority, and owner — read live
@@ -712,16 +791,43 @@ pub async fn materialize_adapters(
         // supertrait of AircCitizen). Enriching framing, NOT a participation
         // gate — bound brain-only + defer-tolerant like the active-work + wall
         // sources. Task #117 O6.
-        let room_board_source: Arc<dyn crate::persona::rag_budget::RagSource> =
-            Arc::new(crate::persona::room_board_source::RoomBoardSource::new(
+        let room_board_source: Arc<dyn crate::persona::rag_budget::RagSource> = Arc::new(
+            crate::persona::room_board_source::RoomBoardSource::new(
                 identity.peer_id.as_uuid(),
                 runtime.clone(),
             )
-                // Bound to the room she joined at bootstrap — the room her airc
-                // connection (the reader) answers for. The room gate in deliver then
-                // keeps this grounding out of turns in OTHER contexts (another room,
-                // the eval fork's nil room) — the exam-bleed fix (#127).
-                .for_room(identity.default_room));
+            // Bound to the room she joined at bootstrap — the room her airc
+            // connection (the reader) answers for. The room gate in deliver then
+            // keeps this grounding out of turns in OTHER contexts (another room,
+            // the eval fork's nil room) — the exam-bleed fix (#127).
+            .for_room(identity.default_room),
+        );
+
+        // Live-call perception: the persona's room-as-NOW visual grounding — WHO is
+        // visible on the call + a description of what they show, read NON-BLOCKING from
+        // the persona's PerceptionBuffer (only cells resolved this tick; the turn never
+        // waits) and BUDGETED through the same flexbox allocator so perception can never
+        // dominate context ([[perception-feedback-must-not-blow-rag]]).
+        //
+        // The buffer is the ADDRESSABLE home in `media::perception_registry` — the ONE
+        // seam the LiveKit media ingest (#192/#193) warms via `observe()` and this source
+        // reads, resolved by persona_id from BOTH sides (the "one home, two reachers"
+        // shape of `focus::registry()`). Its cells resolve on the runtime's ONE
+        // `SharedCompute` (`shared_compute::global()`, which the Runtime adopts), so a
+        // frame warmed once by ingest is a cache hit for EVERY viewing persona:
+        // compute-once / share-many, the multi-persona vision moat
+        // ([[vision-replication-is-the-multipersona-moat-vs-cloud]]). Empty until frames
+        // arrive — this wires the READ path into cognition; the video_rx → observe ingest
+        // is #192.
+        let perception_buffer =
+            crate::media::perception_registry().handle(identity.peer_id.as_uuid());
+        let media_perception_source: Arc<dyn crate::persona::rag_budget::RagSource> = Arc::new(
+            crate::persona::media_perception_source::MediaPerceptionSource::new(
+                identity.peer_id.as_uuid(),
+                perception_buffer,
+                crate::runtime::shared_compute::global(),
+            ),
+        );
 
         // Disk-backed, per-persona memory: open <home>/engrams.sqlite and
         // rehydrate prior engrams + recall metadata, so memory SURVIVES restart.
@@ -732,11 +838,9 @@ pub async fn materialize_adapters(
         // (NOT an inference fallback). MUST run before the WorkspaceCycle is
         // assembled below, so its RecallFaculty binds the persisted admission.
         let home = crate::persona::home::PersonaHome::from_root(identity.home.clone());
-        let recall_meta = std::sync::Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
-        );
-        match crate::persona::admission_state::AdmissionState::for_persona(&home, recall_meta)
-            .await
+        let recall_meta =
+            std::sync::Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
+        match crate::persona::admission_state::AdmissionState::for_persona(&home, recall_meta).await
         {
             Ok(persisted) => {
                 cognition.attach_persistent_admission(
@@ -846,10 +950,22 @@ pub async fn materialize_adapters(
                         room_board_source,
                     )
                     .defer_tolerant(),
+                    // Live-call perception (#187/#192): WHO is visible on the call +
+                    // what they show, as enriching framing. Defer-tolerant: a
+                    // first-tick miss costs one under-grounded turn, not a wrong one —
+                    // and perception is non-blocking by construction (absent cells are
+                    // simply not present this tick, never awaited). NOT requires_hands:
+                    // seeing is a SENSE, not a tool, so it stays present in a
+                    // tool-stripped (spoken-exam) cycle. Reads only ready cells (O(participants)
+                    // string assembly, no inference) — off the 30fps media plane entirely.
+                    crate::cognition::persona_workspace::GroundingSource::framing(
+                        media_perception_source,
+                    )
+                    .defer_tolerant(),
                 ],
                 // The persona's HANDS — built by the caller for THIS persona's
                 // identity (None → speak-only). What turns "talks" into "acts".
-                tool_executor: tool_executor_for(identity.peer_id.as_uuid()),
+                tool_executor,
                 // The window the gateway actually serves this persona (task #50:
                 // single-sourced; Local → ServingPlan.served_context_window). The
                 // deliberation faculty keeps its prompt inside it so llama-server
@@ -867,6 +983,9 @@ pub async fn materialize_adapters(
                 // enriching framing. Doctrine (ColdStartCritical) stays synchronous
                 // regardless. Eval/harness override to false.
                 defer_grounding: true,
+                // The LIVING persona always keeps her memories — suppression is a
+                // benchmark-reproducibility knob, never a life-path setting (#207).
+                suppress_recall: false,
             },
         );
 
@@ -1145,8 +1264,7 @@ mod tests {
             profile: Ok(fake_profile("Paige", "model-a")),
         }];
 
-        let factory =
-            ScriptedPersonaAdapterFactory::always_fails("simulated factory rejection");
+        let factory = ScriptedPersonaAdapterFactory::always_fails("simulated factory rejection");
         let hosted =
             materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup(), |_| None).await;
 
@@ -1252,14 +1370,15 @@ mod tests {
 
         let factory = ScriptedPersonaAdapterFactory::heuristic();
         // Lookup returns Some only for Paige; Pax goes RuntimeMissing.
-        let lookup = move |pid: Uuid| -> Option<Arc<dyn crate::persona::airc_citizen::AircCitizen>> {
-            if pid == pax_persona_id {
-                None
-            } else {
-                Some(Arc::new(StubAircCitizen::new(Uuid::new_v4()))
-                    as Arc<dyn crate::persona::airc_citizen::AircCitizen>)
-            }
-        };
+        let lookup =
+            move |pid: Uuid| -> Option<Arc<dyn crate::persona::airc_citizen::AircCitizen>> {
+                if pid == pax_persona_id {
+                    None
+                } else {
+                    Some(Arc::new(StubAircCitizen::new(Uuid::new_v4()))
+                        as Arc<dyn crate::persona::airc_citizen::AircCitizen>)
+                }
+            };
         let hosted = materialize_adapters(plans, &factory, lookup, |_| None).await;
 
         assert_eq!(hosted.len(), 2);
@@ -1363,16 +1482,19 @@ mod tests {
     #[tokio::test]
     async fn warmup_failure_does_not_taint_sibling_slots() {
         init_test_registry();
-        let (factory_ok, ok_counts) =
-            ScriptedPersonaAdapterFactory::heuristic_with_counters();
+        let (factory_ok, ok_counts) = ScriptedPersonaAdapterFactory::heuristic_with_counters();
         let ok_plan = vec![MaterializedPersonaPlan {
             role: RoleId::Helper,
             instance: fake_instance("Paige"),
             profile: Ok(fake_profile("Paige", "model-a")),
         }];
-        let hosted_ok =
-            materialize_adapters(ok_plan, &factory_ok, StubAircCitizen::fresh_lookup(), |_| None)
-                .await;
+        let hosted_ok = materialize_adapters(
+            ok_plan,
+            &factory_ok,
+            StubAircCitizen::fresh_lookup(),
+            |_| None,
+        )
+        .await;
         assert!(hosted_ok[0].is_ok(), "ok-warmup adapter materializes");
         assert_eq!(ok_counts.warmups(), 1);
 

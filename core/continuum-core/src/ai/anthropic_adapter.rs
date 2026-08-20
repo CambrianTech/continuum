@@ -326,9 +326,20 @@ impl AIProviderAdapter for AnthropicAdapter {
         // the ceiling from the model's reported capability rather than inventing a
         // magic inline number. The capability is the single authority on this model's
         // real output limit; the adapter just reads it.
-        let max_tokens = request
+        let Some(max_tokens) = request
             .max_tokens
-            .unwrap_or_else(|| self.capabilities().max_output_tokens);
+            .or_else(|| self.capabilities().max_output_tokens)
+        else {
+            // Undeclared is now representable (it used to silently inherit a 2048 floor), so
+            // handle it honestly: this provider's API cannot proceed without the number, and
+            // inventing one is the exact defect that floor was. Fail loud.
+            return Err(
+                "Anthropic requires max_tokens and this adapter declares no \
+                        max_output_tokens capability — declare it via \
+                        AdapterCapabilities::builder().max_output_tokens(n)"
+                    .to_string(),
+            );
+        };
 
         // Build request body
         let mut body = json!({

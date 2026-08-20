@@ -21,7 +21,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use airc_core::PeerId;
 use airc_test_fixtures::TwoAircLoopback;
 use async_trait::async_trait;
-use continuum_core::persona::command_inbound_pump::{build_grant_authorizer, PersonaCommandInboundPump};
+use continuum_core::persona::command_inbound_pump::{
+    build_grant_authorizer, PersonaCommandInboundPump,
+};
 use continuum_core::routing::grant_issuance::{issue_grant, IssueGrantParams};
 use continuum_core::routing::presented_grant_store::InMemoryPresentedGrantStore;
 use continuum_core::routing::{route, AircTransport, CommandUri, GridTrustAuthPolicy, Transport};
@@ -82,26 +84,20 @@ async fn owner_signed_grant_lets_grantee_run_a_tier_denied_command() {
     // --- Owner side: the production gate + the EchoModule, addressable via the pump.
     let registry = Arc::new(ModuleRegistry::new());
     registry.register(Arc::new(EchoModule) as Arc<dyn ServiceModule>);
-    let executor = Arc::new(
-        CommandExecutor::new(registry).with_policy(Arc::new(GridTrustAuthPolicy::new())),
-    );
+    let executor =
+        Arc::new(CommandExecutor::new(registry).with_policy(Arc::new(GridTrustAuthPolicy::new())));
     let owner_home = tempfile::tempdir().expect("owner home");
     let grant_authorizer = build_grant_authorizer(owner, owner_home.path())
         .await
         .expect("owner builds its grant authorizer");
-    let pump = PersonaCommandInboundPump::spawn(
-        owner_id,
-        Arc::clone(owner),
-        executor,
-        grant_authorizer,
-    )
-    .await
-    .expect("install owner command pump");
+    let pump =
+        PersonaCommandInboundPump::spawn(owner_id, Arc::clone(owner), executor, grant_authorizer)
+            .await
+            .expect("install owner command pump");
 
     let decision = || {
         route(
-            &CommandUri::parse(&format!("airc://{owner_id}/compute/echo"))
-                .expect("valid peer URI"),
+            &CommandUri::parse(&format!("airc://{owner_id}/compute/echo")).expect("valid peer URI"),
         )
     };
 

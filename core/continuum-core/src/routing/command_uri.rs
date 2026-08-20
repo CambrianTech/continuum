@@ -320,19 +320,15 @@ fn parse_room_authority(
 
     // Optional `:env` suffix on a room URI: `room:<uuid>:env`.
     let (uuid_part, env) = match after_sigil.rsplit_once(':') {
-        Some((u, e)) if !u.is_empty() && !e.is_empty() => {
-            (u, Some(parse_env_selector(e)))
-        }
+        Some((u, e)) if !u.is_empty() && !e.is_empty() => (u, Some(parse_env_selector(e))),
         Some((_u, e)) if e.is_empty() => {
             return Err(UriParseError::EmptyEnv(full_authority.to_string()));
         }
         _ => (after_sigil, None),
     };
 
-    let room_id =
-        Uuid::parse_str(uuid_part).map_err(|e| {
-            UriParseError::InvalidRoomUuid(uuid_part.to_string(), e.to_string())
-        })?;
+    let room_id = Uuid::parse_str(uuid_part)
+        .map_err(|e| UriParseError::InvalidRoomUuid(uuid_part.to_string(), e.to_string()))?;
 
     Ok(CommandUri::Room {
         room_id,
@@ -364,9 +360,7 @@ fn parse_peer_authority(
 
     // Split off `@node` from the peer.
     let (peer_str, node) = match peer_and_node.split_once('@') {
-        Some((p, n)) if !p.is_empty() && !n.is_empty() => {
-            (p, Some(NodeId(n.to_string())))
-        }
+        Some((p, n)) if !p.is_empty() && !n.is_empty() => (p, Some(NodeId(n.to_string()))),
         Some((_p, n)) if n.is_empty() => {
             return Err(UriParseError::EmptyNodeId(authority.to_string()));
         }
@@ -613,14 +607,12 @@ mod tests {
 
     // Helper for round-trip assertions.
     fn round_trip(input: &str, expected: CommandUri) {
-        let parsed = CommandUri::parse(input).unwrap_or_else(|e| {
-            panic!("parse({input:?}) failed: {e}")
-        });
+        let parsed =
+            CommandUri::parse(input).unwrap_or_else(|e| panic!("parse({input:?}) failed: {e}"));
         assert_eq!(parsed, expected, "parsed mismatch for {input:?}");
         let printed = parsed.to_string();
-        let reparsed = CommandUri::parse(&printed).unwrap_or_else(|e| {
-            panic!("re-parse of {printed:?} failed: {e}")
-        });
+        let reparsed = CommandUri::parse(&printed)
+            .unwrap_or_else(|e| panic!("re-parse of {printed:?} failed: {e}"));
         assert_eq!(reparsed, parsed, "round-trip mismatch for {input:?}");
     }
 
@@ -1004,13 +996,13 @@ mod tests {
     #[test]
     fn name_with_hyphens_does_not_false_positive_as_uuid() {
         // Five segments but wrong lengths → name, not UUID.
-        let r = CommandUri::parse("airc://maya-the-helper-of-joel/foo")
+        let r = CommandUri::parse("airc://maya-the-helper-of-operator/foo")
             .expect("hyphenated name should parse as Name");
         match r {
             CommandUri::Peer {
                 peer: PeerRef::Name(n),
                 ..
-            } => assert_eq!(n, "maya-the-helper-of-joel"),
+            } => assert_eq!(n, "maya-the-helper-of-operator"),
             other => panic!("expected Peer{{Name}}, got {other:?}"),
         }
     }

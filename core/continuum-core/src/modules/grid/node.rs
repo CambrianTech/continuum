@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::forge::endpoint::ForgeEndpoint;
+use crate::identity::PeerId;
 
 /// Trust level for a remote node.
 /// Determines what commands the node is allowed to execute on us,
@@ -53,6 +54,7 @@ pub enum TransportAddress {
         port: u16,
         /// Tailscale machine name (e.g., "bigmama")
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         machine_name: Option<String>,
     },
 
@@ -92,7 +94,8 @@ impl TransportAddress {
                 // though destination_hash is in practice ASCII-hex — the
                 // safe primitive removes the latent panic by construction
                 // per [[every-error-is-an-opportunity-to-battle-harden]].
-                let short = crate::utils::str_truncate::truncate_at_char_boundary(destination_hash, 8);
+                let short =
+                    crate::utils::str_truncate::truncate_at_char_boundary(destination_hash, 8);
                 format!("ret:{short}...")
             }
         }
@@ -114,7 +117,10 @@ pub const DEFAULT_GRID_PORT: u16 = 7117;
 /// A capability that a node advertises to the mesh.
 /// Used by the GridRouter to decide where to send commands.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/grid/NodeCapability.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/grid/NodeCapability.ts"
+)]
 #[serde(tag = "type")]
 pub enum NodeCapability {
     /// GPU compute available.
@@ -122,9 +128,11 @@ pub enum NodeCapability {
     Compute {
         /// GPU model name (e.g., "RTX 5090", "M3 Pro")
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         gpu: Option<String>,
         /// Available VRAM in megabytes
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         #[ts(type = "number")]
         vram_mb: Option<u64>,
     },
@@ -176,6 +184,7 @@ pub struct GridNode {
 
     /// Human-readable name (user-assigned, e.g., "home-5090", "school-laptop").
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub node_name: Option<String>,
 
     /// All transport addresses through which this node can be reached.
@@ -194,8 +203,22 @@ pub struct GridNode {
 
     /// Last measured round-trip latency in milliseconds.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(type = "number | undefined")]
     pub latency_ms: Option<u64>,
+
+    /// The node's DURABLE airc identity — its `PeerId`, the SAME key the capacity
+    /// gossip (`CapacityOffer`) and the settlement `Reputation` use. `node_id` above is
+    /// a TRANSPORT-derived address (a Tailscale IP) that changes with location; THIS is
+    /// the being's identity that moves with it. Optional because a node found by a
+    /// transport-level scan alone has no `PeerId` until the pairing/gossip correlation
+    /// supplies it (`set_peer_id`). Once set it is the ONE key that joins routing ↔
+    /// capacity ↔ reputation — #2228, the node sibling of the enforced
+    /// `persona_id == peer_id` (`airc_runtime.rs:390`). See GRID-ELASTIC-CAPABILITY §3d.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[ts(type = "string | undefined")]
+    pub peer_id: Option<PeerId>,
 }
 
 /// A node discovered during transport-level discovery (before trust assignment).

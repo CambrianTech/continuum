@@ -18,7 +18,10 @@ use crate::persona::Mood;
 use crate::sdk_codegen::CommandError;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/GetStateParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/GetStateParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct GetStateParams {
     /// Persona whose cognitive state is read.
@@ -29,7 +32,10 @@ pub struct GetStateParams {
 /// The persona's live cognitive state — a camelCase projection of
 /// [`PersonaState`](crate::persona::PersonaState) plus the derived service cadence.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/GetStateResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/GetStateResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct GetStateResult {
     /// Energy level 0.0–1.0 (depletes with work, recovers with rest).

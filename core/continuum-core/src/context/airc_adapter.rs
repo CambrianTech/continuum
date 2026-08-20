@@ -37,11 +37,21 @@ impl AircHandleAdapter {
 
 #[async_trait]
 impl AircTranscriptReader for AircHandleAdapter {
-    async fn page_recent(
+    async fn page_recent(&self, limit: usize) -> Result<Vec<airc_lib::TranscriptEvent>, AircError> {
+        // Route through the ONE kinds-filtered impl on `airc_lib::Airc`
+        // (persona/airc_source.rs, #297) — never the raw inherent page.
+        crate::persona::airc_source::AircTranscriptReader::page_recent(&*self.inner, limit).await
+    }
+
+    async fn page_recent_in(
         &self,
+        room: Option<airc_core::RoomId>,
         limit: usize,
     ) -> Result<Vec<airc_lib::TranscriptEvent>, AircError> {
-        self.inner.page_recent(limit).await
+        // Explicit forward (#367) — the #262 lesson lives in this file:
+        // a silently-inherited trait default is how regressions ship.
+        crate::persona::airc_source::AircTranscriptReader::page_recent_in(&*self.inner, room, limit)
+            .await
     }
 }
 
@@ -55,8 +65,35 @@ impl crate::persona::room_roster_source::AircRosterReader for AircHandleAdapter 
         &self,
         within: std::time::Duration,
         window: usize,
+        room: Option<uuid::Uuid>,
     ) -> Result<Vec<airc_lib::RoomMember>, AircError> {
-        self.inner.room_roster(within, window).await
+        crate::persona::room_roster_source::AircRosterReader::room_roster(
+            self.inner.as_ref(),
+            within,
+            window,
+            room,
+        )
+        .await
+    }
+
+    // #262: forward the CARDS read to the real airc identity join. Without
+    // this override the adapter silently inherits the trait's identity-less
+    // default and every roster name regresses to the provisional peer label
+    // (glass-boxed live 2026-07-30 — the whole room went `peer-xxxx` for one
+    // deploy cycle).
+    async fn room_roster_cards(
+        &self,
+        within: std::time::Duration,
+        window: usize,
+        room: Option<uuid::Uuid>,
+    ) -> Result<Vec<airc_lib::RoomMemberCard>, AircError> {
+        crate::persona::room_roster_source::AircRosterReader::room_roster_cards(
+            self.inner.as_ref(),
+            within,
+            window,
+            room,
+        )
+        .await
     }
 }
 
@@ -64,16 +101,19 @@ impl crate::persona::room_roster_source::AircRosterReader for AircHandleAdapter 
 impl crate::persona::room_doctrine_source::AircDoctrineReader for AircHandleAdapter {
     async fn room_doctrine(
         &self,
+        room: Option<uuid::Uuid>,
     ) -> Result<Option<airc_core::doctrine::RoomDoctrinePublished>, AircError> {
-        self.inner.room_doctrine().await
+        crate::persona::room_doctrine_source::AircDoctrineReader::room_doctrine(
+            self.inner.as_ref(),
+            room,
+        )
+        .await
     }
 }
 
 #[async_trait]
 impl crate::persona::wall_source::WallReader for AircHandleAdapter {
-    async fn wall_posts(
-        &self,
-    ) -> Result<Vec<airc_core::doctrine::WallPostPublished>, AircError> {
+    async fn wall_posts(&self) -> Result<Vec<airc_core::doctrine::WallPostPublished>, AircError> {
         // Whole board (all categories); the source filters/labels per post.
         self.inner.wall_posts(None).await
     }
@@ -101,8 +141,24 @@ impl crate::persona::room_board_source::RoomBoardReader for AircHandleAdapter {
     /// The current room's WHOLE work board — delegates to the inner airc
     /// handle's single board fold (same read the desktop-app kanban projector
     /// makes).
-    async fn work_board(&self) -> Result<airc_work::BoardSnapshot, AircError> {
-        crate::persona::room_board_source::RoomBoardReader::work_board(self.inner.as_ref()).await
+    async fn work_board(
+        &self,
+        room: Option<uuid::Uuid>,
+    ) -> Result<airc_work::BoardSnapshot, AircError> {
+        crate::persona::room_board_source::RoomBoardReader::work_board(self.inner.as_ref(), room)
+            .await
+    }
+
+    /// Delegates to the inner airc handle's alias store — the same durable
+    /// lookup the operator CLI uses, so a card holder reads as a person here
+    /// too. Delegation, never a "no names" stub: an adapter that quietly
+    /// dropped resolution would restore the hex-only board this exists to fix.
+    async fn peer_names(
+        &self,
+        peers: &[airc_core::PeerId],
+    ) -> std::collections::HashMap<airc_core::PeerId, String> {
+        crate::persona::room_board_source::RoomBoardReader::peer_names(self.inner.as_ref(), peers)
+            .await
     }
 }
 
@@ -112,11 +168,11 @@ impl AircCitizen for AircHandleAdapter {
         self.inner.peer_id().as_uuid()
     }
 
-    async fn subscribe(&self) -> Result<airc_lib::EventStream, AircError> {
-        self.inner.subscribe().await
+    async fn subscribe_all_rooms(&self) -> Result<airc_lib::FilteredEventStream, AircError> {
+        crate::persona::airc_citizen::subscribe_every_room(&self.inner).await
     }
 
-    async fn say(&self, text: &str) -> Result<EventId, AircError> {
-        self.inner.say(text).await
+    async fn say_in(&self, room_id: Uuid, text: &str) -> Result<EventId, AircError> {
+        crate::persona::airc_citizen::publish_text_in_room(&self.inner, room_id, text).await
     }
 }

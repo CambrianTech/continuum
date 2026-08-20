@@ -16,7 +16,10 @@ use crate::modules::cognition::CognitionState;
 use crate::sdk_codegen::CommandError;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/TrackResponseParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/TrackResponseParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackResponseParams {
     /// Persona that responded.
@@ -28,7 +31,10 @@ pub struct TrackResponseParams {
 }
 
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/TrackResponseResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/TrackResponseResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackResponseResult {
     pub tracked: bool,

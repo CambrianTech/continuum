@@ -137,7 +137,9 @@ impl CandidateSource for GenomeStoreCandidateSource {
                 outcome_history_factor: 0.0,
                 last_used_ms: layer.last_used_ms,
                 // On this machine, on SSD (Cold tier) — a load, not a page fault.
-                residency: ResidencyHint::Local { role: TierRole::Cold },
+                residency: ResidencyHint::Local {
+                    role: TierRole::Cold,
+                },
                 provenance_trust_factor: layer.trust_factor,
             });
         }
@@ -191,12 +193,19 @@ mod tests {
         let source = GenomeStoreCandidateSource::new(vec![code, poetry], embedder);
 
         let cands = source
-            .fetch(&query_for("rust code refactoring"), &RecallContext::cold_start(crate::identity::PeerId::from_uuid(Uuid::nil())))
+            .fetch(
+                &query_for("rust code refactoring"),
+                &RecallContext::cold_start(crate::identity::PeerId::from_uuid(Uuid::nil())),
+            )
             .await;
         assert_eq!(cands.len(), 2, "both layers surface as candidates");
 
         let sem = |id: ArtifactId| {
-            cands.iter().find(|c| c.artifact_id == id).unwrap().semantic_factor
+            cands
+                .iter()
+                .find(|c| c.artifact_id == id)
+                .unwrap()
+                .semantic_factor
         };
         assert!(
             sem(code_id) > sem(poetry_id),
@@ -231,8 +240,10 @@ mod tests {
             mk("code-expert", "rust code editing and refactoring"),
             mk("poet", "lyrical poetry and creative verse"),
         ];
-        let source =
-            GenomeStoreCandidateSource::from_local_adapters(&adapters, Arc::new(LexicalEmbedder::new()));
+        let source = GenomeStoreCandidateSource::from_local_adapters(
+            &adapters,
+            Arc::new(LexicalEmbedder::new()),
+        );
         let cands = source
             .fetch(
                 &query_for("rust code refactoring"),
@@ -240,7 +251,13 @@ mod tests {
             )
             .await;
         assert_eq!(cands.len(), 2);
-        let sem = |id: ArtifactId| cands.iter().find(|c| c.artifact_id == id).unwrap().semantic_factor;
+        let sem = |id: ArtifactId| {
+            cands
+                .iter()
+                .find(|c| c.artifact_id == id)
+                .unwrap()
+                .semantic_factor
+        };
         assert!(
             sem(stable_local_id("code-expert")) > sem(stable_local_id("poet")),
             "the code skill matches the code task more closely"
@@ -258,7 +275,10 @@ mod tests {
     async fn empty_store_yields_no_candidates() {
         let source = GenomeStoreCandidateSource::new(vec![], Arc::new(LexicalEmbedder::new()));
         let cands = source
-            .fetch(&query_for("anything"), &RecallContext::cold_start(crate::identity::PeerId::from_uuid(Uuid::nil())))
+            .fetch(
+                &query_for("anything"),
+                &RecallContext::cold_start(crate::identity::PeerId::from_uuid(Uuid::nil())),
+            )
             .await;
         assert!(cands.is_empty());
     }

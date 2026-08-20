@@ -18,7 +18,10 @@ use crate::sdk_codegen::CommandError;
 
 /// Look up one model by its catalog id.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/model_registry/ModelsCapabilitiesParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/model_registry/ModelsCapabilitiesParams.ts"
+)]
 pub struct ModelsCapabilitiesParams {
     /// The catalog model id (e.g. `qwen2.5-omni-7b-instruct`), not a raw provider
     /// artifact name.
@@ -27,7 +30,10 @@ pub struct ModelsCapabilitiesParams {
 
 /// The model's closed capability set.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/model_registry/ModelCapabilities.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/model_registry/ModelCapabilities.ts"
+)]
 pub struct ModelCapabilities {
     pub model_id: String,
     pub capabilities: Vec<Capability>,

@@ -37,9 +37,21 @@
 
 1. **Rooms/DMs `Listing`** — lowest new-vocab (reuses `Listing` + `group` + a filter). Needs the core
    to project the room set into `nav`. Render on web + terminal, screenshot/frame-verified. *Proves the
-   data-expansion path.*
+   data-expansion path.* **✅ LANDED (2026-07-23)**: room-set fold + per-citizen nav projector wired at
+   the WS `?me=` seam (core), `ListingCell.count` + `roomsListingFromNav` + unread pills (web);
+   live-verified end-to-end (probe: real `kind="nav"` frame; browser: rail draws the live room set).
+   Remaining inside this brick: room CLICK→switch (needs the `nav/select` current-tab write + chat
+   projection refocus/reseed — the `markRead` sibling), DM grouping once DM rooms carry a marker.
 2. **`Gauge` widget** (system metrics) — the first genuinely-new widget kind; a `ContextPanel` sibling.
    Small, self-contained, sources from ResourceGovernor (#56). *Proves the new-widget-kind path.*
+   **✅ LANDED (2026-07-23)**: `SystemMetricsViewState` (kind="system-metrics") + core emitter
+   (2s sample of the ONE shared SystemResourceMonitor, spawn_blocking + timeout, 90-sample ring)
+   + `GaugeView` vocab + web SVG sparkline w/ legend (CPU red · MEM green). Live-verified
+   (real boot spike on screen). GPU series pending a public GpuMemoryManager stats read.
+   **Bug surfaced during live verify**: a persona posted a degenerate repetition wall
+   ("…ae0e-ae0e-…" ×hundreds) into general — repetition-brick class AND a human-side
+   perception-contract violation (long messages render unbounded; need digest→collapse in the
+   message renderer). File + fix both.
 3. **GENOME `MeterBlock`** on the persona tile — extends the roster cell (the `meters` pattern again).
 4. **`Hud`** (brain-HUD as a `purpose:"mind"` Content) — the glass box as an inhabitable activity;
    the AR payoff (`persona-brain-hud` → a room you walk into).

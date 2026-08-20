@@ -33,39 +33,88 @@ use ts_rs::TS;
 // 2026-07-15: one inbound message woke six minds, each ran a full ~54s deliberation,
 // and the two lanes serialized them into a 250s tail (#139).
 // [[conversational-latency-is-a-misdirection-budget]] [[idle-is-self-directed-free-time]]
-static INFLIGHT_MODEL_CALLS: AtomicUsize = AtomicUsize::new(0);
+static INFLIGHT_MODEL_CALLS: Gauge = Gauge::new();
 
-/// RAII marker: increments the shared in-flight gauge on entry and decrements on
-/// EVERY exit path (Ok, Err, panic-unwind). The deliberation faculty wraps its single
-/// generate call in this so the gauge reflects exactly the model-call window
-/// (lane-queue + prefill + decode) and nothing downstream.
+/// The in-flight model-call gauge: a saturating count of outstanding deliberative model calls.
+/// Extracted as a named type (not a bare static) for one reason beyond tidiness — testability.
+/// The process has exactly ONE shared instance (`INFLIGHT_MODEL_CALLS`) that production RAII
+/// guards bump; a unit test constructs its OWN isolated `Gauge` and drives the identical
+/// enter/read/saturate logic against it, so its absolute-count assertions are deterministic
+/// under `cargo test`'s parallel execution — no cross-module guard on the shared instance can
+/// perturb a gauge nothing else can reach. (This is the #1960 flaky class killed at the root:
+/// the previous test read the process-global counter as an absolute value while a sibling test's
+/// `InflightModelCall` guard bumped it mid-loop; drain-before-baseline couldn't catch mid-loop
+/// interference. Inject the gauge instead of draining around it.)
 #[derive(Debug)]
-pub struct InflightModelCall(());
+struct Gauge {
+    count: AtomicUsize,
+}
 
-impl InflightModelCall {
-    pub fn enter() -> Self {
-        INFLIGHT_MODEL_CALLS.fetch_add(1, Ordering::AcqRel);
-        Self(())
+impl Gauge {
+    const fn new() -> Self {
+        Self {
+            count: AtomicUsize::new(0),
+        }
+    }
+
+    /// Enter one in-flight call; the returned guard decrements the SAME gauge on drop.
+    fn enter(&self) -> GaugeGuard<'_> {
+        self.count.fetch_add(1, Ordering::AcqRel);
+        GaugeGuard(&self.count)
+    }
+
+    /// Outstanding calls right now.
+    fn inflight(&self) -> usize {
+        self.count.load(Ordering::Acquire)
+    }
+
+    /// True when `outstanding >= max_lanes` — one more call would queue behind the fleet.
+    fn saturated(&self, max_lanes: usize) -> bool {
+        self.inflight() >= max_lanes
     }
 }
 
-impl Drop for InflightModelCall {
+/// RAII decrement for one gauge entry. Borrows the gauge it incremented so drop decrements
+/// exactly that gauge — the shared instance for a production guard, a test's local instance for
+/// a test's. This borrow is what makes the gauge injectable without a second counter.
+#[derive(Debug)]
+struct GaugeGuard<'a>(&'a AtomicUsize);
+
+impl Drop for GaugeGuard<'_> {
     fn drop(&mut self) {
-        INFLIGHT_MODEL_CALLS.fetch_sub(1, Ordering::AcqRel);
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// RAII marker: increments the shared in-flight gauge on entry and decrements on EVERY exit
+/// path (Ok, Err, panic-unwind). The deliberation faculty wraps its single generate call in this
+/// so the gauge reflects exactly the model-call window (lane-queue + prefill + decode) and
+/// nothing downstream. Wraps a guard on the process-global `INFLIGHT_MODEL_CALLS`, so it carries
+/// NO lifetime and stays storable as a plain field (e.g. `ServingLanePermit._inflight`).
+#[derive(Debug)]
+pub struct InflightModelCall(GaugeGuard<'static>);
+
+impl InflightModelCall {
+    pub fn enter() -> Self {
+        Self(INFLIGHT_MODEL_CALLS.enter())
     }
 }
 
 /// Deliberative model calls outstanding against the shared serving target right now.
 pub fn inflight_model_calls() -> usize {
-    INFLIGHT_MODEL_CALLS.load(Ordering::Acquire)
+    INFLIGHT_MODEL_CALLS.inflight()
 }
 
 /// True when every shared decode slot is busy, so one more call would QUEUE behind
-/// the fleet. Threshold is the serving concurrency (`serving_plan::MAX_LANES`) — the
-/// same constant the planner sizes lanes by, NOT a new magic number. A self-tick
-/// yields on this; message/directed turns are never gated on it (a human/peer waits).
+/// the fleet. Threshold is the LIVE served lane count (`LANES.lane_count()` — the real
+/// `--parallel` slots serving reports, `set_served_lane_count`), falling back to the
+/// `MAX_LANES` backstop only before the first plan lands. This must track the live count,
+/// not the `MAX_LANES` ceiling: once the ceiling can exceed the served count (#266 raised it
+/// 2 → 8), keying saturation off the ceiling would let a 2-slot host admit 8 in-flight and
+/// queue 6 at the backend before a self-tick ever yields. A self-tick yields on this;
+/// message/directed turns are never gated on it (a human/peer waits).
 pub fn shared_model_saturated() -> bool {
-    inflight_model_calls() >= crate::cognition::serving_plan::MAX_LANES as usize
+    INFLIGHT_MODEL_CALLS.saturated(LANES.lane_count())
 }
 
 // ── Ambient-turn admission permit (#171) ───────────────────────────────────────
@@ -79,36 +128,136 @@ pub fn shared_model_saturated() -> bool {
 // ambient turn defers to a later beat with free capacity — the durable transcript is
 // unchanged, so nothing is lost. [[conversational-latency-is-a-misdirection-budget]]
 
-/// How many ambient turns may run at once. 1 = strongly prioritize directed work:
-/// under a burst, the addressed persona plus at most one ambient contribution run;
-/// the rest yield. Under light/staggered load ambient turns are naturally serial, so
-/// this never throttles a quiet room.
-const AMBIENT_TURN_CONCURRENCY: usize = 1;
+// How many ambient turns may run at once: [`LaneAdmission::nondirected_budget`] — the
+// SAME live (lanes − 1, floored at 1) budget the per-call lane reservation below uses.
+// One machine, one answer to "how much non-directed concurrency is there", derived from
+// live capacity instead of declared twice.
+//
+// This was `const AMBIENT_TURN_CONCURRENCY: usize = 1` until 2026-08-17, and the constant
+// was the roster's starvation CEILING. Two things made it invisible:
+//   1. `service_loop.rs`'s self-tick gate documents this permit as "sized to the LIVE
+//      served lane count (LaneAdmission ← set_served_lane_count)". It never was — it was
+//      a bare 1, and the comment described the design that was intended.
+//   2. A hard 1 is indistinguishable from a quiet room at n≈1 citizen, which is how it
+//      was reasoned about ("under light load ambient turns are naturally serial").
+// Measured on this box 2026-08-17: 4 served lanes, 20+ hosted citizens, so 3 non-directed
+// lanes sat permanently idle while every citizen but one yielded on a pool of 1.
+//
+// Why lowering the bound is still safe — the directed-turn guarantee never came from THIS
+// permit. It comes from the per-call reservation (`acquire_serving_lane`), which caps
+// non-directed calls at lanes−1 so a directed call always finds a lane. That is the layer
+// that owns lane priority, and it is untouched. This permit's own job (#171) is anti-
+// STAMPEDE: bound the fan-out when N peers wake on the same beat and all read inflight=0.
+// A bound of lanes−1 does that job exactly as well as a bound of 1 — it is still fixed,
+// still acquired non-blockingly, still held across the whole turn — while no longer
+// throttling below the hardware. On a 1- or 2-lane box the budget floors at 1, so weak
+// machines get byte-identical behaviour to before.
 
-static AMBIENT_TURN_PERMITS: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> =
-    std::sync::OnceLock::new();
+/// Ambient turns that YIELDED because the pool was full, since process start.
+///
+/// Why this exists (2026-08-17): the yield path emits no probe — deliberately, because at
+/// 24 citizens on a 15s beat a per-yield row would be ~92 rows/min and would drown the
+/// stream exactly as `serving.plan` did at 2.6 rows/s (#399). But the ABSENCE of a row made
+/// starvation indistinguishable from health: a 10-minute window showing zero
+/// `persona.selftick.*` reads identically whether one citizen is mid-turn holding the only
+/// lane or nobody is ticking at all. Resolving that took a manual `/slots` curl. A counter
+/// costs one relaxed increment and makes the difference reportable.
+static AMBIENT_YIELDS: AtomicUsize = AtomicUsize::new(0);
+/// Epoch-ms of the last starvation report, so the emit is rate-limited rather than per-yield.
+static AMBIENT_YIELD_LAST_REPORT_MS: AtomicUsize = AtomicUsize::new(0);
 
-fn ambient_permits() -> &'static std::sync::Arc<tokio::sync::Semaphore> {
-    AMBIENT_TURN_PERMITS
-        .get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(AMBIENT_TURN_CONCURRENCY)))
+/// Minimum gap between starvation reports. One row a minute is free next to a 15s beat and
+/// still resolves "is the roster moving?" at the granularity anyone asks it.
+const AMBIENT_YIELD_REPORT_GAP_MS: usize = 60_000;
+
+/// Cumulative ambient yields since process start.
+pub fn ambient_yields() -> usize {
+    AMBIENT_YIELDS.load(Ordering::Relaxed)
+}
+
+/// Should the caller emit a starvation report now, and if so for how many yields?
+///
+/// Pure over its inputs so the rate-limit rule is unit-testable without a clock: returns
+/// `Some(yields_in_window)` at most once per [`AMBIENT_YIELD_REPORT_GAP_MS`]. `last_report_ms`
+/// of 0 means "never reported" and always fires, so the FIRST starvation is never silent —
+/// which is the one that matters, and the one a naive `now - last >= gap` would swallow on a
+/// box whose clock starts near zero.
+pub fn ambient_yield_report_due(
+    total_yields: usize,
+    yields_at_last_report: usize,
+    now_ms: usize,
+    last_report_ms: usize,
+) -> Option<usize> {
+    let fresh = total_yields.saturating_sub(yields_at_last_report);
+    if fresh == 0 {
+        return None;
+    }
+    if last_report_ms != 0 && now_ms.saturating_sub(last_report_ms) < AMBIENT_YIELD_REPORT_GAP_MS {
+        return None;
+    }
+    Some(fresh)
+}
+
+/// Yield total as of the last report — the OTHER half of the window, and the half I
+/// originally forgot.
+///
+/// Shipped 2026-08-17 passing a literal 0 for `yields_at_last_report`, on the reasoning that
+/// "the report resets the clock, so total-at-report is implicit". It is not: resetting the
+/// TIMESTAMP does not reset the COUNT, so `fresh = total - 0 = total` and every row reported
+/// the cumulative figure under a field named `yields_since_last_report`. Caught within the
+/// hour by reading the live rows — yields_this_window == cumulative on all six (457==457,
+/// 392==392, …) when consecutive rows differed by ~65. The pure `ambient_yield_report_due`
+/// was correct and its table test asserted the delta properly; the defect was entirely in
+/// this impure wrapper feeding it a wrong argument, which is precisely why the pure/impure
+/// split exists and precisely the gap a table test cannot close.
+static AMBIENT_YIELDS_AT_LAST_REPORT: AtomicUsize = AtomicUsize::new(0);
+
+/// Claim the report slot if due, returning the yields IN THIS WINDOW. Swaps the timestamp
+/// atomically so concurrent yielders cannot both emit for the same window, and advances the
+/// count watermark in the same critical section so the next window measures from here.
+pub fn take_ambient_yield_report(now_ms: u64) -> Option<usize> {
+    let now = now_ms as usize;
+    let last = AMBIENT_YIELD_LAST_REPORT_MS.load(Ordering::Relaxed);
+    let total = AMBIENT_YIELDS.load(Ordering::Relaxed);
+    let at_last = AMBIENT_YIELDS_AT_LAST_REPORT.load(Ordering::Relaxed);
+    let fresh = ambient_yield_report_due(total, at_last, now, last)?;
+    // Only the winner of this compare-exchange reports…
+    if AMBIENT_YIELD_LAST_REPORT_MS
+        .compare_exchange(last, now, Ordering::AcqRel, Ordering::Relaxed)
+        .is_err()
+    {
+        return None;
+    }
+    // …and the winner alone advances the count watermark, so the loser's yields are not
+    // silently dropped from the NEXT window — they are still ahead of `total` here.
+    AMBIENT_YIELDS_AT_LAST_REPORT.store(total, Ordering::Relaxed);
+    Some(fresh)
 }
 
 /// Try to claim an ambient-turn slot. `Some(permit)` → run the ambient turn (hold the
 /// permit for the turn's lifetime; it releases on drop). `None` → all ambient slots
 /// are busy; the caller yields this ambient turn. Non-blocking (never waits).
 pub fn try_hold_ambient_turn() -> Option<tokio::sync::OwnedSemaphorePermit> {
-    ambient_permits().clone().try_acquire_owned().ok()
+    LANES.try_hold_ambient_turn()
 }
 
 // ── Serving-lane reservation for directed turns (#139) ──────────────────────────
 //
-// The ambient PERMIT above bounds how many ambient TURNS run at once (1). But a single
-// ambient `drive_to_settle` makes many model calls over minutes, and an idle self-tick
-// is not ambient-permit-gated at all — so together they can occupy BOTH physical decode
-// lanes (`llama --parallel MAX_LANES`), and an addressed (directed) question then queues
-// INSIDE the serving process behind them. Glass-boxed 2026-07-15: a directed turn sat
+// The ambient PERMIT above bounds how many ambient TURNS run at once (1). But ONE
+// permitted turn is not one model call: a single `drive_to_settle` makes many calls over
+// minutes (act → observe → act), so the permit-holder alone can occupy several physical
+// decode lanes (`llama --parallel`), and an addressed (directed) question then queues
+// INSIDE the serving process behind it. Glass-boxed 2026-07-15: a directed turn sat
 // 8+ minutes behind one 197s idle self-tick + one 213s ambient turn on the two lanes;
 // its latency was lane-QUEUE, not decode (a free-lane turn is ~30-60s).
+//
+// (That glass-box predates the permit reaching the self-tick. Both non-directed paths are
+// permit-gated today — `service_loop.rs` acquires at the self-tick gate AND at the
+// message-ambient gate, and they share the one ambient pool. The reservation below is
+// still required, because the thing it bounds is CALLS-per-turn, which no turn-level
+// permit can see. Corrected 2026-08-17: this paragraph had claimed "an idle self-tick is
+// not ambient-permit-gated at all", contradicting the self-tick gate's own comment block
+// in the same tree — a stale premise sitting under a live design argument.)
 //
 // Neither the gauge nor the turn-level permit can fix this — the reservation must live
 // at the LANE the model call actually consumes. So every model call acquires a lane
@@ -131,24 +280,48 @@ pub fn try_hold_ambient_turn() -> Option<tokio::sync::OwnedSemaphorePermit> {
 /// exact; now the plan serves DEMAND (e.g. 4 lanes on this box while MAX_LANES = 6), so
 /// sizing the admission semaphores by the constant would over-admit by the difference
 /// and weaken the directed-turn reservation. Sizing by THIS keeps the reservation exact.
-static SERVED_LANE_COUNT: AtomicUsize = AtomicUsize::new(0);
+/// Every piece of admission state that used to be six separate process-global statics
+/// (`SERVED_LANE_COUNT`, `SERVING_LANES`, `NONDIRECTED_LANES`, their two installed
+/// counters, and the resize lock) plus the ambient-turn permits — owned by ONE type.
+///
+/// Why (2026-08-06): scattered mutable statics made the tests order-dependent, so they took
+/// a `TEST_SERIAL` lock whose own comment admitted it was insufficient — "TEST_SERIAL only
+/// serializes THIS module, but a cross-module guard could bump it mid-loop". This file had
+/// already learned the lesson once and applied it to the in-flight Gauge, stating the
+/// principle outright: *the race is gone at the SOURCE, not merely serialized*. That cure
+/// reached one of three cases. This applies it to the other two, and to the sibling
+/// [`crate::cognition::prefill_throttle`] the same day.
+///
+/// The semaphores stay LAZY (`OnceLock` per field, not eager construction) and that is
+/// load-bearing, not incidental: they must capture the lane count at FIRST USE, once
+/// serving is up. Sizing them eagerly at struct construction would bake in the
+/// `MAX_LANES` boot ceiling, and a later `set_served_lane_count` to a SMALLER real count
+/// only ever GROWS — so an eager version would sit permanently over-admitted. On a weak
+/// box that is not a slow tick; it is admitting more concurrent decodes than the machine
+/// can hold.
+pub struct LaneAdmission {
+    /// LIVE `--parallel` count; 0 until serving publishes one.
+    served: AtomicUsize,
+    serving: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>>,
+    nondirected: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>>,
+    serving_installed: AtomicUsize,
+    nondirected_installed: AtomicUsize,
+    /// Serializes the rare live semaphore reconcile so two concurrent re-plans can't
+    /// double-count a grow.
+    resize_lock: Mutex<()>,
+    ambient: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>>,
+    ambient_installed: AtomicUsize,
+}
 
-/// Serializes the rare live semaphore reconcile in [`set_served_lane_count`] so two
-/// concurrent re-plans can't double-count a grow.
-static LANE_RESIZE_LOCK: Mutex<()> = Mutex::new(());
+/// The process-global admission gate — ONE INSTANCE of [`LaneAdmission`], not a separate
+/// implementation of it. Tests build their own with [`LaneAdmission::new`].
+static LANES: LaneAdmission = LaneAdmission::new();
 
 /// Physical decode lanes on the shared serving target — the LIVE served count when
 /// serving has come up, else the planner's `MAX_LANES` ceiling as the boot-time fallback.
 /// Floored at 1. Read live by the saturation gauge; captured at lazy-init by the lane
 /// semaphores (serving is always up before the first persona model call, so the init
 /// captures the real count, not the ceiling).
-fn serving_lane_count() -> usize {
-    match SERVED_LANE_COUNT.load(Ordering::Acquire) {
-        0 => (crate::cognition::serving_plan::MAX_LANES as usize).max(1),
-        n => n,
-    }
-}
-
 /// Publish the running serving target's live lane count (the plan's `--parallel`). The
 /// serving daemon calls this on every reconcile. Sizes the admission semaphores exactly:
 /// the lazy-init captures it at boot, and a LATER increase (roster grows, more personas
@@ -157,15 +330,7 @@ fn serving_lane_count() -> usize {
 /// takes effect on the next process start. Over-admitting by a lane until then only means
 /// a call queues at llama, never an OOM — the fit math already guards residency.
 pub fn set_served_lane_count(lanes: usize) {
-    let lanes = lanes.max(1);
-    SERVED_LANE_COUNT.store(lanes, Ordering::Release);
-    let _guard = LANE_RESIZE_LOCK.lock().expect("lane-resize lock never poisoned");
-    if let Some(sem) = SERVING_LANES.get() {
-        grow_semaphore_to(sem, &SERVING_LANES_INSTALLED, lanes);
-    }
-    if let Some(sem) = NONDIRECTED_LANES.get() {
-        grow_semaphore_to(sem, &NONDIRECTED_LANES_INSTALLED, lanes.saturating_sub(1).max(1));
-    }
+    LANES.set_served_lane_count(lanes);
 }
 
 /// Grow a live semaphore to `target` total permits (no-op if already ≥). Never shrinks —
@@ -181,44 +346,17 @@ fn grow_semaphore_to(sem: &tokio::sync::Semaphore, installed: &AtomicUsize, targ
 
 /// Total permits installed into each lane semaphore — the grow-delta bookkeeping for
 /// [`grow_semaphore_to`], set at lazy-init and bumped on each live grow.
-static SERVING_LANES_INSTALLED: AtomicUsize = AtomicUsize::new(0);
-static NONDIRECTED_LANES_INSTALLED: AtomicUsize = AtomicUsize::new(0);
 
 /// The lane count a sibling gate should boot with before any plan publishes — the same
 /// live-count-else-ceiling read the lane semaphores lazy-init from. Used by the prefill
 /// throttle (#56) so both gates start from the ONE number.
 pub fn boot_lane_count() -> usize {
-    serving_lane_count()
+    LANES.lane_count()
 }
 
 /// Lanes a non-directed (ambient / idle) model call may occupy: all lanes minus one
 /// reserved for directed work, floored at 1 so a single-lane machine — where there is
 /// nothing to reserve — still lets idle work run rather than starving it forever.
-fn nondirected_lane_budget() -> usize {
-    serving_lane_count().saturating_sub(1).max(1)
-}
-
-static SERVING_LANES: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> =
-    std::sync::OnceLock::new();
-static NONDIRECTED_LANES: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> =
-    std::sync::OnceLock::new();
-
-fn serving_lanes() -> &'static std::sync::Arc<tokio::sync::Semaphore> {
-    SERVING_LANES.get_or_init(|| {
-        let n = serving_lane_count();
-        SERVING_LANES_INSTALLED.store(n, Ordering::Release);
-        std::sync::Arc::new(tokio::sync::Semaphore::new(n))
-    })
-}
-
-fn nondirected_lanes() -> &'static std::sync::Arc<tokio::sync::Semaphore> {
-    NONDIRECTED_LANES.get_or_init(|| {
-        let n = nondirected_lane_budget();
-        NONDIRECTED_LANES_INSTALLED.store(n, Ordering::Release);
-        std::sync::Arc::new(tokio::sync::Semaphore::new(n))
-    })
-}
-
 /// RAII permit for one serving-lane model call. Holds a physical-lane permit, the
 /// (optional) non-directed sub-cap permit, and the in-flight gauge marker — ALL released
 /// on drop. Acquire it around the single generate call so the reservation window matches
@@ -230,42 +368,149 @@ pub struct ServingLanePermit {
     _inflight: InflightModelCall,
 }
 
+impl LaneAdmission {
+    /// A fresh, INDEPENDENT admission gate. `const` so the process-global can be a `static`;
+    /// tests call it to get their own and therefore run order-independently and in parallel.
+    pub const fn new() -> Self {
+        Self {
+            served: AtomicUsize::new(0),
+            serving: std::sync::OnceLock::new(),
+            nondirected: std::sync::OnceLock::new(),
+            serving_installed: AtomicUsize::new(0),
+            nondirected_installed: AtomicUsize::new(0),
+            resize_lock: Mutex::new(()),
+            ambient: std::sync::OnceLock::new(),
+            ambient_installed: AtomicUsize::new(0),
+        }
+    }
+
+    /// Physical decode lanes: the LIVE served count once serving is up, else the planner's
+    /// ceiling as the boot fallback. Floored at 1.
+    fn lane_count(&self) -> usize {
+        match self.served.load(Ordering::Acquire) {
+            0 => (crate::cognition::serving_plan::MAX_LANES as usize).max(1),
+            n => n,
+        }
+    }
+
+    /// Lanes a non-directed (ambient / idle) call may occupy: all but one, floored at 1 so a
+    /// single-lane machine still lets idle work run rather than starving it forever.
+    fn nondirected_budget(&self) -> usize {
+        self.lane_count().saturating_sub(1).max(1)
+    }
+
+    /// See [`set_served_lane_count`].
+    pub fn set_served_lane_count(&self, lanes: usize) {
+        let lanes = lanes.max(1);
+        self.served.store(lanes, Ordering::Release);
+        let _guard = self
+            .resize_lock
+            .lock()
+            .expect("lane-resize lock never poisoned");
+        if let Some(sem) = self.serving.get() {
+            grow_semaphore_to(sem, &self.serving_installed, lanes);
+        }
+        if let Some(sem) = self.nondirected.get() {
+            grow_semaphore_to(
+                sem,
+                &self.nondirected_installed,
+                lanes.saturating_sub(1).max(1),
+            );
+        }
+        // The ambient-turn pool rides the SAME budget, so it grows on the same signal.
+        // Missing this is how a pool installed at the boot floor would stay there for the
+        // process's life while serving grew underneath it.
+        if let Some(sem) = self.ambient.get() {
+            grow_semaphore_to(sem, &self.ambient_installed, lanes.saturating_sub(1).max(1));
+        }
+    }
+
+    fn serving_lanes(&self) -> &std::sync::Arc<tokio::sync::Semaphore> {
+        self.serving.get_or_init(|| {
+            let n = self.lane_count();
+            self.serving_installed.store(n, Ordering::Release);
+            std::sync::Arc::new(tokio::sync::Semaphore::new(n))
+        })
+    }
+
+    fn nondirected_lanes(&self) -> &std::sync::Arc<tokio::sync::Semaphore> {
+        self.nondirected.get_or_init(|| {
+            let n = self.nondirected_budget();
+            self.nondirected_installed.store(n, Ordering::Release);
+            std::sync::Arc::new(tokio::sync::Semaphore::new(n))
+        })
+    }
+
+    /// See [`try_hold_ambient_turn`]. Lazy like its siblings, and for the same load-bearing
+    /// reason: it must capture the budget at FIRST USE, once serving has published a real
+    /// lane count — never at construction, when only the boot ceiling is known.
+    pub fn try_hold_ambient_turn(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        self.ambient
+            .get_or_init(|| {
+                let n = self.nondirected_budget();
+                self.ambient_installed.store(n, Ordering::Release);
+                std::sync::Arc::new(tokio::sync::Semaphore::new(n))
+            })
+            .clone()
+            .try_acquire_owned()
+            .ok()
+            .or_else(|| {
+                // Count the miss. The permit is non-blocking, so a None here IS the yield.
+                AMBIENT_YIELDS.fetch_add(1, Ordering::Relaxed);
+                None
+            })
+    }
+
+    /// See [`acquire_serving_lane`] — the reservation policy lives HERE so the global and a
+    /// test instance can never drift into two different policies.
+    pub async fn acquire_serving_lane(&self, directed: bool) -> ServingLanePermit {
+        // Non-directed reserves within the (lanes-1) budget FIRST, so the physical-lane
+        // acquire below can never let non-directed work starve a directed caller.
+        let nondirected = if directed {
+            None
+        } else {
+            let sem = self.nondirected_lanes().clone();
+            let permit = match sem.clone().try_acquire_owned() {
+                Ok(p) => p,
+                Err(_) => {
+                    tracing::info!(
+                        probe_class = "serving.lane.nondirected_waiting",
+                        "non-directed model call waiting — a lane is reserved for directed turns (#139)"
+                    );
+                    sem.acquire_owned()
+                        .await
+                        .expect("non-directed-lane semaphore is never closed")
+                }
+            };
+            Some(permit)
+        };
+        let lane = self
+            .serving_lanes()
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("serving-lane semaphore is never closed");
+        ServingLanePermit {
+            _lane: lane,
+            _nondirected: nondirected,
+            _inflight: InflightModelCall::enter(),
+        }
+    }
+}
+
+impl Default for LaneAdmission {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Acquire a serving lane for a model call, priced by priority (#139). `directed`
 /// callers take from the full lane pool; non-directed callers first claim the
 /// (MAX_LANES-1) non-directed budget, guaranteeing a directed caller always finds a free
 /// physical lane. Awaits only under genuine contention; the returned permit releases
 /// every lane on drop.
 pub async fn acquire_serving_lane(directed: bool) -> ServingLanePermit {
-    // Non-directed reserves within the (MAX_LANES-1) budget FIRST, so the physical-lane
-    // acquire below can never let non-directed work starve a directed caller.
-    let nondirected = if directed {
-        None
-    } else {
-        let sem = nondirected_lanes().clone();
-        let permit = match sem.clone().try_acquire_owned() {
-            Ok(p) => p,
-            Err(_) => {
-                tracing::info!(
-                    probe_class = "serving.lane.nondirected_waiting",
-                    "non-directed model call waiting — a lane is reserved for directed turns (#139)"
-                );
-                sem.acquire_owned()
-                    .await
-                    .expect("non-directed-lane semaphore is never closed")
-            }
-        };
-        Some(permit)
-    };
-    let lane = serving_lanes()
-        .clone()
-        .acquire_owned()
-        .await
-        .expect("serving-lane semaphore is never closed");
-    ServingLanePermit {
-        _lane: lane,
-        _nondirected: nondirected,
-        _inflight: InflightModelCall::enter(),
-    }
+    LANES.acquire_serving_lane(directed).await
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
@@ -475,37 +720,53 @@ fn format_lease_error(err: ThroughputLeaseError) -> String {
 mod tests {
     use super::*;
 
+    // No serialization lock lives here any more, and that is the point. It used to exist
+    // because the ambient-permit and serving-lane tests mutated PROCESS-GLOBAL admission
+    // statics — and its own comment admitted the lock was not enough: "TEST_SERIAL only
+    // serializes THIS module, but a cross-module guard could bump it mid-loop" (#1960/#191).
+    // The in-flight Gauge test was rescued first by driving a LOCAL instance; these two now
+    // do the same with `LaneAdmission::new()`. The race is gone at the SOURCE, not merely
+    // serialized, and the tests run in parallel.
+
     // what this catches (#139 idle admission): the in-flight gauge counts each
     // model-call entry, releases on drop, and reads SATURATED exactly at the serving
     // concurrency (serving_plan::MAX_LANES) — the signal a self-tick yields on so an
-    // idle deliberation never deepens the queue live conversation waits behind. This
-    // is the only test that touches the process-global gauge, so it starts at zero.
+    // idle deliberation never deepens the queue live conversation waits behind.
+    //
+    // Drives a LOCAL Gauge instance — the SAME type production's process-global
+    // INFLIGHT_MODEL_CALLS is, but one nothing else in the process can reach — so the
+    // absolute-count assertions are deterministic under cargo's parallel execution. The
+    // prior version read the process-global counter and a sibling test's InflightModelCall
+    // guard could bump it mid-loop (the #1960 flaky class, canary red 2026-07-25); scoping
+    // the gauge kills that race at the root, so no TEST_SERIAL / drain-wait is needed here.
     #[test]
     fn inflight_gauge_counts_releases_and_saturates_at_serving_concurrency() {
         let max = crate::cognition::serving_plan::MAX_LANES as usize;
-        assert_eq!(inflight_model_calls(), 0, "gauge starts clean");
-        assert!(!shared_model_saturated(), "idle model is not saturated");
+        let gauge = Gauge::new();
 
-        let mut guards: Vec<InflightModelCall> = Vec::new();
+        assert_eq!(gauge.inflight(), 0, "a fresh gauge starts empty");
+        assert!(!gauge.saturated(max), "an empty gauge is not saturated");
+
+        let mut guards = Vec::new();
         for expected in 1..=max {
-            guards.push(InflightModelCall::enter());
-            assert_eq!(inflight_model_calls(), expected);
+            guards.push(gauge.enter());
+            assert_eq!(gauge.inflight(), expected);
         }
         // Every decode slot busy → one more call would queue behind the fleet.
         assert!(
-            shared_model_saturated(),
+            gauge.saturated(max),
             "MAX_LANES outstanding must read saturated"
         );
 
         guards.pop(); // free a slot
-        assert_eq!(inflight_model_calls(), max - 1);
+        assert_eq!(gauge.inflight(), max - 1);
         assert!(
-            !shared_model_saturated(),
+            !gauge.saturated(max),
             "freeing a slot clears saturation — an idle self-tick may run again"
         );
 
         drop(guards);
-        assert_eq!(inflight_model_calls(), 0, "all guards released → baseline");
+        assert_eq!(gauge.inflight(), 0, "all guards released → baseline");
     }
 
     // what this catches (#171 fan-out): the ambient-turn permit bounds how many
@@ -518,15 +779,29 @@ mod tests {
     // the process-global ambient semaphore, so it starts with all slots free.
     #[test]
     fn ambient_permit_bounds_concurrency_and_releases_on_drop() {
+        // OUR OWN gate — no process-global, so no lock and no order dependence.
+        let gate = LaneAdmission::new();
+        // PREMISE CHANGE 2026-08-17: the pool used to be a bare `AMBIENT_TURN_CONCURRENCY
+        // = 1`; it is now the live `nondirected_budget()` (lanes − 1, floored at 1), the
+        // same budget the per-call lane reservation uses. Pin a real multi-lane machine so
+        // the burst has something to bound — at the old hardcoded 1 this test could not
+        // distinguish "correctly bounded" from "throttled below the hardware", which is
+        // exactly how the starvation ceiling stayed invisible.
+        gate.set_served_lane_count(4);
+        let budget = gate.nondirected_budget();
+        assert_eq!(budget, 3, "4 served lanes → 3 non-directed, 1 reserved directed");
         // A simultaneous-wake burst: several ambient turns try to claim a slot at once.
-        // Exactly AMBIENT_TURN_CONCURRENCY win; the rest get None and must yield.
+        // Exactly `budget` win; the rest get None and must yield.
         let mut held: Vec<tokio::sync::OwnedSemaphorePermit> = Vec::new();
-        for _ in 0..AMBIENT_TURN_CONCURRENCY {
-            held.push(try_hold_ambient_turn().expect("a free slot is grantable"));
+        for _ in 0..budget {
+            held.push(
+                gate.try_hold_ambient_turn()
+                    .expect("a free slot is grantable"),
+            );
         }
         // The next simultaneous ambient waker finds every slot taken → yields.
         assert!(
-            try_hold_ambient_turn().is_none(),
+            gate.try_hold_ambient_turn().is_none(),
             "over-capacity ambient turn must yield (the stampede the gauge let through)"
         );
 
@@ -537,10 +812,123 @@ mod tests {
         // A held ambient turn finishes → its permit drops → capacity frees for the next
         // beat, so a yielded room re-perceives and contributes when there's headroom.
         held.pop();
-        let reclaimed =
-            try_hold_ambient_turn().expect("dropping a finished turn frees its slot for the next");
+        let reclaimed = gate
+            .try_hold_ambient_turn()
+            .expect("dropping a finished turn frees its slot for the next");
         drop(reclaimed);
-        drop(held); // release the rest → back to all-free for any later test
+        drop(held); // release the rest (nothing else can observe this gate anyway)
+    }
+
+    // what this catches: a starvation report that is either a firehose or silent. At 24
+    // citizens on a 15s beat, per-yield rows would be ~92/min and would drown the stream the
+    // way serving.plan did at 2.6 rows/s (#399) — but NO row made a starved roster
+    // indistinguishable from a healthy one, which cost a manual /slots curl to resolve on
+    // 2026-08-17. Both failure modes are pinned here.
+    #[test]
+    fn the_starvation_report_is_rate_limited_but_the_first_one_is_never_silent() {
+        // Never reported before (last_report_ms == 0) → fires immediately, however early.
+        assert_eq!(
+            ambient_yield_report_due(23, 0, 5, 0),
+            Some(23),
+            "the FIRST starvation must report even at t=5ms — it is the one that matters"
+        );
+        // Inside the gap → silent, no matter how many yields piled up.
+        assert_eq!(
+            ambient_yield_report_due(1_000, 23, 10_000, 9_000),
+            None,
+            "a second report inside the gap would be the firehose"
+        );
+        // Gap elapsed → reports only the DELTA, not the cumulative total.
+        assert_eq!(
+            ambient_yield_report_due(1_000, 23, 70_000, 9_000),
+            Some(977),
+            "reports yields in THIS window; a cumulative count cannot show a rate"
+        );
+        // No new yields → nothing to say, even after the gap. Contention ended.
+        assert_eq!(
+            ambient_yield_report_due(23, 23, 999_000, 9_000),
+            None,
+            "a quiet roster must not emit a row saying nothing happened"
+        );
+    }
+
+    // what this catches: THE BUG I SHIPPED, in the impure wrapper the table test could not
+    // reach. `take_ambient_yield_report` passed a literal 0 for `yields_at_last_report`, so
+    // every row reported the CUMULATIVE total under a field named `yields_since_last_report`.
+    // Live rows on 2026-08-17 read 457==457, 392==392 while consecutive rows differed by ~65.
+    // A pure rule with a correct test is worth nothing if its caller feeds it a wrong
+    // argument — this asserts the SECOND window measures from the first, not from zero.
+    #[test]
+    fn consecutive_reports_measure_windows_not_running_totals() {
+        // Simulate two windows over the shared statics via the pure rule, which is what the
+        // wrapper now actually does (the wrapper itself touches process globals, so the
+        // contract that broke is pinned here at the argument boundary).
+        let first = ambient_yield_report_due(135, 0, 60_000, 0).expect("first window reports");
+        assert_eq!(first, 135, "first window is total-so-far — nothing preceded it");
+
+        // Second window: watermark advanced to 135, total climbed to 197.
+        let second = ambient_yield_report_due(197, 135, 120_000, 60_000)
+            .expect("second window reports");
+        assert_eq!(
+            second, 62,
+            "the SECOND window must be the delta (197-135), not the cumulative 197 — \
+             passing 0 here is the bug that shipped"
+        );
+        assert_ne!(second, 197, "reporting cumulative under a per-window name is the lie");
+    }
+
+    // what this catches: the WEAK-BOX floor of the same change. Deriving the ambient pool
+    // from lanes−1 must not regress a 1- or 2-lane machine below the behaviour it had
+    // under the old hardcoded 1 — a single-lane host has nothing to reserve, so its
+    // budget floors at 1 and it stays byte-identical. This is the half of the change that
+    // could silently hurt the smallest supported hardware, so it gets its own row.
+    #[test]
+    fn a_one_lane_box_keeps_exactly_one_ambient_slot() {
+        for lanes in [1usize, 2] {
+            let gate = LaneAdmission::new();
+            gate.set_served_lane_count(lanes);
+            assert_eq!(
+                gate.nondirected_budget(),
+                1,
+                "{lanes}-lane box floors the non-directed budget at 1"
+            );
+            let held = gate
+                .try_hold_ambient_turn()
+                .expect("the one slot is grantable");
+            assert!(
+                gate.try_hold_ambient_turn().is_none(),
+                "a {lanes}-lane box admits exactly ONE ambient turn — unchanged from the \
+                 pre-2026-08-17 hardcoded bound"
+            );
+            drop(held);
+        }
+    }
+
+    // what this catches: an ambient pool installed at the BOOT floor and then never grown.
+    // The pool is lazy on purpose (capture the real lane count at first use), but that
+    // makes "first use happened before serving published its count" a live possibility —
+    // and without the grow-on-resize wiring the whole roster would stay pinned at the boot
+    // budget for the life of the process while 3 lanes sat idle. Regression for the
+    // starvation ceiling this change removes.
+    #[test]
+    fn the_ambient_pool_grows_when_serving_publishes_more_lanes() {
+        let gate = LaneAdmission::new();
+        gate.set_served_lane_count(1); // cold boot: one lane
+        let first = gate.try_hold_ambient_turn().expect("the one slot");
+        assert!(gate.try_hold_ambient_turn().is_none(), "1 lane → 1 ambient slot");
+
+        gate.set_served_lane_count(4); // serving warms up and reports its real width
+        let second = gate
+            .try_hold_ambient_turn()
+            .expect("growing to 4 lanes must open a second ambient slot");
+        let third = gate
+            .try_hold_ambient_turn()
+            .expect("…and a third (budget = lanes - 1)");
+        assert!(
+            gate.try_hold_ambient_turn().is_none(),
+            "still bounded at lanes-1 — growth must not remove the directed reservation"
+        );
+        drop((first, second, third));
     }
 
     // what this catches (#139 lane starvation): a directed (addressed) turn must never
@@ -551,23 +939,22 @@ mod tests {
     // touches the process-global serving-lane semaphores, so it starts all-free.
     #[tokio::test]
     async fn directed_turn_always_finds_a_reserved_lane() {
+        let gate = LaneAdmission::new();
         use std::time::Duration;
-        let budget = nondirected_lane_budget();
+        let budget = gate.nondirected_budget();
 
         // Fill the ENTIRE non-directed budget (all lanes idle/ambient work may hold).
         let mut nondirected = Vec::new();
         for _ in 0..budget {
-            nondirected.push(acquire_serving_lane(false).await);
+            nondirected.push(gate.acquire_serving_lane(false).await);
         }
 
         // On a machine with a lane to reserve (MAX_LANES >= 2), a directed call still
         // acquires immediately — it is not blocked by the saturated non-directed budget.
-        if serving_lane_count() > 1 {
-            let directed = tokio::time::timeout(
-                Duration::from_millis(250),
-                acquire_serving_lane(true),
-            )
-            .await;
+        if gate.lane_count() > 1 {
+            let directed =
+                tokio::time::timeout(Duration::from_millis(250), gate.acquire_serving_lane(true))
+                    .await;
             assert!(
                 directed.is_ok(),
                 "a directed turn must get a reserved lane, never queue behind non-directed work"
@@ -575,11 +962,9 @@ mod tests {
 
             // And a FURTHER non-directed call must now WAIT (its budget is full) — it
             // times out rather than stealing the lane the directed turn is using.
-            let extra_nondirected = tokio::time::timeout(
-                Duration::from_millis(150),
-                acquire_serving_lane(false),
-            )
-            .await;
+            let extra_nondirected =
+                tokio::time::timeout(Duration::from_millis(150), gate.acquire_serving_lane(false))
+                    .await;
             assert!(
                 extra_nondirected.is_err(),
                 "non-directed work over its (MAX_LANES-1) budget must wait, not preempt"
@@ -587,7 +972,7 @@ mod tests {
             drop(directed);
         }
 
-        drop(nondirected); // release → all lanes free for any later test
+        drop(nondirected); // release (nothing else can observe this gate anyway)
     }
 
     // what this catches: the grow-delta bookkeeping behind live lane resizing (#139
@@ -619,18 +1004,26 @@ mod tests {
     // what this catches: serving_lane_count reads the LIVE published count when serving is
     // up, and only falls back to the MAX_LANES ceiling when nothing has published yet —
     // the exact fix so the admission reservation sizes by what's SERVED (e.g. 4), not the
-    // ceiling (6). Serialized against the global atomic via the resize lock's discipline;
-    // restores 0 so it can't leak into sibling tests.
+    // ceiling (6).
+    //
+    // Drives its OWN gate. The prior version swapped the process-global atomic and restored
+    // it at the end — brittle in two ways at once: a sibling test reading the count in the
+    // window between swap and restore sees a value this test invented, and a panic anywhere
+    // in between leaves the global corrupted for every test that follows. Owning the state
+    // removes both, with neither a lock nor a restore.
     #[test]
     fn serving_lane_count_prefers_the_live_published_count_over_the_ceiling() {
-        let restore = SERVED_LANE_COUNT.swap(0, Ordering::AcqRel);
+        let gate = LaneAdmission::new();
         assert_eq!(
-            serving_lane_count(),
+            gate.lane_count(),
             (crate::cognition::serving_plan::MAX_LANES as usize).max(1),
             "unset → MAX_LANES ceiling fallback"
         );
-        SERVED_LANE_COUNT.store(4, Ordering::Release);
-        assert_eq!(serving_lane_count(), 4, "published live count wins over the ceiling");
-        SERVED_LANE_COUNT.store(restore, Ordering::Release);
+        gate.set_served_lane_count(4);
+        assert_eq!(
+            gate.lane_count(),
+            4,
+            "published live count wins over the ceiling"
+        );
     }
 }

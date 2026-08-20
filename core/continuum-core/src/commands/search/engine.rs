@@ -21,7 +21,10 @@ use ts_rs::TS;
 
 /// Input to any text search algorithm.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/search/SearchInput.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/search/SearchInput.ts"
+)]
 pub(crate) struct SearchInput {
     pub query: String,
     pub corpus: Vec<String>,
@@ -30,7 +33,10 @@ pub(crate) struct SearchInput {
 /// Output from any search algorithm — scores parallel to the corpus plus the
 /// indices sorted best-first.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/search/SearchOutput.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/search/SearchOutput.ts"
+)]
 pub(crate) struct SearchOutput {
     /// Scores normalized to 0-1, parallel to corpus.
     pub scores: Vec<f64>,
@@ -46,7 +52,10 @@ pub(crate) struct SearchOutput {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct VectorSearchInput {
+    /// The query embedding to rank the corpus against — one vector of floats.
     pub query_vector: Vec<f64>,
+    /// The corpus embeddings to rank — one float vector per candidate item, each
+    /// the same dimensionality as `queryVector`.
     pub corpus_vectors: Vec<Vec<f64>>,
     #[serde(default = "default_true")]
     pub normalize: bool,
@@ -61,7 +70,10 @@ fn default_true() -> bool {
 /// The shared result shape for `search/execute` and `search/vector`: which
 /// algorithm ran, the per-document scores, and the best-first ranking.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/search/SearchResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/search/SearchResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchResult {
     /// The algorithm that produced these scores (bow, bm25, cosine).

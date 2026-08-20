@@ -8,6 +8,11 @@
  * covering the view model covers the presentation logic.
  */
 
+// formatTimeOfDay is VIEWER-LOCAL by design (Joel: chat times in the reader's
+// zone) — so this spec pins the process TZ to make its assertions deterministic
+// on any runner (PR #2057 review: 4 specs asserted UTC and failed on CST).
+process.env.TZ = 'UTC';
+
 import { describe, it, expect } from 'vitest';
 import { chatViewModel, formatTimeOfDay } from './chatViewModel';
 import type { ChatState } from './ChatState';
@@ -24,6 +29,7 @@ const member = (over: Partial<RosterSlotView> = {}): RosterSlotView => ({
   active: true,
   last_seen_ms: 0,
   vitals: {},
+  genes: [],
   ...over,
 });
 
@@ -48,10 +54,53 @@ const state = (over: Partial<ChatState> = {}): ChatState => ({
   purpose: 'chat',
   messages: [],
   roster: [],
+  acts: [],
   ...over,
 });
 
 describe('chatViewModel', () => {
+  it('interleaves act receipts into the transcript, collapsing consecutive same-actor acts (#243)', () => {
+    // what this catches: the transcript contract — acts land BETWEEN the
+    // messages they chronologically belong to; consecutive same-actor acts
+    // collapse into ONE group with a composed summary line; a failure inside
+    // the group marks it; a different actor breaks the group. An acts-less
+    // wire (older core) folds to a messages-only transcript.
+    const vm = chatViewModel(
+      state({
+        messages: [
+          message({ id: 'm1', timestamp: 1_000 }),
+          message({ id: 'm2', timestamp: 60_000 }),
+        ],
+        acts: [
+          { id: 'a1', room_id: 'room-1', actor_id: 'asha', actor_name: 'Asha',
+            tool: 'code/read', summary: 'mul.py', ok: true, timestamp: 10_000 },
+          { id: 'a2', room_id: 'room-1', actor_id: 'asha', actor_name: 'Asha',
+            tool: 'code/read', summary: 'test_mul.py', ok: true, timestamp: 20_000 },
+          { id: 'a3', room_id: 'room-1', actor_id: 'asha', actor_name: 'Asha',
+            tool: 'code/shell', summary: 'pytest -x', ok: false, timestamp: 30_000 },
+          { id: 'a4', room_id: 'room-1', actor_id: 'solenne', actor_name: 'Solenne',
+            tool: 'code/edit', summary: 'proj.ts', ok: true, timestamp: 40_000 },
+        ],
+      }),
+    );
+    const rows = vm.transcript;
+    expect(rows.map((r) => r.row)).toEqual(['message', 'acts', 'acts', 'message']);
+    const group = rows[1];
+    if (group?.row !== 'acts') throw new Error('expected act group');
+    expect(group.actorName).toBe('Asha');
+    expect(group.receipts).toHaveLength(3);
+    expect(group.summaryLine).toBe('Read 2 files, ran a command');
+    expect(group.anyFailed).toBe(true); // the pytest -x failure marks the group
+    const solo = rows[2];
+    if (solo?.row !== 'acts') throw new Error('expected second act group');
+    expect(solo.actorName).toBe('Solenne');
+    expect(solo.summaryLine).toBe('Edited a file');
+    // acts-less wire: transcript degenerates to exactly the messages.
+    const bare = chatViewModel(state({ messages: [message({ id: 'm1' })] }));
+    expect(bare.transcript.map((r) => r.row)).toEqual(['message']);
+  });
+
+
   // what this catches: the three panels must project from one snapshot —
   // room→header (where), roster→members (who), messages→rows (what). A
   // regression that dropped a facet would blank a whole panel.
@@ -114,6 +163,25 @@ describe('chatViewModel', () => {
     expect(vm.members[1]?.loadout).toBeUndefined();
     // all-empty fields collapse to no loadout — honest absent, not an empty strip.
     expect(vm.members[2]?.loadout).toBeUndefined();
+  });
+
+  // what this catches: gene NAMES (the label half of the numeric `genome`
+  // vital) project onto the VM only when the radiator reported any — an empty
+  // list (base model) and an older core omitting the field both read as
+  // absent, so the tile never draws fabricated gene labels.
+  it('projects gene names, omitting when empty or unreported', () => {
+    const vm = chatViewModel(
+      state({
+        roster: [
+          member({ member_id: 'a', genes: ['rust-hands', 'tool-fluency'] }),
+          member({ member_id: 'b', genes: [] }),
+          member({ member_id: 'c' }),
+        ],
+      }),
+    );
+    expect(vm.members[0]?.genes).toEqual(['rust-hands', 'tool-fluency']);
+    expect(vm.members[1]?.genes).toBeUndefined();
+    expect(vm.members[2]?.genes).toBeUndefined();
   });
 
   // what this catches: activeCount counts only present members — it drives the

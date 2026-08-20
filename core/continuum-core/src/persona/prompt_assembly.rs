@@ -84,6 +84,30 @@ pub const DIRECTED_PRESENCE_BLOCK: &str = "\n\n[Conversational Presence]\n\
     one; knowing when a conversation is complete is part of speaking well. The \
     choice is yours alone.";
 
+/// The HELD-WORK variant of the presence block: appended on an UNDIRECTED turn when
+/// this persona holds a live in-progress work claim (a structural fact read from the
+/// airc claim state her own [active-work] grounding renders — never a read of her
+/// output). Glass-boxed 2026-08-07 (card f6a9fe5c's sequel): with a perfect window —
+/// card title, workspace root, board, roster all present — all four citizens still
+/// yielded EVERY ambient turn, 7 tokens each, no reasoning. The conversational
+/// contract was doing exactly what it says: nobody spoke, so there was nothing to
+/// add TO THE CONVERSATION, and yield is the correct conversational move. Her held
+/// card was scenery, not the turn's purpose. Meanwhile the SAME minds act reliably
+/// under the eval/agent harness, whose framing names the work as the deliverable —
+/// the difference was never the model, it was the CONTRACT. This block states the
+/// work contract for a claim-holder's quiet turn. Framing, never a gate: yielding
+/// stays available and legitimate — what changes is that a quiet room is no longer
+/// presented as the absence of anything to do.
+pub const WORKING_PRESENCE_BLOCK: &str = "\n\n[Working Presence]\n\
+    You hold claimed work in progress — your card(s) are listed under [active-work], \
+    and the repository is staged in your workspace. A quiet room is not a stop sign: \
+    with no message to answer, this turn is yours to ADVANCE that work with your \
+    tools — open the staged repo under your workspace root, read the code, run the \
+    tests, make the change. Speak when you have something real to report or ask: \
+    progress, a finding, a blocker, a question to a peer (asking is normal here). \
+    Yielding is still yours to choose, but choose it because you are blocked or \
+    resting — not because the room is quiet. The work is why the turn exists.";
+
 /// Recognize the silence token in a persona's post-processed visible
 /// text. Permissive enough for LCD-tier sloppiness — trims whitespace
 /// and accepts a trailing period — strict enough that any substantive
@@ -118,9 +142,9 @@ pub fn looks_like_silence_token(text: &str) -> bool {
     core.lines()
         .last()
         .map(|l| {
-            let l = l
-                .trim()
-                .trim_matches(|c| matches!(c, '[' | ']' | '(' | ')' | '*' | '_' | '`' | '"' | '\''));
+            let l = l.trim().trim_matches(|c| {
+                matches!(c, '[' | ']' | '(' | ')' | '*' | '_' | '`' | '"' | '\'')
+            });
             let l = l.strip_suffix('.').unwrap_or(l).trim_end();
             l.eq_ignore_ascii_case(SILENCE_TOKEN)
         })
@@ -825,13 +849,13 @@ mod tests {
             matched_angle: "This is a coding question about Rust error handling.".to_string(),
             history: vec![HistoryMessage {
                 role: "user".to_string(),
-                name: Some("Joel".to_string()),
+                name: Some("Operator".to_string()),
                 content: "How do I handle errors in Rust?".to_string(),
                 timestamp_ms: Some(1000000),
             }],
             current_message: HistoryMessage {
                 role: "user".to_string(),
-                name: Some("Joel".to_string()),
+                name: Some("Operator".to_string()),
                 content: "Specifically with Result types?".to_string(),
                 timestamp_ms: Some(1010000),
             },
@@ -867,7 +891,7 @@ mod tests {
             history: vec![],
             current_message: HistoryMessage {
                 role: "user".to_string(),
-                name: Some("Joel".to_string()),
+                name: Some("Operator".to_string()),
                 content: "what color did I say I liked?".to_string(),
                 timestamp_ms: Some(1000),
             },
@@ -876,8 +900,8 @@ mod tests {
             multi_party_strategy: MultiPartyChatStrategy::default(),
             other_persona_names: vec![],
             recalled_engrams: vec![
-                "Joel's favorite color is teal.".to_string(),
-                "Joel works in San Francisco.".to_string(),
+                "Operator's favorite color is teal.".to_string(),
+                "Operator works in San Francisco.".to_string(),
             ],
             room_roster: vec![],
             room_doctrine: None,
@@ -892,14 +916,14 @@ mod tests {
         assert!(
             result
                 .system_message
-                .contains("- Joel's favorite color is teal."),
+                .contains("- Operator's favorite color is teal."),
             "expected bullet-prefixed engram in: {}",
             result.system_message
         );
         assert!(
             result
                 .system_message
-                .contains("- Joel works in San Francisco."),
+                .contains("- Operator works in San Francisco."),
             "expected second bullet in: {}",
             result.system_message
         );
@@ -1020,6 +1044,7 @@ mod tests {
                 &self,
                 _within: Duration,
                 _window: usize,
+                _room: Option<uuid::Uuid>,
             ) -> Result<Vec<RoomMember>, AircError> {
                 Ok(vec![RoomMember {
                     peer_id: self.other,
@@ -1042,16 +1067,23 @@ mod tests {
 
         // 1. Real delivery from the shared roster projection.
         let ctx = RagContext::for_persona(persona, 1_000_000);
-        let delivery = source
-            .deliver(&ctx, 1_000, ResolutionPreference::Raw)
-            .await;
+        let delivery = source.deliver(&ctx, 1_000, ResolutionPreference::Raw).await;
 
         // 2. Real loop fold: delivery → grounding consumers (the converged line +
         //    the bare name), via the exact fn the heartbeat loop calls.
         let proj = project_room_roster(std::slice::from_ref(&delivery));
+        // Agent-only roster ⇒ the no-human authority fact (#2113) rides FIRST in
+        // the grounding lines — it reaches the prompt through the same block —
+        // while other_persona_names stays peer-only (the fact has no
+        // display_name, so it can NEVER become a phantom "peer" name).
+        assert_eq!(proj.room_roster.len(), 2);
+        assert!(
+            proj.room_roster[0].contains("No human is present"),
+            "authority fact first: {}",
+            proj.room_roster[0]
+        );
         assert_eq!(
-            proj.room_roster,
-            vec!["win-claude [claude] — busy".to_string()],
+            proj.room_roster[1], "win-claude [claude] — busy",
             "converged line (availability = airc's neutral 'busy', not Debug 'Busy')"
         );
         assert_eq!(proj.other_persona_names, vec!["win-claude".to_string()]);
@@ -1368,7 +1400,7 @@ mod tests {
         let history = vec![
             HistoryMessage {
                 role: "user".to_string(),
-                name: Some("Joel".to_string()), // human
+                name: Some("Operator".to_string()), // human
                 content: "anyone want to review PersonaUser.ts?".to_string(),
                 timestamp_ms: None,
             },
@@ -1392,7 +1424,7 @@ mod tests {
             },
             HistoryMessage {
                 role: "user".to_string(),
-                name: Some("Joel".to_string()), // human
+                name: Some("Operator".to_string()), // human
                 content: "great, let's go".to_string(),
                 timestamp_ms: None,
             },
@@ -1468,7 +1500,7 @@ mod tests {
     fn proper_chatml_single_party_human_only_history() {
         let history = vec![HistoryMessage {
             role: "user".to_string(),
-            name: Some("Joel".to_string()),
+            name: Some("Operator".to_string()),
             content: "hi".to_string(),
             timestamp_ms: None,
         }];

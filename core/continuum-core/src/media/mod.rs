@@ -26,7 +26,14 @@
 
 pub mod frame;
 pub mod image_ops;
+pub mod perception_buffer;
+pub mod perception_ingest;
+pub mod perception_registry;
 pub mod projection;
 
 pub use frame::{FrameDescriber, MediaFrame};
+pub use perception_buffer::{
+    LookFidelity, LookImage, LookScope, ParticipantId, Percept, PerceptionBuffer,
+};
+pub use perception_registry::{registry as perception_registry, AMBIENT_PERCEPTION_SIZE};
 pub use projection::{project_image, MediaResolution, ProjectedMedia};

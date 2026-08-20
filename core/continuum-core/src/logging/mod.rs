@@ -91,6 +91,14 @@ macro_rules! log_debug {
                 &format!($($arg)*),
                 None
             );
+        } else {
+            // NO LOGGER = NO SILENCE. `init_logger` has exactly one production
+            // caller (ffi/mod.rs — the legacy Node-embedding entry), so on the
+            // NATIVE server this arm is the only one that ever runs. Before this
+            // `else`, all 615 `log_*` call sites evaporated there. Falls through to
+            // the SAME sink `clog_*` already writes to, so there is one file-logging
+            // truth rather than a third path.
+            $crate::logging::write_log_direct($category, "DEBUG", $component, &format!($($arg)*));
         }
     };
 }
@@ -106,6 +114,14 @@ macro_rules! log_info {
                 &format!($($arg)*),
                 None
             );
+        } else {
+            // NO LOGGER = NO SILENCE. `init_logger` has exactly one production
+            // caller (ffi/mod.rs — the legacy Node-embedding entry), so on the
+            // NATIVE server this arm is the only one that ever runs. Before this
+            // `else`, all 615 `log_*` call sites evaporated there. Falls through to
+            // the SAME sink `clog_*` already writes to, so there is one file-logging
+            // truth rather than a third path.
+            $crate::logging::write_log_direct($category, "INFO", $component, &format!($($arg)*));
         }
     };
 }
@@ -121,6 +137,14 @@ macro_rules! log_warn {
                 &format!($($arg)*),
                 None
             );
+        } else {
+            // NO LOGGER = NO SILENCE. `init_logger` has exactly one production
+            // caller (ffi/mod.rs — the legacy Node-embedding entry), so on the
+            // NATIVE server this arm is the only one that ever runs. Before this
+            // `else`, all 615 `log_*` call sites evaporated there. Falls through to
+            // the SAME sink `clog_*` already writes to, so there is one file-logging
+            // truth rather than a third path.
+            $crate::logging::write_log_direct($category, "WARN", $component, &format!($($arg)*));
         }
     };
 }
@@ -136,6 +160,14 @@ macro_rules! log_error {
                 &format!($($arg)*),
                 None
             );
+        } else {
+            // NO LOGGER = NO SILENCE. `init_logger` has exactly one production
+            // caller (ffi/mod.rs — the legacy Node-embedding entry), so on the
+            // NATIVE server this arm is the only one that ever runs. Before this
+            // `else`, all 615 `log_*` call sites evaporated there. Falls through to
+            // the SAME sink `clog_*` already writes to, so there is one file-logging
+            // truth rather than a third path.
+            $crate::logging::write_log_direct($category, "ERROR", $component, &format!($($arg)*));
         }
     };
 }

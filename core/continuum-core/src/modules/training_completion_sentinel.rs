@@ -64,6 +64,7 @@
 //! claim guarantees no later tick re-handles the same completion; the spawn keeps the
 //! poll cadence crisp (mirrors the producer's best-effort spawn).
 
+use crate::cognition::learning_policy::LearningPolicy;
 use std::any::Any;
 use std::sync::Arc;
 use std::time::Duration;
@@ -169,7 +170,7 @@ impl TrainingCompletionSentinel {
 
             let params = CognitionEvalParams {
                 run_id: None,
-                persona_id: job.persona_id.to_string(),
+                persona_id: crate::identity::PersonaRef::new(job.persona_id.to_string()),
                 gene: Some(EvalGene {
                     name: job.trait_kind.clone(),
                     path: path_str.clone(),
@@ -188,7 +189,11 @@ impl TrainingCompletionSentinel {
                 max_retries: None,
                 workspace_root: None,
                 capture_dir: None,
-                learn: None,
+                // The L3 auto-eval MEASURES lift; it is not her life. Stated, not defaulted.
+                learn: LearningPolicy::DoNotLearn,
+                // #207: L3 auto-eval measures LIFT (base vs gene in one fork), which is
+                // reproducible regardless of recall; keep memories intact (default).
+                suppress_recall: None,
                 note: Some(format!(
                     "L3 auto-eval (gene={}, base={}, provider={})",
                     job.trait_kind, job.base_model, job.handle.provider_id
@@ -206,7 +211,11 @@ impl TrainingCompletionSentinel {
                 }
             };
 
-            let result = match conn.commands().execute_value("cognition/eval", params).await {
+            let result = match conn
+                .commands()
+                .execute_value("cognition/eval", params)
+                .await
+            {
                 Ok(v) => v,
                 Err(e) => {
                     tracing::warn!(
@@ -248,8 +257,7 @@ impl TrainingCompletionSentinel {
 
             // lift > 0: page the gene into the LIVE cycle. A wait-free atomic genome
             // swap — the persona's next generation runs base + this layer.
-            let Some(cycle) =
-                crate::cognition::persona_workspace::global().get(&job.persona_id)
+            let Some(cycle) = crate::cognition::persona_workspace::global().get(&job.persona_id)
             else {
                 // De-spawned between train start and completion — don't adopt into a
                 // ghost. Fail loud; the next time she's live + retrained the loop runs.

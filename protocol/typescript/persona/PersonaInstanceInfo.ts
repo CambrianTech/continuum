@@ -48,8 +48,9 @@ peerId: string,
  */
 home: string, 
 /**
- * The room the persona joined at bootstrap (currently always
- * the continuum-core's discovered default_room).
+ * The persona's HOME room — her own durable subscription default,
+ * resolved at bootstrap from HER airc home (fresh minds land in
+ * `#general`), never the operator's discovered room (#298).
  */
 defaultRoom: string, 
 /**

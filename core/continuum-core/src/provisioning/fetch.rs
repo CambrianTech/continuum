@@ -64,7 +64,10 @@ pub async fn fetch_and_place(
                 extract_member_by_ext(&archive_for_task, &want_ext, &dest_buf, &url)
             })
             .await
-            .map_err(|e| FetchError::Zip { url: spec.url.clone(), msg: e.to_string() })??;
+            .map_err(|e| FetchError::Zip {
+                url: spec.url.clone(),
+                msg: e.to_string(),
+            })??;
 
             let _ = tokio::fs::remove_file(&archive).await; // archive is scratch — best-effort
             Ok(bytes)
@@ -167,7 +170,10 @@ mod tests {
         let n = extract_member_by_ext(&archive, "vrm", &dest, "test://a").unwrap();
         assert_eq!(n, 14);
         assert_eq!(std::fs::read(&dest).unwrap(), b"VRM-BYTES-1234");
-        assert!(!dest.with_extension("vrm.part").exists(), "temp cleaned via rename");
+        assert!(
+            !dest.with_extension("vrm.part").exists(),
+            "temp cleaned via rename"
+        );
     }
 
     // what this catches: an archive with no matching member fails LOUD (NoMember),

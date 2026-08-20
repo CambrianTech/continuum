@@ -651,9 +651,10 @@ impl SentinelModule {
                 let pid_path = entry.path().join("pid");
                 if let Ok(pid_str) = std::fs::read_to_string(&pid_path) {
                     if let Ok(pid) = pid_str.trim().parse::<i32>() {
-                        unsafe {
-                            libc::kill(-pid, libc::SIGTERM);
-                        }
+                        // Graceful process-group/tree kill — one cross-platform
+                        // definition lives in executor.rs (Unix: kill(-pgid,
+                        // SIGTERM); Windows: taskkill /T).
+                        executor::kill_process_group(Some(pid as u32));
                         std::fs::remove_file(&pid_path).ok();
                         killed += 1;
                     }

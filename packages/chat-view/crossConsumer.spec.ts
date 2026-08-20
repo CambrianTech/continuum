@@ -26,6 +26,10 @@
  * the MODEL those two renderers both receive is one canonical value.
  */
 
+// Time-of-day rendering is VIEWER-LOCAL by design; pin TZ so the fixed
+// HH:MM assertions below are deterministic on any runner (PR #2057 review).
+process.env.TZ = 'UTC';
+
 import { describe, it, expect } from 'vitest';
 import { CHAT_KIND, chatStateFromEnvelope } from './ChatState';
 import { chatViewModel } from './chatViewModel';
@@ -49,6 +53,7 @@ const member = (over: Partial<RosterSlotView> = {}): RosterSlotView => ({
   active: true,
   last_seen_ms: 0,
   vitals: {},
+  genes: [],
   ...over,
 });
 
@@ -68,11 +73,14 @@ const message = (over: Partial<ChatMessageView> = {}): ChatMessageView => ({
 /** A `chat` state frame exactly as `StateConnection` hands to a `CHAT_KIND` sink:
  *  the payload is a bare `ChatViewState` (no kind/revision — those ride the
  *  envelope), and the merge is what grafts them on. */
-const chatEnvelope = (revision: number, payload: ChatViewState): StateEnvelope => ({
+const chatEnvelope = (
+  revision: number,
+  payload: Omit<ChatViewState, 'acts'> & { acts?: ChatViewState['acts'] },
+): StateEnvelope => ({
   kind: CHAT_KIND,
   revision,
   layer: 'ephemeral',
-  payload,
+  payload: { acts: [], ...payload },
 });
 
 /**

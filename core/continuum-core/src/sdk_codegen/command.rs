@@ -155,6 +155,19 @@ pub trait ActionCommand: Send + Sync + Sized + 'static {
     /// Model-facing one-liner surfaced into the persona tool surface. Defaults
     /// empty (falls back to a name-based description).
     const DESCRIPTION: &'static str = "";
+    /// Whether this command joins the persona's NATIVE tool surface (the bounded set
+    /// given as full structured tool-call schemas every turn). Defaults `false`
+    /// (catalog-only); a core agentic command overrides it to `true` — and then it's
+    /// offered natively AUTOMATICALLY, no central list. See [`CommandSpec::NATIVE`].
+    const NATIVE: bool = false;
+    /// The trained/former/expected names this command ANSWERS TO — the conventional
+    /// tool-call names a model reaches for (`read_file`, `bash`), plus any FORMER
+    /// name this command carried before it moved. Declared HERE, on the command
+    /// itself, so a command is fully portable: rename/move it and its aliases
+    /// travel with it — no central table to keep in sync. Aggregated into one
+    /// generated inverse index ([`crate::cognition::tool_dialect`]); a name two
+    /// commands both claim is a build-time panic. Defaults to none.
+    const ALIASES: &'static [&'static str] = &[];
 
     /// The typed request payload (a ts-rs wire type). `JsonSchema` so its schema
     /// is derived automatically (no hand-authoring) and exposed to every SDK.
@@ -173,6 +186,8 @@ impl<T: ActionCommand> CommandSpec for T {
     const NAME: &'static str = <T as ActionCommand>::NAME;
     const ACCESS_LEVEL: AccessLevel = <T as ActionCommand>::ACCESS;
     const DESCRIPTION: &'static str = <T as ActionCommand>::DESCRIPTION;
+    const NATIVE: bool = <T as ActionCommand>::NATIVE;
+    const ALIASES: &'static [&'static str] = <T as ActionCommand>::ALIASES;
     const WIRE: WireShape = WireShape::Bare;
     type Params = <T as ActionCommand>::Params;
     type Result = <T as ActionCommand>::Output;
@@ -266,7 +281,11 @@ mod tests {
 
         let d = cmd.descriptor();
         assert_eq!(d.name, "test/echo-action");
-        assert_eq!(d.access_level, AccessLevel::AiSafe, "ACCESS default carried through");
+        assert_eq!(
+            d.access_level,
+            AccessLevel::AiSafe,
+            "ACCESS default carried through"
+        );
         assert_eq!(d.description, "Echo the input text back.");
         assert_eq!(d.wire, WireShape::Bare, "ActionCommand is Bare");
 
@@ -276,8 +295,15 @@ mod tests {
             .expect("invoke ok");
         match cr {
             CommandResult::Json(v) => {
-                assert_eq!(v, serde_json::json!({ "echoed": "hi" }), "bare output, no envelope");
-                assert!(v.get("success").is_none(), "Bare must not add a success field");
+                assert_eq!(
+                    v,
+                    serde_json::json!({ "echoed": "hi" }),
+                    "bare output, no envelope"
+                );
+                assert!(
+                    v.get("success").is_none(),
+                    "Bare must not add a success field"
+                );
             }
             other => panic!("expected Json, got {other:?}"),
         }
@@ -301,15 +327,25 @@ mod tests {
         );
 
         // Two invokes through the type-erased object hit the captured state.
-        let first = cmd.invoke(serde_json::json!({ "text": "a" }), None).await.unwrap();
-        let second = cmd.invoke(serde_json::json!({ "text": "a" }), None).await.unwrap();
+        let first = cmd
+            .invoke(serde_json::json!({ "text": "a" }), None)
+            .await
+            .unwrap();
+        let second = cmd
+            .invoke(serde_json::json!({ "text": "a" }), None)
+            .await
+            .unwrap();
         if let (CommandResult::Json(a), CommandResult::Json(b)) = (first, second) {
             assert_eq!(a["echoed"], "a#1");
             assert_eq!(b["echoed"], "a#2", "shared state advanced across calls");
         } else {
             panic!("expected Json results");
         }
-        assert_eq!(calls.load(Ordering::SeqCst), 2, "deps are owned by the object");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "deps are owned by the object"
+        );
     }
 
     // what this catches: bad params become a named `invalid` refusal at the
@@ -322,6 +358,9 @@ mod tests {
             .invoke(serde_json::json!({ "text": 123 }), None)
             .await
             .expect_err("type mismatch must refuse");
-        assert!(err.starts_with("test/echo-action: [invalid]"), "named + categorized: {err}");
+        assert!(
+            err.starts_with("test/echo-action: [invalid]"),
+            "named + categorized: {err}"
+        );
     }
 }

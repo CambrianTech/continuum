@@ -216,9 +216,7 @@ async fn event_fanout_wallclock_is_sublinear_in_subscriber_count() {
         .map(|(_, d)| *d)
         .expect("SUBSCRIBER_COUNTS must include 1 for the baseline");
 
-    let (largest_k, largest_elapsed) = *measurements
-        .last()
-        .expect("at least one measurement");
+    let (largest_k, largest_elapsed) = *measurements.last().expect("at least one measurement");
 
     // Property 1 — sub-linear scaling. The doctrine claim is
     // "fanout < O(K)", which means the scaling EXPONENT is < 1.

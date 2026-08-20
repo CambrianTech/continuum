@@ -15,7 +15,10 @@ use uuid::Uuid;
 use crate::modules::cognition::CognitionState;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/SyncDomainClassifierParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/SyncDomainClassifierParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncDomainClassifierParams {
     /// Persona whose domain classifier is reconciled.
@@ -24,7 +27,10 @@ pub struct SyncDomainClassifierParams {
 }
 
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/SyncDomainClassifierResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/SyncDomainClassifierResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncDomainClassifierResult {
     pub synced: bool,

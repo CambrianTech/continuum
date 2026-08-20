@@ -16,7 +16,7 @@ a headless-core install. So the installer aborted at ~49s on an optional, retire
 
 **Fix (this PR):** that branch now `module_skip`s + `return 0`. Unit-verified in isolation:
 `mod_jtag_bin_link /nonexistent → RETURN CODE: 0` (was `exit 1`). install.sh now proceeds past the jtag step
-to `compose up`. The `continuum` / `cu` CLIs still link (those succeeded in the log); only the old `jtag` is
+to `compose up`. The `continuum` / `uu` CLIs still link (those succeeded in the log); only the old `jtag` is
 skipped.
 
 ## Your job on WSL/Linux — verify the smoke goes green

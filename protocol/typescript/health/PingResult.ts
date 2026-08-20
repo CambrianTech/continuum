@@ -11,4 +11,26 @@ ok: boolean,
 /**
  * Substrate-measured handling time in milliseconds.
  */
-roundTripMs: number, };
+roundTripMs: number, 
+/**
+ * Git commit this RUNNING process was compiled from (deploy provenance, #194).
+ * Self-reported by the live process image — unlike re-exec'ing the on-disk
+ * binary at the process's path, this cannot be fooled by a rebuild that
+ * swapped the file under a still-running old core. `"unknown"` only when the
+ * server was built outside a git tree.
+ */
+buildSha: string, 
+/**
+ * Auto-incrementing build number: the repo's commit count at compile time
+ * (Joel, 2026-08-08: "versions must always increment and display along with
+ * sha … stale binaries ruin you"). Monotonic per branch, so two nodes'
+ * builds can be ORDERED at a glance — "is this node stale?" becomes
+ * arithmetic instead of SHA archaeology. 0 only outside a git tree.
+ */
+buildNumber: number, 
+/**
+ * UTC timestamp this binary was compiled (third leg of the version trio:
+ * number orders SOURCE, sha names it, built-at dates the BINARY — catching
+ * a rebuild of old source after a fix landed, which number+sha both miss).
+ */
+builtAt: string, };

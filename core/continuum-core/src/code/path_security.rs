@@ -41,7 +41,133 @@ pub enum PathSecurityError {
     /// than ABSENT, and they stop probing paths instead of correcting the path.
     /// Glass-boxed 2026-07-11: 58/65 exam reads died on this lie and the solver
     /// never reached the file she was asked to fix.
-    NotFound { path: String, workspace: String },
+    NotFound {
+        path: String,
+        workspace: String,
+        /// Where the path actually diverges from the filesystem, and what IS there —
+        /// computed at construction while the tool still has the workspace in hand.
+        /// Empty when nothing useful could be found; never a guess presented as fact.
+        lead: String,
+    },
+}
+
+/// Turn "no file there" into a LEAD: the deepest ancestor that DOES exist, the segment that
+/// broke, and the real entries at that level — with an exact suggestion when one is obviously
+/// the intended name.
+///
+/// The old message ended with "check the path, e.g. with code/list or code/tree", which is true
+/// and costs her an ACT to go look. The tool is holding the workspace; it can answer the
+/// question the next act would have asked. Two distinct failures deserve different answers:
+/// a mistyped FILENAME (`file_engin.rs`) and a guessed DIRECTORY STRUCTURE (`core/src/...`) —
+/// telling her which one she hit is most of the fix.
+///
+/// Returns an empty string rather than a guess when nothing is close: a confident wrong
+/// suggestion is worse than the generic advice it replaces.
+fn missing_path_lead(root: &std::path::Path, normalized: &str) -> String {
+    let segments: Vec<&str> = normalized.split('/').filter(|s| !s.is_empty()).collect();
+    if segments.is_empty() {
+        return String::new();
+    }
+
+    // Walk down until a segment does not exist — that is where her model of the tree diverges.
+    let mut here = root.to_path_buf();
+    let mut depth = 0usize;
+    for seg in &segments {
+        let next = here.join(seg);
+        if !next.exists() {
+            break;
+        }
+        here = next;
+        depth += 1;
+    }
+    if depth == segments.len() {
+        return String::new(); // whole path exists — not our case
+    }
+
+    let broke = segments[depth];
+    let existing_prefix = segments[..depth].join("/");
+    let mut names: Vec<String> = std::fs::read_dir(&here)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| !n.starts_with('.'))
+        .collect();
+    names.sort();
+    if names.is_empty() {
+        return String::new();
+    }
+
+    // An obvious near-miss beats a listing: same name modulo a couple of characters.
+    if let Some(best) = nearest_name(broke, &names) {
+        let full = if existing_prefix.is_empty() {
+            best.clone()
+        } else {
+            format!("{existing_prefix}/{best}")
+        };
+        return format!(
+            "There is no '{broke}' in '{}', but there IS '{best}' — did you mean '{full}'?",
+            if existing_prefix.is_empty() {
+                "."
+            } else {
+                &existing_prefix
+            }
+        );
+    }
+
+    // No near-miss: name the divergence point and show what is actually there, so her next
+    // act is a corrected read rather than another guess.
+    let shown: Vec<String> = names.iter().take(12).cloned().collect();
+    let more = names.len().saturating_sub(shown.len());
+    format!(
+        "The path is good up to '{}' — but that directory has no '{broke}'. It contains: {}{}.",
+        if existing_prefix.is_empty() {
+            "."
+        } else {
+            &existing_prefix
+        },
+        shown.join(", "),
+        if more > 0 {
+            format!(", …+{more} more")
+        } else {
+            String::new()
+        }
+    )
+}
+
+/// The entry closest to `want`, when one is close ENOUGH to name confidently. Character-level
+/// edit distance, capped: 1-2 typos in a real filename, never a coincidental prefix match.
+fn nearest_name(want: &str, names: &[String]) -> Option<String> {
+    let budget = match want.len() {
+        0..=3 => 0, // too short to disambiguate — a listing is more honest
+        4..=8 => 1,
+        _ => 2,
+    };
+    if budget == 0 {
+        return None;
+    }
+    names
+        .iter()
+        .map(|n| (edit_distance(want, n), n))
+        .filter(|(d, _)| *d <= budget)
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, n)| n.clone())
+}
+
+/// Levenshtein distance, two-row. Small inputs (filenames) so allocation is irrelevant.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cost = if ca == cb { 0 } else { 1 };
+            cur[j + 1] = (prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
 }
 
 impl std::fmt::Display for PathSecurityError {
@@ -59,13 +185,24 @@ impl std::fmt::Display for PathSecurityError {
             Self::InvalidWorkspace { path } => {
                 write!(f, "Invalid workspace root: '{}'", path)
             }
-            Self::NotFound { path, workspace } => {
-                write!(
-                    f,
-                    "No file at '{}' under workspace '{}' (path is inside the sandbox; \
-                     nothing exists there — check the path, e.g. with code/list or code/tree)",
-                    path, workspace
-                )
+            Self::NotFound {
+                path,
+                workspace,
+                lead,
+            } => {
+                // "check the path with code/list" costs her an ACT to go look. The tool is
+                // already holding the workspace — it can say where the path breaks and what
+                // is actually there, so the next act is the corrected read, not a search.
+                if lead.is_empty() {
+                    write!(
+                        f,
+                        "No file at '{}' under workspace '{}' (path is inside the sandbox; \
+                         nothing exists there — check the path, e.g. with code/list or code/tree)",
+                        path, workspace
+                    )
+                } else {
+                    write!(f, "No file at '{}'. {}", path, lead)
+                }
             }
         }
     }
@@ -205,6 +342,7 @@ impl PathSecurity {
         Err(PathSecurityError::NotFound {
             path: relative_path.to_string(),
             workspace: root.display().to_string(),
+            lead: missing_path_lead(root, &normalized),
         })
     }
 
@@ -367,6 +505,45 @@ mod tests {
         ));
     }
 
+    // what this catches: "no file there, go run code/list" costs her an ACT to answer a
+    // question the tool could have answered. A one-character filename typo must be NAMED, and
+    // a wrongly-guessed directory structure must say WHERE the path diverges and what is
+    // actually at that level — those are different mistakes needing different corrections.
+    #[test]
+    fn a_missing_path_says_where_it_broke_and_what_is_there() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("core/continuum-core/src")).unwrap();
+        std::fs::write(root.join("core/continuum-core/src/file_engine.rs"), "x").unwrap();
+        std::fs::create_dir_all(root.join("core/vendor")).unwrap();
+
+        // FILENAME typo — one character. Must be named outright, not listed.
+        let lead = missing_path_lead(root, "core/continuum-core/src/file_engin.rs");
+        assert!(
+            lead.contains("did you mean 'core/continuum-core/src/file_engine.rs'"),
+            "a one-char typo must be resolved, not listed: {lead}"
+        );
+
+        // GUESSED STRUCTURE — 'core' exists, 'core/src' does not. Must name the divergence
+        // point and show the real entries so her next act is a corrected read.
+        let lead = missing_path_lead(root, "core/src/file_engine.rs");
+        assert!(
+            lead.contains("good up to 'core'") && lead.contains("no 'src'"),
+            "must localise where her model of the tree diverged: {lead}"
+        );
+        assert!(
+            lead.contains("continuum-core") && lead.contains("vendor"),
+            "and show what is actually at that level: {lead}"
+        );
+
+        // NOTHING close — silence beats a confident wrong suggestion.
+        let lead = missing_path_lead(root, "totally/unrelated/thing.rs");
+        assert!(
+            !lead.contains("did you mean"),
+            "must not invent a neighbour when none is close: {lead}"
+        );
+    }
+
     // what this catches: a missing file INSIDE the sandbox must report NotFound,
     // never TraversalBlocked — reporting ENOENT as "escapes workspace" reads as
     // FORBIDDEN and stops a persona from ever correcting the path. Regression for
@@ -417,7 +594,9 @@ mod tests {
     #[test]
     fn any_extension_writes_within_sandbox_but_escapes_are_refused() {
         let (_dir, security) = setup_workspace();
-        for ext in &["swift", "kt", "cpp", "m", "go", "java", "ts", "rs", "py", "plist"] {
+        for ext in &[
+            "swift", "kt", "cpp", "m", "go", "java", "ts", "rs", "py", "plist",
+        ] {
             let path = format!("src/test.{}", ext);
             assert!(
                 security.validate_write(&path).is_ok(),

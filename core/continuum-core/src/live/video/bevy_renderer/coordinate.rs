@@ -105,8 +105,11 @@ pub struct CoordinateConvention {
 
 impl CoordinateConvention {
     /// The canonical convention (glTF/Bevy). Correction is identity.
-    pub const CANONICAL: Self =
-        Self { forward: CANONICAL_FORWARD, up: CANONICAL_UP, unit_scale: 1.0 };
+    pub const CANONICAL: Self = Self {
+        forward: CANONICAL_FORWARD,
+        up: CANONICAL_UP,
+        unit_scale: 1.0,
+    };
 
     /// Build a convention from arbitrary axes, validating orthonormality and a
     /// non-degenerate scale up front — a geometry-inferred detector (a later
@@ -122,9 +125,15 @@ impl CoordinateConvention {
             ));
         }
         if unit_scale <= 0.0 || !unit_scale.is_finite() {
-            return Err(format!("coordinate convention unit_scale {unit_scale} must be positive"));
+            return Err(format!(
+                "coordinate convention unit_scale {unit_scale} must be positive"
+            ));
         }
-        Ok(Self { forward: forward.normalize(), up: up.normalize(), unit_scale })
+        Ok(Self {
+            forward: forward.normalize(),
+            up: up.normalize(),
+            unit_scale,
+        })
     }
 
     /// The rotation+scale that maps this convention onto [`Self::CANONICAL`].
@@ -135,7 +144,10 @@ impl CoordinateConvention {
     /// (right = up × forward), so `R` is always a proper rotation.
     pub fn correction(&self) -> CoordinateCorrection {
         let rotation = align_rotation(self.forward, self.up);
-        CoordinateCorrection { rotation, scale: self.unit_scale }
+        CoordinateCorrection {
+            rotation,
+            scale: self.unit_scale,
+        }
     }
 }
 
@@ -219,7 +231,10 @@ mod tests {
     #[test]
     fn canonical_correction_is_identity() {
         let c = CoordinateConvention::CANONICAL.correction();
-        assert!(approx(c.rotation * Vec3::NEG_Z, Vec3::NEG_Z), "forward preserved");
+        assert!(
+            approx(c.rotation * Vec3::NEG_Z, Vec3::NEG_Z),
+            "forward preserved"
+        );
         assert!(approx(c.rotation * Vec3::Y, Vec3::Y), "up preserved");
         assert_eq!(c.scale, 1.0);
     }
@@ -229,9 +244,17 @@ mod tests {
     // adapter never rotates a model we haven't characterized as broken.
     #[test]
     fn all_detected_formats_are_identity_today() {
-        for fmt in [DetectedFormat::Vrm0, DetectedFormat::Vrm1, DetectedFormat::Gltf] {
+        for fmt in [
+            DetectedFormat::Vrm0,
+            DetectedFormat::Vrm1,
+            DetectedFormat::Gltf,
+        ] {
             let c = fmt.convention().correction();
-            assert!(approx(c.rotation * Vec3::NEG_Z, Vec3::NEG_Z), "{}: forward", fmt.label());
+            assert!(
+                approx(c.rotation * Vec3::NEG_Z, Vec3::NEG_Z),
+                "{}: forward",
+                fmt.label()
+            );
             assert!(approx(c.rotation * Vec3::Y, Vec3::Y), "{}: up", fmt.label());
             assert_eq!(c.scale, 1.0, "{}: scale", fmt.label());
         }
@@ -245,8 +268,14 @@ mod tests {
     fn z_up_source_is_uprighted_by_the_general_math() {
         let src = CoordinateConvention::new(Vec3::Y, Vec3::Z, 1.0).unwrap();
         let c = src.correction();
-        assert!(approx(c.rotation * Vec3::Y, Vec3::NEG_Z), "forward +Y → canonical −Z");
-        assert!(approx(c.rotation * Vec3::Z, Vec3::Y), "up +Z → canonical +Y");
+        assert!(
+            approx(c.rotation * Vec3::Y, Vec3::NEG_Z),
+            "forward +Y → canonical −Z"
+        );
+        assert!(
+            approx(c.rotation * Vec3::Z, Vec3::Y),
+            "up +Z → canonical +Y"
+        );
     }
 
     // what this catches: a degenerate convention (forward == up, or a zero axis,
@@ -254,9 +283,18 @@ mod tests {
     // of failing loud at construction.
     #[test]
     fn degenerate_convention_fails_loud() {
-        assert!(CoordinateConvention::new(Vec3::Y, Vec3::Y, 1.0).is_err(), "non-orthogonal");
-        assert!(CoordinateConvention::new(Vec3::ZERO, Vec3::Y, 1.0).is_err(), "zero forward");
-        assert!(CoordinateConvention::new(Vec3::NEG_Z, Vec3::Y, 0.0).is_err(), "zero scale");
+        assert!(
+            CoordinateConvention::new(Vec3::Y, Vec3::Y, 1.0).is_err(),
+            "non-orthogonal"
+        );
+        assert!(
+            CoordinateConvention::new(Vec3::ZERO, Vec3::Y, 1.0).is_err(),
+            "zero forward"
+        );
+        assert!(
+            CoordinateConvention::new(Vec3::NEG_Z, Vec3::Y, 0.0).is_err(),
+            "zero scale"
+        );
     }
 
     // what this catches: format detection regressing — the authoritative

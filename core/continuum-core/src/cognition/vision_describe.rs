@@ -157,11 +157,95 @@ fn pick_vision_candidate<'a>(
     candidates.first()
 }
 
+/// Is a `llama-server`-provider vision row actually SERVABLE right now, per the
+/// serving daemon's live snapshot? Pure — the snapshot IO lives in the caller.
+///
+/// The lane serves exactly ONE model, so a vision row is a real candidate only
+/// when it IS the active model, the lane is decode-ready, AND the daemon's
+/// verified multimodal verdict (`vision_ready`: declared Vision + resolved
+/// mmproj + `/props modalities.vision`, #106) came back true. Anything less and
+/// routing an image here would either hard-error at `select()` (model not
+/// served) or be silently dropped by a text-only lane — the capability lie the
+/// observe path must fail HONESTLY on instead
+/// ([[fallbacks-are-illegal-fail-loud]]).
+fn llama_server_row_ready(
+    model_id: &str,
+    snap: &crate::inference::llama_server::ServingSnapshot,
+) -> Result<(), String> {
+    if !snap.ready || snap.active_model.is_none() {
+        return Err("serving lane has no ready model".to_string());
+    }
+    // The node's ONE verified vision endpoint (#106): the main lane when the
+    // mind's model itself sees, or the SIDECAR lane beside a text-only mind.
+    // A row is servable iff it IS that endpoint's model — the snapshot's
+    // vision fields are projected from a single verified value, so this check
+    // covers both shapes without caring which lane answers.
+    if !snap.vision_ready {
+        return Err(
+            "no verified vision endpoint on this node (main lane is text-only and no \
+             sidecar came up) — see the serving daemon's `serving.vision.*` probes for \
+             the reason (`models/pull` a *-VL-*-GGUF repo to enable the sidecar)"
+                .to_string(),
+        );
+    }
+    if snap.vision_model.as_deref() != Some(model_id) {
+        return Err(format!(
+            "the verified vision endpoint serves {:?}, not this row",
+            snap.vision_model.as_deref().unwrap_or("<none>")
+        ));
+    }
+    Ok(())
+}
+
+/// Is this vision candidate SERVABLE right now? Registry rows *declare*
+/// capability; this checks the lane behind them actually answers, so the
+/// picker never selects a model whose `ai/generate` would hard-error at
+/// `select()` (the pre-#106 failure: prefer-local picked a VL row with no
+/// artifacts on disk and EVERY observe act died "no adapter", even while a
+/// perfectly good cloud vision lane sat registered).
+fn candidate_servable(m: &crate::model_registry::types::Model) -> Result<(), String> {
+    let registry = model_registry::try_global().ok_or("model registry not initialized")?;
+    let provider = registry
+        .provider(&m.provider)
+        .ok_or_else(|| format!("provider {:?} not in registry", m.provider))?;
+
+    if m.provider == crate::inference::llama_server::PROVIDER_ID {
+        // The local serving lane: gate on the daemon's LIVE snapshot.
+        return llama_server_row_ready(&m.id, &crate::inference::llama_server::current_serving());
+    }
+    if m.provider == crate::inference::LLAMACPP_PROVIDER_ID {
+        // The retiring in-process path is OPT-IN ONLY (CONTINUUM_LOCAL_LLAMA=1,
+        // see AIProviderModule) — without the opt-in no adapter registers for
+        // these rows, so they are never servable candidates.
+        if crate::config_env::read("CONTINUUM_LOCAL_LLAMA").as_deref() != Some("1") {
+            return Err("in-process llama.cpp is not opted in (CONTINUUM_LOCAL_LLAMA=1)".into());
+        }
+        if crate::model_registry::artifacts::resolve_gguf_for_model(m).is_none() {
+            return Err("no local GGUF resolves for this row".into());
+        }
+        if crate::model_registry::artifacts::resolve_mmproj_for_model(m).is_none() {
+            return Err("no mmproj projector resolves for this row".into());
+        }
+        return Ok(());
+    }
+    // Cloud (and other keyless local gateways): the adapter registers iff the
+    // provider's API key secret is present — mirror that gate here so a keyless
+    // boot never picks a cloud vision model whose `select()` would refuse.
+    match provider.api_key_env.as_deref() {
+        None => Ok(()),
+        Some(env_key) if crate::secrets::get_secret(env_key).is_some() => Ok(()),
+        Some(env_key) => Err(format!("no {env_key} secret — provider not registered")),
+    }
+}
+
 /// Pick the best vision-capable model from the global model registry.
 ///
-/// Returns `(model_id, provider_id)` or `None` if no vision-capable
-/// model is registered. Wraps `pick_vision_candidate` with the registry
-/// IO; the priority logic itself lives in the pure helper for tests.
+/// Returns `(model_id, provider_id)` or `None` if no vision-capable model is
+/// SERVABLE (declared capability alone is not enough — see
+/// [`candidate_servable`]). Wraps `pick_vision_candidate` with the registry +
+/// serving-snapshot IO; the priority logic itself lives in the pure helper for
+/// tests. Skipped candidates are logged with their reason so an all-skipped
+/// outcome (the honest "no eyes available" failure) is diagnosable, not mute.
 fn select_vision_model(opts: &VisionDescribeOptions) -> Option<(String, String)> {
     let registry = model_registry::try_global()?;
 
@@ -170,6 +254,11 @@ fn select_vision_model(opts: &VisionDescribeOptions) -> Option<(String, String)>
         .filter(|m| m.has(Capability::Vision))
         .filter_map(|m| {
             let provider = registry.provider(&m.provider)?;
+            if let Err(why) = candidate_servable(m) {
+                runtime::logger("cognition")
+                    .info(&format!("vision-describe: skipping {:?} — {why}", m.id));
+                return None;
+            }
             Some(VisionCandidate {
                 model_id: m.id.clone(),
                 provider_id: m.provider.clone(),
@@ -302,7 +391,9 @@ pub async fn describe_image(
         "temperature": 0.3,
     });
 
-    let response_value = executor.execute_json("ai/generate", generate_params).await?;
+    let response_value = executor
+        .execute_json("ai/generate", generate_params)
+        .await?;
 
     // ai/generate's wire format serializes FinishReason via Display
     // (`modules/ai_provider.rs::response_to_json`); the sentinel string
@@ -338,6 +429,78 @@ pub async fn describe_image(
     }))
 }
 
+/// The live [`FrameDescriber`](crate::media::FrameDescriber) — the sensory bridge that
+/// `media/` promises but cannot implement itself (the layering rule forbids `media/`
+/// from depending on `cognition/`). This is the ONE production implementor: it routes a
+/// frame's bytes through [`describe_image`] (i.e. `ai/generate` on the best available
+/// vision model) and hands back the prose a non-vision persona reads to "see"
+/// ([[perception-feedback-must-not-blow-rag]]).
+///
+/// A [`MediaFrame`](crate::media::MediaFrame) caches the result per content hash, so
+/// wrapping this describer ONCE and pointing every persona's frame at it means the same
+/// image is described a single time and shared — N personas in a call cost one describe
+/// per distinct frame, not N ([[media-is-compute-once-zero-copy-hardware-grade]]).
+pub struct VisionDescribeFramer {
+    executor: std::sync::Arc<crate::runtime::CommandExecutor>,
+    options: VisionDescribeOptions,
+}
+
+impl VisionDescribeFramer {
+    /// Bridge over the given command executor with default describe options
+    /// (concise prose, best available vision model).
+    pub fn new(executor: std::sync::Arc<crate::runtime::CommandExecutor>) -> Self {
+        Self {
+            executor,
+            options: VisionDescribeOptions::default(),
+        }
+    }
+
+    /// Bridge with caller-tuned options (e.g. `detect_objects`, a length cap, or a
+    /// pinned model) applied to every frame this describer handles.
+    pub fn with_options(
+        executor: std::sync::Arc<crate::runtime::CommandExecutor>,
+        options: VisionDescribeOptions,
+    ) -> Self {
+        Self { executor, options }
+    }
+}
+
+/// Encode + shape a frame's raw bytes into a [`VisionDescribeRequest`]. Pulled out as a
+/// pure function so the base64 + option threading is unit-testable without standing up a
+/// `CommandExecutor` or the model registry (the executor IO lives in `describe_image`).
+fn build_frame_request(
+    source: &[u8],
+    mime: &str,
+    options: VisionDescribeOptions,
+) -> VisionDescribeRequest {
+    use base64::Engine;
+    VisionDescribeRequest {
+        base64_data: base64::engine::general_purpose::STANDARD.encode(source),
+        mime_type: mime.to_string(),
+        options,
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::media::FrameDescriber for VisionDescribeFramer {
+    async fn describe(&self, source: &[u8], mime: &str) -> Result<String, String> {
+        let req = build_frame_request(source, mime, self.options.clone());
+        match describe_image(req, &self.executor).await? {
+            Some(desc) => Ok(desc.description),
+            // No vision-capable model resolved (or the model errored / returned empty).
+            // Fail loud — a describe with no real sight must never fabricate a
+            // placeholder a persona would read AS having seen the frame
+            // ([[fallbacks-are-illegal-fail-loud]]). `MediaFrame` caches this `Err` per
+            // content hash, so the gap is surfaced deterministically, not silently
+            // retried per persona.
+            None => Err(format!(
+                "no vision-capable model available to describe this {mime} frame — bring \
+                 up a VL model (or grant a vision provider) before a persona can see it"
+            )),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,6 +509,25 @@ mod tests {
     fn build_prompt_default_is_concise() {
         let prompt = build_prompt(&VisionDescribeOptions::default());
         assert_eq!(prompt, "Describe this image concisely.");
+    }
+
+    // what this catches: the live FrameDescriber bridge encodes a frame's raw bytes as
+    // standard base64 and threads the caller's describe options through to the
+    // ai/generate request — the wiring the compute-once description cell depends on to
+    // let a non-vision persona "see". A regression here silently corrupts every frame
+    // the perception pipeline sends for description.
+    #[test]
+    fn build_frame_request_base64_encodes_and_threads_options() {
+        let opts = VisionDescribeOptions {
+            detect_objects: true,
+            max_length: Some(120),
+            ..Default::default()
+        };
+        let req = build_frame_request(b"hello", "image/png", opts);
+        assert_eq!(req.base64_data, "aGVsbG8=", "base64('hello')");
+        assert_eq!(req.mime_type, "image/png");
+        assert!(req.options.detect_objects);
+        assert_eq!(req.options.max_length, Some(120));
     }
 
     #[test]
@@ -479,6 +661,47 @@ mod tests {
         let picked = pick_vision_candidate(&candidates, &opts).unwrap();
         assert!(picked.is_local);
         assert_eq!(picked.model_id, "local-llava");
+    }
+
+    // what this catches (#106): the observe path may route to the local serving
+    // gateway ONLY when the node has a VERIFIED vision endpoint AND this row IS
+    // that endpoint's model — the main lane when the mind's model itself sees, or
+    // the vision SIDECAR beside a text-only mind. A regression that accepts an
+    // unverified node re-opens the capability lie (images POSTed to a text-only
+    // lane, silently dropped); one that accepts a row the endpoint doesn't serve
+    // aims pixels at the wrong model.
+    #[test]
+    fn llama_server_row_is_servable_only_when_it_is_the_verified_vision_endpoint() {
+        use crate::inference::llama_server::ServingSnapshot;
+        let mut snap = ServingSnapshot::empty();
+
+        // Nothing serving → not servable.
+        assert!(llama_server_row_ready("vl-model", &snap).is_err());
+
+        // Ready text-only mind, no sidecar → no verified endpoint anywhere; the
+        // reason teaches the fix (pull a VL repo to enable the sidecar).
+        snap.ready = true;
+        snap.active_model = Some("coder-14b".into());
+        snap.vision_ready = false;
+        let err = llama_server_row_ready("vl-model", &snap).unwrap_err();
+        assert!(err.contains("no verified vision endpoint"), "{err}");
+        assert!(err.contains("sidecar"), "teaches the sidecar path: {err}");
+
+        // SIDECAR shape: text mind stays active, the verified endpoint is the
+        // sidecar's model → the VL row is servable, the mind's row is not.
+        snap.vision_ready = true;
+        snap.vision_base_url = Some("http://127.0.0.1:58091/v1".into());
+        snap.vision_model = Some("vl-model".into());
+        assert!(llama_server_row_ready("vl-model", &snap).is_ok());
+        let err = llama_server_row_ready("coder-14b", &snap).unwrap_err();
+        assert!(
+            err.contains("vl-model"),
+            "names the endpoint's real model: {err}"
+        );
+
+        // MAIN-LANE shape: a VL mind — the endpoint IS the active model.
+        snap.active_model = Some("vl-model".into());
+        assert!(llama_server_row_ready("vl-model", &snap).is_ok());
     }
 
     #[test]

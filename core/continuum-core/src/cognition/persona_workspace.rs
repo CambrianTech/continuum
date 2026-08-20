@@ -13,16 +13,26 @@
 //! supplies the unified memory + identity + faculties.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
+
+// parking_lot::Mutex, not std::sync::Mutex — matching `working_memory.rs`, this module's
+// sibling holding the same kind of per-persona state. std's `lock()` returns a Result that
+// is Err only when ANOTHER thread panicked while holding it, so `.lock()` converts
+// one persona's failure into a process-wide cascade: the registry every other persona needs
+// dies with it. parking_lot does not poison, so there is no Result and no unwrap to get
+// wrong. This also collapses two mutex types for one concern back to one.
+use parking_lot::Mutex;
 
 use uuid::Uuid;
+
+use crate::identity::{PeerId, PersonaRef};
 
 use super::deferred_faculty::DeferredFaculty;
 use super::embedding::{CachingEmbeddingProvider, EmbeddingProvider, LexicalEmbedder};
 use super::llm_deliberation_faculty::LlmDeliberationFaculty;
 use super::rag_source_faculty::{RagSourceFaculty, SaliencePolicy};
 use super::recall_faculty::RecallFaculty;
-use super::working_memory::{WorkingMemory, WorkingMemoryFaculty, DEFAULT_WORKING_MEMORY_CAPACITY};
+use super::working_memory::{WorkingMemory, WorkingMemoryFaculty};
 use super::workspace::{ActingBody, Faculty, SituationFocusArbiter, WorkspaceCycle};
 use crate::ai::adapter::AIProviderAdapter;
 use crate::persona::admission_state::AdmissionState;
@@ -114,6 +124,20 @@ pub struct PersonaBrainConfig {
     ///
     /// [`reproject_to_now`]: super::deferred_faculty::reproject_to_now
     pub defer_grounding: bool,
+    /// SUPPRESS the recall faculty entirely — the fork's mind carries system + task +
+    /// grounding (roster/doctrine/workspace-map) but injects NO episodic recall. `false`
+    /// on every live path and by default (memories intact — the natural persona). `true`
+    /// ONLY for a reproducible ABSOLUTE benchmark baseline: a self-contained proctored task
+    /// (HumanEval, a repo-nav question, a from-scratch UI build) is answerable from the
+    /// system+task alone, so injecting her durable episodic store — which GROWS as she lives
+    /// between runs — makes the exam prompt drift run-to-run (unrelated room chatter recalled
+    /// into a self-contained task = noise AND nondeterminism). The LIFT (base vs gene in one
+    /// fork) is reproducible regardless; this pins the ABSOLUTE number so today's run compares
+    /// to last week's. NOT a life-path knob — a benchmark-reproducibility control, sibling of
+    /// the greedy-temperature and directed-turn pins. See #207,
+    /// [[eval-reproducibility-is-two-tier-lift-controlled-absolute-drifts]],
+    /// [[redaction-makes-exam-learning-honest]].
+    pub suppress_recall: bool,
 }
 
 /// Whether a grounding source must run synchronously on the inference loop, or
@@ -252,7 +276,11 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     // long-term engram store; self-activates only when thinking is enabled (suppressed
     // turns record nothing). Built HERE (before recall) so recall can share it in and
     // suppress an engram the recency channel already carries — see below.
-    let working_memory = Arc::new(WorkingMemory::new(DEFAULT_WORKING_MEMORY_CAPACITY));
+    // Depth comes from the BUDGET, never a constant: the count sibling of the per-step size
+    // bound, off the same live window. See `ContextBudget::working_memory_steps`.
+    let working_memory = Arc::new(WorkingMemory::new(
+        crate::cognition::context_budget::ContextBudget::live_or_floor().working_memory_steps(),
+    ));
     // MEMENTO FIX (#138 slice 2, Joel: "they wake up blank like Memento — an
     // engineering failure; the flywheel falls apart"): on LIVE spawns, restore
     // the volatile tier persisted by the previous life so she wakes MID-WORK —
@@ -264,8 +292,26 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
             let n = persisted.wm.entries.len();
             working_memory.restore(persisted.wm);
             let peer = crate::identity::PeerId::from_uuid(cfg.persona_id);
-            for utterance in &persisted.own_speech {
-                super::deliberation_budget::record_own_speech(peer, utterance);
+            match &persisted.own_speech {
+                OwnSpeechPersisted::ByRoom(by_room) => {
+                    for (room, utterances) in by_room {
+                        for utterance in utterances {
+                            super::deliberation_budget::record_own_speech(peer, *room, utterance);
+                        }
+                    }
+                }
+                // Pre-room-scoping file: unattributable, so dropped rather than
+                // mis-filed into a room she may never have spoken in. See
+                // OwnSpeechPersisted — hydrate_speech_rings re-seeds with rooms.
+                OwnSpeechPersisted::Legacy(flat) => {
+                    crate::probe!(
+                        class = "persona.volatile.own_speech_legacy_dropped",
+                        persona = %cfg.persona_name,
+                        dropped = flat.len(),
+                        "pre-room-scoping own-speech ring carried no room — dropped, \
+                         durable-transcript hydration re-seeds it"
+                    );
+                }
             }
             crate::probe!(
                 class = "persona.volatile.restored",
@@ -327,7 +373,16 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     // served into another. Eval forks + harnesses keep recall SYNCHRONOUS
     // (`defer_recall == false`): their tight settle-loops never yield to the
     // worker, so deferral there would measure a recall-starved mind.
-    if cfg.defer_recall {
+    // #207: a reproducible ABSOLUTE benchmark fork suppresses recall entirely — a
+    // self-contained proctored task wants system + task + grounding only, never the
+    // drifting episodic store. The living persona and every life path keep recall (default
+    // false). The faculty is simply not built into the cycle; nothing downstream depends on
+    // its presence (the arbiter integrates whatever bids exist).
+    if cfg.suppress_recall {
+        // constructed above (it wired the recency channel + working-memory share); dropped
+        // here so those wirings are torn down cleanly rather than left half-attached.
+        drop(recall);
+    } else if cfg.defer_recall {
         faculties.push(Arc::new(DeferredFaculty::spawn(Arc::new(recall))));
     } else {
         faculties.push(Arc::new(recall));
@@ -398,16 +453,26 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
         None,
         cfg.context_window,
     );
-    let mut deliberation = LlmDeliberationFaculty::new(
-        cfg.persona_id,
-        cfg.persona_name,
-        cfg.system_prompt,
-        adapter,
-    )
-    .with_working_memory(Arc::clone(&working_memory))
-    .with_genome(Arc::clone(&genome))
-    .with_decoding(Arc::clone(&decoding))
-    .with_model_binding(Arc::clone(&model_binding));
+    let mut deliberation =
+        LlmDeliberationFaculty::new(cfg.persona_id, cfg.persona_name, cfg.system_prompt, adapter)
+            .with_working_memory(Arc::clone(&working_memory))
+            .with_genome(Arc::clone(&genome))
+            .with_decoding(Arc::clone(&decoding))
+            .with_model_binding(Arc::clone(&model_binding))
+            // Every mind reports what its turns actually COST into the shared registry the
+            // serving daemon provisions the window from. Without this line the measurement
+            // exists and reaches nobody, and `serving_plan` falls back to the cold-start
+            // constant forever — the exact shape of defect that left every citizen thinking
+            // in 8192 tokens of a 128k model. [[wire-it-into-the-default-path]]
+            .with_working_set({
+                // Re-adopt her measured window demand BEFORE her first turn, so a restart
+                // is a pause and not a demotion — without this the reboot drops her back to
+                // the cold-start window until enough turns re-measure (observed live
+                // 2026-08-06: a measured 24,126 fell to 16,384 across one reboot).
+                let ws = crate::cognition::working_set::global();
+                ws.rehydrate(cfg.persona_id);
+                ws
+            });
     if tool_executor.is_some() {
         // Offer EXACTLY what this persona is authorized to run (offer ==
         // authorized) — never a tool the gate would refuse. A local persona is the
@@ -520,6 +585,264 @@ pub struct PersonaWorkspaceRegistry {
     templates: Mutex<HashMap<Uuid, PersonaBrainConfig>>,
 }
 
+/// When an eval pins a `workspace_root` (a SWE-bench repo clone, or a clean
+/// from-scratch build dir), `code/create-workspace` re-roots the persona's HANDS
+/// there — but the `[workspace-map]` grounding is baked at spawn rooted at the
+/// citizen layer, so without this it describes the WRONG directory (she reasons over
+/// a layout that isn't hers: a clean build dir reads as the big repo → she explores
+/// instead of building, #206). Re-point the map grounding to the same pinned root so
+/// eyes-grounding matches hands. Swaps ONLY the source Arc — policy, deferrability,
+/// and `requires_hands` are preserved. No-op when no root is pinned (the live path
+/// and every non-pinned benchmark are untouched — zero blast radius).
+fn repoint_workspace_map_if_pinned(
+    cfg: &mut PersonaBrainConfig,
+    persona_id: &Uuid,
+    workspace_root: Option<&str>,
+) {
+    let Some(root) = workspace_root else {
+        return;
+    };
+    // The fork's hands expose the bus where its write-completions land — the
+    // invalidation wire for the cache wrap below. Resolved once, outside the loop.
+    let bus = cfg
+        .tool_executor
+        .as_ref()
+        .and_then(|t| t.command_executor())
+        .and_then(|c| c.message_bus());
+    for g in cfg.grounding_sources.iter_mut() {
+        if g.source.source_id() == "workspace-map" {
+            let pinned: Arc<dyn crate::persona::rag_budget::RagSource> = Arc::new(
+                crate::persona::workspace_map_source::WorkspaceMapSource::for_pinned_root(
+                    *persona_id,
+                    root,
+                ),
+            );
+            // Event-invalidated cache (#398): eval forks compose SYNCHRONOUSLY
+            // (defer_grounding=false), so without this the pinned map re-walks
+            // the repo dir on EVERY act — the measured per-act prefill churn on
+            // solve runs (#266). Serve last-good until one of the fork's own
+            // mutating commands completes. No wrap without a wire: a handless
+            // cfg keeps the raw walk. The invalidator holds only a weak handle,
+            // so it exits with the ephemeral fork instead of leaking.
+            g.source = match bus.clone() {
+                Some(bus) => {
+                    let (cached, dirty) =
+                        crate::persona::cached_source::CachedRagSource::new(pinned);
+                    crate::persona::grounding_invalidation::spawn_workspace_invalidator(
+                        bus,
+                        dirty.downgrade(),
+                    );
+                    cached
+                }
+                None => pinned,
+            };
+        }
+    }
+}
+
+/// A persona's HANDS, lifted out of the cycle that owns them.
+///
+/// Exists because rooting a measurement fork's workspace is a PROCESS-GLOBAL side effect that
+/// must be undone after the cycle it was taken for is gone. `code/create-workspace` keys the
+/// file engine on the CALLER identity (`caller_id(ctx)` → the persona's peer id), and the
+/// engines live in one `DashMap` for the whole runtime — while a measurement fork shares the
+/// living persona's `Arc<dyn ToolExecutor>` and her id. So re-rooting "the fork's" hands
+/// re-roots the LIVING persona's hands, and nothing put them back.
+///
+/// That is #312, measured 2026-08-04: after a SWE-bench solve on a flask clone, Anwen's LIVE
+/// self ran `code/list(path=src)` → `flask/` and `code/read(src/flask/app.py)` in her ordinary
+/// room turns, hours later. She had been left standing in the exam room.
+///
+/// Carrying `(id, name, executor)` separately from the cycle is what makes the restore
+/// possible on every exit path: the cycle gets consumed by `with_capture`, moved into the
+/// drive, or dropped on an error — the hands handle outlives all of it.
+#[derive(Clone)]
+pub(crate) struct ActingHands {
+    persona_id: Uuid,
+    persona_name: String,
+    executor: Arc<dyn crate::cognition::tool_executor::ToolExecutor>,
+}
+
+impl ActingHands {
+    /// The hands of a cycle that has them; `None` for a pure-cognition (handless) cycle.
+    pub(crate) fn of(cycle: &WorkspaceCycle) -> Option<Self> {
+        cycle.acting().map(|a| Self {
+            persona_id: a.persona_id,
+            persona_name: a.persona_name.clone(),
+            executor: a.executor.clone(),
+        })
+    }
+}
+
+/// Drive `code/create-workspace` through the persona's OWN identity-bearing executor —
+/// the single place either direction (root for a measurement, restore afterward) goes
+/// through, so the ACL gate and the failure shape are identical for both
+/// ([[the-compression-principle]]).
+async fn drive_create_workspace(
+    hands: &ActingHands,
+    root: &str,
+    path_prepend: &[String],
+    call_id: &str,
+    refuse_inert_edits: bool,
+) -> Result<(), crate::sdk_codegen::CommandError> {
+    let ws_ctx = crate::cognition::tool_executor::ToolExecutionContext {
+        persona_id: hands.persona_id,
+        persona_name: hands.persona_name.clone(),
+        session_id: Uuid::new_v4(),
+        context_id: Uuid::new_v4(),
+        caller_context: serde_json::Value::Null,
+        persona_config: crate::cognition::tool_executor::PersonaMediaConfigLite {
+            auto_load_media: false,
+            supported_media_types: vec![],
+        },
+    };
+    let ws_call = crate::ai::types::ToolCall {
+        id: call_id.to_string(),
+        name: "code/create-workspace".to_string(),
+        input: serde_json::json!({
+            "workspace_root": root,
+            "path_prepend": path_prepend,
+            "refuse_inert_edits": refuse_inert_edits,
+        }),
+    };
+    let ws_out = hands
+        .executor
+        .execute_native_batch(std::slice::from_ref(&ws_call), &ws_ctx, 8000)
+        .await
+        .map_err(|e| {
+            crate::sdk_codegen::CommandError::Internal(format!(
+                "failed to root workspace at '{root}': {e}"
+            ))
+        })?;
+    if let Some(r) = ws_out.results.first() {
+        if r.is_error.is_some() {
+            return Err(crate::sdk_codegen::CommandError::Internal(format!(
+                "code/create-workspace rejected workspace_root '{root}': {} — refusing to run with \
+                 the persona's hands rooted at the wrong directory (would score a false zero).",
+                r.content
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Root a forked cycle's file-engine (its `ToolExecutor`) at `root` by driving the
+/// `code/create-workspace` act through her hands — the SAME mechanism `cognition/eval`
+/// uses to point a measurement persona at a target repo, and now `agent/solve` uses to
+/// point her at a benchmark sandbox. This is the counterpart to
+/// [`repoint_workspace_map_if_pinned`]: that fixes what she *sees* (the workspace-map RAG
+/// block); THIS moves where her hands *write*. Without it a forked persona writes to her
+/// durable per-persona workspace (`<home>/citizens/peers/<id>/workspace/`) and the caller's
+/// `git diff` on the sandbox scores a false ZERO — a lie about the solver
+/// ([[fallbacks-are-illegal-fail-loud]]). Fails LOUD if the cycle has no hands or the
+/// executor rejects the root; never silently no-ops.
+///
+/// **Every caller of this MUST pair it with [`restore_acting_workspace`]** on every exit
+/// path — the re-root is process-global and outlives the fork (see [`ActingHands`]).
+pub(crate) async fn root_acting_workspace(
+    cycle: &WorkspaceCycle,
+    root: &str,
+    path_prepend: &[String],
+    refuse_inert_edits: bool,
+) -> Result<(), crate::sdk_codegen::CommandError> {
+    let hands = ActingHands::of(cycle).ok_or_else(|| {
+        crate::sdk_codegen::CommandError::Internal(
+            "workspace_root requested but this cycle has no acting body (no hands) — cannot root \
+             a workspace for a pure-cognition persona"
+                .to_string(),
+        )
+    })?;
+    drive_create_workspace(
+        &hands,
+        root,
+        path_prepend,
+        "root-acting-workspace",
+        refuse_inert_edits,
+    )
+    .await?;
+    crate::probe!(
+        class = "workspace.rooted",
+        persona = %hands.persona_name,
+        root = %root,
+        "forked persona's file engine rooted at the target directory before her cycle"
+    );
+    Ok(())
+}
+
+/// Put the persona's hands BACK in her own home after a measurement — the HANDS
+/// counterpart of [`EvalIsolation`](crate::cognition::workspace::EvalIsolation), which
+/// already guards the MIND (admission sink, memory checkpoint, decoding temperature).
+/// The mind had a guard from the day snapshot-eval landed (#59); the hands never did, and
+/// that asymmetry IS #312.
+///
+/// Restores to her durable citizen layer (`<home>/citizens/peers/<id>/workspace`) — the
+/// root `code/create-workspace` would auto-provision for her anyway — rather than to
+/// "whatever it was before". Deliberate: if a previous measurement already left her
+/// standing in an exam repo, restoring the *previous* value would faithfully preserve the
+/// bug. Restoring to her HOME is self-healing — the next measurement corrects an earlier
+/// leak instead of inheriting it.
+///
+/// Best-effort by contract: it returns the error for the caller to LOG, never to propagate.
+/// A failed restore must not mask the measurement's own result — but it must be loud.
+pub(crate) async fn restore_acting_workspace(
+    hands: &ActingHands,
+) -> Result<(), crate::sdk_codegen::CommandError> {
+    // `ensure_`, not `path_`: `code/create-workspace` REFUSES a root that does not exist
+    // (PathSecurity canonicalizes), and a persona who has never written anything has no
+    // layer on disk yet. Provisioning here is not a new side effect — it is exactly what
+    // `ensure_engine` would do on her very next file op; an existing layer is reused.
+    let home = crate::modules::code_commands::ensure_citizen_layer(&hands.persona_id.to_string())?;
+    restore_acting_workspace_at(hands, &home.to_string_lossy()).await
+}
+
+/// [`restore_acting_workspace`] addressed by persona id, resolved against the LIVING
+/// registry rather than a fork handle.
+///
+/// This is the form `cognition/eval` needs. Its `--workspace_root` rooting happens deep
+/// inside a ~230-line fallible body, but the thing that got clobbered is the LIVING
+/// persona's file engine (one process-global map, keyed by her id — the fork only ever
+/// borrowed her executor), so the restore does not need the fork at all: it can be done
+/// from outside, at the command boundary, where "the eval is over" is unambiguous and
+/// covers the error paths for free.
+pub(crate) async fn restore_persona_workspace(
+    persona: &PersonaRef,
+) -> Result<(), crate::sdk_codegen::CommandError> {
+    let persona_id = persona.as_str();
+    let uuid =
+        crate::id_resolve::resolve(persona_id.trim(), &crate::persona::card::ids(), "persona")
+            .map_err(crate::sdk_codegen::CommandError::Invalid)?;
+    let cycle = global().get(&uuid).ok_or_else(|| {
+        crate::sdk_codegen::CommandError::NotFound(format!(
+            "persona {uuid} is not resident — cannot return her hands to her own workspace"
+        ))
+    })?;
+    let hands = ActingHands::of(&cycle).ok_or_else(|| {
+        crate::sdk_codegen::CommandError::Internal(format!(
+            "persona {uuid} has no acting body — nothing to restore"
+        ))
+    })?;
+    restore_acting_workspace(&hands).await
+}
+
+/// [`restore_acting_workspace`] with the home root supplied — the seam the isolation test
+/// drives, so the round-trip (root at a sandbox → restore → the sandbox is no longer
+/// visible through those hands) is provable without touching the real `CONTINUUM_HOME`.
+async fn restore_acting_workspace_at(
+    hands: &ActingHands,
+    home: &str,
+) -> Result<(), crate::sdk_codegen::CommandError> {
+    // Restoring her to her OWN home restores the LIVE stance too: a citizen at home writes code
+    // as text whenever she means to, and only gets told when it will not execute (#317).
+    drive_create_workspace(hands, home, &[], "restore-acting-workspace", false).await?;
+    crate::probe!(
+        class = "workspace.restored",
+        persona = %hands.persona_name,
+        root = %home,
+        "measurement over — persona's hands returned to her own citizen workspace"
+    );
+    Ok(())
+}
+
 impl PersonaWorkspaceRegistry {
     pub fn new() -> Self {
         Self {
@@ -530,7 +853,85 @@ impl PersonaWorkspaceRegistry {
 
     /// Look up a persona's mind. `None` if it hasn't been registered/built yet.
     pub fn get(&self, persona_id: &Uuid) -> Option<Arc<WorkspaceCycle>> {
-        self.cycles.lock().unwrap().get(persona_id).cloned()
+        self.cycles.lock().get(persona_id).cloned()
+    }
+
+    /// The personas that have a fork-template right now — i.e. the set
+    /// `cognition/eval` can fork a measurement copy of. Keyed by the template map
+    /// (populated by [`register_from_cfg`](Self::register_from_cfg) at spawn).
+    pub fn template_ids(&self) -> Vec<Uuid> {
+        self.templates.lock().keys().copied().collect()
+    }
+
+    /// THE ONE formal boundary (#396) that turns an operator-supplied persona
+    /// reference — a full UUID, an 8-char short-id prefix, or a case-insensitive
+    /// persona NAME — into the typed persona `Uuid`. Callers never sniff strings
+    /// themselves; a name resolves INTO the id here (Joel's "come from name, but be
+    /// more formal").
+    ///
+    /// A well-formed full UUID passes through unchanged, WITHOUT a membership check,
+    /// so a persona whose template is still assembling (the post-reboot
+    /// `register_from_cfg` race the fork wait absorbs) is never false-rejected —
+    /// race safety lives in the caller's existing wait, not here. Short-id and name
+    /// resolve against the forkable set that exists at call time. Fails LOUD naming
+    /// the online personas — never a silent guess (the loose-`String` id boundary is
+    /// exactly the defect class that fed a dead id to a doomed eval).
+    /// The ONE door from a caller's [`PersonaRef`] to a real [`PeerId`]. Taking the
+    /// newtype rather than `&str` is what makes resolution unskippable: a param that
+    /// holds a reference cannot reach a subsystem that wants an identity without
+    /// coming through here.
+    pub fn resolve_persona(&self, reference: &PersonaRef) -> Result<PeerId, String> {
+        let id_or_name = reference.as_str();
+        // Snapshot (id, name) once, then drop the lock before resolving.
+        let roster: Vec<(Uuid, String)> = {
+            let templates = self.templates.lock();
+            templates
+                .iter()
+                .map(|(id, cfg)| (*id, cfg.persona_name.clone()))
+                .collect()
+        };
+        let ids: Vec<Uuid> = roster.iter().map(|(id, _)| *id).collect();
+
+        // 1. Full UUID (race-safe passthrough) or short-id prefix against the
+        //    forkable set — the shared id normalization primitive.
+        if let Ok(id) = crate::id_resolve::resolve(id_or_name, &ids, "persona") {
+            return Ok(PeerId::from_uuid(id));
+        }
+
+        // 2. Case-insensitive persona NAME.
+        let want = id_or_name.trim();
+        let name_matches: Vec<Uuid> = roster
+            .iter()
+            .filter(|(_, name)| name.eq_ignore_ascii_case(want))
+            .map(|(id, _)| *id)
+            .collect();
+        match name_matches.as_slice() {
+            [one] => Ok(PeerId::from_uuid(*one)),
+            [] => Err(format!(
+                "no persona matches '{id_or_name}' (not a UUID, an 8-char short-id, or a name). {}",
+                Self::roster_hint(&roster)
+            )),
+            many => Err(format!(
+                "'{id_or_name}' is ambiguous — {} online personas share that name; pass a UUID. {}",
+                many.len(),
+                Self::roster_hint(&roster)
+            )),
+        }
+    }
+
+    /// "Online now: Asha (90e758b2), Atlas (e5f4141d)" — the actionable tail every
+    /// resolution failure carries so an operator can fix the reference without
+    /// grepping. Empty roster reads "no personas are online".
+    fn roster_hint(roster: &[(Uuid, String)]) -> String {
+        if roster.is_empty() {
+            return "No personas are online right now — call persona/instances/list.".to_string();
+        }
+        let mut listed: Vec<String> = roster
+            .iter()
+            .map(|(id, name)| format!("{name} ({})", &id.to_string()[..8]))
+            .collect();
+        listed.sort();
+        format!("Online now: {}.", listed.join(", "))
     }
 
     /// Build + register a persona's mind from its `cfg`, retaining a clone of the
@@ -542,11 +943,8 @@ impl PersonaWorkspaceRegistry {
     pub fn register_from_cfg(&self, cfg: PersonaBrainConfig) -> Arc<WorkspaceCycle> {
         let persona_id = cfg.persona_id;
         // cycles THEN templates (the one canonical lock order).
-        let mut cycles = self.cycles.lock().unwrap();
-        self.templates
-            .lock()
-            .unwrap()
-            .insert(persona_id, cfg.clone());
+        let mut cycles = self.cycles.lock();
+        self.templates.lock().insert(persona_id, cfg.clone());
         let cycle = Arc::new(build_workspace_cycle(cfg));
         cycles.insert(persona_id, cycle.clone());
         cycle
@@ -559,14 +957,11 @@ impl PersonaWorkspaceRegistry {
     pub fn get_or_build(&self, cfg: PersonaBrainConfig) -> Arc<WorkspaceCycle> {
         let persona_id = cfg.persona_id;
         // cycles THEN templates (the one canonical lock order).
-        let mut cycles = self.cycles.lock().unwrap();
+        let mut cycles = self.cycles.lock();
         if let Some(existing) = cycles.get(&persona_id) {
             return existing.clone();
         }
-        self.templates
-            .lock()
-            .unwrap()
-            .insert(persona_id, cfg.clone());
+        self.templates.lock().insert(persona_id, cfg.clone());
         let cycle = Arc::new(build_workspace_cycle(cfg));
         cycles.insert(persona_id, cycle.clone());
         cycle
@@ -584,9 +979,17 @@ impl PersonaWorkspaceRegistry {
     /// (never spawned through `register_from_cfg`/`get_or_build`) — the caller
     /// fails loud rather than measuring her live mind. See
     /// [[design-the-persona-as-a-being]] + [[eval-mutates-persona-lift-needs-isolation]].
-    pub fn fork_eval_cycle(&self, persona_id: &Uuid, with_tools: bool) -> Option<WorkspaceCycle> {
-        let mut cfg = self.templates.lock().unwrap().get(persona_id)?.clone();
+    pub fn fork_eval_cycle(
+        &self,
+        persona_id: &Uuid,
+        with_tools: bool,
+        workspace_root: Option<&str>,
+        suppress_recall: bool,
+    ) -> Option<WorkspaceCycle> {
+        let mut cfg = self.templates.lock().get(persona_id)?.clone();
         cfg.admission = Arc::new(cfg.admission.fork_detached());
+        cfg.suppress_recall = suppress_recall;
+        repoint_workspace_map_if_pinned(&mut cfg, persona_id, workspace_root);
         // The eval fork runs recall + grounding SYNCHRONOUSLY: drive_to_settle's
         // tight loop never yields to a background prefetch worker, so deferral would
         // measure a starved copy. Faithful eval = synchronous perception here.
@@ -629,17 +1032,28 @@ impl PersonaWorkspaceRegistry {
     /// deliberation faculty budgets its prompt against what THIS lane serves —
     /// otherwise a fork carrying the 14B's larger window could build a prompt the
     /// ephemeral 4B lane can't hold and overflow it (the Asha-mute failure class).
+    /// `extra_grounding` joins the persona's own grounding sources for THIS fork only —
+    /// the seam a measurement drive uses to pin its task brief as `[mission]` standing
+    /// framing (#390: the brief delivered once as a burst was evicted by act ~6 on a
+    /// 24-act solve, and the persona literally asked what the issue was; a
+    /// StandingFraming source cannot be evicted). Empty for plain evals.
     pub fn fork_eval_cycle_with_adapter(
         &self,
         persona_id: &Uuid,
         adapter: Arc<dyn AIProviderAdapter>,
         context_window: u32,
         with_tools: bool,
+        workspace_root: Option<&str>,
+        suppress_recall: bool,
+        extra_grounding: Vec<GroundingSource>,
     ) -> Option<WorkspaceCycle> {
-        let mut cfg = self.templates.lock().unwrap().get(persona_id)?.clone();
+        let mut cfg = self.templates.lock().get(persona_id)?.clone();
         cfg.admission = Arc::new(cfg.admission.fork_detached());
         cfg.adapter = adapter;
         cfg.context_window = context_window;
+        cfg.suppress_recall = suppress_recall;
+        cfg.grounding_sources.extend(extra_grounding);
+        repoint_workspace_map_if_pinned(&mut cfg, persona_id, workspace_root);
         // Synchronous perception on the eval copy (see `fork_eval_cycle`).
         cfg.defer_recall = false;
         cfg.defer_grounding = false;
@@ -663,7 +1077,6 @@ impl PersonaWorkspaceRegistry {
     pub fn roster(&self) -> Vec<(Uuid, Option<String>)> {
         self.cycles
             .lock()
-            .unwrap()
             .iter()
             .map(|(id, cycle)| (*id, cycle.acting().map(|b| b.persona_name.clone())))
             .collect()
@@ -680,11 +1093,15 @@ impl PersonaWorkspaceRegistry {
     pub fn reflector_handles(
         &self,
         persona_id: &Uuid,
-    ) -> Option<(Arc<AdmissionState>, Arc<dyn AIProviderAdapter>, Option<String>)> {
+    ) -> Option<(
+        Arc<AdmissionState>,
+        Arc<dyn AIProviderAdapter>,
+        Option<String>,
+    )> {
         // Lock order contract: `cycles` THEN `templates` (see struct docs).
         // `get` takes + releases the cycles lock before we touch templates.
         let cycle = self.get(persona_id)?;
-        let templates = self.templates.lock().unwrap();
+        let templates = self.templates.lock();
         let cfg = templates.get(persona_id)?;
         // Adapter AND served-model id from the live binding: a request without
         // the model id degenerated on the dream's first live pass (role-token
@@ -713,7 +1130,7 @@ impl PersonaWorkspaceRegistry {
         model: Option<String>,
         context_window: u32,
     ) -> usize {
-        let cycles = self.cycles.lock().unwrap();
+        let cycles = self.cycles.lock();
         for cycle in cycles.values() {
             cycle.rebind_model(super::llm_deliberation_faculty::ModelBinding {
                 adapter: Arc::clone(&adapter),
@@ -726,7 +1143,7 @@ impl PersonaWorkspaceRegistry {
 
     /// How many persona minds are resident.
     pub fn len(&self) -> usize {
-        self.cycles.lock().unwrap().len()
+        self.cycles.lock().len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -759,7 +1176,34 @@ pub fn global() -> Arc<PersonaWorkspaceRegistry> {
 #[derive(serde::Serialize, serde::Deserialize)]
 struct PersistedVolatile {
     wm: super::working_memory::VolatileSnapshot,
-    own_speech: Vec<String>,
+    own_speech: OwnSpeechPersisted,
+}
+
+/// Her own-speech rings on disk. Room-keyed since 2026-08-14 — a ring restored
+/// without its room would re-create the cross-room repetition fact the keying
+/// fix exists to kill.
+///
+/// `Legacy` is the pre-room-scoping shape (a flat `Vec<String>`) and exists so
+/// an older `volatile.json` still PARSES: a torn mind-file that fails to
+/// deserialize is a silent blank wake, which is strictly worse than a dropped
+/// scratchpad. Legacy utterances carry no room, so they cannot be attributed
+/// and are discarded on load — covered by `hydrate_speech_rings`, which
+/// re-seeds from the durable transcript where every message HAS a room (#265).
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+enum OwnSpeechPersisted {
+    ByRoom(Vec<(Uuid, Vec<String>)>),
+    Legacy(Vec<String>),
+}
+
+impl OwnSpeechPersisted {
+    /// Total utterances across every room — what the restore probe reports.
+    fn len(&self) -> usize {
+        match self {
+            Self::ByRoom(by_room) => by_room.iter().map(|(_, u)| u.len()).sum(),
+            Self::Legacy(flat) => flat.len(),
+        }
+    }
 }
 
 fn volatile_path(persona_id: Uuid) -> std::path::PathBuf {
@@ -777,9 +1221,9 @@ fn volatile_path(persona_id: Uuid) -> std::path::PathBuf {
 fn save_volatile(persona_id: Uuid, wm: &super::working_memory::WorkingMemory) {
     let persisted = PersistedVolatile {
         wm: wm.snapshot(),
-        own_speech: super::deliberation_budget::recent_own_speech(
+        own_speech: OwnSpeechPersisted::ByRoom(super::deliberation_budget::own_speech_by_room(
             crate::identity::PeerId::from_uuid(persona_id),
-        ),
+        )),
     };
     let path = volatile_path(persona_id);
     let write = || -> std::io::Result<()> {
@@ -814,6 +1258,12 @@ fn load_volatile(persona_id: Uuid) -> Option<PersistedVolatile> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use std::time::Duration;
+
+    use tokio::sync::{watch, Notify};
+    use tokio::time::timeout;
+
     use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
     use crate::cognition::workspace::Decision;
     use crate::persona::engram::{ChatMessageRef, Engram, EngramKind, EngramOrigin, TrustState};
@@ -871,6 +1321,9 @@ mod tests {
             // satisfy. Deferral is a live-path concern, tested in deferred_faculty.rs.
             defer_recall: false,
             defer_grounding: false,
+            // Harness/test cycles keep recall (they assert on its bids); suppression is a
+            // benchmark-reproducibility knob set only by the eval fork.
+            suppress_recall: false,
         }
     }
 
@@ -885,6 +1338,63 @@ mod tests {
         let ws = cycle.run("teammate: what's the deploy status?").await;
         // The mind reached a participation verdict (heuristic adapter → Speak).
         assert!(matches!(ws.decision(), Some(Decision::Speak { .. })));
+    }
+
+    // what this catches: #396 — resolve_persona is the ONE formal identity boundary
+    // for eval/benchmark. It must (a) resolve a full UUID, an 8-char short-id, and a
+    // case-insensitive persona NAME to the typed id; (b) pass a well-formed full UUID
+    // through WITHOUT a liveness check (race safety — a persona still assembling isn't
+    // false-rejected; the fork wait absorbs it); (c) fail LOUD on garbage, naming the
+    // online roster — never a silent guess. The loose-String id that skipped all of
+    // this is exactly what fed a dead reference to a doomed 10s eval.
+    #[test]
+    fn resolve_persona_takes_uuid_short_id_or_name_and_fails_loud() {
+        let registry = PersonaWorkspaceRegistry::new();
+        let asha = Uuid::new_v4();
+        let atlas = Uuid::new_v4();
+        let mut asha_cfg = cfg_for(asha);
+        asha_cfg.persona_name = "Asha".to_string();
+        let mut atlas_cfg = cfg_for(atlas);
+        atlas_cfg.persona_name = "Atlas".to_string();
+        registry.register_from_cfg(asha_cfg);
+        registry.register_from_cfg(atlas_cfg);
+
+        // full UUID
+        assert_eq!(
+            registry.resolve_persona(&asha.to_string().into()).unwrap(),
+            PeerId::from_uuid(asha)
+        );
+        // 8-char short-id prefix
+        assert_eq!(
+            registry
+                .resolve_persona(&asha.to_string()[..8].into())
+                .unwrap(),
+            PeerId::from_uuid(asha)
+        );
+        // case-insensitive name
+        assert_eq!(
+            registry.resolve_persona(&"atlas".into()).unwrap(),
+            PeerId::from_uuid(atlas)
+        );
+        assert_eq!(
+            registry.resolve_persona(&"ASHA".into()).unwrap(),
+            PeerId::from_uuid(asha)
+        );
+
+        // (b) a well-formed but NON-live full UUID passes through — race safety. The
+        // caller's fork wait, not this boundary, decides liveness.
+        let ghost = Uuid::new_v4();
+        assert_eq!(
+            registry.resolve_persona(&ghost.to_string().into()).unwrap(),
+            PeerId::from_uuid(ghost)
+        );
+
+        // (c) garbage fails loud AND names the roster so the operator can fix it.
+        let err = registry.resolve_persona(&"general".into()).unwrap_err();
+        assert!(
+            err.contains("Asha") && err.contains("Atlas"),
+            "roster hint missing: {err}"
+        );
     }
 
     // what this catches: ONE cycle per persona — get_or_build is idempotent and
@@ -991,10 +1501,10 @@ mod tests {
         // of the tick (all bids incl. losers, the assembled context, the decision)
         // so we can diagnose cognition at any phase — record + recreate, not guess.
         #[derive(Default)]
-        struct CapturingSink(std::sync::Mutex<Vec<WorkspaceTrace>>);
+        struct CapturingSink(Mutex<Vec<WorkspaceTrace>>);
         impl WorkspaceCaptureSink for CapturingSink {
             fn record(&self, t: &WorkspaceTrace) {
-                self.0.lock().unwrap().push(t.clone());
+                self.0.lock().push(t.clone());
             }
         }
         let sink = Arc::new(CapturingSink::default());
@@ -1014,7 +1524,7 @@ mod tests {
         let ws = cycle.run(burst).await;
 
         // ---- Glass box: diagnose cognition at EVERY phase ----
-        let trace = sink.0.lock().unwrap().pop().expect("a tick was recorded");
+        let trace = sink.0.lock().pop().expect("a tick was recorded");
         eprintln!("\n================ COGNITION TRACE ================");
         eprintln!("WORLD-STATE (the burst):\n{}\n", trace.world_state);
         eprintln!("PHASE 1 — perception bids (the full competition, incl. losers):");
@@ -1074,6 +1584,16 @@ mod tests {
     impl RagSource for ClassifyStub {
         fn source_id(&self) -> &'static str {
             "classify-stub"
+        }
+
+        fn expand_command(&self) -> Option<&'static str> {
+            // Test/stub source — nothing further to fetch.
+            None
+        }
+
+        /// Test/stub source — floorless, so it never encodes a production floor.
+        fn floor_tokens(&self) -> u32 {
+            0
         }
         async fn deliver(
             &self,
@@ -1156,6 +1676,16 @@ mod tests {
             fn source_id(&self) -> &'static str {
                 "workspace-map"
             }
+
+            fn expand_command(&self) -> Option<&'static str> {
+                // Test/stub source — nothing further to fetch.
+                None
+            }
+
+            /// Test/stub source — floorless, so it never encodes a production floor.
+            fn floor_tokens(&self) -> u32 {
+                0
+            }
             async fn deliver(
                 &self,
                 _ctx: &crate::persona::rag_budget::RagContext,
@@ -1186,13 +1716,16 @@ mod tests {
         let mut cfg = cfg_for(persona);
         cfg.grounding_sources = vec![
             GroundingSource::framing(Arc::new(HandsMap)).requires_hands(),
-            GroundingSource::framing(Arc::new(SlowGrounding { delay_ms: 0 })),
+            // A second, hands-agnostic source so the assertion below is about the
+            // hands-describing one being stripped, not about grounding being empty.
+            // Its gate starts open, so it delivers straight through here.
+            GroundingSource::framing(Arc::new(GatedGrounding::new())),
         ];
         registry.register_from_cfg(cfg);
 
         // Spoken exam (no hands): the workspace-map must not reach her mind.
         let spoken = registry
-            .fork_eval_cycle(&persona, false)
+            .fork_eval_cycle(&persona, false, None, false)
             .expect("template retained");
         let ws = spoken.run("proctor: reverse a string in Rust").await;
         assert!(
@@ -1209,7 +1742,7 @@ mod tests {
 
         // Handed exam: the map is real guidance and must be delivered.
         let handed = registry
-            .fork_eval_cycle(&persona, true)
+            .fork_eval_cycle(&persona, true, None, false)
             .expect("template retained");
         let ws = handed.run("proctor: reverse a string in Rust").await;
         assert!(
@@ -1219,17 +1752,103 @@ mod tests {
         );
     }
 
-    /// A grounding RagSource whose deliver is deliberately slow — models the real
-    /// I/O cost (roster query / workspace-map scan) the slice moves off the hot
-    /// path. Exercised through the LIVE grounding path (GroundingSource →
-    /// RagSourceFaculty → DeferredFaculty), not a hand-built faculty.
-    struct SlowGrounding {
-        delay_ms: u64,
+    // what this catches (#207): the reproducible-absolute benchmark knob. A default fork keeps
+    // the recall faculty (memories intact — the natural persona), so its ABSOLUTE score can
+    // drift as her durable engram store grows between runs; a `suppress_recall` fork OMITS
+    // recall entirely (system + task + grounding only), pinning the absolute baseline. The two
+    // forks must differ by exactly the recall faculty — the whole point of the knob.
+    #[tokio::test]
+    async fn suppress_recall_omits_the_recall_faculty_from_the_eval_fork() {
+        use crate::cognition::workspace::FacultyId;
+        let registry = PersonaWorkspaceRegistry::new();
+        let persona = Uuid::new_v4();
+        registry.register_from_cfg(cfg_for(persona));
+
+        let with_recall = registry
+            .fork_eval_cycle(&persona, false, None, false)
+            .expect("template retained");
+        assert!(
+            with_recall.faculty_ids().contains(&FacultyId::Recall),
+            "default fork must keep recall (memories intact): {:?}",
+            with_recall.faculty_ids()
+        );
+
+        let suppressed = registry
+            .fork_eval_cycle(&persona, false, None, true)
+            .expect("template retained");
+        assert!(
+            !suppressed.faculty_ids().contains(&FacultyId::Recall),
+            "suppress_recall fork must OMIT recall for a reproducible absolute baseline: {:?}",
+            suppressed.faculty_ids()
+        );
     }
+
+    /// A grounding RagSource whose `deliver()` the TEST holds the door on: it
+    /// cannot return until the gate is opened. Models the real I/O cost (roster
+    /// query / workspace-map scan) the slice moves off the hot path — but as a
+    /// *control-flow* hold rather than a `sleep`, so "is this deliver on the
+    /// critical path?" is answered by whether the tick completes, never by a
+    /// wall-clock threshold a loaded CI runner can forge. Exercised through the
+    /// LIVE grounding path (GroundingSource → RagSourceFaculty → DeferredFaculty),
+    /// not a hand-built faculty.
+    struct GatedGrounding {
+        /// `false` = held shut. Every `deliver()` parks here until it flips true.
+        gate: watch::Sender<bool>,
+        /// Bumped on ENTRY to `deliver()`, before parking — so the test can wait
+        /// for "the tick reached the source" without polling a clock.
+        entries: AtomicUsize,
+        /// Fires on each entry, so that wait is event-driven (system law: no
+        /// condition-polling).
+        entered: Notify,
+    }
+
+    impl GatedGrounding {
+        /// Starts OPEN — the cold tick must be able to complete.
+        fn new() -> Self {
+            let (gate, _rx) = watch::channel(true);
+            Self {
+                gate,
+                entries: AtomicUsize::new(0),
+                entered: Notify::new(),
+            }
+        }
+        /// `send_replace`, not `send`: with no receiver parked at this instant
+        /// `send` fails and silently leaves the value UNCHANGED, which quietly
+        /// turns the whole gate into a no-op. Same reason `DashboardCaptureSink`
+        /// publishes with `send_replace`.
+        fn open_gate(&self) {
+            self.gate.send_replace(true);
+        }
+        fn shut_gate(&self) {
+            self.gate.send_replace(false);
+        }
+        fn deliver_entries(&self) -> usize {
+            self.entries.load(AtomicOrdering::SeqCst)
+        }
+        /// Resolves once `deliver()` has been ENTERED beyond `baseline`. Loops on
+        /// the counter because a stale `notify_one` permit from an earlier entry
+        /// may wake us spuriously.
+        async fn entered_beyond(&self, baseline: usize) {
+            while self.deliver_entries() == baseline {
+                self.entered.notified().await;
+            }
+        }
+    }
+
     #[async_trait::async_trait]
-    impl RagSource for SlowGrounding {
+    impl RagSource for GatedGrounding {
         fn source_id(&self) -> &'static str {
-            "slow-grounding"
+            "gated-grounding"
+        }
+
+        fn expand_command(&self) -> Option<&'static str> {
+            // Test/stub source — nothing further to fetch.
+            None
+        }
+
+        /// Test/stub source — floorless, so it never encodes a production floor.
+        fn floor_tokens(&self) -> u32 {
+            0
         }
         async fn deliver(
             &self,
@@ -1237,9 +1856,13 @@ mod tests {
             _budget: u32,
             resolution: crate::persona::rag_budget::ResolutionPreference,
         ) -> crate::persona::rag_budget::RagDelivery {
-            tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+            self.entries.fetch_add(1, AtomicOrdering::SeqCst);
+            self.entered.notify_one();
+            // Park until the test opens the gate. `wait_for` returns immediately
+            // when it is already open, so an open gate costs nothing.
+            let _ = self.gate.subscribe().wait_for(|open| *open).await;
             crate::persona::rag_budget::RagDelivery {
-                source_id: "slow-grounding".to_string(),
+                source_id: "gated-grounding".to_string(),
                 items: vec![crate::persona::rag_budget::RagItem {
                     content: "roster: Ivar [persona], win-claude [claude]".to_string(),
                     tokens: 12,
@@ -1260,79 +1883,212 @@ mod tests {
         }
     }
 
-    // what this catches: the SPEED the grounding-deferral slice buys, measured on
-    // the live critical path. Model LOCKED (same HeuristicInferenceAdapter both
-    // forks), ONE variable changed (defer_grounding) — the glass-box controlled
-    // experiment. A slow grounding source (60ms deliver, modeling roster/
-    // workspace-map I/O) sits ON the perception barrier when synchronous; when
-    // deferred it runs in the bg and the WARM tick serves reprojected last-good,
-    // so it LEAVES the barrier. critical_path_us = max(perception)+max(delib);
-    // the model (delib) is identical across forks, so the delta isolates exactly
-    // the grounding cost removed from the loop. If a regression puts the deferred
-    // source back on the barrier, the delta collapses and this fails.
+    // what this catches: that deferring grounding takes the slow source OFF the
+    // perception barrier — the structural claim, proven by control flow instead of
+    // by a stopwatch. Model LOCKED (same HeuristicInferenceAdapter both forks), ONE
+    // variable changed (defer_grounding). With the source's deliver held SHUT:
+    //   * the DEFERRED fork's warm tick still completes — it can only do that by
+    //     serving reprojected last-good, i.e. never awaiting deliver; and
+    //   * the SYNCHRONOUS fork's warm tick runs INTO deliver and parks there —
+    //     the control that proves the hold is real and the completion above means
+    //     something.
+    // A future parked on a shut gate cannot complete no matter how loaded the
+    // machine is, so neither assertion has a timing tolerance to blow. The COST
+    // this buys (that removing it from the barrier removes exactly its deliver
+    // from the turn's wait) is the arithmetic half, table-tested clock-free in
+    // `workspace_dashboard::tests`.
+    //
+    // This replaces a version that asserted `deferred_critical_path < 30ms` on the
+    // live cycle. It measured wall clock through `cargo test`'s parallelism, so on
+    // a loaded CI runner (a 60s CPU-hog test running alongside it) the deferred
+    // fork clocked 99,798µs against the synchronous fork's 62,427µs — the fork
+    // that pays NO grounding cost measuring higher than the one that pays 60ms.
+    // The number was scheduler stall, not grounding; the invariant was never
+    // temporal. Never re-express it as a duration.
     #[tokio::test]
-    async fn deferring_grounding_removes_its_deliver_cost_from_the_critical_path() {
-        use crate::cognition::workspace_dashboard::DashboardCaptureSink;
-        const DELAY_MS: u64 = 60;
+    async fn deferring_grounding_takes_the_slow_source_off_the_perception_barrier() {
+        // A LIVENESS bound, never a performance threshold: every assertion here is
+        // about control flow, so this only fires if a tick genuinely hangs.
+        const LIVENESS: Duration = Duration::from_secs(30);
+        const WARM_BURST: &str = "teammate: and the rollback plan?";
 
-        // Build a cycle with ONE slow grounding source, run a cold tick + a warm
-        // tick in the same room, and return the WARM tick's critical path.
-        async fn warm_critical_path(defer_grounding: bool) -> u128 {
+        // Build a cycle with ONE gated grounding source and run the COLD tick with
+        // the gate OPEN, so the deferred lane publishes its last-good finding and
+        // both forks reach the steady state a live persona actually runs at.
+        async fn warmed(defer_grounding: bool) -> (WorkspaceCycle, Arc<GatedGrounding>, Uuid) {
             let persona = Uuid::new_v4();
             let room = Uuid::new_v4();
-            let slow: Arc<dyn RagSource> = Arc::new(SlowGrounding { delay_ms: DELAY_MS });
+            let gate = Arc::new(GatedGrounding::new());
+            let source: Arc<dyn RagSource> = Arc::clone(&gate) as Arc<dyn RagSource>;
             let mut cfg = cfg_for(persona);
-            cfg.grounding_sources = vec![GroundingSource::framing(slow).defer_tolerant()];
+            cfg.grounding_sources = vec![GroundingSource::framing(source).defer_tolerant()];
             cfg.defer_grounding = defer_grounding;
 
-            let sink = Arc::new(DashboardCaptureSink::new(persona));
-            let rx = sink.subscribe();
-            let cycle = build_workspace_cycle(cfg).with_capture(sink.clone());
-
-            // Tick 1: cold-start for the deferred fork (kicks the bg worker, serves
-            // None); the sync fork pays the full deliver here too.
-            let _ = cycle
-                .run_in_room("teammate: where are we on the deploy?", room)
-                .await;
-            // Let the bg worker land its finding so the warm tick serves last-good.
-            tokio::time::sleep(std::time::Duration::from_millis(DELAY_MS * 2)).await;
-            // Tick 2 (warm): the steady-state the live persona actually runs at.
-            let _ = cycle
-                .run_in_room("teammate: and the rollback plan?", room)
-                .await;
-            // record() ran synchronously inside run_in_room → the watch holds tick 2.
-            let cp = rx.borrow().critical_path_us;
-            cp
+            let cycle = build_workspace_cycle(cfg);
+            timeout(
+                LIVENESS,
+                cycle.run_in_room("teammate: where are we on the deploy?", room),
+            )
+            .await
+            .expect("cold tick completes with the grounding gate open");
+            (cycle, gate, room)
         }
 
-        let sync_cp = warm_critical_path(false).await;
-        let deferred_cp = warm_critical_path(true).await;
+        // DEFERRED fork: with deliver held shut, the warm tick must STILL complete.
+        let (cycle, gate, room) = warmed(true).await;
+        gate.shut_gate();
+        timeout(LIVENESS, cycle.run_in_room(WARM_BURST, room))
+            .await
+            .expect(
+                "deferred fork's warm tick never completed with the grounding deliver held \
+                 shut — the deferred source is back ON the perception barrier",
+            );
+        // Release the background worker (parked on the gate) before teardown.
+        gate.open_gate();
+        drop(cycle);
 
-        eprintln!("\n=== grounding-deferral speed delta (model locked) ===");
-        eprintln!("defer_grounding=false  critical_path = {sync_cp} µs");
-        eprintln!("defer_grounding=true   critical_path = {deferred_cp} µs");
-        eprintln!(
-            "removed from the loop  = {} µs (~{} ms)",
-            sync_cp.saturating_sub(deferred_cp),
-            sync_cp.saturating_sub(deferred_cp) / 1000
-        );
-        eprintln!("====================================================\n");
+        // SYNCHRONOUS fork — the control. Same gate, same hold: this tick must run
+        // INTO deliver rather than complete, which is what makes the deferred
+        // fork's completion above evidence of anything.
+        let (cycle, gate, room) = warmed(false).await;
+        gate.shut_gate();
+        let before = gate.deliver_entries();
+        let mut tick = std::pin::pin!(cycle.run_in_room(WARM_BURST, room));
+        tokio::select! {
+            _ = tick.as_mut() => panic!(
+                "synchronous fork's warm tick completed while the grounding deliver was held \
+                 shut — the source is not on the perception barrier at all, so this test can \
+                 no longer tell deferral apart from nothing happening"
+            ),
+            reached = timeout(LIVENESS, gate.entered_beyond(before)) => {
+                reached.expect(
+                    "synchronous fork's warm tick never reached the grounding deliver — the \
+                     source is not being delivered on the barrier"
+                );
+            }
+        }
+        // …and it finishes the moment the door opens, proving the hold — not a
+        // deadlock elsewhere — is what kept it parked.
+        gate.open_gate();
+        timeout(LIVENESS, tick)
+            .await
+            .expect("synchronous fork's warm tick finishes once the gate opens");
+    }
 
-        let delay_us = (DELAY_MS as u128) * 1000;
-        assert!(
-            sync_cp >= delay_us - 10_000,
-            "sync fork must pay ~the deliver cost on the barrier: {sync_cp}µs < {}µs",
-            delay_us - 10_000
-        );
-        assert!(
-            deferred_cp < delay_us / 2,
-            "deferred fork's warm tick must NOT pay the deliver cost: {deferred_cp}µs"
-        );
-        assert!(
-            sync_cp.saturating_sub(deferred_cp) >= 40_000,
-            "deferral must remove ~the grounding deliver from the critical path; \
-             delta was only {}µs",
-            sync_cp.saturating_sub(deferred_cp)
-        );
+    mod hands_isolation {
+        use super::*;
+        use crate::cognition::tool_executor::CommandToolExecutor;
+        use crate::modules::code::{CodeModule, CodeState};
+        use crate::routing::CallerIdentity;
+        use crate::runtime::{CommandExecutor, InProcessTransport, ModuleRegistry};
+        use continuum_client::Connection;
+        use dashmap::DashMap;
+
+        /// One core with the REAL `CodeModule` — the single process-global engine map
+        /// every caller's workspace lives in, which is exactly why the leak is possible.
+        fn hands_for(persona: Uuid) -> ActingHands {
+            let registry = Arc::new(ModuleRegistry::new());
+            registry.register(Arc::new(CodeModule::new(Arc::new(CodeState::new(
+                Arc::new(DashMap::new()),
+                Arc::new(DashMap::new()),
+                tokio::runtime::Handle::current(),
+            )))));
+            let executor = Arc::new(CommandExecutor::new(registry));
+            let transport = InProcessTransport::new(
+                executor,
+                Some(CallerIdentity::local_persona(
+                    crate::identity::PeerId::from_uuid(persona),
+                )),
+            );
+            ActingHands {
+                persona_id: persona,
+                persona_name: "Anwen".to_string(),
+                executor: Arc::new(CommandToolExecutor::new(Connection::new(transport))),
+            }
+        }
+
+        /// What her hands can SEE right now — the honest probe, because "where is the
+        /// engine rooted" is only interesting insofar as it changes what she can read.
+        async fn listing(hands: &ActingHands) -> String {
+            let ctx = crate::cognition::tool_executor::ToolExecutionContext {
+                persona_id: hands.persona_id,
+                persona_name: hands.persona_name.clone(),
+                session_id: Uuid::new_v4(),
+                context_id: Uuid::new_v4(),
+                caller_context: serde_json::Value::Null,
+                persona_config: crate::cognition::tool_executor::PersonaMediaConfigLite {
+                    auto_load_media: false,
+                    supported_media_types: vec![],
+                },
+            };
+            let call = crate::ai::types::ToolCall {
+                id: "ls".to_string(),
+                name: "code/list".to_string(),
+                input: serde_json::json!({ "path": "." }),
+            };
+            let out = hands
+                .executor
+                .execute_native_batch(std::slice::from_ref(&call), &ctx, 8000)
+                .await
+                .expect("code/list runs");
+            out.results[0].content.clone()
+        }
+
+        // what this catches: #312 — the measurement leaving the LIVING persona standing in
+        // the exam repo. `code/create-workspace` keys the file engine on the CALLER, the
+        // engines live in ONE process-global map, and a measurement fork shares the living
+        // persona's executor AND her id — so rooting "the fork" re-roots HER, permanently.
+        // Measured 2026-08-04: after a SWE-bench solve on a flask clone, Anwen's live self
+        // ran `code/list(path=src)` → `flask/` and `code/read(src/flask/app.py)` in her own
+        // room turns, hours later. The MIND had a guard (EvalIsolation) from #59; the HANDS
+        // had none. If the restore regresses, the exam file is still visible here.
+        #[tokio::test]
+        async fn a_measurement_returns_her_hands_to_her_own_workspace() {
+            let exam = tempfile::TempDir::new().expect("exam dir");
+            let home = tempfile::TempDir::new().expect("home dir");
+            std::fs::write(exam.path().join("EXAM_ONLY_blueprints.py"), "# flask\n").unwrap();
+            std::fs::write(home.path().join("HER_OWN_notes.md"), "# mine\n").unwrap();
+
+            let hands = hands_for(Uuid::new_v4());
+
+            // Root at the sandbox, as agent/solve does before a drive.
+            drive_create_workspace(&hands, &exam.path().to_string_lossy(), &[], "root", false)
+                .await
+                .expect("roots at the exam sandbox");
+            let during = listing(&hands).await;
+            assert!(
+                during.contains("EXAM_ONLY_blueprints.py"),
+                "the measurement must actually move her hands, or it scores a false zero: {during}"
+            );
+
+            // Measurement over.
+            restore_acting_workspace_at(&hands, &home.path().to_string_lossy())
+                .await
+                .expect("restores to her own workspace");
+
+            let after = listing(&hands).await;
+            assert!(
+                !after.contains("EXAM_ONLY_blueprints.py"),
+                "SHE IS STILL IN THE EXAM ROOM (#312) — her live hands can still see the \
+                 measurement sandbox after the run: {after}"
+            );
+            assert!(
+                after.contains("HER_OWN_notes.md"),
+                "restore must land her in her OWN workspace, not merely unroot her: {after}"
+            );
+        }
+
+        // what this catches: a pure-cognition persona has no hands, so there is nothing to
+        // root and nothing to restore. `of` must say so rather than have the caller invent
+        // a handle — the fail-loud in `root_acting_workspace` depends on this being None.
+        #[test]
+        fn a_handless_cycle_yields_no_hands() {
+            let cycle = crate::cognition::workspace::WorkspaceCycle::new(
+                vec![],
+                Arc::new(crate::cognition::workspace::SalienceArbiter),
+                4,
+            );
+            assert!(ActingHands::of(&cycle).is_none());
+        }
     }
 }

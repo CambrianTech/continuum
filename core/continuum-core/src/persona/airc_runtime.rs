@@ -53,8 +53,30 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use airc_core::{EventId, RoomId};
-use airc_lib::{Airc, AircError, HeartbeatTask, DEFAULT_HEARTBEAT_INTERVAL};
+use airc_core::{EventId, PeerId, RoomId};
+use airc_lib::{Airc, AircError, DEFAULT_HEARTBEAT_INTERVAL};
+
+/// The room a FRESH citizen scope lands in (room-consolidation master
+/// card daa01102, Joel: academy is THE default room — training,
+/// benchmarks, and the commons all root there; `#general` was airc's
+/// generic lobby, and citizens landing in it is the "disorganized
+/// non-academy room stuff" the consolidation kills). Passed to
+/// `Airc::current_room_landing_in` at bootstrap; an ESTABLISHED
+/// persona's durable membership always wins, so changing this never
+/// migrates a living citizen.
+pub const CITIZEN_COMMONS_ROOM: &str = "academy";
+
+/// Abort-on-drop guard for the continuum-owned heartbeat pump (#260): keeps
+/// the airc `HeartbeatTask` teardown contract — dropping the runtime aborts
+/// the pump so a torn-down persona ages out of the roster within the
+/// presence window (honest "no longer here"), never beats past her death.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -97,10 +119,14 @@ pub enum PersonaAircRuntimeError {
         #[source]
         source: AircError,
     },
-    #[error("failed to join room {room_id} as persona {agent_name:?}: {source}")]
-    Join {
+    #[error(
+        "failed to resolve persona {agent_name:?}'s home room from her durable \
+         subscription state: {source} — a persona's rooms come from HER OWN airc \
+         home (fresh scopes land in the citizen commons, #academy — daa01102), \
+         never from the operator's current room (#298)"
+    )]
+    HomeRoom {
         agent_name: String,
-        room_id: Uuid,
         #[source]
         source: AircError,
     },
@@ -150,6 +176,14 @@ pub struct PersonaAircRuntime {
     home: PathBuf,
     airc: Arc<Airc>,
     default_room: RoomId,
+    /// Bumped by [`Self::join_room`] whenever this citizen's room membership
+    /// GROWS at runtime. The perception stream's rebuild cue (P0 20b44763):
+    /// airc-lib's `subscribe_subscribed_filtered` snapshots the subscribed
+    /// channel list ONCE at subscribe time, so a room joined after `prime()`
+    /// (benchmark dispatch moving assignees into a fresh run room) never
+    /// enters an existing stream — the run room is born deaf. Watchers of
+    /// [`AircCitizen::membership_epoch`] re-open their stream when this moves.
+    membership_epoch: tokio::sync::watch::Sender<u64>,
     inbound_handle: Option<JoinHandle<()>>,
     /// Per-persona command inbound pump (task #222). When `Some`,
     /// this persona's airc handle is wired to receive cross-grid
@@ -171,7 +205,16 @@ pub struct PersonaAircRuntime {
     /// here" signal. `None` only on `from_attached` paths (tests/demo) that opt
     /// out of presence. Without it, co-resident personas never see each other in
     /// `[Present in this room]` — the roster-grounding-goes-dark bug.
-    heartbeat: Option<HeartbeatTask>,
+    heartbeat: Option<AbortOnDrop>,
+    /// Periodic re-publisher of this persona's airc identity CARD (name + role +
+    /// bio + avatar), on the heartbeat cadence — BigMama's half of #262, adopted
+    /// (cherry-pick 1225f2eee): the card is a one-shot emit at attach; a peer that
+    /// joins the room LATER (a desktop reconnecting, a fresh grid peer) missed it
+    /// and would render `peer-<uuid>` + default glyph forever. This task re-emits
+    /// the card every cadence so any late arrival is grounded by name within a
+    /// heartbeat window. `None` on `from_attached` (tests/demo). Held for the
+    /// persona's lifetime; aborted on drop, like the heartbeat pump.
+    identity_republish: Option<JoinHandle<()>>,
     /// Where this citizen's identity came from — resumed from disk
     /// vs freshly minted. Carried for the lifetime of the runtime so
     /// telemetry surfaces (list/get IPC, future status panels) can
@@ -179,6 +222,49 @@ pub struct PersonaAircRuntime {
     /// [[substrate-is-a-good-citizen-on-the-host]]: observability
     /// honest.
     source: crate::persona::identity_provider::PersonaIdentitySource,
+}
+
+/// Build the airc identity CARD a hosted persona publishes to its rooms, from her
+/// durable [`PersonaCard`](crate::persona::card::PersonaCard) (the seed's identity).
+///
+/// continuum-core publishes this ON THE PERSONA'S BEHALF — a hosted persona can't
+/// run `airc identity set` herself — so every peer's `RoomRosterSource`
+/// (continuum#1650, the M5 desktop roster fold) renders her by NAME + role + bio +
+/// avatar instead of a bare `peer-<uuid>` + default glyph.
+///
+/// `kind=persona` is NOT an airc `Identity` field (the struct has none); it rides
+/// the `Alive` heartbeat's `runtime="persona"` tag. We ALSO mirror it into
+/// `integrations["continuum_kind"]` for a consumer that reads the card directly,
+/// alongside the persona id and the avatar ref (the avatar rides `integrations`
+/// exactly as the desktop expects).
+fn persona_identity_card(
+    card: &crate::persona::card::PersonaCard,
+) -> airc_core::identity::Identity {
+    let mut integrations = std::collections::BTreeMap::new();
+    integrations.insert(
+        "continuum_persona_id".to_string(),
+        card.persona_id.to_string(),
+    );
+    integrations.insert("continuum_kind".to_string(), "persona".to_string());
+    if let Some(vrm) = card.avatar_vrm.as_deref() {
+        integrations.insert("avatar_vrm".to_string(), vrm.to_string());
+    }
+    airc_core::identity::Identity {
+        name: card.agent_name.clone(),
+        pronouns: card.pronouns().short(),
+        // `RoleId` serializes snake_case ("helper"); empty when the seed predates
+        // role threading — the persona is still named, just role-less on the wire.
+        role: card
+            .role
+            .map(|r| r.as_str().to_string())
+            .unwrap_or_default(),
+        // The self-authored bio lives in the OPEN profile map; empty when unset.
+        bio: card.profile.get("bio").cloned().unwrap_or_default(),
+        integrations,
+        // `status` (away) and `fingerprint` (pubkey-derived, computed by airc
+        // tooling) are not authored here — Default leaves them empty.
+        ..Default::default()
+    }
 }
 
 impl PersonaAircRuntime {
@@ -193,9 +279,13 @@ impl PersonaAircRuntime {
     ///    (generate or load Ed25519 keypair, write `identity.key`,
     ///    record the local_identity row) and attaches a daemon
     ///    client for live publish + subscribe. No shelling out.
-    /// 3. Resolve the room by its UUID via `default_room.as_uuid()`
-    ///    and call `Airc::join(...)`. This makes the persona appear
-    ///    on `airc peers` as an enrolled participant of the room.
+    /// 3. Resolve her HOME room via
+    ///    `Airc::current_room_landing_in(CITIZEN_COMMONS_ROOM)` — her
+    ///    OWN durable subscription default; a fresh scope lands in the
+    ///    citizen commons `#academy` (daa01102) instead of airc's
+    ///    generic `#general` lobby. This makes the persona appear on
+    ///    `airc peers` as an enrolled participant of HER room — never
+    ///    the operator's (#298).
     /// 4. Install the per-persona command inbound pump
     ///    ([`PersonaCommandInboundPump`](crate::persona::command_inbound_pump))
     ///    so this persona's airc handle starts receiving cross-grid
@@ -219,8 +309,6 @@ impl PersonaAircRuntime {
         agent_name: impl Into<String>,
         continuum_root: &Path,
         daemon_socket: PathBuf,
-        default_room: RoomId,
-        default_room_name: Option<String>,
         source: crate::persona::identity_provider::PersonaIdentitySource,
         executor: Arc<crate::runtime::command_executor::CommandExecutor>,
     ) -> Result<Self, PersonaAircRuntimeError> {
@@ -259,47 +347,52 @@ impl PersonaAircRuntime {
             .await
             .map_err(|e| PersonaAircRuntimeError::HomeCreate(home.clone(), e))?;
 
-        let airc = Airc::attach_as(home.clone(), agent_name.clone(), daemon_socket)
-            .await
-            .map_err(|source| PersonaAircRuntimeError::Attach {
-                agent_name: agent_name.clone(),
-                home: home.clone(),
-                source,
-            })?;
+        // ── #199 Slice 1b: supply persona_id AS the airc peer_id ─────────
+        //
+        // Continuum derives the persona's `agent_name` (and thus her home
+        // dir) from `persona_id` BEFORE attach. By handing `persona_id` to
+        // airc's identity mint (`attach_as_with_peer_id`), airc adopts it as
+        // the peer_id on a FRESH mint, so `airc.peer_id() == persona_id ==
+        // the seed her name was derived from` — coherent identity from birth
+        // ([[airc-peer-id-is-random-stored-not-keypair-derived]]). A RESUMED
+        // persona (key + row already on disk) loads her STORED peer_id and
+        // the supplied id is ignored — never a rotation — so the living
+        // personas keep their identity across this change.
+        let airc = Airc::attach_as_with_peer_id(
+            home.clone(),
+            agent_name.clone(),
+            daemon_socket,
+            PeerId::from_uuid(persona_id),
+        )
+        .await
+        .map_err(|source| PersonaAircRuntimeError::Attach {
+            agent_name: agent_name.clone(),
+            home: home.clone(),
+            source,
+        })?;
 
-        // ── Slice 1B of #142: collapse persona_id := peer_id ─────────────
+        // ── The persona_id == peer_id invariant (guardrail) ──────────────
         //
-        // Per [[persona-identity-derives-from-source-id]] +
-        // [[airc-is-the-session-not-a-feature]]: the substrate has ONE
-        // unique identifier per actor — the airc peer_id (Ed25519
-        // keypair Uuid). The continuum-side `persona_id` originally
-        // minted via `Uuid::new_v4()` pre-bootstrap is the historical
-        // artifact; airc-lib is the source of cryptographic truth.
-        //
-        // Post-bootstrap, the runtime stores `persona_id` as the
-        // peer_id. Callers using `runtime.persona_id()` as a registry
-        // key are then safe to also reach for `ctx.identity().id`
-        // (= peer_id) from the Context trait without divergence.
-        //
-        // The input `persona_id` parameter is retained for API
-        // continuity (callers shouldn't break) but its value is
-        // logged-then-discarded. Divergence is at `debug!` level —
-        // for fresh mints the divergence is the NORMAL case
-        // (`ResumeOrMintProvider::mint_fresh_intent` allocates
-        // `Uuid::new_v4()` before the keypair is generated, so the
-        // two Uuids are statistically guaranteed to differ for every
-        // fresh persona). Logging it at `warn!` would spam operators
-        // at every boot. A future API cleanup drops the parameter
-        // entirely and removes this branch.
+        // The substrate keys everything downstream of bootstrap (the command
+        // inbound pump, roster presence, registry) by `runtime.persona_id()`,
+        // which MUST equal the airc peer_id the pump's envelopes address. Post
+        // Slice 1b a FRESH mint satisfies this by construction (we supplied
+        // persona_id as the peer_id, so the reseat below is a proven no-op),
+        // and a RESUMED persona already stored `persona_id == peer_id` at her
+        // first mint, so it is a no-op there too. The reseat remains as the
+        // guardrail: if a home's stored identity ever diverges from the
+        // supplied id (manual tampering, a pre-Slice-1b legacy divergence),
+        // the runtime keys by the ACTUAL cryptographic identity, never a
+        // stale input. It fires at `debug!` — silent in the coherent case.
         let peer_id_uuid = airc.peer_id().as_uuid();
         if persona_id != peer_id_uuid {
             tracing::debug!(
                 input_persona_id = %persona_id,
                 peer_id = %peer_id_uuid,
                 agent_name = %agent_name,
-                "PersonaAircRuntime::bootstrap: persona_id parameter ignored — \
-                 runtime collapses persona_id := peer_id per Slice 1B of #142. \
-                 Expected for fresh mints; a future API cleanup drops the parameter."
+                "PersonaAircRuntime::bootstrap: supplied persona_id diverges from the \
+                 stored peer_id (a resumed home minted before Slice 1b) — keying by the \
+                 cryptographic peer_id per the persona_id == peer_id invariant."
             );
         }
         let persona_id = peer_id_uuid;
@@ -313,42 +406,34 @@ impl PersonaAircRuntime {
             "PersonaAircRuntime bootstrap: identity ready (persona_id == peer_id post-collapse)"
         );
 
-        // Join the default room. From the daemon's perspective the
-        // persona is now an enrolled participant — `airc peers`
-        // from another scope MUST list this peer_id.
+        // Resolve the persona's HOME room from her OWN durable
+        // subscription state — never from the operator's focus.
         //
-        // CRITICAL: `Airc::join(name)` calls `ChannelName::new(name)`
-        // which DERIVES a channel UUID from the name. If we pass the
-        // UUID-as-string of the operator's channel, that string gets
-        // interpreted as a name and produces a DIFFERENT channel.
-        // The persona then sits in the derived channel while the
-        // operator publishes into the canonical one — they never
-        // see each other. Joining by NAME (e.g. "continuum") lands
-        // both in the same channel. PR #1511 integration test caught
-        // this; demo binary in slice 11 reshaped via `from_attached`
-        // explicitly to work around the same hazard.
-        let join_target = match default_room_name.as_deref() {
-            Some(name) => name.to_string(),
-            None => {
-                tracing::warn!(
-                    persona_id = %persona_id,
-                    agent_name = %agent_name,
-                    room_id = %default_room.as_uuid(),
-                    "PersonaAircRuntime bootstrap: no default_room_name supplied — \
-                     falling back to joining by UUID-as-string, which derives a NEW \
-                     channel. Persona will likely land in the wrong room. Resolve: \
-                     ensure AircModule discovers default_room_name (via `airc room` \
-                     output's `room: <name>` line) and threads it through here.",
-                );
-                default_room.as_uuid().to_string()
-            }
-        };
+        // Task #298 (Joel: "we can't launch with these hacked rooms"):
+        // bootstrap used to join the room the OPERATOR's daemon happened
+        // to have current (`airc room` discovery), so every persona born
+        // on a machine was dumped into whatever coordination room the
+        // human/agent CLI last focused — live-found with the whole
+        // resident population squatting in a FINISHED ACTIVITY room,
+        // because the operator scope happened to be parked there. (A room
+        // is an activity with a done-condition, not a standing channel;
+        // parking citizens in one whose activity ended is how a fleet
+        // ends up with nothing to do and no way to say why.)
+        // A persona is her own airc peer with her own home dir;
+        // `current_room_landing_in` loads HER durable subscription set
+        // (the same state `Airc::join` writes), returns her established
+        // default, and on a FRESH scope lands her in the citizen
+        // commons `#academy` (CITIZEN_COMMONS_ROOM, card daa01102 —
+        // airc's own `current_room` lobby stays `#general`; continuum's
+        // citizens root in the academy tree): subscribe, set default,
+        // publish presence + identity card. Resumed personas keep their
+        // real membership; only new minds land in the commons. The
+        // operator's current-room pointer no longer exists on this path.
         let room = airc
-            .join(&join_target)
+            .current_room_landing_in(CITIZEN_COMMONS_ROOM)
             .await
-            .map_err(|source| PersonaAircRuntimeError::Join {
+            .map_err(|source| PersonaAircRuntimeError::HomeRoom {
                 agent_name: agent_name.clone(),
-                room_id: default_room.as_uuid(),
                 source,
             })?;
 
@@ -374,18 +459,17 @@ impl PersonaAircRuntime {
                     agent_name: agent_name.clone(),
                     source,
                 })?;
-        let command_pump =
-            crate::persona::command_inbound_pump::PersonaCommandInboundPump::spawn(
-                persona_id,
-                Arc::clone(&airc_arc),
-                executor,
-                grant_authorizer,
-            )
-            .await
-            .map_err(|source| PersonaAircRuntimeError::CommandPumpInstall {
-                agent_name: agent_name.clone(),
-                source,
-            })?;
+        let command_pump = crate::persona::command_inbound_pump::PersonaCommandInboundPump::spawn(
+            persona_id,
+            Arc::clone(&airc_arc),
+            executor,
+            grant_authorizer,
+        )
+        .await
+        .map_err(|source| PersonaAircRuntimeError::CommandPumpInstall {
+            agent_name: agent_name.clone(),
+            source,
+        })?;
 
         info!(
             persona_id = %persona_id,
@@ -407,19 +491,57 @@ impl PersonaAircRuntime {
         // failure above (which IS fatal): a deaf persona is useless, but an
         // anonymous-but-functional one is fine — it appears by peer-id in
         // rosters until its identity card propagates / is re-published.
-        match airc_arc.publish_identity().await {
-            Ok(()) => info!(
-                persona_id = %persona_id,
-                agent_name = %agent_name,
-                "PersonaAircRuntime bootstrap: identity card published — grounded by name"
-            ),
-            Err(source) => warn!(
-                persona_id = %persona_id,
-                agent_name = %agent_name,
-                error = %source,
-                "PersonaAircRuntime bootstrap: publish_identity failed — persona is live \
-                 but will appear by peer-id in rosters until its identity card propagates"
-            ),
+        // Publish her FULL identity card (name + pronouns + role + bio +
+        // avatar-in-integrations), not just the agent-name floor. `publish_identity`
+        // alone seeds ONLY the name; M5's desktop roster needs the whole card
+        // (display_name + kind + role + bio + avatar) to render "Kimi" with her face
+        // instead of "peer-<uuid>" + default glyph. Source it from her durable
+        // PersonaCard — the seed.json one directory up from the airc home
+        // (citizens/personas/<name>/seed.json vs …/<name>/airc/). WARN-and-continue:
+        // a card that didn't publish leaves her anonymous-but-functional, so fall
+        // back to the name-floor publish so she is at least NAMED.
+        let seed_path = home
+            .parent()
+            .map(|p| p.join("seed.json"))
+            .unwrap_or_else(|| home.join("seed.json"));
+        match crate::persona::seed::read_seed(&seed_path).await {
+            Ok(seed) => {
+                let identity = persona_identity_card(&seed.card());
+                match airc_arc.set_local_identity_card(identity).await {
+                    Ok(()) => info!(
+                        persona_id = %persona_id,
+                        agent_name = %agent_name,
+                        "PersonaAircRuntime bootstrap: full identity card published \
+                         (name + role + bio + avatar) — named for every peer's roster"
+                    ),
+                    Err(source) => warn!(
+                        persona_id = %persona_id,
+                        agent_name = %agent_name,
+                        error = %source,
+                        "PersonaAircRuntime bootstrap: set_local_identity_card failed — \
+                         persona appears by peer-id until her card propagates"
+                    ),
+                }
+            }
+            Err(source) => {
+                warn!(
+                    persona_id = %persona_id,
+                    agent_name = %agent_name,
+                    seed = %seed_path.display(),
+                    error = %source,
+                    "PersonaAircRuntime bootstrap: seed read failed — publishing the \
+                     name-floor card only (no role/bio/avatar)"
+                );
+                if let Err(source) = airc_arc.publish_identity().await {
+                    warn!(
+                        persona_id = %persona_id,
+                        agent_name = %agent_name,
+                        error = %source,
+                        "PersonaAircRuntime bootstrap: name-floor publish_identity also \
+                         failed — persona will appear by peer-id until it propagates"
+                    );
+                }
+            }
         }
 
         // Presence contract: a persona is PRESENT in another citizen's
@@ -433,30 +555,284 @@ impl PersonaAircRuntime {
         // with publish_identity: a persona that can't heartbeat is
         // live-but-roster-invisible — degraded, not dead — never a silent
         // fallback ([[fallbacks-are-illegal-fail-loud]]: the cause is named).
-        let heartbeat = match airc_arc
-            .start_agent_heartbeat("persona", None, DEFAULT_HEARTBEAT_INTERVAL)
-            .await
-        {
-            Ok(task) => {
-                info!(
-                    persona_id = %persona_id,
-                    agent_name = %agent_name,
-                    interval_s = DEFAULT_HEARTBEAT_INTERVAL.as_secs(),
-                    "PersonaAircRuntime bootstrap: Alive heartbeat pump started — persona \
-                     is a present citizen in room rosters"
+        // #260 honest presence: the beat carries LIVE availability derived
+        // per tick from real serving state, not a spawn-time snapshot —
+        // `away` while her lane is still loading (warming), `ready` once
+        // /health answers. The interface must never show a green dot for a
+        // mind that cannot yet answer (Joel: "online = able to respond").
+        // Continuum owns this pump (airc's `start_agent_heartbeat` freezes
+        // availability at spawn); the first beat fires immediately so she is
+        // visible-as-warming from second one, and a beat is emitted on every
+        // tick thereafter (same DEFAULT_HEARTBEAT_INTERVAL cadence).
+        let heartbeat = {
+            let hb_airc = airc_arc.clone();
+            let hb_persona = persona_id;
+            let hb_name = agent_name.clone();
+            // NO birth stamp — renewal is earned ONLY by cognition, never by
+            // booting. The grace stamp that used to sit here (one lease-length
+            // per spawn, meant to cover the post-boot deaf window #412) made
+            // convergence structurally impossible across restarts: every core
+            // restart re-armed 30 minutes of "earned" renewals, and the renewal
+            // loop below resurrected already-lapsed claims faster than the 180s
+            // lapsed-claim sweeper could observe them — an entire overnight round
+            // (2026-08-16) sat "actively held" with zero turns because of it.
+            // Never-stamped ⇒ `idle_ms` is None ⇒ renewal denied ⇒ holds lapse
+            // within one TTL of boot unless she actually thinks. A citizen who
+            // wakes later can re-claim; a finished artifact gets swept and graded.
+            let handle = tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(DEFAULT_HEARTBEAT_INTERVAL);
+                let mut last: Option<airc_lib::AgentAvailabilityState> = None;
+                // CLAIM RENEWAL RUNS ON ITS OWN, SLOWER CADENCE (Joel 2026-08-15:
+                // "Heartbeat needs fix. That is no good"). Presence needs the 60s
+                // pulse — roster liveness IS a fast question. A 30-minute claim
+                // lease does not: renewing it every presence tick emitted ~30× the
+                // events one lease needs, and that churn crossed the wire to EVERY
+                // subscriber on every node. Renew at TTL/3 — derived from the one
+                // lease constant, never a second magic number — which still gives a
+                // healthy citizen three renewal opportunities per lease. The stamp
+                // is only advanced on a fully-clean pass, so any roster-read or
+                // per-card failure falls back to retrying on the NEXT 60s tick
+                // (exactly the old cadence) until clean — degraded mode is the old
+                // behavior, never a wider gap.
+                let renewal_period = std::time::Duration::from_millis(
+                    crate::modules::work::DEFAULT_CLAIM_TTL_MS / 3,
                 );
-                Some(task)
-            }
-            Err(source) => {
-                warn!(
-                    persona_id = %persona_id,
-                    agent_name = %agent_name,
-                    error = %source,
-                    "PersonaAircRuntime bootstrap: start_agent_heartbeat failed — persona is \
-                     live but will NOT appear present in other citizens' room rosters"
-                );
-                None
-            }
+                let mut last_clean_renewal: Option<std::time::Instant> = None;
+                // Emit-on-transition for the renewal-denied probe: denial is a
+                // STANDING condition (an idle citizen stays idle for hours) and
+                // this loop ticks every 60s, so an unguarded probe here is the
+                // same stream-flooding shape as the per-tick serving.plan probe
+                // (#399 — measured 110 identical denial rows in 5 min across
+                // the roster). One row when denial BEGINS, one implicit end
+                // when renewals resume; the standing state stays queryable via
+                // the work board's lease column.
+                let mut renewal_denied = false;
+                loop {
+                    ticker.tick().await;
+                    let serving = crate::inference::llama_server::current_serving();
+                    let availability = if serving.ready {
+                        airc_lib::AgentAvailabilityState::Ready
+                    } else {
+                        // Lane not up (cold boot, relaunch, squeeze): she can
+                        // hear but cannot yet think — warming, not online.
+                        airc_lib::AgentAvailabilityState::Away
+                    };
+                    if last != Some(availability) {
+                        crate::probe!(
+                            class = "persona.presence.availability",
+                            persona_id = %hb_persona,
+                            agent_name = %hb_name,
+                            state = ?availability,
+                            serving_ready = serving.ready,
+                            "presence availability transitioned (derived from live serving state)"
+                        );
+                        last = Some(availability);
+                    }
+                    let coordination = airc_lib::CoordinationSignal {
+                        availability: Some(availability),
+                        ..Default::default()
+                    };
+                    if let Err(error) = hb_airc
+                        .emit_agent_heartbeat_with_coordination(
+                            airc_lib::HeartbeatKind::Alive,
+                            "persona".to_string(),
+                            None,
+                            None,
+                            None,
+                            coordination,
+                        )
+                        .await
+                    {
+                        // WARN-and-continue: a persona that can't heartbeat is
+                        // live-but-roster-invisible — degraded, not dead.
+                        warn!(
+                            persona_id = %hb_persona,
+                            agent_name = %hb_name,
+                            error = %error,
+                            "persona heartbeat emit failed — presence degraded this tick"
+                        );
+                    }
+
+                    // HER WORK STAYS HERS WHILE SHE BREATHES (2026-08-07).
+                    //
+                    // Claim leases are 30 min and `work/heartbeat` already existed —
+                    // as a VERB THE MODEL HAD TO REMEMBER TO CALL, which no citizen
+                    // ever did. Glass-boxed this night from live captures: citizens
+                    // claimed cards successfully (`work/claim` → real claim_id), every
+                    // lease then lapsed untouched, and their next briefing correctly
+                    // read `[board] you hold 0 card(s)` with the SAME card re-offered
+                    // under `[available work]`. So they reported "no open tasks" and
+                    // passed — accurately describing a board that had quietly taken
+                    // their work back. Six citizens, two machines, days of it.
+                    //
+                    // Presence and claim liveness were two channels answering one
+                    // question, and they contradicted each other: this pump was
+                    // emitting "I am alive" on the very ticks her holds were dying.
+                    // Binding them is the fix — the substrate observes that she is
+                    // working instead of asking her to announce it
+                    // ([[commands-are-agency]]; Joel: "you've turned convenience into
+                    // disability"). The verb stays for deliberate extension.
+                    //
+                    // Renewal is per-card WARN-and-continue: a failed renewal degrades
+                    // to exactly the old lapse, and never takes down presence.
+                    let renewal_due =
+                        last_clean_renewal.map_or(true, |t| t.elapsed() >= renewal_period);
+                    if !renewal_due {
+                        continue;
+                    }
+                    // RENEWAL IS EARNED BY COGNITION, NOT BY BREATHING
+                    // (2026-08-16). The presence-bound renewal above this
+                    // comment's ancestor fixed #331 by overcorrecting: a
+                    // citizen whose cognition had been silent for HOURS still
+                    // renewed every minute, so a stalled round read as
+                    // "actively held" forever and the lapsed-claim sweeper
+                    // could never recover her finished artifact. The gate:
+                    // no turn within one lease-length → skip renewal → the
+                    // hold lapses naturally → the card becomes re-claimable
+                    // and any written artifact gets graded. A turn that
+                    // DEFERS on serving pressure still stamps the pulse —
+                    // trying to think counts; only true silence lapses.
+                    {
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as u64)
+                            .unwrap_or_default();
+                        let idle = crate::persona::cognition_pulse::idle_ms(hb_persona, now_ms);
+                        if !crate::persona::cognition_pulse::renewal_earned(
+                            idle,
+                            crate::modules::work::DEFAULT_CLAIM_TTL_MS,
+                        ) {
+                            if !renewal_denied {
+                                renewal_denied = true;
+                                crate::probe!(
+                                    class = "persona.claim.renewal_skipped_idle",
+                                    persona_id = %hb_persona,
+                                    agent_name = %hb_name,
+                                    idle_ms = idle.unwrap_or(u64::MAX),
+                                    ttl_ms = crate::modules::work::DEFAULT_CLAIM_TTL_MS,
+                                    "no cognition within one lease-length — renewals \
+                                     DENIED from here until she thinks again; holds \
+                                     lapse naturally so the work can be recovered"
+                                );
+                            }
+                            continue;
+                        }
+                        if renewal_denied {
+                            renewal_denied = false;
+                            crate::probe!(
+                                class = "persona.claim.renewal_resumed",
+                                persona_id = %hb_persona,
+                                agent_name = %hb_name,
+                                "cognition resumed — claim renewals earned again"
+                            );
+                        }
+                    }
+                    match hb_airc
+                        .work_roster_status(airc_lib::WorkRosterQuery::default())
+                        .await
+                    {
+                        Ok(status) => {
+                            let me = hb_airc.peer_id();
+                            let mine = status
+                                .rows
+                                .into_iter()
+                                .find(|r| r.peer == me)
+                                .map(|r| r.active_claims)
+                                .unwrap_or_default();
+                            let mut renewed = 0usize;
+                            let mut failed = 0usize;
+                            for card in &mine {
+                                let Some(claim_id) = card.claim_id else {
+                                    continue;
+                                };
+                                if let Err(error) = hb_airc
+                                    .heartbeat_work_claim(airc_lib::HeartbeatWorkClaim {
+                                        card_id: card.card_id,
+                                        claim_id,
+                                        ttl_ms: crate::modules::work::DEFAULT_CLAIM_TTL_MS,
+                                    })
+                                    .await
+                                {
+                                    failed += 1;
+                                    warn!(
+                                        persona_id = %hb_persona,
+                                        agent_name = %hb_name,
+                                        card_id = %card.card_id.as_uuid(),
+                                        error = %error,
+                                        "claim renewal failed — this card can lapse out from \
+                                         under her while she is still working it"
+                                    );
+                                } else {
+                                    renewed += 1;
+                                }
+                            }
+                            if renewed > 0 {
+                                crate::probe!(
+                                    class = "persona.claim.renewed",
+                                    persona_id = %hb_persona,
+                                    agent_name = %hb_name,
+                                    renewed = renewed,
+                                    held = mine.len(),
+                                    ttl_ms = crate::modules::work::DEFAULT_CLAIM_TTL_MS,
+                                    "held work-card claims renewed on the claim cadence (TTL/3)"
+                                );
+                            }
+                            // Only a fully-clean pass earns the slow cadence; any
+                            // failure retries on the next 60s presence tick.
+                            if failed == 0 {
+                                last_clean_renewal = Some(std::time::Instant::now());
+                            }
+                        }
+                        Err(error) => {
+                            warn!(
+                                persona_id = %hb_persona,
+                                agent_name = %hb_name,
+                                error = %error,
+                                "claim-renewal roster read failed — holds may lapse; retrying \
+                                 on the next presence tick"
+                            );
+                        }
+                    }
+                }
+            });
+            info!(
+                persona_id = %persona_id,
+                agent_name = %agent_name,
+                interval_s = DEFAULT_HEARTBEAT_INTERVAL.as_secs(),
+                "PersonaAircRuntime bootstrap: dynamic-availability heartbeat pump started — \
+                 presence tracks live serving state (away=warming, ready=able to respond)"
+            );
+            Some(AbortOnDrop(handle))
+        };
+
+        // Re-publish the identity card on the heartbeat cadence so it SURVIVES. The
+        // card emit at attach is one-shot: a peer that joins the room AFTER this
+        // persona attached (M5's desktop reconnecting, a fresh grid peer) missed it
+        // and would render her by peer-id forever. `publish_identity()` re-emits the
+        // already-set full card to every subscribed room; on the 60s cadence, any
+        // late arrival is grounded within a heartbeat window. Handle held for the
+        // persona's lifetime; dropped on teardown (mirrors the heartbeat pump).
+        let identity_republish = {
+            let airc = airc_arc.clone();
+            let persona_id = persona_id;
+            let agent_name = agent_name.clone();
+            Some(tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(DEFAULT_HEARTBEAT_INTERVAL);
+                // Skip the immediate tick — bootstrap already emitted the card.
+                ticker.tick().await;
+                loop {
+                    ticker.tick().await;
+                    if let Err(source) = airc.publish_identity().await {
+                        warn!(
+                            persona_id = %persona_id,
+                            agent_name = %agent_name,
+                            error = %source,
+                            "PersonaAircRuntime: periodic identity re-publish failed \
+                             (transient) — will retry next cadence"
+                        );
+                    }
+                }
+            }))
         };
 
         // Resume-visibility contract (Joel 2026-07-13: post-reboot the team
@@ -532,12 +908,32 @@ impl PersonaAircRuntime {
             agent_name,
             home,
             airc: airc_arc,
-            default_room,
+            // The ACTUALLY-joined home room (from her durable subscription
+            // state above) — before #298 this stored the passed-in operator
+            // room, which could even diverge from the joined channel.
+            default_room: RoomId::from_uuid(room.channel.as_uuid()),
+            membership_epoch: tokio::sync::watch::channel(0u64).0,
             inbound_handle: None,
             command_pump: Some(command_pump),
             heartbeat,
+            identity_republish,
             source,
         })
+    }
+
+    /// Join a room UNDER THIS CITIZEN'S IDENTITY at runtime and bump the
+    /// membership epoch so her live perception stream re-opens with the
+    /// enlarged channel snapshot (P0 20b44763). This — not `airc().join`
+    /// directly — is the ONE runtime-join path for a living persona:
+    /// airc-lib's `subscribe_subscribed_filtered` collects the channel list
+    /// once at subscribe time, so a bare join grants durable membership to a
+    /// room whose events her existing stream will never carry (measured
+    /// 2026-08-15: three benchmark rounds, 12 addressed kickoffs each, zero
+    /// turns — every per-run room was born deaf).
+    pub async fn join_room(&self, name: &str) -> Result<(), AircError> {
+        self.airc.join(name).await?;
+        self.membership_epoch.send_modify(|e| *e += 1);
+        Ok(())
     }
 
     /// Wrap an already-attached + already-joined `Arc<Airc>` into a
@@ -582,6 +978,7 @@ impl PersonaAircRuntime {
             home,
             airc,
             default_room,
+            membership_epoch: tokio::sync::watch::channel(0u64).0,
             inbound_handle: None,
             // from_attached is sync + the pump install is async, so
             // we don't install at construction. Callers that want the
@@ -595,6 +992,9 @@ impl PersonaAircRuntime {
             // live `bootstrap` path always starts the pump; test/demo callers
             // that want roster presence start it themselves after construction.
             heartbeat: None,
+            // from_attached is sync; the periodic card re-publisher (async spawn)
+            // is a bootstrap-path concern. Test/demo callers don't need it.
+            identity_republish: None,
             source,
         }
     }
@@ -698,11 +1098,21 @@ impl PersonaAircRuntime {
 // trait definition + rationale.
 #[async_trait::async_trait]
 impl crate::persona::airc_source::AircTranscriptReader for PersonaAircRuntime {
-    async fn page_recent(
+    async fn page_recent(&self, limit: usize) -> Result<Vec<airc_lib::TranscriptEvent>, AircError> {
+        // Route through the ONE kinds-filtered impl on `airc_lib::Airc`
+        // (persona/airc_source.rs, #297) — never the raw inherent page.
+        crate::persona::airc_source::AircTranscriptReader::page_recent(&*self.airc, limit).await
+    }
+
+    async fn page_recent_in(
         &self,
+        room: Option<airc_core::RoomId>,
         limit: usize,
     ) -> Result<Vec<airc_lib::TranscriptEvent>, AircError> {
-        self.airc.page_recent(limit).await
+        // Explicit forward (#367) — inheriting the trait default here would
+        // silently drop the turn-room scope (#262-class regression).
+        crate::persona::airc_source::AircTranscriptReader::page_recent_in(&*self.airc, room, limit)
+            .await
     }
 }
 
@@ -716,8 +1126,15 @@ impl crate::persona::room_roster_source::AircRosterReader for PersonaAircRuntime
         &self,
         within: std::time::Duration,
         window: usize,
+        room: Option<uuid::Uuid>,
     ) -> Result<Vec<airc_lib::RoomMember>, AircError> {
-        self.airc.room_roster(within, window).await
+        crate::persona::room_roster_source::AircRosterReader::room_roster(
+            self.airc.as_ref(),
+            within,
+            window,
+            room,
+        )
+        .await
     }
 }
 
@@ -725,16 +1142,19 @@ impl crate::persona::room_roster_source::AircRosterReader for PersonaAircRuntime
 impl crate::persona::room_doctrine_source::AircDoctrineReader for PersonaAircRuntime {
     async fn room_doctrine(
         &self,
+        room: Option<uuid::Uuid>,
     ) -> Result<Option<airc_core::doctrine::RoomDoctrinePublished>, AircError> {
-        self.airc.room_doctrine().await
+        crate::persona::room_doctrine_source::AircDoctrineReader::room_doctrine(
+            self.airc.as_ref(),
+            room,
+        )
+        .await
     }
 }
 
 #[async_trait::async_trait]
 impl crate::persona::wall_source::WallReader for PersonaAircRuntime {
-    async fn wall_posts(
-        &self,
-    ) -> Result<Vec<airc_core::doctrine::WallPostPublished>, AircError> {
+    async fn wall_posts(&self) -> Result<Vec<airc_core::doctrine::WallPostPublished>, AircError> {
         // Whole board (all categories); the source filters/labels per post.
         self.airc.wall_posts(None).await
     }
@@ -764,8 +1184,24 @@ impl crate::persona::room_board_source::RoomBoardReader for PersonaAircRuntime {
     /// The current room's WHOLE work board — every card/column/owner. Delegates
     /// to the inner airc handle's single board fold (`work_board_complete` →
     /// snapshot), the same read the desktop-app kanban projector makes.
-    async fn work_board(&self) -> Result<airc_work::BoardSnapshot, AircError> {
-        crate::persona::room_board_source::RoomBoardReader::work_board(self.airc.as_ref()).await
+    async fn work_board(
+        &self,
+        room: Option<uuid::Uuid>,
+    ) -> Result<airc_work::BoardSnapshot, AircError> {
+        crate::persona::room_board_source::RoomBoardReader::work_board(self.airc.as_ref(), room)
+            .await
+    }
+
+    /// Published display names for card owners — delegates to the inner airc
+    /// handle's alias store. This is the LIVE persona path: without it, every
+    /// teammate's card renders as an 8-hex prefix she cannot recognize or
+    /// reach out to.
+    async fn peer_names(
+        &self,
+        peers: &[airc_core::PeerId],
+    ) -> std::collections::HashMap<airc_core::PeerId, String> {
+        crate::persona::room_board_source::RoomBoardReader::peer_names(self.airc.as_ref(), peers)
+            .await
     }
 }
 
@@ -775,19 +1211,20 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
         self.airc.peer_id().as_uuid()
     }
 
-    async fn subscribe(&self) -> Result<airc_lib::EventStream, AircError> {
-        self.airc.subscribe().await
+    async fn subscribe_all_rooms(&self) -> Result<airc_lib::FilteredEventStream, AircError> {
+        crate::persona::airc_citizen::subscribe_every_room(&self.airc).await
     }
 
-    async fn say(&self, text: &str) -> Result<EventId, AircError> {
-        self.airc.say(text).await
+    fn membership_epoch(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.membership_epoch.subscribe()
+    }
+
+    async fn say_in(&self, room_id: Uuid, text: &str) -> Result<EventId, AircError> {
+        crate::persona::airc_citizen::publish_text_in_room(&self.airc, room_id, text).await
     }
 
     /// #170: delegate to airc-lib's ephemeral stream-chunk publish.
-    async fn publish_stream_chunk(
-        &self,
-        chunk: &airc_lib::StreamChunk,
-    ) -> Result<(), AircError> {
+    async fn publish_stream_chunk(&self, chunk: &airc_lib::StreamChunk) -> Result<(), AircError> {
         self.airc.publish_stream_chunk(chunk).await.map(|_| ())
     }
 }
@@ -803,6 +1240,10 @@ impl Drop for PersonaAircRuntime {
             // explicit-shutdown callers use. Tokio reaps the
             // aborted task.
             pump.abort();
+        }
+        if let Some(handle) = self.identity_republish.take() {
+            // Stop re-emitting the identity card once the persona leaves the grid.
+            handle.abort();
         }
         // Arc<Airc> drops alongside the runtime; airc-lib handles
         // its own cleanup (daemon connection close, identity state
@@ -875,8 +1316,7 @@ mod tests {
         // running daemon.
         // Dummy executor — bootstrap fires the legacy-path detection
         // BEFORE pump install, so the executor is never touched.
-        let dummy_registry =
-            std::sync::Arc::new(crate::runtime::ModuleRegistry::new());
+        let dummy_registry = std::sync::Arc::new(crate::runtime::ModuleRegistry::new());
         let dummy_executor = std::sync::Arc::new(
             crate::runtime::command_executor::CommandExecutor::new(dummy_registry),
         );
@@ -886,8 +1326,6 @@ mod tests {
             "maya",
             root,
             PathBuf::from("/nonexistent/daemon.sock"),
-            RoomId::from_uuid(Uuid::new_v4()),
-            None,
             crate::persona::identity_provider::PersonaIdentitySource::FreshlyMinted,
             dummy_executor,
         )
@@ -904,7 +1342,10 @@ mod tests {
                 assert_eq!(l, legacy);
                 assert_eq!(
                     new,
-                    root.join("citizens").join("personas").join("maya").join("airc")
+                    root.join("citizens")
+                        .join("personas")
+                        .join("maya")
+                        .join("airc")
                 );
                 assert_eq!(
                     new_parent,

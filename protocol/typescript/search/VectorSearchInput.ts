@@ -3,4 +3,13 @@
 /**
  * Params for `search/vector` — also the cosine algorithm's direct input.
  */
-export type VectorSearchInput = { queryVector: Array<number>, corpusVectors: Array<Array<number>>, normalize: boolean, threshold: number, };
+export type VectorSearchInput = { 
+/**
+ * The query embedding to rank the corpus against — one vector of floats.
+ */
+queryVector: Array<number>, 
+/**
+ * The corpus embeddings to rank — one float vector per candidate item, each
+ * the same dimensionality as `queryVector`.
+ */
+corpusVectors: Array<Array<number>>, normalize: boolean, threshold: number, };

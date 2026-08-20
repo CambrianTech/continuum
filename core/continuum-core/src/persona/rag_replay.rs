@@ -130,6 +130,16 @@ impl RagSource for ReplayRagSource {
         self.source_id
     }
 
+    fn expand_command(&self) -> Option<&'static str> {
+        // a replay reproduces a recorded delivery verbatim; there is no live 'more'.
+        None
+    }
+
+    /// A replay reproduces a recorded delivery; it reserves nothing.
+    fn floor_tokens(&self) -> u32 {
+        0
+    }
+
     async fn deliver(
         &self,
         ctx: &RagContext,
@@ -262,12 +272,8 @@ mod tests {
     #[tokio::test]
     async fn replay_returns_canned_delivery_on_deliver() {
         let canned = delivery("stub", vec![item("hello", 5)]);
-        let source = ReplayRagSource::from_deliveries(
-            "stub",
-            persona(),
-            vec![canned.clone()],
-            Vec::new(),
-        );
+        let source =
+            ReplayRagSource::from_deliveries("stub", persona(), vec![canned.clone()], Vec::new());
         let result = source.deliver(&ctx(), 100, ResolutionPreference::Raw).await;
         assert_eq!(result.items.len(), 1);
         assert_eq!(result.items[0].content, "hello");
@@ -277,12 +283,7 @@ mod tests {
 
     #[tokio::test]
     async fn replay_exhausted_returns_empty_not_panic() {
-        let source = ReplayRagSource::from_deliveries(
-            "stub",
-            persona(),
-            Vec::new(),
-            Vec::new(),
-        );
+        let source = ReplayRagSource::from_deliveries("stub", persona(), Vec::new(), Vec::new());
         let result = source.deliver(&ctx(), 100, ResolutionPreference::Raw).await;
         assert_eq!(result.items.len(), 0);
         assert_eq!(result.resolution_used, ResolutionPreference::Placeholder);
@@ -291,12 +292,7 @@ mod tests {
     #[tokio::test]
     async fn replay_cross_persona_ctx_returns_empty() {
         let canned = delivery("stub", vec![item("a", 5)]);
-        let source = ReplayRagSource::from_deliveries(
-            "stub",
-            persona(),
-            vec![canned],
-            Vec::new(),
-        );
+        let source = ReplayRagSource::from_deliveries("stub", persona(), vec![canned], Vec::new());
         let other = Uuid::parse_str("00000000-0000-0000-0000-000000000bbb").unwrap();
         let result = source
             .deliver(
@@ -312,12 +308,7 @@ mod tests {
     async fn replay_serves_deliveries_in_capture_order() {
         let d1 = delivery("stub", vec![item("first", 5)]);
         let d2 = delivery("stub", vec![item("second", 5)]);
-        let source = ReplayRagSource::from_deliveries(
-            "stub",
-            persona(),
-            vec![d1, d2],
-            Vec::new(),
-        );
+        let source = ReplayRagSource::from_deliveries("stub", persona(), vec![d1, d2], Vec::new());
         let r1 = source.deliver(&ctx(), 100, ResolutionPreference::Raw).await;
         let r2 = source.deliver(&ctx(), 100, ResolutionPreference::Raw).await;
         assert_eq!(r1.items[0].content, "first");
@@ -351,12 +342,7 @@ mod tests {
     #[tokio::test]
     async fn replay_continuation_refuses_wrong_persona_cursor() {
         let canned = delivery("stub", vec![item("a", 5)]);
-        let source = ReplayRagSource::from_deliveries(
-            "stub",
-            persona(),
-            Vec::new(),
-            vec![canned],
-        );
+        let source = ReplayRagSource::from_deliveries("stub", persona(), Vec::new(), vec![canned]);
         let other = Uuid::parse_str("00000000-0000-0000-0000-000000000bbb").unwrap();
         let alien_cursor = ContinuationCursor {
             persona_id: other,
@@ -372,12 +358,7 @@ mod tests {
     #[tokio::test]
     async fn replay_continuation_refuses_wrong_source_id_cursor() {
         let canned = delivery("stub", vec![item("a", 5)]);
-        let source = ReplayRagSource::from_deliveries(
-            "stub",
-            persona(),
-            Vec::new(),
-            vec![canned],
-        );
+        let source = ReplayRagSource::from_deliveries("stub", persona(), Vec::new(), vec![canned]);
         let alien_cursor = ContinuationCursor {
             persona_id: persona(),
             source_id: "memories".to_string(),
@@ -404,7 +385,9 @@ mod tests {
 
         // Two deliver calls — captures should accumulate.
         recorder.deliver(&ctx(), 8, ResolutionPreference::Raw).await; // packs 1 item
-        recorder.deliver(&ctx(), 100, ResolutionPreference::Raw).await; // packs the rest
+        recorder
+            .deliver(&ctx(), 100, ResolutionPreference::Raw)
+            .await; // packs the rest
 
         // Now replay the captured events through ReplayRagSource.
         let captured = sink.events();
@@ -496,7 +479,9 @@ mod tests {
             let sink: Arc<dyn RagCaptureSink> =
                 Arc::new(JsonlRagCaptureSink::open(path.clone()).unwrap());
             let recorder = RecordingRagSource::new(live, sink);
-            recorder.deliver(&ctx(), 100, ResolutionPreference::Raw).await;
+            recorder
+                .deliver(&ctx(), 100, ResolutionPreference::Raw)
+                .await;
         }
 
         // Phase 2: load + replay

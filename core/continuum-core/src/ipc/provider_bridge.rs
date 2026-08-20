@@ -233,10 +233,7 @@ pub(super) fn complete_provide_result(pending: &PendingCalls, msg: &Value) {
         return;
     };
 
-    let success = msg
-        .get("success")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+    let success = msg.get("success").and_then(Value::as_bool).unwrap_or(false);
     let outcome = if success {
         Ok(msg.get("result").cloned().unwrap_or(Value::Null))
     } else {

@@ -84,6 +84,8 @@ pub fn to_corpus_memory(memory: &ConsolidatedMemory) -> CorpusMemory {
             last_accessed_at: None,
             layer: None,
             relevance_score: None,
+            origin_node: None,
+            origin_seq: None,
         },
         embedding: None,
     }
@@ -111,7 +113,7 @@ pub async fn run_consolidation_pass(
     for memory in &result.memories {
         let corpus_memory = to_corpus_memory(memory);
         manager
-            .append_memory(&memory.persona_id.to_string(), corpus_memory)
+            .append_memory(&memory.persona_id.to_string().into(), corpus_memory)
             .map_err(|e| format!("append_memory failed for {}: {}", memory.id, e.0))?;
     }
 
@@ -167,7 +169,7 @@ mod tests {
         // Load an empty corpus so append_memory has a corpus to write into.
         // load_corpus returns LoadCorpusResponse (not Result) — it either
         // succeeds or records the failure in-band.
-        let _ = manager.load_corpus(persona_id, Vec::new(), Vec::new());
+        let _ = manager.load_corpus(&persona_id.into(), Vec::new(), Vec::new());
         manager
     }
 

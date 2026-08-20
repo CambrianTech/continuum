@@ -48,7 +48,10 @@ pub mod teach;
 /// Wire shape for `genome/job-status` + `genome/job-cancel`. A single handle;
 /// adapter lookup keys on `handle.providerId`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/genome/JobLookupParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/JobLookupParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct JobLookupParams {
     /// The job handle returned by `genome/job-create`.
@@ -124,10 +127,7 @@ pub(crate) mod test_support {
                 requires: TrainerHardware::Any,
             }
         }
-        async fn create_job(
-            &self,
-            _r: TrainingJobRequest,
-        ) -> Result<JobHandle, FineTuningError> {
+        async fn create_job(&self, _r: TrainingJobRequest) -> Result<JobHandle, FineTuningError> {
             Ok(JobHandle {
                 provider_id: self.0.to_string(),
                 provider_job_id: format!("{}-job-1", self.0),
