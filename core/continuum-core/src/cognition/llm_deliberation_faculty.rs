@@ -408,10 +408,18 @@ impl LlmDeliberationFaculty {
     /// actually offered, and the reserve is the same `/4` split
     /// [`completion_budget_for`] uses, so this cannot drift from what the budget does.
     ///
-    /// `tools + framing <= window - window/4`  ⇒  `window >= ceil((tools + framing) * 4 / 3)`
+    /// With `D = COMPLETION_SHARE_DENOM`:
+    /// `tools + framing <= window - window/D`  ⇒  `window >= ceil((tools + framing) * D / (D-1))`
+    ///
+    /// DERIVED from the denominator, not transcribed. It read `div_ceil(3).saturating_mul(4)`,
+    /// which is that algebra solved for D=4 and frozen — so changing the split would have left
+    /// this bound silently computing the old one, and the "you are structurally mute below
+    /// here" sensor would have been measuring a window nobody serves.
     pub fn min_window_for_agentic_surface(&self) -> u32 {
         let fixed = self.describe_tool_tokens() as u32 + self.framing_floor_tokens();
-        fixed.div_ceil(3).saturating_mul(4)
+        fixed
+            .div_ceil(Self::COMPLETION_SHARE_DENOM - 1)
+            .saturating_mul(Self::COMPLETION_SHARE_DENOM)
     }
 
     /// The irreducible framing cost, MEASURED — never a constant.
@@ -495,8 +503,27 @@ impl LlmDeliberationFaculty {
     /// done, so a generous quarter-window allowance never wastes anything; it just
     /// lets the reply be as long as the task genuinely needs.
     fn completion_budget_for(context_window: u32) -> u32 {
-        (context_window / 4).max(256)
+        (context_window / Self::COMPLETION_SHARE_DENOM).max(Self::COMPLETION_FLOOR_TOKENS)
     }
+
+    /// The reply's share of the served window, as a DENOMINATOR: reply gets `window/N`.
+    ///
+    /// One home for a fraction that was previously re-spelled as a bare `/ 4` in five
+    /// places — `completion_budget_for`, the `div_ceil(3).saturating_mul(4)` algebra in
+    /// [`Self::min_window_for_agentic_surface`], and three test mirrors. That duplication is
+    /// why changing the split kept breaking things quietly: the tests re-derived the OLD
+    /// fraction from scratch, so they kept passing while no longer measuring the invariant
+    /// they were written for — a silent failure, the worst outcome for a guard.
+    ///
+    /// Not a hardcoded context size (the de-hardcode guard keys on WINDOW/TOKEN-named
+    /// constants holding bare literals): this is a ratio, and the window it divides is the
+    /// live served one.
+    const COMPLETION_SHARE_DENOM: u32 = 4;
+
+    /// Floor so a tiny window still yields a usable reply. Binding only below
+    /// `COMPLETION_SHARE_DENOM * this`, which is under `MIN_SERVE_CTX` — i.e. a regime
+    /// production cannot actually produce.
+    const COMPLETION_FLOOR_TOKENS: u32 = 256;
 
     /// Build a generation request for the message thread. Centralized so the
     /// first prompt and any future re-prompt share one shape. Takes the model
@@ -3083,7 +3110,7 @@ mod tests {
                 "recalled",
             ));
             let view = faculty.prompt_view(&ws);
-            let reserve = (window / 4).max(256) as usize;
+            let reserve = LlmDeliberationFaculty::completion_budget_for(window) as usize; // derive, never re-spell the fraction: a mirror keeps PASSING while measuring the old split
             let prompt = est_tokens(&view.system) + est_tokens(&view.user_text());
 
             // This assertion used to demand that framing + the FULL tool surface + the
@@ -3110,7 +3137,7 @@ mod tests {
             assert!(
                 faculty.describe_tool_tokens()
                     + faculty.framing_floor_tokens() as usize
-                    + (needed / 4).max(256) as usize
+                    + LlmDeliberationFaculty::completion_budget_for(needed) as usize // same: derived from the one source
                     <= needed as usize,
                 "min_window_for_agentic_surface({needed}) must clear its own arithmetic"
             );
@@ -3492,7 +3519,7 @@ mod tests {
             // collapsed bookmarks — which is the floor case for this fit guard.
             let collapsed = faculty.compose_system("", &BTreeSet::new(), false, false, None);
             let framing = est_tokens(&collapsed);
-            let reserve = (window / 4).max(256) as usize;
+            let reserve = LlmDeliberationFaculty::completion_budget_for(window) as usize; // derive, never re-spell the fraction: a mirror keeps PASSING while measuring the old split
             assert!(
                 framing + reserve < window as usize,
                 "framing+menu ({framing}) + reserve ({reserve}) must leave burst room in {window}"
