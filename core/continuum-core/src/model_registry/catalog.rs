@@ -543,6 +543,25 @@ pub fn models() -> Vec<Model> {
             // 19,712 served window with the KV cache warm (cache_n 42 of a 67-token prompt).
             // Was a conservative 10.0 estimate; the row's own instruction is "corrected by
             // live measurement, never by wish", so this is the measurement.
+            //
+            // SECOND DATAPOINT, and it does NOT replace the one above (2026-08-20, 6
+            // samples, 150 tok each): 4.74 / 5.25 / 6.55 / 6.57 / 6.66 / 6.67 tok/s,
+            // median 6.56 — at a 22,528 PER-SLOT window with `busy_slots = 2` of 4 on
+            // EVERY sample. That is a CONTENDED rate, so it is not a `ThroughputBaseline`
+            // (that type means single-sequence by its own definition) and it must not be
+            // written into `tokens_per_second`, which the #441 collapse alarm reads as the
+            // single-stream expectation. Recording 6.5 there would raise the alarm's floor
+            // to ~1.6 t/s and let a genuine collapse pass silently.
+            //
+            // Both numbers are true and they measure different machines: 17.2 pinned,
+            // ~6.5 sharing the box with two working citizens. THE GAP IS THE POINT — the
+            // sentinel currently cannot tell "contended" from "degraded" because nothing
+            // records concurrency at measurement time. That is #441's remaining half, the
+            // sibling of the window axis landed in `ThroughputBaseline` (#2339).
+            //
+            // MTP spec-decode held 83.9–84.8% draft acceptance across all six, and across
+            // three earlier samples at a different prompt — the draft head is doing its job
+            // and is NOT the variance source (acceptance is flat while t/s moves 1.4×).
             tokens_per_second: 17.2,
             capabilities: &[
                 Capability::TextGeneration,
