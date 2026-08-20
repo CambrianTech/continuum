@@ -137,6 +137,7 @@ mod tests {
         let mk = |src: &str| SourceFile {
             rel: "fake.rs".into(),
             production: src.into(),
+            raw: src.into(),
         };
 
         assert_eq!(rule.check(&mk("let x = o.unwrap(); // ok")).len(), 1, "`// ok` is not a reason");

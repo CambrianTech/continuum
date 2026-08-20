@@ -24,6 +24,7 @@
 //! The two existing scanners should migrate onto this seam (they predate it); doing
 //! that is a follow-up, not a reason to hand-roll a fourth.
 
+pub mod production_reachability;
 pub mod unwrap_justification;
 
 use std::path::{Path, PathBuf};
@@ -43,6 +44,14 @@ pub struct SourceFile {
     /// violation slip; one that over-reports cries wolf and gets deleted. Erring
     /// toward the first is the deliberate choice.
     pub production: String,
+    /// The WHOLE file, test mods included.
+    ///
+    /// Carried alongside `production` rather than re-read on demand because a rule
+    /// that compares one text shape against another must be able to get both from the
+    /// same read. (The first cut of [`production_reachability`] re-read the file and
+    /// fell back to `production` when the read failed — a fallback that silently
+    /// swapped the shape and reintroduced the exact miscount it was written to fix.)
+    pub raw: String,
 }
 
 impl SourceFile {
@@ -77,14 +86,53 @@ pub fn crate_src_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
 }
 
-/// Walk `src/` once and apply every rule to every `.rs` file.
+/// Every `src/` directory in the workspace — this crate's, its sibling crates', and
+/// the apps'.
+///
+/// **Why a rule ever needs more than `crate_src_root`:** some hygiene questions are
+/// not answerable from one crate. "Is this `pub` type referenced anywhere?" is the
+/// motivating case — `continuum-core` is a LIBRARY, so a type with no in-crate caller
+/// may be perfectly well wired from `apps/cli` or `continuum-mcp`. A guard that
+/// reported those as dead would be wrong on its first run and deleted by its second.
+///
+/// So the asymmetry is deliberate and load-bearing: **violations are only ever raised
+/// against `crate_src_root()`, while REFERENCES are searched across every root here.**
+/// Widening the reference corpus can only ever REMOVE findings, never add one.
+///
+/// Resolved from the manifest (`core/continuum-core` → repo root two levels up) so the
+/// scan does not depend on the process's working directory. Roots that do not exist
+/// are skipped, so this stays correct if the layout changes under it.
+pub fn workspace_src_roots() -> Vec<PathBuf> {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut roots = vec![manifest.join("src")];
+    // `core/continuum-core` → `continuum/`. `ancestors()` rather than two `parent()`
+    // unwraps: a path shallower than expected yields no root instead of a panic.
+    let Some(repo) = manifest.ancestors().nth(2) else {
+        return roots;
+    };
+    for group in ["core", "apps"] {
+        let Ok(entries) = std::fs::read_dir(repo.join(group)) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let src = entry.path().join("src");
+            // The crate's own root is already first; skip the duplicate rather than
+            // paying to read every file in it twice.
+            if src.is_dir() && src != roots[0] {
+                roots.push(src);
+            }
+        }
+    }
+    roots
+}
+
+/// Read every `.rs` file under `root`, pre-split into production and test halves.
 ///
 /// Unreadable files are skipped rather than failing the scan: a hygiene guard must
 /// not turn a transient IO error into a red build that says nothing about hygiene.
-pub fn scan(rules: &[&dyn SourceRule]) -> Vec<Violation> {
-    let root = crate_src_root();
+pub fn collect_files(root: &Path) -> Vec<SourceFile> {
     let mut out = Vec::new();
-    let mut stack = vec![root.clone()];
+    let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
@@ -102,7 +150,7 @@ pub fn scan(rules: &[&dyn SourceRule]) -> Vec<Violation> {
                 continue;
             };
             let rel = path
-                .strip_prefix(&root)
+                .strip_prefix(root)
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .replace('\\', "/");
@@ -123,14 +171,98 @@ pub fn scan(rules: &[&dyn SourceRule]) -> Vec<Violation> {
                     .join("\n"),
                 None => src.clone(),
             };
-            let file = SourceFile { rel, production };
-            for rule in rules {
-                out.extend(rule.check(&file));
+            out.push(SourceFile {
+                rel,
+                production,
+                raw: src,
+            });
+        }
+    }
+    out
+}
+
+/// Walk this crate's `src/` once and apply every per-file rule to every `.rs` file.
+pub fn scan(rules: &[&dyn SourceRule]) -> Vec<Violation> {
+    let files = collect_files(&crate_src_root());
+    let mut out = Vec::new();
+    for file in &files {
+        for rule in rules {
+            out.extend(rule.check(file));
+        }
+    }
+    sort_violations(&mut out);
+    out
+}
+
+/// A rule that needs to see the WHOLE crate at once, not one file at a time.
+///
+/// [`SourceRule`] covers the common case — a predicate over a single file — and every
+/// rule that CAN be expressed that way should be, because per-file rules are cheap and
+/// trivially testable. But some hygiene questions are irreducibly cross-file: "does
+/// anything reference this?" cannot be answered from the file that declares it. That
+/// is this trait, and the reason it is a separate one rather than a widened
+/// `SourceRule`: a per-file rule that received the whole crate would invite every
+/// future rule to reach for global state it does not need.
+pub trait CrateRule {
+    fn name(&self) -> &'static str;
+    /// `files` are this crate's, the only source of violations. `corpus` is every
+    /// production line in the workspace — the reference haystack, never a source of
+    /// violations. See [`workspace_src_roots`] for why the two differ.
+    fn check_crate(&self, files: &[SourceFile], corpus: &str) -> Vec<Violation>;
+}
+
+/// Apply crate-wide rules. Reads this crate once for violations and the workspace once
+/// for references.
+pub fn scan_crate(rules: &[&dyn CrateRule]) -> Vec<Violation> {
+    let files = collect_files(&crate_src_root());
+    // The reference corpus is RAW file text — production AND test halves.
+    //
+    // This asymmetry against `files` (production-only, the violation source) is
+    // deliberate. A type referenced only from another file's `#[cfg(test)]` mod is
+    // WIRED — to a test harness, on purpose; `GridSimulator` and `RecordingGridCapture`
+    // are exactly that. Counting only production halves reported them as dead, and a
+    // guard that cries wolf on legitimate harnesses is one that gets deleted. Asking
+    // "referenced NOWHERE, not even by a test" is the sharper question and still
+    // catches the motivating defect, whose only mentions are inside its own file.
+    let mut corpus = String::new();
+    for root in workspace_src_roots() {
+        for text in raw_sources(&root) {
+            corpus.push_str(&text);
+            corpus.push('\n');
+        }
+    }
+    let mut out = Vec::new();
+    for rule in rules {
+        out.extend(rule.check_crate(&files, &corpus));
+    }
+    sort_violations(&mut out);
+    out
+}
+
+/// Every `.rs` file under `root`, unsplit — the whole text including test mods.
+fn raw_sources(root: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                if let Ok(text) = std::fs::read_to_string(&path) {
+                    out.push(text);
+                }
             }
         }
     }
-    out.sort_by(|a, b| (a.file.as_str(), a.line).cmp(&(b.file.as_str(), b.line)));
     out
+}
+
+fn sort_violations(v: &mut [Violation]) {
+    v.sort_by(|a, b| (a.file.as_str(), a.line).cmp(&(b.file.as_str(), b.line)));
 }
 
 /// Split a source line into (code, same-line comment), respecting string literals so
