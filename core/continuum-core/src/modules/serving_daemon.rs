@@ -29,6 +29,7 @@ use crate::cognition::serving_plan::{
     MIN_SERVE_CTX,
 };
 use crate::gpu::GpuMemoryManager;
+use crate::inference::lane_registry::LaneRecord;
 use crate::inference::llama_server::{
     ensure_model_serving, serving_v1_url, AdapterEntry, EnsureOutcome, LlamaServerControl,
     LlamaServerProcess, ServingSnapshot, ServingTarget, READY_TIMEOUT,
@@ -176,6 +177,60 @@ const MOE_PLAN_WINDOW_K: u32 = 8;
 /// — resolve once, pass the struct, never re-fetch ([[pass-the-model-struct-no-param-hell]]).
 type ModelResolver = Arc<dyn Fn(&str) -> Option<Model> + Send + Sync>;
 
+/// How the planner learns about a lane inherited from a PREVIOUS GENERATION of this core —
+/// a past form of ourself, still resident, still holding its weights + KV.
+///
+/// This exists because of a measured boot defect (#438, glass-boxed 2026-08-19 from the probe
+/// ledger). A core crashed with a healthy Qwen3.8-27B serving 4 lanes at a 25,075 window
+/// (`serving.grow served_lanes=4 target_window=25075`). The successor booted while that lane was
+/// STILL ALIVE holding ~45 GB, so the very first plan sampled `usable_gb=6` — an entirely HONEST
+/// reading of free VRAM — and, seeing 6 GB, selected a 7B, then a 14B at `MIN_SERVE_CTX`. The old
+/// lane was reclaimed 1.2 SECONDS LATER (`serving.lane_reclaim outcome=Reclaimed { pid: 11341 }`),
+/// freeing all 45 GB; by then the downshift had already been actuated and the 14B was resident.
+/// Ten seconds on, the planner was asking for the 27B again at `usable_gb=29..47` and could not
+/// get back — a model swap needs the relaunch the plan had already spent.
+///
+/// The mechanism is NOT a bogus sample and NOT a reap-ordering race in the reclaim itself. It is
+/// that BOTH anti-thrash defenses key on an incumbent, and boot has none:
+///   * [`plan_serving_stable`]'s at-rest credit (which exists precisely so "a model's OWN
+///     load/residency can never flap it out") never fires, because it credits back the
+///     INCUMBENT's weights and `plan_tx` is empty on a fresh boot;
+///   * [`downshift_gate`]'s sustained-ticks debounce (#368) is a no-op for the same reason —
+///     with no incumbent there is nothing to debounce against.
+///
+/// So the one moment when a transient squeeze is GUARANTEED — the successor overlapping its
+/// predecessor — is the exact moment every defense against transients is disabled. The comment
+/// on [`ServingDaemonModule::publish_plan`] stated this as intent ("Boot's first plan has no
+/// incumbent → plain selection"); it is the bug.
+///
+/// The fix is Joel's own framing of the governor: know our footprint, the system with us removed,
+/// and **any past forms of ourself** — then work within that. An inherited lane is the third
+/// category. It is ours, its memory is ours to reclaim, and it is therefore the incumbent the
+/// first plan should reason against, not an external squeeze to flee from.
+///
+/// A seam and not a direct call to [`crate::inference::lane_registry::live_lane`] for the same
+/// reason [`DecodeAgeSource`] is one: that function reads a filesystem singleton (the pidfile
+/// plus `~/.continuum`), so under `cargo test` — one process, shared HOME — it would report the
+/// OPERATOR's real 27B into unrelated unit tests. That exact leak was caught by measurement in
+/// `serving_consumer` and fixed the same way.
+type InheritedLaneSource = Arc<dyn Fn() -> Option<LaneRecord> + Send + Sync>;
+
+/// Which model the plan should treat as the incumbent, given what we have already PUBLISHED and
+/// what we INHERITED from a previous generation of this core.
+///
+/// A published plan always wins: once this core has decided, its own decision is the incumbent
+/// and the inherited lane is either already adopted or already reclaimed. The inherited lane
+/// only speaks for the window where `plan_tx` is still empty — the first plan after boot — which
+/// is precisely the window the #438 downshift lives in.
+///
+/// Deliberately does NOT verify that the inherited model is still on disk or still servable:
+/// [`plan_serving_stable`] already refuses an incumbent that is not among the candidates
+/// (falling straight through to a plain plan), so a stale record degrades to today's behaviour
+/// instead of pinning a model that no longer exists.
+fn incumbent_for_plan(published: Option<String>, inherited: Option<&LaneRecord>) -> Option<String> {
+    published.or_else(|| inherited.map(|rec| rec.model.clone()))
+}
+
 /// How the heartbeat learns whether a REAL generation delivered tokens recently — the input
 /// to the "trust busy lanes, probe quiet ones" short-circuit in
 /// [`ServingDaemonModule::spawn_health_heartbeat_if_due`]. Milliseconds since the last real
@@ -290,6 +345,10 @@ pub struct ServingDaemonModule {
     /// exonerate a later freeze. `std::sync::Mutex` — held only for a copy, never
     /// across an await.
     last_miss_slots_fp: Arc<std::sync::Mutex<Option<u64>>>,
+    /// Where the first plan after boot learns about a PAST FORM OF OURSELF still holding VRAM.
+    /// Defaults to the lane registry; tests own it ([`Self::set_inherited_lane`]). See
+    /// [`InheritedLaneSource`] for the measured defect this closes (#438).
+    inherited_lane: InheritedLaneSource,
     /// Where the heartbeat reads the real-turn failure streak (#363). Sustained real
     /// failure is wedge evidence that OUTRANKS a passing smoke probe — the undersized-slot
     /// wedge class rejects the fleet's real prompts while a tiny probe still succeeds.
@@ -550,6 +609,7 @@ impl ServingDaemonModule {
             }),
             decode_age: Arc::new(crate::inference::llama_server::ms_since_real_work),
             last_miss_slots_fp: Arc::new(std::sync::Mutex::new(None)),
+            inherited_lane: Arc::new(crate::inference::lane_registry::live_lane),
             real_fails: Arc::new(crate::inference::llama_server::consecutive_real_decode_failures),
             last_healthy_window: Arc::new(AtomicU32::new(0)),
             last_healthy_lanes: Arc::new(AtomicU32::new(0)),
@@ -727,6 +787,15 @@ impl ServingDaemonModule {
     #[cfg(test)]
     fn set_model_resolver(&mut self, resolver: ModelResolver) {
         self.model_resolver = resolver;
+    }
+
+    /// Test seam: own the inherited-lane evidence instead of reading the operator's real
+    /// pidfile + registry. See [`InheritedLaneSource`] for why this MUST be injected — the
+    /// production default reads a filesystem singleton, and the identical leak was already
+    /// caught by measurement in `serving_consumer`.
+    #[cfg(test)]
+    fn set_inherited_lane(&mut self, source: InheritedLaneSource) {
+        self.inherited_lane = source;
     }
 
     /// Test seam: own the heartbeat's real-decode evidence instead of inheriting whatever
@@ -2410,13 +2479,22 @@ impl ServingDaemonModule {
     /// global registry / live GPU.
     fn publish_plan(&self, budget: HostBudget, candidates: &[ModelFootprint]) {
         // Hysteresis: pass the currently-served model as the incumbent so a
-        // transient free-memory dip doesn't thrash the served model. Boot's
-        // first plan has no incumbent (plan_tx holds None) → plain selection.
-        let incumbent = self
-            .plan_tx
-            .borrow()
-            .as_ref()
-            .map(|p| p.base_model.model_id.clone());
+        // transient free-memory dip doesn't thrash the served model.
+        //
+        // Boot's first plan used to have no incumbent (plan_tx holds None) and fall through to
+        // plain selection — and THAT was #438. A successor core boots while its predecessor's
+        // lane is still resident, so the one moment a squeeze is GUARANTEED is the one moment
+        // both the at-rest credit and the downshift debounce are disabled. Measured: the 27B's
+        // successor sampled `usable_gb=6`, downshifted to a 14B at MIN_SERVE_CTX, and reclaimed
+        // the 27B 1.2s later — freeing 45 GB it could no longer use. An inherited lane is not an
+        // external squeeze; it is a past form of ourself, and it is the incumbent.
+        let incumbent = incumbent_for_plan(
+            self.plan_tx
+                .borrow()
+                .as_ref()
+                .map(|p| p.base_model.model_id.clone()),
+            (self.inherited_lane)().as_ref(),
+        );
         let demand = self.serving_demand();
         match plan_serving_stable(budget, candidates, incumbent.as_deref(), demand) {
             Some(plan) => {
@@ -4279,6 +4357,12 @@ mod tests {
         // can stamp (`llama_server`'s `note_real_decode` coverage does), which silently turns
         // the trust short-circuit on and reds these tests by scheduling order alone.
         daemon.set_decode_age_source(Arc::new(|| None));
+        // NO inherited lane — the fresh-machine state every plan test below assumes. Left to the
+        // default this reads the OPERATOR's real pidfile + lane registry, so a developer with a
+        // 27B serving would silently hand every planning test an incumbent it never declared.
+        // Same class of leak as the decode-age global above; caught by measurement in
+        // `serving_consumer` before it could ever be caught by a red.
+        daemon.set_inherited_lane(Arc::new(|| None));
         daemon
     }
 
@@ -4615,6 +4699,98 @@ mod tests {
         assert_eq!(wedge_heal_floor(41_216, 2, false, 34_048, 2), 41_216);
         // No healthy lane ever observed (cold boot) → plan through.
         assert_eq!(wedge_heal_floor(9_984, 2, false, 0, 0), 9_984);
+    }
+
+    /// The #438 boot geometry, in the shape taken from the live ledger (2026-08-19): a 27B whose
+    /// weights are ~19 GB is still resident from the previous generation, so the successor's
+    /// first sample of free VRAM reads ~6 GB. Only something small fits that; the 27B does not.
+    fn boot_squeeze() -> (HostBudget, Vec<ModelFootprint>) {
+        (
+            HostBudget {
+                usable_bytes: 6 * GB,
+                perf_cores: 6,
+            },
+            vec![
+                footprint_from_parts("qwen3-27b", 19 * GB, 8192, true).unwrap(),
+                footprint_from_parts("coder-4b", 3 * GB, 8192, true).unwrap(),
+            ],
+        )
+    }
+
+    fn inherited_27b() -> LaneRecord {
+        LaneRecord {
+            pid: 11341,
+            port: 58057,
+            role: crate::inference::lane_registry::LaneRole::Live,
+            model: "qwen3-27b".into(),
+            context_window: 25_075,
+            lanes: 4,
+        }
+    }
+
+    // what this catches: THE #438 boot downshift, measured live 2026-08-19. A successor core
+    // boots while its predecessor's 27B still holds ~45 GB, so the first plan honestly samples
+    // ~6 GB free and — with no incumbent — plainly selects the biggest thing that fits: a 14B at
+    // the floor. The predecessor was then reclaimed 1.2s later, freeing memory the plan had
+    // already spent. Counting the inherited lane as the incumbent re-arms the at-rest credit
+    // that exists for exactly this ("a model's OWN residency can never flap it out"), so the
+    // 27B holds. Regression here = every crash-and-restart silently demotes the served model.
+    #[tokio::test]
+    async fn a_lane_inherited_from_a_previous_generation_is_the_incumbent_the_first_plan_defends() {
+        let mut daemon = daemon_with(Arc::new(FakeServer::healthy(
+            Arc::new(AtomicUsize::new(0)),
+            true,
+        )));
+        daemon.set_inherited_lane(Arc::new(|| Some(inherited_27b())));
+
+        let (budget, candidates) = boot_squeeze();
+        daemon.publish_plan(budget, &candidates);
+
+        let plan = daemon.plan_tx.borrow().clone().expect("a plan");
+        assert_eq!(
+            plan.base_model.model_id, "qwen3-27b",
+            "the inherited 27B is ours and its bytes are ours to reclaim — the successor must \
+             not flee its own predecessor onto a 14B"
+        );
+    }
+
+    // what this catches: the NEGATIVE control for the test above — proof the fixture really is
+    // a squeeze and the assertion is not vacuous. Same budget, same candidates, no inherited
+    // lane: the planner correctly downshifts, because on a genuinely 6 GB machine a 27B does
+    // not fit. If this ever also returns the 27B, the test above proves nothing.
+    #[tokio::test]
+    async fn without_a_past_form_of_ourself_a_six_gigabyte_box_really_does_downshift() {
+        let daemon = daemon_with(Arc::new(FakeServer::healthy(
+            Arc::new(AtomicUsize::new(0)),
+            true,
+        )));
+
+        let (budget, candidates) = boot_squeeze();
+        daemon.publish_plan(budget, &candidates);
+
+        let plan = daemon.plan_tx.borrow().clone().expect("a plan");
+        assert_eq!(
+            plan.base_model.model_id, "coder-4b",
+            "with no incumbent to credit, 6 GB genuinely cannot hold a 19 GB model"
+        );
+    }
+
+    // what this catches: precedence. Once THIS core has published a decision, its own plan is
+    // the incumbent and a stale registry record must never override it — otherwise a leftover
+    // .lane file would pin the model forever against every later replan.
+    #[test]
+    fn a_published_plan_outranks_an_inherited_lane() {
+        assert_eq!(
+            incumbent_for_plan(Some("coder-14b".into()), Some(&inherited_27b())).as_deref(),
+            Some("coder-14b"),
+        );
+        // …and with nothing published, the inherited lane speaks.
+        assert_eq!(
+            incumbent_for_plan(None, Some(&inherited_27b())).as_deref(),
+            Some("qwen3-27b"),
+        );
+        // …and a true cold boot still has no incumbent at all.
+        assert_eq!(incumbent_for_plan(None, None), None);
     }
 
     // what this catches: a published plan drives a reconcile that brings the
