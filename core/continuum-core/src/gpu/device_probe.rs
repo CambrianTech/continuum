@@ -426,6 +426,95 @@ mod tests {
         assert_eq!(m.derived_pressure(), Some(0.75));
     }
 
+    /// What this catches: **a new backend bypassing this module entirely.**
+    ///
+    /// The split above is only load-bearing if backends actually go through it. A
+    /// Vulkan / MLX / ROCm author who writes `impl GpuMonitor for VulkanMonitor`
+    /// gets a compiling, plausible-looking adapter that re-owns retention and the
+    /// unknown state — and is free to re-invent the `unwrap_or(total)` lie a third
+    /// time. Prose in a module header cannot stop that; this can.
+    ///
+    /// The rule: exactly TWO `impl GpuMonitor` sites exist tree-wide — this
+    /// module's blanket impl for `MonitoredGpu<P>`, and `MockMonitor` (a test
+    /// double, scripted by definition, which is why it is exempt and named here
+    /// rather than pattern-excused). Everything else implements `GpuDeviceProbe`.
+    ///
+    /// Comment-stripped before matching so a doc mention of `impl GpuMonitor`
+    /// cannot satisfy OR trip the check — the same predicate discipline as the
+    /// module-wiring audit in `registry.rs`.
+    #[test]
+    fn every_gpu_backend_goes_through_the_shared_base() {
+        /// The only impls allowed to exist, each with the reason it is not a
+        /// backend. Adding a row is a DESIGN decision, not a formality.
+        const SANCTIONED: &[(&str, &str)] = &[
+            (
+                "gpu/device_probe.rs",
+                "the blanket impl every backend inherits — this IS the base",
+            ),
+            (
+                "gpu/monitor.rs",
+                "MockMonitor: a scripted test double with no device behind it",
+            ),
+            (
+                "cognition/host_capability_probe.rs",
+                "a #[cfg(test)] fake device inside that module's own tests — no hardware, \
+                 no sampling loop. Found BY this guard on its first run, which is the point. \
+                 It is a second test double next to MockMonitor and should collapse into it \
+                 (CLAUDE.md: one fixture per concern) — sanctioned as a test, not as a backend.",
+            ),
+        ];
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut offenders = Vec::new();
+        let mut stack = vec![root.clone()];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().is_none_or(|e| e != "rs") {
+                    continue;
+                }
+                let Ok(src) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                // Strip line comments + doc comments so prose can neither fake
+                // nor trip the check.
+                let code: String = src
+                    .lines()
+                    .filter(|l| !l.trim_start().starts_with("//"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if !code.contains("impl GpuMonitor for") {
+                    continue;
+                }
+                let rel = path
+                    .strip_prefix(&root)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if !SANCTIONED.iter().any(|(f, _)| rel == *f) {
+                    offenders.push(rel);
+                }
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "these files implement GpuMonitor directly, bypassing the shared base: {offenders:?}\n\
+             A GPU backend implements `GpuDeviceProbe` (how to ask THIS device) and wraps in \
+             `MonitoredGpu` — it does NOT own retention, the unknown state, the tick, or pressure. \
+             That ownership split is what makes the `unwrap_or(total)` class unrepresentable; \
+             see this module's header. If a new impl is genuinely not a backend, add it to \
+             SANCTIONED with its reason."
+        );
+    }
+
     /// What this catches: a device reporting `total_bytes == 0` (no device, or a
     /// parse failure) producing a divide-by-zero or a NaN pressure.
     #[test]
