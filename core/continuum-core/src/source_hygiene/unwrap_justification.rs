@@ -38,6 +38,10 @@ use super::{split_code_and_comment, SourceRule, SourceFile, Violation};
 /// are the shape of a reason, which is worse than nothing because it silences the
 /// guard. Twelve characters is roughly "unwrap: seeded" — short, but forced to name
 /// a fact.
+// context-budget-exempt: this bounds the length of a COMMENT a human types, not a
+// window, prompt, or token budget — it never scales with the served context and a
+// fraction of the window would be meaningless here. The de-hardcode guard matched it
+// on the `CHARS` suffix alone, which is the guard erring toward noise on purpose.
 const MIN_JUSTIFICATION_CHARS: usize = 12;
 
 /// The call shapes this rule watches, longest-first so `unwrap_or_else` is not
