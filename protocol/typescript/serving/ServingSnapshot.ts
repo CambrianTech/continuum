@@ -111,4 +111,20 @@ vision_base_url?: string,
  * path selects and stamps on its result. Same `None`-iff-not-ready
  * contract as `vision_base_url`.
  */
-vision_model?: string, };
+vision_model?: string, 
+/**
+ * THE MODEL THIS NODE IS BRINGING UP RIGHT NOW, if a lane is loading.
+ *
+ * Before this field the snapshot was BINARY — ready with a model, or not-ready with
+ * `active_model: None` — so throughout the entire load window the pipe FORGOT what
+ * it was loading. Measured live 2026-08-19 on a cold boot: physical climbed
+ * 29.90 → 36.88 GB while `serving` attributed 0.00 GB, because the consumer had
+ * nothing to name. Those bytes read as unowned, unowned reads as immovable,
+ * `available` fell to 18.79 GB, and a planner running in that window sizes against a
+ * machine that looks two thirds full of someone else's memory.
+ *
+ * The bytes exist from the moment the process is spawned, not from the moment it
+ * answers `/props`. Readiness is a claim about SERVICE; residency is a fact about
+ * MEMORY, and they do not start together.
+ */
+loading_model?: string, };
