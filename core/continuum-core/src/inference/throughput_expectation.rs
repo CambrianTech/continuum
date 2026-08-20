@@ -29,6 +29,55 @@ pub struct ThroughputBaseline {
     pub accelerator: &'static str,
     pub expected_tok_s: f64,
     pub source: &'static str,
+    /// The SERVED WINDOW this rate was measured at, in tokens.
+    ///
+    /// Load-bearing, and its absence was a live mis-attribution (measured
+    /// 2026-08-20, Qwen3.8-27B on this M5): the catalog carried 17.2 tok/s
+    /// taken at a 19,712 window, the live lane was serving at 89,280 — 4.5×
+    /// the KV to walk per decoded token on UMA — and three samples came in at
+    /// 2.7/6.2/7.8 tok/s. The collapse alarm's own text names CPU fallback,
+    /// pager thrash and GPU contention as the suspects, so a reader would
+    /// have gone hunting a defect that was not there. Decode rate is a
+    /// function of KV size; a rate without its window is not a comparable
+    /// quantity, and the struct already refuses to "present an unsourced
+    /// baseline as fact" — an unwindowed one is the same class.
+    ///
+    /// `None` means the window was genuinely not recorded when the number was
+    /// taken. That is an honest absence, NOT a zero: consumers must treat it
+    /// as "no like-for-like comparison available" rather than silently
+    /// assuming the live window matches ([[unknown-is-not-a-quantity]]).
+    pub measured_at_window: Option<u32>,
+}
+
+/// How far apart two served windows must be before a throughput comparison
+/// between them stops being like-for-like.
+///
+/// Decode cost per token grows with resident KV, so the same lane legitimately
+/// reads slower at a larger window with NOTHING wrong. 2× is deliberately
+/// coarse — same order of magnitude is still a fair comparison, and this gate
+/// exists to suppress mis-attribution, not to excuse real collapse.
+const WINDOW_COMPARABILITY_FACTOR: f64 = 2.0;
+
+impl ThroughputBaseline {
+    /// Whether this baseline can be fairly compared against a lane serving
+    /// `live_window` tokens.
+    ///
+    /// `false` does NOT mean "healthy" — it means this baseline cannot say.
+    /// A caller that still wants to alarm must say out loud that the
+    /// expectation was taken at a different window, or it will send a reader
+    /// hunting the wrong cause.
+    pub fn comparable_at(&self, live_window: u32) -> bool {
+        let Some(measured) = self.measured_at_window else {
+            // Never recorded → no basis to claim comparability either way.
+            return false;
+        };
+        if measured == 0 || live_window == 0 {
+            return false;
+        }
+        let (a, b) = (measured as f64, live_window as f64);
+        let spread = if a > b { a / b } else { b / a };
+        spread <= WINDOW_COMPARABILITY_FACTOR
+    }
 }
 
 /// How measured decode throughput compares to the expected baseline. `ratio`
@@ -151,6 +200,10 @@ pub const SEED_BASELINES: &[ThroughputBaseline] = &[
         accelerator: "apple-m5",
         expected_tok_s: 67.8,
         source: "MEASURED: continuum tests/llamacpp_metal_throughput.rs single-seq, 2026-06",
+        // Window not recorded when this number was taken (pre-#440). Honest
+        // absence: consumers get `comparable_at() == false` rather than a
+        // silent assumption that the live lane matches.
+        measured_at_window: None,
     },
     ThroughputBaseline {
         model: "qwen3-8b",
@@ -161,6 +214,10 @@ pub const SEED_BASELINES: &[ThroughputBaseline] = &[
         // prompt-eval was ~960 tok/s. This anchors the 4B estimate below.
         expected_tok_s: 221.7,
         source: "MEASURED: DMR llama.cpp-cuda slot timing, RTX 5090 32GB, 2026-06-15",
+        // Window not recorded when this number was taken (pre-#440). Honest
+        // absence: consumers get `comparable_at() == false` rather than a
+        // silent assumption that the live lane matches.
+        measured_at_window: None,
     },
     ThroughputBaseline {
         model: "qwen3.5-4b",
@@ -173,6 +230,10 @@ pub const SEED_BASELINES: &[ThroughputBaseline] = &[
         // fallen-off-GPU regression worth screaming about.
         expected_tok_s: 180.0,
         source: "ESTIMATE: conservative floor (8B measured 221.7 same GPU); REFINE with a 4B run",
+        // Window not recorded when this number was taken (pre-#440). Honest
+        // absence: consumers get `comparable_at() == false` rather than a
+        // silent assumption that the live lane matches.
+        measured_at_window: None,
     },
 ];
 
