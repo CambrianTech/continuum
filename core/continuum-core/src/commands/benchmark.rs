@@ -1656,9 +1656,15 @@ impl ActionCommand for BenchmarkDispatch {
                     crate::modules::work::dispatch_staged_swe_solve(
                         ctx,
                         &airc,
-                        *who_peer,
-                        card_id,
-                        Some(room.room_id.as_uuid()),
+                        crate::modules::work::StagedSolveDispatch {
+                            // The roster still carries bare `(String, Uuid)` tuples — a
+                            // loose-id smell of its own (#396). Typed at THIS boundary so
+                            // the dispatch cannot confuse a peer with a room; typing the
+                            // roster itself is that card's work, not a silent widening here.
+                            claimer: crate::identity::PeerId::from_uuid(*who_peer),
+                            card: card_id,
+                            room: room.room_id,
+                        },
                     )
                     .await;
                     solves_fired += 1;
