@@ -149,6 +149,18 @@ pub struct ServingDemand {
     /// UNCLAMPED, so it is free to exceed what is currently served. That excess is the
     /// signal that the window is too small; nothing else in the system can produce it.
     pub window_tokens: u32,
+    /// Whether `window_tokens` came from MEASUREMENT or from [`BOOTSTRAP_WORKING_SET`].
+    ///
+    /// The two are not interchangeable and the plan must not present them as if they
+    /// were. Measured 2026-08-20: after a reboot the plan served 16384 and reported
+    /// `bound_by=demand` — i.e. "the minds asked for exactly this much" — when no mind
+    /// had asked for anything at all, because no turn had been measured yet. That is a
+    /// receipt asserting a fact nobody established, the [[#151]]/[[#357]] class, and it
+    /// is the more dangerous kind: the probe's own doc says `bound_by` exists so a
+    /// window that fails to grow is falsifiable, distinguishing "the host could not fit
+    /// more" from "the measured demand did not ask for more". A bootstrap prior wearing
+    /// the `demand` label defeats exactly that.
+    pub measured: bool,
 }
 
 impl ServingDemand {
@@ -165,7 +177,9 @@ impl ServingDemand {
     pub fn new(lanes: u32, measured: Option<u32>) -> Self {
         Self {
             lanes,
-            window_tokens: measured.unwrap_or(BOOTSTRAP_WORKING_SET),
+            window_tokens: measured.unwrap_or(BOOTSTRAP_WORKING_SET), // JUSTIFIED unwrap_or: cold start is a real state, not a missing measurement; the substituted value is a declared PRIOR and its provenance is preserved on `measured` below rather than discarded here
+            measured: measured.is_some(), // the provenance `unwrap_or` would otherwise destroy — UNKNOWN must stay distinguishable from a quantity
+
         }
     }
 }
@@ -799,6 +813,35 @@ mod tests {
     use super::*;
 
     const GB: u64 = 1_000_000_000;
+
+    // what this catches: a bootstrap prior being reported as measured demand. Live
+    // 2026-08-20 the plan served 16384 with `bound_by=demand` and 33 GB of VRAM free —
+    // reading as "the minds asked for exactly this", when no turn had been measured at
+    // all. The number is fine as a PRIOR; laundering it into a measurement is what made
+    // the window's failure to grow unfalsifiable. Pins provenance to survive `unwrap_or`.
+    #[test]
+    fn a_bootstrap_window_never_claims_to_be_measured_demand() {
+        let cold = ServingDemand::new(4, None);
+        assert_eq!(cold.window_tokens, BOOTSTRAP_WORKING_SET);
+        assert!(
+            !cold.measured,
+            "no turn has been assembled, so the window is a prior — not something a mind asked for"
+        );
+
+        let warm = ServingDemand::new(4, Some(31_834));
+        assert_eq!(warm.window_tokens, 31_834);
+        assert!(warm.measured);
+
+        // The degenerate case that makes the flag load-bearing rather than cosmetic: a
+        // real measurement that happens to EQUAL the bootstrap value is still measured,
+        // so the two states can never be told apart by comparing the number alone.
+        let coincidence = ServingDemand::new(1, Some(BOOTSTRAP_WORKING_SET));
+        assert_eq!(coincidence.window_tokens, cold.window_tokens);
+        assert!(
+            coincidence.measured && !cold.measured,
+            "identical windows, opposite provenance — the value cannot carry this fact"
+        );
+    }
 
     // kv_per_token in BYTES; ctx is the model's trained ceiling. The served
     // window is DERIVED from (footprint ∩ host) by the planner, never passed in.

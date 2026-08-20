@@ -2634,7 +2634,7 @@ impl ServingDaemonModule {
                         // deadband entirely (reconcile short-circuits), so a grant
                         // that flaps while this reads 0 is a different defect from one
                         // that flaps with a real spike — and they were indistinguishable.
-                        spike_bytes = spike_of_served.unwrap_or(0),
+                        spike_bytes = spike_of_served.unwrap_or(0), // JUSTIFIED unwrap_or: probe-only, and 0 is not a fabricated measurement — it is the documented DISABLED sentinel the deadband already keys on, with `spike_known` on the next line carrying the Option's provenance so a reader can still tell "no spike" from "no data"
                         spike_known = spike_of_served.is_some(),
                         // WHICH bound decided the window. Without this the plan is
                         // unfalsifiable: a window that does not grow after demand rises
@@ -2648,11 +2648,20 @@ impl ServingDaemonModule {
                         served_window = plan.served_context_window,
                         demand_window = demand.window_tokens,
                         demand_lanes = demand.lanes,
-                        bound_by = if plan.served_context_window >= demand.window_tokens {
+                        // `bootstrap` is a THIRD state, not a flavour of `demand`
+                        // (2026-08-20). A cold plan reporting `demand` claims the minds
+                        // asked for 16384 when none had asked for anything — and that is
+                        // the one reading this field exists to rule out. Ordered so the
+                        // unmeasured case wins: with no measurement there is no demand
+                        // bound to be within, so calling it demand-bound is vacuous.
+                        bound_by = if !demand.measured {
+                            "bootstrap"
+                        } else if plan.served_context_window >= demand.window_tokens {
                             "demand"
                         } else {
                             "host-fit"
                         },
+                        demand_measured = demand.measured,
                         "serving plan recomputed",
                     );
                     // Warm-slot oversubscription for the ADOPTED plan (#266) —
