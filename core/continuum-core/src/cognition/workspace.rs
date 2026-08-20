@@ -614,6 +614,72 @@ pub struct Burst {
     /// The text projection of `turns` (+ room header) — what `world_state` IS.
     /// Materialized once at construction so the hot path never re-renders.
     pub rendered: String,
+    /// WHY this turn is happening — see [`Cause`].
+    ///
+    /// It lives on the `Burst` because the burst IS the perception the turn responds
+    /// to: threading the cause as a separate parameter through every driver would let
+    /// the two drift, and provenance belongs on the thing whose provenance it is.
+    pub cause: Cause,
+}
+
+/// Why a turn is happening — the thing it is a RESPONSE to, and the root of its
+/// causal thread (CAUSAL-MEMORY-GRAPH.md §3a).
+///
+/// Joel's law, 2026-08-18: *any stimulus has a response — that is what comes into a
+/// system, like any input to a channel — therefore needing causal linkage.* A mind
+/// whose acts chain only to each other has instants, not experience; it can say "I ran
+/// a command" but never "I ran a command BECAUSE she asked". Without a head on the
+/// thread there is no path in the graph from a work card to the acts done for it, and
+/// no query can show a link that was never recorded.
+///
+/// This is an ENUM rather than an `Option<Uuid>` on purpose. The optional form made
+/// "nothing caused this" and "nobody wired this up" the same value, so a burst site
+/// that simply forgot was indistinguishable from one being honest — and the compiler
+/// helped it forget. Naming the reasons separately means an uncaused turn is a
+/// measurable fact ([`Cause::Ambient`]) instead of a silence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cause {
+    /// A discrete input to a channel — the message, kickoff or event this turn
+    /// answers — already admitted as an engram. The thread has a head, so the first
+    /// act carries a real `CausedBy` edge back to what provoked it.
+    Stimulus(uuid::Uuid),
+
+    /// A self-directed wake: her own cadence noticed the world had changed, with no
+    /// single admitted input to point at. The idle tick perceives AMBIENT state (a
+    /// re-read of the room, the board, her work) rather than an arrival, so there is
+    /// nothing to root in and inventing one would be a lie.
+    ///
+    /// Honest, but not the end state: the ambient sources are projections that drop
+    /// their items' identity, so an idle turn *cannot yet* name the change that woke
+    /// it. Giving deliveries a handle back to their source item is what would let this
+    /// become a `Stimulus` — see `docs/architecture/CONTENT-TRAVELS-BY-HANDLE.md`.
+    Ambient,
+
+    /// A burst assembled with no live antecedent at all: eval exams, replay fixtures,
+    /// faculty tests. Distinct from [`Ambient`](Self::Ambient) so measurements of how
+    /// many LIVE turns run uncaused are not diluted by fixtures.
+    Synthetic,
+}
+
+impl Cause {
+    /// The engram a chain rooted here begins from — `Some` only for a real stimulus.
+    /// Ambient and synthetic bursts have no antecedent, and reporting one they do not
+    /// have would fabricate an edge.
+    pub fn root(&self) -> Option<uuid::Uuid> {
+        match self {
+            Cause::Stimulus(id) => Some(*id),
+            Cause::Ambient | Cause::Synthetic => None,
+        }
+    }
+
+    /// Short tag for probes and receipts — the vocabulary a measurement groups by.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Cause::Stimulus(_) => "stimulus",
+            Cause::Ambient => "ambient",
+            Cause::Synthetic => "synthetic",
+        }
+    }
 }
 
 impl Burst {
@@ -622,8 +688,12 @@ impl Burst {
     /// `rendered` (so `world_state` is byte-identical to the old
     /// `build_workspace_burst`) but deliberately kept OUT of `turns` — room
     /// identity is standing context for the system prompt, not a conversation turn.
+    /// **Not for a live turn.** This constructor states [`Cause::Synthetic`] on your
+    /// behalf, which is true for an exam, a replay fixture or a faculty test and a lie
+    /// for anything a citizen actually lived. A live burst site must call
+    /// [`from_turns_at`](Self::from_turns_at) and say what caused it.
     pub fn from_turns(room: Uuid, turns: Vec<BurstTurn>) -> Self {
-        Self::from_turns_at(room, turns, None)
+        Self::from_turns_at(room, turns, None, Cause::Synthetic)
     }
 
     /// Like [`from_turns`](Self::from_turns) but stamps the persona's NOW into the
@@ -634,7 +704,15 @@ impl Burst {
     /// the live path passes wall-clock, the eval passes its pinned epoch (exams stay
     /// byte-reproducible), tests pass fixtures. Rendered at MINUTE granularity so
     /// the prompt prefix — and the serving KV cache — only changes once a minute.
-    pub fn from_turns_at(room: Uuid, turns: Vec<BurstTurn>, now_ms: Option<u64>) -> Self {
+    ///
+    /// `cause` is REQUIRED, not a builder step, because it is the one field a live
+    /// assembly site can silently forget. See [`Cause`].
+    pub fn from_turns_at(
+        room: Uuid,
+        turns: Vec<BurstTurn>,
+        now_ms: Option<u64>,
+        cause: Cause,
+    ) -> Self {
         use std::fmt::Write as _;
         let mut rendered = String::new();
         let _ = writeln!(rendered, "[room {room}]");
@@ -651,6 +729,7 @@ impl Burst {
             turns,
             rendered,
             now_ms,
+            cause,
         }
     }
 }
@@ -664,6 +743,9 @@ impl From<String> for Burst {
             turns: vec![BurstTurn::opaque(s.clone())],
             rendered: s,
             now_ms: None,
+            // A raw string arrives with no channel and no antecedent — a fixture, by
+            // construction. Honest, never invented.
+            cause: Cause::Synthetic,
         }
     }
 }
@@ -1601,6 +1683,24 @@ impl WorkspaceCycle {
         }
     }
 
+    /// How many acts these hands have executed, EVER — the monotonic counter, not
+    /// the capacity-bounded receipt ring ([`super::working_memory::WorkingMemory::actions_taken`]).
+    /// `None` for a pure-cognition cycle (no hands, so the question has no answer —
+    /// distinct from `Some(0)`, which is hands that have not acted yet).
+    ///
+    /// Exists so a LONG-RUNNING drive can report its own liveness WHILE it runs.
+    /// `drive_to_settle` returns its act count only at settlement, and a benchmark
+    /// attempt legitimately runs for hours — so every liveness surface downstream
+    /// (`benchmark/runs`, the bench board, the run-room panel) was reading a number
+    /// that could not move until the work was already over. Measured 2026-08-16:
+    /// two dispatched solves read `acts=0, stalled=false` for ten straight minutes
+    /// while their citizens were mid-turn, and the projection whose stated purpose
+    /// is "silence must never be ambiguous with progress" could not tell the two
+    /// apart. A wait-free atomic load, safe to poll on a heartbeat.
+    pub fn actions_taken(&self) -> Option<u64> {
+        self.acting.as_ref().map(|a| a.working_memory.actions_taken())
+    }
+
     /// Begin a memory-isolated measurement window over this cycle's hippocampus.
     ///
     /// `cognition/eval` drives the persona's REAL admission as it grades her, so
@@ -1985,6 +2085,72 @@ impl WorkspaceCycle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod causality {
+        use super::*;
+
+        // what this catches: a `Cause` variant gaining a root it has no right to.
+        // `Stimulus` is the ONLY antecedent — if `Ambient` or `Synthetic` ever
+        // returned an id, the graph would grow `CausedBy` edges pointing at engrams
+        // nothing admitted, which is worse than an unrooted chain: a fabricated cause
+        // reads as evidence. `Cause::root` is the single place that decision lives, so
+        // this pins it there.
+        #[test]
+        fn only_a_real_stimulus_is_ever_an_antecedent() {
+            let id = Uuid::new_v4();
+            assert_eq!(Cause::Stimulus(id).root(), Some(id));
+            assert_eq!(
+                Cause::Ambient.root(),
+                None,
+                "an idle tick has no admitted input — never invent one"
+            );
+            assert_eq!(
+                Cause::Synthetic.root(),
+                None,
+                "a fixture has no live antecedent — never invent one"
+            );
+        }
+
+        // what this catches: the SILENT default coming back. `cause` was once
+        // `Option<Uuid>` defaulting to `None` at construction, which made "nothing
+        // caused this" and "the author forgot" the same value — so the one live site
+        // I wired by hand looked identical to the three I hadn't. Making it a required
+        // constructor argument is the whole fix; this test fails to compile (not
+        // merely fails) if someone reintroduces a defaulted builder, and asserts the
+        // fixture constructors stay honestly Synthetic rather than quietly Ambient,
+        // which would pollute the live ambient-rate measurement with test noise.
+        #[test]
+        fn a_burst_cannot_be_built_without_saying_what_caused_it() {
+            let room = Uuid::new_v4();
+            let id = Uuid::new_v4();
+
+            let live = Burst::from_turns_at(room, Vec::new(), Some(1), Cause::Stimulus(id));
+            assert_eq!(live.cause.root(), Some(id));
+
+            assert_eq!(
+                Burst::from_turns(room, Vec::new()).cause,
+                Cause::Synthetic,
+                "the no-cause constructor is for fixtures and must say so"
+            );
+            assert_eq!(
+                Burst::from("a raw string".to_string()).cause,
+                Cause::Synthetic,
+                "a raw string arrives through no channel at all"
+            );
+        }
+
+        // what this catches: probe/receipt vocabulary drifting away from the variants,
+        // which would silently break any grouping done on `cause=` rows.
+        #[test]
+        fn every_cause_reports_a_distinct_stable_tag() {
+            let tags = [
+                Cause::Stimulus(Uuid::new_v4()).as_str(),
+                Cause::Ambient.as_str(),
+                Cause::Synthetic.as_str(),
+            ];
+            assert_eq!(tags, ["stimulus", "ambient", "synthetic"]);
+        }
+    }
 
     /// A canned faculty for tests — fixed contribution + salience.
     struct FixedFaculty(Contribution);

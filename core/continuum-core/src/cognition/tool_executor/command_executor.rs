@@ -239,6 +239,15 @@ fn fold_with_recovery(full: String, max: usize, persona_id: Uuid) -> String {
 /// citizen cannot summon this arm by guessing it.
 pub(crate) const NAMELESS_ARGS_SENTINEL: &str = "tools/<no name given>";
 
+/// Reserved pseudo-name for "the generation ended INSIDE the reasoning channel" —
+/// content empty, reasoning present, no liftable call anywhere in the thinking.
+/// Same uncallable namespace as [`NAMELESS_ARGS_SENTINEL`]; same contract:
+/// REPORTED, never executed. The teacher arm below is the accommodation for
+/// thinking models (any of them — the reasoning channel is an adapter fact, not a
+/// model sniff): her thinking already landed in working memory, so the next
+/// generation `drive_to_settle` grants starts from her own conclusions.
+pub(crate) const THINK_ONLY_SENTINEL: &str = "tools/<think-only turn>";
+
 fn persona_tool_error(attempted: &str, raw: String) -> String {
     // The MISSING-name case, which is not the wrong-name case and must not borrow its
     // sentence. Rendering "`X` is not a tool you can call" here would be actively
@@ -247,6 +256,23 @@ fn persona_tool_error(attempted: &str, raw: String) -> String {
     // English — the fence lifted nothing and, before this, reported nothing, so she
     // repeated the same shape until the deadline. Name the missing piece and show the
     // form; the args she already wrote are reusable as-is.
+    // The THINK-ONLY case: nothing she wrote was wrong and nothing was absent from a
+    // call — there was no call, no answer, no PASS; the whole generation stayed in the
+    // private reasoning channel. "not a tool you can call" would be false (she called
+    // nothing), and silence would be the dead turn this sentinel exists to break. Name
+    // what happened and the three commitment affordances; her reasoning is already in
+    // working memory, so the retry starts from her own conclusions.
+    if attempted == THINK_ONLY_SENTINEL {
+        return "Your whole generation was private reasoning — the turn ended inside the \
+                thinking channel, so nothing was said and nothing ran. Your thinking is \
+                saved in your working memory, but nobody else can see it, and it is not \
+                an answer or an action. Commit now: call a tool \
+                (`tool/name({\"arg\": \"value\"})`), or state your conclusion as plain \
+                text, or PASS. You have already done the thinking — put the conclusion \
+                in the answer."
+            .to_string();
+    }
+
     if attempted == NAMELESS_ARGS_SENTINEL {
         return format!(
             "You emitted tool ARGUMENTS with no tool NAME, so nothing ran:\n{raw}\n\n\
@@ -573,6 +599,22 @@ mod tests {
         assert!(
             out.contains("`frobnicate`"),
             "must name what she tried: {out}"
+        );
+    }
+
+    // what this catches: the think-only sentinel gets its OWN teacher sentence — it
+    // must name what happened (the generation ended inside the reasoning channel) and
+    // the three commitment affordances (tool call / plain answer / PASS). The
+    // "not a tool you can call" wording would be false here: she called nothing.
+    #[test]
+    fn think_only_sentinel_teaches_commitment_not_unknown_tool() {
+        let raw = "no Rust module handles command: 'tools/<think-only turn>'".to_string();
+        let out = persona_tool_error(THINK_ONLY_SENTINEL, raw);
+        assert!(out.contains("reasoning"), "{out}");
+        assert!(out.contains("PASS"), "{out}");
+        assert!(
+            !out.contains("not a tool you can call"),
+            "she called nothing — the unknown-tool wording is false here: {out}"
         );
     }
 

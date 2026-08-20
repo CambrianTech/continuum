@@ -979,9 +979,24 @@ async fn dream_pass(
     // (a magic constant that crushes a real context window is the "120k clamped to 3k →
     // all models suck" anti-pattern, Joel 2026-07-17 [[no-hardcoded-context-numbers-derive-from-the-live-window]]).
     // The prompt (system + observations) must leave room for the reply so
-    // prompt+reply ≤ n_ctx (no-context-shift). Reserve the SAME completion fraction the
-    // deliberation path uses — `completion_budget_for` = window/4 — for the distilled
-    // reply, and give the rest (×4 chars/token) to observations. When the window is
+    // prompt+reply ≤ n_ctx (no-context-shift). The reserve comes from `ContextBudget`'s own
+    // `latest_action_chars`, which is where a window-relative CHARS bound belongs.
+    //
+    // CORRECTED 2026-08-20 — this comment claimed to "reserve the SAME completion fraction
+    // the deliberation path uses — `completion_budget_for` = window/4". That was false in
+    // three ways and had been for as long as it was written: it named a function this code
+    // never called, and the deliberation reserve is neither `/4` nor a bare share any more
+    // (it yields to a mandatory prompt floor, and `completion_budget_for` is deleted). The
+    // claim SURVIVED only because both fractions happened to be a quarter, so the prose
+    // agreed with the arithmetic by coincidence rather than by construction.
+    //
+    // Deliberately NOT "fixed" by wiring this to the deliberation reserve. These are
+    // different budgets for different prompts — a distiller's reply is not a citizen's turn
+    // — and inventing a dependency to make a sentence true would couple two things that
+    // have no reason to move together. The honest fix is prose that describes what the code
+    // does.
+    //
+    // The rest (×4 chars/token) goes to observations. When the window is
     // unknown (mid-relaunch) fall back to the substrate floor MIN_SERVE_CTX (an established
     // constant, not an invented one), which the next ready tick supersedes.
     let distiller = distiller_for(&reflector);
@@ -1289,15 +1304,27 @@ async fn review_batch(
 /// supersessions from that fragment; the line is removed from the fact text
 /// either way when present. Only the LAST line is consulted — a fact whose
 /// body legitimately mentions the word "supersedes" is untouched.
+///
+/// The line is NORMALIZED before matching: surrounding markdown emphasis and
+/// backticks are stripped, and the keyword is matched case-insensitively. The
+/// verdict is the model's JUDGMENT; how it decorated the line is not part of
+/// it. Glass-boxed 2026-08-13 — a live `**SUPERSEDES: 3,6**` matched none of
+/// the three exact prefixes, so a real supersession ruling was DISCARDED and
+/// the marker stayed baked into the stored belief. Honor the emission idiom
+/// structurally, the same lesson as the tool-call formats.
 fn parse_supersedes_line(raw: &str, prior_beliefs: &[Engram]) -> (String, Vec<Uuid>) {
+    /// Markdown decoration a model may wrap the verdict line in.
+    const DECORATION: &[char] = &['*', '_', '`', '#', ' ', '\t'];
+    const KEYWORD: &str = "SUPERSEDES:";
+
     let Some(last) = raw.lines().last() else {
         return (raw.trim().to_string(), Vec::new());
     };
-    let trimmed = last.trim();
+    let trimmed = last.trim_matches(|c: char| DECORATION.contains(&c));
     let Some(rest) = trimmed
-        .strip_prefix("SUPERSEDES:")
-        .or_else(|| trimmed.strip_prefix("Supersedes:"))
-        .or_else(|| trimmed.strip_prefix("supersedes:"))
+        .get(..KEYWORD.len())
+        .filter(|head| head.eq_ignore_ascii_case(KEYWORD))
+        .map(|_| &trimmed[KEYWORD.len()..])
     else {
         return (raw.trim().to_string(), Vec::new());
     };
@@ -2040,5 +2067,55 @@ mod tests {
         // Out-of-range + junk indices are ignored, valid ones kept.
         let (_body, ids) = parse_supersedes_line("fact\nSUPERSEDES: 0, 2, 9, banana", &priors);
         assert_eq!(ids, vec![priors[1].id], "only the in-range index maps");
+    }
+
+    // what this catches: a DECORATED verdict line silently discarding the
+    // model's ruling. Glass-boxed live 2026-08-13 — probe dream.review.raw_tail
+    // carried `**SUPERSEDES: 3,6**`, which matched none of the three exact
+    // prefixes, so the else-branch returned "no supersessions" AND left the
+    // marker baked into the stored belief. Both halves failed silently: the
+    // judgment was lost (#221's review no-ops) and the belief was contaminated.
+    // Goes RED if the normalization is ever narrowed back to exact prefixes.
+    #[test]
+    fn a_decorated_verdict_line_is_still_the_models_judgment() {
+        let mk = |content: &str| Engram {
+            id: Uuid::new_v4(),
+            context_id: None,
+            kind: crate::persona::engram::EngramKind::Semantic,
+            content: content.to_string(),
+            origin: crate::persona::engram::EngramOrigin::SelfReflection {
+                parent_engram_id: Uuid::nil(),
+            },
+            recall_keys: vec![],
+            admitted_at_ms: 1,
+            trust_state_at_admission: crate::persona::engram::TrustState::SelfTrust,
+            admission_trace_id: None,
+        };
+        let priors = vec![mk("one"), mk("two"), mk("three")];
+
+        // The exact live shape: bold-wrapped on BOTH ends, so the trailing `**`
+        // also has to come off or `3**` fails to parse as an index.
+        let (body, ids) = parse_supersedes_line("A consolidated fact.\n**SUPERSEDES: 1,3**", &priors);
+        assert_eq!(body, "A consolidated fact.", "the marker must never survive into the belief");
+        assert_eq!(ids, vec![priors[0].id, priors[2].id], "the ruling must be honored");
+
+        // Other decorations models reach for, and case variance.
+        for line in [
+            "*Supersedes: 2*",
+            "`SUPERSEDES: 2`",
+            "__supersedes: 2__",
+            "## SUPERSEDES: 2",
+            "**SUPERSEDES: 2**",
+        ] {
+            let (body, ids) = parse_supersedes_line(&format!("Fact.\n{line}"), &priors);
+            assert_eq!(body, "Fact.", "marker leaked into the body for {line:?}");
+            assert_eq!(ids, vec![priors[1].id], "ruling dropped for {line:?}");
+        }
+
+        // The explicit no-op still strips and supersedes nothing — the shape
+        // that reached #general as speech.
+        let (body, ids) = parse_supersedes_line("Fact.\n**SUPERSEDES: none**", &priors);
+        assert_eq!(body, "Fact.");
+        assert!(ids.is_empty(), "'none' is a decision to keep every prior");
     }
 }

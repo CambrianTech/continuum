@@ -184,13 +184,21 @@ impl RagContext {
 /// (`None`, legacy/test construction) and an unstamped ctx (`airc_room: None`,
 /// background consolidation) both keep pre-gate behavior. One logical decision,
 /// one place (the compression law); every abstain emits a probe naming both
-/// rooms so a mis-binding is diagnosable from the log, never a silent blank
-/// grounding block. [[identity-context-session-three-axes]]
+/// rooms so a mis-binding is diagnosable from the PROBE STREAM, never a silent
+/// blank grounding block. [[identity-context-session-three-axes]]
+///
+/// `probe!`, not `tracing::info!(probe_class = …)`. Glass-boxed 2026-08-14
+/// chasing the anchor_silent cascade (#346/#353/#264): this abstain WAS a bare
+/// `tracing::info!` carrying a `probe_class` field, which is the "tracing
+/// masquerading as a probe" move the concurrency guide forbids — it never
+/// reaches `~/.continuum/probes/`, so querying the probe stream for it returned
+/// a confident zero that meant nothing at all. An absence is only evidence when
+/// the instrument can produce a presence; this one couldn't.
 pub fn room_scope_allows(bound: Option<uuid::Uuid>, ctx: &RagContext, source_id: &str) -> bool {
     match (bound, ctx.airc_room.as_ref()) {
         (Some(b), Some(t)) if t.as_uuid() != b => {
-            tracing::info!(
-                probe_class = "rag.room_gate.abstain",
+            crate::probe!(
+                class = "rag.room_gate.abstain",
                 source = %source_id,
                 bound_room = %b,
                 turn_room = %t.as_uuid(),
@@ -294,6 +302,41 @@ pub struct ReservedTokens {
 impl ReservedTokens {
     pub fn total(self) -> u32 {
         self.system.saturating_add(self.completion)
+    }
+
+    /// THE window-scaled reservation shape (#424 dedup — this derivation was
+    /// byte-identical in `unified.rs` and `rag_inspect.rs`; one logical
+    /// decision lives in one place). Reservations scale as a percentage of
+    /// the window per [[intent-driven-api-not-hot-patches]]: a 2048-window
+    /// persona can't reserve a flat 4000 for completion (negative headroom →
+    /// all sources get 0 → cognition fires with no RAG content → LLM defaults
+    /// to the grammar-shortest "will_respond=false" attractor), while an
+    /// M-series 32k persona shouldn't be pinned to Compat-tier crumbs.
+    ///
+    /// - system: 10% of window, clamped [128, 512]
+    /// - completion: 25% of window, clamped [256, 4_000]
+    ///
+    /// This is a FALLBACK shape, not a budgeter: the substrate's real
+    /// budgeter (profile/model-characteristic driven) can override via a
+    /// richer reservation API. NOTE the 4_000 completion ceiling is the RAG
+    /// *reservation* only — the generation ceiling itself is deliberately
+    /// uncapped (`llm_deliberation_faculty::completion_budget_for`, Joel
+    /// 2026-07-13: stop choking context); whether this reservation should
+    /// follow it up on large windows is an open budgeting question, not a
+    /// dedup question.
+    pub fn scaled_for_window(context_window: u32) -> Self {
+        Self {
+            system: (context_window / 10).clamp(128, 512),
+            completion: (context_window / 4).clamp(256, 4_000),
+        }
+    }
+
+    /// Tokens left for sources after this reservation, floored at 512 so a
+    /// tiny window still delivers *some* context instead of zeroing every
+    /// source. Sibling of [`Self::scaled_for_window`] — both call sites
+    /// computed this identically too.
+    pub fn headroom_within(self, context_window: u32) -> u32 {
+        context_window.saturating_sub(self.total()).max(512)
     }
 }
 
@@ -1362,6 +1405,32 @@ mod tests {
                 s.source_id,
             );
         }
+    }
+
+    /// What this catches: the window-scaled reservation stays ONE derivation
+    /// with the documented shape — a second hand-copied variant (the exact
+    /// duplication this replaced across unified.rs / rag_inspect.rs) shows up
+    /// as a drift here. Also pins the headroom floor: a tiny window must
+    /// still deliver ≥512 tokens to sources, never zero. regression for #424
+    #[test]
+    fn reserved_tokens_scaled_shape_is_the_one_derivation() {
+        // Compat-tier 2048: percentages, floors active.
+        let small = ReservedTokens::scaled_for_window(2048);
+        assert_eq!(small.system, 204); // 10%, inside [128, 512]
+        assert_eq!(small.completion, 512); // 25%, inside [256, 4_000]
+        assert_eq!(small.headroom_within(2048), 2048 - 204 - 512);
+
+        // M-series 32k: both ceilings engage.
+        let big = ReservedTokens::scaled_for_window(32_768);
+        assert_eq!(big.system, 512);
+        assert_eq!(big.completion, 4_000);
+        assert_eq!(big.headroom_within(32_768), 32_768 - 4_512);
+
+        // Degenerate window: floors dominate, headroom floor holds — sources
+        // still get 512, never zero (the zero-budget annihilation class, #259).
+        let tiny = ReservedTokens::scaled_for_window(256);
+        assert_eq!((tiny.system, tiny.completion), (128, 256));
+        assert_eq!(tiny.headroom_within(256), 512);
     }
 }
 

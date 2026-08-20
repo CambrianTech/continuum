@@ -484,7 +484,9 @@ async fn serve_persona_loop_inner(
                 // #385-wedging it (glass-boxed 2026-08-10: resident_personas=4 vs
                 // warm_slots=1, every self-tick died on "no TOKEN progress for 90s").
                 // The permit is sized to the LIVE served lane count (LaneAdmission ←
-                // set_served_lane_count) and HELD across the whole self-cycle, so ambient
+                // set_served_lane_count — true since 2026-08-17; it was a hardcoded 1 for
+                // the whole time this comment claimed otherwise) and HELD across the whole
+                // self-cycle, so ambient
                 // concurrency is bounded to real capacity no matter when everyone woke —
                 // the surplus minds genuinely yield toward rest instead of stampeding.
                 // Directed turns still bypass entirely (they were named). Self-tick and
@@ -495,17 +497,78 @@ async fn serve_persona_loop_inner(
                         Some(permit) => permit,
                         None => {
                             next_beat = (next_beat + next_beat / 2).min(rest_cap);
+                            // A YIELD IS NOT A REST — do NOT compound the beat here.
+                            //
+                            // The backoff below (after a real cycle) is earned: she THOUGHT,
+                            // the room had nothing new, so she rests deeper. A yield is the
+                            // opposite — she never ran. A peer held the single ambient slot,
+                            // she learned nothing, and there is nothing to rest ON.
+                            //
+                            // Compounding it built a STARVATION RATCHET, measured live
+                            // 2026-08-17 on this box: the ambient pool was a hardcoded 1 and 24
+                            // hosted citizens, so ~23 yield on every beat. At 1.5× per yield
+                            // a citizen crosses 15s → the 240s `rest_cap` in ~8 yields — 16×
+                            // slower — and STAYS there, because the only two resets are a
+                            // successful self-cycle (which the ratchet now denies her) and an
+                            // inbound Msg. Transient contention became permanent slowness, and
+                            // it deepened as the roster grew: measured ONE self-tick across 24
+                            // citizens in 40 minutes, on a lane that was healthy and decoding
+                            // the whole time.
+                            //
+                            // Leaving the beat UNCHANGED is the minimal correct rule: her
+                            // cadence stays whatever her own history earned, contention can no
+                            // longer slow her, and the identity-derived `phase` still keeps the
+                            // retries desynced so no herd forms. Yielding stays cheap — the
+                            // permit is a non-blocking try and perception work all happens
+                            // inside `run_self_cycle`, below this gate.
+                            next_beat = next_beat_after(
+                                BeatOutcome::YieldedNoSlot,
+                                next_beat,
+                                engaged_beat,
+                                rest_cap,
+                            );
+                            // Make the yield VISIBLE, at ≤1 row/min for the whole process.
+                            // Without this the yield path emits nothing, so a window with
+                            // zero `persona.selftick.*` reads identically whether one citizen
+                            // is mid-turn holding the only lane or the roster is dead —
+                            // resolving that took a manual /slots curl on 2026-08-17. Per-yield
+                            // rows would be ~92/min at this roster size and would drown the
+                            // stream (#399), so the admission gate rate-limits and only the
+                            // winner of its compare-exchange reports.
+                            if let Some(yields) =
+                                crate::cognition::resource_admission::take_ambient_yield_report(
+                                    std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|d| d.as_millis() as u64)
+                                        .unwrap_or(0),
+                                )
+                            {
+                                crate::probe!(
+                                    class = "persona.selftick.starved",
+                                    yields_since_last_report = yields,
+                                    total_yields =
+                                        crate::cognition::resource_admission::ambient_yields(),
+                                    "ambient turns yielded — the pool was full. NOT a fault: \
+                                     this is what contention looks like when citizens outnumber \
+                                     non-directed lanes. Rate-limited to ≤1 row/min."
+                                );
+                            }
                             continue;
                         }
                     };
                 let before = last_burst_fp;
                 run_self_cycle(ctx, conversation, &opts, &mut last_burst_fp).await;
                 drop(_self_tick_permit);
-                next_beat = if last_burst_fp != before {
-                    engaged_beat
-                } else {
-                    (next_beat + next_beat / 2).min(rest_cap)
-                };
+                next_beat = next_beat_after(
+                    if last_burst_fp != before {
+                        BeatOutcome::Engaged
+                    } else {
+                        BeatOutcome::NothingNew
+                    },
+                    next_beat,
+                    engaged_beat,
+                    rest_cap,
+                );
                 continue;
             }
             // A message means life in the room — snap back to a quick beat so she's present
@@ -690,6 +753,16 @@ async fn serve_persona_loop_inner(
         // for the complete per-turn record. The `respond_inner`-level
         // probes (`persona.response.enter` etc.) live INSIDE the
         // cognition; this one names the airc-boundary turn.
+        // Cognition pulse: this stamp is what EARNS her claim renewals
+        // (cognition_pulse.rs) — a turn starting, even one that later defers
+        // on serving pressure, is proof she is working her holds.
+        crate::persona::cognition_pulse::touch(
+            ctx.identity.peer_id.as_uuid(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or_default(),
+        );
         crate::probe!(
             class = "persona.turn.start",
             persona = %ctx.identity.agent_name,
@@ -702,16 +775,19 @@ async fn serve_persona_loop_inner(
         );
 
         // ===========================================================
-        // The brain services the turn through the canonical cognition
-        // pipeline — `persona::response::respond(RespondInput)`. This
-        // is the agent contract Joel and I have been building for a
-        // year: shared analysis (single-flight cache) → specialty
-        // scoring → genome activate → evaluate_response (adapter-
-        // translated, model-canonical tool calls + multi-modal) →
-        // clean_and_validate → tool_executor → audit → record_turn.
+        // The brain services the turn through the WorkspaceCycle:
+        // admit → build_workspace_turns → Burst → workspace cycle
+        // (RecallFaculty feeds the prompt, deliberation decides,
+        // act→observe drives to settle). That is the live path below.
+        //
+        // NOT `persona::response::respond(RespondInput)` — that verb
+        // only has one caller, PersonaServiceModule, which the module
+        // audit declares UNWIRED ("shadowed", runtime/registry.rs) so
+        // the respond path is dead code, kept only until the verbs it
+        // owns are dismantled or re-homed.
         //
         // See docs/architecture/PERSONA-COGNITION-PIPELINE.md for the
-        // full pipeline and the bypass this commit replaces.
+        // full pipeline.
         //
         // NOT a `will_respond + response_text` chatbot contract. NOT
         // a parallel rag_inspect bypass. The verbs in `cognition/`
@@ -755,6 +831,11 @@ async fn serve_persona_loop_inner(
         // 2026-06-03 "introspect all rag" directive). The ranked Vec is no longer
         // threaded into a per-turn RespondInput (that path is gone); only the side-
         // effects and the admit remain.
+        // The engram of the message that woke this turn — the root its acts chain back
+        // to. Bound here (outer scope) because it is written at admission and read at
+        // burst assembly, two blocks apart.
+        let mut wake_engram: Option<uuid::Uuid> = None;
+
         {
             let cognition = ctx.cognition.lock().await;
             // recall BEFORE admit so the ranking is "what I knew going in" — the
@@ -782,18 +863,33 @@ async fn serve_persona_loop_inner(
             let admit_started = std::time::Instant::now();
             let admit_result = cognition.admission.admit(&inbox_msg, None);
             phase_timings.admit_ms = admit_started.elapsed().as_millis() as u64;
-            if let Err(e) = admit_result {
-                tracing::warn!(
-                    lamport = msg.lamport,
-                    error = %e,
-                    "admission.admit failed — engram not formed this turn"
-                );
-            } else {
-                tracing::info!(
-                    lamport = msg.lamport,
-                    engram_count = cognition.admission.engram_count(),
-                    "admitted incoming → L2 store"
-                );
+            match &admit_result {
+                Err(e) => {
+                    tracing::warn!(
+                        lamport = msg.lamport,
+                        error = %e,
+                        "admission.admit failed — engram not formed this turn"
+                    );
+                }
+                Ok(decision) => {
+                    // THE ROOT OF THIS TURN'S CAUSAL THREAD (CAUSAL-MEMORY-GRAPH.md §3a).
+                    // The message that woke her is already becoming an engram here; its id
+                    // was being discarded. Keeping it lets the turn's first act carry a
+                    // `CausedBy` edge to what actually caused it, instead of the chain
+                    // starting mid-air — which is what made "which acts were done for this"
+                    // unanswerable from the graph.
+                    //
+                    // Only an ADMITTED message is a cause. A Drop (dedup) or Quarantine has
+                    // no engram to point at, and inventing one would be a fabricated link —
+                    // worse than the honest gap it replaces.
+                    wake_engram = decision.admitted_engram_id();
+                    tracing::info!(
+                        lamport = msg.lamport,
+                        engram_count = cognition.admission.engram_count(),
+                        wake_engram = ?wake_engram,
+                        "admitted incoming → L2 store"
+                    );
+                }
             }
         }
 
@@ -879,6 +975,22 @@ async fn serve_persona_loop_inner(
         );
         let workspace_burst =
             crate::cognition::workspace::Burst::from_turns_at(turn_room, ws_turns, Some(now_ms));
+        // Carry the wake message's engram as this burst's cause, so the turn's acts
+        // chain back to what triggered them (CAUSAL-MEMORY-GRAPH.md §3a). `None` when
+        // the message was deduped/quarantined — an honest gap, never a made-up link.
+        let workspace_burst =
+            crate::cognition::workspace::Burst::from_turns_at(
+                turn_room,
+                ws_turns,
+                Some(now_ms),
+                // The arrival that woke this turn IS its cause. A dedup Drop or a
+                // Quarantine put nothing in the store, so those fall back to Ambient
+                // rather than pointing an edge at an engram that does not exist.
+                match wake_engram {
+                    Some(id) => crate::cognition::workspace::Cause::Stimulus(id),
+                    None => crate::cognition::workspace::Cause::Ambient,
+                },
+            );
         // Mark this world-state as just-deliberated so the next heartbeat tick doesn't
         // re-run the same burst (the message path and the self-tick share the gate;
         // own chat is excluded so this reply can't re-trigger a self-tick, while her
@@ -1079,6 +1191,12 @@ async fn serve_persona_loop_inner(
                         framing,
                     )
                     .await;
+                    // The lived-turn experience write (#319) is NOT here: it lives inside
+                    // `drive_to_settle`, which is the one place a `SettleOutcome` is born.
+                    // It WAS here, at this single call site, and that was the bug — the
+                    // self-tick and held-work paths settle turns through the same driver
+                    // and got no record, so nothing on disk ever described a lived turn.
+                    // The driver stays a driver: no learning policy at any call site.
                     crate::cognition::act_observe::SettleStep::from_settled(outcome)
                 };
                 // Turn done: drop the cycle's sink so the forwarder's channel closes,
@@ -1146,102 +1264,19 @@ async fn serve_persona_loop_inner(
                             reason = "workspace-pass",
                             "persona chose silence"
                         );
-                        // THE SECOND QUESTION (BigMama's gate-conflation diagnosis,
-                        // verified in-file 2026-08-08; the root under Joel's "missing
-                        // something"): speak and act shared ONE terminal gate, so
-                        // "nothing to say" — the CORRECT answer on a quiet room —
-                        // also silently answered "nothing to do" for a citizen
-                        // holding claimed work. The ledger's falsifiable signature:
-                        // every completion followed a direct address; zero happened
-                        // ambiently. Working is not speaking. A Pass settles the
-                        // speak-question; when she holds an in-progress claim, the
-                        // ACT-question is asked as its OWN turn — a separate
-                        // drive_to_settle whose burst IS her card, under the
-                        // workspace-deliverable contract. Her answer stays hers:
-                        // Pass here too and the turn simply ends. This adds a
-                        // question, never an instruction — the card is not made
-                        // louder and nothing nags inside the speak turn
-                        // ([[no-hardcoded-heuristics-to-steer-cognition]]).
-                        if !directed {
-                            if let Some(citizen) = conversation.stream_citizen() {
-                                if let Ok(claims) = citizen.active_claims().await {
-                                    let held: Vec<&airc_lib::WorkCard> = claims
-                                        .iter()
-                                        .filter(|c| {
-                                            matches!(c.state, airc_work::CardState::InProgress)
-                                        })
-                                        .collect();
-                                    if !held.is_empty() {
-                                        let burst = held_work_burst(&held);
-                                        let work_framing =
-                                            crate::cognition::workspace::TurnFraming::self_thread(
-                                                false,
-                                            )
-                                            .on_workspace();
-                                        let work = crate::cognition::act_observe::drive_to_settle(
-                                            &cycle,
-                                            burst,
-                                            turn_room,
-                                            LIVE_MAX_ACTS,
-                                            work_framing,
-                                        )
-                                        .await;
-                                        let (work_step, _) =
-                                            crate::cognition::act_observe::SettleStep::from_settled(
-                                                work,
-                                            );
-                                        match work_step {
-                                            crate::cognition::act_observe::SettleStep::Spoke(
-                                                text,
-                                            ) => {
-                                                // She worked and has something to report —
-                                                // that report earned its send.
-                                                crate::probe!(
-                                                    class = "persona.turn.work",
-                                                    persona = %ctx.identity.agent_name,
-                                                    lamport = msg.lamport,
-                                                    decision = "spoke",
-                                                    "work-turn settled with a report"
-                                                );
-                                                // Answer where she was asked — `turn_room`
-                                                // is the A.6 arrival room already resolved
-                                                // for this turn, so the report lands in the
-                                                // room whose work it reports on.
-                                                if let Err(e) =
-                                                    conversation.say_in(turn_room, &text).await
-                                                {
-                                                    tracing::warn!(
-                                                        error = %e,
-                                                        "work-turn report failed to send"
-                                                    );
-                                                }
-                                            }
-                                            crate::cognition::act_observe::SettleStep::Passed => {
-                                                crate::probe!(
-                                                    class = "persona.turn.work",
-                                                    persona = %ctx.identity.agent_name,
-                                                    lamport = msg.lamport,
-                                                    decision = "passed",
-                                                    "work-turn passed — her choice, honored"
-                                                );
-                                            }
-                                            other => {
-                                                // Acted (results already in her working
-                                                // memory) or an inference failure — either
-                                                // way the receipt says which.
-                                                crate::probe!(
-                                                    class = "persona.turn.work",
-                                                    persona = %ctx.identity.agent_name,
-                                                    lamport = msg.lamport,
-                                                    decision = ?std::mem::discriminant(&other),
-                                                    "work-turn settled without a spoken report"
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        // THE ACT-QUESTION. Asked here on the PASS path and again after a spoken reply,
+                        // so holding work is what makes it fire — not declining to speak.
+                        // `directed` is recomputed here rather than threaded: it is a pure function of
+        // (identity, msg.text) and the binding above lives inside the cycle branch.
+        let spoke_directed = ctx.identity.persona_identity().mentions(&msg.text);
+        crate::persona::act_question::ask_the_act_question(
+            ctx,
+            conversation,
+            msg.lamport,
+            turn_room,
+            spoke_directed,
+        )
+        .await;
                         outcome.turns_skipped += 1;
                         continue;
                     }
@@ -1338,6 +1373,26 @@ async fn serve_persona_loop_inner(
             outcome.turns_errored += 1;
             continue;
         }
+        // SHE SPOKE — and she may ALSO hold work. Ask the act-question here too.
+        //
+        // The question used to live only on the PASS arm, which made answering someone
+        // mutually exclusive with working your own card: a citizen who replied in the room
+        // was never asked whether to act on the claim she was holding. That is backwards
+        // for a colleague — talking about the work and doing the work are not alternatives.
+        // Asked AFTER the reply is sent, so the room hears her answer at the same latency
+        // as before and the act-question can never delay a conversation.
+        // `directed` is recomputed here rather than threaded: it is a pure function of
+        // (identity, msg.text) and the binding above lives inside the cycle branch.
+        let spoke_directed = ctx.identity.persona_identity().mentions(&msg.text);
+        crate::persona::act_question::ask_the_act_question(
+            ctx,
+            conversation,
+            msg.lamport,
+            turn_room,
+            spoke_directed,
+        )
+        .await;
+
         let turn_duration_ms = turn_started.elapsed().as_millis() as u64;
         outcome.turn_latency.record(turn_duration_ms);
 
@@ -1348,6 +1403,7 @@ async fn serve_persona_loop_inner(
         // depend on the room's context budget.
         crate::cognition::deliberation_budget::record_own_speech(
             ctx.identity.peer_id,
+            turn_room,
             &response_text,
         );
 
@@ -1415,6 +1471,47 @@ async fn serve_persona_loop_inner(
     Ok(outcome)
 }
 
+/// What a self-tick beat DID, and therefore what the next interval should be.
+///
+/// Extracted as a pure decision (the `core_bind_guard::decide` shape) because the
+/// three outcomes are trivially confusable in an inline `match`, and confusing two
+/// of them cost a measured 16× slowdown across the whole roster — see
+/// [`next_beat_after`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BeatOutcome {
+    /// She ran a cycle and the room had something new → stay engaged.
+    Engaged,
+    /// She ran a cycle and nothing had changed → rest deeper (earned backoff).
+    NothingNew,
+    /// She never ran: a peer held the single ambient slot. She learned NOTHING,
+    /// so there is nothing to rest on and the beat must NOT compound.
+    YieldedNoSlot,
+}
+
+/// The self-tick cadence rule. Pure so every row is table-testable without a runtime.
+///
+/// The bug this encodes against (measured live 2026-08-17, 24 hosted citizens):
+/// `YieldedNoSlot` used to share `NothingNew`'s 1.5× backoff. With
+/// the ambient pool hardcoded at 1, ~23 citizens yield per beat, so each of them
+/// compounded 15s → the 240s cap in ~8 yields and STAYED pinned there — the only
+/// resets being a successful cycle (which the backoff itself denied them) or an
+/// inbound message. Transient contention became permanent slowness, and it got
+/// worse as the roster grew. Measured symptom: ONE self-tick across 24 citizens in
+/// 40 minutes, on a lane that was healthy and decoding throughout.
+pub fn next_beat_after(
+    outcome: BeatOutcome,
+    current: std::time::Duration,
+    engaged: std::time::Duration,
+    rest_cap: std::time::Duration,
+) -> std::time::Duration {
+    match outcome {
+        BeatOutcome::Engaged => engaged,
+        BeatOutcome::NothingNew => (current + current / 2).min(rest_cap),
+        // Unchanged: contention must never cost her cadence.
+        BeatOutcome::YieldedNoSlot => current,
+    }
+}
+
 /// Engaged heartbeat period — how often a persona pursuing its OWN intentions
 /// (no inbound message) gets another self-directed slice. This is the SELF-CHATTER
 /// pace, NOT message responsiveness: a real message wakes the loop instantly through
@@ -1447,7 +1544,7 @@ const SELF_TICK_REST_CAP_MS: u64 = 240_000;
 /// repeat-guard fact) is how a looping mind notices itself; the ONLY external
 /// stopwatch that remains is the eval grader's `max_acts` — a proctored exam's
 /// clock, held by the observer, never wired into life.
-const LIVE_MAX_ACTS: usize = usize::MAX;
+pub(crate) const LIVE_MAX_ACTS: usize = usize::MAX;
 
 /// What woke the service loop this cycle. A message from the wire, the never-stop
 /// heartbeat, or the end of the stream. Returned by the `select!` so the borrow of
@@ -1665,7 +1762,7 @@ fn append_ring_anchor_if_starved(
     if turns.iter().any(|t| t.content.starts_with("[anchor]")) {
         return;
     }
-    let own = crate::cognition::deliberation_budget::recent_own_speech(peer);
+    let own = crate::cognition::deliberation_budget::recent_own_speech(peer, room);
     let room_recent = crate::cognition::deliberation_budget::recent_room_speech(room);
     let run = ring_echo_run(&own, &room_recent);
     if run >= PATTERN_FIRES_BEFORE_ANCHOR {
@@ -1707,21 +1804,6 @@ fn push_work_board_anchor(
     turns.push(crate::cognition::workspace::BurstTurn::perception(anchor));
 }
 
-/// Build the `[anchor]` escalation line — the perception-side FACT that gives a
-/// repeating mind somewhere concrete to go (work card d6f010c8, live
-/// 2026-07-23: the `[pattern]` description fired and did NOT break the greeting
-/// loop; a concrete work anchor posted in-room broke it instantly, room-wide).
-/// A description competes with an empty-looking room; an anchor gives the next
-/// token somewhere real to go.
-///
-/// Mechanical and data-driven: built from the `room-kanban` delivery ALREADY in
-/// this burst's slice ([`super::room_board_source::RoomBoardSource`] — the one
-/// airc board read, never a second fetcher), quoting the top unclaimed and
-/// in-progress card lines verbatim as the board source rendered them (one
-/// render, one truth). An empty or unreadable board is stated honestly — never
-/// a fabricated card ([[fallbacks-are-illegal-fail-loud]]). Perception, not
-/// steering: it names what exists NOW; she still chooses
-/// ([[no-hardcoded-heuristics-to-steer-cognition]]).
 
 /// The WORK-question burst — the input of the second gate a claim-holder's
 /// quiet turn asks (see the `SettleStep::Passed` arm). The burst IS the
@@ -1729,7 +1811,7 @@ fn push_work_board_anchor(
 /// passing remains hers. Deliberately NOT the room transcript — the subject of
 /// this turn is the work, and the card details/workspace root arrive through
 /// her own grounding exactly as on any turn.
-fn held_work_burst(held: &[&airc_lib::WorkCard]) -> String {
+pub(crate) fn held_work_burst(held: &[&airc_lib::WorkCard]) -> String {
     use std::fmt::Write as _;
     let mut s = String::from(
         "[work turn] The room is quiet and your speak-turn is settled. This \
@@ -2431,6 +2513,14 @@ async fn run_self_cycle(
         ctx.identity.default_room,
         selftick_turns,
         Some(now_ms),
+        // Ambient, and honestly so. The self-tick wakes on a CHANGE to a re-read
+        // projection (`burst_fingerprint` over composed deliveries), not on an
+        // arrival — the RAG sources hand back rendered text with the identity of the
+        // items that produced it already discarded, so there is no engram to point at.
+        // Something DID cause this turn; the projection layer is where its name was
+        // lost. Handles are what would make it nameable
+        // (docs/architecture/CONTENT-TRAVELS-BY-HANDLE.md).
+        crate::cognition::workspace::Cause::Ambient,
     );
     let Some(cycle) =
         crate::cognition::persona_workspace::global().get(&ctx.identity.peer_id.as_uuid())
@@ -2631,6 +2721,11 @@ async fn run_self_cycle(
             // repeats, no [repetition], caught live 2026-07-12 10:20).
             // Every successful say records, whichever path spoke.
             crate::cognition::deliberation_budget::record_own_speech(ctx.identity.peer_id, &text);
+            crate::cognition::deliberation_budget::record_own_speech(
+                ctx.identity.peer_id,
+                ctx.identity.default_room,
+                &text,
+            );
             crate::probe!(
                 class = "persona.selftick.spoke",
                 persona = %ctx.identity.agent_name,
@@ -4535,5 +4630,43 @@ mod tests {
         assert_eq!(outcome.turns_errored, 1);
         assert_eq!(outcome.turns_skipped, 0);
         assert_eq!(conversation.said().len(), 1);
+    }
+    // what this catches: the STARVATION RATCHET — a yield being charged the rest
+    // backoff it did not earn. Regression for the live 2026-08-17 measurement (24
+    // hosted citizens, ambient pool of 1, ONE self-tick in 40 minutes on a
+    // healthy decoding lane). If `YieldedNoSlot` ever compounds again, contention
+    // silently becomes permanent slowness and the whole roster degrades as it grows.
+    #[test]
+    fn a_yield_never_costs_her_cadence_but_a_fruitless_cycle_still_rests() {
+        use std::time::Duration;
+        let engaged = Duration::from_millis(SELF_TICK_MS);
+        let cap = Duration::from_millis(SELF_TICK_REST_CAP_MS);
+
+        // A yield leaves the beat EXACTLY where it was — she never ran.
+        let mut beat = engaged;
+        for _ in 0..50 {
+            beat = next_beat_after(BeatOutcome::YieldedNoSlot, beat, engaged, cap);
+        }
+        assert_eq!(
+            beat, engaged,
+            "50 yields must not slow her by a single millisecond — she never ran, \
+             so there is nothing to rest on (the ratchet that pinned 24 citizens at the cap)"
+        );
+
+        // A cycle that found nothing DOES rest deeper, and saturates at the cap.
+        let mut beat = engaged;
+        let once = next_beat_after(BeatOutcome::NothingNew, beat, engaged, cap);
+        assert!(once > engaged, "an earned rest still backs off");
+        for _ in 0..50 {
+            beat = next_beat_after(BeatOutcome::NothingNew, beat, engaged, cap);
+        }
+        assert_eq!(beat, cap, "earned rest saturates at the cap, never beyond");
+
+        // Finding something new snaps her straight back to engaged from full rest.
+        assert_eq!(
+            next_beat_after(BeatOutcome::Engaged, cap, engaged, cap),
+            engaged,
+            "life in the room returns her to the engaged beat immediately"
+        );
     }
 }

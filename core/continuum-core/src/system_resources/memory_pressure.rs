@@ -117,6 +117,34 @@ pub fn is_memory_gate_closed() -> bool {
 /// the first poll. This is the number to size a large elective allocation against —
 /// unlike [`MemoryPressureMonitor::current_level`], it does not lie when the OS
 /// counts compressible/cached pages as available.
+/// Free physical memory, derived as `total − used` rather than read from
+/// `sysinfo::available_memory()`.
+///
+/// # Why this exists — one call returns 0 and the other does not (2026-08-19)
+///
+/// Measured on this M5, same process, same `System`:
+///
+/// ```text
+/// System::new() + refresh_memory()  → total=68719476736  available_memory()=0
+/// System::new_all()                 → total=68719476736  available_memory()=0
+/// ```
+///
+/// `available_memory()` returns **zero** here while `total_memory()` and
+/// `used_memory()` both return real values. `SystemMonitor::read_memory` has always
+/// derived `total − used` and consequently reports correctly (10.5 GB available,
+/// 58.2 GB used, live); this monitor called `available_memory()` and therefore
+/// published a permanent 0 into `CURRENT_AVAILABLE_BYTES`.
+///
+/// The consequence was not local. That atomic is the "how much can I allocate before
+/// the OS kills me" number the doc above promises, and it read as "nothing is free"
+/// (or, once inverted by a consumer, "everything is free") for anyone who trusted it.
+/// A bogus `usable_gb=0` is exactly the shape of the #438 downshift incident.
+///
+/// ONE derivation, used by every reader, so the two can never disagree again.
+pub fn available_from(sys: &sysinfo::System) -> u64 {
+    sys.total_memory().saturating_sub(sys.used_memory())
+}
+
 pub fn current_available_bytes() -> Option<u64> {
     match CURRENT_AVAILABLE_BYTES.load(std::sync::atomic::Ordering::Relaxed) {
         0 => None,
@@ -750,7 +778,10 @@ impl MemoryPressureMonitor {
             // System memory.
             st.sys.refresh_memory();
             let total = st.sys.total_memory();
-            let available = st.sys.available_memory();
+            // NOT `available_memory()` — it returns 0 on this platform while
+            // total/used are correct, which published a permanent zero into the
+            // global atomic every consumer budgets against. See `available_from`.
+            let available = available_from(&st.sys);
             let used = total.saturating_sub(available);
             let swap_used = st.sys.used_swap();
 

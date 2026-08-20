@@ -178,6 +178,91 @@ impl RecipeExperienceSource {
         Self::new(purpose, Self::embedded())
     }
 
+    /// Every purpose the SHIPPED recipe set declares. Derived from the SAME
+    /// [`Self::embedded`] iterator the registry is built from, so this list
+    /// and the embedded resolution set cannot drift. Production validation
+    /// goes through [`Self::known_purposes`], which is this PLUS the disk
+    /// overlay — the same union [`Self::builtins_with_overlay`] resolves.
+    pub fn shipped_purposes() -> Vec<String> {
+        Self::embedded().map(|r| r.purpose).collect()
+    }
+
+    /// The ONE directory production overlays recipes from:
+    /// `<continuum_root>/recipes`. Named here so the resolution side
+    /// ([`Self::builtins_with_overlay`] in the positron projection) and the
+    /// validation side (`activity/spawn`'s `validate_recipe`) derive the same
+    /// path from the same root — two hand-built joins would drift, and a
+    /// drifted pair means an authored recipe that RESOLVES gets REFUSED at
+    /// spawn (or the reverse, the #431 silent-chat downgrade).
+    pub fn overlay_dir(continuum_root: &std::path::Path) -> std::path::PathBuf {
+        continuum_root.join("recipes")
+    }
+
+    /// Every purpose the FULL recipe set declares — embedded floor plus the
+    /// disk overlay under `dir` (#432). This is the validation list
+    /// `activity/spawn` refuses against, and it is the same union
+    /// [`Self::builtins_with_overlay`] builds its registry from, so an
+    /// authored on-disk recipe is spawnable the moment the file exists. A
+    /// malformed overlay recipe is an ERROR naming the file, not a silent
+    /// skip — the author believes it is live.
+    pub fn known_purposes(dir: &std::path::Path) -> Result<Vec<String>, RecipeLoadError> {
+        Ok(Self::known_recipes(dir)?.into_iter().map(|r| r.purpose).collect())
+    }
+
+    /// The FULL known recipe set — embedded floor plus the disk overlay, in
+    /// registry order (embedded first, overlay after, so later-wins-by-purpose
+    /// resolution can be applied by any consumer). `activity/spawn` reads
+    /// this to resolve a recipe's PARAM declarations (#433), not just its
+    /// purpose — the same union the projection serves, so what validates is
+    /// what resolves.
+    pub fn known_recipes(
+        dir: &std::path::Path,
+    ) -> Result<Vec<ExperienceRecipe>, RecipeLoadError> {
+        let overlay = Self::load_dir(dir)?;
+        Ok(Self::embedded().chain(overlay).collect())
+    }
+
+    /// The node's RESIDENT roles — the roster as recipe data (#430). Read from
+    /// the DEFAULT experience's `citizens` (the `chat` recipe — the room fresh
+    /// minds land in, #298), embedded floor overlaid by `dir` with the same
+    /// later-wins-by-purpose law the registry uses: author a `chat.json` on
+    /// disk and the node's resident roster changes with zero code.
+    pub fn resident_roles(
+        dir: &std::path::Path,
+    ) -> Result<Vec<crate::persona::role_template::RoleId>, RecipeLoadError> {
+        let overlay = Self::load_dir(dir)?;
+        Ok(Self::resident_roles_from(Self::embedded().chain(overlay)))
+    }
+
+    /// [`Self::resident_roles`] over the EMBEDDED set alone — infallible, for
+    /// tests/fixtures and as the documented loud-refusal arm when the overlay
+    /// directory fails to load (same shape as the positron projection's #432
+    /// refusal: serve the shipped floor, never go dark over one bad file).
+    pub fn resident_roles_embedded() -> Vec<crate::persona::role_template::RoleId> {
+        Self::resident_roles_from(Self::embedded())
+    }
+
+    fn resident_roles_from(
+        recipes: impl Iterator<Item = ExperienceRecipe>,
+    ) -> Vec<crate::persona::role_template::RoleId> {
+        let default_purpose = Self::shipped_purpose(shipped::CHAT)
+            .expect("embedded chat recipe must exist — build-time authoring bug");
+        recipes
+            .filter(|r| r.purpose == default_purpose)
+            .last()
+            .map(|r| r.citizens.into_iter().map(|c| c.role).collect())
+            .unwrap_or_default()
+    }
+
+    /// The declared purpose of a shipped recipe, by its [`shipped`] handle.
+    /// Lets core call sites bind rooms by CONSTANT (`shipped::BENCHMARK_HARD_RS`)
+    /// while the purpose string stays authored in exactly one place — the
+    /// recipe JSON. `None` only if the handle names no embedded recipe, which
+    /// is a build-time authoring bug the shipped-constants test pins.
+    pub fn shipped_purpose(id: RecipeId) -> Option<String> {
+        Self::embedded().find(|r| r.id == id).map(|r| r.purpose)
+    }
+
     /// The embedded seed set. These ship IN the binary so a fresh clone has working
     /// experiences with zero files on disk — the same self-provisioning contract the
     /// rest of the substrate holds. They are a FLOOR, not the catalogue: anything on
@@ -454,6 +539,35 @@ mod tests {
     /// if authoring an activity needs a compiler, people hand-make rooms instead,
     /// and a hand-made room has no recipe and no purpose.
     ///
+    /// what this catches (#430): the resident roster is RECIPE DATA. The
+    /// embedded chat recipe declares the shipped floor (one Helper), and an
+    /// authored on-disk `chat.json` REPLACES it — changing the node's
+    /// resident population with zero code, the same later-wins-by-purpose
+    /// law the registry uses. If this regresses, boot silently reverts to a
+    /// hardcoded roster and authored rosters are dead data.
+    #[test]
+    fn resident_roster_is_recipe_data_and_the_overlay_replaces_it() {
+        use crate::persona::role_template::RoleId;
+        assert_eq!(
+            RecipeExperienceSource::resident_roles_embedded(),
+            vec![RoleId::Helper],
+            "the embedded chat recipe declares the shipped single-Helper floor"
+        );
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("chat.json"),
+            r#"{ "purpose": "chat", "regions": [], "affordances": [],
+                 "citizens": [{ "role": "coder" }] }"#,
+        )
+        .expect("author an overlay chat recipe");
+        assert_eq!(
+            RecipeExperienceSource::resident_roles(dir.path()).expect("overlay loads"),
+            vec![RoleId::Coder],
+            "an authored chat.json replaces the resident roster, zero code"
+        );
+    }
+
     /// The assertion is deliberately about a purpose NOT known to this binary.
     #[test]
     fn an_experience_authored_on_disk_needs_no_rust() {

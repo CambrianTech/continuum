@@ -2,6 +2,16 @@
 
 export type BenchmarkDispatchResult = { benchmark: string, 
 /**
+ * The room this run lives in — where its board, its kickoffs and its citizens are.
+ * Returned so the caller never has to guess where the work went.
+ */
+room: string, 
+/**
+ * That room's airc channel id — the TYPE, not a uuid-shaped string. See
+ * `ActivitySpawnResult::room_id`; this field is that value passed through.
+ */
+room_id: string, 
+/**
  * Cards actually posted to the board.
  */
 dispatched: number, 
@@ -16,6 +26,32 @@ card_ids: Array<string>,
  * full coverage is the lie this field exists to prevent.
  */
 skipped_needs_setup: number, 
+/**
+ * Tasks NOT dispatched because a LIVE card for that exact task is already on
+ * the board (same `[bench <name>] <task_id>:` key, in any non-terminal state).
+ * Dispatch is idempotent per task: re-running it tops the board up to one card
+ * per task instead of posting a second copy.
+ *
+ * Why this exists: without it, every re-dispatch re-posted the dataset head as
+ * brand-new cards. Measured on the live board 2026-08-13 — 124 bench cards for
+ * 51 distinct tasks, `sympy__sympy-24152` alone holding 15 copies, with two
+ * citizens solving the SAME instance in parallel. That wastes scarce lanes and
+ * leaves the pass rate with no honest denominator.
+ */
+skipped_already_on_board: number, 
+/**
+ * Redundant duplicate cards CLOSED by this call (only when `prune` was set).
+ * Cards under a live claim are never counted here because they are never
+ * closed — see `contended_tasks`.
+ */
+pruned_duplicates: number, 
+/**
+ * Tasks where MORE THAN ONE citizen holds a live claim on a duplicate card.
+ * The prune leaves all of them alone: cancelling one would destroy real
+ * in-flight work, so this is surfaced as a coordination fact for the room to
+ * settle rather than resolved silently.
+ */
+contended_tasks: number, 
 /**
  * Addressed kickoff messages actually delivered (one per dispatched card —
  * every card is directed at a live citizen). A kickoff that failed to send is

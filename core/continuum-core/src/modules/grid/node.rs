@@ -54,6 +54,7 @@ pub enum TransportAddress {
         port: u16,
         /// Tailscale machine name (e.g., "bigmama")
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         machine_name: Option<String>,
     },
 
@@ -127,9 +128,11 @@ pub enum NodeCapability {
     Compute {
         /// GPU model name (e.g., "RTX 5090", "M3 Pro")
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         gpu: Option<String>,
         /// Available VRAM in megabytes
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         #[ts(type = "number")]
         vram_mb: Option<u64>,
     },
@@ -181,6 +184,7 @@ pub struct GridNode {
 
     /// Human-readable name (user-assigned, e.g., "home-5090", "school-laptop").
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub node_name: Option<String>,
 
     /// All transport addresses through which this node can be reached.
@@ -199,6 +203,7 @@ pub struct GridNode {
 
     /// Last measured round-trip latency in milliseconds.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(type = "number | undefined")]
     pub latency_ms: Option<u64>,
 
@@ -211,6 +216,7 @@ pub struct GridNode {
     /// capacity ↔ reputation — #2228, the node sibling of the enforced
     /// `persona_id == peer_id` (`airc_runtime.rs:390`). See GRID-ELASTIC-CAPABILITY §3d.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(type = "string | undefined")]
     pub peer_id: Option<PeerId>,
 }

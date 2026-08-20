@@ -71,11 +71,58 @@ fn short_circuit_acts(calls: &[ToolCall], nudge: &str, status: ActStatus) -> Vec
         .collect()
 }
 
+/// One settle chain's causal thread — owned by the DRIVER of the chain
+/// (`drive_to_settle`, or one turn-frame), passed by reference through
+/// `settle_step` into `apply_act`. Holds the engram id of the most recently
+/// ADMITTED act observation so the next act in the same chain can carry a
+/// `CausedBy` edge to it (CAUSAL-MEMORY-GRAPH.md §3a). One concern, one
+/// chain; the driver drops it when the turn settles, so an edge can never
+/// cross turns or rooms by construction — the wire is the scope, never an
+/// inference over timestamps.
+#[derive(Default)]
+pub struct ActChain(std::sync::Mutex<Option<Uuid>>);
+
+impl ActChain {
+    /// A chain with no recorded antecedent — its first act links to nothing.
+    /// Prefer [`rooted_in`](Self::rooted_in): a chain that knows what caused it is
+    /// what makes "which acts were done FOR this card" answerable.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A chain rooted in whatever CAUSED the turn (CAUSAL-MEMORY-GRAPH.md §3a) — the
+    /// stimulus engram for a real arrival, nothing for an ambient or synthetic burst.
+    ///
+    /// Seeding rather than special-casing is the whole trick: the write site already
+    /// links each act to `prior()`, so rooting the chain makes the FIRST act link to
+    /// its trigger through the same line of code. No new branch, no second rule, and
+    /// the thread has a head instead of starting mid-air.
+    ///
+    /// Takes the whole [`Cause`] rather than a pre-extracted id so the decision about
+    /// what counts as a root lives in ONE place (`Cause::root`) instead of at every
+    /// driver that builds a chain.
+    pub fn rooted_in(cause: &crate::cognition::workspace::Cause) -> Self {
+        Self(std::sync::Mutex::new(cause.root()))
+    }
+
+    /// The CAUSE of whatever act comes next in this chain: the latest admitted act
+    /// engram, or — before any act has run — the trigger the chain was rooted in.
+    /// `None` only when the chain has no antecedent at all.
+    pub fn prior(&self) -> Option<Uuid> {
+        *self.0.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn advance(&self, id: Uuid) {
+        *self.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(id);
+    }
+}
+
 pub async fn apply_act(
     cycle: &WorkspaceCycle,
     calls: &[ToolCall],
     intent: &str,
     room_id: Uuid,
+    chain: &ActChain,
 ) -> ActOutcome {
     // no hands → cannot act (and tools were never offered)
     let Some(body) = cycle.acting() else {
@@ -550,6 +597,27 @@ pub async fn apply_act(
             // durable knowledge.
             body.admission
                 .set_recall_salience(engram.id, PROPRIOCEPTION_RECALL_SALIENCE);
+            // The causal spine (CAUSAL-MEMORY-GRAPH.md): this act was decided by
+            // a deliberation that perceived the chain's previous act result, so
+            // wire the CausedBy edge HERE, where the relation is known — the
+            // `because` clause as structure. A fact about what happened, never
+            // a rail on what she does next.
+            if let Some(prior) = chain.prior() {
+                body.admission.link_engrams(
+                    engram.id,
+                    prior,
+                    crate::persona::engram_graph::EdgeKind::CausedBy,
+                );
+                crate::probe!(
+                    class = "engram.edge.caused_by",
+                    persona = %body.persona_name,
+                    room_id = %room_id,
+                    from = %engram.id,
+                    to = %prior,
+                    "act chained to its predecessor in the causal memory graph"
+                );
+            }
+            chain.advance(engram.id);
         }
         Ok(_) => {} // Drop (dedup) — nothing admitted to weight.
         Err(e) => {
@@ -581,6 +649,7 @@ pub async fn apply_act(
     // one-time recency rendering; `acts` are the id-correlated typed observations.
     body.working_memory
         .record_receipt_typed(&acts, &observation);
+        .record_receipt_typed(&acts, &observation, Some(room_id));
     if let Some(f) = &tally_fact {
         body.working_memory.record_fact(f);
     }

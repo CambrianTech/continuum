@@ -30,6 +30,10 @@
 pub mod act_observe;
 pub mod adaptive_throughput;
 pub mod audit;
+pub mod bench_round;
+pub mod bench_staging;
+pub mod bench_task;
+pub mod round_readiness;
 pub mod benchmark;
 pub mod benchmark_humaneval;
 pub mod channel_digest;
@@ -85,6 +89,7 @@ pub mod shared_analysis;
 pub mod should_respond;
 pub mod should_respond_module;
 pub mod swe_bench;
+pub mod swe_verdict_sweep;
 pub mod threat_detector;
 pub mod throughput_lease;
 pub mod token_budget;

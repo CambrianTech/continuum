@@ -47,6 +47,7 @@ pub struct DatasetManifest {
     #[ts(optional, type = "number")]
     pub pre_cutoff: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub post_cutoff: Option<usize>,
     pub imported_at: String,
@@ -217,6 +218,16 @@ pub struct FromCapturesParams {
     #[serde(default)]
     #[ts(optional)]
     pub skill_axis: Option<String>,
+    /// Include nil-room captures (benchmark/eval FORK ticks). Default `false`:
+    /// forks share the persona's capture file (`fork_eval_cycle` keeps
+    /// `persona_id`, the sink path is `<dir>/<persona_id>.jsonl`), so without
+    /// this guard a default dataset run silently ingests measurement-fork turns
+    /// as if they were her lived room experience — unlabeled benchmark work
+    /// entering L1 while the SAME work is deliberately excluded from L2
+    /// (2026-08-14 citizenship audit, AXIS 3). Set `true` only when a fork
+    /// corpus is the explicit goal.
+    #[serde(default)]
+    pub include_forks: bool,
 }
 
 /// Params for `dataset/import-realclasseval`.
@@ -503,6 +514,19 @@ impl DatasetService {
                 }
                 if let Some(rid) = p.room_id.as_deref() {
                     if cap.get("room_id").and_then(|v| v.as_str()) != Some(rid) {
+                        continue;
+                    }
+                }
+                // FORK GUARD (#427): benchmark/eval fork ticks carry the NIL
+                // room and land in the SAME per-persona capture file as live
+                // turns. Only an EXPLICIT nil room marks a fork — an absent
+                // room_id is an older live capture and stays. An explicit
+                // `room_id` filter above already expresses the caller's intent
+                // (including asking FOR the nil room), so the guard applies
+                // only to unfiltered runs.
+                if !p.include_forks && p.room_id.is_none() {
+                    let nil = uuid::Uuid::nil().to_string();
+                    if cap.get("room_id").and_then(|v| v.as_str()) == Some(nil.as_str()) {
                         continue;
                     }
                 }
@@ -1231,6 +1255,61 @@ mod tests {
             capture_to_example(&no_burst, true).is_none(),
             "system-only must be dropped"
         );
+    }
+
+    // what this catches: L1 fork contamination (#427, 2026-08-14 citizenship
+    // audit AXIS 3). Benchmark/eval forks keep the persona's id, so their
+    // nil-room ticks land in the SAME capture file as her live turns — and a
+    // default dataset run was ingesting them as if they were her lived room
+    // experience. Default must SKIP nil-room captures; `include_forks: true`
+    // is the explicit opt-in. Regression here = benchmark work silently
+    // re-enters the training corpus unlabeled.
+    #[test]
+    fn from_captures_excludes_nil_room_forks_by_default() {
+        let tmp = TempDir::new().unwrap();
+        let captures_dir = tmp.path().join("captures");
+        std::fs::create_dir_all(&captures_dir).unwrap();
+
+        let live = json!({
+            "persona_id": "11111111-1111-1111-1111-111111111111",
+            "room_id": "22222222-2222-2222-2222-222222222222",
+            "system": "You are Asha.",
+            "messages": [{ "role": "user", "content": "peer: how do rooms work?" }],
+            "response": { "text": "A room is an activity with a lifetime." }
+        });
+        let fork = json!({
+            "persona_id": "11111111-1111-1111-1111-111111111111",
+            "room_id": uuid::Uuid::nil().to_string(),
+            "system": "You are Asha.",
+            "messages": [{ "role": "user", "content": "[measurement] solve the task" }],
+            "response": { "text": "Working the benchmark instance now." }
+        });
+        create_test_csv(
+            &captures_dir,
+            "asha.jsonl",
+            &format!("{live}\n{fork}\n"),
+        );
+
+        let params = |name: &str, include_forks: bool| FromCapturesParams {
+            captures_dir: Some(captures_dir.to_str().unwrap().to_string()),
+            output_dir: Some(tmp.path().join("out").to_str().unwrap().to_string()),
+            name: name.to_string(),
+            split_ratio: 1.0,
+            include_system: true,
+            persona_id: None,
+            room_id: None,
+            skill_axis: None,
+            include_forks,
+        };
+
+        // Default: the fork tick is excluded — only the lived room turn trains.
+        let v = service().from_captures(&params("live-only", false)).unwrap();
+        assert_eq!(v.total_examples, 1, "nil-room fork must be excluded");
+
+        // Explicit opt-in: both convert (a fork corpus is a legitimate goal,
+        // it just must never be the silent default).
+        let v = service().from_captures(&params("with-forks", true)).unwrap();
+        assert_eq!(v.total_examples, 2, "opt-in must include the fork tick");
     }
 
     // what this catches: the rooms→training-data bridge — recorded persona

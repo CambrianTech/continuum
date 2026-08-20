@@ -241,6 +241,9 @@ impl ModelCatalog {
                     if mmproj_path.is_some() {
                         live.model.mmproj_local_path = mmproj_path;
                     }
+                    // A path without its size is a row that forces every later estimate
+                    // back to the filesystem. Attach both, in the one mutation.
+                    crate::model_registry::artifacts::hydrate_artifact_sizes(&mut live.model);
                     live.status.availability = Availability::Ready;
                 }
             });
@@ -264,6 +267,8 @@ impl ModelCatalog {
                 if let Some(live) = snap.models.get_mut(id) {
                     live.model.gguf_local_path = None;
                     live.model.mmproj_local_path = None;
+                    live.model.weights_bytes = None;
+                    live.model.mmproj_bytes = None;
                     live.status.availability = Availability::NotDownloaded;
                 }
             });

@@ -149,12 +149,14 @@ pub struct CommandRequest<P> {
     /// Handlers reading this can correlate per-session telemetry, dual
     /// log, etc.
     #[serde(rename = "sessionId", skip_serializing_if = "Option::is_none", default)]
+    #[ts(optional)]
     #[ts(optional, type = "string")]
     pub session_id: Option<Uuid>,
 
     /// Calling user — set by the kernel from the session. Handlers
     /// reading this can scope per-user state (e.g., per-persona work).
     #[serde(rename = "userId", skip_serializing_if = "Option::is_none", default)]
+    #[ts(optional)]
     #[ts(optional, type = "string")]
     pub user_id: Option<Uuid>,
 
@@ -171,6 +173,7 @@ pub struct CommandRequest<P> {
     /// a citizen scoped to that room's contextId, the same shape a browser tab
     /// uses (this is what fills the persona cognition's tool_context).
     #[serde(rename = "contextId", skip_serializing_if = "Option::is_none", default)]
+    #[ts(optional)]
     #[ts(optional, type = "string")]
     pub context_id: Option<Uuid>,
 }

@@ -30,6 +30,7 @@ pub struct JobCreateParams {
     /// if that provider is in the capable set; otherwise the outcome is
     /// `success=false` — never a silent fallback to a different provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub preferred_provider: Option<String>,
     /// Name of an on-disk dataset under the datasets root
     /// (`~/.continuum/datasets/<name>/train.jsonl`, the chat `{messages}` JSONL
@@ -38,6 +39,7 @@ pub struct JobCreateParams {
     /// populated dataset. Mutually exclusive with inlining `dataset` examples —
     /// exactly one of the two must be provided.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub dataset_name: Option<String>,
 }
 

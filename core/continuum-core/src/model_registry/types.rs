@@ -432,6 +432,26 @@ pub struct Model {
     /// server-side and leave this absent.
     #[serde(default)]
     pub mmproj_local_path: Option<PathBuf>,
+    /// Size on disk of the resolved GGUF, in bytes. Hydrated ONCE by
+    /// [`resolve_model_artifacts`](crate::model_registry::artifacts::resolve_model_artifacts)
+    /// at the same moment `gguf_local_path` is resolved — the artifact's path and its
+    /// size are one fact discovered together, so they are stored together.
+    ///
+    /// It lives on the row because it is an input to EVERY residency estimate
+    /// (`weights + lanes × kv(window) + compute reserve`), and those estimates run on
+    /// the governor's accounting tick. Deriving it by `stat`ing the file per call —
+    /// which is what `footprint_for` used to do — means a syscall per poll for a number
+    /// that cannot change while the path is valid, and it puts filesystem I/O on a hot
+    /// path that must not block. `None` means "not resolved yet", never "zero bytes".
+    #[serde(default)]
+    pub weights_bytes: Option<u64>,
+    /// Size on disk of the resolved multimodal projector, in bytes. Same hydration and
+    /// the same reason as [`weights_bytes`](Self::weights_bytes) — and it is a REAL
+    /// residency term the weights alone omit: a vision lane loads the projector
+    /// alongside the model, so an estimate that counts only the GGUF under-reports a
+    /// vision lane by the projector's whole size.
+    #[serde(default)]
+    pub mmproj_bytes: Option<u64>,
     /// Jinja chat template the adapter feeds to llama.cpp's renderer.
     /// Source of truth ordering: (1) template embedded in the GGUF's
     /// own metadata (`tokenizer.chat_template`), (2) this field, (3)

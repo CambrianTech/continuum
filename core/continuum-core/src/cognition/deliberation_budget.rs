@@ -63,17 +63,9 @@ pub(super) fn tail_to_tokens(s: &str, budget_tokens: usize) -> String {
 /// geometry against known participant names, never content NLP
 /// ([[no-hardcoded-heuristics-to-steer-cognition]] — this renders a fact visible,
 /// it steers nothing).
-pub(super) fn turn_message_line(turn: &BurstTurn) -> String {
-    if turn.is_self || turn.author.is_empty() {
-        turn.content.clone()
-    } else {
-        format!("{}: {}", turn.author, turn.content)
-    }
-}
-
-/// [`turn_message_line`] with addressee annotation for peer turns. `participants`
-/// is every display name known in the window (peers + self); `self_name` is THIS
-/// persona's name, rendered as "you" so a directed ask reads as directed.
+/// `participants` is every display name known in the window (peers + self);
+/// `self_name` is THIS persona's name, rendered as "you" so a directed ask reads
+/// as directed.
 pub(super) fn turn_message_line_addressed(
     turn: &BurstTurn,
     participants: &[String],
@@ -121,58 +113,101 @@ pub(super) fn turn_message_line_addressed(
 /// ([[no-hardcoded-heuristics-to-steer-cognition]]).
 pub(super) const NEAR_DUP_JACCARD: f64 = 0.6;
 
-/// Minimum run length (consecutive near-identical PAIRS, so `3` = four messages
-/// in a row) before the repetition fact renders. Same calibration: the longest
-/// observed live runs were 36 and 80 messages; under healthy flow three
-/// consecutive ≥0.6 pairs is vanishingly rare. Evidence-scaled: below this, say
-/// nothing.
-const NEAR_DUP_MIN_RUN: usize = 3;
+/// Minimum CLUSTER size — how many of her own visible messages must be mutually
+/// near-identical (≥ [`NEAR_DUP_JACCARD`]) before the repetition fact renders.
+/// Counted anywhere in the window, at any period, NOT as a consecutive run: live
+/// loops cycle 2–3 templates, so a trailing-run rule went blind to exactly the
+/// loops it was built for (see [`own_repetition_fact`]). Same calibration corpus:
+/// the longest observed live loops were 36 and 80 messages; under healthy flow
+/// three mutually ≥0.6 messages is vanishingly rare. Evidence-scaled: below this,
+/// say nothing.
+const NEAR_DUP_MIN_CLUSTER: usize = 3;
 
 /// How many of her own recent utterances the spoken ring retains — the
-/// repetition detector's self-history window. Sized past NEAR_DUP_MIN_RUN
+/// repetition detector's self-history window. Sized past NEAR_DUP_MIN_CLUSTER
 /// with slack for interleaved non-loop turns; utterances are short-lived
 /// evidence, not memory (the hippocampus owns memory).
 const OWN_SPEECH_RING: usize = 8;
 
-/// Process-global per-persona ring of recent OWN utterances, keyed by the
-/// canonical PeerId (persona_id == peer_id post-collapse). Written at the say
-/// seam (service_loop, after a successful publish — only REAL utterances),
-/// read by the deliberation faculty when rendering the repetition fact. Same
+/// Process-global ring of recent OWN utterances, keyed by (canonical PeerId,
+/// ROOM) — persona_id == peer_id post-collapse. Written at the say seam
+/// (service_loop, after a successful publish — only REAL utterances), read by
+/// the deliberation faculty when rendering the repetition fact. Same
 /// process-global registry pattern as `channel_substrate` — the seam between
 /// the speaking path and the perceiving path.
 fn own_speech_rings() -> &'static std::sync::Mutex<
     std::collections::HashMap<crate::identity::PeerId, std::collections::VecDeque<String>>,
+///
+/// The ROOM half of the key is load-bearing, and its absence was a live defect
+/// (glass-boxed 2026-08-14): personas are MULTI-room citizens, so a ring keyed
+/// by peer alone mixes what she said in room A into the repetition fact
+/// rendered for room B. Measured specimen — a citizen dispatched into a
+/// brand-new benchmark room, where she had said NOTHING, was told on her first
+/// turn there: "[repetition] 4 of your recent messages were nearly identical —
+/// you're circling … silence (PASS) is the honest response." Those four
+/// utterances were spoken in #academy. A fresh room must be a fresh start; the
+/// brick's own wording is room-scoped ("restating what you've ALREADY SAID adds
+/// nothing" — to THIS conversation), and its room-side sibling
+/// `room_speech_rings` has always keyed this way. The say path was already
+/// room-correct (`say_in(turn_room, …)`, "never her ambient default, or she
+/// answers one room's question to a different audience"); only the ring was
+/// blind.
+fn own_speech_rings() -> &'static std::sync::Mutex<
+    std::collections::HashMap<
+        (crate::identity::PeerId, uuid::Uuid),
+        std::collections::VecDeque<String>,
+    >,
 > {
     static RINGS: std::sync::OnceLock<
         std::sync::Mutex<
-            std::collections::HashMap<crate::identity::PeerId, std::collections::VecDeque<String>>,
+            std::collections::HashMap<
+                (crate::identity::PeerId, uuid::Uuid),
+                std::collections::VecDeque<String>,
+            >,
         >,
     > = std::sync::OnceLock::new();
     RINGS.get_or_init(Default::default)
 }
 
-/// Record one real spoken utterance (call ONLY after the publish succeeded —
-/// an utterance that never reached the room is not self-history).
-pub fn record_own_speech(peer: crate::identity::PeerId, text: &str) {
+/// Record one real spoken utterance into the ring for the room it was spoken
+/// INTO (call ONLY after the publish succeeded — an utterance that never
+/// reached the room is not self-history).
+pub fn record_own_speech(peer: crate::identity::PeerId, room: uuid::Uuid, text: &str) {
     if text.trim().is_empty() {
         return;
     }
     let mut rings = own_speech_rings().lock().unwrap();
-    let ring = rings.entry(peer).or_default();
+    let ring = rings.entry((peer, room)).or_default();
     ring.push_back(text.to_string());
     while ring.len() > OWN_SPEECH_RING {
         ring.pop_front();
     }
 }
 
-/// Her recent own utterances, oldest-first (empty if she has not spoken).
-pub fn recent_own_speech(peer: crate::identity::PeerId) -> Vec<String> {
+/// Her recent own utterances IN THIS ROOM, oldest-first (empty if she has not
+/// spoken here — which is the correct reading for a room she just entered).
+pub fn recent_own_speech(peer: crate::identity::PeerId, room: uuid::Uuid) -> Vec<String> {
     own_speech_rings()
         .lock()
         .unwrap()
-        .get(&peer)
+        .get(&(peer, room))
         .map(|r| r.iter().cloned().collect())
         .unwrap_or_default()
+}
+
+/// Every (room, utterances) pair she currently holds — the persistence seam
+/// only. Cognition never reads across rooms; `save_volatile` does, because the
+/// volatile tier must restore each room's ring to the room it belongs to.
+pub fn own_speech_by_room(
+    peer: crate::identity::PeerId,
+) -> Vec<(uuid::Uuid, Vec<String>)> {
+    own_speech_rings()
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|((p, _), _)| *p == peer)
+        .map(|((_, room), ring)| (*room, ring.iter().cloned().collect()))
+        .collect()
 }
 
 /// How many recent ROOM messages the per-room ring retains. Sized to hold a
@@ -247,8 +282,10 @@ pub(super) fn jaccard(a: &str, b: &str) -> f64 {
 
 /// The persona's OWN-SPEECH repetition fact for this tick, if her trailing run
 /// of own turns is a loop: `Some("[repetition] your last N messages were nearly
-/// identical")` when the last [`NEAR_DUP_MIN_RUN`]+ consecutive own turns are
-/// pairwise ≥ [`NEAR_DUP_JACCARD`] similar. Pure fact, no imperative — perception
+/// identical")` when [`NEAR_DUP_MIN_CLUSTER`]+ of her own visible turns are
+/// mutually ≥ [`NEAR_DUP_JACCARD`] similar — a CLUSTER at any period, not a
+/// trailing run (see the detection comment below, and the live deploy that proved
+/// the run form blind). Pure fact, no imperative — perception
 /// renders what happened; it never steers what she says next.
 ///
 /// Why (task #134, glass-boxed 2026-07-11): Atlas looped stage-direction
@@ -305,7 +342,7 @@ pub(super) fn own_repetition_fact(turns: &[BurstTurn], spoken: &[String]) -> Opt
     // ALREADY has (her Silence Option prompt: "Choose PASS when … nothing new has
     // been raised"), surfaced at the moment repetition is structurally detected. The
     // fork (add something genuinely new, OR go silent) is hers; this only names it.
-    (best >= 3).then(|| {
+    (best >= NEAR_DUP_MIN_CLUSTER).then(|| {
         format!(
             "[repetition] {best} of your recent messages were nearly identical — you're \
              circling, and restating what you've already said adds nothing. If you have \
@@ -413,7 +450,7 @@ pub(super) fn template_loop_fact(turns: &[BurstTurn], spoken: &[String]) -> Opti
             .count();
         best = best.max(dups + 1);
     }
-    (best >= 3).then(|| {
+    (best >= NEAR_DUP_MIN_CLUSTER).then(|| {
         format!(
             "[template-loop] {best} of your recent messages reuse the same template with \
              the topic swapped — a new subject inside the same scaffold is still circling, \
@@ -636,8 +673,8 @@ fn matches_name_at(line: &str, pos: usize, name: &str) -> bool {
         .is_some_and(|s| s.eq_ignore_ascii_case(name))
 }
 
-/// Find WHO a message's first line addresses, by vocative GEOMETRY only — never
-/// content interpretation. Two shapes, matched against known participant names:
+/// Find WHO a message addresses, by vocative GEOMETRY only — never content
+/// interpretation. Two shapes, matched against known participant names:
 ///
 /// - **Leading vocative**: `Anwen, …` / `Atlas: …` / `Asha — …` / `@Anwen …`
 /// - **Greeting vocative** in the first line: `Sure, Anwen. Could you…` /
@@ -654,6 +691,8 @@ pub(super) fn vocative_addressee<'a>(content: &str, participants: &'a [String]) 
 }
 
 /// Every addressee the message's vocative geometry names, in discovery order,
+///
+/// Returns every addressee the geometry names, in discovery order,
 /// deduped, capped at 3. The LEADING form is scanned on every line (live
 /// coordination messages address several teammates on separate lines —
 /// "Atlas, please test… / Asha, could you…" — #134 specimen 2 was missed by
@@ -746,6 +785,59 @@ pub(super) fn vocative_addressees<'a>(content: &str, participants: &'a [String])
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: a citizen entering a room she has never spoken in must read
+    // as SILENT there, no matter how much she has said elsewhere. Regression for the
+    // 2026-08-14 live specimen — dispatched into a fresh benchmark room, her first
+    // turn carried "[repetition] 4 of your recent messages were nearly identical …
+    // silence (PASS) is the honest response" about utterances spoken in #academy.
+    // The ring was keyed by peer alone, so a multi-room citizen carried one room's
+    // withdrawal pressure into every other room. Keyed by (peer, room), a fresh room
+    // is a fresh start — and her OTHER room's history stays intact, so this can never
+    // be "fixed" by simply clearing the ring on room change.
+    #[test]
+    fn own_speech_is_scoped_to_the_room_it_was_spoken_in() {
+        let peer = crate::identity::PeerId::from_uuid(uuid::Uuid::new_v4());
+        let academy = uuid::Uuid::new_v4();
+        let bench = uuid::Uuid::new_v4();
+
+        for _ in 0..4 {
+            record_own_speech(peer, academy, "I'll remain silent while monitoring.");
+        }
+
+        // Where she spoke, she sees it.
+        assert_eq!(
+            recent_own_speech(peer, academy).len(),
+            4,
+            "her own history in the room she spoke in must survive"
+        );
+
+        // The fresh room she was just dispatched into: nothing to be repetitive about.
+        assert!(
+            recent_own_speech(peer, bench).is_empty(),
+            "a room she has not spoken in must read as silent — this is the bug"
+        );
+
+        // And a peer who never spoke anywhere is unaffected by hers.
+        let other = crate::identity::PeerId::from_uuid(uuid::Uuid::new_v4());
+        assert!(recent_own_speech(other, academy).is_empty());
+
+        // The persistence seam sees every room, so a restart restores each ring to
+        // the room it belongs to rather than collapsing them into one.
+        record_own_speech(peer, bench, "Let me claim that card.");
+        let mut by_room = own_speech_by_room(peer);
+        by_room.sort_by_key(|(room, _)| *room);
+        let mut expected = vec![(academy, 4usize), (bench, 1usize)];
+        expected.sort_by_key(|(room, _)| *room);
+        assert_eq!(
+            by_room
+                .iter()
+                .map(|(room, u)| (*room, u.len()))
+                .collect::<Vec<_>>(),
+            expected,
+            "persistence must carry the room key, not a flattened ring"
+        );
+    }
 
     // what this catches: the tail-trim must keep the LATEST lines (drop the head),
     // start on a clean line boundary (never mid-line), and never split a UTF-8 char.
@@ -1351,8 +1443,8 @@ mod tests {
         // (the closing-punctuation requirement doubles as the word boundary).
         let names2 = vec![SPEAKER_LEAD.to_string()];
         assert_eq!(
-            vocative_addressee("Sure, Anwenne. Please post it.", &names2),
-            None
+            vocative_addressees("Sure, Anwenne. Please post it.", &names2),
+            Vec::<&str>::new()
         );
 
         // Name-AGNOSTIC proof: personas are procedurally generated, so the

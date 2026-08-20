@@ -122,6 +122,20 @@ fn write_at(path: &Path, pid: u32) -> io::Result<()> {
     std::fs::write(path, pid.to_string())
 }
 
+/// The pid this machine's CANONICAL live lane was last recorded at, if any.
+///
+/// This file is the authority on **which** lane is the live one — the lane registry
+/// holds a record per lane and cannot answer "which is current" by itself (its
+/// `read_dir` order is arbitrary, and a crashed generation can leave several).
+/// Callers that need the live lane's SHAPE pair this pid with its registry record.
+///
+/// `None` = no file, unparseable, or no lane recorded. NOT a liveness claim: the pid
+/// may be dead or REUSED, so a caller acting on it must identity-verify with
+/// [`crate::inference::lane_process::is_llama_server`] exactly as [`reclaim`] does.
+pub fn read() -> Option<u32> {
+    read_at(&pidfile_path()?)
+}
+
 /// Read and parse the pid at `path`. `None` for an absent or unparseable file.
 fn read_at(path: &Path) -> Option<u32> {
     std::fs::read_to_string(path)

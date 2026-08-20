@@ -38,6 +38,9 @@ pub const RECIPE_WALL_CATEGORY: &str = "recipe";
 /// The room → recipe pointer, as published by `activity/spawn` and read back by
 /// [`crate::ipc::recipe_room_purpose::RecipeRoomPurpose`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+// `Eq` was dropped when `params` arrived (#433): `serde_json::Value` carries
+// floats, which are only `PartialEq`. Nothing keyed on the binding's Eq.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -57,6 +60,26 @@ pub struct RoomRecipeBinding {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub parent: Option<String>,
+    ///
+    /// A pointer to a room is a `RoomId`. It was a `String` while the doc directly
+    /// above it said "POINTERS" — a pointer typed as text is not a pointer, it is a
+    /// hope that whoever fills it in spells a uuid correctly, and nothing rejects
+    /// `"the benchmark one"` ([[uuids-are-not-strings-and-never-hand-drawn]]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[ts(optional, type = "string")]
+    pub parent: Option<airc_core::RoomId>,
+    /// The RESOLVED parameters this room was spawned with (#433) — caller
+    /// overrides merged over the recipe's declared defaults, validated at
+    /// spawn. On the wall so the room is SELF-DESCRIBING: a citizen, a
+    /// renderer, or a grader reads WHAT this room is parameterized to do from
+    /// the same pipe as everything else — no side-channel run files
+    /// (BENCHMARKS-ARE-ADAPTERS law). Empty for parameterless recipes, and
+    /// absent on bindings published before #433 (serde default keeps them
+    /// readable).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    #[ts(type = "Record<string, unknown>")]
+    pub params: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 /// Why a wall could not be turned into a recipe binding.
@@ -184,6 +207,15 @@ mod tests {
         let written = RoomRecipeBinding {
             recipe: "benchmark/hard-rs".to_string(),
             parent: Some("f1a1b2c3-0000-4000-8000-000000000000".to_string()),
+            // This fixture was ALWAYS a uuid — written as a String only because the
+            // field was one. The value never changed; the type caught up to it.
+            parent: Some(airc_core::RoomId::from_uuid(
+                uuid::Uuid::parse_str("f1a1b2c3-0000-4000-8000-000000000000").expect("fixture id"),
+            )),
+            params: std::collections::BTreeMap::from([
+                ("suite".to_string(), serde_json::json!("swe-lite")),
+                ("instances".to_string(), serde_json::json!(2)),
+            ]),
         };
         let body = serde_json::to_string(&written).expect("encode");
         let read = project_binding(&[post(&body)]).expect("decode").expect("bound");

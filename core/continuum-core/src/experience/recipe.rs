@@ -120,10 +120,67 @@ pub struct ExperienceRecipe {
     /// gains its computed `who_may` at projection.
     #[serde(default)]
     pub affordances: Vec<AffordanceRecipe>,
+    /// The parameters this recipe accepts (#433) — typed knobs with EASY
+    /// DEFAULTS, so a zero-arg `activity/spawn` always works while callers can
+    /// target anything dynamic (suite, instances, team, budget…). Declared as
+    /// DATA in the recipe JSON: authoring a parameterized activity is a file,
+    /// zero code. Empty (the default) means the recipe takes no parameters.
+    #[serde(default)]
+    #[ts(type = "Record<string, ParamDecl>")]
+    pub params: std::collections::BTreeMap<String, ParamDecl>,
+    /// The resident citizens this experience wants HOSTED — the roster as
+    /// authored DATA (#430). The DEFAULT experience's citizens are the node's
+    /// resident population: what the persona spawner plans at boot, replacing
+    /// the hardcoded `plan_for_tier` role vec. Empty (the default) means this
+    /// experience declares no residents — for most activity recipes that is
+    /// the ordinary state; membership is live roster state, not authorship.
+    #[serde(default)]
+    pub citizens: Vec<CitizenRecipe>,
     /// Optional explicit composition (level-3 layout). Omitted → organic placement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub layout: Option<Layout>,
+}
+
+/// One declared recipe parameter (#433). The DEFAULT is also the TYPE
+/// declaration: a supplied value must carry the same JSON type as the default,
+/// and a parameter cannot be authored WITHOUT a default — so "a zero-arg spawn
+/// always works" holds by construction, not by review. Richer shapes (member
+/// lists, durations) arrive as conventions over these JSON types when the
+/// activities that need them land; the schema stays this small on purpose.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/experience/ParamDecl.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct ParamDecl {
+    /// The default value — applied when the caller omits the param, and the
+    /// authority on the param's TYPE (a supplied value of a different JSON
+    /// type is refused at spawn).
+    #[ts(type = "unknown")]
+    pub default: serde_json::Value,
+    /// What this knob does, for the refusal message and the catalog.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub doc: String,
+}
+
+/// One resident citizen an experience declares (#430) — a ROLE, not an
+/// identity. Identity (peer_id, name) is minted or resumed by the identity
+/// provider at hosting time; the MODEL is the serving daemon's per-host
+/// decision. A recipe authoring a device-specific model id would make the
+/// recipe non-portable across the grid, so the role is all it declares.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/experience/CitizenRecipe.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct CitizenRecipe {
+    /// Role identifier (snake_case: `helper`, `coder`, `sentinel`, …) —
+    /// `persona/role_template::RoleId`'s own serde form.
+    #[ts(type = "string")]
+    pub role: crate::persona::role_template::RoleId,
 }
 
 /// The authored shape of an [`Affordance`] — the verb and its command plus the

@@ -210,8 +210,7 @@ impl PersonaChannelReader for crate::persona::airc_runtime_registry::PersonaAirc
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cognition::channel_digest::ChannelBookmarks;
-    use crate::cognition::channel_element::ChannelElementCache;
+        use crate::cognition::channel_element::ChannelElementCache;
     use crate::cognition::embedding::EmbeddingProvider;
     use airc_core::TranscriptEvent;
     use airc_core::{
@@ -236,9 +235,14 @@ mod tests {
 
     struct StubReader {
         events: Mutex<Vec<TranscriptEvent>>,
+        /// The reader's cursor — airc's durable one in production.
+        cursor: Mutex<u64>,
     }
     #[async_trait]
     impl AircTranscriptReader for StubReader {
+        async fn read_cursor(&self, _p: Uuid, _r: Uuid) -> Result<u64, AircError> {
+            Ok(*self.cursor.lock().unwrap())
+        }
         async fn page_recent(&self, limit: usize) -> Result<Vec<TranscriptEvent>, AircError> {
             Ok(self
                 .events
@@ -288,26 +292,37 @@ mod tests {
     }
 
     /// Build a region whose stub channel source serves `events` in `room` for
-    /// `persona`. Returns (region, bookmarks) so tests can advance the cursor.
+    /// `persona`. The cursor is the READER's (airc's) — the stub reader carries it.
     fn region_for(
         persona: Uuid,
         room: RoomId,
         events: Vec<TranscriptEvent>,
-    ) -> (ChannelDigestRegion, Arc<ChannelBookmarks>) {
+    ) -> ChannelDigestRegion {
+        region_read_through(persona, room, events, 0)
+    }
+
+    /// Same, with the reader already read through `cursor`.
+    fn region_read_through(
+        persona: Uuid,
+        room: RoomId,
+        events: Vec<TranscriptEvent>,
+        cursor: u64,
+    ) -> ChannelDigestRegion {
         let cache = Arc::new(ChannelElementCache::new(Arc::new(NoopEmbedder)));
-        let bookmarks = Arc::new(ChannelBookmarks::new());
-        let builder = Arc::new(ChannelDigestBuilder::new(cache, bookmarks.clone()));
+        let builder = Arc::new(ChannelDigestBuilder::new(cache));
         let channels = Arc::new(StubChannels {
             persona,
             room: room.as_uuid(),
             reader: Arc::new(StubReader {
                 events: Mutex::new(events),
+                cursor: Mutex::new(cursor),
             }),
         });
         (
             ChannelDigestRegion::new(builder, channels).with_grounding(0),
             bookmarks,
         )
+        ChannelDigestRegion::new(builder, channels).with_grounding(0)
     }
 
     // what this catches: THE PRE-STAGING — a per-persona tick builds the digest and
@@ -317,7 +332,7 @@ mod tests {
     async fn tick_prestages_digest_for_consumer_to_peek() {
         let persona = Uuid::new_v4();
         let room = RoomId::new();
-        let (region, _) = region_for(
+        let region = region_for(
             persona,
             room,
             vec![event_in(room, "a", 1), event_in(room, "b", 2)],
@@ -342,7 +357,7 @@ mod tests {
     async fn global_tick_is_idle() {
         let persona = Uuid::new_v4();
         let room = RoomId::new();
-        let (region, _) = region_for(persona, room, vec![event_in(room, "a", 1)]);
+        let region = region_for(persona, room, vec![event_in(room, "a", 1)]);
         let outcome = region.tick(&RegionContext::global(0)).await;
         assert_eq!(outcome.published, 0);
         assert!(region.peek(persona, room.as_uuid()).is_none());
@@ -355,6 +370,7 @@ mod tests {
         let persona = Uuid::new_v4();
         let room = RoomId::new();
         let (region, _) = region_for(persona, room, vec![event_in(room, "a", 1)]);
+        let region = region_for(persona, room, vec![event_in(room, "a", 1)]);
         let outcome = region
             .tick(&RegionContext::for_persona(0, Uuid::new_v4()))
             .await;
@@ -367,12 +383,14 @@ mod tests {
     async fn quiet_channel_hints_slower() {
         let persona = Uuid::new_v4();
         let room = RoomId::new();
-        let (region, bookmarks) = region_for(
+        // Already read everything (cursor at the tip) — that is what makes the
+        // channel QUIET; the hint is about unread, not about emptiness.
+        let region = region_read_through(
             persona,
             room,
             vec![event_in(room, "a", 1), event_in(room, "b", 2)],
+            2,
         );
-        bookmarks.advance(persona, room.as_uuid(), 2); // already read everything
         let outcome = region.tick(&RegionContext::for_persona(0, persona)).await;
         assert_eq!(outcome.cadence_hint, Some(CadenceHint::Slower));
         // Still publishes (the grounding snapshot), just with no unread.
@@ -386,7 +404,7 @@ mod tests {
     async fn retick_refreshes_in_place() {
         let persona = Uuid::new_v4();
         let room = RoomId::new();
-        let (region, _) = region_for(persona, room, vec![event_in(room, "a", 1)]);
+        let region = region_for(persona, room, vec![event_in(room, "a", 1)]);
         region.tick(&RegionContext::for_persona(0, persona)).await;
         region.tick(&RegionContext::for_persona(1, persona)).await;
         assert_eq!(

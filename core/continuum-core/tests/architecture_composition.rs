@@ -148,7 +148,10 @@ fn memory_pressure_signal_propagates_through_monitor() {
 
     let snap_quiet = monitor.snapshot();
     assert!(snap_quiet.pressure < 0.2);
-    assert!(snap_quiet.free_bytes > snap_quiet.process_bytes * 5);
+    let quiet_free = snap_quiet
+        .free_bytes
+        .expect("a mock monitor always has a scripted free reading");
+    assert!(quiet_free > snap_quiet.process_bytes * 5);
 
     // Game starts in background, grabs ~12GB
     monitor.set_pressure(0.85);
@@ -160,7 +163,10 @@ fn memory_pressure_signal_propagates_through_monitor() {
     assert!(snap_pressured.pressure > 0.8);
     // Critical: WE didn't grow, but free dropped — distinguishable signal
     assert_eq!(snap_pressured.process_bytes, snap_quiet.process_bytes);
-    assert!(snap_pressured.free_bytes < snap_quiet.free_bytes / 4);
+    let pressured_free = snap_pressured
+        .free_bytes
+        .expect("a mock monitor always has a scripted free reading");
+    assert!(pressured_free < quiet_free / 4);
 
     // Game ends, pressure relaxes
     monitor.set_pressure(0.20);

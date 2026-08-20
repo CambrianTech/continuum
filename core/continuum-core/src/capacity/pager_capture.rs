@@ -32,6 +32,7 @@ use ts_rs::TS;
 #[ts(
     export,
     export_to = "../../../shared/generated/pager/PagerCaptureEvent.ts"
+    export_to = "../../../protocol/typescript/capacity/PagerCaptureEvent.ts"
 )]
 pub struct PagerCaptureEvent {
     /// Monotonic decode-token index.

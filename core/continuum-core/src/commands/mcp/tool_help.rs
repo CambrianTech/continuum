@@ -43,6 +43,7 @@ pub struct McpToolHelpParams {
 pub struct McpToolHelpResult {
     pub found: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "unknown")]
     pub help: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -58,8 +58,49 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 use tokio::sync::watch;
 
+use crate::cognition::serving_plan::MIN_SERVE_CTX;
+use crate::inference::lane_registry::LaneRecord;
 use crate::inference::llama_server::ServingSnapshot;
 use crate::modules::serving_tier_down::{TierDownContext, TierDownPolicy};
+
+/// Size a lane inherited from a previous generation of this core — **a past form of
+/// ourself** — from its custody record alone, with no probe and no clock.
+///
+/// # Why this exists (#452, measured 2026-08-19)
+///
+/// A fresh core's `ServingSnapshot` is empty for a lane it did not spawn, so the
+/// consumer reported ZERO bytes and the governor filed the predecessor's ~50 GB under
+/// `external` — someone else's. That read as `usable_gb = 2` on a 64 GB machine, the
+/// planner chose a 3B, and a healthy 27B was reaped to make room for it. Twice, in one
+/// boot. The self-eviction ratchet could not save it either: the ratchet adds back our
+/// OWN measured residency, and the lane was not ours yet.
+///
+/// # The refusal is the load-bearing half
+///
+/// A record written before the shape fields existed carries `0`, which means UNKNOWN,
+/// not "a zero-byte lane". Returning `None` there hands the caller an absence it can
+/// reason about; returning `0` would hand it a *quantity* it would happily budget
+/// against — the exact defect class this file spent the day removing
+/// ([[an-absence-is-an-unfinished-measurement]]).
+///
+/// Pure over `(record, sizer)` so both arms are testable without a filesystem, a
+/// process, or a live governor.
+fn inherited_footprint(
+    rec: &LaneRecord,
+    size: impl Fn(&str, u32, u32) -> u64,
+) -> Option<(u64, String)> {
+    if rec.context_window == 0 || rec.lanes == 0 {
+        return None;
+    }
+    Some((
+        size(&rec.model, rec.context_window, rec.lanes),
+        format!(
+            "{} inherited from a previous generation (pid {}, {} lane(s) × {} ctx) — a \
+             past form of ourself, ours to count and ours to control",
+            rec.model, rec.pid, rec.lanes, rec.context_window
+        ),
+    ))
+}
 use crate::resources::{
     ConsumerFootprint, ReclaimOutcome, ReclaimReason, ReclaimRequest, ReclaimStatus,
     ResourceConsumer, ResourceKind,
@@ -105,8 +146,26 @@ pub struct ServingConsumer {
     /// it (candidates intersect to the pin), freeing the delta without going dark
     /// (#105). The tier-down lever.
     pin: watch::Sender<Option<String>>,
+    /// HIGH-WATER RESIDENCY (#438, measured 2026-08-19). The bytes this consumer has
+    /// held and has NOT been shown releasing. See `footprint` for why a plan-derived
+    /// number alone under-reports by a whole model during every reshape.
+    held_high_water: std::sync::atomic::AtomicU64,
+    /// The `ready_verified_at_ms` of the last snapshot we accepted as PROOF the previous
+    /// process is gone. Evidence, not a timer: the high-water decays only when readiness
+    /// is re-verified at the new shape.
+    decayed_at_verified_ms: std::sync::atomic::AtomicU64,
     /// active model id + live shape → resident VRAM bytes (weights + per-lane KV).
     footprint_of: FootprintFn,
+    /// How to find a lane inherited from a previous generation — **injected**, for the
+    /// same reason `footprint_of` is.
+    ///
+    /// The first cut called `lane_registry::live_lane()` directly from `footprint()`,
+    /// which reaches a process-wide FILESYSTEM singleton: three unit tests immediately
+    /// began reporting the operator's real live 27B and failing. A unit that reads the
+    /// developer's machine is not a unit test ([[#72 embed-resolver]]), and worse, it
+    /// would pass or fail depending on whether a lane happened to be up. Production
+    /// wires the real lookup; tests hand it a closure.
+    inherited_lane: Arc<dyn Fn() -> Option<LaneRecord> + Send + Sync>,
     /// The swappable intelligence that chooses whether/where to tier down under
     /// pressure. `DeclineTierDown` until a real selection policy is authored — the
     /// consumer's handshake is identical regardless.
@@ -128,10 +187,25 @@ impl ServingConsumer {
             serving,
             suppress,
             pin,
+            held_high_water: std::sync::atomic::AtomicU64::new(0),
+            decayed_at_verified_ms: std::sync::atomic::AtomicU64::new(0),
             footprint_of,
+            inherited_lane: Arc::new(crate::inference::lane_registry::live_lane),
             tier_down,
             pending: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Override how an inherited lane is found. Production keeps the default (the
+    /// real lane registry); tests inject a closure so a unit never depends on whether
+    /// the developer's machine happens to have a lane up.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn with_inherited_lane(
+        mut self,
+        f: Arc<dyn Fn() -> Option<LaneRecord> + Send + Sync>,
+    ) -> Self {
+        self.inherited_lane = f;
+        self
     }
 
     /// The model the box is serving right now WITH the shape needed to size its
@@ -183,17 +257,109 @@ impl ResourceConsumer for ServingConsumer {
     }
 
     fn footprint(&self) -> Vec<ConsumerFootprint> {
-        match self.active_ready() {
-            Some((id, window, lanes)) => {
-                let bytes = (self.footprint_of)(&id, window, lanes);
-                vec![ConsumerFootprint {
-                    kind: ResourceKind::Vram,
+        use std::sync::atomic::Ordering;
+
+        // WHAT THE PLAN SAYS is served right now. Zero while a lane is loading or
+        // relaunching, because `active_ready` gates on `ready`.
+        let planned = match self.active_ready() {
+            Some((id, window, lanes)) => Some((
+                (self.footprint_of)(&id, window, lanes),
+                format!("{id} weights+KV resident ({lanes} lane(s) × {window} ctx)"),
+            )),
+            None => None,
+        };
+        // A LOADING LANE STILL HOLDS BYTES. `active_ready()` is None until `/props`
+        // answers, but the weights are mmap'd from the moment the process starts. Charge
+        // them at a MINIMUM shape — one lane at the floor window — which under-states the
+        // eventual KV but names the dominant term (weights) immediately. Conservative in
+        // the safe direction: it grows to the true figure the moment readiness lands.
+        let planned = planned.or_else(|| {
+            let snap = self.serving.borrow();
+            snap.loading_model.clone().map(|id| {
+                let bytes = (self.footprint_of)(&id, MIN_SERVE_CTX, 1);
+                (
                     bytes,
-                    detail: format!("{id} weights+KV resident ({lanes} lane(s) × {window} ctx)"),
-                }]
-            }
-            None => Vec::new(),
+                    format!("{id} loading — weights resident, KV not yet allocated"),
+                )
+            })
+        });
+        // A PAST FORM OF OURSELF IS STILL OURS (#452, measured 2026-08-19).
+        //
+        // Neither arm above can see a lane this core did not spawn. After a crash the
+        // predecessor's llama-server keeps running — named in our own custody record,
+        // holding tens of GB — while a fresh core's snapshot is empty. It therefore
+        // reported ZERO, and the governor filed those bytes under `external`: someone
+        // else's. Measured consequence: `usable_gb = 2` on a 64 GB machine, so the
+        // planner chose a 3B and REAPED a healthy 27B to make room for it, twice in one
+        // boot. The self-eviction ratchet could not rescue it either — the ratchet adds
+        // back our OWN measured residency, and the lane wasn't ours yet.
+        //
+        // The record is the durable statement of what our previous generation holds, so
+        // read it. Refuse to size a record that predates the shape fields: `0` there
+        // means UNKNOWN, and a fabricated number is the exact class of bug this whole
+        // day was spent removing.
+        let planned = planned.or_else(|| {
+            let rec = (self.inherited_lane)()?;
+            inherited_footprint(&rec, |m, w, l| (self.footprint_of)(m, w, l))
+        });
+        let planned_bytes = planned.as_ref().map(|(b, _)| *b).unwrap_or(0);
+
+        // THE HIGH-WATER REQUIRES A PROOF CHANNEL. `ready_verified_at_ms` is stamped the
+        // moment readiness is CONFIRMED for the lane now serving, and a verification we
+        // have not yet consumed is proof the previous process is gone. If the snapshot
+        // carries NO stamp at all, there is no mechanism that could ever prove release —
+        // and a claim that can never be falsified would strand this machine's capacity
+        // forever. So: no proof channel, no claim. Report the plan and nothing more.
+        //
+        // That is the same rule as everywhere else today — the failure direction must
+        // move toward LESS trust. Under-reporting for a moment is recoverable; holding an
+        // unfalsifiable claim on a third of the box is not.
+        let Some(verified) = self.serving.borrow().ready_verified_at_ms else {
+            return planned
+                .map(|(bytes, detail)| {
+                    vec![ConsumerFootprint {
+                        kind: ResourceKind::Vram,
+                        bytes,
+                        detail,
+                    }]
+                })
+                .unwrap_or_default();
+        };
+
+        // DECAY ON EVIDENCE, NEVER ON A TIMER.
+        let consumed = self.decayed_at_verified_ms.load(Ordering::Relaxed);
+        if verified > consumed && planned.is_some() {
+            self.decayed_at_verified_ms.store(verified, Ordering::Relaxed);
+            self.held_high_water.store(planned_bytes, Ordering::Relaxed);
+        } else if planned_bytes > self.held_high_water.load(Ordering::Relaxed) {
+            self.held_high_water.store(planned_bytes, Ordering::Relaxed);
         }
+
+        let held = self.held_high_water.load(Ordering::Relaxed);
+        if held == 0 {
+            // Never held anything and nothing is planned — a real, honest nothing.
+            return Vec::new();
+        }
+
+        // REPORT WHAT WE HOLD, NOT WHAT WE INTEND. Measured live 2026-08-19: mid-reshape
+        // the board read `serving 25.93 GB (1 lane)` against `phys 47.25 GB` — the old
+        // 4-lane process was still resident while the snapshot had already flipped to the
+        // new shape. The 21.3 GB gap became "unowned", unowned reads as immovable,
+        // `available` collapsed to 8.42 GB, the 27B no longer fit, and the planner took a
+        // 0.5B. Under-reporting our own residency is indistinguishable from someone else
+        // holding it, and it is strictly more dangerous: it invites over-commit against
+        // bytes we have not released.
+        let detail = match &planned {
+            Some((b, d)) if *b >= held => d.clone(),
+            Some((_, d)) => format!("{d} — reporting prior residency, not yet confirmed released"),
+            None => "prior residency held while no lane is ready (loading or relaunching)"
+                .to_string(),
+        };
+        vec![ConsumerFootprint {
+            kind: ResourceKind::Vram,
+            bytes: held,
+            detail,
+        }]
     }
 
     async fn reclaim(&self, request: ReclaimRequest) -> ReclaimOutcome {
@@ -340,6 +506,7 @@ mod tests {
     // the only lever is a full unload — the tier-down path has its own rig below.
     fn rig(active: &str, bytes: u64) -> (ServingConsumer, watch::Sender<ServingSnapshot>) {
         let (serving_tx, serving_rx) = watch::channel(ServingSnapshot {
+            loading_model: None,
             // test fixture: no live readiness was ever CONFIRMED here.
             ready_verified_at_ms: None,
             active_model: Some(active.to_string()),
@@ -365,7 +532,8 @@ mod tests {
             pin_tx,
             footprint_of,
             Arc::new(DeclineTierDown),
-        );
+        )
+            .with_inherited_lane(Arc::new(|| None));
         (consumer, serving_tx)
     }
 
@@ -398,6 +566,137 @@ mod tests {
     // is not actually resident, the daemon's scan-vs-footprint reconcile would
     // see phantom bytes; if it reported nothing while a model is live, the
     // authority would think serving is reclaimable-free and over-grant into it.
+    /// A rig whose footprint actually SCALES with the lane count — the shared `rig`
+    /// deliberately returns a flat number ("the shape is ignored here"), which is right
+    /// for the reclaim-handshake tests and useless for these: with a flat resolver a
+    /// 4-lane and a 1-lane serve are the same size, so a shrink is unobservable. I wrote
+    /// three tests against the flat rig before reading it.
+    fn shape_rig(bytes_per_lane: u64) -> (ServingConsumer, watch::Sender<ServingSnapshot>) {
+        let (serving_tx, serving_rx) = watch::channel(ServingSnapshot {
+            loading_model: None,
+            ready_verified_at_ms: Some(1_000),
+            active_model: Some("qwen3.8-27b".into()),
+            ready: true,
+            base_url: "http://localhost:0/v1".into(),
+            adapters: Vec::new(),
+            served_context_window: 22_528,
+            lanes: 4,
+            degraded_reason: None,
+            vision_ready: false,
+            vision_base_url: None,
+            vision_model: None,
+        });
+        let (suppress_tx, _srx) = watch::channel(Arc::new(HashSet::new()));
+        let (pin_tx, _prx) = watch::channel(None);
+        let footprint_of: FootprintFn =
+            Arc::new(move |_id: &str, _w: u32, lanes: u32| bytes_per_lane * lanes as u64);
+        let consumer = ServingConsumer::new(
+            serving_rx,
+            suppress_tx,
+            pin_tx,
+            footprint_of,
+            Arc::new(DeclineTierDown),
+        )
+            .with_inherited_lane(Arc::new(|| None));
+        (consumer, serving_tx)
+    }
+
+    // what this catches: a high-water that can never be released. If the snapshot carries
+    // no `ready_verified_at_ms`, nothing can ever prove the old process died — holding a
+    // claim on those bytes would strand them for the life of the process. No proof
+    // channel, no claim.
+    #[tokio::test]
+    async fn without_a_verification_stamp_no_high_water_is_claimed() {
+        let (consumer, serving_tx) = rig("qwen3-coder-30b", 18_000); // stamp is None
+        assert_eq!(consumer.footprint()[0].bytes, 18_000);
+        serving_tx.send_modify(|s| s.ready = false);
+        assert!(
+            consumer.footprint().is_empty(),
+            "with no way to ever prove release, we must not claim bytes we cannot give back"
+        );
+    }
+
+    // what this catches: THE COLD-LOAD HOLE, measured live 2026-08-19 AFTER the
+    // high-water fix and NOT covered by it. On a first boot the consumer has no prior
+    // residency and `active_ready()` is None the whole way up, so the board read
+    // `serving 0.00 GB` while physical climbed 29.90 → 36.88 GB. The cause was upstream:
+    // the snapshot was binary, so throughout the load window it FORGOT what it was
+    // loading and the consumer had nothing to name. Now it does.
+    #[tokio::test]
+    async fn a_cold_load_charges_the_model_being_brought_up() {
+        let (consumer, serving_tx) = shape_rig(6_000_000_000);
+        serving_tx.send_modify(|s| {
+            // Cold: never ready, no prior residency, no verification stamp — exactly the
+            // first boot of a fresh install.
+            s.ready = false;
+            s.active_model = None;
+            s.ready_verified_at_ms = None;
+            s.loading_model = Some("qwen3.8-27b".into());
+        });
+        let fp = consumer.footprint();
+        assert_eq!(fp.len(), 1, "a loading lane must be attributed, not silent");
+        assert!(fp[0].bytes > 0, "the weights are resident from spawn");
+        assert!(fp[0].detail.contains("loading"));
+    }
+
+    // what this catches: THE MEASURED #438 COLLAPSE. Mid-reshape the board read
+    // `serving 25.93 GB (1 lane)` against `phys 47.25 GB` — the old 4-lane process was
+    // still resident while the snapshot had already flipped to the new shape. The 21.3 GB
+    // gap read as unowned, unowned reads as immovable, `available` fell to 8.42 GB, the
+    // 27B stopped fitting, and the planner took a 0.5B. Shrinking the SHAPE must not
+    // shrink what we claim to HOLD until something proves the bytes came back.
+    #[tokio::test]
+    async fn a_shrinking_shape_does_not_shrink_reported_residency_without_proof() {
+        let (consumer, serving_tx) = shape_rig(6_000_000_000);
+        let wide = consumer.footprint()[0].bytes;
+        assert!(wide > 0, "a ready 4-lane serve must attribute something");
+
+        // The plan reshapes to 1 lane. No NEW readiness verification yet — the old
+        // process may still be resident, and nothing has shown us otherwise.
+        serving_tx.send_modify(|s| s.lanes = 1);
+        let during = consumer.footprint();
+        assert_eq!(
+            during[0].bytes, wide,
+            "must still claim the wider residency until a verification proves release"
+        );
+        assert!(during[0].detail.contains("not yet confirmed released"));
+    }
+
+    // what this catches: the OTHER half — `active_ready()` returns None while a lane
+    // loads or relaunches, and the old code returned an EMPTY vec. Zero attributed while
+    // gigabytes are demonstrably resident is the same defect wearing a different face.
+    #[tokio::test]
+    async fn a_loading_lane_still_reports_the_bytes_it_has_not_released() {
+        let (consumer, serving_tx) = shape_rig(6_000_000_000);
+        let held = consumer.footprint()[0].bytes;
+
+        serving_tx.send_modify(|s| s.ready = false); // relaunching
+        let during = consumer.footprint();
+        assert_eq!(during.len(), 1, "must NOT go silent while bytes are resident");
+        assert_eq!(during[0].bytes, held);
+        assert!(during[0].detail.contains("loading or relaunching"));
+    }
+
+    // what this catches: the opposite failure — never decaying, which strands capacity
+    // forever. A FRESH readiness verification is proof the previous process is gone, so
+    // the claim must collapse to the live plan. Evidence, not a timer.
+    #[tokio::test]
+    async fn a_new_readiness_verification_releases_the_high_water() {
+        let (consumer, serving_tx) = shape_rig(6_000_000_000);
+        let wide = consumer.footprint()[0].bytes;
+
+        serving_tx.send_modify(|s| s.lanes = 1);
+        assert_eq!(consumer.footprint()[0].bytes, wide, "no proof yet");
+
+        // The new 1-lane process verifies ready → the old one is gone.
+        serving_tx.send_modify(|s| s.ready_verified_at_ms = Some(2_000));
+        let after = consumer.footprint()[0].bytes;
+        assert!(
+            after < wide,
+            "a confirmed relaunch must release the claim, or capacity is stranded forever"
+        );
+    }
+
     #[tokio::test]
     async fn footprint_is_the_active_ready_model_only() {
         let (consumer, serving_tx) = rig("qwen3-coder-30b", 18_000);
@@ -429,6 +728,7 @@ mod tests {
         let seen: Arc<Mutex<Option<(String, u32, u32)>>> = Arc::new(Mutex::new(None));
         let seen_w = seen.clone();
         let (serving_tx, serving_rx) = watch::channel(ServingSnapshot {
+            loading_model: None,
             // test fixture: no live readiness was ever CONFIRMED here.
             ready_verified_at_ms: None,
             active_model: Some("coder-14b".into()),
@@ -455,7 +755,8 @@ mod tests {
             pin_tx,
             footprint_of,
             Arc::new(DeclineTierDown),
-        );
+        )
+            .with_inherited_lane(Arc::new(|| None));
 
         let fp = consumer.footprint();
         assert_eq!(fp.len(), 1);
@@ -529,6 +830,7 @@ mod tests {
         watch::Receiver<Option<String>>,
     ) {
         let (serving_tx, serving_rx) = watch::channel(ServingSnapshot {
+            loading_model: None,
             // test fixture: no live readiness was ever CONFIRMED here.
             ready_verified_at_ms: None,
             active_model: Some(active.to_string()),
@@ -546,6 +848,8 @@ mod tests {
         let (pin_tx, pin_rx) = watch::channel(None);
         let footprint_of: FootprintFn = Arc::new(move |_id: &str, _w: u32, _l: u32| current);
         let consumer = ServingConsumer::new(serving_rx, suppress_tx, pin_tx, footprint_of, policy);
+        let consumer = ServingConsumer::new(serving_rx, suppress_tx, pin_tx, footprint_of, policy)
+            .with_inherited_lane(Arc::new(|| None));
         (consumer, serving_tx, pin_rx)
     }
 
@@ -675,5 +979,51 @@ mod tests {
         assert_eq!(out.status, ReclaimStatus::Refused);
         assert_eq!(out.freed_bytes, 0);
         assert!(out.detail.unwrap().contains("Ram"));
+    }
+
+    fn inherited_rec(window: u32, lanes: u32) -> LaneRecord {
+        LaneRecord {
+            pid: 64372,
+            port: 58057,
+            role: crate::inference::lane_registry::LaneRole::Live,
+            model: "ggml-org/Qwen3.8-27B-GGUF".into(),
+            context_window: window,
+            lanes,
+        }
+    }
+
+    // what this catches: THE 2026-08-19 GOVERNOR DEFECT. A lane inherited from a crashed
+    // predecessor holds real bytes, and if the consumer reports nothing for it the
+    // governor files those bytes under `external` — someone else's. Measured live: that
+    // read as usable_gb=2 on a 64 GB box, so the planner chose a 3B and reaped a healthy
+    // 27B to make room for it, TWICE in one boot. A past form of ourself must be counted
+    // as OURS, sized from its own custody record, with a reason that says where it came
+    // from.
+    #[test]
+    fn a_lane_inherited_from_a_previous_generation_is_counted_as_ours() {
+        let rec = inherited_rec(22_784, 4);
+        let (bytes, why) = inherited_footprint(&rec, |_m, w, l| u64::from(w) * u64::from(l))
+            .expect("a fully-described inherited lane must be sizable");
+        assert_eq!(bytes, 22_784 * 4, "sized from the record's OWN shape");
+        assert!(
+            why.contains("inherited") && why.contains("64372"),
+            "the reason must name the past form it came from, got {why:?}"
+        );
+    }
+
+    // what this catches: the refusal half, which is the one that keeps this honest. A
+    // record written before the shape fields existed carries 0 — that is UNKNOWN, not a
+    // zero-byte lane. Regression here (returning Some(0)) hands the governor a QUANTITY
+    // where it should get an absence, which is the same fabricated-zero class as #438's
+    // usable_gb=0 and the sidecar's two-zeros bug. Refuse instead
+    // ([[an-absence-is-an-unfinished-measurement]]).
+    #[test]
+    fn an_old_record_without_a_shape_is_unknown_and_never_a_zero_byte_lane() {
+        for rec in [inherited_rec(0, 4), inherited_rec(22_784, 0), inherited_rec(0, 0)] {
+            assert!(
+                inherited_footprint(&rec, |_m, _w, _l| 999).is_none(),
+                "a record missing its shape must refuse to be sized, never report 0"
+            );
+        }
     }
 }

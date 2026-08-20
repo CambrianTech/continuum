@@ -34,7 +34,48 @@ use super::types::{SettleOutcome, SettleStep};
 /// forever" persona is a fitness gap to train away, never a substrate ceiling —
 /// §4). When the budget runs out mid-action, the final un-driven `Act` is
 /// returned and the grader scores it as unfinished — never a fabricated answer.
+///
+/// ## Why the lived-experience write lives HERE and not at the call sites
+///
+/// This function is the ONE place a `SettleOutcome` is produced, so it is the one
+/// place "a turn was lived" can be recorded without the fact being re-derived per
+/// caller. It was not always: the #319 producer was first wired into a SINGLE
+/// service_loop call site (the directed-message path), which left the self-tick
+/// path and the held-work path settling turns that no experience record ever
+/// described. Three callers, one of them remembering — the missing-constraint
+/// shape ([[the-same-bug-at-two-sites-is-a-missing-constraint]]), and the reason
+/// zero `LivedTurn` records existed on disk while citizens were demonstrably
+/// deliberating.
+///
+/// Recording once around the driver — rather than at each of its four return
+/// paths — is deliberate for the same reason: a fifth return path added later
+/// inherits the record instead of silently opting out of learning.
+///
+/// The write is gated on [`WorkspaceCycle::acting`] because that is where a
+/// citizen's identity lives. A cycle with no `ActingBody` is pure cognition (a
+/// faculty test, a replay) — it is nobody's lived experience, so there is no
+/// stream it belongs in. That is a structural absence, not a skipped write.
 pub async fn drive_to_settle(
+    cycle: &WorkspaceCycle,
+    burst: impl Into<Burst>,
+    room_id: Uuid,
+    max_acts: usize,
+    framing: TurnFraming,
+) -> SettleOutcome {
+    let settled = settle_to_outcome(cycle, burst, room_id, max_acts, framing).await;
+    if let Some(body) = cycle.acting() {
+        crate::cognition::experience::record_lived_turn(
+            &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            crate::identity::PeerId::from_uuid(body.persona_id),
+            &settled,
+        );
+    }
+    settled
+}
+
+/// The settle loop itself. Private so that [`drive_to_settle`] is the only way to
+/// reach it — every produced outcome therefore passes the lived-experience seam.
+async fn settle_to_outcome(
     cycle: &WorkspaceCycle,
     burst: impl Into<Burst>,
     room_id: Uuid,
@@ -43,6 +84,25 @@ pub async fn drive_to_settle(
 ) -> SettleOutcome {
     let burst: Burst = burst.into();
     let mut acts = 0usize;
+    // This turn's causal thread: each admitted act observation becomes the
+    // CausedBy target of the next act in the SAME chain — the driver owns the
+    // chain, so an edge can never cross turns or rooms (CAUSAL-MEMORY-GRAPH.md).
+    // ROOTED in what caused this turn, so the first act chains to its trigger rather
+    // than starting mid-air — the link that makes "which acts were done for this card"
+    // a graph query instead of an inference.
+    let chain = super::apply::ActChain::rooted_in(&burst.cause);
+    // How many turns actually run with a head on their thread — the measurement that
+    // tells us whether the causal graph is CONNECTED in the live system, rather than
+    // connected in the one path I happened to wire by hand
+    // ([[an-absence-is-an-unfinished-measurement]]). An `ambient` row is not a fault;
+    // it is an idle tick whose stimulus the projection layer discarded.
+    crate::probe!(
+        class = "engram.chain.rooted",
+        cause = burst.cause.as_str(),
+        room = %room_id,
+        rooted = burst.cause.root().is_some(),
+        "turn's causal thread begins here"
+    );
     // The turn's investigation trail (see `SettleOutcome::touched_paths`).
     let mut touched: Vec<String> = Vec::new();
     // Fold each tick's deliberation cost in, so the settled outcome reports the
@@ -158,8 +218,16 @@ pub async fn drive_to_settle(
             );
         }
         let may_act = acts < max_acts && stuck < STUCK_LIMIT && discovery_open;
-        let (step, step_metrics) =
-            settle_step(cycle, burst.clone(), room_id, may_act, framing, situation).await;
+        let (step, step_metrics) = settle_step(
+            cycle,
+            burst.clone(),
+            room_id,
+            may_act,
+            framing,
+            situation,
+            &chain,
+        )
+        .await;
         if let Some(m) = step_metrics {
             metrics.accumulate(m);
         }
@@ -388,6 +456,7 @@ pub async fn settle_step(
     may_act: bool,
     framing: TurnFraming,
     situation: Situation,
+    chain: &super::apply::ActChain,
 ) -> (SettleStep, Option<TurnMetrics>) {
     let burst: Burst = burst.into();
     // Snapshot the burst's PEER turns before the workspace consumes it — the
@@ -428,7 +497,7 @@ pub async fn settle_step(
                 // re-perceive next step; `NoHands`/`ExecutorError` → unfulfilled. Behavior
                 // identical to the old `Some`/`None`, but `ExecutorError` is now
                 // distinguishable for a future backstop.
-                if apply_act(cycle, &calls, &intent, room_id)
+                if apply_act(cycle, &calls, &intent, room_id, chain)
                     .await
                     .produced_an_act()
                 {

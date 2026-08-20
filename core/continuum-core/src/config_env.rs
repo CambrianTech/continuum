@@ -68,22 +68,53 @@ fn unquote(v: &str) -> String {
     v.to_string()
 }
 
-/// Path-taking core of [`read`] — testable without touching `$HOME`.
-pub fn read_from(path: &Path, key: &str) -> Option<String> {
-    let content = fs::read_to_string(path).ok()?;
-    let mut found = None;
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        if let Some((k, v)) = trimmed.split_once('=') {
-            if k.trim() == key {
-                found = Some(unquote(v.trim()));
+/// Every assignment in the file, in file order, duplicates included.
+///
+/// Exists because the file has to reach a CHILD PROCESS, not just answer a
+/// single-key question. `tools/scripts/start-server.sh` gets that for free —
+/// it `source`s config.env under `set -a`, so a core launched through the
+/// script inherits every key. A core launched by exec'ing the installed binary
+/// got NONE of them, and instead inherited whatever environment the calling CLI
+/// happened to have. Measured 2026-08-14: a core auto-started from an agent
+/// session was running with that session's env and no `CONTINUUM_PROBE_DIR`,
+/// so the glass box was silently OFF on a node whose config.env sets it.
+///
+/// Order is preserved and duplicates are kept so the caller can apply them
+/// left-to-right and get shell `source` semantics (last assignment wins) from
+/// the application itself, rather than this function having to pick.
+pub fn read_all() -> Vec<(String, String)> {
+    config_path().map(|p| read_all_from(&p)).unwrap_or_default()
+}
+
+/// Path-taking core of [`read_all`] — testable without touching `$HOME`.
+/// THE parser for this format; [`read_from`] is a projection of it, so a fix to
+/// comment/quote handling can never apply to one reader and miss the other.
+pub fn read_all_from(path: &Path) -> Vec<(String, String)> {
+    let Ok(content) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    content
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                return None;
             }
-        }
-    }
-    found
+            let (k, v) = trimmed.split_once('=')?;
+            Some((k.trim().to_string(), unquote(v.trim())))
+        })
+        .collect()
+}
+
+/// Path-taking core of [`read`] — testable without touching `$HOME`.
+/// Last assignment wins, matching the shell `source` semantics the bootstrap
+/// relies on.
+pub fn read_from(path: &Path, key: &str) -> Option<String> {
+    read_all_from(path)
+        .into_iter()
+        .filter(|(k, _)| k == key)
+        .next_back()
+        .map(|(_, v)| v)
 }
 
 /// Path-taking core of [`upsert`] — testable without touching `$HOME`. Writes
@@ -192,6 +223,54 @@ mod tests {
         static N: AtomicU64 = AtomicU64::new(0);
         let n = N.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!("continuum-config-env-test-{n}/config.env"))
+    }
+
+    /// What this catches: the file has to reach a CHILD PROCESS, not just answer one key. A core
+    /// launched by exec'ing the installed binary gets its environment from `read_all`; a core
+    /// launched via start-server.sh gets it from bash `source` under `set -a`. Those two must
+    /// agree, or the same node behaves differently depending on which verb started it — measured
+    /// 2026-08-14, when the exec path produced a core with NO `CONTINUUM_PROBE_DIR` (glass box
+    /// silently OFF) on a machine whose config.env sets it.
+    ///
+    /// Pins the three things a `source` consumer depends on: comments and blanks are skipped,
+    /// quotes are stripped the same way single-key reads strip them, and duplicate assignments
+    /// are KEPT IN ORDER so applying them left-to-right reproduces shell last-wins. Returning a
+    /// deduped map instead would silently pick a winner here and could disagree with `read_from`.
+    #[test]
+    fn read_all_reproduces_source_semantics_for_a_child_process() {
+        let p = tmp_config();
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(
+            &p,
+            "# comment\n\nA=1\nB='two'\nA=3\n  C=\"three\"  \n",
+        )
+        .unwrap();
+
+        let all = read_all_from(&p);
+        assert_eq!(
+            all,
+            vec![
+                ("A".to_string(), "1".to_string()),
+                ("B".to_string(), "two".to_string()),
+                ("A".to_string(), "3".to_string()),
+                ("C".to_string(), "three".to_string()),
+            ],
+            "file order preserved, duplicates kept, comments/blanks dropped, quotes stripped"
+        );
+
+        // The projection must agree with the parser it is built from: applying `all` in order
+        // leaves A=3, and that is exactly what a single-key read reports.
+        assert_eq!(read_from(&p, "A").as_deref(), Some("3"), "last assignment wins");
+        assert_eq!(read_from(&p, "B").as_deref(), Some("two"));
+        assert_eq!(read_from(&p, "missing"), None);
+    }
+
+    /// What this catches: a missing config.env must read as "no keys", never panic — a fresh
+    /// clone has no such file and still has to be able to launch a core (#291).
+    #[test]
+    fn read_all_on_a_missing_file_is_empty_not_a_panic() {
+        let p = tmp_config();
+        assert!(read_all_from(&p).is_empty());
     }
 
     /// What this catches: a Windows path written by the installer must survive being read back,

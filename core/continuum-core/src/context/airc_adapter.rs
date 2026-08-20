@@ -65,8 +65,15 @@ impl crate::persona::room_roster_source::AircRosterReader for AircHandleAdapter 
         &self,
         within: std::time::Duration,
         window: usize,
+        room: Option<uuid::Uuid>,
     ) -> Result<Vec<airc_lib::RoomMember>, AircError> {
-        self.inner.room_roster(within, window).await
+        crate::persona::room_roster_source::AircRosterReader::room_roster(
+            self.inner.as_ref(),
+            within,
+            window,
+            room,
+        )
+        .await
     }
 
     // #262: forward the CARDS read to the real airc identity join. Without
@@ -78,8 +85,15 @@ impl crate::persona::room_roster_source::AircRosterReader for AircHandleAdapter 
         &self,
         within: std::time::Duration,
         window: usize,
+        room: Option<uuid::Uuid>,
     ) -> Result<Vec<airc_lib::RoomMemberCard>, AircError> {
-        self.inner.room_roster_cards(within, window).await
+        crate::persona::room_roster_source::AircRosterReader::room_roster_cards(
+            self.inner.as_ref(),
+            within,
+            window,
+            room,
+        )
+        .await
     }
 }
 
@@ -87,8 +101,13 @@ impl crate::persona::room_roster_source::AircRosterReader for AircHandleAdapter 
 impl crate::persona::room_doctrine_source::AircDoctrineReader for AircHandleAdapter {
     async fn room_doctrine(
         &self,
+        room: Option<uuid::Uuid>,
     ) -> Result<Option<airc_core::doctrine::RoomDoctrinePublished>, AircError> {
-        self.inner.room_doctrine().await
+        crate::persona::room_doctrine_source::AircDoctrineReader::room_doctrine(
+            self.inner.as_ref(),
+            room,
+        )
+        .await
     }
 }
 

@@ -118,6 +118,7 @@ pub struct GenomeTeachParams {
     pub max_fix_iters: Option<u32>,
     /// Teacher decoding temperature. Default 0.2 (we want correct, convergent code).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub temperature: Option<f32>,
     /// Dataset name (subdirectory under the datasets root). Default
@@ -1036,6 +1037,7 @@ pub struct GenomeTeachStatusResult {
     pub complete: bool,
     /// The terminal ledger row `{ok, result|error}` when complete, else null.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "unknown")]
     pub result: Option<serde_json::Value>,
     /// Live progress of the currently-running teach — the mid-run scoreboard a progress

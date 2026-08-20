@@ -375,6 +375,19 @@ pub enum GenerationChunk {
     /// ever leaking chain-of-thought into the room — the answer/reasoning split is
     /// preserved on the stream, not just on the assembled response.
     Reasoning(String),
+    /// PREFILL advanced — the slot has ingested `processed` of `total` prompt
+    /// tokens (`cached` of them served free by the KV prefix cache). Emitted
+    /// BEFORE any token exists, so a consumer can show honest progress during
+    /// the long silence a big prompt buys ([[honest-presence-lifecycle]]).
+    ///
+    /// This is also the liveness signal the stream watchdog keys on: a healthy
+    /// prefill raises `processed`, a wedged slot freezes it. Consumers that only
+    /// care about text may ignore this variant.
+    Prefill {
+        processed: u64,
+        total: u64,
+        cached: u64,
+    },
 }
 
 /// The universal AI provider adapter trait

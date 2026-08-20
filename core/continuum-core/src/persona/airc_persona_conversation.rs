@@ -78,6 +78,16 @@ pub struct AircPersonaConversation {
     /// wire-schema fault it surfaces loud, card 807193ab), which we
     /// re-surface rather than mask.
     stream: Option<FilteredEventStream>,
+    /// Membership-change cue (P0 20b44763): when the citizen joins a room at
+    /// RUNTIME (benchmark dispatch moving her into a fresh run room), this
+    /// epoch moves and `next_message` re-opens the stream so the new room's
+    /// events reach her. Without it the stream keeps the spawn-time channel
+    /// snapshot forever and every later-joined room is born deaf — measured
+    /// live 2026-08-15: three bench rounds, 12 addressed kickoffs each, zero
+    /// turns. NOT the forbidden auto-resubscribe fallback documented on the
+    /// terminal-`None` arm below: that masks a wire fault; this answers a
+    /// REAL membership event, the system-law event-driven shape.
+    membership_epoch: tokio::sync::watch::Receiver<u64>,
 }
 
 impl AircPersonaConversation {
@@ -85,10 +95,12 @@ impl AircPersonaConversation {
     /// is built on first `next_message`; until then this is free.
     pub fn new(runtime: Arc<dyn AircCitizen>) -> Self {
         let own_peer_id = runtime.peer_id();
+        let membership_epoch = runtime.membership_epoch();
         Self {
             runtime,
             own_peer_id,
             stream: None,
+            membership_epoch,
         }
     }
 
@@ -161,12 +173,14 @@ impl PersonaConversation for AircPersonaConversation {
         // visibly — never silently lazy-subscribes (PR #1514 reviewer
         // fix: the soft-language lazy fallback was a silent-degradation
         // shape we refuse).
-        let stream = self.stream.as_mut().ok_or_else(|| {
-            "AircPersonaConversation::next_message called before prime() — caller must \
-             invoke prime() before iterating (serve_persona_loop does this automatically \
-             at boot)"
-                .to_string()
-        })?;
+        if self.stream.is_none() {
+            return Err(
+                "AircPersonaConversation::next_message called before prime() — caller must \
+                 invoke prime() before iterating (serve_persona_loop does this automatically \
+                 at boot)"
+                    .to_string(),
+            );
+        }
 
         // Skip self / non-text inline — they're not "next messages"
         // from the loop's perspective. Yielding them with the loop
@@ -174,7 +188,45 @@ impl PersonaConversation for AircPersonaConversation {
         // over-counts skips for events the conversation already
         // knows aren't relevant.
         loop {
-            match stream.next().await {
+            // Wait on EITHER the next event OR a membership-epoch move. The
+            // epoch branch is the P0 20b44763 fix: a room joined at runtime
+            // (benchmark dispatch) never enters the existing stream's channel
+            // snapshot, so on a membership change we re-open the stream with
+            // the enlarged set. A closed epoch channel (stub citizens whose
+            // default `membership_epoch` drops its sender) parks on
+            // `pending()` — closed means "membership never changes", never
+            // an event, or stubs would busy-loop on `changed() == Err`.
+            let polled = {
+                let stream = self
+                    .stream
+                    .as_mut()
+                    .expect("stream checked Some at next_message entry");
+                let epoch = &mut self.membership_epoch;
+                tokio::select! {
+                    ev = stream.next() => Some(ev),
+                    _ = async {
+                        if epoch.changed().await.is_err() {
+                            std::future::pending::<()>().await;
+                        }
+                    } => None,
+                }
+            };
+            let Some(polled) = polled else {
+                tracing::info!(
+                    persona = %self.own_peer_id,
+                    probe_class = "persona.inbound.resubscribed",
+                    "room membership changed at runtime — re-opening the subscribe \
+                     stream with the enlarged channel snapshot (P0 20b44763)"
+                );
+                let stream = self
+                    .runtime
+                    .subscribe_all_rooms()
+                    .await
+                    .map_err(|e| format!("resubscribe after membership change failed: {e}"))?;
+                self.stream = Some(stream);
+                continue;
+            };
+            match polled {
                 None => {
                     // Transient transport loss (daemon restart, socket
                     // drop) is NOT seen here — airc-lib's `subscribe()`
@@ -248,6 +300,14 @@ impl PersonaConversation for AircPersonaConversation {
                         probe_class = "persona.inbound.raw_event",
                         "persona subscribe stream yielded a raw event (#146)"
                     );
+                    // Card-state transitions bridge onto the internal bus HERE —
+                    // the persona subscribe streams are the only channel-complete
+                    // receiver this core has (the daemon attach covers ONE room),
+                    // and this runs BEFORE the perceptual filter and the self-skip
+                    // so a citizen's own `work/state` echo counts. Once per wire
+                    // event process-wide (the bridge dedups by event id); this is
+                    // the single emitter the grade-on-done subscriber hears.
+                    crate::modules::work::bridge_wire_work_event(&event).await;
                     // Recover a perceptual room turn. Two on-wire shapes
                     // reach a persona's subscribe stream and both are
                     // messages it must hear: a peer's plain-text `say()`
@@ -325,7 +385,27 @@ impl PersonaConversation for AircPersonaConversation {
                     // Skip our own turn, matched on the RESOLVED sender so a
                     // self-authored chat_transcript is caught too — not just
                     // a self `say()` (whose transport peer is us).
+                    //
+                    // PROBED, because this drop was SILENT and that cost a whole round
+                    // (2026-08-17). `benchmark/dispatch` authored `@Atlas (to you)`
+                    // kickoffs THROUGH Atlas (the operator has no self-peer, so
+                    // `curator_airc` borrows the lexicographically-first live citizen —
+                    // her). Every kickoff died right here: no error, no probe, no turn,
+                    // `kickoff_errors: []`, and hours spent looking at the grader, the
+                    // roster and the model. The skip is CORRECT — nobody answers their own
+                    // speech — but a message vanishing without a trace is how a structural
+                    // failure reads as "the citizen chose not to work"
+                    // ([[an-absence-is-an-unfinished-measurement]]).
                     if message.peer_id == self.own_peer_id {
+                        tracing::debug!(
+                            persona = %self.own_peer_id,
+                            from_peer = %event.peer_id,
+                            text_len = message.text.len(),
+                            probe_class = "persona.inbound.skipped_self_authored",
+                            "skipped a message this persona is recorded as having said — \
+                             if it was ADDRESSED to her, whoever sent it authored through \
+                             her identity and she cannot hear it"
+                        );
                         continue;
                     }
                     return Ok(Some(message));

@@ -671,6 +671,20 @@ mod tests {
         let deferred = [
             ("hf-hub", "#155: hub LRU keyed on last-access — downloads are re-fetchable"),
             ("citizens", "#155/#49: workspace CoW fix removes the bulk; stores are persona MEMORY, never auto-evicted"),
+            // Sibling of `citizens` and inherits its rule: a LIVE mind's longterm.db and
+            // working-set.json are MEMORY, never auto-evicted. What IS evictable is the
+            // GHOST sub-class — a dir whose uuid appears in no roster and which never
+            // recorded a turn, left by the spawn name-pool (#437). Measured 2026-08-20:
+            // 295 dirs, 286 of them under 100 KB, 2 real citizens. Small in bytes, which is
+            // exactly why it went unnoticed for so long — the hazard here is not capacity,
+            // it is that ghost identities pollute the roster and the demand ceiling. An
+            // owner pool must key on "has this uuid ever completed a turn", never on size.
+            (
+                "personas",
+                "#155/#437: per-persona MEMORY, never blind-LRU'd. Evictable sub-class is \
+                 GHOST dirs only — no roster entry AND no recorded turn — which needs a pool \
+                 that can ask the roster, not a size heuristic",
+            ),
             ("forge", "#155: export trimmer — intermediates only, published artifacts stay"),
             // Registered the day benchmark/swe-* landed, BEFORE a sweep ran. Everything under
             // it is re-creatable — repo clones from git, venvs from uv, the dataset from HF —
@@ -681,7 +695,14 @@ mod tests {
             (
                 "benchmarks",
                 "#155: LRU over per-instance dirs, skipping the in-flight set — clones/venvs \
-                 are re-creatable from git+uv, so only an active grade is at risk",
+                 are re-creatable from git+uv, so only an active grade is at risk. NOT \
+                 everything under it is re-creatable: `swe/captures/run-*/attempt-N.patch` \
+                 is a citizen's actual diff, deleted from her workspace the moment the next \
+                 attempt resets it (#379). An eviction pool here must treat captures as \
+                 EVIDENCE — small, and the only thing that can answer what she wrote — and \
+                 reclaim the bulky re-creatable clones/venvs instead. Corrected 2026-08-18: \
+                 this entry read \"everything under it is re-creatable\", which the 25 \
+                 patches already sitting there had falsified since before it was written",
             ),
         ];
         use super::super::disk_pressure::DiskReporter as _;

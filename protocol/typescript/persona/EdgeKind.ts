@@ -12,4 +12,4 @@
  * empirically by algorithm 7 in L0-4c; this enum just declares the
  * variants the substrate supports.
  */
-export type EdgeKind = "shared-entity" | "shared-topic" | "cited-in" | "recall-co-occurrence" | "conversational-reply" | "task-outcome";
+export type EdgeKind = "shared-entity" | "shared-topic" | "cited-in" | "recall-co-occurrence" | "conversational-reply" | "task-outcome" | "caused-by" | "produced";

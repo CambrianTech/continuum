@@ -169,6 +169,9 @@
 pub mod arbiter;
 pub mod broker;
 pub mod capacity;
+pub mod ceiling_prior;
+pub mod footprint_source;
+pub mod holders;
 pub mod consumer;
 pub mod daemon;
 pub mod governor;
@@ -189,6 +192,13 @@ pub use broker::{
 
 pub use arbiter::{ArbiterContext, LeaseArbiter, TieredArbiter};
 pub use capacity::{CapacitySource, GpuCapacitySource, MockCapacitySource};
+pub use capacity::{
+    default_ram_reserve_for, CapacitySource, GpuCapacitySource, HostMemoryReader,
+    HostRamCapacitySource, LiveHostMemory, MockCapacitySource, UnifiedMemoryPool,
+};
+pub use ceiling_prior::CeilingEvidence;
+pub use footprint_source::{FootprintReading, FootprintSource, LastKnown, Provenance};
+pub use holders::{standard_memory_holders, HolderStatus, MemoryHolder, Reconciliation};
 pub use consumer::{
     ConsumerFootprint, ReclaimOutcome, ReclaimReason, ReclaimRequest, ReclaimStatus,
     ResourceConsumer,

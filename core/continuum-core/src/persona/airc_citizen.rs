@@ -117,6 +117,27 @@ pub trait AircCitizen:
     /// to drive the service loop.
     async fn subscribe_all_rooms(&self) -> Result<FilteredEventStream, AircError>;
 
+    /// Watch receiver whose value increments whenever this citizen's room
+    /// membership GROWS at runtime (a join after spawn) — the perception
+    /// stream's rebuild cue (P0 20b44763). airc-lib's
+    /// `subscribe_subscribed_filtered` snapshots the subscribed-channel
+    /// list ONCE at subscribe time, so a room joined later (benchmark
+    /// dispatch moving assignees into a fresh run room) never enters an
+    /// existing stream — the run room is born deaf. Consumers select on
+    /// this beside the stream and re-open it (via
+    /// [`subscribe_all_rooms`](Self::subscribe_all_rooms)) when the epoch
+    /// moves. The sibling of the 2026-08-08 narrowing bug documented on
+    /// `subscribe_all_rooms` above: that one snapshotted the WRONG SET,
+    /// this one snapshots the right set at the WRONG TIME.
+    ///
+    /// Default: a receiver whose sender is already dropped — membership
+    /// never changes for stubs/fixtures. Consumers MUST treat a closed
+    /// channel as "never fires" (park on `pending()`), never as an event,
+    /// or a stub conversation would busy-loop on `changed() == Err`.
+    fn membership_epoch(&self) -> tokio::sync::watch::Receiver<u64> {
+        tokio::sync::watch::channel(0u64).1
+    }
+
     /// Publish a text message under the citizen's identity INTO A
     /// SPECIFIC ROOM — normally the room the turn being answered
     /// arrived in ([`IncomingMessage::room_id`](super::service_loop::IncomingMessage),
@@ -167,7 +188,42 @@ pub trait AircCitizen:
 pub(crate) async fn subscribe_every_room(
     airc: &airc_lib::Airc,
 ) -> Result<FilteredEventStream, AircError> {
-    airc.subscribe_subscribed_filtered(airc_lib::EventFilter::default())
+    // #445: liveness beacons were 84% of a persona subscription's inbound
+    // (measured 2026-08-15: 149 of 177 events in the window, 100% discarded
+    // post-decode as no_continuum_body_hint). Heartbeats already stamp their
+    // class header at publish, so exclude them at the ROUTER — they never
+    // cross the socket, never cost a decode. Exclusion, never an allowlist:
+    // unstamped events keep flowing, so nothing a publisher hasn't classified
+    // yet can be silently dropped. The same filter still applies client-side
+    // on the in-process (non-daemon) fallback, which has no router.
+    let mut filter = airc_lib::EventFilter::default();
+    filter.headers_filter = airc_core::HeaderFilter::Not(Box::new(airc_core::HeaderFilter::Has {
+        key: airc_lib::HEADER_HEARTBEAT_KIND.to_string(),
+    }));
+    // #445 second cut (measured 2026-08-16, post daemon-heal): with delivery
+    // restored, EphemeralLatest projection re-publishes fanned to EVERY persona
+    // subscription (router counters: matched=68 per publish) and 100% were
+    // discarded as non_chat_schema — 1,196 decode-and-drop events in minutes.
+    // This pump's contract is PERCEPTUAL ROOM TURNS + work events (#146/#177/
+    // #450), and both of those are Durable-class by construction (a message or
+    // board mutation that didn't persist would be a worse bug than a missed
+    // fanout). So attach ROUTER-SIDE as a Durable-only consumer — the shape
+    // `subscribe_subscribed_delivery` was built for; its doc cites this exact
+    // persona measurement.
+    //
+    // FOR WHOEVER EXTENDS THIS (read before widening):
+    // - If a persona ever needs an ephemeral signal (peer stream chunks, live
+    //   presence), do NOT widen this delivery list — those belong to their own
+    //   consumer with its own narrow attach (positron/TTS taps StreamChunk,
+    //   roster taps presence). One subscription per consumer shape; widening
+    //   the perception pump re-creates the decode-everything flood this line
+    //   removes (#297 is what happens next: personas deaf under their own
+    //   fan-in).
+    // - If a NEW durable event class starts flooding, the fix is a class
+    //   header at ITS publisher + a `HeaderFilter::Not` arm here (the
+    //   heartbeat exclusion above is the template), never client-side
+    //   filtering after a paid decode.
+    airc.subscribe_subscribed_delivery(filter, Some(vec![airc_ipc::IpcDelivery::Durable]))
         .await
 }
 
@@ -266,6 +322,7 @@ impl crate::persona::room_roster_source::AircRosterReader for StubAircCitizen {
         &self,
         _within: std::time::Duration,
         _window: usize,
+        _room: Option<uuid::Uuid>,
     ) -> Result<Vec<airc_lib::RoomMember>, AircError> {
         // No daemon in tests → no presence. RAG runs through cleanly
         // with an empty roster (no [Present in this room] block).
@@ -277,6 +334,7 @@ impl crate::persona::room_roster_source::AircRosterReader for StubAircCitizen {
 impl crate::persona::room_doctrine_source::AircDoctrineReader for StubAircCitizen {
     async fn room_doctrine(
         &self,
+        _room: Option<uuid::Uuid>,
     ) -> Result<Option<airc_core::doctrine::RoomDoctrinePublished>, AircError> {
         // No daemon in tests → no published doctrine. Cognition runs
         // through cleanly with no [Room operating doctrine] block.
@@ -388,6 +446,26 @@ mod tests {
     // degradation path (sources stay uncached, logged loud). What must never happen is
     // an Ok(empty stream): that would look like a live subscription that silently never
     // invalidates — the actual fallback.
+    #[tokio::test]
+    async fn stub_subscribe_refuses_rather_than_faking_a_stream() {
+        let stub: Arc<dyn AircCitizen> = Arc::new(StubAircCitizen::new(Uuid::new_v4()));
+    // what this catches: the default `membership_epoch` contract (P0 20b44763) —
+    // a CLOSED receiver (sender already dropped). The conversation's select loop
+    // parks on `pending()` when `changed()` errs; if a future default swapped to
+    // a live-but-never-moving channel (or a consumer treated Err as an event),
+    // stub-driven conversations would either deadlock waiting on a phantom
+    // membership change or busy-loop resubscribing. Closed = "membership never
+    // changes", and this pins that both ways.
+    #[tokio::test]
+    async fn default_membership_epoch_is_a_closed_channel() {
+        let stub: Arc<dyn AircCitizen> = Arc::new(StubAircCitizen::new(Uuid::new_v4()));
+        let mut rx = stub.membership_epoch();
+        assert!(
+            rx.changed().await.is_err(),
+            "default epoch sender must be dropped — consumers park, never poll"
+        );
+    }
+
     #[tokio::test]
     async fn stub_subscribe_refuses_rather_than_faking_a_stream() {
         let stub: Arc<dyn AircCitizen> = Arc::new(StubAircCitizen::new(Uuid::new_v4()));

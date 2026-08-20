@@ -745,6 +745,22 @@ pub fn command_registry() -> Vec<CommandDescriptor> {
         .clone()
 }
 
+/// Is `name` declared in the descriptor registry?
+///
+/// The half of a command's declaration that codegen, the ACL, `commands/list` and the
+/// persona tool surface all read. `ModuleRegistry::register` asks this of every
+/// constructor a module contributes, so a command that declared only one half of its
+/// (descriptor, constructor) pair fails LOUD at boot instead of routing invisibly.
+///
+/// `command_registry()` sorts by name and panics on duplicates, so a binary search is
+/// exact — and it reads the SAME list every other consumer reads, which is the point:
+/// this must never become a second opinion about what commands exist.
+pub fn descriptor_exists(name: &str) -> bool {
+    command_registry()
+        .binary_search_by(|d| d.name.cmp(name))
+        .is_ok()
+}
+
 // No demo/fixture commands: the generator is validated against the REAL
 // registered commands (declared via CommandSpec at their own sites, e.g. the
 // inference module), whose Params/Result are real ts-rs types carrying the

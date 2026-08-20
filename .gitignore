@@ -228,3 +228,17 @@ benchmarks/swe/.venv/
 /core/wordstats*
 /core/sample.txt
 /core/reverse*
+
+# Agent/persona scratch workspaces at the REPO ROOT (`work-<card>/`,
+# `work-team-<name>/`) — same debris class as /core/work-*/ above, minted by
+# agent sessions whose shell CWD was the checkout. The 2026-08-14 audit found
+# one carrying a live `.airc/identity.key` (card #424); the dirs were
+# quarantined and the key destroyed. Persona hands now root at the citizen
+# layer (`ensure_engine` — never the checkout), so anything matching this at
+# root is escaped debris, never repo content.
+/work-*/
+# A nested airc scope's credential must NEVER be trackable, anywhere in the
+# tree. The root `.airc/*` rule above is anchored and does not cover scopes
+# minted inside subdirectories (that is exactly how the #424 key nearly
+# became repo content).
+**/.airc/identity.key

@@ -312,8 +312,8 @@ mod tests {
             fn total_bytes(&self) -> u64 {
                 1
             }
-            fn free_bytes(&self) -> u64 {
-                1
+            fn free_bytes(&self) -> Option<u64> {
+                Some(1)
             }
             fn process_bytes(&self) -> u64 {
                 0

@@ -20,10 +20,13 @@ pub struct SentinelHandle {
     pub progress: u8,
     pub start_time: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub end_time: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub exit_code: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub error: Option<String>,
     pub working_dir: String,
     pub logs_dir: String,
@@ -87,17 +90,21 @@ pub struct BudgetConsumed {
 pub struct BudgetLimits {
     /// e.g. 3600 (1 hour)
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(type = "number | undefined")]
     pub max_time_secs: Option<u64>,
     /// e.g. 5.00
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub max_cost_usd: Option<f64>,
     /// e.g. 1_000_000
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(type = "number | undefined")]
     pub max_tokens: Option<u64>,
     /// Full pipeline loop iterations (NOT agent turns)
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub max_iterations: Option<u32>,
 }
 
@@ -111,6 +118,7 @@ pub struct BudgetLimits {
 pub struct PipelineCheckpoint {
     pub sentinel_handle: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub pipeline_name: Option<String>,
     /// Resume from this step index (next step to execute)
     pub step_index: usize,
@@ -128,6 +136,7 @@ pub struct PipelineCheckpoint {
     pub working_dir: String,
     /// Escalation metadata for persona routing on resume
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub escalation: Option<SentinelEscalation>,
 }
 
@@ -163,20 +172,24 @@ pub enum PipelineStep {
         #[serde(default)]
         args: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         #[serde(rename = "timeoutSecs")]
         timeout_secs: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         #[serde(rename = "workingDir")]
         working_dir: Option<String>,
         /// If true, non-zero exit code doesn't mark the step as failed.
         /// The exit code is still recorded in data.exitCode for condition steps.
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         #[serde(rename = "allowFailure")]
         allow_failure: Option<bool>,
         /// Environment variables set on the child process. Values are interpolated.
         /// Use this to pass arbitrary data (code, JSON) safely — env vars bypass
         /// shell quoting issues that break heredocs and embedded strings.
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         env: Option<std::collections::HashMap<String, String>>,
     },
 
@@ -188,32 +201,41 @@ pub enum PipelineStep {
     Llm {
         prompt: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         model: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         provider: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         #[serde(rename = "maxTokens")]
         max_tokens: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         temperature: Option<f32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         #[serde(rename = "systemPrompt")]
         system_prompt: Option<String>,
         /// Tool subset for agent mode (undefined = all public, [] = none)
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         tools: Option<Vec<String>>,
         /// Enable agentic loop: LLM can call tools, see results, re-generate
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         #[serde(rename = "agentMode")]
         agent_mode: Option<bool>,
         /// Override safety cap for tool iterations in agent mode
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         #[serde(rename = "maxIterations")]
         max_iterations: Option<u32>,
         /// Active LoRA adapters to apply during inference.
         /// Each entry: { name, path, domain?, scale? }
         /// Values are interpolated, so pipeline steps can reference trained adapter paths.
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         #[serde(rename = "activeAdapters")]
         #[ts(type = "Array<{ name: string; path: string; domain?: string; scale?: number }>")]
         active_adapters: Option<Vec<serde_json::Value>>,
@@ -250,14 +272,18 @@ pub enum PipelineStep {
     /// Defaults to 10000 if omitted on non-count loops.
     Loop {
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         count: Option<usize>,
         steps: Vec<PipelineStep>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         #[serde(rename = "while")]
         while_condition: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         until: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         #[serde(rename = "maxIterations")]
         max_iterations: Option<usize>,
     },
@@ -291,6 +317,7 @@ pub enum PipelineStep {
         event: String,
         /// Timeout in seconds (default: 300)
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         #[serde(rename = "timeoutSecs")]
         timeout_secs: Option<u64>,
     },
@@ -311,6 +338,7 @@ pub enum PipelineStep {
         approvers: Vec<String>,
         /// Auto-approve after this many seconds (optional — None means wait forever)
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         #[serde(rename = "timeoutSecs")]
         timeout_secs: Option<u64>,
     },
@@ -323,10 +351,12 @@ pub enum PipelineStep {
         query: String,
         /// Max pages to load (default 3)
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         #[serde(rename = "maxPages")]
         max_pages: Option<u32>,
         /// What to extract from pages: "code examples", "error solutions", etc.
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         extract: Option<String>,
     },
 
@@ -341,52 +371,65 @@ pub enum PipelineStep {
         prompt: String,
         /// Which provider: "claude-code" (default), future: "codex", "aider"
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         provider: Option<String>,
         /// Working directory
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         #[serde(rename = "workingDir")]
         working_dir: Option<String>,
         /// System prompt override
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         #[serde(rename = "systemPrompt")]
         system_prompt: Option<String>,
         /// Model override (e.g., "sonnet", "opus")
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         model: Option<String>,
         /// Allowed tools (provider-specific names)
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         #[serde(rename = "allowedTools")]
         allowed_tools: Option<Vec<String>>,
         /// Max conversation turns
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         #[serde(rename = "maxTurns")]
         max_turns: Option<u32>,
         /// Max budget in USD
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         #[serde(rename = "maxBudgetUsd")]
         max_budget_usd: Option<f64>,
         /// Permission mode: "default", "acceptEdits", "bypassPermissions"
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         #[serde(rename = "permissionMode")]
         permission_mode: Option<String>,
         /// Resume a prior session
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         #[serde(rename = "resumeSessionId")]
         resume_session_id: Option<String>,
         /// Capture interactions for LoRA training (default: true if personaId set)
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         #[serde(rename = "captureTraining")]
         capture_training: Option<bool>,
         /// Persona ID for training attribution
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         #[serde(rename = "personaId")]
         persona_id: Option<String>,
         /// Path to git repo — triggers project worktree workspace (proper git isolation)
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         #[serde(rename = "repoPath")]
         repo_path: Option<String>,
         /// Branch slug: ai/sentinel-{handle}/{slug} (default: "work")
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         #[serde(rename = "taskSlug")]
         task_slug: Option<String>,
     },
@@ -401,11 +444,14 @@ pub enum PipelineStep {
 #[serde(rename_all = "camelCase")]
 pub struct Pipeline {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub name: Option<String>,
     pub steps: Vec<PipelineStep>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub working_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub timeout_secs: Option<u64>,
     #[serde(default)]
     #[ts(type = "Record<string, unknown>")]
@@ -425,10 +471,13 @@ pub struct StepResult {
     pub success: bool,
     pub duration_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub output: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub exit_code: Option<i32>,
     /// Full result data for complex outputs
     #[serde(default, skip_serializing_if = "Value::is_null")]
@@ -451,6 +500,7 @@ pub struct PipelineResult {
     pub steps_total: usize,
     pub step_results: Vec<StepResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub error: Option<String>,
 }
 
@@ -598,9 +648,11 @@ pub fn default_escalation_rules() -> Vec<EscalationRule> {
 pub struct SentinelEscalation {
     /// Owning persona for inbox delivery
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub parent_persona_id: Option<String>,
     /// SentinelEntity ID for execution history persistence
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub entity_id: Option<String>,
     /// Human-readable name for escalation messages
     pub sentinel_name: String,
@@ -608,6 +660,7 @@ pub struct SentinelEscalation {
     /// [`default_escalation_rules`]. The wire shape is typed (not
     /// `Value` pass-through) now that TS no longer owns the schema.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub escalation_rules: Option<Vec<EscalationRule>>,
 }
 

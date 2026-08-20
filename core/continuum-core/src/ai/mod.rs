@@ -36,6 +36,7 @@ pub mod anthropic_adapter;
 // adapter no other form. Declaration." cfg gating IS the declaration.
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod heuristic_adapter;
+pub mod inference_error;
 pub mod json_in_prompt_tools;
 pub mod openai_adapter;
 pub mod openai_endpoints;

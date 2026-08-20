@@ -20,5 +20,6 @@
       "live": true
     }
   ],
-  "affordances": []
+  "affordances": [],
+  "citizens": [{ "role": "helper" }]
 }

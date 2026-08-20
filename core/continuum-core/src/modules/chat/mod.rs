@@ -121,18 +121,23 @@ impl ChatModule {
         Self { executor_slot }
     }
 
-    /// Resolve the executor for the current call. Panics if the
-    /// executor was never installed — that's a boot ordering bug
-    /// (`start_server` must call `install_executor_on_all` BEFORE
-    /// any chat command can dispatch). Per [[no-fallbacks-ever]]:
-    /// the panic message names the contract so the operator sees
-    /// the actual problem.
-    fn executor(&self) -> Arc<CommandExecutor> {
-        self.executor_slot.cloned().expect(
+    /// Resolve the executor for the current call. Returns a loud,
+    /// contract-naming error if the executor was never installed — a
+    /// boot-ordering bug (`start_server` must call
+    /// `install_executor_on_all` BEFORE any chat command dispatches).
+    /// Per [[no-fallbacks-ever]] the message still names the contract
+    /// so the operator sees the real problem — but the blast radius is
+    /// THIS request, not the whole core: a command that races boot
+    /// fails loudly to its caller instead of `.expect()`-panicking the
+    /// process and taking every other module down with it
+    /// (#201 boot-race / #26 faculties degrade, never panic).
+    fn executor(&self) -> Result<Arc<CommandExecutor>, String> {
+        self.executor_slot.cloned().ok_or_else(|| {
             "ChatModule: CommandExecutor not installed — \
              start_server must call install_executor_on_all \
-             before any chat command can dispatch (task #224)",
-        )
+             before any chat command can dispatch (task #224)"
+                .to_string()
+        })
     }
 
     /// Resolve a pagination anchor to its stored `timestamp` (the field
@@ -148,7 +153,7 @@ impl ChatModule {
         });
 
         let anchor_result = self
-            .executor()
+            .executor()?
             .execute_json("data/query", anchor_query)
             .await
             .map_err(|e| format!("chat/poll: anchor lookup failed: {e}"))?;
@@ -177,7 +182,7 @@ impl ChatModule {
     /// 5. Normalize back to chronological order for display regardless
     ///    of query direction.
     pub async fn poll(&self, params: ChatPollParams) -> Result<ChatPollResult, String> {
-        let executor = self.executor();
+        let executor = self.executor()?;
         let limit = params.limit.unwrap_or(DEFAULT_POLL_LIMIT);
 
         // The two anchors are opposite scroll directions — both at once
@@ -298,7 +303,7 @@ impl ChatModule {
     /// could be the dedup id) but the design conversation is its
     /// own scope.
     pub async fn send(&self, params: ChatSendParams) -> Result<ChatSendResult, String> {
-        let executor = self.executor();
+        let executor = self.executor()?;
         let message_id = Uuid::new_v4();
         let now_ms = now_ms();
         let now_iso = now_iso(now_ms);
@@ -430,7 +435,7 @@ impl ChatModule {
     /// EXPECTED duplicate, never an error. A persona line's id is airc's
     /// `event_id` (stable across replay), so restarts can't double-store either.
     pub async fn persist_posted(&self, payload: Value) -> Result<(), String> {
-        let executor = self.executor();
+        let executor = self.executor()?;
         let field = |k: &str| -> Result<String, String> {
             payload
                 .get(k)
@@ -551,6 +556,7 @@ impl ChatModule {
             {
                 crate::cognition::deliberation_budget::record_own_speech(
                     crate::identity::PeerId::from_uuid(sender),
+                    room,
                     text,
                 );
             }
@@ -1098,6 +1104,24 @@ mod tests {
         assert_eq!(result.count, 0);
         assert!(result.messages.is_empty());
         assert!(result.after_message_id.is_none());
+    }
+
+    // what this catches: #201 boot-race — a chat command that arrives BEFORE
+    // install_executor_on_all runs fails LOUD to its caller (naming the contract),
+    // instead of .expect()-panicking the whole core and taking every other module
+    // down with it. Regression for the .expect() → Result conversion in executor().
+    #[tokio::test]
+    async fn command_before_executor_installed_fails_loud_not_panics() {
+        let chat = ChatModule::new(); // executor slot deliberately NOT installed
+        let err = chat
+            .poll(ChatPollParams::default())
+            .await
+            .expect_err("poll before install_executor_on_all must fail, not panic");
+        assert!(err.contains("not installed"), "loud contract error, got: {err}");
+        assert!(
+            err.contains("install_executor_on_all"),
+            "error names the contract so the operator sees the real problem: {err}"
+        );
     }
 
     // ── chat/poll: latest-N path (no anchor) ──────────────────────────
@@ -2249,12 +2273,25 @@ mod tests {
 
         let own_ring = crate::cognition::deliberation_budget::recent_own_speech(
             crate::identity::PeerId::from_uuid(persona),
+            room,
         );
         assert_eq!(
             own_ring.len(),
             2,
             "the sender's own-speech ring must carry her durable lines — this is \
              what lets own_repetition/inbound_restates fire on a post-boot re-greeting"
+        );
+        // …and they must be filed under the room they were SAID in: hydration that
+        // dumped every line into one undifferentiated ring would re-create the
+        // cross-room repetition fact (a citizen entering a fresh room told she is
+        // "circling" about utterances from elsewhere).
+        assert!(
+            crate::cognition::deliberation_budget::recent_own_speech(
+                crate::identity::PeerId::from_uuid(persona),
+                uuid::Uuid::new_v4(),
+            )
+            .is_empty(),
+            "hydration must key by room — a room she never spoke in reads as silent"
         );
     }
 }

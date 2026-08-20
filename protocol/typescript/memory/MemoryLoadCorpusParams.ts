@@ -2,6 +2,9 @@
 import type { CorpusMemory } from "../../../core/continuum-core/bindings/CorpusMemory";
 import type { CorpusTimelineEvent } from "../../../core/continuum-core/bindings/CorpusTimelineEvent";
 import type { PersonaRef } from "../identity/PersonaRef";
+import type { PersonaRef } from "../identity/PersonaRef";
+import type { CorpusMemory } from "./CorpusMemory";
+import type { CorpusTimelineEvent } from "./CorpusTimelineEvent";
 
 /**
  * Params for `memory/load-corpus`. Wire keys are snake_case (the ORM IPC contract).

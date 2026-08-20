@@ -366,7 +366,7 @@ async fn run_presence_loop(
             .await
             .unwrap_or_default();
     match reader
-        .room_roster_cards(MEMBERSHIP_WINDOW, MEMBERSHIP_SCAN)
+        .room_roster_cards(MEMBERSHIP_WINDOW, MEMBERSHIP_SCAN, None)
         .await
     {
         Ok(members) => {
@@ -483,7 +483,7 @@ async fn emit_once(
     directory: &mut HashMap<Uuid, RosterSlotView>,
     force: bool,
 ) -> bool {
-    let members = match reader.room_roster_cards(PRESENCE_WINDOW, ROSTER_SCAN).await {
+    let members = match reader.room_roster_cards(PRESENCE_WINDOW, ROSTER_SCAN, None).await {
         Ok(m) => m,
         Err(err) => {
             tracing::warn!(
@@ -632,6 +632,7 @@ mod tests {
             &self,
             _within: Duration,
             _window: usize,
+            _room: Option<uuid::Uuid>,
         ) -> Result<Vec<RoomMember>, AircError> {
             Ok(self
                 .members
@@ -650,6 +651,7 @@ mod tests {
             &self,
             _within: Duration,
             _window: usize,
+            _room: Option<uuid::Uuid>,
         ) -> Result<Vec<airc_lib::RoomMemberCard>, AircError> {
             Ok(self.members.clone())
         }

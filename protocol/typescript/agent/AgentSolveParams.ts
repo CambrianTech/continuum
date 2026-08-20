@@ -26,6 +26,22 @@ workspace: string,
  */
 max_acts?: number, 
 /**
+ * The ROOM this run happens in — `benchmark/dispatch`'s per-run activity room
+ * (#329). Every act she executes radiates a `persona:act` receipt into it, so
+ * the run's work lands in the room's transcript as collapsed receipts (#243)
+ * and anyone standing there — human screen or citizen mind — perceives it
+ * through the ONE ViewState pipe.
+ *
+ * Omitted → `Uuid::nil()`, which is the ROOMLESS shape: `apply_act` skips
+ * receipt radiation entirely for a nil room (radiating them stole the
+ * single-room chat projection onto a phantom, live-proven 2026-08-12), so a
+ * roomless solve does its work invisibly. That was every dispatched benchmark
+ * run until this param existed — the exact disconnection
+ * BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md names as the failure mode, and the
+ * reason the flywheel saw no turns from a full graded attempt.
+ */
+room?: string, 
+/**
  * Fire-and-poll (#86): when true, the solve is spawned DETACHED — `run` returns a job
  * handle NOW (arms empty, `detached: true`) and the REAL result (patch + acts) lands in
  * `~/.continuum/progress/agent-solve-<run_id>.json`. A real agentic drive (N full-generation

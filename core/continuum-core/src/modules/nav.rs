@@ -18,7 +18,9 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::cognition::channel_substrate::{global_channel_bookmarks, global_channel_digest_buffer};
+use crate::cognition::channel_substrate::global_channel_digest_buffer;
+use crate::persona::airc_source::AircTranscriptReader;
+use crate::persona::PersonaAircRuntimeRegistry;
 use crate::ipc::positron_nav_source::{global_nav_focus, NAV_CHANGED};
 use crate::ipc::positron_source::{AircChatFocused, CHAT_FOCUSED};
 use crate::runtime::ready_buffer::ReadyBuffer;
@@ -169,7 +171,7 @@ pub struct MarkReadResult {
     pub last_read: u64,
 }
 
-/// `nav/mark-read` — advance the shared `ChannelBookmarks` cursor for the caller +
+/// `nav/mark-read` — advance the caller's durable airc read cursor +
 /// publish `NAV_CHANGED` on the airc bus. Command in, Event out; the write half of
 /// the dual-consumer atom.
 struct MarkRead {
@@ -194,15 +196,79 @@ impl ActionCommand for MarkRead {
                 "nav/mark-read requires an authenticated caller (user_id)".to_string(),
             )
         })?;
-        let bookmarks = global_channel_bookmarks();
-        bookmarks.advance(user, params.room, params.lamport);
+        // The cursor is AIRC's durable `runtime_cursor`, written through the
+        // CALLER'S OWN airc scope — a reader's position belongs in that reader's
+        // store, never in a process-global map (which is what this used to be, and
+        // which died on every restart).
+        let last_read = advance_caller_cursor(user, params.room, params.lamport).await;
         // Command in → Event out on the airc bus (not a DOM event): the projector
         // re-reads + re-projects, so every surface + the persona see the new cursor.
         self.shared.publish_nav_changed(user);
-        Ok(MarkReadResult {
-            last_read: bookmarks.last_read(user, params.room),
-        })
+        Ok(MarkReadResult { last_read })
     }
+}
+
+/// Mark `room` read for `caller` at `lamport`, through the CALLER'S OWN airc scope,
+/// and return the resulting cursor.
+///
+/// One cursor per (reader, room), living in airc's durable `runtime_cursor` — the
+/// same one `AircRagSource` reads when it builds a citizen's window, so the human's
+/// mark-read and the citizen's perception cannot disagree.
+///
+/// ⚠ THE OPERATOR GAP (#27, self-peer): a cursor can only be written into a scope we
+/// can address, and today only CITIZENS have a registered airc runtime. When the
+/// caller has none — the human operator, until #27 lands — there is nowhere correct
+/// to put it: writing into some citizen's store would file the human's position
+/// under another being's identity. So we log and return 0 rather than fabricate a
+/// cursor. That is the honest shape; the projection already reports 0 as "nothing
+/// known yet". It is NOT a silent success — the warning names the gap.
+async fn advance_caller_cursor(caller: Uuid, room: Uuid, lamport: u64) -> u64 {
+    let Some(runtime) = PersonaAircRuntimeRegistry::try_global().and_then(|r| r.get(caller)) else {
+        tracing::warn!(
+            caller = %caller,
+            room = %room,
+            lamport,
+            "nav: no airc runtime for this caller — read cursor NOT persisted (#27 \
+             self-peer: the operator has no addressable airc scope yet)"
+        );
+        return 0;
+    };
+    let airc = runtime.airc();
+    // Resolve the event AT this lamport so airc gets the real source event (room +
+    // kind, and the `SubscriptionAdvanced` emit). No event → nothing to mark.
+    // airc 574ce235: page_recent_in takes a resolved &Room; the resolver refuses
+    // rooms outside this scope's subscription set, which is the right refusal here
+    // too — advancing a read cursor in a room the caller isn't part of would mint
+    // state about a conversation they never joined.
+    let room_handle = match airc
+        .room_by_name_or_channel(&room.to_string(), "advance read cursor in")
+        .await
+    {
+        Ok(r) => r,
+        Err(err) => {
+            tracing::warn!(error = %err, caller = %caller, room = %room, "nav: cursor room resolve failed");
+            return 0;
+        }
+    };
+    let events = match airc.page_recent_in(&room_handle, 256).await {
+        Ok(e) => e,
+        Err(err) => {
+            tracing::warn!(error = %err, caller = %caller, room = %room, "nav: cursor page failed");
+            return 0;
+        }
+    };
+    let Some(at) = events
+        .iter()
+        .filter(|e| e.lamport <= lamport)
+        .max_by_key(|e| e.lamport)
+    else {
+        return 0;
+    };
+    if let Err(err) = airc.advance_read_cursor(caller, room, at).await {
+        tracing::warn!(error = %err, caller = %caller, room = %room, "nav: cursor write failed");
+        return 0;
+    }
+    at.lamport
 }
 
 /// Params for `nav/select` — switch the calling citizen's current tab to an
@@ -298,7 +364,7 @@ impl ActionCommand for Select {
                     .peek(&(user, prev_room))
                     .and_then(|d| d.tip_lamport())
                 {
-                    global_channel_bookmarks().advance(user, prev_room, tip);
+                    advance_caller_cursor(user, prev_room, tip).await;
                 }
             }
         }
@@ -416,17 +482,15 @@ mod tests {
             .run(&ctx, MarkReadParams { room, lamport: 77 })
             .await
             .expect("mark-read ok");
-        assert_eq!(out.last_read, 77);
-        // Monotonic: a lower lamport does not move it backward.
-        let out2 = cmd
-            .run(&ctx, MarkReadParams { room, lamport: 10 })
-            .await
-            .expect("ok");
-        assert_eq!(out2.last_read, 77, "cursor is monotonic — never rewinds");
+        // NO airc runtime is registered for this caller in a unit test, and that
+        // is the #27 self-peer gap made visible: a cursor can only be written into
+        // a scope we can address. The command reports 0 — it does NOT fabricate a
+        // cursor and does NOT claim success. That honesty is the contract this
+        // pins; when #27 lands and the caller has a scope, this returns the real
+        // lamport from airc's durable `runtime_cursor`.
         assert_eq!(
-            global_channel_bookmarks().last_read(user, room),
-            77,
-            "the shared store carries the advance (the row the persona grounding reads)"
+            out.last_read, 0,
+            "no addressable airc scope → no cursor, reported honestly (never invented)"
         );
     }
 
@@ -477,7 +541,7 @@ mod tests {
             metadata: serde_json::Value::Null,
         };
         let digest =
-            global_channel_digest_builder().build_from_events(user, room_a, vec![event], 0);
+            global_channel_digest_builder().build_from_events(user, room_a, vec![event], 0, 0);
         global_channel_digest_buffer().publish((user, room_a), Arc::new(digest));
 
         // First select: no previous focus, cursor untouched.
@@ -504,7 +568,6 @@ mod tests {
             )),
             "the explicit focus (target + kind) landed in the shared store the reader surfaces"
         );
-        assert_eq!(global_channel_bookmarks().last_read(user, room_a), 0);
 
         // Second select: leaving room_a advances its cursor to the digest tip.
         let second = cmd
@@ -519,11 +582,11 @@ mod tests {
             .expect("select ok");
         assert_eq!(second.current, room_b.to_string());
         assert_eq!(second.previous, Some(room_a.to_string()));
-        assert_eq!(
-            global_channel_bookmarks().last_read(user, room_a),
-            3,
-            "leaving room_a marked it read up to the staged digest's tip"
-        );
+        // Same #27 gap as mark-read: the tip is RESOLVED from the staged digest
+        // (that half works and is what `previous`/`current` above prove), but with
+        // no addressable scope for this caller there is nowhere durable to put it.
+        // The select still succeeds — navigation is not blocked by an unwritable
+        // cursor.
     }
 
     // what this catches: the Command-in → Events-out contract — one nav/select
