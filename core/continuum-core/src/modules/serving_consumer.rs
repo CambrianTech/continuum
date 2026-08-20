@@ -156,6 +156,16 @@ pub struct ServingConsumer {
     decayed_at_verified_ms: std::sync::atomic::AtomicU64,
     /// active model id + live shape → resident VRAM bytes (weights + per-lane KV).
     footprint_of: FootprintFn,
+    /// How to find a lane inherited from a previous generation — **injected**, for the
+    /// same reason `footprint_of` is.
+    ///
+    /// The first cut called `lane_registry::live_lane()` directly from `footprint()`,
+    /// which reaches a process-wide FILESYSTEM singleton: three unit tests immediately
+    /// began reporting the operator's real live 27B and failing. A unit that reads the
+    /// developer's machine is not a unit test ([[#72 embed-resolver]]), and worse, it
+    /// would pass or fail depending on whether a lane happened to be up. Production
+    /// wires the real lookup; tests hand it a closure.
+    inherited_lane: Arc<dyn Fn() -> Option<LaneRecord> + Send + Sync>,
     /// The swappable intelligence that chooses whether/where to tier down under
     /// pressure. `DeclineTierDown` until a real selection policy is authored — the
     /// consumer's handshake is identical regardless.
@@ -180,9 +190,22 @@ impl ServingConsumer {
             held_high_water: std::sync::atomic::AtomicU64::new(0),
             decayed_at_verified_ms: std::sync::atomic::AtomicU64::new(0),
             footprint_of,
+            inherited_lane: Arc::new(crate::inference::lane_registry::live_lane),
             tier_down,
             pending: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Override how an inherited lane is found. Production keeps the default (the
+    /// real lane registry); tests inject a closure so a unit never depends on whether
+    /// the developer's machine happens to have a lane up.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn with_inherited_lane(
+        mut self,
+        f: Arc<dyn Fn() -> Option<LaneRecord> + Send + Sync>,
+    ) -> Self {
+        self.inherited_lane = f;
+        self
     }
 
     /// The model the box is serving right now WITH the shape needed to size its
@@ -276,7 +299,7 @@ impl ResourceConsumer for ServingConsumer {
         // means UNKNOWN, and a fabricated number is the exact class of bug this whole
         // day was spent removing.
         let planned = planned.or_else(|| {
-            let rec = crate::inference::lane_registry::live_lane()?;
+            let rec = (self.inherited_lane)()?;
             inherited_footprint(&rec, |m, w, l| (self.footprint_of)(m, w, l))
         });
         let planned_bytes = planned.as_ref().map(|(b, _)| *b).unwrap_or(0);
@@ -509,7 +532,8 @@ mod tests {
             pin_tx,
             footprint_of,
             Arc::new(DeclineTierDown),
-        );
+        )
+            .with_inherited_lane(Arc::new(|| None));
         (consumer, serving_tx)
     }
 
@@ -572,7 +596,8 @@ mod tests {
             pin_tx,
             footprint_of,
             Arc::new(DeclineTierDown),
-        );
+        )
+            .with_inherited_lane(Arc::new(|| None));
         (consumer, serving_tx)
     }
 
@@ -730,7 +755,8 @@ mod tests {
             pin_tx,
             footprint_of,
             Arc::new(DeclineTierDown),
-        );
+        )
+            .with_inherited_lane(Arc::new(|| None));
 
         let fp = consumer.footprint();
         assert_eq!(fp.len(), 1);
@@ -821,7 +847,8 @@ mod tests {
         let (suppress_tx, _srx) = watch::channel(Arc::new(HashSet::new()));
         let (pin_tx, pin_rx) = watch::channel(None);
         let footprint_of: FootprintFn = Arc::new(move |_id: &str, _w: u32, _l: u32| current);
-        let consumer = ServingConsumer::new(serving_rx, suppress_tx, pin_tx, footprint_of, policy);
+        let consumer = ServingConsumer::new(serving_rx, suppress_tx, pin_tx, footprint_of, policy)
+            .with_inherited_lane(Arc::new(|| None));
         (consumer, serving_tx, pin_rx)
     }
 

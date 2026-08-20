@@ -37,6 +37,7 @@
 //! core (the #7 `$HOME`-pollution class). Public wrappers resolve the one
 //! canonical directory and delegate.
 
+use super::lane_pidfile;
 use super::lane_process;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -93,23 +94,39 @@ pub struct LaneRecord {
 /// The LIVE-role lane left behind by a previous generation of this core, if one
 /// is still running — a **past form of ourself**.
 ///
-/// Returns a record only when the pid is genuinely alive, so a stale file cannot
-/// conjure residency. The shape fields may be `0` (an older record); sizing is the
+/// # Two authorities, one question each (corrected 2026-08-19, measured)
+///
+/// The first cut of this function scanned `read_dir` for any `Live` record whose pid
+/// was `is_alive`. Both halves were wrong, and the live board caught it:
+/// `serving = 0.81 GB — "qwen2.5-0.5b … inherited from a previous generation"` while
+/// the actual live lane was a 27B holding ~50 GB. Two defects compounding:
+///
+/// 1. **`read_dir` order is arbitrary.** A crashed generation can leave several `Live`
+///    records; the loop returned whichever the filesystem listed first, which was a
+///    stale 0.5B.
+/// 2. **`is_alive` is not identity.** A dead lane's pid gets REUSED by an unrelated
+///    process, and then a stale record reads as live forever. `lane_pidfile::reclaim`
+///    has always been "identity-verified (never a reused pid)" and
+///    [`lane_process::is_llama_server`] exists precisely for this; the first cut simply
+///    did not call it.
+///
+/// So: the **pidfile** answers *which* lane is live (it holds exactly one canonical
+/// pid), the **registry record** supplies that lane's *shape*, and `is_llama_server`
+/// proves the pid still belongs to a lane rather than to whoever inherited its number.
+/// One authority per question, which is why neither can drift from the other.
+///
+/// The shape fields may still be `0` (a record predating them); sizing remains the
 /// caller's judgement and it must refuse rather than guess.
 pub fn live_lane() -> Option<LaneRecord> {
-    let dir = lanes_dir()?;
-    for entry in std::fs::read_dir(dir).ok()?.flatten() {
-        let Ok(body) = std::fs::read_to_string(entry.path()) else {
-            continue;
-        };
-        let Ok(rec) = serde_json::from_str::<LaneRecord>(&body) else {
-            continue; // unparseable garbage is dropped, exactly as the sweep does
-        };
-        if rec.role == LaneRole::Live && lane_process::is_alive(rec.pid) {
-            return Some(rec);
-        }
+    let pid = lane_pidfile::read()?;
+    if !lane_process::is_llama_server(pid) {
+        // Dead, or the number now belongs to something else. Either way this machine
+        // has no past form of itself to count — an absence, not a zero-byte lane.
+        return None;
     }
-    None
+    let body = std::fs::read_to_string(lanes_dir()?.join(format!("{pid}.lane"))).ok()?;
+    let rec = serde_json::from_str::<LaneRecord>(&body).ok()?;
+    (rec.role == LaneRole::Live && rec.pid == pid).then_some(rec)
 }
 
 /// WHY a sweep is running — the one axis on which boot and shutdown differ.
