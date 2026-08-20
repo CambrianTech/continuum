@@ -155,6 +155,43 @@ jobs:
           fi
           echo "✓ protocol/typescript/ is in sync with Rust source"
 
+  # Publishes the REQUIRED status context `ts-rs binding drift detector`.
+  #
+  # This job does NOT detect drift. The detection is the `Verify protocol/typescript/
+  # in sync with Rust source` step inside cargo-test-continuum-core above, and it
+  # belongs there: the check is a `git diff` against bindings the test run already
+  # regenerated, so a standalone job would have to re-compile continuum-core (~9 min)
+  # to diff something the previous job just produced. That duplicate build was
+  # deliberately deleted on 2026-08-16 and must not come back.
+  #
+  # What was NOT updated that day: canary's branch protection, which still requires a
+  # status context by this name. No job had published it since, so the context never
+  # reported and EVERY pull request into canary sat permanently BLOCKED with all real
+  # gates green — four days of unmergeable PRs from a stale config line, not a quality
+  # problem. (Found 2026-08-20 merging #2338.)
+  #
+  # So this job exists to make the required name real again, honestly:
+  # `needs:` binds it to the job that actually runs the detector. Drift → lib job fails
+  # → this job is SKIPPED → the required check never passes → the PR stays blocked,
+  # which is the correct outcome. It mirrors a verdict; it does not compute one, and it
+  # says so rather than printing a "✓ no drift" it did not establish.
+  #
+  # If the detector ever moves out of that job, update `needs:` — a mirror pointed at
+  # the wrong source is worse than no mirror.
+  ts-rs-binding-drift-detector:
+    name: ts-rs binding drift detector
+    needs: cargo-test-continuum-core
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Mirror the binding-drift verdict from cargo-test-continuum-core
+        run: |
+          echo "ts-rs binding drift is gated by the 'Verify protocol/typescript/ in sync"
+          echo "with Rust source' step inside 'cargo test -p continuum-core --lib'."
+          echo ""
+          echo "That job passed, so the drift check within it passed."
+          echo "This job publishes the required status context; it does not re-check."
+
   # windows-msvc BUILD gate (#304). Glass-boxed 2026-08-02: the Windows grid
   # node (the CUDA lane) could not run ANY core test locally — un-gated unix
   # imports (std::os::unix FileExt/MetadataExt/symlink, unix-socket test
