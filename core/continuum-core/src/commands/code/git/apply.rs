@@ -19,7 +19,10 @@ use crate::modules::code::CodeState;
 use crate::sdk_codegen::CommandError;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/code/GitApplyParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/GitApplyParams.ts"
+)]
 pub struct GitApplyParams {
     /// The unified diff to apply (the text a peer shared — the output of
     /// `code/git/diff`).
@@ -31,7 +34,10 @@ pub struct GitApplyParams {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/code/GitApplyResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/GitApplyResult.ts"
+)]
 pub struct GitApplyResult {
     /// What happened: applied, or checked-clean.
     pub message: String,
@@ -89,13 +95,19 @@ mod tests {
         // Author edits + stages; diff of the staged change is the shared patch.
         std::fs::write(a.join("life.rs"), "fn main() { println!(\"glider\"); }\n").unwrap();
         let patch = git_bridge::git_diff(&a, false).expect("diff");
-        assert!(patch.contains("glider"), "patch carries the change: {patch}");
+        assert!(
+            patch.contains("glider"),
+            "patch carries the change: {patch}"
+        );
 
         // Receiver checks, then applies.
         git_bridge::git_apply(&b, &patch, true).expect("check passes");
         git_bridge::git_apply(&b, &patch, false).expect("apply");
         let got = std::fs::read_to_string(b.join("life.rs")).unwrap();
-        assert!(got.contains("glider"), "receiver has the author's change: {got}");
+        assert!(
+            got.contains("glider"),
+            "receiver has the author's change: {got}"
+        );
 
         // Garbage is rejected loudly, files untouched.
         let err = git_bridge::git_apply(&b, "not a patch", false).unwrap_err();

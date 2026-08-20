@@ -109,6 +109,34 @@ impl ModuleRegistry {
         // sdk_codegen::command_registry's duplicate-name panic).
         for cmd in module.commands() {
             let cmd_name = cmd.name();
+            // A command is ONE thing declared in ONE file as a (descriptor, constructor)
+            // pair. `register_stateless_command!` emits both; a dep-holding command splits
+            // them — `register_command!(X)` at the declaration site for the descriptor
+            // (type-only, `CommandDescriptor::of::<Spec>()`, so deps are irrelevant to it)
+            // and this `commands()` vec for the constructor (which needs the module's
+            // deps). Splitting is fine. Shipping only ONE HALF is not, and nothing used to
+            // catch it: a constructor with no descriptor is routable but INVISIBLE — absent
+            // from `commands/list`, from the persona tool surface, from the ACL, from
+            // codegen. That is how `activity/spawn` — the verb that mints every room —
+            // became unfindable while `commands/list` was promising "Listed == callable".
+            // Six commands had shipped this way.
+            //
+            // `dispatch_orphans` audits the OTHER direction (descriptor, no route). This is
+            // its mirror, and together they make the pair total. It panics rather than logs
+            // for the same reason the duplicate-name check below does, and it is the same
+            // class of defect: the "no central list" design removes the human backstop, so
+            // the registry must catch its own wiring gaps. Boot is the right time — the
+            // fact is knowable the instant the module registers, and the alternative is a
+            // command that silently does not exist for anyone who has to discover it.
+            if !crate::sdk_codegen::descriptor_exists(cmd_name) {
+                panic!(
+                    "ModuleRegistry: command object '{cmd_name}' (module '{name}') has NO \
+                     DESCRIPTOR — it would route but stay invisible to commands/list, the \
+                     persona tool surface, the ACL and codegen. Add `crate::register_command!\
+                     (<Type>);` at its declaration site (descriptor is type-only, so it needs \
+                     none of the module's deps — see BenchmarkDispatch for the pattern)."
+                );
+            }
             if let Some(existing) = self.command_objects.insert(cmd_name, cmd) {
                 panic!(
                     "ModuleRegistry: duplicate command object '{}' — module '{}' \
@@ -318,6 +346,74 @@ mod tests {
         }
     }
 
+    /// A module contributing a command CONSTRUCTOR whose name was never declared as
+    /// a descriptor — the exact half-declared shape the boot guard exists to catch.
+    struct UndeclaredCommandModule;
+
+    struct UndeclaredCommand;
+
+    #[async_trait::async_trait]
+    impl crate::sdk_codegen::DynCommand for UndeclaredCommand {
+        fn name(&self) -> &'static str {
+            // Deliberately a name no `register_command!` anywhere claims. The guard
+            // keys on this, so the descriptor below can be any real one.
+            "test/never-declared-verb"
+        }
+        fn descriptor(&self) -> crate::sdk_codegen::CommandDescriptor {
+            crate::sdk_codegen::CommandDescriptor::of::<crate::commands::catalog::CommandsList>()
+        }
+        async fn invoke(
+            &self,
+            _params: Value,
+            _caller: Option<crate::routing::CallerIdentity>,
+        ) -> Result<CommandResult, String> {
+            Ok(CommandResult::Json(serde_json::json!({})))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ServiceModule for UndeclaredCommandModule {
+        fn config(&self) -> ModuleConfig {
+            ModuleConfig {
+                name: "undeclared",
+                priority: ModulePriority::Normal,
+                command_prefixes: &[],
+                event_subscriptions: &[],
+                needs_dedicated_thread: false,
+                max_concurrency: 0,
+                tick_interval: None,
+            }
+        }
+        async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
+            Ok(())
+        }
+        async fn handle_command(&self, _c: &str, _p: Value) -> Result<CommandResult, String> {
+            Ok(CommandResult::Json(serde_json::json!({})))
+        }
+        fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
+            vec![Arc::new(UndeclaredCommand)]
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    // what this catches: a command shipping only HALF its declaration — a constructor
+    // in a module's `commands()` with no `register_command!` descriptor. Such a command
+    // ROUTES, so every smoke test passes, while being invisible to `commands/list`, the
+    // persona tool surface, the ACL and codegen. Three real verbs shipped that way
+    // (`activity/spawn|archive|protect`), which is why the room-minting verb could not
+    // be found by anyone — human or citizen — reading the catalog. `dispatch_orphans`
+    // covers the mirror case (descriptor, no route); this covers the one that had no
+    // check at all. It must PANIC at register(), not warn: the fact is knowable the
+    // instant the module registers, and a warning about an invisible command is read
+    // by nobody, for the same reason the command is invisible.
+    #[test]
+    #[should_panic(expected = "has NO DESCRIPTOR")]
+    fn a_command_constructor_without_a_descriptor_refuses_to_register() {
+        ModuleRegistry::new().register(Arc::new(UndeclaredCommandModule));
+    }
+
     #[test]
     fn test_register_and_route() {
         let registry = ModuleRegistry::new();
@@ -466,7 +562,17 @@ mod tests {
         registry.register(std::sync::Arc::new(crate::modules::work::WorkModule::new(
             crate::persona::PersonaAircRuntimeRegistry::new(),
         )));
-        registry.register(std::sync::Arc::new(crate::modules::room::RoomModule::new(crate::persona::PersonaAircRuntimeRegistry::new(),)));
+        registry.register(std::sync::Arc::new(crate::modules::room::RoomModule::new(
+            crate::persona::PersonaAircRuntimeRegistry::new(),
+        )));
+        // Event-driven SWE grade-on-done: subscribes to work.card.state_changed (emitted
+        // by work/state) and grades a finished bench SWE card's workspace against the
+        // held-out oracle. No commands, no tick — pure event subscriber.
+        registry.register(std::sync::Arc::new(
+            crate::modules::benchmark_grade::BenchmarkGradeModule::new(
+                crate::persona::PersonaAircRuntimeRegistry::new(),
+            ),
+        ));
         let after = registry.dispatch_orphans();
         for name in work_names {
             assert!(
@@ -517,18 +623,59 @@ mod tests {
     /// - **defect** — known-broken, with the task tracking the fix. Loud on
     ///   purpose: the guard refuses to let it be forgotten.
     const UNWIRED: &[Unwired] = &[
-        Unwired { module: "BarrierModule", why: "fixture: barrier for the command-executor concurrency test" },
-        Unwired { module: "DefaultsModule", why: "fixture: exercises ModuleConfig trait defaults" },
-        Unwired { module: "FaultRecorder", why: "fixture: records genome page-faults in residency tests" },
-        Unwired { module: "GreeterModule", why: "fixture: the module_harness worked example" },
-        Unwired { module: "InferenceRecorder", why: "fixture: captures llm_module_service calls" },
-        Unwired { module: "OptedInModule", why: "fixture: sibling of DefaultsModule, opts into every hook" },
-        Unwired { module: "PageFaultOnly", why: "fixture: genome bus subscriber asserting fault-only delivery" },
-        Unwired { module: "ReadyModule", why: "fixture: runtime readiness-gate test" },
-        Unwired { module: "RecorderModule", why: "fixture: genome local_manager call recorder" },
-        Unwired { module: "StubAircModule", why: "fixture: ChatModule's airc stand-in" },
-        Unwired { module: "StubDataModule", why: "fixture: ChatModule's data stand-in" },
-        Unwired { module: "TestModule", why: "fixture: this file's own routing tests" },
+        Unwired {
+            module: "BarrierModule",
+            why: "fixture: barrier for the command-executor concurrency test",
+        },
+        Unwired {
+            module: "UndeclaredCommandModule",
+            why: "fixture: half-declared command (constructor, no descriptor) — \
+                  the boot guard's positive control",
+        },
+        Unwired {
+            module: "DefaultsModule",
+            why: "fixture: exercises ModuleConfig trait defaults",
+        },
+        Unwired {
+            module: "FaultRecorder",
+            why: "fixture: records genome page-faults in residency tests",
+        },
+        Unwired {
+            module: "GreeterModule",
+            why: "fixture: the module_harness worked example",
+        },
+        Unwired {
+            module: "InferenceRecorder",
+            why: "fixture: captures llm_module_service calls",
+        },
+        Unwired {
+            module: "OptedInModule",
+            why: "fixture: sibling of DefaultsModule, opts into every hook",
+        },
+        Unwired {
+            module: "PageFaultOnly",
+            why: "fixture: genome bus subscriber asserting fault-only delivery",
+        },
+        Unwired {
+            module: "ReadyModule",
+            why: "fixture: runtime readiness-gate test",
+        },
+        Unwired {
+            module: "RecorderModule",
+            why: "fixture: genome local_manager call recorder",
+        },
+        Unwired {
+            module: "StubAircModule",
+            why: "fixture: ChatModule's airc stand-in",
+        },
+        Unwired {
+            module: "StubDataModule",
+            why: "fixture: ChatModule's data stand-in",
+        },
+        Unwired {
+            module: "TestModule",
+            why: "fixture: this file's own routing tests",
+        },
         Unwired {
             module: "HippocampusModule",
             why: "staging: BrainRegion skeleton, command_prefixes is empty by \
@@ -662,11 +809,12 @@ mod tests {
             .map(|(name, _)| name.clone())
             .collect();
 
-        let declared: std::collections::HashSet<&str> =
-            UNWIRED.iter().map(|u| u.module).collect();
+        let declared: std::collections::HashSet<&str> = UNWIRED.iter().map(|u| u.module).collect();
 
-        let undeclared: Vec<&String> =
-            unwired.iter().filter(|n| !declared.contains(n.as_str())).collect();
+        let undeclared: Vec<&String> = unwired
+            .iter()
+            .filter(|n| !declared.contains(n.as_str()))
+            .collect();
         assert!(
             undeclared.is_empty(),
             "these ServiceModules are implemented but never registered, and \

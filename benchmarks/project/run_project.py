@@ -21,14 +21,27 @@ Adapters that need heavy infra (Docker, a live web server, app APIs, a GPU) decl
 it in `.requires`; the runner reports it honestly instead of pretending — that infra
 is the grid's job, and the adapter is ready the moment it's present.
 """
-import argparse, json, os, subprocess, sys, tempfile, time, datetime, platform
+import argparse, datetime, json, os, platform, shutil, subprocess, sys, tempfile, time
+
+def _resolve_cli():
+    """Locate the continuum CLI.
+
+    `uu` is THE official short alias (the double-U of contin-UU-m). `uu` is
+    /usr/bin/cu (UUCP) on every Unix and was never ours — a default pointing at a
+    `uu` binary resolved to a file that does not exist, so the harness failed at
+    the first invocation instead of running. Prefer what is actually installed on
+    PATH; fall back to the release build.
+    """
+    for name in ("uu", "continuum"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return os.path.expanduser("~/.continuum/cache/cargo-target/release/continuum")
+
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
-CU = next((p for p in (
-    os.path.expanduser("~/.continuum/cache/cargo-target/release/cu"),
-    os.path.expanduser("~/.continuum/cache/cargo-target/debug/cu"),
-) if os.path.exists(p)), "cu")
+UU = _resolve_cli()
 LEDGER = os.path.join(ROOT, "benchmarks", "RESULTS.jsonl")
 
 
@@ -52,7 +65,7 @@ class BenchmarkAdapter:
 
 
 def resolve_persona():
-    r = subprocess.run([CU, "cognition/personas"], capture_output=True, text=True)
+    r = subprocess.run([UU, "cognition/personas"], capture_output=True, text=True)
     ps = (json.loads(r.stdout).get("personas") or []) if r.stdout.strip().startswith("{") else []
     if not ps:
         raise SystemExit("no resident persona (is the core booted?)")
@@ -72,7 +85,7 @@ def run_persona_on(workspace_root, prompt, note, max_acts=25):
     n0 = sum(1 for _ in open(led)) if os.path.exists(led) else 0
     cap = os.path.join(wd, "capture")
     print(f"[run] dispatching on workspace={workspace_root} (detached, max_acts={max_acts}, capture→{cap})")
-    sh([CU, "cognition/eval", "--persona_id", pid, "--eval_set", tf,
+    sh([UU, "cognition/eval", "--persona_id", pid, "--eval_set", tf,
         "--workspace_root", workspace_root, "--capture_dir", cap,
         "--max_acts", str(max_acts), "--note", note, "--detach", "true"], check=False)
     for _ in range(40):
@@ -96,7 +109,7 @@ def run_persona_agent(workspace_root, prompt, note, max_acts=25,
     if os.path.exists(ledger):
         os.remove(ledger)
     print(f"[agent] dispatching {run_id} (workspace={workspace_root}, max_acts={max_acts})")
-    sh([CU, "agent/solve", "--persona-id", pid, "--base-model-id", base_model,
+    sh([UU, "agent/solve", "--persona-id", pid, "--base-model-id", base_model,
         "--task", prompt, "--workspace", workspace_root, "--max-acts", str(max_acts),
         "--learn", "true", "--detach", "true", "--run-id", run_id], check=False)
     for _ in range(120):
@@ -335,7 +348,7 @@ def main():
         print("Project-benchmark adapters:")
         for n, a in ADAPTERS.items():
             print(f"  {n:16} requires: {a.requires or 'nothing extra'}")
-        print("\nCatalog (cu benchmark/list) has more targets; each becomes an adapter here.")
+        print("\nCatalog (uu benchmark/list) has more targets; each becomes an adapter here.")
         return
 
     adapter = ADAPTERS.get(args.benchmark)

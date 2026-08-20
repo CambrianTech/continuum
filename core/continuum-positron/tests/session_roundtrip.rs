@@ -103,6 +103,7 @@ fn build_chat_state(content: &str) -> ChatViewState {
             avatar_url: None,
             genes: Vec::new(),
         }],
+        acts: vec![],
     }
 }
 

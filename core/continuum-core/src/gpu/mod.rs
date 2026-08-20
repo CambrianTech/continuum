@@ -8,16 +8,16 @@
 //! GpuMemoryManager detects real VRAM at startup (Metal/CUDA), enforces
 //! per-subsystem budgets, and provides an RAII allocation guard pattern.
 
+/// The GPU adapter contract: backends supply a sample, the base owns the rest.
+/// Read this before adding a Vulkan/MLX/ROCm backend — implement `GpuDeviceProbe`,
+/// never `GpuMonitor` directly.
+pub mod device_probe;
+/// Per-platform adapters. ALL `#[cfg(target_os = ...)]` for GPU backends lives in
+/// `backends/mod.rs` and nowhere else — see that file for why.
+pub mod backends;
 pub mod eviction_registry;
 pub mod memory_manager;
-#[cfg(target_os = "macos")]
-pub mod metal_monitor;
 pub mod monitor;
-// NvidiaMonitor is pure subprocess (`nvidia-smi`) + parsing — no NVIDIA
-// FFI — so it compiles on every platform (its parser tests run on the Mac
-// dev box). `new()` returns None where `nvidia-smi` is absent, so building
-// it everywhere costs nothing on non-NVIDIA hosts.
-pub mod nvidia_monitor;
 pub mod tracker;
 
 pub use eviction_registry::{
@@ -27,8 +27,12 @@ pub use memory_manager::{
     AllocationsByPriority, GpuAllocationGuard, GpuError, GpuMemoryManager, GpuPriority, GpuStats,
     GpuSubsystem, SubsystemStats, PRESSURE_CRITICAL, PRESSURE_HIGH, PRESSURE_WARNING,
 };
+// No `cfg` below this line, deliberately. `backends` has already answered the
+// which-platform question, so there is no second gate here to drift onto the wrong
+// item — the failure that took out both CI jobs on 2026-08-20.
 #[cfg(target_os = "macos")]
-pub use metal_monitor::MetalMonitor;
+pub use backends::{MetalMonitor, MetalProbe};
+pub use backends::{NvidiaMonitor, NvidiaProbe};
+pub use device_probe::{GpuDeviceProbe, GpuSample, MonitoredGpu};
 pub use monitor::{GpuMonitor, GpuSnapshot, MockMonitor};
-pub use nvidia_monitor::NvidiaMonitor;
 pub use tracker::GpuModelTracker;

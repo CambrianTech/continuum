@@ -69,7 +69,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use airc_lib::adapter::ConsumerAdapter;
-use airc_lib::{Airc, AircError, EventStream};
+use airc_lib::{Airc, AircError, FilteredEventStream};
 use continuum_airc_protocol::{COMMAND_REQUEST_BODY_HINT, HEADER_CONTINUUM_BODY_HINT};
 use futures::stream::StreamExt;
 use tokio::task::JoinHandle;
@@ -168,13 +168,21 @@ impl PersonaCommandInboundPump {
         // site. The stream moves into the spawned task; subsequent
         // stream errors (lag, end-of-stream) are runtime concerns,
         // not install-time concerns.
-        let stream = airc.subscribe().await?;
+        // Every room she is subscribed to, not just her default. A
+        // cross-grid command envelope is addressed to the PERSONA, so
+        // narrowing it by room made her un-callable from anywhere she
+        // was not currently parked — the same one-channel narrowing
+        // that made operator chat structurally invisible (task #64).
+        let stream = crate::persona::airc_citizen::subscribe_every_room(&airc).await?;
         // The handler VERIFIES presented capability grants against the authorizer
         // (built from this node's own key + mesh + durable watermark). A peer
         // presenting an owner-signed grant gets the conferred command past its tier
         // ceiling; absent/invalid grants fall back to tier gating.
-        let handler =
-            CommandRequestHandler::with_grant_authorizer(Arc::clone(&airc), executor, grant_authorizer);
+        let handler = CommandRequestHandler::with_grant_authorizer(
+            Arc::clone(&airc),
+            executor,
+            grant_authorizer,
+        );
         let handle = tokio::spawn(run(persona_id, airc, handler, stream));
         Ok(Self { persona_id, handle })
     }
@@ -217,7 +225,7 @@ async fn run(
     persona_id: Uuid,
     airc: Arc<Airc>,
     handler: Arc<CommandRequestHandler>,
-    mut stream: EventStream,
+    mut stream: FilteredEventStream,
 ) {
     let self_id = airc.peer_id();
     debug!(

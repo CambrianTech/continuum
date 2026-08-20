@@ -88,12 +88,8 @@ impl CommandDispatch for ExecutorDispatch {
         // owner takes. `command` is the command path, `kind` is the
         // state kind it mutates; positron carries no `env` selector, so
         // it's absent (not defaulted to a guess — [[fallbacks-are-illegal]]).
-        let request = AircCommandRequest::new(
-            envelope.command,
-            envelope.kind,
-            None,
-            envelope.params,
-        );
+        let request =
+            AircCommandRequest::new(envelope.command, envelope.kind, None, envelope.params);
 
         // Trust comes from the envelope's SOURCE, not the socket: a human keeps
         // the socket's own (unauthenticated) Ws identity; an AI observer gets an
@@ -143,7 +139,10 @@ mod tests {
 
         // Both ride the same anonymous socket peer today — the SOURCE is the only
         // thing that diverges the trust ceiling, never the peer_id.
-        assert_eq!(human.peer_id, observer.peer_id, "same socket, different principal");
+        assert_eq!(
+            human.peer_id, observer.peer_id,
+            "same socket, different principal"
+        );
         assert!(
             !matches!(observer.source, CallerSource::Ws),
             "the observer must NOT be indistinguishable from the human socket"

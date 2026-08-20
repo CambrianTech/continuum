@@ -111,8 +111,8 @@ impl ModelArchConfig {
     /// `vocab_size` fall back only to spec-defined derivations (see below),
     /// never to a hardcoded number.
     pub fn from_gguf(path: &Path) -> Result<Self, String> {
-        let mut file = std::fs::File::open(path)
-            .map_err(|e| format!("open GGUF {}: {e}", path.display()))?;
+        let mut file =
+            std::fs::File::open(path).map_err(|e| format!("open GGUF {}: {e}", path.display()))?;
         let content = gguf_file::Content::read(&mut file)
             .map_err(|e| format!("read GGUF {}: {e}", path.display()))?;
         let md = &content.metadata;
@@ -144,25 +144,25 @@ impl ModelArchConfig {
         // the historical llama.* key failed dimension extraction while its
         // Model row hydrated fine). Required for the KV-cache budget, so the
         // absent case is a refuse-error.
-        let context_length =
-            crate::inference_capability::gguf_keys::context_length(&content, &arch).ok_or_else(
-                || {
-                    format!(
-                        "GGUF {} missing required context_length (tried `{arch}.context_length` \
+        let context_length = crate::inference_capability::gguf_keys::context_length(&content, &arch)
+            .ok_or_else(|| {
+                format!(
+                    "GGUF {} missing required context_length (tried `{arch}.context_length` \
                          and `llama.context_length`)",
-                        path.display()
-                    )
-                },
-            )? as usize;
+                    path.display()
+                )
+            })? as usize;
 
         // head_dim: explicit `{arch}.attention.key_length` if present, else the
         // spec-defined derivation hidden_size / num_attention_heads (llama.cpp
         // omits the key precisely when it equals that quotient).
         let head_dim = match md.get(&format!("{arch}.attention.key_length")) {
-            Some(v) => v
-                .to_u32()
-                .map(|n| n as usize)
-                .map_err(|e| format!("GGUF {} key `{arch}.attention.key_length` not a u32: {e}", path.display()))?,
+            Some(v) => v.to_u32().map(|n| n as usize).map_err(|e| {
+                format!(
+                    "GGUF {} key `{arch}.attention.key_length` not a u32: {e}",
+                    path.display()
+                )
+            })?,
             None => {
                 if num_attention_heads == 0 {
                     return Err(format!(
@@ -178,10 +178,12 @@ impl ModelArchConfig {
         // of the tokenizer's token array (the vocab IS that array). One of the
         // two must exist — a GGUF with neither cannot be served.
         let vocab_size = match md.get(&format!("{arch}.vocab_size")) {
-            Some(v) => v
-                .to_u32()
-                .map(|n| n as usize)
-                .map_err(|e| format!("GGUF {} key `{arch}.vocab_size` not a u32: {e}", path.display()))?,
+            Some(v) => v.to_u32().map(|n| n as usize).map_err(|e| {
+                format!(
+                    "GGUF {} key `{arch}.vocab_size` not a u32: {e}",
+                    path.display()
+                )
+            })?,
             None => {
                 let tokens = md.get("tokenizer.ggml.tokens").ok_or_else(|| {
                     format!(
@@ -191,7 +193,12 @@ impl ModelArchConfig {
                 })?;
                 tokens
                     .to_vec()
-                    .map_err(|e| format!("GGUF {} `tokenizer.ggml.tokens` not an array: {e}", path.display()))?
+                    .map_err(|e| {
+                        format!(
+                            "GGUF {} `tokenizer.ggml.tokens` not an array: {e}",
+                            path.display()
+                        )
+                    })?
                     .len()
             }
         };
@@ -217,10 +224,10 @@ impl ModelArchConfig {
     /// spec-defined derivations (MHA → kv == q; head_dim = hidden / heads).
     pub fn from_config_json(dir: &Path) -> Result<Self, String> {
         let path = dir.join("config.json");
-        let text = std::fs::read_to_string(&path)
-            .map_err(|e| format!("read {}: {e}", path.display()))?;
-        let json: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|e| format!("parse {}: {e}", path.display()))?;
+        let text =
+            std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        let json: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| format!("parse {}: {e}", path.display()))?;
 
         let req = |key: &str| -> Result<usize, String> {
             json.get(key)
@@ -359,7 +366,10 @@ mod tests {
     #[test]
     fn from_gguf_fails_loud_on_missing_artifact() {
         let err = ModelArchConfig::from_gguf(Path::new("/nonexistent/model.gguf")).unwrap_err();
-        assert!(err.contains("open GGUF"), "should name the open failure: {err}");
+        assert!(
+            err.contains("open GGUF"),
+            "should name the open failure: {err}"
+        );
     }
 
     // what this catches: config.json reader parses the HF-standard fields and
@@ -367,8 +377,8 @@ mod tests {
     // absent (kv == q) — reading the spec, not guessing.
     #[test]
     fn from_config_json_reads_fields_and_derives_mha() {
-        let dir = std::env::temp_dir()
-            .join(format!("continuum_arch_config_mha_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("continuum_arch_config_mha_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("config.json"),
@@ -400,8 +410,10 @@ mod tests {
     // naming that field, rather than defaulting it.
     #[test]
     fn from_config_json_fails_loud_on_missing_required_field() {
-        let dir = std::env::temp_dir()
-            .join(format!("continuum_arch_config_missing_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "continuum_arch_config_missing_{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("config.json"), r#"{ "hidden_size": 2048 }"#).unwrap();
 

@@ -60,9 +60,7 @@ pub trait AircInferenceTransport: Send + Sync {
 /// invokes it inline.
 pub struct StubInferenceTransport {
     handler: Box<
-        dyn Fn(
-                &RemoteInferenceRequest,
-            ) -> Result<RemoteInferenceResponse, RemoteInferenceError>
+        dyn Fn(&RemoteInferenceRequest) -> Result<RemoteInferenceResponse, RemoteInferenceError>
             + Send
             + Sync,
     >,
@@ -71,9 +69,7 @@ pub struct StubInferenceTransport {
 impl StubInferenceTransport {
     pub fn new<F>(handler: F) -> Arc<Self>
     where
-        F: Fn(
-                &RemoteInferenceRequest,
-            ) -> Result<RemoteInferenceResponse, RemoteInferenceError>
+        F: Fn(&RemoteInferenceRequest) -> Result<RemoteInferenceResponse, RemoteInferenceError>
             + Send
             + Sync
             + 'static,
@@ -128,7 +124,10 @@ impl LocalAdapterTransport {
         })
     }
 
-    pub fn with_peer_id(adapter: Arc<dyn AIProviderAdapter>, peer_id: impl Into<String>) -> Arc<Self> {
+    pub fn with_peer_id(
+        adapter: Arc<dyn AIProviderAdapter>,
+        peer_id: impl Into<String>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             adapter,
             fake_peer_id: peer_id.into(),
@@ -215,14 +214,16 @@ impl AircLiveTransport {
     ) -> Result<PeerId, RemoteInferenceError> {
         match &request.target_peer {
             None => Ok(self.default_target_peer),
-            Some(s) => Uuid::parse_str(s)
-                .map(PeerId)
-                .map_err(|e| RemoteInferenceError::Transport {
-                    message: format!(
-                        "AircLiveTransport: RemoteInferenceRequest.target_peer \
+            Some(s) => {
+                Uuid::parse_str(s)
+                    .map(PeerId)
+                    .map_err(|e| RemoteInferenceError::Transport {
+                        message: format!(
+                            "AircLiveTransport: RemoteInferenceRequest.target_peer \
                          must be a peer UUID, got {s:?}: {e}"
-                    ),
-                }),
+                        ),
+                    })
+            }
         }
     }
 }
@@ -262,11 +263,10 @@ impl AircInferenceTransport for AircLiveTransport {
             params,
         );
 
-        let body_value = serde_json::to_value(&envelope).map_err(|e| {
-            RemoteInferenceError::Transport {
+        let body_value =
+            serde_json::to_value(&envelope).map_err(|e| RemoteInferenceError::Transport {
                 message: format!("serialize AircCommandRequest: {e}"),
-            }
-        })?;
+            })?;
         let body = Body::Json(body_value);
         // Reuse the substrate's canonical command-header stamper per
         // R2-N1 on round 1 review: one logical decision lives in one
@@ -352,11 +352,9 @@ impl AircInferenceTransport for AircLiveTransport {
             }
         };
 
-        let reply_body = reply
-            .body
-            .ok_or_else(|| RemoteInferenceError::Transport {
-                message: "remote replied with no body".to_string(),
-            })?;
+        let reply_body = reply.body.ok_or_else(|| RemoteInferenceError::Transport {
+            message: "remote replied with no body".to_string(),
+        })?;
         let reply_value = match reply_body {
             Body::Json(v) => v,
             Body::Binary(_) => {
@@ -366,22 +364,19 @@ impl AircInferenceTransport for AircLiveTransport {
             }
         };
 
-        let response: AircCommandResponse = serde_json::from_value(reply_value).map_err(|e| {
-            RemoteInferenceError::Transport {
+        let response: AircCommandResponse =
+            serde_json::from_value(reply_value).map_err(|e| RemoteInferenceError::Transport {
                 message: format!("decode AircCommandResponse: {e}"),
-            }
-        })?;
+            })?;
 
-        let result_value =
-            response
-                .into_result()
-                .map_err(|e| RemoteInferenceError::PeerAdapterFailed { message: e })?;
+        let result_value = response
+            .into_result()
+            .map_err(|e| RemoteInferenceError::PeerAdapterFailed { message: e })?;
 
-        let text_response = serde_json::from_value(result_value).map_err(|e| {
-            RemoteInferenceError::Transport {
+        let text_response =
+            serde_json::from_value(result_value).map_err(|e| RemoteInferenceError::Transport {
                 message: format!("decode TextGenerationResponse: {e}"),
-            }
-        })?;
+            })?;
 
         Ok(RemoteInferenceResponse {
             correlation_id,
@@ -396,8 +391,8 @@ mod tests {
     use super::*;
     use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
     use crate::ai::types::{
-        ChatMessage, FinishReason, MessageContent, TextGenerationRequest,
-        TextGenerationResponse, UsageMetrics,
+        ChatMessage, FinishReason, MessageContent, TextGenerationRequest, TextGenerationResponse,
+        UsageMetrics,
     };
     use uuid::Uuid;
 
@@ -470,11 +465,10 @@ mod tests {
 
     #[tokio::test]
     async fn stub_transport_can_return_typed_error() {
-        let transport = StubInferenceTransport::always_failing(
-            RemoteInferenceError::NoPeerReachable {
+        let transport =
+            StubInferenceTransport::always_failing(RemoteInferenceError::NoPeerReachable {
                 message: "test".to_string(),
-            },
-        );
+            });
         let result = transport.send_request(req("anything")).await;
         match result {
             Err(RemoteInferenceError::NoPeerReachable { message }) => {
@@ -495,8 +489,7 @@ mod tests {
         // AircRemoteInferenceAdapter wrapping this transport is
         // functionally identical to calling the wrapped adapter
         // directly.
-        let heuristic: Arc<dyn AIProviderAdapter> =
-            Arc::new(HeuristicInferenceAdapter::new());
+        let heuristic: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
         let transport = LocalAdapterTransport::new(heuristic);
         let request = req("hello world");
         let resp = transport.send_request(request).await.unwrap();
@@ -511,17 +504,27 @@ mod tests {
         struct AlwaysFails;
         #[async_trait]
         impl AIProviderAdapter for AlwaysFails {
-            fn provider_id(&self) -> &str { "always-fails" }
-            fn name(&self) -> &str { "always-fails" }
+            fn provider_id(&self) -> &str {
+                "always-fails"
+            }
+            fn name(&self) -> &str {
+                "always-fails"
+            }
             fn capabilities(&self) -> crate::ai::adapter::AdapterCapabilities {
                 crate::ai::adapter::AdapterCapabilities::default()
             }
             fn api_style(&self) -> crate::ai::adapter::ApiStyle {
                 crate::ai::adapter::ApiStyle::Local
             }
-            fn default_model(&self) -> &str { "no-model" }
-            async fn initialize(&mut self) -> Result<(), String> { Ok(()) }
-            async fn shutdown(&mut self) -> Result<(), String> { Ok(()) }
+            fn default_model(&self) -> &str {
+                "no-model"
+            }
+            async fn initialize(&mut self) -> Result<(), String> {
+                Ok(())
+            }
+            async fn shutdown(&mut self) -> Result<(), String> {
+                Ok(())
+            }
             async fn generate_text(
                 &self,
                 _r: TextGenerationRequest,
@@ -555,8 +558,7 @@ mod tests {
 
     #[tokio::test]
     async fn local_adapter_transport_preserves_correlation_id() {
-        let heuristic: Arc<dyn AIProviderAdapter> =
-            Arc::new(HeuristicInferenceAdapter::new());
+        let heuristic: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
         let transport = LocalAdapterTransport::new(heuristic);
         let request = req("anything");
         let expected_cid = request.correlation_id;
@@ -566,8 +568,7 @@ mod tests {
 
     #[tokio::test]
     async fn local_adapter_transport_with_custom_peer_id() {
-        let heuristic: Arc<dyn AIProviderAdapter> =
-            Arc::new(HeuristicInferenceAdapter::new());
+        let heuristic: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
         let transport = LocalAdapterTransport::with_peer_id(heuristic, "test-remote-peer");
         let resp = transport.send_request(req("hi")).await.unwrap();
         assert_eq!(resp.served_by, "test-remote-peer");

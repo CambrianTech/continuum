@@ -85,8 +85,7 @@ impl Screenshotter for AndroidEmuShot {
                 }
             }
             _ => Availability::Unavailable(
-                "couldn't query devices via `adb devices` — is the adb server running?"
-                    .to_string(),
+                "couldn't query devices via `adb devices` — is the adb server running?".to_string(),
             ),
         }
     }
@@ -108,14 +107,22 @@ impl Screenshotter for AndroidEmuShot {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("`adb exec-out screencap` failed: {}", stderr.trim()));
+            return Err(format!(
+                "`adb exec-out screencap` failed: {}",
+                stderr.trim()
+            ));
         }
         if output.stdout.is_empty() {
             return Err("adb returned no image bytes from screencap".to_string());
         }
         tokio::fs::write(&req.out_path, &output.stdout)
             .await
-            .map_err(|e| format!("failed to write screenshot to {}: {e}", req.out_path.display()))?;
+            .map_err(|e| {
+                format!(
+                    "failed to write screenshot to {}: {e}",
+                    req.out_path.display()
+                )
+            })?;
         Ok(())
     }
 }

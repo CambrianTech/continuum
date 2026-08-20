@@ -81,7 +81,7 @@ the Δ column is only a claim if a skeptic reproducing THEIR side gets our numbe
 ## Status: scaffolding, not substrate
 
 Python here is deliberately NON-load-bearing (Joel, 2026-07-22): it only seeds git
-workspaces, fires the `cu agent/solve` CLI, runs an assert, and tallies. Every
+workspaces, fires the `uu agent/solve` CLI, runs an assert, and tallies. Every
 measurement-path concern — the drive loop, lane admission, patch extraction, the
 persona herself — is Rust. Convergence TODO: fold these tiers into gym JSONL and grow
 a Rust `agent/battery` sweep on `cognition/eval`'s existing task/grade/ledger

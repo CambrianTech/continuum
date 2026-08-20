@@ -16,7 +16,10 @@ fn default_timeout_ms() -> u64 {
 
 /// Inputs to `agent/wait`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/agent/AgentWaitParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/agent/AgentWaitParams.ts"
+)]
 pub struct AgentWaitParams {
     /// The agent handle returned by `agent/start`.
     pub handle: String,

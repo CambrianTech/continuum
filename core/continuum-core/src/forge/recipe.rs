@@ -51,7 +51,10 @@ use uuid::Uuid;
 /// type with a `derive(TS)` import of this Rust type as the source of
 /// truth.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/forge/AlloySource.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/forge/AlloySource.ts"
+)]
 pub struct AlloySource {
     /// Hugging Face model identifier (e.g., "Qwen/Qwen3.5-4B-Instruct").
     pub base_model: String,
@@ -72,7 +75,10 @@ pub struct AlloySource {
 /// falsifiability. Each baseline names a metric + measured value +
 /// source so a reader can falsify the published improvement claim.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/forge/PriorBaseline.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/forge/PriorBaseline.ts"
+)]
 pub struct PriorBaseline {
     /// Metric name (e.g., "perplexity", "humaneval-pass1").
     pub metric: String,
@@ -140,7 +146,10 @@ pub struct QuantTier {
 /// `BenchmarkDef` shape so Phase 2 can swap the Python type to a
 /// generated client of this Rust type.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/forge/BenchmarkDef.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/forge/BenchmarkDef.ts"
+)]
 pub struct BenchmarkDef {
     /// Benchmark name (e.g., "humaneval", "mmlu", "hellaswag").
     pub name: String,
@@ -160,7 +169,10 @@ pub struct BenchmarkDef {
 /// tier to target + estimates resource needs. Mirrors the existing
 /// Python `AlloyHardware` shape.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/forge/AlloyHardware.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/forge/AlloyHardware.ts"
+)]
 pub struct AlloyHardware {
     /// Minimum VRAM (GB) required to run the foundry pipeline.
     #[ts(optional)]
@@ -195,7 +207,10 @@ pub struct AlloyHardware {
 /// All prose fields the model card renders live HERE, not in a hand-
 /// authored `.alloy.json`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/forge/ForgeRecipe.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/forge/ForgeRecipe.ts"
+)]
 pub struct ForgeRecipe {
     //--- Identity ----------------------------------------------------------
     /// Stable recipe identifier. Generated at recipe creation time.

@@ -7,11 +7,12 @@ use crate::orm::adapter::ClearAllResult;
 use crate::orm::types::StorageResult;
 
 /// Params for `data/clear-all`.
-#[derive(
-    Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/data/DataClearAllParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/data/DataClearAllParams.ts"
+)]
 pub struct DataClearAllParams {
     /// Storage handle. Defaults to "main" (the shared DB). Accepts the legacy
     /// `dbPath` field name as an alias.

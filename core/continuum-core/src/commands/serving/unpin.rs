@@ -21,13 +21,19 @@ use ts_rs::TS;
 
 /// `serving/unpin` takes no parameters — there is at most one force-pin per host.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/model_registry/ServingUnpinParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/model_registry/ServingUnpinParams.ts"
+)]
 pub struct ServingUnpinParams {}
 
 /// What `serving/unpin` did: which model (if any) was released back to autonomic
 /// selection.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/model_registry/UnpinReport.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/model_registry/UnpinReport.ts"
+)]
 pub struct UnpinReport {
     /// The model id that was pinned and is now released, or `None` if no pin was
     /// set (nothing changed).
@@ -90,7 +96,10 @@ mod tests {
             .await
             .expect("unpin ok");
         assert_eq!(report.released_model.as_deref(), Some("coder-14b"));
-        assert!(pin_rx.borrow().is_none(), "the pin watch is cleared → autonomic again");
+        assert!(
+            pin_rx.borrow().is_none(),
+            "the pin watch is cleared → autonomic again"
+        );
     }
 
     // what this catches: unpin with no pin set is idempotent (not an error) and

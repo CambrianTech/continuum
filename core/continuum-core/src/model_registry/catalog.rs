@@ -518,6 +518,51 @@ pub fn models() -> Vec<Model> {
             stop_sequences: &["<|im_end|>"],
             ..ModelSpec::default()
         }),
+        // QWEN3.8-27B — the FRONTIER-TIER lane (Joel, 2026-08-15: "open models just got
+        // released that are better than opus and even fable"). Dense 27B, Arch::Qwen35
+        // (the fork carries LLM_ARCH_QWEN35 + MTP draft spec-decode + the mmproj vision
+        // path for it). Published scores: SWE-bench Pro 61.7 vs Opus 4.6 Max 53.4,
+        // QwenSWEBench 79.0 vs 63.8 — a local model that beats the cloud flagship on
+        // agentic coding, on consumer hardware. Field-measured serving (RTX 4090,
+        // Q4_K_M-class): 40.7 t/s decode plain, 60.1 t/s with native MTP spec-decode
+        // (the `mtp-*.gguf` sibling this catalog's serving spawn now auto-loads, #440),
+        // 262k native context resident in 24GB with q4_0 KV. The ggml-org repo ships
+        // main + mtp draft + mmproj in ONE snapshot, so `models/pull` acquires all
+        // three and the sibling resolvers find them with zero per-machine paths.
+        // context_window is the MODEL's capability; the live served window comes from
+        // the adapter/live serve per #50.
+        model(ModelSpec {
+            id: "ggml-org/Qwen3.8-27B-GGUF",
+            name: "Qwen3.8-27B (frontier agentic coder + vision)",
+            provider: "llama-server",
+            arch: Arch::Qwen35,
+            context_window: 262_144,
+            max_output_tokens: 16_384,
+            // MEASURED on this M5 (2026-08-19, build dd441a664): 200 predicted tokens in
+            // 11,605 ms = 17.2 tok/s generation, 56.8 tok/s prefill, on a pinned lane at a
+            // 19,712 served window with the KV cache warm (cache_n 42 of a 67-token prompt).
+            // Was a conservative 10.0 estimate; the row's own instruction is "corrected by
+            // live measurement, never by wish", so this is the measurement.
+            tokens_per_second: 17.2,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Vision,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/ggml-org/Qwen3.8-27B-GGUF"),
+            // Trainable HF safetensors base (verified live 2026-08-15: repo exists,
+            // pipeline image-text-to-text, arch qwen3_5) — what the genome forge
+            // trains LoRA against; the GGUF above is serving-only.
+            hf_source: Some("Qwen/Qwen3.8-27B"),
+            // Embedded template + --jinja (same pattern as Devstral/Hermes): the
+            // ggml-org GGUF carries Qwen3.5's own ChatML-with-tools template.
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>"],
+            ..ModelSpec::default()
+        }),
         // Hermes-3-Llama-3.1-8B — the OPPONENT, made first-class. A general (non-coder) model we
         // benchmark AGAINST; giving it a real catalog row lets it flow through OURS (base_model_id)
         // and opencode like any other model, so the head-to-head is model-through-harness fair, not
@@ -583,6 +628,59 @@ pub fn models() -> Vec<Model> {
             // Verified 2026-08-04: the repo carries 49 GGUFs across UD-IQ1_S … UD-Q8_K_XL, so the
             // IQ1_S tier the residency work needs is actually satisfiable from here.
             gguf_hint: Some("huggingface.co/unsloth/DeepSeek-V4-Flash-GGUF"),
+            ..ModelSpec::default()
+        }),
+        // BTL-4-Compact — an OUTSIDE claim we intend to falsify, not adopt. Added to make it
+        // measurable on our own harness rather than argued about from a model card.
+        //
+        // Every field here is read from the artifact's own declarations, never the card:
+        //   • arch: the base repo's config.json says `Qwen3_5MoeForConditionalGeneration` —
+        //     256 experts, 8 per token, 40 layers, hidden 2048. So `qwen3_5_moe`, a routed MoE.
+        //     The card describes it as "35B dense", which contradicts its OWN config; that
+        //     discrepancy is the first thing to check and the reason for the skepticism.
+        //   • context_window: `max_position_embeddings: 262144` from that same config. The live
+        //     served window is still the planner's business (model-max ∩ VRAM-KV fit, #31) —
+        //     the operator running this reported ~250k "was costing you KV", which is exactly
+        //     the intersection our planner is supposed to compute instead of hardcoding.
+        //   • Arch::Unknown is deliberate: qwen3_5_moe is not an enumerated arch here, and
+        //     llama-server reads the real arch from the GGUF header. Naming a wrong enum to
+        //     avoid an `Unknown` would be a guess wearing a type.
+        //
+        // The Compact build is TEXT-ONLY: the base repo carries a vision tower (a nested vision
+        // config with hidden_size 1152 → out_hidden_size 2048), and this GGUF drops it. Hence no
+        // Vision capability and no mmproj — `badtheorylabs/BTL-4-Compact` ships exactly one file,
+        // `BTL-4-IQ2_XXS.gguf` (9,967,966,240 bytes, unsharded). If the vision half is ever
+        // wanted, `bartowski/badtheorylabs_BTL-4-GGUF` carries mmproj + a full IQ2 ladder.
+        //
+        // chat_template: None + --jinja, because BTL-4 uses a
+        // `<tool_call><function=name><parameter=x>` DSL rather than stock Qwen's JSON form; the
+        // correct template ships INSIDE the GGUF. Overriding it here — or letting llama.cpp fall
+        // back to a builtin — silently disables every tool call the model tries to make.
+        //
+        // NOT persona_serving_eligible: unevaluated third-party weights must not be adopted by
+        // the autonomic planner. It reaches this model only by explicit id, for evals. The repo
+        // ships its own `eval/bfcl_compact.py` + `eval/probe_tools.py`, so their methodology can
+        // be run alongside our held-out suite — the point being that a model which has learned
+        // the benchmark scores well on THEIR harness and poorly on ours.
+        model(ModelSpec {
+            id: "badtheorylabs/BTL-4-Compact",
+            name: "BTL-4-Compact IQ2_XXS (third-party claim — evaluate, do not adopt)",
+            provider: "llama-server",
+            arch: Arch::Unknown, // qwen3_5_moe — llama-server reads it from the GGUF header
+            context_window: 262_144,
+            max_output_tokens: 8192,
+            tokens_per_second: 0.0, // UNMEASURED on this grid — do not fill in an estimate
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/badtheorylabs/BTL-4-Compact"),
+            chat_template: None, // the tool-call DSL template is embedded in the GGUF (--jinja)
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &[],
+            persona_serving_eligible: false,
             ..ModelSpec::default()
         }),
         // ── The campaign roster (benchmarks/HERMES-CAMPAIGN.md) ──
@@ -731,7 +829,12 @@ pub fn models() -> Vec<Model> {
             context_window: 32_768,
             max_output_tokens: 8192,
             tokens_per_second: 45.0,
-            capabilities: &[Capability::TextGeneration, Capability::Chat, Capability::ToolUse, Capability::Streaming],
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
             gguf_hint: Some("huggingface.co/bartowski/Qwen2.5-Coder-3B-Instruct-GGUF"),
             chat_template: Some(QWEN35_CHAT_TEMPLATE),
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
@@ -746,7 +849,12 @@ pub fn models() -> Vec<Model> {
             context_window: 32_768,
             max_output_tokens: 8192,
             tokens_per_second: 70.0,
-            capabilities: &[Capability::TextGeneration, Capability::Chat, Capability::ToolUse, Capability::Streaming],
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
             gguf_hint: Some("huggingface.co/bartowski/Qwen2.5-Coder-1.5B-Instruct-GGUF"),
             chat_template: Some(QWEN35_CHAT_TEMPLATE),
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
@@ -761,7 +869,12 @@ pub fn models() -> Vec<Model> {
             context_window: 32_768,
             max_output_tokens: 8192,
             tokens_per_second: 110.0,
-            capabilities: &[Capability::TextGeneration, Capability::Chat, Capability::ToolUse, Capability::Streaming],
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
             gguf_hint: Some("huggingface.co/bartowski/Qwen2.5-Coder-0.5B-Instruct-GGUF"),
             chat_template: Some(QWEN35_CHAT_TEMPLATE),
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
@@ -778,7 +891,12 @@ pub fn models() -> Vec<Model> {
             context_window: 32_768,
             max_output_tokens: 8192,
             tokens_per_second: 45.0,
-            capabilities: &[Capability::TextGeneration, Capability::Chat, Capability::ToolUse, Capability::Streaming],
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
             gguf_hint: Some("huggingface.co/bartowski/Qwen2.5-3B-Instruct-GGUF"),
             chat_template: Some(QWEN35_CHAT_TEMPLATE),
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
@@ -1013,7 +1131,13 @@ pub fn providers() -> Vec<Provider> {
             default_model: Some("mistral-large-latest"),
             auth: AuthKind::Bearer,
             kind: ProviderKind::Cloud,
-            model_prefixes: &["mistral", "mixtral", "codestral", "open-mistral", "open-mixtral"],
+            model_prefixes: &[
+                "mistral",
+                "mixtral",
+                "codestral",
+                "open-mistral",
+                "open-mixtral",
+            ],
             ..Default::default()
         }),
         // DwarfStar (antirez/ds4) local sidecar — the V4-Flash lane (#306).
@@ -1223,6 +1347,12 @@ fn model(spec: ModelSpec) -> Model {
         hf_source: spec.hf_source.map(str::to_string),
         gguf_local_path: spec.gguf_local_path.map(PathBuf::from),
         mmproj_local_path: spec.mmproj_local_path.map(PathBuf::from),
+        // Artifact SIZES, like the artifact paths above, are discovered not declared:
+        // `artifacts::resolve_model_artifacts` stamps them at registry load. Kept out
+        // of `ModelSpec` for the same reason `parameter_count` is — a hand-authored
+        // byte count is a fact that silently goes stale the moment a quant is re-pulled.
+        weights_bytes: None,
+        mmproj_bytes: None,
         chat_template: spec.chat_template.map(str::to_string),
         multi_party_strategy: spec.multi_party_strategy,
         stop_sequences: spec.stop_sequences.iter().map(|s| s.to_string()).collect(),

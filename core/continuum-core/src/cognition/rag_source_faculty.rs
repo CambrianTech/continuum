@@ -311,15 +311,15 @@ mod tests {
             self.id
         }
 
-    fn expand_command(&self) -> Option<&'static str> {
-        // Test/stub source — nothing further to fetch.
-        None
-    }
+        fn expand_command(&self) -> Option<&'static str> {
+            // Test/stub source — nothing further to fetch.
+            None
+        }
 
-    /// Test/stub source — floorless, so it never encodes a production floor.
-    fn floor_tokens(&self) -> u32 {
-        0
-    }
+        /// Test/stub source — floorless, so it never encodes a production floor.
+        fn floor_tokens(&self) -> u32 {
+            0
+        }
         async fn deliver(
             &self,
             ctx: &RagContext,

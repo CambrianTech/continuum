@@ -32,7 +32,10 @@ use crate::sdk_codegen::{ActionCommand, CommandError, Ctx};
 /// the current concentration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/focus/FocusNudgeParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/focus/FocusNudgeParams.ts"
+)]
 pub struct FocusNudgeParams {
     /// Relative lean on your focus concentration, in roughly `-1.0..=1.0`. Positive =
     /// TIGHTER (more heads-down: narrow onto your focused thread, less cross-thread
@@ -50,7 +53,10 @@ pub struct FocusNudgeParams {
 /// Result of `focus/nudge` — the concentration after the call.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/focus/FocusNudgeResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/focus/FocusNudgeResult.ts"
+)]
 pub struct FocusNudgeResult {
     /// Your focus concentration after the call: `0.0` (broad / associative) ..
     /// `1.0` (locked in / heads-down).
@@ -122,7 +128,9 @@ mod tests {
 
     fn persona_ctx(persona: Uuid) -> Ctx {
         Ctx {
-            caller: Some(CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona))),
+            caller: Some(CallerIdentity::local_persona(
+                crate::identity::PeerId::from_uuid(persona),
+            )),
             ..Ctx::default()
         }
     }
@@ -136,20 +144,34 @@ mod tests {
         let up = FocusNudge
             .run(
                 &persona_ctx(persona),
-                FocusNudgeParams { delta: 0.3, reset: false },
+                FocusNudgeParams {
+                    delta: 0.3,
+                    reset: false,
+                },
             )
             .await
             .expect("ok");
-        assert!((up.focus - 0.8).abs() < 1e-5, "0.5 + 0.3 = 0.8, got {}", up.focus);
+        assert!(
+            (up.focus - 0.8).abs() < 1e-5,
+            "0.5 + 0.3 = 0.8, got {}",
+            up.focus
+        );
 
         let down = FocusNudge
             .run(
                 &persona_ctx(persona),
-                FocusNudgeParams { delta: -0.5, reset: false },
+                FocusNudgeParams {
+                    delta: -0.5,
+                    reset: false,
+                },
             )
             .await
             .expect("ok");
-        assert!((down.focus - 0.3).abs() < 1e-5, "0.8 - 0.5 = 0.3, got {}", down.focus);
+        assert!(
+            (down.focus - 0.3).abs() < 1e-5,
+            "0.8 - 0.5 = 0.3, got {}",
+            down.focus
+        );
 
         // the SAME state the kernel/serve loop reads now carries the leaned value.
         let state = focus::registry().handle(persona);
@@ -164,12 +186,19 @@ mod tests {
         let persona = Uuid::from_u128(0xB2);
         let lane = Uuid::from_u128(0xC3);
         // she had settled a cursor via the state (a future focus/attend verb sets this).
-        focus::registry().handle(persona).lock().unwrap().set_cursor(lane);
+        focus::registry()
+            .handle(persona)
+            .lock()
+            .unwrap()
+            .set_cursor(lane);
 
         let pinned = FocusNudge
             .run(
                 &persona_ctx(persona),
-                FocusNudgeParams { delta: 5.0, reset: false },
+                FocusNudgeParams {
+                    delta: 5.0,
+                    reset: false,
+                },
             )
             .await
             .expect("ok");
@@ -178,11 +207,17 @@ mod tests {
         let rested = FocusNudge
             .run(
                 &persona_ctx(persona),
-                FocusNudgeParams { delta: 0.0, reset: true },
+                FocusNudgeParams {
+                    delta: 0.0,
+                    reset: true,
+                },
             )
             .await
             .expect("ok");
-        assert!((rested.focus - 0.5).abs() < 1e-5, "reset → resting setpoint");
+        assert!(
+            (rested.focus - 0.5).abs() < 1e-5,
+            "reset → resting setpoint"
+        );
         assert_eq!(
             focus::registry().handle(persona).lock().unwrap().cursor(),
             Some(lane),
@@ -195,11 +230,15 @@ mod tests {
     // state.
     #[tokio::test]
     async fn rejects_non_persona_and_anonymous_callers() {
-        let denied = FocusNudge.run(&Ctx::default(), FocusNudgeParams::default()).await;
+        let denied = FocusNudge
+            .run(&Ctx::default(), FocusNudgeParams::default())
+            .await;
         assert!(matches!(denied, Err(CommandError::Denied(_))));
 
         let remote = Ctx {
-            caller: Some(CallerIdentity::tcp(crate::identity::PeerId::from_u128(0xE5))),
+            caller: Some(CallerIdentity::tcp(crate::identity::PeerId::from_u128(
+                0xE5,
+            ))),
             ..Ctx::default()
         };
         let denied_remote = FocusNudge.run(&remote, FocusNudgeParams::default()).await;

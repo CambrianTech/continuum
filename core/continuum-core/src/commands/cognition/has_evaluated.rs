@@ -16,7 +16,10 @@ use crate::modules::cognition::CognitionState;
 use crate::sdk_codegen::CommandError;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/HasEvaluatedParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/HasEvaluatedParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct HasEvaluatedParams {
     /// Persona whose evaluation ledger is consulted.
@@ -28,7 +31,10 @@ pub struct HasEvaluatedParams {
 }
 
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/HasEvaluatedResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/HasEvaluatedResult.ts"
+)]
 pub struct HasEvaluatedResult {
     pub evaluated: bool,
 }

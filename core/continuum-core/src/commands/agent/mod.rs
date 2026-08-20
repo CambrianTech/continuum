@@ -4,7 +4,7 @@
 //! These verbs once lived only in [`AgentModule::handle_command`](crate::modules::agent)'s
 //! stringly `match` — dispatchable, but with no descriptor in the registry, so a
 //! persona was never OFFERED them. As typed commands each gets a descriptor (so it
-//! appears in the persona tool surface, the grid ACL, codegen, `cu`) AND routes
+//! appears in the persona tool surface, the grid ACL, codegen, `uu`) AND routes
 //! through the O(1) lock-free typed path. The wire name mirrors the file path —
 //! `commands/agent/start.rs` ⟺ `agent/start`.
 //!
@@ -69,7 +69,7 @@ mod tests {
     use crate::sdk_codegen::ActionCommand;
 
     // what this catches: the five agent commands carry their `agent/<verb>` wire
-    // names — the routing keys cu / the persona tool surface / the grid bind to. The
+    // names — the routing keys uu / the persona tool surface / the grid bind to. The
     // name mirrors the file path; drift silently breaks "the file tree IS the
     // namespace".
     #[test]

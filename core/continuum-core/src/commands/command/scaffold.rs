@@ -37,7 +37,12 @@ pub enum Access {
 impl Access {
     /// Parse a CLI-friendly spelling (`"ai-safe"`, `"privileged"`, `"internal"`).
     pub fn parse(s: &str) -> Result<Self, CommandError> {
-        match s.trim().to_ascii_lowercase().replace(['-', '_'], "").as_str() {
+        match s
+            .trim()
+            .to_ascii_lowercase()
+            .replace(['-', '_'], "")
+            .as_str()
+        {
             "aisafe" => Ok(Access::AiSafe),
             "privileged" => Ok(Access::Privileged),
             "internal" => Ok(Access::Internal),
@@ -234,7 +239,10 @@ mod tests {
         assert!(src.contains("pub struct DataList { state: Arc<DataState> }"));
         assert!(src.contains("access: Privileged,"));
         assert!(src.contains("run(this, ctx, _p) => {"));
-        assert!(src.contains("let _ = (&this.state, ctx);"), "stub touches bindings");
+        assert!(
+            src.contains("let _ = (&this.state, ctx);"),
+            "stub touches bindings"
+        );
     }
 
     // what this catches: a transplanted body (the migrate path) is emitted verbatim
@@ -253,7 +261,10 @@ mod tests {
         };
         let src = render_command_file(&id, &opts);
         assert!(src.contains("Ok(DataListResult { ok: true })"));
-        assert!(!src.contains("let _ = (&this.state, ctx);"), "no stub touch when body given");
+        assert!(
+            !src.contains("let _ = (&this.state, ctx);"),
+            "no stub touch when body given"
+        );
     }
 
     // what this catches: access parsing accepts the CLI spellings and rejects junk.

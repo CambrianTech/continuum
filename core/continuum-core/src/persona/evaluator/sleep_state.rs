@@ -15,7 +15,10 @@ use ts_rs::TS;
     Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, TS, schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
-#[ts(export, export_to = "../../../protocol/typescript/persona/SleepMode.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/SleepMode.ts"
+)]
 pub enum SleepMode {
     #[default]
     Active,

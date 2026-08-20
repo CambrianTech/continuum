@@ -369,14 +369,15 @@ impl ServiceModule for VoiceModule {
                                     let pump_user_id = user_id.clone();
                                     let pump_display = display_name.clone();
                                     tokio::spawn(async move {
-                                        if let Err(e) = crate::live::avatar::spawn_avatar_video_pump(
-                                            pump_manager,
-                                            pump_call_manager,
-                                            pump_call_id,
-                                            pump_user_id,
-                                            pump_display.clone(),
-                                        )
-                                        .await
+                                        if let Err(e) =
+                                            crate::live::avatar::spawn_avatar_video_pump(
+                                                pump_manager,
+                                                pump_call_manager,
+                                                pump_call_id,
+                                                pump_user_id,
+                                                pump_display.clone(),
+                                            )
+                                            .await
                                         {
                                             log_error!(
                                                 "module",
@@ -1384,7 +1385,7 @@ mod tests {
                     "event": {
                         "session_id": legacy,
                         "speaker_id": Uuid::new_v4(),
-                        "speaker_name": "Joel",
+                        "speaker_name": "Operator",
                         "speaker_type": "human",
                         "transcript": "hello there",
                         "confidence": 1.0,

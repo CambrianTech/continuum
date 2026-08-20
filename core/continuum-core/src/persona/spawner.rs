@@ -146,6 +146,8 @@ mod tests {
             capabilities: crate::model_registry::types::ProviderCapabilities::default(),
         };
         let qwen25_05b = Model {
+            weights_bytes: None,
+            mmproj_bytes: None,
             id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
             name: Some("Qwen2.5 0.5B Instruct".to_string()),
             provider: "llamacpp-local".to_string(),
@@ -308,12 +310,8 @@ mod tests {
             assert_eq!(prof.context_length, TEST_SERVE_WINDOW);
         }
 
-        let mseries_plan = derive_spawn_plan(
-            &roster,
-            "m1_uma_8gb",
-            HwTierCategory::MSeries,
-            &registry,
-        );
+        let mseries_plan =
+            derive_spawn_plan(&roster, "m1_uma_8gb", HwTierCategory::MSeries, &registry);
         for p in &mseries_plan {
             let prof = p.as_ref().unwrap();
             assert_eq!(prof.tier_category, HwTierCategory::MSeries);

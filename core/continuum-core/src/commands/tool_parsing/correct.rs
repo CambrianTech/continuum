@@ -19,7 +19,10 @@ use crate::tool_parsing::{correction::correct_tool_call, CorrectedToolCall};
 
 /// One tool call to correct: its (possibly mangled) name and string parameters.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/tool_parsing/ToolCorrectParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/tool_parsing/ToolCorrectParams.ts"
+)]
 pub struct ToolCorrectParams {
     /// The model-produced tool name (may be an alias or mis-namespaced form).
     pub tool_name: String,
@@ -78,6 +81,9 @@ mod tests {
             .expect("correct must succeed");
         assert_eq!(out.tool_name, "code/tree");
         assert!(out.name_changed);
-        assert_eq!(out.parameters.get("path").map(String::as_str), Some("./src"));
+        assert_eq!(
+            out.parameters.get("path").map(String::as_str),
+            Some("./src")
+        );
     }
 }

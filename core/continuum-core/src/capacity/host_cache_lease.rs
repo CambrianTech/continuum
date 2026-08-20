@@ -195,12 +195,24 @@ mod tests {
     fn commit_ceiling_clamps_and_saturates() {
         let mut i = her_box(4 * GB);
         i.commit_charge_bytes = Some(60 * GB);
-        assert_eq!(host_cache_lease_bytes(&i), 3 * GB, "commit-bound, not headroom-bound");
+        assert_eq!(
+            host_cache_lease_bytes(&i),
+            3 * GB,
+            "commit-bound, not headroom-bound"
+        );
         i.commit_charge_bytes = Some(70 * GB);
-        assert_eq!(host_cache_lease_bytes(&i), 0, "past-physical commit → zero lease");
+        assert_eq!(
+            host_cache_lease_bytes(&i),
+            0,
+            "past-physical commit → zero lease"
+        );
         i.commit_charge_bytes = None;
         i.live_kv_bytes = 200 * GB;
-        assert_eq!(host_cache_lease_bytes(&i), 0, "over-full working set saturates to zero");
+        assert_eq!(
+            host_cache_lease_bytes(&i),
+            0,
+            "over-full working set saturates to zero"
+        );
     }
 
     /// what this catches (#287 retention arithmetic): the per-token expert
@@ -219,7 +231,11 @@ mod tests {
         assert!(retention_tokens_x100(16 * GB, ws) > 100);
         // A lease below one token's set → verdict under 100 (cache buys nothing).
         assert!(retention_tokens_x100(ws - 1, ws) < 100);
-        assert_eq!(retention_tokens_x100(2 * ws, ws), 200, "two tokens retained");
+        assert_eq!(
+            retention_tokens_x100(2 * ws, ws),
+            200,
+            "two tokens retained"
+        );
         // Dense model (no experts) → zero working set → zero verdict, no wrap.
         assert_eq!(per_token_expert_working_set_bytes(0, 0, 16), 0);
         assert_eq!(retention_tokens_x100(16 * GB, 0), 0);
@@ -232,11 +248,23 @@ mod tests {
     #[test]
     fn sticky_lease_holds_jitter_moves_on_material_change() {
         let mut s = StickyLease::new(8);
-        assert_eq!(s.observe(8 * GB), Some(8 * GB), "first observation publishes");
+        assert_eq!(
+            s.observe(8 * GB),
+            Some(8 * GB),
+            "first observation publishes"
+        );
         assert_eq!(s.observe(8 * GB + GB / 2), None, "sub-band growth holds");
         assert_eq!(s.observe(8 * GB - GB / 2), None, "sub-band shrink holds");
-        assert_eq!(s.observe(5 * GB), Some(5 * GB), "material shrink publishes now");
-        assert_eq!(s.observe(9 * GB), Some(9 * GB), "grow-back publishes past the band");
+        assert_eq!(
+            s.observe(5 * GB),
+            Some(5 * GB),
+            "material shrink publishes now"
+        );
+        assert_eq!(
+            s.observe(9 * GB),
+            Some(9 * GB),
+            "grow-back publishes past the band"
+        );
         assert_eq!(s.published_bytes(), 9 * GB);
     }
 }

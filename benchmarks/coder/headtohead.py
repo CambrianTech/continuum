@@ -6,7 +6,7 @@ grader, and print the delta — the number the scoreboard has always listed as "
   RAW    = the model one-shot against its own /v1 endpoint (no Continuum context) —
            `oneshot_opponent.py`, zero-dependency, the outsider-reproducible path.
   SYSTEM = the SAME model through the full Continuum cognition loop (grounding, tool menu,
-           act→observe) — `cu benchmark/run --base_model_id <model>`, its own ephemeral lane.
+           act→observe) — `uu benchmark/run --base_model_id <model>`, its own ephemeral lane.
 
   Δ = SYSTEM − RAW.  Positive = our loop LIFTS the model.  Negative = our context TAXES it.
 
@@ -15,7 +15,7 @@ one-shot vs run_ours, to attribute the gap between model-fit and our loop/PX." H
 52% raw / 42% system by hand once; this makes that a one-command, per-model, reproducible row.
 
 We never depend on an opponent: RAW just needs a /v1 URL you already run; SYSTEM needs a booted
-core (`cu`). Either arm can be skipped (--skip-raw / --skip-system) to get a single number.
+core (`uu`). Either arm can be skipped (--skip-raw / --skip-system) to get a single number.
 
 Usage:
   # same served model both ways (clean isolation):
@@ -27,15 +27,31 @@ Usage:
 
 Emits a JSON blob and a ready-to-paste SCOREBOARD row.
 """
-import argparse, json, os, subprocess, sys, time
+import argparse, json, os, shutil, subprocess, sys, time
+
+def _resolve_cli():
+    """Locate the continuum CLI.
+
+    `uu` is THE official short alias (the double-U of contin-UU-m). `uu` is
+    /usr/bin/cu (UUCP) on every Unix and was never ours — a default pointing at a
+    `uu` binary resolved to a file that does not exist, so the harness failed at
+    the first invocation instead of running. Prefer what is actually installed on
+    PATH; fall back to the release build.
+    """
+    for name in ("uu", "continuum"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return os.path.expanduser("~/.continuum/cache/cargo-target/release/continuum")
+
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ONESHOT = os.path.join(HERE, "oneshot_opponent.py")
 DEFAULT_GYM = os.path.join(HERE, "..", "..", "docs", "genome", "humaneval-rs.jsonl")
-DEFAULT_CU = os.path.expanduser("~/.continuum/cache/cargo-target/debug/cu")
-def resolve_persona(cu):
+DEFAULT_UU = _resolve_cli()
+def resolve_persona(uu):
     """The resident persona whose cognition runs the SYSTEM arm — resolved LIVE from the
-    booted core (`cu cognition/personas`), never a hardcoded id (a baked UUID only exists on
+    booted core (`uu cognition/personas`), never a hardcoded id (a baked UUID only exists on
     one machine and breaks every other install). Any resident works: the arm swaps her served
     brain to --base-model-id on an ephemeral lane, so WHO she is doesn't change the measurement
     (same weights, same gym). Fails loud when no persona is resident."""
@@ -46,7 +62,7 @@ def resolve_persona(cu):
         personas = []
     if not personas:
         raise SystemExit("no resident persona (is the core booted?) — cannot run the SYSTEM arm. "
-                         f"cu output: {r.stdout[:200]} {r.stderr[:200]}")
+                         f"uu output: {r.stdout[:200]} {r.stderr[:200]}")
     p = personas[0]
     print(f"[persona] {p.get('name')} ({p.get('persona_id')})", file=sys.stderr)
     return p["persona_id"]
@@ -73,13 +89,13 @@ def run_raw(args):
 
 
 def run_system(args):
-    """SYSTEM arm — the same model through the full loop via `cu benchmark/run`.
+    """SYSTEM arm — the same model through the full loop via `uu benchmark/run`.
 
     `--base_model_id` swaps the persona onto this model's OWN ephemeral lane (the humane-eval
     invariant: her living brain is untouched), so the measured weights are identical to RAW.
     Foreground, because the detached path returns a placeholder 0/0 before the run lands.
     """
-    cmd = [args.cu, "benchmark/run", "--name", args.benchmark,
+    cmd = [args.uu, "benchmark/run", "--name", args.benchmark,
            "--persona_id", args.persona_id, "--limit", str(args.limit)]
     if args.base_model_id:
         cmd += ["--base_model_id", args.base_model_id]
@@ -88,11 +104,11 @@ def run_system(args):
     t0 = time.time()
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
-        raise SystemExit(f"[system] cu benchmark/run failed:\n{r.stdout}\n{r.stderr}")
-    # cu prints the result JSON on stdout; take the last JSON object it emitted.
+        raise SystemExit(f"[system] uu benchmark/run failed:\n{r.stdout}\n{r.stderr}")
+    # uu prints the result JSON on stdout; take the last JSON object it emitted.
     blob = _last_json(r.stdout)
     if blob is None:
-        raise SystemExit(f"[system] no JSON in cu output:\n{r.stdout}\n{r.stderr}")
+        raise SystemExit(f"[system] no JSON in uu output:\n{r.stdout}\n{r.stderr}")
     total = blob.get("total", 0) or 0
     elapsed = time.time() - t0
     mean_out = blob.get("meanOutputTokensPerTask", None)
@@ -154,7 +170,7 @@ def main():
     ap.add_argument("--limit", type=int, default=10)
     ap.add_argument("--persona-id", default=None,
                     help="resident persona UUID; omitted -> resolved live from the booted core")
-    ap.add_argument("--cu", default=DEFAULT_CU)
+    ap.add_argument("--uu", default=DEFAULT_UU)
     ap.add_argument("--max-tokens", type=int, default=1024)
     ap.add_argument("--timeout", type=int, default=120)
     ap.add_argument("--api-key", default=os.environ.get("OPPONENT_API_KEY", ""))
@@ -165,7 +181,7 @@ def main():
     args = ap.parse_args()
     args.tmp = args.tmp or __import__("tempfile").mkdtemp(prefix="h2h-")
     if not args.skip_system and not args.persona_id:
-        args.persona_id = resolve_persona(args.cu)
+        args.persona_id = resolve_persona(args.uu)
 
     if not args.skip_raw and (not args.endpoint or not args.model):
         ap.error("RAW arm needs --endpoint and --model (or pass --skip-raw)")

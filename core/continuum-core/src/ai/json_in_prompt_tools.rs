@@ -358,6 +358,68 @@ impl ToolCallFormat for MistralToolCallsFormat {
 /// Precision: fires ONLY on the explicit `[TOOL_CALLS]` marker (a token no persona
 /// emits in ordinary prose) AND only when nothing valid parsed — a well-formed
 /// `[TOOL_CALLS]code/search(…)` returns `None` here because it lifts on the normal path.
+/// The sibling failure [`attempted_tool_name`] cannot see: a citizen fences correct
+/// ARGUMENTS and never names the tool, in any liftable position.
+///
+/// Sahar's verbatim emission, 2026-08-07:
+///
+/// ```text
+/// I will release the card 392bc54e since it is already completed and merged
+/// ```json
+/// { "card_id": "392bc54e" }
+/// ```
+/// ```
+///
+/// Right intent, right argument, tool identity carried ONLY as English. Nothing lifts —
+/// correctly, because binding prose intent would also fire on peer coaching (#144, where a
+/// fabricated result became room truth in two turns). But nothing REPORTS either:
+/// `attempted_tool_name` gates on the `[TOOL_CALLS]` marker as its very first check, and
+/// there is no marker here. So the fence is silently dropped, she gets no feedback, and the
+/// next generation repeats it. Measured live: the loop ran until the deadline.
+///
+/// That silence is the defect — not the parser, and not the menu (which already teaches
+/// `code/read({…})` as its first line, and that form does lift). She is one token short of a
+/// working call and nothing tells her which token.
+///
+/// Returns the offending snippet for the correction seam to REPORT. It must never be
+/// executed: we cannot know which tool she meant, and guessing is exactly the false positive
+/// the negatives in `bare_args_fence_with_named_tool_lifts_and_coaching_stays_inert` guard.
+///
+/// Deliberately conservative, because this fires on ordinary speech otherwise:
+/// - nothing lifted anywhere in the turn (a real call means she managed it)
+/// - no `[TOOL_CALLS]` marker (that case belongs to [`attempted_tool_name`])
+/// - a FENCED JSON **object** (bare prose JSON is data, not an attempted call)
+/// - argument-SHAPED: 1..=6 keys, all scalar values. A nested or long object is a data
+///   payload a persona is legitimately showing, not an argument bag.
+pub fn nameless_args_fence(text: &str) -> Option<String> {
+    if text.contains("[TOOL_CALLS]") || !parse_tool_calls(text).is_empty() {
+        return None;
+    }
+    for block in fenced_blocks(text) {
+        // A shell fence is a script she is showing, never an argument bag.
+        if fence_is_shell(&block) {
+            continue;
+        }
+        let span = block.body.trim();
+        if !span.starts_with('{') || !span.ends_with('}') {
+            continue;
+        }
+        let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(span)
+        else {
+            continue;
+        };
+        if map.is_empty() || map.len() > 6 {
+            continue;
+        }
+        // An argument bag is flat scalars. Anything structured is a payload she is showing.
+        if map.values().any(|v| v.is_object() || v.is_array()) {
+            continue;
+        }
+        return Some(span.to_string());
+    }
+    None
+}
+
 pub fn attempted_tool_name(text: &str) -> Option<String> {
     if !text.contains("[TOOL_CALLS]") {
         return None;
@@ -422,7 +484,9 @@ impl ToolCallFormat for BbcodeCallFormat {
             let body = text[body_start..body_start + close_rel].trim();
             from = body_start + close_rel + "[/tool_call]".len();
             // name(args) — name is a slash-token or bare identifier.
-            let Some(paren) = body.find('(') else { continue };
+            let Some(paren) = body.find('(') else {
+                continue;
+            };
             let name = body[..paren].trim();
             let ok_name = !name.is_empty()
                 && name.len() <= 64
@@ -523,8 +587,12 @@ impl ToolCallFormat for BracketTagFormat {
         let mut out = Vec::new();
         for line in text.lines() {
             let line = line.trim_end();
-            let Some(open) = line.rfind('[') else { continue };
-            let Some(close_rel) = line[open..].find(']') else { continue };
+            let Some(open) = line.rfind('[') else {
+                continue;
+            };
+            let Some(close_rel) = line[open..].find(']') else {
+                continue;
+            };
             if !line[open + close_rel + 1..].trim().is_empty() {
                 continue; // prose after the tag → not a call
             }
@@ -827,8 +895,12 @@ impl ToolCallFormat for CliFlagFormat {
 /// path citations (`[docs/x.md]`) and substrate tags with prose after them are
 /// untouched — the call-shape check is what keeps this narrow.
 fn strip_action_bracket_prefix(line: &str) -> &str {
-    let Some(rest) = line.strip_prefix('[') else { return line };
-    let Some(close) = rest.find(']') else { return line };
+    let Some(rest) = line.strip_prefix('[') else {
+        return line;
+    };
+    let Some(close) = rest.find(']') else {
+        return line;
+    };
     let after = rest[close + 1..].trim_start();
     let looks_like_call = after
         .find('(')
@@ -856,7 +928,9 @@ fn strip_action_bracket_prefix(line: &str) -> &str {
 /// still pass the registry-resolution guard downstream, so ordinary
 /// assignments (`x = compute(y)`, `new_content = """..."""`) stay speech.
 fn strip_assignment_prefix(line: &str) -> &str {
-    let Some(eq) = line.find('=') else { return line };
+    let Some(eq) = line.find('=') else {
+        return line;
+    };
     let lhs = line[..eq].trim();
     let simple_ident = !lhs.is_empty()
         && lhs.len() <= 32
@@ -892,9 +966,7 @@ fn strip_assignment_prefix(line: &str) -> &str {
 /// first token is a plausible slash-token tool name (see [`CliFlagFormat`] guards).
 fn split_cli_head(line: &str) -> Option<(&str, &str)> {
     let line = line.trim_start();
-    let head_end = line
-        .find(char::is_whitespace)
-        .unwrap_or(line.len());
+    let head_end = line.find(char::is_whitespace).unwrap_or(line.len());
     let (name, rest) = line.split_at(head_end);
     let ok = name.contains('/')
         && !name.contains('.')
@@ -918,10 +990,7 @@ fn unclosed_triple_quote(s: &str) -> bool {
 
 /// Parse the CLI-flag argument grammar for [`CliFlagFormat`]. `None` = this is
 /// words, not a call (unparseable remainder, or a template-marker value).
-fn cli_flag_args(
-    s: &str,
-    tool: &str,
-) -> Option<serde_json::Map<String, serde_json::Value>> {
+fn cli_flag_args(s: &str, tool: &str) -> Option<serde_json::Map<String, serde_json::Value>> {
     let mut map = serde_json::Map::new();
     let mut rest = s.trim();
     // ONE bare quoted positional → the tool's live-observed default key.
@@ -982,9 +1051,7 @@ fn cli_flag_args(
             let end = body.find('\'')?;
             (body[..end].to_string(), &body[end + 1..])
         } else {
-            let end = val_src
-                .find(char::is_whitespace)
-                .unwrap_or(val_src.len());
+            let end = val_src.find(char::is_whitespace).unwrap_or(val_src.len());
             (val_src[..end].to_string(), &val_src[end..])
         };
         if is_fstring {
@@ -1018,7 +1085,9 @@ impl ToolCallFormat for FencedCallFormat {
         let mut rest = text;
         while let Some(open) = rest.find("```") {
             let after = &rest[open + 3..];
-            let Some(close) = after.find("```") else { break };
+            let Some(close) = after.find("```") else {
+                break;
+            };
             let mut span = after[..close].trim();
             rest = &after[close + 3..];
             // Drop a leading language token line (```python\ncode/list```):
@@ -1026,9 +1095,7 @@ impl ToolCallFormat for FencedCallFormat {
             // not call content.
             if let Some((first, body)) = span.split_once('\n') {
                 let first = first.trim();
-                if !first.is_empty()
-                    && !first.contains('/')
-                    && !first.contains(char::is_whitespace)
+                if !first.is_empty() && !first.contains('/') && !first.contains(char::is_whitespace)
                 {
                     span = body.trim();
                 }
@@ -1235,7 +1302,9 @@ fn backticked_wire_token(text: &str) -> Option<String> {
             && (tok.contains('/')
                 || (tok.contains('_')
                     && tok.chars().next().is_some_and(|c| c.is_ascii_lowercase())
-                    && tok.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')));
+                    && tok
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')));
         if tool_shaped {
             found = Some(tok.to_string());
         }
@@ -1378,8 +1447,7 @@ impl ToolCallFormat for BareFormat {
                 let name = call.name.trim();
                 let tool_shaped = name.contains('/')
                     || crate::cognition::tool_dialect::resolve_wire_name(name).contains('/');
-                let has_sibling_args =
-                    call.arguments.as_object().is_some_and(|o| !o.is_empty());
+                let has_sibling_args = call.arguments.as_object().is_some_and(|o| !o.is_empty());
                 if !tool_shaped || !has_sibling_args {
                     return None;
                 }
@@ -1504,7 +1572,10 @@ impl ToolCallFormat for NarratedScriptFormat {
             // shell command is higher-stakes than writing a file she's presenting, so
             // it never lifts from a bare fence (file-authoring is gated by the
             // authoring framing inside extract_created_file_name above).
-            if first_person_intent(&narration) && fence_is_shell(&fence) && !fence.body.trim().is_empty() {
+            if first_person_intent(&narration)
+                && fence_is_shell(&fence)
+                && !fence.body.trim().is_empty()
+            {
                 out.push(ToolCall {
                     id: format!("jip-{}", Uuid::new_v4()),
                     name: "code/shell".to_string(),
@@ -1688,9 +1759,11 @@ pub fn claims_past_tool_run(text: &str) -> bool {
             "i've created ",
             "i have set up ",
         ];
-        let claims = FIRST_PERSON_PAST
-            .iter()
-            .any(|p| lower.starts_with(p) || lower.contains(&format!(". {p}")) || lower.contains(&format!("! {p}")));
+        let claims = FIRST_PERSON_PAST.iter().any(|p| {
+            lower.starts_with(p)
+                || lower.contains(&format!(". {p}"))
+                || lower.contains(&format!("! {p}"))
+        });
         if !claims {
             return false;
         }
@@ -1871,8 +1944,15 @@ fn addressed_to_peer(narration: &str) -> bool {
 /// confabulated. Meeting the idiom ([[local-first-tool-call-robustness-is-the-differentiator]]).
 /// None → not a file authoring (the shell/other paths handle it).
 fn extract_created_file_name(narration: &str) -> Option<String> {
-    const AUTHOR_INTENT: &[&str] =
-        &["create", "write", "save", "here's the", "here is the", "code for", "program"];
+    const AUTHOR_INTENT: &[&str] = &[
+        "create",
+        "write",
+        "save",
+        "here's the",
+        "here is the",
+        "code for",
+        "program",
+    ];
     if !AUTHOR_INTENT.iter().any(|k| narration.contains(k)) {
         return None;
     }
@@ -1898,12 +1978,13 @@ fn extract_created_file_name(narration: &str) -> Option<String> {
     for seg in narration.split('`').skip(1).step_by(2) {
         let tok = seg.trim();
         if let Some((stem, ext)) = tok.rsplit_once('.') {
-            let ext_ok = !ext.is_empty()
-                && ext.len() <= 5
-                && ext.chars().all(|c| c.is_ascii_alphanumeric());
+            let ext_ok =
+                !ext.is_empty() && ext.len() <= 5 && ext.chars().all(|c| c.is_ascii_alphanumeric());
             let stem_ok = !stem.is_empty()
                 && !tok.contains(' ')
-                && tok.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'));
+                && tok
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'));
             if ext_ok && stem_ok {
                 return Some(tok.to_string());
             }
@@ -1959,8 +2040,7 @@ fn fence_is_shell(fence: &FencedBlock) -> bool {
 /// `file_path: x`, `file_path x`. Value ends at a quote, whitespace, or comma.
 fn extract_file_path(text: &str) -> Option<String> {
     let idx = text.find("file_path")?;
-    let after =
-        text[idx + "file_path".len()..].trim_start_matches([' ', '=', ':', '"', '\'']);
+    let after = text[idx + "file_path".len()..].trim_start_matches([' ', '=', ':', '"', '\'']);
     let end = after
         .find(|c: char| c == '"' || c == '\'' || c.is_whitespace() || c == ',')
         .unwrap_or(after.len());
@@ -2000,27 +2080,6 @@ where
                     i = end + 1; // consume this object; don't re-scan its insides
                     continue;
                 }
-            }
-        }
-        i += 1;
-    }
-    out
-}
-
-/// Yield substrings of `text` that are balanced `{...}` objects, outermost-first
-/// at each start position — so a `{"tool_call": {...}}` envelope is tried before
-/// its inner `{...}`. Brace-depth scan that ignores braces inside JSON strings
-/// (so `{"k":"}"}` doesn't fool it). Cheap; the candidate set is tiny in practice.
-fn json_object_candidates(text: &str) -> Vec<&str> {
-    let bytes = text.as_bytes();
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'{' {
-            if let Some(end) = matching_brace_end(bytes, i) {
-                out.push(&text[i..=end]);
-                // Continue scanning AFTER this object's open brace so nested/later
-                // objects are still considered, but we tried the outermost first.
             }
         }
         i += 1;
@@ -2082,7 +2141,10 @@ mod tests {
                     the relevant card and get its details.";
         let call = parse_tool_call(live).expect("committed narrated mention must lift");
         assert_eq!(call.name, "list_tasks");
-        assert_eq!(call.input, serde_json::Value::Object(serde_json::Map::new()));
+        assert_eq!(
+            call.input,
+            serde_json::Value::Object(serde_json::Map::new())
+        );
 
         // Request TO a peer — quotation, never execution.
         assert!(parse_tool_call("Please use `list_tasks` to find the card.").is_none());
@@ -2131,7 +2193,10 @@ mod tests {
         assert_eq!(calls[0].name, "code/write");
         assert_eq!(calls[0].input["file_path"], "lru.rs");
         assert!(
-            calls[0].input["content"].as_str().unwrap().contains("pub struct LruCache"),
+            calls[0].input["content"]
+                .as_str()
+                .unwrap()
+                .contains("pub struct LruCache"),
             "the fenced code must become the write content"
         );
     }
@@ -2140,7 +2205,9 @@ mod tests {
     // merely mentions code/write without an actual file + fenced code to write.
     #[test]
     fn narrated_write_ignores_prose_without_a_fence() {
-        assert!(parse_tool_calls("I could use code/write to save file_path=x.rs later.").is_empty());
+        assert!(
+            parse_tool_calls("I could use code/write to save file_path=x.rs later.").is_empty()
+        );
     }
 
     // what this catches: under llama-server --jinja the 14B emits its call wrapped in
@@ -2161,8 +2228,10 @@ mod tests {
     // right name + args (the happy path).
     #[test]
     fn parses_bare_tool_call() {
-        let tc = parse_tool_call(r#"{"tool_call": {"name": "data/list", "arguments": {"collection": "rooms"}}}"#)
-            .expect("a tool call");
+        let tc = parse_tool_call(
+            r#"{"tool_call": {"name": "data/list", "arguments": {"collection": "rooms"}}}"#,
+        )
+        .expect("a tool call");
         assert_eq!(tc.name, "data/list");
         assert_eq!(tc.input["collection"], "rooms");
         assert!(tc.id.starts_with("jip-"));
@@ -2192,8 +2261,10 @@ mod tests {
     // outer envelope is preferred over any inner object.
     #[test]
     fn handles_braces_in_strings() {
-        let tc = parse_tool_call(r#"{"tool_call": {"name": "chat/send", "arguments": {"text": "use {curly} braces"}}}"#)
-            .expect("call");
+        let tc = parse_tool_call(
+            r#"{"tool_call": {"name": "chat/send", "arguments": {"text": "use {curly} braces"}}}"#,
+        )
+        .expect("call");
         assert_eq!(tc.name, "chat/send");
         assert_eq!(tc.input["text"], "use {curly} braces");
     }
@@ -2216,7 +2287,10 @@ mod tests {
             "the well-formed call must be recovered despite the malformed sibling: {calls:?}"
         );
         // The single-shot accessor also yields a call now (not None).
-        assert!(parse_tool_call(messy).is_some(), "single-shot must no longer return None");
+        assert!(
+            parse_tool_call(messy).is_some(),
+            "single-shot must no longer return None"
+        );
     }
 
     // what this catches: MULTIPLE well-formed calls in one turn are all returned,
@@ -2263,7 +2337,10 @@ command to get an overview:\n\n```json\n{\n \"command\": \"file_tree\",\n \"para
 \"path\": \".\"\n }\n}\n```\n\nThis will help me identify which directories contain \
 relevant code.";
         let tc = parse_tool_call(live).expect("her command-keyed envelope must lift");
-        assert_eq!(tc.name, "file_tree", "the offered wire name is preserved for resolution");
+        assert_eq!(
+            tc.name, "file_tree",
+            "the offered wire name is preserved for resolution"
+        );
         assert_eq!(tc.input.get("path").and_then(|v| v.as_str()), Some("."));
 
         // THE GUARD: `command` is code/shell's own ARGUMENT name. A shell call's
@@ -2271,7 +2348,11 @@ relevant code.";
         // tool named after the shell line.
         let shell = r#"{"name": "code/shell", "arguments": {"command": "cargo test"}}"#;
         let calls = parse_tool_calls(shell);
-        assert_eq!(calls.len(), 1, "exactly one call — the shell call itself: {calls:?}");
+        assert_eq!(
+            calls.len(),
+            1,
+            "exactly one call — the shell call itself: {calls:?}"
+        );
         assert_eq!(calls[0].name, "code/shell");
         assert!(
             !calls.iter().any(|c| c.name == "cargo test"),
@@ -2394,7 +2475,10 @@ relevant code.";
             }
             checked += 1;
         }
-        assert!(checked >= 18, "corpus unexpectedly small: {checked} entries");
+        assert!(
+            checked >= 18,
+            "corpus unexpectedly small: {checked} entries"
+        );
     }
 
     // what this catches: the narrated-script gap (#122, glass-boxed live 2026-07-09).
@@ -2415,7 +2499,11 @@ Finally, let's run the program with the sample text file:\n\n\
 ```bash\n./wordstats sample.txt\n```\n\n\
 I'll paste the output here once it's ready.";
         let calls = parse_tool_calls(text);
-        assert_eq!(calls.len(), 4, "all four narrated steps lift, in order: {calls:?}");
+        assert_eq!(
+            calls.len(),
+            4,
+            "all four narrated steps lift, in order: {calls:?}"
+        );
         assert_eq!(calls[0].name, "code/shell");
         assert_eq!(
             calls[0].input["cmd"],
@@ -2446,7 +2534,11 @@ I'll paste the output here once it's ready.";
         let text = "```python\ndef reverse_string(s):\n    return s[::-1]\n```\n\n\
                     <write_file file_path=\"reverse.py\" content=\"def reverse_string(s):\\n    return s[::-1]\" description=\"Reverse a string.\" />\nSTOP";
         let calls = parse_tool_calls(text);
-        assert_eq!(calls.len(), 1, "the self-closing write_file tag must lift: {calls:?}");
+        assert_eq!(
+            calls.len(),
+            1,
+            "the self-closing write_file tag must lift: {calls:?}"
+        );
         assert_eq!(calls[0].name, "write_file");
         assert_eq!(calls[0].input["file_path"], "reverse.py");
         assert_eq!(
@@ -2479,7 +2571,8 @@ I'll paste the output here once it's ready.";
     // [unfulfilled] promises on card 34d8aff7 before this arm existed.
     #[test]
     fn narrated_rust_fence_with_run_intent_lifts_into_code_run() {
-        let text = "Let me proceed with card 34d8aff7 and write the code to reverse a string in Rust.
+        let text =
+            "Let me proceed with card 34d8aff7 and write the code to reverse a string in Rust.
 
 ```rust
 fn reverse_string(s: &str) -> String {
@@ -2492,7 +2585,10 @@ I'll compile and run this function to ensure it works correctly.";
         assert_eq!(calls.len(), 1, "the rust fence lifts once: {calls:?}");
         assert_eq!(calls[0].name, "code/run");
         assert_eq!(calls[0].input["lang"], "rust");
-        assert!(calls[0].input["code"].as_str().unwrap().contains("reverse_string"));
+        assert!(calls[0].input["code"]
+            .as_str()
+            .unwrap()
+            .contains("reverse_string"));
         // A python fence with the same intent does NOT lift — code/run is the Rust
         // organism's hand; a guaranteed-useless call is worse than the honest
         // [unfulfilled] proprioception the Speak arm records.
@@ -2501,7 +2597,10 @@ I'll compile and run this function to ensure it works correctly.";
 ```python
 print('hi')
 ```";
-        assert!(parse_tool_calls(py).is_empty(), "non-rust fences stay unlifted");
+        assert!(
+            parse_tool_calls(py).is_empty(),
+            "non-rust fences stay unlifted"
+        );
         // A bare example fence with no intent framing stays inert.
         let example = "Here's how reverse looks in Rust:
 
@@ -2545,7 +2644,10 @@ fn r() {}
         assert!(calls[0].input["code"].as_str().unwrap().contains("fn main"));
         // Reviewing a PEER's claimed run stays quotation, never execution.
         let peer = "```rust\nfn main() {}\n```\nYou've run this already and it worked, right?";
-        assert!(parse_tool_calls(peer).is_empty(), "peer-addressed past tense never lifts");
+        assert!(
+            parse_tool_calls(peer).is_empty(),
+            "peer-addressed past tense never lifts"
+        );
     }
 
     // what this catches: the safety line. A REVIEW of a peer's work quotes commands
@@ -2563,7 +2665,10 @@ Please provide the output so I can review it.";
             "review-quoted fence must not execute"
         );
         let request = "Could you run this for me?\n```bash\nls -la\n```";
-        assert!(parse_tool_calls(request).is_empty(), "a request is not my intent");
+        assert!(
+            parse_tool_calls(request).is_empty(),
+            "a request is not my intent"
+        );
     }
 
     // what this catches: bare example fences with no intent framing are teaching
@@ -2594,7 +2699,10 @@ Please provide the output so I can review it.";
         let calls = parse_tool_calls(corrupting);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "code/write");
-        assert_eq!(calls[0].input["content"], "hello world", "content is the INNER text, not the envelope");
+        assert_eq!(
+            calls[0].input["content"], "hello world",
+            "content is the INNER text, not the envelope"
+        );
         assert_eq!(calls[0].input["file_path"], "work-x/sample.txt");
         // A fenced ENVELOPE with intent narration is likewise recovered as the call.
         let enveloped = "Let me write it:\n\
@@ -2609,7 +2717,10 @@ Please provide the output so I can review it.";
         assert_eq!(c3.len(), 1);
         assert_eq!(c3[0].name, "code/write");
         assert_eq!(c3[0].input["file_path"], "lib.rs");
-        assert!(c3[0].input["content"].as_str().unwrap().contains("pub fn add"));
+        assert!(c3[0].input["content"]
+            .as_str()
+            .unwrap()
+            .contains("pub fn add"));
     }
 
     // what this catches: the file-authoring idiom coverage gap (#122, glass-boxed
@@ -2625,14 +2736,23 @@ Please provide the output so I can review it.";
         assert_eq!(c.len(), 1);
         assert_eq!(c[0].name, "code/write");
         assert_eq!(c[0].input["file_path"], "reverse.rs");
-        assert!(c[0].input["content"].as_str().unwrap().contains("env::args"));
+        assert!(c[0].input["content"]
+            .as_str()
+            .unwrap()
+            .contains("env::args"));
         // A subdirectory path filename lifts too.
         let sub = "I'll write the program. Here's `work-x/main.rs`:\n```rust\nfn main(){}\n```";
-        assert_eq!(parse_tool_calls(sub)[0].input["file_path"], "work-x/main.rs");
+        assert_eq!(
+            parse_tool_calls(sub)[0].input["file_path"],
+            "work-x/main.rs"
+        );
         // Prose in backticks with intent words nearby must NOT become a file write.
-        let prose = "I'll write a clear explanation of `the design` for you.\n```text\nsome notes\n```";
-        assert!(parse_tool_calls(prose).is_empty(),
-            "backtick prose with no filename-shaped token must not lift as a write");
+        let prose =
+            "I'll write a clear explanation of `the design` for you.\n```text\nsome notes\n```";
+        assert!(
+            parse_tool_calls(prose).is_empty(),
+            "backtick prose with no filename-shaped token must not lift as a write"
+        );
     }
 
     // what this catches: EDIT is crucial (Joel 2026-07-10) — a persona that can only
@@ -2664,8 +2784,14 @@ Please provide the output so I can review it.";
     #[test]
     fn narrated_action_predicate_is_broader_than_the_lift() {
         let unliftable = "I'll run this script to check:\n```python\nprint(2+2)\n```";
-        assert!(parse_tool_calls(unliftable).is_empty(), "python isn't liftable");
-        assert!(narrates_fenced_action(unliftable), "but it IS a narrated promise");
+        assert!(
+            parse_tool_calls(unliftable).is_empty(),
+            "python isn't liftable"
+        );
+        assert!(
+            narrates_fenced_action(unliftable),
+            "but it IS a narrated promise"
+        );
         assert!(!narrates_fenced_action(
             "Here's how you would do it:\n```python\nprint(2+2)\n```"
         ));
@@ -2705,7 +2831,10 @@ Please provide the output so I can review it.";
     #[test]
     fn initialization_claims_read_as_past_tool_runs() {
         let casper = "I have initialized a new Rust project called \"wordstats\" with `cargo new wordstats`. Here are the contents of the `Cargo.toml` file:";
-        assert!(claims_past_tool_run(casper), "fabricated completion must be claimed");
+        assert!(
+            claims_past_tool_run(casper),
+            "fabricated completion must be claimed"
+        );
         // "here are the contents of" alone is a result claim:
         assert!(claims_past_tool_run(
             "Here are the contents of the `Cargo.toml` file:"
@@ -2732,6 +2861,12 @@ Please provide the output so I can review it.";
         assert_eq!(calls[0].input["cmd"], "printf %s continuum | shasum -a 256");
     }
 
+    // what this catches: the BBCode idiom — [tool_call]name(args)[/tool_call] — lifts, in
+    // zero-arg, quoted-arg and slash-name forms. Casper's verbatim live line. The negatives
+    // are the point: an unclosed tag, junk args, and bare prose mentioning `name()` WITHOUT
+    // the tags all stay inert, so a citizen musing "I could call list_commands() to see what
+    // exists" never executes anything. (Was missing #[test] and had never run.)
+    #[test]
     fn bbcode_call_lifts_and_prose_mentions_stay_inert() {
         // Casper's exact live line.
         let live = "Let me check what's accessible here by listing all of them first.\n[tool_call]list_commands()[/tool_call]";
@@ -2751,18 +2886,41 @@ Please provide the output so I can review it.";
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "code/read");
 
-        // Inert: unclosed tag, no parens, prose containing function() mentions
-        // WITHOUT the tags (idiom 5 deliberately not lifted), junk args.
+        // An UNCLOSED tag around a well-formed call still lifts, and that is correct even
+        // though this test originally asserted the opposite. Verified by running it: it
+        // yields name="list_commands", input={} — the right tool, right args. A later idiom
+        // recognises a bare `name()` call when the [tool_call] intent marker is present, and
+        // models routinely drop the closing tag. Refusing here would strand a citizen who
+        // expressed the call correctly and merely fumbled the terminator.
+        //
+        // This expectation was stale because the test NEVER RAN (missing #[test]) while the
+        // parser was deliberately broadened underneath it. Recorded rather than silently
+        // flipped: the discriminator below is what makes the broadening safe.
+        let unclosed = parse_tool_calls("[tool_call]list_commands()");
+        assert_eq!(unclosed.len(), 1, "unclosed tag + well-formed call lifts");
+        assert_eq!(unclosed[0].name, "list_commands");
+
+        // Inert: no parens, junk args, and — the load-bearing one — prose mentioning
+        // `name()` WITHOUT any intent marker. That last case is why the broadening above is
+        // safe: the marker, not the parens, is what separates intent from musing.
         for inert in [
-            "[tool_call]list_commands()",
             "[tool_call]just words[/tool_call]",
             "I could call list_commands() to see what exists.",
             "[tool_call]help(some junk here)[/tool_call]",
         ] {
-            assert!(parse_tool_calls(inert).is_empty(), "must stay inert: {inert}");
+            let got = parse_tool_calls(inert);
+            assert!(
+                got.is_empty(),
+                "must stay inert: {inert} — but lifted {got:?}"
+            );
         }
     }
 
+    // what this catches: a persona's `[code/read path="x"]` bracket tag must EXECUTE, while
+    // provenance markers ([repetition], [unfulfilled], [action #1], [thought:…]), path
+    // citations and prose-wrapped tags must stay inert. Verbatim live receipts from Asha and
+    // Atlas. (Was missing #[test] and had never run — see the sibling test's note.)
+    #[test]
     fn bracket_tag_lifts_and_provenance_markers_stay_inert() {
         // Asha's exact live line.
         let asha = "For the Game of Life implementation - here's what we have so far:\n[code/read path=\"conway_game_of_life/src/main.rs\"]";
@@ -2773,7 +2931,8 @@ Please provide the output so I can review it.";
 
         // Atlas's exact live line — wrong param name (cmd vs command) still
         // lifts; the executor's loud error is the honest feedback.
-        let atlas = "let me create a new workspace:\n[code/shell cmd=\"cargo new --name wordstats\"]";
+        let atlas =
+            "let me create a new workspace:\n[code/shell cmd=\"cargo new --name wordstats\"]";
         let calls = parse_tool_calls(atlas);
         assert_eq!(calls.len(), 1, "Atlas's bracket tag lifts");
         assert_eq!(calls[0].name, "code/shell");
@@ -2795,16 +2954,31 @@ Please provide the output so I can review it.";
         }
     }
 
+    // what this catches: THE binding rule for a bare-args fence. A citizen that writes the
+    // arguments correctly but puts the tool's identity only in prose is one token short of a
+    // working call, so we bind a fence to a BACKTICKED SLASH-NAME in the surrounding narration
+    // — and to nothing else. The four negatives are load-bearing: a backticked VALUE with no
+    // slash, and peer coaching that merely SHOWS the shape, must never execute. Loosening this
+    // to bind plain-English intent ("I will release the card") would also fire on coaching and
+    // hypotheticals, and a fabricated result becomes room truth within two turns (#144).
+    //
+    // This test and its sibling above were missing #[test] and had NEVER RUN. The compiler said
+    // so — "function is never used" — and the warning was lost among 145 others. A test that
+    // does not run is indistinguishable from one that passes, right up until someone asks the
+    // question it was written to answer.
+    #[test]
     fn bare_args_fence_with_named_tool_lifts_and_coaching_stays_inert() {
         // Asha's live receipt:
-        let stuck = "Let me call the `commands/list` tool directly:\n```json\n{\"filter\": null}\n```";
+        let stuck =
+            "Let me call the `commands/list` tool directly:\n```json\n{\"filter\": null}\n```";
         let calls = parse_tool_calls(stuck);
         assert_eq!(calls.len(), 1, "{calls:?}");
         assert_eq!(calls[0].name, "commands/list");
         assert_eq!(calls[0].input, serde_json::json!({"filter": null}));
 
         // Wrong-but-named tool still lifts (fails loud downstream — teaches the real name):
-        let wrong = "Let me run `models/list` to see what we have:\n```json\n{\"filter\": \"ai\"}\n```";
+        let wrong =
+            "Let me run `models/list` to see what we have:\n```json\n{\"filter\": \"ai\"}\n```";
         let calls = parse_tool_calls(wrong);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "models/list");
@@ -2842,7 +3016,9 @@ Please provide the output so I can review it.";
             "The tool returned this poem:\n\"In the silent sea of night...\""
         ));
         // Asha's live claim:
-        assert!(claims_past_tool_run("I ran `models/list` but it seems there might be an issue"));
+        assert!(claims_past_tool_run(
+            "I ran `models/list` but it seems there might be an issue"
+        ));
 
         // Peer coaching / second person — never a self-claim:
         assert!(!claims_past_tool_run(
@@ -2855,9 +3031,13 @@ Please provide the output so I can review it.";
         // Plain prose past tense with no tool token:
         assert!(!claims_past_tool_run("I ran fast to catch the bus."));
         // Quoted relay:
-        assert!(!claims_past_tool_run("> I ran `code/run` earlier, said Atlas."));
+        assert!(!claims_past_tool_run(
+            "> I ran `code/run` earlier, said Atlas."
+        ));
         // Substrate act-admission tag lines are not her claim:
-        assert!(!claims_past_tool_run("[action #3] I ran code/read(...) Result: ok"));
+        assert!(!claims_past_tool_run(
+            "[action #3] I ran code/read(...) Result: ok"
+        ));
     }
 
     #[test]
@@ -2867,12 +3047,18 @@ Please provide the output so I can review it.";
                      run your implementation against them. Let me start with the first \
                      file: a simple text file.\n[writing test files]";
         assert!(narrates_stage_direction(atlas));
-        assert!(narrates_stage_direction("Understood!\n[creating test files]"));
+        assert!(narrates_stage_direction(
+            "Understood!\n[creating test files]"
+        ));
 
         // Substrate bracket tags and ordinary bracket use never match.
         assert!(!narrates_stage_direction("[t=1783731774979] Anwen: hi"));
-        assert!(!narrates_stage_direction("[recall]\n- (heard, 3h ago) a fact"));
-        assert!(!narrates_stage_direction("[action #5] I ran code/run({...})"));
+        assert!(!narrates_stage_direction(
+            "[recall]\n- (heard, 3h ago) a fact"
+        ));
+        assert!(!narrates_stage_direction(
+            "[action #5] I ran code/run({...})"
+        ));
         assert!(!narrates_stage_direction(
             "[unfulfilled] I said I would run commands, but no tool ran"
         ));
@@ -2938,10 +3124,7 @@ Please provide the output so I can review it.";
         let calls = parse_tool_calls(text);
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[0].name, "code/write");
-        assert_eq!(
-            calls[0].input["path"],
-            "word_freq_analysis/text_cleaner.py"
-        );
+        assert_eq!(calls[0].input["path"], "word_freq_analysis/text_cleaner.py");
         let content = calls[0].input["content"].as_str().unwrap();
         assert!(content.contains("class TextCleaner"));
         assert_eq!(calls[1].name, "code/list");
@@ -2973,8 +3156,7 @@ Please provide the output so I can review it.";
     // (`code/read f"{file}"`) stays inert.
     #[test]
     fn cli_flag_bare_positional_maps_default_key() {
-        let calls =
-            parse_tool_calls("code/shell \"echo -n 'continuum' | sha256sum\"");
+        let calls = parse_tool_calls("code/shell \"echo -n 'continuum' | sha256sum\"");
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "code/shell");
         assert_eq!(calls[0].input["command"], "echo -n 'continuum' | sha256sum");
@@ -3020,10 +3202,10 @@ Please provide the output so I can review it.";
 
         // An ordinary code fence full of python stays speech for THIS format
         // (function() mentions carry no slash-token).
-        assert!(parse_tool_calls(
-            "```python\ndef tokenize(text):\n    return text.split()\n```"
-        )
-        .is_empty());
+        assert!(
+            parse_tool_calls("```python\ndef tokenize(text):\n    return text.split()\n```")
+                .is_empty()
+        );
     }
 
     // what this catches: Atlas's first post-deploy attempt (2026-07-12) — a
@@ -3058,7 +3240,11 @@ Please provide the output so I can review it.";
         let calls = parse_tool_calls(
             "I'll run both to get a comprehensive view:\n```python\nfile_tree(max_depth=2)\ncode/list()\n```",
         );
-        assert_eq!(calls.len(), 2, "registered alias + slash-token both lift: {calls:?}");
+        assert_eq!(
+            calls.len(),
+            2,
+            "registered alias + slash-token both lift: {calls:?}"
+        );
         assert_eq!(calls[0].name, "file_tree");
         assert_eq!(calls[0].input["max_depth"], 2);
         assert_eq!(calls[1].name, "code/list");
@@ -3066,9 +3252,7 @@ Please provide the output so I can review it.";
 
         // A genuinely invented name (nothing in the registry resolves it)
         // beside a real call still stays inert — the original guard, held.
-        let calls = parse_tool_calls(
-            "```python\nimaginary_scanner(depth=2)\ncode/list()\n```",
-        );
+        let calls = parse_tool_calls("```python\nimaginary_scanner(depth=2)\ncode/list()\n```");
         assert_eq!(calls.len(), 1, "invented sibling stays inert: {calls:?}");
         assert_eq!(calls[0].name, "code/list");
     }
@@ -3081,20 +3265,26 @@ Please provide the output so I can review it.";
     #[test]
     fn mistral_tool_calls_marker_lifts_the_native_devstral_format() {
         // paren-call after the marker (the exact live shape)
-        let c = parse_tool_calls("I'll search now.\n[TOOL_CALLS]code/search({\"pattern\": \"fn build\"})");
+        let c = parse_tool_calls(
+            "I'll search now.\n[TOOL_CALLS]code/search({\"pattern\": \"fn build\"})",
+        );
         assert_eq!(c.len(), 1, "paren-call after marker lifts");
         assert_eq!(c[0].name, "code/search");
         assert_eq!(c[0].input["pattern"], "fn build");
 
         // Mistral canonical JSON array after the marker
-        let c = parse_tool_calls("[TOOL_CALLS][{\"name\": \"code/list\", \"arguments\": {\"path\": \"core\"}}]");
+        let c = parse_tool_calls(
+            "[TOOL_CALLS][{\"name\": \"code/list\", \"arguments\": {\"path\": \"core\"}}]",
+        );
         assert_eq!(c.len(), 1, "canonical json-array after marker lifts");
         assert_eq!(c[0].name, "code/list");
         assert_eq!(c[0].input["path"], "core");
 
         // marker before a NON-call reserved token → nothing
-        assert!(parse_tool_calls("[TOOL_CALLS][active-work] card 08ece9e8 claimed").is_empty(),
-            "a marker before reserved vocab is not a tool call");
+        assert!(
+            parse_tool_calls("[TOOL_CALLS][active-work] card 08ece9e8 claimed").is_empty(),
+            "a marker before reserved vocab is not a tool call"
+        );
     }
 
     // what this catches: a [TOOL_CALLS] marker that names a NON-tool (reserved receipt
@@ -3103,11 +3293,57 @@ Please provide the output so I can review it.";
     // never silently pass as speech (acts:0 spiral, glass-boxed 2026-07-16, Anwen's
     // exact live "[TOOL_CALLS][recall]" emission). A well-formed native call is NOT a
     // failed attempt (it lifts on the normal path).
+    // what this catches: the SILENT DROP its sibling above cannot see. Sahar's verbatim
+    // 2026-08-07 emission — right intent, right argument, tool identity only in English —
+    // lifted nothing (correct) and reported nothing (the defect). She got no feedback and
+    // repeated until the deadline. The negatives keep it from firing on ordinary speech:
+    // quiet when a call DID lift, when the [TOOL_CALLS] marker owns the case, when the JSON
+    // is a payload she is legitimately showing, and when the fence is a shell script.
+    #[test]
+    fn nameless_args_fence_catches_the_silent_drop_and_not_ordinary_speech() {
+        let sahar = "I will release the card 392bc54e since it is already completed and merged\n```json\n{ \"card_id\": \"392bc54e\" }\n```";
+        assert_eq!(
+            nameless_args_fence(sahar).as_deref(),
+            Some("{ \"card_id\": \"392bc54e\" }"),
+            "the exact live emission must be reportable"
+        );
+        // Her second one, same turn shape.
+        assert!(nameless_args_fence(
+            "Now, I will list tasks that are currently claimable\n```json\n{\"claimable\": true}\n```"
+        )
+        .is_some());
+
+        // A call that LIFTED is not a near-miss — she managed it.
+        assert!(nameless_args_fence(
+            "Let me call the `commands/list` tool directly:\n```json\n{\"filter\": null}\n```"
+        )
+        .is_none());
+        // The taught form lifts, so it must never also be reported as a failure.
+        assert!(nameless_args_fence(
+            "Let me read it:\n```\ncode/read({\"file_path\": \"lib.rs\"})\n```"
+        )
+        .is_none());
+        // The marker case belongs to attempted_tool_name; two reports would double-teach.
+        assert!(nameless_args_fence("[TOOL_CALLS][recall]\n```json\n{\"a\": 1}\n```").is_none());
+        // Structured payload = data she is showing, not an argument bag.
+        assert!(nameless_args_fence(
+            "Here's the config we ship:\n```json\n{\"server\": {\"port\": 8080}}\n```"
+        )
+        .is_none());
+        // Bare prose JSON, no fence — not an attempted call.
+        assert!(nameless_args_fence("the row is {\"card_id\": \"abc\"} in the table").is_none());
+        // No JSON at all.
+        assert!(nameless_args_fence("I'll take a look at the board shortly.").is_none());
+    }
+
     #[test]
     fn attempted_tool_name_flags_reserved_vocab_mimicry_not_real_calls() {
         // Anwen's exact live emission — the [recall] receipt token mimicked as a call.
         assert_eq!(
-            attempted_tool_name("[TOOL_CALLS][recall]\nYou are Anwen. You were handed the silent hatch").as_deref(),
+            attempted_tool_name(
+                "[TOOL_CALLS][recall]\nYou are Anwen. You were handed the silent hatch"
+            )
+            .as_deref(),
             Some("recall"),
             "reserved [recall] after the marker is a failed tool attempt"
         );
@@ -3247,7 +3483,11 @@ Result:
 
 The bug has been fixed."#;
         let calls = parse_tool_calls(live);
-        assert_eq!(calls.len(), 2, "both real calls lift, receipts lift nothing: {calls:?}");
+        assert_eq!(
+            calls.len(),
+            2,
+            "both real calls lift, receipts lift nothing: {calls:?}"
+        );
         assert_eq!(calls[0].name, "edit_file");
         assert_eq!(calls[0].input["file_path"], "util.py");
         assert_eq!(calls[0].input["edit_mode"]["search"], "min(xs)");
@@ -3263,7 +3503,10 @@ The bug has been fixed."#;
         assert!(parse_tool_calls("[docs/setup.md] has the details you need").is_empty());
         assert!(parse_tool_calls("[recall] she mentioned utils.py earlier").is_empty());
         // Opens like a call but never closes → no lift.
-        assert!(parse_tool_calls("[Action #2] edit_file({\n  \"file_path\": \"x.py\",\nand then some prose").is_empty());
+        assert!(parse_tool_calls(
+            "[Action #2] edit_file({\n  \"file_path\": \"x.py\",\nand then some prose"
+        )
+        .is_empty());
     }
 
     // what this catches: Atlas's EXACT live script idiom (glass-boxed

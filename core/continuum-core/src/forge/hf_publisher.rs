@@ -109,7 +109,8 @@ impl Publisher for HfPublisher {
     async fn publish(&self, req: &PublishRequest) -> Result<PublicationReceipt, PublishError> {
         // Stage into a unique temp dir; clean it up on EVERY path (success or
         // failure) so a failed publish never leaks a staging dir.
-        let staging = std::env::temp_dir().join(format!("continuum-publish-{}", uuid::Uuid::new_v4()));
+        let staging =
+            std::env::temp_dir().join(format!("continuum-publish-{}", uuid::Uuid::new_v4()));
         let result = self.publish_from_staging(req, &staging).await;
         let _ = tokio::fs::remove_dir_all(&staging).await;
         result
@@ -140,7 +141,12 @@ impl HfPublisher {
             .ok_or_else(|| fail("gene path has no file name".to_string()))?;
         tokio::fs::copy(&req.gene_path, staging.join(gguf_name))
             .await
-            .map_err(|e| fail(format!("could not stage gene {}: {e}", req.gene_path.display())))?;
+            .map_err(|e| {
+                fail(format!(
+                    "could not stage gene {}: {e}",
+                    req.gene_path.display()
+                ))
+            })?;
         tokio::fs::write(staging.join("README.md"), render_model_card(req))
             .await
             .map_err(|e| fail(format!("could not write model card: {e}")))?;
@@ -203,14 +209,20 @@ mod tests {
     #[test]
     fn model_card_has_frontmatter_tags_and_lift_provenance() {
         let card = render_model_card(&request());
-        assert!(card.starts_with("---\ntags:\n"), "opens with YAML frontmatter");
+        assert!(
+            card.starts_with("---\ntags:\n"),
+            "opens with YAML frontmatter"
+        );
         assert!(card.contains("- continuum:role=code"));
         assert!(card.contains("- continuum:base=devstral-small-2507-gguf"));
         assert!(card.contains("library_name: peft"));
         assert!(card.contains("base_model: unsloth/Devstral-Small-2507-GGUF"));
         assert!(card.contains("# devstral-code-asha"), "title = repo name");
         assert!(card.contains("trained by **Asha** (role: code)"));
-        assert!(card.contains("Held-out lift:** +5.10 points"), "lift provenance on the card");
+        assert!(
+            card.contains("Held-out lift:** +5.10 points"),
+            "lift provenance on the card"
+        );
         assert!(card.contains("hf download continuum-ai/devstral-code-asha adapters-abc123.gguf"));
     }
 
@@ -222,7 +234,14 @@ mod tests {
         let args = upload_args("continuum-ai/qwen3-coder-30b", "/tmp/stage");
         assert_eq!(
             args,
-            vec!["upload", "continuum-ai/qwen3-coder-30b", "/tmp/stage", ".", "--repo-type", "model"]
+            vec![
+                "upload",
+                "continuum-ai/qwen3-coder-30b",
+                "/tmp/stage",
+                ".",
+                "--repo-type",
+                "model"
+            ]
         );
     }
 

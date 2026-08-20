@@ -10,7 +10,7 @@
 //! Wired together by [`command_objects`], which the owning `ChatModule` calls from its
 //! [`commands()`](crate::runtime::ServiceModule::commands) so both verbs reach the
 //! kernel's typed object map (and thus `command_registry()`, the persona tool surface,
-//! the ACL, codegen, and `cu`).
+//! the ACL, codegen, and `uu`).
 
 use std::sync::Arc;
 
@@ -25,9 +25,7 @@ use send::ChatSend;
 
 /// The `chat/*` command objects over the module's shared late-bound executor slot.
 /// Called from [`ChatModule::commands`](crate::modules::chat::ChatModule::commands).
-pub fn command_objects(
-    executor_slot: Arc<LateBound<CommandExecutor>>,
-) -> Vec<Arc<dyn DynCommand>> {
+pub fn command_objects(executor_slot: Arc<LateBound<CommandExecutor>>) -> Vec<Arc<dyn DynCommand>> {
     vec![
         Arc::new(ChatPoll {
             executor_slot: executor_slot.clone(),

@@ -255,6 +255,31 @@ fn plan_to_fit(
 // weights (`ShareLane`) beats a node with more free bytes every time. `capacity::grid`'s
 // `GridPlacementPolicy` becomes a thin adapter over this once its `GridSnapshot` carries
 // each node's resident models (the integration slice) — NOT a third parallel allocator.
+//
+// ─── STATUS 2026-08-10: THE PARAGRAPH ABOVE IS A PLAN, NOT A DESCRIPTION ───────────
+//
+// Read it as intent. Neither seam is on a live path, and the wording above has now
+// misled two agents in a single day — once into nominating `capacity::grid` as the
+// surviving allocator, and once into building a pricing policy behind
+// `GridPlacementPolicy` because "AffinityFit uses it" implied traffic.
+//
+// Verified by both of us independently, today:
+//   * `GridPlacementPolicy` — zero non-test callers. The ONLY reference outside
+//     `capacity/grid.rs` is this comment. Its impls are exercised solely by the
+//     `GridScenario` sim in that same file, which is what makes them look alive.
+//   * `plan_grid_placement` (below) — zero non-test callers, despite its own doc
+//     calling it "THE grid admission planner".
+//
+// Note the trap in the sentence above: "becomes a thin adapter over this" DEMOTES
+// `GridPlacementPolicy` (the pronoun is `plan_grid_placement`), yet it scans as an
+// endorsement because it names `GridPlacementPolicy` last. If you are choosing a
+// survivor, do not read it as a vote.
+//
+// The seam that IS live is `modules::grid::router::GridRouter::route`, reached via
+// `GridInterceptor → try_route_remote`. Eligibility gating landed there in #2230;
+// ranking/pricing composes onto it AFTER the eligibility filter. Anything built
+// behind the two policy seams above is unreachable in production until something
+// calls them — see #2227 / task #68 for the cleanup decision.
 
 /// One node in the grid's live view: its physical ceiling + what it already serves +
 /// the network's `reachable` verdict THIS instant. An unreachable node is a memory, not
@@ -282,7 +307,10 @@ impl GridNode {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GridPlacement {
     /// Host on `node_id` via the model-aware per-node decision (share / spawn / cpu-spill).
-    Place { node_id: String, placement: Placement },
+    Place {
+        node_id: String,
+        placement: Placement,
+    },
     /// No node is reachable at all (a total partition with not even a local offer — a
     /// defensive case; the local node is normally always reachable). Never returned just
     /// because the grid is full: a full grid still returns the best node's `CpuSpill`
@@ -293,10 +321,10 @@ pub enum GridPlacement {
 /// Rank a per-node decision: cheapest/least-disruptive first.
 fn placement_rank(p: &Placement) -> u8 {
     match p {
-        Placement::ShareLane { .. } => 0,                          // weights already warm — no cold-load, no transfer
+        Placement::ShareLane { .. } => 0, // weights already warm — no cold-load, no transfer
         Placement::SpawnLane { reclaim } if reclaim.is_empty() => 1, // fits fresh, disturbs nothing
-        Placement::SpawnLane { .. } => 2,                          // fits only after tiering lower tiers down
-        Placement::CpuSpill { .. } => 3,                           // last resort — slow but never blocks
+        Placement::SpawnLane { .. } => 2, // fits only after tiering lower tiers down
+        Placement::CpuSpill { .. } => 3,  // last resort — slow but never blocks
     }
 }
 
@@ -343,7 +371,14 @@ mod tests {
     const KV_PER_TOKEN: u64 = 160 * 1024; // 160 KiB/token
     const COMPUTE: u64 = GIB; // ~1 GiB decode headroom
 
-    fn lane(id: &str, model: &str, slots: u32, window: u32, tier: DemandTier, pinned: bool) -> ResidentLane {
+    fn lane(
+        id: &str,
+        model: &str,
+        slots: u32,
+        window: u32,
+        tier: DemandTier,
+        pinned: bool,
+    ) -> ResidentLane {
         ResidentLane {
             lane_id: id.into(),
             base_model_id: model.into(),
@@ -385,14 +420,27 @@ mod tests {
 
         // A fresh copy (weights+KV+buffer ≈ 21.6 GiB) would NOT fit in the ~16.4 GiB free —
         // proving the incident. Sharing costs only the added KV (~6.6 GiB), which DOES fit.
-        assert!(d.footprint() > capacity - resident[0].footprint(), "a 2nd copy must not fit — else the scenario is toothless");
-        assert!(d.kv_bytes() <= capacity - resident[0].footprint(), "the shared slot must fit");
+        assert!(
+            d.footprint() > capacity - resident[0].footprint(),
+            "a 2nd copy must not fit — else the scenario is toothless"
+        );
+        assert!(
+            d.kv_bytes() <= capacity - resident[0].footprint(),
+            "the shared slot must fit"
+        );
 
         match plan_placement(capacity, &resident, &d) {
-            Placement::ShareLane { lane_id, add_slots, reclaim } => {
+            Placement::ShareLane {
+                lane_id,
+                add_slots,
+                reclaim,
+            } => {
                 assert_eq!(lane_id, "live");
                 assert_eq!(add_slots, 1);
-                assert!(reclaim.is_empty(), "personas are idle enough — no preemption needed");
+                assert!(
+                    reclaim.is_empty(),
+                    "personas are idle enough — no preemption needed"
+                );
             }
             other => panic!("same-base eval must SHARE the live lane, got {other:?}"),
         }
@@ -405,7 +453,10 @@ mod tests {
         let capacity = 64 * GIB;
         let resident = vec![lane("live", "devstral", 2, 8192, DemandTier::Live, true)];
         let d = demand("qwen-1.5b", 1, 8192, DemandTier::Eval);
-        assert_eq!(plan_placement(capacity, &resident, &d), Placement::SpawnLane { reclaim: vec![] });
+        assert_eq!(
+            plan_placement(capacity, &resident, &d),
+            Placement::SpawnLane { reclaim: vec![] }
+        );
     }
 
     // what this catches: SCENARIO C — a DIFFERENT base that doesn't fit alongside live serving
@@ -416,13 +467,24 @@ mod tests {
         let capacity = 40 * GIB;
         let resident = vec![
             lane("live", "devstral", 1, 16384, DemandTier::Live, true), // ~17.6 GiB, pinned
-            lane("dream", "devstral-dream", 1, 16384, DemandTier::Background, false), // ~17.6 GiB
+            lane(
+                "dream",
+                "devstral-dream",
+                1,
+                16384,
+                DemandTier::Background,
+                false,
+            ), // ~17.6 GiB
         ];
         // A fresh Live-tier lane that needs a full copy — only fits if the dream lane yields.
         let d = demand("qwen-coder-14b", 1, 16384, DemandTier::Live);
         match plan_placement(capacity, &resident, &d) {
             Placement::SpawnLane { reclaim } => {
-                assert_eq!(reclaim, vec!["dream".to_string()], "must tier down the Background lane, not the pinned Live lane");
+                assert_eq!(
+                    reclaim,
+                    vec!["dream".to_string()],
+                    "must tier down the Background lane, not the pinned Live lane"
+                );
             }
             other => panic!("expected SpawnLane preempting the dream lane, got {other:?}"),
         }
@@ -456,7 +518,10 @@ mod tests {
         d.isolate = true;
         match plan_placement(capacity, &resident, &d) {
             Placement::SpawnLane { reclaim } => {
-                assert!(reclaim.is_empty(), "plenty of room — no preemption to isolate");
+                assert!(
+                    reclaim.is_empty(),
+                    "plenty of room — no preemption to isolate"
+                );
             }
             other => panic!("isolated exam must get its OWN lane, got {other:?}"),
         }
@@ -475,7 +540,9 @@ mod tests {
         d.isolate = true;
         match plan_placement(capacity, &resident, &d) {
             Placement::ShareLane { lane_id, .. } => assert_eq!(lane_id, "live"),
-            other => panic!("under pressure the isolate demand must fall back to SHARE, got {other:?}"),
+            other => {
+                panic!("under pressure the isolate demand must fall back to SHARE, got {other:?}")
+            }
         }
     }
 
@@ -498,12 +565,21 @@ mod tests {
         let capacity = 22 * GIB; // fits a 1-slot copy (~15.6 GiB), not a 4-slot copy (~35 GiB)
         assert!(one_slot.footprint() <= capacity);
         assert!(d.footprint() > capacity);
-        assert!(matches!(plan_placement(capacity, &[], &d), Placement::CpuSpill { .. }));
+        assert!(matches!(
+            plan_placement(capacity, &[], &d),
+            Placement::CpuSpill { .. }
+        ));
     }
 
     // ---- grid scenarios: nodes coming online / going offline --------------------
 
-    fn node(id: &str, capacity_gib: u64, resident: Vec<ResidentLane>, reachable: bool, local: bool) -> GridNode {
+    fn node(
+        id: &str,
+        capacity_gib: u64,
+        resident: Vec<ResidentLane>,
+        reachable: bool,
+        local: bool,
+    ) -> GridNode {
         GridNode {
             node_id: id.into(),
             capacity: capacity_gib * GIB,
@@ -520,11 +596,27 @@ mod tests {
     #[test]
     fn affinity_routes_to_the_node_that_already_holds_the_weights() {
         let empty_big = node("big", 80, vec![], true, false); // huge + empty, but cold for devstral
-        let warm = node("warm", 40, vec![lane("warm-live", "devstral", 1, 8192, DemandTier::Live, true)], true, false);
+        let warm = node(
+            "warm",
+            40,
+            vec![lane(
+                "warm-live",
+                "devstral",
+                1,
+                8192,
+                DemandTier::Live,
+                true,
+            )],
+            true,
+            false,
+        );
         let d = demand("devstral", 1, 8192, DemandTier::Eval);
         match plan_grid_placement(&[empty_big, warm], &d) {
             GridPlacement::Place { node_id, placement } => {
-                assert_eq!(node_id, "warm", "must route to the node with devstral warm, not the emptier one");
+                assert_eq!(
+                    node_id, "warm",
+                    "must route to the node with devstral warm, not the emptier one"
+                );
                 assert!(matches!(placement, Placement::ShareLane { .. }));
             }
             other => panic!("expected affinity Place on warm, got {other:?}"),
@@ -537,14 +629,23 @@ mod tests {
     #[test]
     fn a_joined_node_absorbs_demand_the_local_node_cannot_fit() {
         // Local is nearly full with a pinned Live devstral lane; a fresh DIFFERENT base won't fit.
-        let local_full = node("local", 24, vec![lane("l", "devstral", 1, 20480, DemandTier::Live, true)], true, true);
+        let local_full = node(
+            "local",
+            24,
+            vec![lane("l", "devstral", 1, 20480, DemandTier::Live, true)],
+            true,
+            true,
+        );
         let d = demand("qwen-coder-14b", 1, 16384, DemandTier::Live);
 
         // Before the join: only the full local node → best it can do is CPU spill.
         match plan_grid_placement(std::slice::from_ref(&local_full), &d) {
             GridPlacement::Place { node_id, placement } => {
                 assert_eq!(node_id, "local");
-                assert!(matches!(placement, Placement::CpuSpill { .. }), "local can't GPU-host it");
+                assert!(
+                    matches!(placement, Placement::CpuSpill { .. }),
+                    "local can't GPU-host it"
+                );
             }
             other => panic!("expected local CpuSpill pre-join, got {other:?}"),
         }
@@ -566,12 +667,21 @@ mod tests {
     #[test]
     fn a_departed_node_is_not_an_offer_demand_fails_over() {
         // 'dead' has devstral warm (affinity) but is unreachable; 'live' is empty + reachable.
-        let dead = node("dead", 40, vec![lane("d", "devstral", 1, 8192, DemandTier::Live, true)], false, false);
+        let dead = node(
+            "dead",
+            40,
+            vec![lane("d", "devstral", 1, 8192, DemandTier::Live, true)],
+            false,
+            false,
+        );
         let live = node("live", 48, vec![], true, false);
         let d = demand("devstral", 1, 8192, DemandTier::Eval);
         match plan_grid_placement(&[dead, live], &d) {
             GridPlacement::Place { node_id, .. } => {
-                assert_eq!(node_id, "live", "must fail over to the reachable node, not the dead affinity node");
+                assert_eq!(
+                    node_id, "live",
+                    "must fail over to the reachable node, not the dead affinity node"
+                );
             }
             other => panic!("expected failover Place on live, got {other:?}"),
         }

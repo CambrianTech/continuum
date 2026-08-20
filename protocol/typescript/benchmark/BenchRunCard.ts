@@ -8,6 +8,15 @@
  */
 export type BenchRunCard = { run_id: string, 
 /**
+ * Instance under test ("sympy__sympy-24066") — from the result ledger's
+ * staged-checkout name (#329: the board names WHAT, not just who).
+ */
+instance?: string, 
+/**
+ * Attempt N of `max_attempts` — the N-chances counter, live per ledger write.
+ */
+attempt?: number, max_attempts?: number, 
+/**
  * Solver persona (from the result ledger; absent while attempt 1 is
  * still in flight and nothing has been written yet).
  */
@@ -16,7 +25,10 @@ solver?: string,
  * `resolved` | `failed` (loud infra marker, incl. #2180 stalls the
  * deadline caught) | `active` (artifact activity within the stall
  * window) | `quiet` (non-terminal AND silent past the window — the
- * shape the projection exists to make visible).
+ * shape the projection exists to make visible) | `ungraded` (a staged
+ * workspace holds a real diff that no grade has ever seen — durable
+ * work awaiting a verdict, NOT a stall; see
+ * [`scan_workspace_artifact_cards`]).
  */
 phase: string, 
 /**

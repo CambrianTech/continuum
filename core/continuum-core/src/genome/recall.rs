@@ -147,7 +147,10 @@ pub enum AcquireSource {
 /// bounded; defaults sum to 1.0).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/genome/RecallScore.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/RecallScore.ts"
+)]
 pub struct RecallScore {
     /// Cosine similarity between query embedding and artifact
     /// metadata embedding. Range [0.0, 1.0]; 1.0 = identical.
@@ -178,7 +181,10 @@ pub struct RecallScore {
 /// federation-scope plumbing through every caller.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/genome/RecallScope.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/RecallScope.ts"
+)]
 pub enum RecallScope {
     /// Never leave this machine. Fastest; may return a thinner
     /// RankedPool if local artifacts don't cover the query well.
@@ -259,7 +265,10 @@ pub enum TaskKind {
 /// can map a peer to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/genome/TrustClass.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/TrustClass.ts"
+)]
 pub enum TrustClass {
     /// The persona's own artifacts. Always full trust.
     Local,
@@ -280,7 +289,10 @@ pub enum TrustClass {
 /// context needed to debug.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/genome/RecallError.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/RecallError.ts"
+)]
 pub enum RecallError {
     /// The query's resource budget couldn't be satisfied by any
     /// combination of available artifacts.

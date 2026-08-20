@@ -8,11 +8,11 @@ export type AvatarPreference = {
 /**
  * Preferred art style (None = any)
  */
-style: AvatarStyle | null, 
+style?: AvatarStyle, 
 /**
  * Preferred specific model ID (highest priority if set)
  */
-model_id: string | null, 
+model_id?: string, 
 /**
  * Exclude these tags
  */

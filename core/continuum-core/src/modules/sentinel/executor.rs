@@ -1240,9 +1240,15 @@ mod tests {
             inputs: HashMap::new(),
         };
 
-        let result =
-            execute_pipeline_direct(&logs_dir, "test-par", pipeline, Some(&bus), Some(&registry), None)
-                .await;
+        let result = execute_pipeline_direct(
+            &logs_dir,
+            "test-par",
+            pipeline,
+            Some(&bus),
+            Some(&registry),
+            None,
+        )
+        .await;
 
         assert!(result.success);
         assert_eq!(result.steps_total, 3);
@@ -1288,9 +1294,15 @@ mod tests {
             inputs: HashMap::new(),
         };
 
-        let result =
-            execute_pipeline_direct(&logs_dir, "test-ew", pipeline, Some(&bus), Some(&registry), None)
-                .await;
+        let result = execute_pipeline_direct(
+            &logs_dir,
+            "test-ew",
+            pipeline,
+            Some(&bus),
+            Some(&registry),
+            None,
+        )
+        .await;
 
         assert!(result.success);
     }
@@ -1401,9 +1413,15 @@ mod tests {
             inputs: HashMap::new(),
         };
 
-        let result =
-            execute_pipeline_direct(&logs_dir, "test-fwd", pipeline, Some(&bus), Some(&registry), None)
-                .await;
+        let result = execute_pipeline_direct(
+            &logs_dir,
+            "test-fwd",
+            pipeline,
+            Some(&bus),
+            Some(&registry),
+            None,
+        )
+        .await;
 
         assert!(result.success);
         assert_eq!(result.steps_completed, 2);
@@ -1467,7 +1485,8 @@ mod tests {
         };
 
         let result =
-            execute_pipeline_direct(&logs_dir, "test-noreg", pipeline, Some(&bus), None, None).await;
+            execute_pipeline_direct(&logs_dir, "test-noreg", pipeline, Some(&bus), None, None)
+                .await;
 
         assert!(!result.success);
         assert!(result.error.as_ref().unwrap().contains("registry"));

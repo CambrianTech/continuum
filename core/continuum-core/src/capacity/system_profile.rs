@@ -121,6 +121,9 @@ impl SystemProfile {
             available_bytes: available,
             total_vram_bytes: total,
             perf_cores: self.perf_cores,
+            // Same operator headroom policy as every live serving-budget caller
+            // (serving_daemon): usable = live × the config fraction.
+            budget_fraction: crate::config_env::vram_headroom(),
         })
         .usable_bytes
     }
@@ -145,8 +148,8 @@ impl SystemProfile {
     /// can't see the GPU still yields a usable (CPU/degraded) profile, because the
     /// resolution never gates — it degrades.
     pub fn detect() -> Self {
-        use crate::inference_capability::hw_probe::probe_hardware_profile;
         use crate::governor::types::classify_hardware;
+        use crate::inference_capability::hw_probe::probe_hardware_profile;
 
         let hw_profile = probe_hardware_profile();
         let hardware = classify_hardware(&hw_profile);

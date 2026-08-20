@@ -255,7 +255,12 @@ async fn handle_ws_connection(
             match rail.recv().await {
                 Ok(d) => {
                     let frame = WsServerMessage::stream_delta(
-                        d.room_id, d.sender_id, d.stream_id, d.seq, d.token, d.done,
+                        d.room_id,
+                        d.sender_id,
+                        d.stream_id,
+                        d.seq,
+                        d.token,
+                        d.done,
                     );
                     match serde_json::to_string(&frame) {
                         Ok(json) => {
@@ -264,7 +269,12 @@ async fn handle_ws_connection(
                             }
                         }
                         Err(e) => {
-                            crate::log_error!("ipc", "ws", "failed to serialize stream delta: {}", e)
+                            crate::log_error!(
+                                "ipc",
+                                "ws",
+                                "failed to serialize stream delta: {}",
+                                e
+                            )
                         }
                     }
                 }
@@ -438,9 +448,17 @@ mod tests {
     fn parse_me_extracts_the_citizen_from_the_connect_query() {
         let me = uuid::Uuid::from_u128(0xa54a);
         let q = format!("core=ws%3A%2F%2Fx&me={me}&other=1");
-        assert_eq!(parse_me(Some(&q)), Some(me), "extracts me from a real query");
+        assert_eq!(
+            parse_me(Some(&q)),
+            Some(me),
+            "extracts me from a real query"
+        );
         assert_eq!(parse_me(Some("me=not-a-uuid")), None, "garbage uuid → None");
-        assert_eq!(parse_me(Some("core=x&room=general")), None, "no me param → None");
+        assert_eq!(
+            parse_me(Some("core=x&room=general")),
+            None,
+            "no me param → None"
+        );
         assert_eq!(parse_me(None), None, "no query → None");
     }
 

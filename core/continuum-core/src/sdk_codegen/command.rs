@@ -281,7 +281,11 @@ mod tests {
 
         let d = cmd.descriptor();
         assert_eq!(d.name, "test/echo-action");
-        assert_eq!(d.access_level, AccessLevel::AiSafe, "ACCESS default carried through");
+        assert_eq!(
+            d.access_level,
+            AccessLevel::AiSafe,
+            "ACCESS default carried through"
+        );
         assert_eq!(d.description, "Echo the input text back.");
         assert_eq!(d.wire, WireShape::Bare, "ActionCommand is Bare");
 
@@ -291,8 +295,15 @@ mod tests {
             .expect("invoke ok");
         match cr {
             CommandResult::Json(v) => {
-                assert_eq!(v, serde_json::json!({ "echoed": "hi" }), "bare output, no envelope");
-                assert!(v.get("success").is_none(), "Bare must not add a success field");
+                assert_eq!(
+                    v,
+                    serde_json::json!({ "echoed": "hi" }),
+                    "bare output, no envelope"
+                );
+                assert!(
+                    v.get("success").is_none(),
+                    "Bare must not add a success field"
+                );
             }
             other => panic!("expected Json, got {other:?}"),
         }
@@ -316,15 +327,25 @@ mod tests {
         );
 
         // Two invokes through the type-erased object hit the captured state.
-        let first = cmd.invoke(serde_json::json!({ "text": "a" }), None).await.unwrap();
-        let second = cmd.invoke(serde_json::json!({ "text": "a" }), None).await.unwrap();
+        let first = cmd
+            .invoke(serde_json::json!({ "text": "a" }), None)
+            .await
+            .unwrap();
+        let second = cmd
+            .invoke(serde_json::json!({ "text": "a" }), None)
+            .await
+            .unwrap();
         if let (CommandResult::Json(a), CommandResult::Json(b)) = (first, second) {
             assert_eq!(a["echoed"], "a#1");
             assert_eq!(b["echoed"], "a#2", "shared state advanced across calls");
         } else {
             panic!("expected Json results");
         }
-        assert_eq!(calls.load(Ordering::SeqCst), 2, "deps are owned by the object");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "deps are owned by the object"
+        );
     }
 
     // what this catches: bad params become a named `invalid` refusal at the
@@ -337,6 +358,9 @@ mod tests {
             .invoke(serde_json::json!({ "text": 123 }), None)
             .await
             .expect_err("type mismatch must refuse");
-        assert!(err.starts_with("test/echo-action: [invalid]"), "named + categorized: {err}");
+        assert!(
+            err.starts_with("test/echo-action: [invalid]"),
+            "named + categorized: {err}"
+        );
     }
 }

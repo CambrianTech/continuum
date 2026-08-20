@@ -241,7 +241,7 @@ tasks (SWE-style) — which is the paper's cleanest possible figure.
 - **Claude Code integration:** frontier agents should DELEGATE repo-work to
   resident personas instead of spawning fresh context-blind subagents —
   "you'd call on personas over your agents if they knew the ropes." The
-  seam already exists (airc msg / cu commands / cards with receipts); the
+  seam already exists (airc msg / uu commands / cards with receipts); the
   integration is a subagent-shaped adapter: Task(persona) routes to the
   room, acceptance = receipts. Global adoption of repo layers makes
   "collaborative with brilliance" the default state of any codebase.

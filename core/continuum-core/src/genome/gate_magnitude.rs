@@ -77,8 +77,8 @@ pub fn locate_gate_magnitudes<R: Read + Seek>(
         let router = ct
             .tensor(reader, &name, &Device::Cpu)?
             .dequantize(&Device::Cpu)?; // [n_experts, hidden]
-        // Clamp to the layer's registered expert count so a prior can never key an expert the
-        // splitter didn't page.
+                                        // Clamp to the layer's registered expert count so a prior can never key an expert the
+                                        // splitter didn't page.
         for (e, mag) in per_expert_row_norms(&router)?
             .into_iter()
             .take(set.n_experts as usize)
@@ -112,8 +112,16 @@ mod tests {
         let t = Tensor::from_vec(vec![3.0f32, 4.0, 6.0, 8.0], (2, 2), &Device::Cpu).unwrap();
         let norms = per_expert_row_norms(&t).unwrap();
         assert_eq!(norms.len(), 2);
-        assert!((norms[0] - 5.0).abs() < 1e-5, "row [3,4] L2 = 5, got {}", norms[0]);
-        assert!((norms[1] - 10.0).abs() < 1e-5, "row [6,8] L2 = 10, got {}", norms[1]);
+        assert!(
+            (norms[0] - 5.0).abs() < 1e-5,
+            "row [3,4] L2 = 5, got {}",
+            norms[0]
+        );
+        assert!(
+            (norms[1] - 10.0).abs() < 1e-5,
+            "row [6,8] L2 = 10, got {}",
+            norms[1]
+        );
     }
 
     // what this catches: a higher-weight expert gets a strictly higher prior — the ORDERING
@@ -123,7 +131,10 @@ mod tests {
     fn bigger_router_row_yields_a_higher_prior() {
         let t = Tensor::from_vec(vec![1.0f32, 0.0, 0.0, 5.0], (2, 2), &Device::Cpu).unwrap();
         let norms = per_expert_row_norms(&t).unwrap();
-        assert!(norms[1] > norms[0], "the 5-weight expert must out-rank the 1-weight one");
+        assert!(
+            norms[1] > norms[0],
+            "the 5-weight expert must out-rank the 1-weight one"
+        );
     }
 
     // Real-GGUF validation — reads the on-disk Qwen3-Coder-30B-A3B router tensors and checks the
@@ -145,13 +156,28 @@ mod tests {
 
         let mags = locate_gate_magnitudes(&ct, &mut reader, &arch).expect("gate magnitudes");
         assert!(!mags.is_empty(), "MoE model must yield priors");
-        assert!(mags.values().all(|m| m.is_finite() && *m >= 0.0), "all norms finite ≥ 0");
+        assert!(
+            mags.values().all(|m| m.is_finite() && *m >= 0.0),
+            "all norms finite ≥ 0"
+        );
         // Layer 0 has one prior per expert.
-        let layer0: Vec<_> = (0..n_experts).filter(|e| mags.contains_key(&(0, *e))).collect();
-        assert_eq!(layer0.len() as u32, n_experts, "one prior per expert in layer 0");
+        let layer0: Vec<_> = (0..n_experts)
+            .filter(|e| mags.contains_key(&(0, *e)))
+            .collect();
+        assert_eq!(
+            layer0.len() as u32,
+            n_experts,
+            "one prior per expert in layer 0"
+        );
         // The router is not degenerate — experts differ in baked-in preference.
         let first = mags[&(0, 0)];
-        assert!(mags.iter().any(|((_, _), m)| (*m - first).abs() > 1e-6), "experts differ");
-        eprintln!("qwen3-coder: {} (layer,expert) priors across MoE layers", mags.len());
+        assert!(
+            mags.iter().any(|((_, _), m)| (*m - first).abs() > 1e-6),
+            "experts differ"
+        );
+        eprintln!(
+            "qwen3-coder: {} (layer,expert) priors across MoE layers",
+            mags.len()
+        );
     }
 }

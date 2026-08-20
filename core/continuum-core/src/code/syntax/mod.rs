@@ -162,7 +162,10 @@ mod tests {
     fn validator_resolves_by_extension_and_stays_silent_otherwise() {
         assert!(validator_for(Path::new("a/b/c.py")).is_some());
         assert!(validator_for(Path::new("stubs.pyi")).is_some());
-        assert!(validator_for(Path::new("main.rs")).is_some(), "this substrate is WRITTEN in Rust — it must gate its own language");
+        assert!(
+            validator_for(Path::new("main.rs")).is_some(),
+            "this substrate is WRITTEN in Rust — it must gate its own language"
+        );
         assert!(validator_for(Path::new("README.md")).is_none());
         assert!(validator_for(Path::new("no_extension")).is_none());
     }

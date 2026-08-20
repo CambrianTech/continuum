@@ -14,7 +14,10 @@ use super::{fine_tuning_error_kind, JobLookupParams};
 /// `status`; `success=false` carries `error` + an `errorKind` slug (`UnknownHandle`
 /// when no adapter owns the handle's provider, else the adapter's error kind).
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/genome/JobStatusOutcome.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/JobStatusOutcome.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct JobStatusOutcome {
     pub success: bool,

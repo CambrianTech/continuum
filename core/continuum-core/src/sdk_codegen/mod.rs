@@ -724,10 +724,9 @@ pub fn command_registry() -> Vec<CommandDescriptor> {
     static REGISTRY: std::sync::OnceLock<Vec<CommandDescriptor>> = std::sync::OnceLock::new();
     REGISTRY
         .get_or_init(|| {
-            let mut descriptors: Vec<CommandDescriptor> =
-                inventory::iter::<CommandRegistration>()
-                    .map(|reg| (reg.descriptor_fn)())
-                    .collect();
+            let mut descriptors: Vec<CommandDescriptor> = inventory::iter::<CommandRegistration>()
+                .map(|reg| (reg.descriptor_fn)())
+                .collect();
             descriptors.sort_by(|a, b| a.name.cmp(b.name));
             // Hard-fail on a duplicate command NAME. The "no central list" design
             // removes the human backstop that would otherwise catch a collision, so
@@ -744,6 +743,22 @@ pub fn command_registry() -> Vec<CommandDescriptor> {
             descriptors
         })
         .clone()
+}
+
+/// Is `name` declared in the descriptor registry?
+///
+/// The half of a command's declaration that codegen, the ACL, `commands/list` and the
+/// persona tool surface all read. `ModuleRegistry::register` asks this of every
+/// constructor a module contributes, so a command that declared only one half of its
+/// (descriptor, constructor) pair fails LOUD at boot instead of routing invisibly.
+///
+/// `command_registry()` sorts by name and panics on duplicates, so a binary search is
+/// exact — and it reads the SAME list every other consumer reads, which is the point:
+/// this must never become a second opinion about what commands exist.
+pub fn descriptor_exists(name: &str) -> bool {
+    command_registry()
+        .binary_search_by(|d| d.name.cmp(name))
+        .is_ok()
 }
 
 // No demo/fixture commands: the generator is validated against the REAL
@@ -1017,7 +1032,9 @@ mod tests {
             .filter(|d| !d.wire.is_enveloped())
             .collect();
         assert!(
-            bare_and_provided.iter().any(|d| d.wire == WireShape::Provided)
+            bare_and_provided
+                .iter()
+                .any(|d| d.wire == WireShape::Provided)
                 && bare_and_provided.iter().any(|d| d.wire == WireShape::Bare),
             "the sampling has both a Bare and a Provided command"
         );
@@ -1030,8 +1047,7 @@ mod tests {
             "no envelope import when nothing is Enveloped:\n{out}"
         );
         assert!(
-            !out.contains("params: CommandRequest<")
-                && !out.contains("result: CommandResponse<"),
+            !out.contains("params: CommandRequest<") && !out.contains("result: CommandResponse<"),
             "no envelope wrapping in the map entries when nothing is Enveloped:\n{out}"
         );
     }
@@ -1048,7 +1064,10 @@ mod tests {
         );
         let mut sorted = names.clone();
         sorted.sort();
-        assert_eq!(names, sorted, "registry sorted by name (deterministic output)");
+        assert_eq!(
+            names, sorted,
+            "registry sorted by name (deterministic output)"
+        );
     }
 
     // what this catches: a real command round-trips to a descriptor at the type

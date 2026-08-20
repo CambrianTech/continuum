@@ -63,17 +63,9 @@ pub(super) fn tail_to_tokens(s: &str, budget_tokens: usize) -> String {
 /// geometry against known participant names, never content NLP
 /// ([[no-hardcoded-heuristics-to-steer-cognition]] — this renders a fact visible,
 /// it steers nothing).
-pub(super) fn turn_message_line(turn: &BurstTurn) -> String {
-    if turn.is_self || turn.author.is_empty() {
-        turn.content.clone()
-    } else {
-        format!("{}: {}", turn.author, turn.content)
-    }
-}
-
-/// [`turn_message_line`] with addressee annotation for peer turns. `participants`
-/// is every display name known in the window (peers + self); `self_name` is THIS
-/// persona's name, rendered as "you" so a directed ask reads as directed.
+/// `participants` is every display name known in the window (peers + self);
+/// `self_name` is THIS persona's name, rendered as "you" so a directed ask reads
+/// as directed.
 pub(super) fn turn_message_line_addressed(
     turn: &BurstTurn,
     participants: &[String],
@@ -121,57 +113,99 @@ pub(super) fn turn_message_line_addressed(
 /// ([[no-hardcoded-heuristics-to-steer-cognition]]).
 pub(super) const NEAR_DUP_JACCARD: f64 = 0.6;
 
-/// Minimum run length (consecutive near-identical PAIRS, so `3` = four messages
-/// in a row) before the repetition fact renders. Same calibration: the longest
-/// observed live runs were 36 and 80 messages; under healthy flow three
-/// consecutive ≥0.6 pairs is vanishingly rare. Evidence-scaled: below this, say
-/// nothing.
-const NEAR_DUP_MIN_RUN: usize = 3;
+/// Minimum CLUSTER size — how many of her own visible messages must be mutually
+/// near-identical (≥ [`NEAR_DUP_JACCARD`]) before the repetition fact renders.
+/// Counted anywhere in the window, at any period, NOT as a consecutive run: live
+/// loops cycle 2–3 templates, so a trailing-run rule went blind to exactly the
+/// loops it was built for (see [`own_repetition_fact`]). Same calibration corpus:
+/// the longest observed live loops were 36 and 80 messages; under healthy flow
+/// three mutually ≥0.6 messages is vanishingly rare. Evidence-scaled: below this,
+/// say nothing.
+const NEAR_DUP_MIN_CLUSTER: usize = 3;
 
 /// How many of her own recent utterances the spoken ring retains — the
-/// repetition detector's self-history window. Sized past NEAR_DUP_MIN_RUN
+/// repetition detector's self-history window. Sized past NEAR_DUP_MIN_CLUSTER
 /// with slack for interleaved non-loop turns; utterances are short-lived
 /// evidence, not memory (the hippocampus owns memory).
 const OWN_SPEECH_RING: usize = 8;
 
-/// Process-global per-persona ring of recent OWN utterances, keyed by the
-/// canonical PeerId (persona_id == peer_id post-collapse). Written at the say
-/// seam (service_loop, after a successful publish — only REAL utterances),
-/// read by the deliberation faculty when rendering the repetition fact. Same
+/// Process-global ring of recent OWN utterances, keyed by (canonical PeerId,
+/// ROOM) — persona_id == peer_id post-collapse. Written at the say seam
+/// (service_loop, after a successful publish — only REAL utterances), read by
+/// the deliberation faculty when rendering the repetition fact. Same
 /// process-global registry pattern as `channel_substrate` — the seam between
 /// the speaking path and the perceiving path.
-fn own_speech_rings(
-) -> &'static std::sync::Mutex<std::collections::HashMap<crate::identity::PeerId, std::collections::VecDeque<String>>> {
+///
+/// The ROOM half of the key is load-bearing, and its absence was a live defect
+/// (glass-boxed 2026-08-14): personas are MULTI-room citizens, so a ring keyed
+/// by peer alone mixes what she said in room A into the repetition fact
+/// rendered for room B. Measured specimen — a citizen dispatched into a
+/// brand-new benchmark room, where she had said NOTHING, was told on her first
+/// turn there: "[repetition] 4 of your recent messages were nearly identical —
+/// you're circling … silence (PASS) is the honest response." Those four
+/// utterances were spoken in #academy. A fresh room must be a fresh start; the
+/// brick's own wording is room-scoped ("restating what you've ALREADY SAID adds
+/// nothing" — to THIS conversation), and its room-side sibling
+/// `room_speech_rings` has always keyed this way. The say path was already
+/// room-correct (`say_in(turn_room, …)`, "never her ambient default, or she
+/// answers one room's question to a different audience"); only the ring was
+/// blind.
+fn own_speech_rings() -> &'static std::sync::Mutex<
+    std::collections::HashMap<
+        (crate::identity::PeerId, uuid::Uuid),
+        std::collections::VecDeque<String>,
+    >,
+> {
     static RINGS: std::sync::OnceLock<
         std::sync::Mutex<
-            std::collections::HashMap<crate::identity::PeerId, std::collections::VecDeque<String>>,
+            std::collections::HashMap<
+                (crate::identity::PeerId, uuid::Uuid),
+                std::collections::VecDeque<String>,
+            >,
         >,
     > = std::sync::OnceLock::new();
     RINGS.get_or_init(Default::default)
 }
 
-/// Record one real spoken utterance (call ONLY after the publish succeeded —
-/// an utterance that never reached the room is not self-history).
-pub fn record_own_speech(peer: crate::identity::PeerId, text: &str) {
+/// Record one real spoken utterance into the ring for the room it was spoken
+/// INTO (call ONLY after the publish succeeded — an utterance that never
+/// reached the room is not self-history).
+pub fn record_own_speech(peer: crate::identity::PeerId, room: uuid::Uuid, text: &str) {
     if text.trim().is_empty() {
         return;
     }
     let mut rings = own_speech_rings().lock().unwrap();
-    let ring = rings.entry(peer).or_default();
+    let ring = rings.entry((peer, room)).or_default();
     ring.push_back(text.to_string());
     while ring.len() > OWN_SPEECH_RING {
         ring.pop_front();
     }
 }
 
-/// Her recent own utterances, oldest-first (empty if she has not spoken).
-pub fn recent_own_speech(peer: crate::identity::PeerId) -> Vec<String> {
+/// Her recent own utterances IN THIS ROOM, oldest-first (empty if she has not
+/// spoken here — which is the correct reading for a room she just entered).
+pub fn recent_own_speech(peer: crate::identity::PeerId, room: uuid::Uuid) -> Vec<String> {
     own_speech_rings()
         .lock()
         .unwrap()
-        .get(&peer)
+        .get(&(peer, room))
         .map(|r| r.iter().cloned().collect())
         .unwrap_or_default()
+}
+
+/// Every (room, utterances) pair she currently holds — the persistence seam
+/// only. Cognition never reads across rooms; `save_volatile` does, because the
+/// volatile tier must restore each room's ring to the room it belongs to.
+pub fn own_speech_by_room(
+    peer: crate::identity::PeerId,
+) -> Vec<(uuid::Uuid, Vec<String>)> {
+    own_speech_rings()
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|((p, _), _)| *p == peer)
+        .map(|((_, room), ring)| (*room, ring.iter().cloned().collect()))
+        .collect()
 }
 
 /// How many recent ROOM messages the per-room ring retains. Sized to hold a
@@ -189,12 +223,11 @@ const ROOM_SPEECH_RING: usize = 16;
 /// across an entire live chorus). Written ONCE per message at the airc
 /// inbound-attach seam (the single point every room message crosses), read
 /// by the deliberation faculty per tick.
-fn room_speech_rings(
-) -> &'static std::sync::Mutex<std::collections::HashMap<uuid::Uuid, std::collections::VecDeque<String>>> {
+fn room_speech_rings() -> &'static std::sync::Mutex<
+    std::collections::HashMap<uuid::Uuid, std::collections::VecDeque<String>>,
+> {
     static RINGS: std::sync::OnceLock<
-        std::sync::Mutex<
-            std::collections::HashMap<uuid::Uuid, std::collections::VecDeque<String>>,
-        >,
+        std::sync::Mutex<std::collections::HashMap<uuid::Uuid, std::collections::VecDeque<String>>>,
     > = std::sync::OnceLock::new();
     RINGS.get_or_init(Default::default)
 }
@@ -247,8 +280,10 @@ pub(super) fn jaccard(a: &str, b: &str) -> f64 {
 
 /// The persona's OWN-SPEECH repetition fact for this tick, if her trailing run
 /// of own turns is a loop: `Some("[repetition] your last N messages were nearly
-/// identical")` when the last [`NEAR_DUP_MIN_RUN`]+ consecutive own turns are
-/// pairwise ≥ [`NEAR_DUP_JACCARD`] similar. Pure fact, no imperative — perception
+/// identical")` when [`NEAR_DUP_MIN_CLUSTER`]+ of her own visible turns are
+/// mutually ≥ [`NEAR_DUP_JACCARD`] similar — a CLUSTER at any period, not a
+/// trailing run (see the detection comment below, and the live deploy that proved
+/// the run form blind). Pure fact, no imperative — perception
 /// renders what happened; it never steers what she says next.
 ///
 /// Why (task #134, glass-boxed 2026-07-11): Atlas looped stage-direction
@@ -305,7 +340,7 @@ pub(super) fn own_repetition_fact(turns: &[BurstTurn], spoken: &[String]) -> Opt
     // ALREADY has (her Silence Option prompt: "Choose PASS when … nothing new has
     // been raised"), surfaced at the moment repetition is structurally detected. The
     // fork (add something genuinely new, OR go silent) is hers; this only names it.
-    (best >= 3).then(|| {
+    (best >= NEAR_DUP_MIN_CLUSTER).then(|| {
         format!(
             "[repetition] {best} of your recent messages were nearly identical — you're \
              circling, and restating what you've already said adds nothing. If you have \
@@ -413,7 +448,7 @@ pub(super) fn template_loop_fact(turns: &[BurstTurn], spoken: &[String]) -> Opti
             .count();
         best = best.max(dups + 1);
     }
-    (best >= 3).then(|| {
+    (best >= NEAR_DUP_MIN_CLUSTER).then(|| {
         format!(
             "[template-loop] {best} of your recent messages reuse the same template with \
              the topic swapped — a new subject inside the same scaffold is still circling, \
@@ -636,8 +671,8 @@ fn matches_name_at(line: &str, pos: usize, name: &str) -> bool {
         .is_some_and(|s| s.eq_ignore_ascii_case(name))
 }
 
-/// Find WHO a message's first line addresses, by vocative GEOMETRY only — never
-/// content interpretation. Two shapes, matched against known participant names:
+/// Find WHO a message addresses, by vocative GEOMETRY only — never content
+/// interpretation. Two shapes, matched against known participant names:
 ///
 /// - **Leading vocative**: `Anwen, …` / `Atlas: …` / `Asha — …` / `@Anwen …`
 /// - **Greeting vocative** in the first line: `Sure, Anwen. Could you…` /
@@ -647,11 +682,8 @@ fn matches_name_at(line: &str, pos: usize, name: &str) -> bool {
 ///
 /// A bare mention ("I agree with Anwen's plan") matches neither shape and stays
 /// unannotated. Leading beats greeting; among greetings the earliest wins.
-pub(super) fn vocative_addressee<'a>(content: &str, participants: &'a [String]) -> Option<&'a str> {
-    vocative_addressees(content, participants).into_iter().next()
-}
-
-/// Every addressee the message's vocative geometry names, in discovery order,
+///
+/// Returns every addressee the geometry names, in discovery order,
 /// deduped, capped at 3. The LEADING form is scanned on every line (live
 /// coordination messages address several teammates on separate lines —
 /// "Atlas, please test… / Asha, could you…" — #134 specimen 2 was missed by
@@ -677,7 +709,11 @@ pub(super) fn vocative_addressees<'a>(content: &str, participants: &'a [String])
             if name.is_empty() {
                 continue;
             }
-            let (start, at_form) = if line.starts_with('@') { (1, true) } else { (0, false) };
+            let (start, at_form) = if line.starts_with('@') {
+                (1, true)
+            } else {
+                (0, false)
+            };
             if matches_name_at(line, start, name) {
                 let after = line[start + name.len()..].trim_start();
                 let boundary = after
@@ -741,6 +777,59 @@ pub(super) fn vocative_addressees<'a>(content: &str, participants: &'a [String])
 mod tests {
     use super::*;
 
+    // what this catches: a citizen entering a room she has never spoken in must read
+    // as SILENT there, no matter how much she has said elsewhere. Regression for the
+    // 2026-08-14 live specimen — dispatched into a fresh benchmark room, her first
+    // turn carried "[repetition] 4 of your recent messages were nearly identical …
+    // silence (PASS) is the honest response" about utterances spoken in #academy.
+    // The ring was keyed by peer alone, so a multi-room citizen carried one room's
+    // withdrawal pressure into every other room. Keyed by (peer, room), a fresh room
+    // is a fresh start — and her OTHER room's history stays intact, so this can never
+    // be "fixed" by simply clearing the ring on room change.
+    #[test]
+    fn own_speech_is_scoped_to_the_room_it_was_spoken_in() {
+        let peer = crate::identity::PeerId::from_uuid(uuid::Uuid::new_v4());
+        let academy = uuid::Uuid::new_v4();
+        let bench = uuid::Uuid::new_v4();
+
+        for _ in 0..4 {
+            record_own_speech(peer, academy, "I'll remain silent while monitoring.");
+        }
+
+        // Where she spoke, she sees it.
+        assert_eq!(
+            recent_own_speech(peer, academy).len(),
+            4,
+            "her own history in the room she spoke in must survive"
+        );
+
+        // The fresh room she was just dispatched into: nothing to be repetitive about.
+        assert!(
+            recent_own_speech(peer, bench).is_empty(),
+            "a room she has not spoken in must read as silent — this is the bug"
+        );
+
+        // And a peer who never spoke anywhere is unaffected by hers.
+        let other = crate::identity::PeerId::from_uuid(uuid::Uuid::new_v4());
+        assert!(recent_own_speech(other, academy).is_empty());
+
+        // The persistence seam sees every room, so a restart restores each ring to
+        // the room it belongs to rather than collapsing them into one.
+        record_own_speech(peer, bench, "Let me claim that card.");
+        let mut by_room = own_speech_by_room(peer);
+        by_room.sort_by_key(|(room, _)| *room);
+        let mut expected = vec![(academy, 4usize), (bench, 1usize)];
+        expected.sort_by_key(|(room, _)| *room);
+        assert_eq!(
+            by_room
+                .iter()
+                .map(|(room, u)| (*room, u.len()))
+                .collect::<Vec<_>>(),
+            expected,
+            "persistence must carry the room key, not a flattened ring"
+        );
+    }
+
     // what this catches: the tail-trim must keep the LATEST lines (drop the head),
     // start on a clean line boundary (never mid-line), and never split a UTF-8 char.
     // A regression that trimmed the tail instead of the head would drop the turn's
@@ -799,8 +888,18 @@ mod tests {
         );
 
         let healthy = vec![
-            BurstTurn::attributed(true, SPEAKER_TESTER, "let me check the workspace state", None),
-            BurstTurn::attributed(true, SPEAKER_TESTER, "the tokenizer needs punctuation tests", None),
+            BurstTurn::attributed(
+                true,
+                SPEAKER_TESTER,
+                "let me check the workspace state",
+                None,
+            ),
+            BurstTurn::attributed(
+                true,
+                SPEAKER_TESTER,
+                "the tokenizer needs punctuation tests",
+                None,
+            ),
             BurstTurn::attributed(true, SPEAKER_TESTER, "I'll claim the README step", None),
         ];
         assert_eq!(
@@ -834,9 +933,24 @@ mod tests {
             )
         };
         let looping = vec![
-            variant("System Security and Privacy", "Security Protocols", "Privacy Considerations", "Vulnerability Management"),
-            variant("Project Documentation", "Documentation Overview", "Best Practices", "Templates and Examples"),
-            variant("User Interface and Experience Design", "UI/UX Principles", "Feedback and Iteration", "Accessibility Considerations"),
+            variant(
+                "System Security and Privacy",
+                "Security Protocols",
+                "Privacy Considerations",
+                "Vulnerability Management",
+            ),
+            variant(
+                "Project Documentation",
+                "Documentation Overview",
+                "Best Practices",
+                "Templates and Examples",
+            ),
+            variant(
+                "User Interface and Experience Design",
+                "UI/UX Principles",
+                "Feedback and Iteration",
+                "Accessibility Considerations",
+            ),
         ];
         let fact = template_loop_fact(&[], &looping)
             .expect("three topic-swapped copies of one scaffold are a structural fact");
@@ -901,7 +1015,12 @@ mod tests {
 
         // Short acknowledgements matching short acknowledgements are
         // conversation, not copying (token floor).
-        let acks = vec![BurstTurn::attributed(false, SPEAKER_LEAD, "thanks, all good!", None)];
+        let acks = vec![BurstTurn::attributed(
+            false,
+            SPEAKER_LEAD,
+            "thanks, all good!",
+            None,
+        )];
         assert_eq!(peer_echo_fact(&acks, Some("thanks, all good!")), None);
 
         // Her own turns are the self-detector's job, never an echo of a peer.
@@ -933,7 +1052,10 @@ mod tests {
                       macOS install modules. First, review existing manifests and related \
                       documentation to understand the acceptance criteria for those checks.";
         let fact = draft_peer_echo(mirror, &turns).expect("a mirrored peer plan is a fact");
-        assert!(fact.contains(SPEAKER_REVIEWER), "names the echoed peer: {fact}");
+        assert!(
+            fact.contains(SPEAKER_REVIEWER),
+            "names the echoed peer: {fact}"
+        );
         assert!(fact.starts_with("[echo]"));
 
         // A genuinely different contribution (division of labor) → inert.
@@ -967,7 +1089,10 @@ mod tests {
             BurstTurn::attributed(false, SPEAKER_LEAD, settled, None),
         ];
         let fact = inbound_restates_fact(&turns, &[], &[]).expect("a restated inbound is a fact");
-        assert!(fact.contains(SPEAKER_LEAD), "names the restating peer: {fact}");
+        assert!(
+            fact.contains(SPEAKER_LEAD),
+            "names the restating peer: {fact}"
+        );
         assert!(fact.starts_with("[settled]"));
 
         // Peer restates what SHE already said (own-speech ring) → fires too.
@@ -1031,7 +1156,10 @@ mod tests {
         ];
         let stops = peer_stop_sequences(&turns);
         assert_eq!(stops, vec!["\nAnwen:".to_string(), "\nAtlas:".to_string()]);
-        assert!(!stops.iter().any(|s| s.contains("Casper")), "own name is never a stop");
+        assert!(
+            !stops.iter().any(|s| s.contains("Casper")),
+            "own name is never a stop"
+        );
     }
 
     // what this catches: #158 — the reserved-marker stops that cut receipt/recall
@@ -1042,11 +1170,23 @@ mod tests {
     #[test]
     fn reserved_marker_stops_cover_action_and_recall_line_anchored() {
         let stops = reserved_marker_stop_sequences();
-        assert!(stops.contains(&"\n[action".to_string()), "cuts fabricated [action #n] receipts");
-        assert!(stops.contains(&"\n[recall]".to_string()), "cuts fabricated [recall] blocks");
-        assert!(stops.contains(&"\nI ran ".to_string()), "cuts the unbracketed 'I ran …' receipt opener");
+        assert!(
+            stops.contains(&"\n[action".to_string()),
+            "cuts fabricated [action #n] receipts"
+        );
+        assert!(
+            stops.contains(&"\n[recall]".to_string()),
+            "cuts fabricated [recall] blocks"
+        );
+        assert!(
+            stops.contains(&"\nI ran ".to_string()),
+            "cuts the unbracketed 'I ran …' receipt opener"
+        );
         // every marker is line-anchored — never fires on a passing mid-line mention
-        assert!(stops.iter().all(|s| s.starts_with('\n')), "line-anchored, not mid-sentence");
+        assert!(
+            stops.iter().all(|s| s.starts_with('\n')),
+            "line-anchored, not mid-sentence"
+        );
     }
 
     // what this catches: the #148 starvation regression — under small serving
@@ -1071,6 +1211,14 @@ mod tests {
         assert_eq!(own_repetition_fact(&[], &healthy), None);
     }
 
+    // what this catches: the self-repetition detector that tells a looping citizen it is
+    // looping. Atlas's live loop (byte-identical repeats with peer turns between) must render
+    // a "[repetition] N of your recent messages were nearly identical" fact AND surface the
+    // silence/PASS affordance — the fact fired 3x live while the model repeated 20x anyway,
+    // so naming PASS at the detected moment is the lever. Also pins the period-2 blind spot:
+    // two alternating templates whose CONSECUTIVE pairs look dissimilar.
+    // (Was missing #[test] and had never run — the loop detector was unguarded.)
+    #[test]
     fn own_speech_loop_renders_a_repetition_fact() {
         let own = |c: &str| BurstTurn::attributed(true, SPEAKER_TESTER, c, None);
         let peer = |c: &str| BurstTurn::attributed(false, SPEAKER_LEAD, c, None);
@@ -1093,17 +1241,26 @@ mod tests {
         // Connects the loop to her existing silence affordance (the fact fired ×3 live
         // and the model repeated 20× anyway — surfacing PASS at the detected moment is
         // the doctrine-safe lever, never an output gate).
-        assert!(fact.contains("silence (PASS)"), "surfaces the PASS affordance: {fact}");
+        assert!(
+            fact.contains("silence (PASS)"),
+            "surfaces the PASS affordance: {fact}"
+        );
 
         // PERIOD-2 CYCLE (the live blind spot that forced cluster detection):
         // two templates alternating — consecutive pairs are dissimilar, but the
         // repetition is massive at lag 2 and must fire.
         let cycling = vec![
-            own("Thank you both for your commitment and enthusiasm! Let's keep each other updated."),
+            own(
+                "Thank you both for your commitment and enthusiasm! Let's keep each other updated.",
+            ),
             own("Got it! Let's proceed with our tasks and keep each other updated on progress."),
-            own("Thank you both for your commitment and enthusiasm! Let's keep each other updated."),
+            own(
+                "Thank you both for your commitment and enthusiasm! Let's keep each other updated.",
+            ),
             own("Got it! Let's proceed with our tasks and keep each other updated on progress."),
-            own("Thank you both for your commitment and enthusiasm! Let's keep each other updated."),
+            own(
+                "Thank you both for your commitment and enthusiasm! Let's keep each other updated.",
+            ),
         ];
         let fact = own_repetition_fact(&cycling, &[]).expect("a period-2 cycle is a loop");
         assert!(
@@ -1129,9 +1286,20 @@ mod tests {
             own("I'll create a simple text file.\n[writing test files]"),
             own("I'll create a simple text file.\n[writing test files]"),
         ];
-        assert_eq!(
-            own_repetition_fact(&whole_window, &[]).as_deref(),
-            Some("[repetition] 3 of your recent messages were nearly identical")
+        // Assert the PREFIX and the affordance, not the exact sentence. The fact now also
+        // carries "you're circling … silence (PASS) is the honest response" — the same
+        // affordance this test already requires twenty lines above. Pinning the full string
+        // here made the assertion a hostage to wording, and since the test never ran (missing
+        // #[test]) the expectation silently rotted while the message deliberately improved.
+        // The count and the PASS lever are the behaviour; the prose around them is not.
+        let whole = own_repetition_fact(&whole_window, &[]).expect("3 identical → a fact");
+        assert!(
+            whole.starts_with("[repetition] 3 of your recent messages were nearly identical"),
+            "states the count: {whole}"
+        );
+        assert!(
+            whole.contains("silence (PASS)"),
+            "surfaces the PASS affordance in the whole-window arm too: {whole}"
         );
 
         // TWO near-identical messages (one dup each) → below the bar; a pair
@@ -1155,9 +1323,13 @@ mod tests {
             own("I'll create a simple text file.\n[writing test files]"),
             own("Files created — here are the wordstats results for all three."),
         ];
-        assert_eq!(
-            own_repetition_fact(&recovered, &[]).as_deref(),
-            Some("[repetition] 4 of your recent messages were nearly identical")
+        // Prefix, not full string — same reason as the whole-window arm above: the count is
+        // the behaviour under test, the coaching sentence is wording that has already moved
+        // once while this test was not running.
+        let after = own_repetition_fact(&recovered, &[]).expect("history is not erased");
+        assert!(
+            after.starts_with("[repetition] 4 of your recent messages were nearly identical"),
+            "a recovery message does not erase in-window history: {after}"
         );
     }
 
@@ -1204,14 +1376,24 @@ mod tests {
 
         // A bare MENTION is not a vocative — no annotation. ("Anwen's" is closed
         // by an apostrophe, not address punctuation.)
-        let mention = BurstTurn::attributed(false, SPEAKER_REVIEWER, "I agree with Anwen's plan for the parser.", None);
+        let mention = BurstTurn::attributed(
+            false,
+            SPEAKER_REVIEWER,
+            "I agree with Anwen's plan for the parser.",
+            None,
+        );
         assert_eq!(
             turn_message_line_addressed(&mention, &names, SPEAKER_TESTER),
             "Asha: I agree with Anwen's plan for the parser."
         );
 
         // Self turns and opaque turns render verbatim — annotation is peer-only.
-        let own = BurstTurn::attributed(true, SPEAKER_TESTER, "Anwen, here are the test results.", None);
+        let own = BurstTurn::attributed(
+            true,
+            SPEAKER_TESTER,
+            "Anwen, here are the test results.",
+            None,
+        );
         assert_eq!(
             turn_message_line_addressed(&own, &names, SPEAKER_TESTER),
             "Anwen, here are the test results."
@@ -1224,23 +1406,36 @@ mod tests {
 
         // A vocative matching the AUTHOR is a signature/self-reference, never an
         // addressee ("Thanks, Asha!" quoted inside Asha's own message).
-        let self_named = BurstTurn::attributed(false, SPEAKER_REVIEWER, "Asha, reporting in: review done.", None);
+        let self_named = BurstTurn::attributed(
+            false,
+            SPEAKER_REVIEWER,
+            "Asha, reporting in: review done.",
+            None,
+        );
         assert_eq!(
             turn_message_line_addressed(&self_named, &names, SPEAKER_TESTER),
             "Asha: Asha, reporting in: review done."
         );
 
         // @-mention form.
-        let at_form = BurstTurn::attributed(false, SPEAKER_REVIEWER, "@Atlas can you run the suite?", None);
+        let at_form = BurstTurn::attributed(
+            false,
+            SPEAKER_REVIEWER,
+            "@Atlas can you run the suite?",
+            None,
+        );
         let line = turn_message_line_addressed(&at_form, &names, SPEAKER_TESTER);
-        assert!(line.starts_with("Asha (to you): @Atlas"), "@-form: {line:?}");
+        assert!(
+            line.starts_with("Asha (to you): @Atlas"),
+            "@-form: {line:?}"
+        );
 
         // Name-prefix false positive guard: ", Anwenne." must not match "Anwen"
         // (the closing-punctuation requirement doubles as the word boundary).
         let names2 = vec![SPEAKER_LEAD.to_string()];
         assert_eq!(
-            vocative_addressee("Sure, Anwenne. Please post it.", &names2),
-            None
+            vocative_addressees("Sure, Anwenne. Please post it.", &names2),
+            Vec::<&str>::new()
         );
 
         // Name-AGNOSTIC proof: personas are procedurally generated, so the

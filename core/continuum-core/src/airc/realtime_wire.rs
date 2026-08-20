@@ -4,6 +4,7 @@
 //! `forge.body_hint` contract has one definition.
 
 use airc_core::{Body, Headers, TranscriptEvent};
+use serde::Deserialize;
 use airc_protocol::{FrameKind, HEADER_FORGE_BODY_HINT};
 
 use crate::airc::realtime::{
@@ -74,7 +75,14 @@ pub fn envelope_from_event(
         return Ok(None);
     };
 
-    serde_json::from_value(value.clone())
+    // Borrow-decode: `&Value` is itself a Deserializer, so the envelope is read
+    // in place. The previous `from_value(value.clone())` deep-copied the WHOLE
+    // body first (`from_value` consumes by value, so the clone was reflexive) —
+    // paid per event PER PERSONA, since every citizen's subscribe stream sees
+    // every event. That is the same O(personas x payload) waste the stream-chunk
+    // header guard above exists to avoid; the header decides, the body is never
+    // copied to find out.
+    AircRealtimeEnvelope::deserialize(value)
         .map(Some)
         .map_err(|error| format!("failed to decode continuum airc envelope: {error}"))
 }
@@ -157,9 +165,7 @@ pub fn is_stream_chunk(event: &TranscriptEvent) -> bool {
     event.headers.get(airc_lib::HEADER_STREAM_ID).is_some()
 }
 
-pub fn room_turn_from_event(
-    event: &TranscriptEvent,
-) -> Result<(uuid::Uuid, String), &'static str> {
+pub fn room_turn_from_event(event: &TranscriptEvent) -> Result<(uuid::Uuid, String), &'static str> {
     // - `"stream_chunk"` — a live streaming token chunk (`airc.stream.*` headers,
     //   published by `publish_stream_chunk` as typing-indicator-class traffic).
     //   By the stream-chunk contract the settled utterance arrives separately via
@@ -181,8 +187,9 @@ pub fn room_turn_from_event(
     match envelope_from_event(event) {
         Err(_) => Err("envelope_decode_error"),
         Ok(None) => Err("no_continuum_body_hint"),
-        Ok(Some(envelope)) => chat_transcript_message(&envelope, event.peer_id.as_uuid())
-            .ok_or("non_chat_schema"),
+        Ok(Some(envelope)) => {
+            chat_transcript_message(&envelope, event.peer_id.as_uuid()).ok_or("non_chat_schema")
+        }
     }
 }
 
@@ -245,7 +252,11 @@ mod tests {
 
         let (recovered, text) =
             chat_transcript_message(&envelope, relay).expect("chat_transcript must decode");
-        assert_eq!(recovered.to_string(), sender, "logical sender, not the relay");
+        assert_eq!(
+            recovered.to_string(),
+            sender,
+            "logical sender, not the relay"
+        );
         assert_eq!(text, "is anyone there?");
     }
 
@@ -273,7 +284,10 @@ mod tests {
 
         let (recovered, text) =
             chat_transcript_message(&envelope, relay).expect("chat_transcript must decode");
-        assert_eq!(recovered, relay, "omitted senderId recovers to the relay peer");
+        assert_eq!(
+            recovered, relay,
+            "omitted senderId recovers to the relay peer"
+        );
         assert_eq!(text, "hello");
     }
 

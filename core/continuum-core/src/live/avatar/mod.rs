@@ -61,13 +61,13 @@ pub use render_loop::{
     SlotGuard,
 };
 pub use renderer::AvatarRenderer;
-pub use video_pump::spawn_avatar_video_pump;
 pub use selection::{
     allocate_avatars_batch, allocate_dynamic_batch, get_allocated_identities,
     select_avatar_by_identity, select_avatar_for_agent, select_avatar_for_voice,
     select_dynamic_avatar, select_from_catalog, select_from_catalog_by_identity,
 };
 pub use types::*;
+pub use video_pump::spawn_avatar_video_pump;
 
 #[cfg(test)]
 pub use selection::reset_allocation;

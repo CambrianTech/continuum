@@ -28,7 +28,10 @@ use crate::persona::AdmissionDecision;
 use crate::sdk_codegen::CommandError;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/AdmitInboxMessageParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/AdmitInboxMessageParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct AdmitInboxMessageParams {
     /// Persona whose admission gate runs.
@@ -40,7 +43,10 @@ pub struct AdmitInboxMessageParams {
 
 /// The admission outcome plus admission-funnel telemetry.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/AdmitInboxMessageResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/AdmitInboxMessageResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct AdmitInboxMessageResult {
     /// The typed admission decision (Admit / Drop / Quarantine).

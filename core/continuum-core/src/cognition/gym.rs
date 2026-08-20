@@ -224,7 +224,10 @@ mod tests {
         let err = resolve_gym("docs/genome/does-not-exist.jsonl")
             .expect_err("unknown gym must fail loud");
         assert!(err.contains("does-not-exist.jsonl"), "names the reference");
-        assert!(err.contains("coder-eval.jsonl"), "lists embedded candidates");
+        assert!(
+            err.contains("coder-eval.jsonl"),
+            "lists embedded candidates"
+        );
     }
 
     // what this catches: the `code` trait resolves to its measuring gym, an

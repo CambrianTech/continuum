@@ -82,8 +82,8 @@ use uuid::Uuid;
 
 use airc_lib::{AgentAvailabilityState, RoomMember};
 use continuum_positron::{
-    ChatMessageView, ChatViewState, Loadout, Provenance, RosterSlotView, RosterViewState,
-    SenderKind, StateBuilder, Substrate,
+    ActReceiptView, ChatMessageView, ChatViewState, Loadout, Provenance, RosterSlotView,
+    RosterViewState, SenderKind, StateBuilder, Substrate,
 };
 
 use crate::experience::{Experience, ExperienceSource, Member, RecipeExperienceSource, Standing};
@@ -119,6 +119,13 @@ pub(crate) const CHAT_FOCUSED: &str = "chat:focused";
 /// renderer shows a recent window; deeper history is a `chat/history`
 /// pull, not a fatter snapshot (see `ChatViewState.messages` doc).
 const MAX_MESSAGES_PER_SNAPSHOT: usize = 100;
+
+/// Bound on the act-receipt ring (#243). Acts arrive far denser than speech
+/// during a work burst (a solve can run 30+ acts per attempt), and the
+/// renderer collapses consecutive receipts anyway — the window exists to show
+/// the CURRENT work rhythm, not to be the act ledger (that is the run
+/// ledger / working memory).
+const MAX_ACTS_PER_SNAPSHOT: usize = 60;
 
 /// A provisional display label for a sender whose identity card has not
 /// yet folded in through presence — the first 8 chars of the peer id,
@@ -200,6 +207,33 @@ pub(crate) struct AircChatFocused {
 
 /// Event name a persona radiates its live vitals under.
 pub(crate) const PERSONA_VITALS: &str = "persona:vitals";
+
+/// Event name a persona's HANDS radiate one executed tool act under (#243:
+/// tool actions show IN chats as collapsed receipts).
+pub(crate) const PERSONA_ACT: &str = "persona:act";
+
+/// Typed `persona:act` payload — one executed tool call, radiated from the
+/// act→observe seam (`apply_act`, the ONE choke point every hand action
+/// passes through: live turns, directed turns, and agent/solve alike). The
+/// projection folds it into [`ChatViewState::acts`] so every client renders
+/// the same receipt stream. Same `pub(crate)` + `Serialize` agree-by-
+/// construction discipline as [`PersonaVitalsUpdate`]: the emitter builds
+/// THIS struct, never a hand JSON. Carries the resolved `actor_name`
+/// because the producer (the acting body) knows it authoritatively — the
+/// projection still re-resolves against the roster when the actor is
+/// present, keeping one display-identity source where possible.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PersonaActUpdate {
+    pub(crate) act_id: Uuid,
+    pub(crate) room_id: Uuid,
+    pub(crate) actor_id: Uuid,
+    pub(crate) actor_name: String,
+    pub(crate) tool: String,
+    pub(crate) summary: String,
+    pub(crate) ok: bool,
+    pub(crate) timestamp: u64,
+}
 
 /// Typed `persona:vitals` payload — one persona's live cognition readouts.
 ///
@@ -472,6 +506,19 @@ pub(crate) fn resolve_identity(roster: &[RosterSlotView], id: Uuid) -> ResolvedS
 /// consume loop owns it.
 struct ChatProjection {
     substrate: Substrate,
+    /// Per-ROOM stores (#408). The node `substrate` above holds ONE room's view at
+    /// a time — the focused room's — which is correct for today's web session and
+    /// useless to a citizen standing in a different room. Every per-room envelope
+    /// is ALSO written to its room's own store here, so a consumer that knows which
+    /// room it means (a persona's grounding via `ViewStateRagSource`) can read THAT
+    /// room instead of whichever wrote last.
+    ///
+    /// ONE fold, TWO sinks — not two folds. The projection computes the view once;
+    /// the same `StateEnvelope` (same revision) lands in both. A second FOLD is what
+    /// goes stale (#346); a second SINK of one fold cannot.
+    ///
+    /// `None` in tests/headless — the node substrate alone, today's behavior.
+    rooms: Option<std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates>>,
     builder: StateBuilder,
     /// The room this accumulator currently describes. `None` before the
     /// first recognized event.
@@ -487,6 +534,11 @@ struct ChatProjection {
     /// Bounded ring of recent messages, oldest first (the order
     /// `ChatViewState.messages` is documented to carry).
     messages: VecDeque<ChatMessageView>,
+    /// Bounded ring of recent tool-act receipts, oldest first — the
+    /// transcript's work stream (#243), folded from `persona:act` events
+    /// the same way `messages` folds `chat:posted`. Cleared on room switch
+    /// with the rest of the per-room state.
+    acts: VecDeque<ActReceiptView>,
     roster: Vec<RosterSlotView>,
     /// Latest live vitals per member id, folded from `persona:vitals` events
     /// (design B). Kept SEPARATE from the presence roster — presence replaces
@@ -535,13 +587,55 @@ struct ChatProjection {
 }
 
 impl ChatProjection {
+    /// Test / headless constructor: every room resolves to `"chat"`.
+    #[cfg(test)]
     fn new(substrate: Substrate) -> Self {
-        // ONE shared purpose resolver feeds BOTH the chat view's `purpose` field and
-        // the Experience manifest's recipe lookup. Default (every room → "chat") until
-        // the recipe-backed source lands; injecting a real one is a one-line change
-        // here, no call-site churn.
-        let purpose_source = crate::ipc::room_purpose::default_source();
+        Self::with_purpose(substrate, crate::ipc::room_purpose::default_source())
+    }
+
+    /// ONE shared purpose resolver feeds BOTH the chat view's `purpose` field and
+    /// the Experience manifest's recipe lookup — INJECTED, because the resolver
+    /// that reads a room's recipe binding needs a live airc handle the projection
+    /// has no business owning.
+    ///
+    /// It was constructed inline here as `default_source()` — "every room is a
+    /// chat room" — which meant a benchmark room spawned from a recipe still
+    /// projected as chat, with no scoreboard region, to every renderer and to the
+    /// citizen standing in it. Injection is what lets
+    /// [`crate::ipc::recipe_room_purpose`] answer instead.
+    fn with_purpose(
+        substrate: Substrate,
+        purpose_source: crate::ipc::room_purpose::SharedRoomPurpose,
+    ) -> Self {
+        Self::with_rooms(substrate, purpose_source, None)
+    }
+
+    /// As [`Self::with_purpose`], plus the per-room stores every per-room envelope
+    /// is mirrored into (#408). Experiences resolve from the EMBEDDED recipe set
+    /// only — the right floor for tests and headless fixtures. Production goes
+    /// through [`Self::with_experience`] so on-disk authored recipes resolve too
+    /// (#432).
+    fn with_rooms(
+        substrate: Substrate,
+        purpose_source: crate::ipc::room_purpose::SharedRoomPurpose,
+        rooms: Option<std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates>>,
+    ) -> Self {
+        let experience_source = RecipeExperienceSource::builtins(purpose_source.clone());
+        Self::with_experience(substrate, purpose_source, rooms, experience_source)
+    }
+
+    /// As [`Self::with_rooms`], with the experience source INJECTED (#432).
+    /// `spawn` builds it via `builtins_with_overlay` so a recipe authored on
+    /// disk projects without recompiling — the module's own "new experience is
+    /// a new recipe entry, zero code" promise, finally true in production.
+    fn with_experience(
+        substrate: Substrate,
+        purpose_source: crate::ipc::room_purpose::SharedRoomPurpose,
+        rooms: Option<std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates>>,
+        experience_source: RecipeExperienceSource,
+    ) -> Self {
         Self {
+            rooms,
             substrate,
             // The projection is the SOLE writer of the `chat` kind, so
             // its own standalone `Revisions` well is the authoritative
@@ -551,11 +645,12 @@ impl ChatProjection {
             explicit_focus: None,
             room_name: String::new(),
             messages: VecDeque::new(),
+            acts: VecDeque::new(),
             roster: Vec::new(),
             vitals: HashMap::new(),
             loadout: HashMap::new(),
             genes: HashMap::new(),
-            experience_source: RecipeExperienceSource::builtins(purpose_source.clone()),
+            experience_source,
             experience_builder: StateBuilder::standalone(),
             last_experience: std::cell::RefCell::new(None),
             roster_builder: StateBuilder::standalone(),
@@ -575,6 +670,7 @@ impl ChatProjection {
             self.room_id = Some(room_id);
             self.room_name.clear();
             self.messages.clear();
+            self.acts.clear();
             self.roster.clear();
             self.vitals.clear();
             self.loadout.clear();
@@ -666,6 +762,47 @@ impl ChatProjection {
         self.store();
     }
 
+    /// Fold one executed tool act into the receipt ring and store — the act
+    /// sibling of `apply_message` (#243). Same focus-pin and room-switch
+    /// discipline; idempotent on `act_id` (bus redelivery). The producer's
+    /// resolved `actor_name` is adopted as-is when the actor is NOT in the
+    /// roster (a headless solve fork acting in a room its presence never
+    /// joined); a rostered actor re-resolves so display identity stays
+    /// single-sourced.
+    fn apply_act(&mut self, act: PersonaActUpdate) {
+        // A nil room is not a room: headless solves radiate acts with
+        // Uuid::nil() (guarded at the producer, kept here as defense in
+        // depth) — folding one would switch_room(nil) and wipe the live
+        // room's view onto a phantom (observed live 2026-08-12).
+        if act.room_id.is_nil() || self.pinned_away_from(act.room_id) {
+            return;
+        }
+        self.switch_room(act.room_id);
+        if self.acts.iter().any(|a| a.id == act.act_id) {
+            return;
+        }
+        let name = self
+            .roster
+            .iter()
+            .find(|s| s.member_id == act.actor_id)
+            .map(|s| s.display_name.clone())
+            .unwrap_or(act.actor_name);
+        self.acts.push_back(ActReceiptView {
+            id: act.act_id,
+            room_id: act.room_id,
+            actor_id: act.actor_id,
+            actor_name: name,
+            tool: act.tool,
+            summary: act.summary,
+            ok: act.ok,
+            timestamp: act.timestamp,
+        });
+        while self.acts.len() > MAX_ACTS_PER_SNAPSHOT {
+            self.acts.pop_front();
+        }
+        self.store();
+    }
+
     /// Replace the focused room's roster from a presence snapshot and
     /// store the new view. Presence is the room-name authority, so this
     /// (unlike a message) adopts the resolved name. It also **upgrades**
@@ -750,8 +887,11 @@ impl ChatProjection {
             if !unchanged {
                 let payload = serde_json::to_value(&exp)
                     .expect("Experience must serialize — substrate bug, not a runtime error");
-                self.substrate
-                    .store(self.experience_builder.session_raw(Experience::KIND, payload));
+                self.store_room_scoped(
+                    room_id,
+                    self.experience_builder
+                        .session_raw(Experience::KIND, payload),
+                );
                 *self.last_experience.borrow_mut() = Some(exp);
             }
         }
@@ -761,9 +901,12 @@ impl ChatProjection {
         // names/kinds/vitals — the display data the manifest's minimal Member omits.
         // Emit-on-change (roster only shifts on presence, not per message).
         if self.last_roster.borrow().as_deref() != Some(roster.as_slice()) {
-            self.substrate.store(
-                self.roster_builder
-                    .session(RosterViewState { room_id, roster: roster.clone() }),
+            self.store_room_scoped(
+                room_id,
+                self.roster_builder.session(RosterViewState {
+                    room_id,
+                    roster: roster.clone(),
+                }),
             );
             *self.last_roster.borrow_mut() = Some(roster.clone());
         }
@@ -778,9 +921,23 @@ impl ChatProjection {
             // dispatches on it (ACTIVITY-ROOM-PATTERNS.md) with no change here.
             purpose: self.purpose_source.purpose_for(room_id),
             messages: self.messages.iter().cloned().collect(),
+            acts: self.acts.iter().cloned().collect(),
             roster,
         };
-        self.substrate.store(self.builder.session(view));
+        self.store_room_scoped(room_id, self.builder.session(view));
+    }
+
+    /// Store one per-room envelope to BOTH sinks: the node substrate (what the
+    /// focused-room web session reads today) and the room's own store (what a
+    /// consumer that names its room reads).
+    ///
+    /// ONE place decides the dual-sink rule, so a future kind cannot be added to one
+    /// sink and forgotten in the other — the compression law applied to a write path.
+    fn store_room_scoped(&self, room_id: Uuid, envelope: continuum_positron::StateEnvelope) {
+        if let Some(rooms) = &self.rooms {
+            rooms.for_room(room_id).store(envelope.clone());
+        }
+        self.substrate.store(envelope);
     }
 
     /// Assemble this room's [`Experience`] manifest: recipe (by the room's purpose)
@@ -795,7 +952,7 @@ impl ChatProjection {
         let membership: Vec<Member> = roster
             .iter()
             .map(|slot| Member {
-                peer_id: slot.member_id.to_string(),
+                peer_id: crate::identity::PeerId::from_uuid(slot.member_id),
                 standing: Standing::Member,
             })
             .collect();
@@ -812,6 +969,8 @@ enum ProjectionInput {
     Message(AircChatPosted),
     Presence(AircPresenceUpdate),
     Vitals(PersonaVitalsUpdate),
+    /// One executed tool act (`persona:act` — the receipt stream, #243).
+    Act(PersonaActUpdate),
     /// An explicit focus switch (`chat:focused` — the `nav/select` verb).
     Focus(AircChatFocused),
 }
@@ -831,6 +990,9 @@ fn classify(name: &str, payload: &serde_json::Value) -> Option<ProjectionInput> 
         PERSONA_VITALS => serde_json::from_value::<PersonaVitalsUpdate>(body.clone())
             .ok()
             .map(ProjectionInput::Vitals),
+        PERSONA_ACT => serde_json::from_value::<PersonaActUpdate>(body.clone())
+            .ok()
+            .map(ProjectionInput::Act),
         CHAT_FOCUSED => serde_json::from_value::<AircChatFocused>(body.clone())
             .ok()
             .map(ProjectionInput::Focus),
@@ -886,7 +1048,12 @@ async fn fetch_seed_messages(
                 let mut entities: Vec<serde_json::Value> = result
                     .get("data")
                     .and_then(|d| d.as_array())
-                    .map(|records| records.iter().filter_map(|r| r.get("data").cloned()).collect())
+                    .map(|records| {
+                        records
+                            .iter()
+                            .filter_map(|r| r.get("data").cloned())
+                            .collect()
+                    })
                     .unwrap_or_default();
                 entities.reverse(); // desc query → chronological apply order
                 return entities.iter().filter_map(entity_to_posted).collect();
@@ -911,11 +1078,18 @@ async fn fetch_seed_messages(
 /// seed room's stored tail, pushed through the SAME `classify` path as wire
 /// events — one message semantics, two sources. `None` (tests, headless
 /// fixtures, no bootstrap room) = wire-fed only, the prior behavior.
+///
+/// `purpose` resolves each room to its activity nature. Pass the live
+/// [`crate::ipc::recipe_room_purpose::RecipeRoomPurpose`] so a recipe-spawned
+/// room projects as what it IS; `room_purpose::default_source()` (every room →
+/// chat) is the honest headless fallback.
 pub fn spawn(
     rt: &tokio::runtime::Handle,
     bus: Arc<MessageBus>,
     substrate: Substrate,
     seed: Option<(Arc<crate::runtime::CommandExecutor>, Uuid)>,
+    purpose: crate::ipc::room_purpose::SharedRoomPurpose,
+    rooms: Option<Arc<continuum_positron::scoping::PerRoomSubstrates>>,
 ) {
     let mut rx = bus.receiver();
     // Demand the current roster now (#118): the presence emitter dedups and
@@ -924,8 +1098,35 @@ pub fn spawn(
     // roster-empty view until presence next changes. `rx` is subscribed
     // above, so the emitter's re-publish lands in our buffer.
     crate::ipc::positron_presence::request_presence_resync(&bus);
+    // #432: production resolves experiences from the embedded floor PLUS the
+    // on-disk overlay (`<continuum_root>/recipes`) — authoring an activity is a
+    // JSON file, zero code, the module's own promise. A malformed overlay file
+    // is REFUSED loudly here, and the projection keeps the embedded floor so
+    // chat itself never goes dark over one bad recipe; the author gets the
+    // second, harder surface at `activity/spawn`, whose validation reads the
+    // SAME directory and returns the parse error naming the file.
+    let overlay_dir = RecipeExperienceSource::overlay_dir(
+        &crate::modules::persona_instance_manager::resolve_continuum_root(),
+    );
+    let experience_source = match RecipeExperienceSource::builtins_with_overlay(
+        purpose.clone(),
+        &overlay_dir,
+    ) {
+        Ok(source) => source,
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                dir = %overlay_dir.display(),
+                "recipe overlay REFUSED — an authored recipe failed to load; \
+                 serving EMBEDDED recipes only until the named file is fixed \
+                 or removed (#432)"
+            );
+            RecipeExperienceSource::builtins(purpose.clone())
+        }
+    };
     rt.spawn(async move {
-        let mut projection = ChatProjection::new(substrate);
+        let mut projection =
+            ChatProjection::with_experience(substrate, purpose, rooms, experience_source);
         if let Some((executor, room)) = seed {
             for payload in fetch_seed_messages(&executor, room).await {
                 if let Some(ProjectionInput::Message(m)) = classify(CHAT_POSTED, &payload) {
@@ -941,6 +1142,7 @@ pub fn spawn(
                             ProjectionInput::Message(m) => projection.apply_message(m),
                             ProjectionInput::Presence(p) => projection.apply_presence(p),
                             ProjectionInput::Vitals(v) => projection.apply_vitals(v),
+                            ProjectionInput::Act(a) => projection.apply_act(a),
                             ProjectionInput::Focus(f) => projection.apply_focus(f.room_id),
                         }
                     }
@@ -959,7 +1161,114 @@ pub fn spawn(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use airc_core::PeerId;
     use serde_json::json;
+
+    /// A `persona:act` payload — one executed tool receipt (#243).
+    fn act_payload(
+        room: Uuid,
+        act: Uuid,
+        actor: Uuid,
+        tool: &str,
+        summary: &str,
+    ) -> serde_json::Value {
+        json!({
+            "actId": act,
+            "roomId": room,
+            "actorId": actor,
+            "actorName": "Asha",
+            "tool": tool,
+            "summary": summary,
+            "ok": true,
+            "timestamp": 1_700_000_000_000u64,
+        })
+    }
+
+    #[test]
+    fn act_receipts_fold_into_the_snapshot_dedup_and_clear_on_room_switch() {
+        // what this catches: the #243 act stream's three contracts — a
+        // `persona:act` event lands in `ChatViewState.acts` with its facts
+        // intact, a redelivered act_id folds once, and a room switch clears
+        // the receipts with the rest of the per-room state.
+        let substrate = Substrate::new();
+        let mut p = ChatProjection::new(substrate.clone());
+        let room = Uuid::from_u128(0x1);
+        let act = Uuid::from_u128(0x2);
+        let actor = Uuid::from_u128(0x3);
+        let payload = act_payload(room, act, actor, "code/read", "sympy/core/mul.py");
+        for _ in 0..2 {
+            if let Some(ProjectionInput::Act(a)) = classify(PERSONA_ACT, &payload) {
+                p.apply_act(a);
+            } else {
+                panic!("persona:act payload must classify as an Act input");
+            }
+        }
+        let view = current_chat(&substrate);
+        assert_eq!(view.acts.len(), 1, "redelivered act_id must fold once");
+        let r = &view.acts[0];
+        assert_eq!(r.tool, "code/read");
+        assert_eq!(r.summary, "sympy/core/mul.py");
+        assert_eq!(r.actor_name, "Asha");
+        assert!(r.ok);
+        // Room switch clears the receipt ring with the rest of the state.
+        if let Some(ProjectionInput::Act(a)) = classify(
+            PERSONA_ACT,
+            &act_payload(
+                Uuid::from_u128(0x9),
+                Uuid::from_u128(0xa),
+                actor,
+                "code/shell",
+                "pytest -x",
+            ),
+        ) {
+            p.apply_act(a);
+        }
+        let view = current_chat(&substrate);
+        assert_eq!(view.acts.len(), 1);
+        assert_eq!(view.acts[0].tool, "code/shell");
+    }
+
+    #[test]
+    fn nil_room_act_never_steals_the_projection() {
+        // what this catches: regression for the 2026-08-12 live find — a
+        // headless solve's act carries Uuid::nil() as its room, and folding
+        // it switch_room(nil)'d the projection off the real room, wiping the
+        // live view onto a phantom. A nil-room act must be a no-op.
+        let substrate = Substrate::new();
+        let mut p = ChatProjection::new(substrate.clone());
+        let room = Uuid::from_u128(0x1);
+        if let Some(ProjectionInput::Act(a)) = classify(
+            PERSONA_ACT,
+            &act_payload(
+                room,
+                Uuid::from_u128(0x2),
+                Uuid::from_u128(0x3),
+                "code/read",
+                "a.py",
+            ),
+        ) {
+            p.apply_act(a);
+        }
+        assert_eq!(current_chat(&substrate).acts.len(), 1);
+        if let Some(ProjectionInput::Act(a)) = classify(
+            PERSONA_ACT,
+            &act_payload(
+                Uuid::nil(),
+                Uuid::from_u128(0x4),
+                Uuid::from_u128(0x3),
+                "code/shell",
+                "pytest",
+            ),
+        ) {
+            p.apply_act(a);
+        }
+        let view = current_chat(&substrate);
+        assert_eq!(view.acts.len(), 1, "nil-room act must not fold or clear");
+        assert_eq!(
+            view.acts[0].tool, "code/read",
+            "real room's receipts survive"
+        );
+    }
 
     /// A thin `chat:posted` payload — core message facts only, sender
     /// hardcoded to `0xc`. Mirrors the emitter contract (identity is NOT
@@ -1007,6 +1316,54 @@ mod tests {
             .get(ChatViewState::KIND)
             .expect("a chat envelope must be stored");
         serde_json::from_value(env.payload.clone()).expect("payload is a ChatViewState")
+    }
+
+    // what this catches (#408): the per-room sink actually receiving data. The node
+    // substrate holds ONE room's view — whichever wrote last — so a citizen standing
+    // in an EARLIER room reads the wrong room or nothing. With the dual sink, each
+    // room's own store keeps ITS view, which is what `ViewStateRagSource` reads.
+    // If this regresses, per-room substrates exist but stay empty and every citizen
+    // is blind again with nothing failing.
+    #[tokio::test]
+    async fn each_rooms_view_lands_in_that_rooms_own_store() {
+        use continuum_positron::scoping::PerRoomSubstrates;
+        let node = Substrate::new();
+        let rooms = std::sync::Arc::new(PerRoomSubstrates::new());
+        let mut p = ChatProjection::with_rooms(
+            node.clone(),
+            crate::ipc::room_purpose::default_source(),
+            Some(rooms.clone()),
+        );
+
+        let room_a = Uuid::from_u128(0xa);
+        let room_b = Uuid::from_u128(0xb);
+        // Two rooms speak, B last — so the node substrate ends on B.
+        for (room, msg, text) in [
+            (room_a, Uuid::from_u128(0x1), "hello from A"),
+            (room_b, Uuid::from_u128(0x2), "hello from B"),
+        ] {
+            match classify(CHAT_POSTED, &posted(room, msg, text)).unwrap() {
+                ProjectionInput::Message(m) => p.apply_message(m),
+                _ => panic!("chat:posted must classify as a Message"),
+            }
+        }
+
+        // The node holds the LAST room — today's focused-room behavior, unchanged.
+        assert_eq!(current_chat(&node).room_id, room_b);
+
+        // But each room's OWN store kept its own view: room A is not lost.
+        let read = |room: Uuid| -> ChatViewState {
+            let env = rooms
+                .for_room(room)
+                .cache()
+                .get(ChatViewState::KIND)
+                .expect("each room keeps its own chat view");
+            serde_json::from_value(env.payload.clone()).expect("a ChatViewState")
+        };
+        assert_eq!(read(room_a).room_id, room_a);
+        assert_eq!(read(room_b).room_id, room_b);
+        assert!(read(room_a).messages.iter().any(|m| m.content == "hello from A"));
+        assert!(read(room_b).messages.iter().any(|m| m.content == "hello from B"));
     }
 
     #[test]
@@ -1115,9 +1472,11 @@ mod tests {
         let mut p = ChatProjection::new(substrate.clone());
         let room = Uuid::from_u128(0xa);
         let asha = Uuid::from_u128(0xd);
-        if let ProjectionInput::Presence(u) =
-            classify(PRESENCE_UPDATED, &presence_one(room, asha, "Asha", "agent", json!({})))
-                .unwrap()
+        if let ProjectionInput::Presence(u) = classify(
+            PRESENCE_UPDATED,
+            &presence_one(room, asha, "Asha", "agent", json!({})),
+        )
+        .unwrap()
         {
             p.apply_presence(u);
         }
@@ -1259,7 +1618,7 @@ mod tests {
                 },
                 RosterSlotView {
                     active: false,
-                    ..test_roster_slot(Uuid::from_u128(0xe), "Joel", SenderKind::Human)
+                    ..test_roster_slot(Uuid::from_u128(0xe), "Operator", SenderKind::Human)
                 },
             ],
         );
@@ -1521,7 +1880,10 @@ mod tests {
         }
         let view = current_chat(&substrate);
         assert_eq!(view.room_id, quiet);
-        assert!(view.messages.is_empty(), "quiet room renders empty, honestly");
+        assert!(
+            view.messages.is_empty(),
+            "quiet room renders empty, honestly"
+        );
         assert!(view.roster.is_empty());
         assert_eq!(view.room_name, "", "no fabricated name before presence");
     }
@@ -1553,7 +1915,10 @@ mod tests {
             p.apply_presence(u);
         }
         let view = current_chat(&substrate);
-        assert_eq!(view.room_id, room_b, "pinned focus survives other rooms' events");
+        assert_eq!(
+            view.room_id, room_b,
+            "pinned focus survives other rooms' events"
+        );
         assert!(view.messages.is_empty());
         assert!(view.roster.is_empty());
         // The selected room's own events fold in normally.

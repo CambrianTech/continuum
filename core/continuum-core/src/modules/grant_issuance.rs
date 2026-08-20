@@ -104,11 +104,7 @@ impl ServiceModule for GrantIssuanceModule {
         Ok(())
     }
 
-    async fn handle_command(
-        &self,
-        _command: &str,
-        params: Value,
-    ) -> Result<CommandResult, String> {
+    async fn handle_command(&self, _command: &str, params: Value) -> Result<CommandResult, String> {
         let req: IssueRequest =
             serde_json::from_value(params).map_err(|e| format!("decode {ISSUE} params: {e}"))?;
 
@@ -165,7 +161,10 @@ mod tests {
             .handle_command(ISSUE, json!({"grantee": "not-even-the-right-shape"}))
             .await
             .expect_err("malformed params must error");
-        assert!(err.contains(ISSUE), "error should name the command, got: {err}");
+        assert!(
+            err.contains(ISSUE),
+            "error should name the command, got: {err}"
+        );
     }
 
     // what this catches: issuing as a persona that is NOT running on this node is a

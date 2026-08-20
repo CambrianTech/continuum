@@ -50,7 +50,10 @@ use crate::sdk_codegen::CommandError;
 
 /// Which model's local bytes to free.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/model_registry/ModelsRemoveParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/model_registry/ModelsRemoveParams.ts"
+)]
 pub struct ModelsRemoveParams {
     /// The model id as it appears in `models/list`. Fails loud if it is unknown,
     /// if it has no local artifact (cloud-served or already not-downloaded), or
@@ -61,7 +64,10 @@ pub struct ModelsRemoveParams {
 /// What `models/remove` freed: the files deleted and the bytes reclaimed. The
 /// command's return DTO — not stored on status.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/model_registry/RemoveReport.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/model_registry/RemoveReport.ts"
+)]
 pub struct RemoveReport {
     /// Absolute paths actually deleted (the GGUF blob, its symlink, the
     /// projector blob/symlink). Empty only if the bytes were already gone.
@@ -237,8 +243,14 @@ mod tests {
 
         let (removed, bytes) = free_file(&link).unwrap();
         assert_eq!(bytes, 4096, "counts the blob's real bytes");
-        assert!(!blob.exists(), "the blob (real bytes) is deleted, not just the symlink");
-        assert!(std::fs::symlink_metadata(&link).is_err(), "the symlink is dropped too");
+        assert!(
+            !blob.exists(),
+            "the blob (real bytes) is deleted, not just the symlink"
+        );
+        assert!(
+            std::fs::symlink_metadata(&link).is_err(),
+            "the symlink is dropped too"
+        );
         assert_eq!(removed.len(), 2, "both blob and symlink reported as freed");
 
         let _ = std::fs::remove_dir_all(&dir);

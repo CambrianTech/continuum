@@ -179,7 +179,10 @@ mod tests {
         let h = CommandIdent::parse("runtime/spawn-region").expect("valid");
         assert_eq!(h.mod_stem, "spawn_region");
         assert_eq!(h.struct_name, "RuntimeSpawnRegion");
-        assert_eq!(h.rel_file, PathBuf::from("commands/runtime/spawn_region.rs"));
+        assert_eq!(
+            h.rel_file,
+            PathBuf::from("commands/runtime/spawn_region.rs")
+        );
     }
 
     // what this catches: mod_wiring lists exactly the pub-mod edits that make a
@@ -204,6 +207,9 @@ mod tests {
         assert!(CommandIdent::parse("/data").is_err());
         assert!(CommandIdent::parse("data/").is_err());
         assert!(CommandIdent::parse("data//list").is_err());
-        assert!(CommandIdent::parse("Data/List").is_err(), "uppercase rejected");
+        assert!(
+            CommandIdent::parse("Data/List").is_err(),
+            "uppercase rejected"
+        );
     }
 }

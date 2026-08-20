@@ -37,10 +37,7 @@ impl AircHandleAdapter {
 
 #[async_trait]
 impl AircTranscriptReader for AircHandleAdapter {
-    async fn page_recent(
-        &self,
-        limit: usize,
-    ) -> Result<Vec<airc_lib::TranscriptEvent>, AircError> {
+    async fn page_recent(&self, limit: usize) -> Result<Vec<airc_lib::TranscriptEvent>, AircError> {
         // Route through the ONE kinds-filtered impl on `airc_lib::Airc`
         // (persona/airc_source.rs, #297) — never the raw inherent page.
         crate::persona::airc_source::AircTranscriptReader::page_recent(&*self.inner, limit).await
@@ -53,12 +50,8 @@ impl AircTranscriptReader for AircHandleAdapter {
     ) -> Result<Vec<airc_lib::TranscriptEvent>, AircError> {
         // Explicit forward (#367) — the #262 lesson lives in this file:
         // a silently-inherited trait default is how regressions ship.
-        crate::persona::airc_source::AircTranscriptReader::page_recent_in(
-            &*self.inner,
-            room,
-            limit,
-        )
-        .await
+        crate::persona::airc_source::AircTranscriptReader::page_recent_in(&*self.inner, room, limit)
+            .await
     }
 }
 
@@ -72,8 +65,15 @@ impl crate::persona::room_roster_source::AircRosterReader for AircHandleAdapter 
         &self,
         within: std::time::Duration,
         window: usize,
+        room: Option<uuid::Uuid>,
     ) -> Result<Vec<airc_lib::RoomMember>, AircError> {
-        self.inner.room_roster(within, window).await
+        crate::persona::room_roster_source::AircRosterReader::room_roster(
+            self.inner.as_ref(),
+            within,
+            window,
+            room,
+        )
+        .await
     }
 
     // #262: forward the CARDS read to the real airc identity join. Without
@@ -85,8 +85,15 @@ impl crate::persona::room_roster_source::AircRosterReader for AircHandleAdapter 
         &self,
         within: std::time::Duration,
         window: usize,
+        room: Option<uuid::Uuid>,
     ) -> Result<Vec<airc_lib::RoomMemberCard>, AircError> {
-        self.inner.room_roster_cards(within, window).await
+        crate::persona::room_roster_source::AircRosterReader::room_roster_cards(
+            self.inner.as_ref(),
+            within,
+            window,
+            room,
+        )
+        .await
     }
 }
 
@@ -94,16 +101,19 @@ impl crate::persona::room_roster_source::AircRosterReader for AircHandleAdapter 
 impl crate::persona::room_doctrine_source::AircDoctrineReader for AircHandleAdapter {
     async fn room_doctrine(
         &self,
+        room: Option<uuid::Uuid>,
     ) -> Result<Option<airc_core::doctrine::RoomDoctrinePublished>, AircError> {
-        self.inner.room_doctrine().await
+        crate::persona::room_doctrine_source::AircDoctrineReader::room_doctrine(
+            self.inner.as_ref(),
+            room,
+        )
+        .await
     }
 }
 
 #[async_trait]
 impl crate::persona::wall_source::WallReader for AircHandleAdapter {
-    async fn wall_posts(
-        &self,
-    ) -> Result<Vec<airc_core::doctrine::WallPostPublished>, AircError> {
+    async fn wall_posts(&self) -> Result<Vec<airc_core::doctrine::WallPostPublished>, AircError> {
         // Whole board (all categories); the source filters/labels per post.
         self.inner.wall_posts(None).await
     }
@@ -158,11 +168,11 @@ impl AircCitizen for AircHandleAdapter {
         self.inner.peer_id().as_uuid()
     }
 
-    async fn subscribe(&self) -> Result<airc_lib::EventStream, AircError> {
-        self.inner.subscribe().await
+    async fn subscribe_all_rooms(&self) -> Result<airc_lib::FilteredEventStream, AircError> {
+        crate::persona::airc_citizen::subscribe_every_room(&self.inner).await
     }
 
-    async fn say(&self, text: &str) -> Result<EventId, AircError> {
-        self.inner.say(text).await
+    async fn say_in(&self, room_id: Uuid, text: &str) -> Result<EventId, AircError> {
+        crate::persona::airc_citizen::publish_text_in_room(&self.inner, room_id, text).await
     }
 }

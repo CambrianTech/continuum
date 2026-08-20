@@ -26,7 +26,8 @@ the capability read ([[a-zero-is-a-harness-claim]]); every row cites receipts
 | A (22840-n9, 24066-n6) | 4557 | 22840, 24066 | 0/3 + 0/3, all patches 0B, p2p intact | Benchy: right file, edit failed NOT-FOUND, cut off mid-recovery at 13 gens; Atlas: 2× one-read + generic essay settles | 1 | 12-act cap + empty-diff Speak settles | acts 12→32 + empty-diff re-drive (#2196) |
 | B (24066-n7, 22840-n10) | 4566 | 24066, 22840 | 0/3 + 0/3, EVERY attempt a real patch | Atlas: 2003B in the EXACT gold function, right concept, wrong symbol broke 30 p2p, resubmitted identical ×3 (breakage hidden from her). Benchy: clean 851B — in a docstring | **2** | retry verdict hid p2p regression | regression-led excerpt (#2204) |
 | C (24066-n8, 22840-n11) | 4566 | 24066, 22840 | VOID — 2h13m parked in lane acquisition, 0 generations | excluded from capability read | — | bounded+probed acquisition (#2207) + ready-gated launch |
-| D (24066-n9, 22840-n12) | 4568 | 24066, 22840 | RUNNING | gens flowing within minutes of gated launch; first edit act by gen 6 | — | — | — |
+| D (24066-n9, 22840-n12) | 4568 | 24066, 22840 | 0/3 + 0/3 | Atlas: att1 0B/tree-intact, att2+att3 BOTH 1146B f2p 0/1 p2p 26/30 — resubmitted a same-size same-verdict patch DESPITE the regression-led excerpt naming her 4 broken tests (byte-identity unverifiable: patch payloads not persisted → #379). **LEARNING-STUCK on the repair axis** — the #2204 lever informed but did not teach. Benchy: best run on record — 76 gens, 22 edit acts, patches 2719B→11445B→10273B, p2p 39/40 held across ALL attempts (one consistent casualty), f2p 0/2 never flipped. Substrate flawless: lane_acquire <1ms, zero parks, lanes 2-serving all night | Atlas 2 (repeat), **Benchy 3** | Atlas: verdict-as-text doesn't reach the next attempt's behavior; Benchy: sustained near-target edits that never cross the fix line | next: verdict must land as STATE not prose (perception fact / forced diff re-read: "your patch is identical to the one that failed") + patch-sha receipts (#379) |
+| E (flask4045-e1, 22840-e1) | 4574 | flask-4045 (easy-rung, gold-proven), 22840 | 0/3 + 0/3 | Atlas: att1 467B tree-intact, att2+att3 BOTH 1299B sha c4dbfba9 — f2p 0/2 but p2p 40/40 EVERY attempt (first time she held the tree: RUNG 3). Benchy: 10373B→10371B→10371B sha 531a03d2, 39/40 held, f2p 0/2. BOTH copied their failed patch on att3 — sha-proven by the new receipts, detector fired live ×2. Lever-design finding: post-grade detection warns an attempt N+1 that never exists | Atlas **3** (up from 2-stuck), Benchy 3 (holding) | on-target harmless edits that never cross the fix line + identical-resubmit burns the last attempt | identical-diff RE-DRIVE at settle (empty-diff's sibling, hash-triggered, pre-grade) + round F from gold-verified 0.36-band instances |
 
 **Stuck-detection, two axes (both instrumented as of 2026-08-08):**
 - **Substrate-stuck:** zero generations while attempt is live → pulse board
@@ -39,8 +40,15 @@ the capability read ([[a-zero-is-a-harness-claim]]); every row cites receipts
   failed to teach — that's a cognition finding, not a substrate one). Judged
   per row against the "Bound by" of the prior row.
 
-**Reading as of round D launch:** monotone so far — rung 0 → 1 → 2 across
-graded rounds, with each rung's binding constraint identified from receipts
-and a lever shipped before the next round. Round D tests: does the regression
-verdict convert Atlas's rung-2 collateral into rung-4 repair, and does
-Benchy's target selection reach rung 3?
+**Reading as of round D grade (2026-08-08):** the two citizens have
+DIVERGED, which is itself signal. Benchy is monotone — rung 1 → 2 → 3 across
+her three graded rounds (0-byte → docstring → sustained near-target edits
+holding 39/40 p2p). Atlas hit the ladder's first genuine learning-stuck: the
+regression-led excerpt (text in her next attempt's prompt) did not change
+her behavior — first confirmed instance of "the lever informed but did not
+teach." Per the two-axis rule that is a COGNITION finding, not substrate:
+information delivered as prose lost to whatever momentum drives resubmission.
+The next lever must land as STATE (a perception fact — "this patch is
+byte-identical to the one that just failed 26/30" — or a forced re-read of
+her own diff), which requires patch-sha receipts first (#379). Substrate axis
+is fully green: bounded acquisition proved out end-to-end, zero parks.

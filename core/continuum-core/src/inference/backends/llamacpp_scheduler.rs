@@ -718,8 +718,11 @@ fn lora_signature(loras: &[(String, Arc<LoraAdapter>, f32)]) -> String {
 
 fn start_request(model: &Model, _seq_id: i32, req: GenerationRequest) -> Result<ActiveSeq, String> {
     let lora_sig = lora_signature(&req.active_loras);
-    let active_loras: Vec<(Arc<LoraAdapter>, f32)> =
-        req.active_loras.into_iter().map(|(_, h, s)| (h, s)).collect();
+    let active_loras: Vec<(Arc<LoraAdapter>, f32)> = req
+        .active_loras
+        .into_iter()
+        .map(|(_, h, s)| (h, s))
+        .collect();
     // special=true so chat-template boundary markers (<|im_start|>,
     // <|im_end|>) are tokenized as the model's actual special token IDs
     // (151644/151645 for qwen3) rather than character-level text. With

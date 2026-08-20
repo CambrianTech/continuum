@@ -7,7 +7,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::genome::fine_tuning::{coordinator::FineTuningCoordinator, JobHandle, TrainingJobRequest};
+use crate::genome::fine_tuning::{
+    coordinator::FineTuningCoordinator, JobHandle, TrainingJobRequest,
+};
 
 use super::fine_tuning_error_kind;
 
@@ -16,7 +18,10 @@ use super::fine_tuning_error_kind;
 /// honors — or rejects, surfacing the rejection as `success=false` rather than
 /// silently routing elsewhere.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/genome/JobCreateParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/JobCreateParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct JobCreateParams {
     #[serde(flatten)]
@@ -25,6 +30,7 @@ pub struct JobCreateParams {
     /// if that provider is in the capable set; otherwise the outcome is
     /// `success=false` — never a silent fallback to a different provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub preferred_provider: Option<String>,
     /// Name of an on-disk dataset under the datasets root
     /// (`~/.continuum/datasets/<name>/train.jsonl`, the chat `{messages}` JSONL
@@ -33,6 +39,7 @@ pub struct JobCreateParams {
     /// populated dataset. Mutually exclusive with inlining `dataset` examples —
     /// exactly one of the two must be provided.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub dataset_name: Option<String>,
 }
 
@@ -40,7 +47,10 @@ pub struct JobCreateParams {
 /// provider is surfaced for telemetry + operators validating that locality
 /// preference fired.
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/genome/JobCreateResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/JobCreateResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct JobCreateResult {
     pub handle: JobHandle,
@@ -52,7 +62,10 @@ pub struct JobCreateResult {
 /// adapter rather than the coordinator). See the module docs for why expected
 /// domain failures are data, not a transport `Err`.
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/genome/JobCreateOutcome.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/JobCreateOutcome.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct JobCreateOutcome {
     pub success: bool,
@@ -168,7 +181,7 @@ crate::action_command! {
             Ok(handle) => {
                 // L2→L3 seam (the ONE birth-seam): every training job is born here —
                 // the trigger's batch path dispatches THIS command, a direct
-                // `cu genome/job-create` lands here, and so will any future caller.
+                // `uu genome/job-create` lands here, and so will any future caller.
                 // Registering the in-flight handle on the board at this single point
                 // is what lets the completion sentinel poll it, run `cognition/eval`,
                 // and page the gene in on `lift > 0`. Without it the handle drops on
@@ -331,7 +344,10 @@ mod tests {
             .unwrap();
         assert!(!out.success);
         let err = out.error.unwrap();
-        assert!(err.contains("no-such-dataset-xyz") && err.contains("dataset/list"), "{err}");
+        assert!(
+            err.contains("no-such-dataset-xyz") && err.contains("dataset/list"),
+            "{err}"
+        );
     }
 
     // what this catches: preferredProvider is honored and surfaced in

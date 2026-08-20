@@ -111,10 +111,12 @@ impl ServiceModule for ForgeModule {
                 if mlx_engine_selected(parsed.engine.as_deref())? {
                     run_train_native_mlx(parsed, self.bus())
                 } else {
-                    Err("forge/train: native forge trains via mlx on Apple Silicon; a \
+                    Err(
+                        "forge/train: native forge trains via mlx on Apple Silicon; a \
                          non-mlx engine must route to a grid-peer custodian (task #52 \
                          follow-up) — there is no Unsloth fallback"
-                        .to_string())
+                            .to_string(),
+                    )
                 }
             }
             "forge/train-status" => {
@@ -145,10 +147,9 @@ impl ServiceModule for ForgeModule {
                          the base architecture to produce a loadable adapter"
                             .to_string()
                     })?;
-                    let hf_base =
-                        crate::model_registry::artifacts::resolve_hf_source_for_model_id(
-                            &base_model_id,
-                        )?;
+                    let hf_base = crate::model_registry::artifacts::resolve_hf_source_for_model_id(
+                        &base_model_id,
+                    )?;
                     run_export_gguf_lora(
                         &ForgeCustodianHttp::from_config(),
                         &parsed,
@@ -468,7 +469,11 @@ fn native_forge_capability() -> crate::forge::protocol::ForgeCapability {
     let s = crate::forge::mlx_job::current_train_status();
     let outputs_dir = native_genome_dir();
     let held_genes = std::fs::read_dir(&outputs_dir)
-        .map(|rd| rd.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()).count())
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter(|e| e.path().is_dir())
+                .count()
+        })
         .unwrap_or(0);
     crate::forge::protocol::ForgeCapability {
         reachable: true,
@@ -556,7 +561,11 @@ fn run_train_native_mlx(
             // mlx needs a NON-empty valid split; with tiny corpora the 0.9 split
             // can round eval to 0 rows, so fall back to copying train as valid.
             let eval_rows = read_jsonl(&eval).map(|r| r.len()).unwrap_or(0);
-            let src = if eval_rows > 0 { &eval } else { &out.join("train.jsonl") };
+            let src = if eval_rows > 0 {
+                &eval
+            } else {
+                &out.join("train.jsonl")
+            };
             std::fs::copy(src, &valid)
                 .map_err(|e| format!("materialize valid.jsonl from {}: {e}", src.display()))?;
             out
@@ -580,10 +589,12 @@ fn run_train_native_mlx(
         return Err("forge/train (mlx): lora_r must be > 0".to_string());
     }
     let scale = p.lora_alpha as f64 / p.lora_r as f64;
-    let learning_rate: f64 = p
-        .learning_rate
-        .parse()
-        .map_err(|e| format!("forge/train (mlx): learning_rate {:?}: {e}", p.learning_rate))?;
+    let learning_rate: f64 = p.learning_rate.parse().map_err(|e| {
+        format!(
+            "forge/train (mlx): learning_rate {:?}: {e}",
+            p.learning_rate
+        )
+    })?;
 
     let spec = MlxTrainSpec {
         base_model_dir,
@@ -746,7 +757,10 @@ async fn run_export_gguf_lora(
 
     // Catch contract drift at the handshake, not as a malformed body deep in a
     // conversion (Contract C, R1/R2).
-    custodian.ensure_contract().await.map_err(|e| e.to_string())?;
+    custodian
+        .ensure_contract()
+        .await
+        .map_err(|e| e.to_string())?;
 
     let req = crate::forge::protocol::GgufLoraRequest {
         checkpoint: p.checkpoint.clone(),
@@ -760,7 +774,10 @@ async fn run_export_gguf_lora(
         .map_err(|e| e.to_string())?;
 
     if !result.success {
-        return Err(format!("custodian export (gguf-lora) failed: {}", result.message));
+        return Err(format!(
+            "custodian export (gguf-lora) failed: {}",
+            result.message
+        ));
     }
 
     // Close the 5th wire: a produced gene that isn't REGISTERED is a silently-lost
@@ -833,8 +850,8 @@ async fn run_publish(p: ForgePublishParams) -> Result<CommandResult, String> {
         rank: p.rank,
         lift: p.lift,
     };
-    let req =
-        PublishRequest::build(&inputs, |path| path.exists()).map_err(|e| format!("forge/publish: {e}"))?;
+    let req = PublishRequest::build(&inputs, |path| path.exists())
+        .map_err(|e| format!("forge/publish: {e}"))?;
 
     let target = p.target.as_deref().unwrap_or("huggingface");
     let publisher: Box<dyn Publisher> = match target {
@@ -949,10 +966,11 @@ fn default_adopt_margin() -> f64 {
 fn decide_assemble_or_train(p: &DecideParams) -> Value {
     // Best available candidate by measured capability (score). Cost-weighted
     // value-density is the eviction/composition decision, not this one.
-    let best = p
-        .candidates
-        .iter()
-        .max_by(|a, b| a.score.partial_cmp(&b.score).unwrap_or(std::cmp::Ordering::Equal));
+    let best = p.candidates.iter().max_by(|a, b| {
+        a.score
+            .partial_cmp(&b.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     match best {
         Some(c) if c.score - p.baseline >= p.adopt_margin => serde_json::json!({
@@ -994,7 +1012,11 @@ mod tests {
     /// collide and never touch the real `~/.continuum` manifest (DI mirrors the
     /// `register` vs `register_at` split — no env globals, no test pollution).
     fn tmp_manifest(tag: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("forge_export_manifest_{}_{}.json", tag, std::process::id()))
+        std::env::temp_dir().join(format!(
+            "forge_export_manifest_{}_{}.json",
+            tag,
+            std::process::id()
+        ))
     }
 
     fn synthetic_recipe() -> ForgeRecipe {
@@ -1066,9 +1088,15 @@ mod tests {
         assert_eq!(a.methodology_paper_url, recipe.methodology_paper_url);
         assert_eq!(a.limitations, recipe.limitations);
         assert_eq!(a.source.base_model, recipe.source.base_model);
-        assert_eq!(a.calibration_corpus.content_hash, recipe.calibration_corpus.content_hash);
+        assert_eq!(
+            a.calibration_corpus.content_hash,
+            recipe.calibration_corpus.content_hash
+        );
         assert_eq!(a.quant_tiers.len(), recipe.quant_tiers.len());
-        assert_eq!(a.evaluation_benchmarks.len(), recipe.evaluation_benchmarks.len());
+        assert_eq!(
+            a.evaluation_benchmarks.len(),
+            recipe.evaluation_benchmarks.len()
+        );
         assert_eq!(a.hardware.supports_cpu, recipe.hardware.supports_cpu);
     }
 
@@ -1185,7 +1213,10 @@ mod tests {
     fn mlx_engine_selection_is_explicit_wins_fail_loud() {
         assert_eq!(mlx_engine_selected(Some("mlx")).unwrap(), true);
         assert_eq!(mlx_engine_selected(Some("custodian")).unwrap(), false);
-        assert!(mlx_engine_selected(Some("tensorflow")).is_err(), "unknown engine must fail loud");
+        assert!(
+            mlx_engine_selected(Some("tensorflow")).is_err(),
+            "unknown engine must fail loud"
+        );
         // None → platform auto-detect; on this Apple-Silicon host that's mlx,
         // and the fn must agree with the same cfg! the dispatch uses.
         let want = cfg!(all(target_os = "macos", target_arch = "aarch64"));
@@ -1203,8 +1234,14 @@ mod tests {
         }
         let p = resolve_mlx_python();
         let s = p.display().to_string();
-        assert!(s.contains(".continuum/genome/venv"), "managed venv path, got {s}");
-        assert!(!s.contains(".unsloth"), "must not reference the legacy unsloth venv, got {s}");
+        assert!(
+            s.contains(".continuum/genome/venv"),
+            "managed venv path, got {s}"
+        );
+        assert!(
+            !s.contains(".unsloth"),
+            "must not reference the legacy unsloth venv, got {s}"
+        );
     }
 
     /// What this catches: the native dry_run RESOLVES the full MlxTrainSpec
@@ -1225,7 +1262,8 @@ mod tests {
             "lora_r": 16,
             "lora_alpha": 32,
             "dry_run": true,
-        })).expect("params");
+        }))
+        .expect("params");
         let v = match run_train_native_mlx(p, None).unwrap() {
             CommandResult::Json(v) => v,
             _ => panic!("json"),
@@ -1256,10 +1294,14 @@ mod tests {
             "base_model": "qwen3.5-4b-code-forged",
             "engine": "mlx",
             "dry_run": true,
-        })).expect("params");
+        }))
+        .expect("params");
         let err = run_train_native_mlx(p, None).unwrap_err();
         assert!(err.contains("train_base_dir is required"), "got: {err}");
-        assert!(err.contains("serve-base"), "must name the train==serve reason, got: {err}");
+        assert!(
+            err.contains("serve-base"),
+            "must name the train==serve reason, got: {err}"
+        );
     }
 
     use std::sync::Mutex;
@@ -1274,7 +1316,10 @@ mod tests {
     }
     impl RecordingForgeCustodian {
         fn ok() -> Self {
-            Self { succeed: true, ..Default::default() }
+            Self {
+                succeed: true,
+                ..Default::default()
+            }
         }
     }
     #[async_trait]
@@ -1340,7 +1385,10 @@ mod tests {
             .unwrap();
         let reqs = cust.exports.lock().unwrap();
         assert_eq!(reqs.len(), 1, "exactly one export call");
-        assert_eq!(reqs[0].checkpoint, "/ckpt", "checkpoint named in the body (stateless)");
+        assert_eq!(
+            reqs[0].checkpoint, "/ckpt",
+            "checkpoint named in the body (stateless)"
+        );
         assert_eq!(reqs[0].save_directory, "/out");
         // The custodian gets the SAFETENSORS hf_base, not the canonical GGUF id.
         assert_eq!(reqs[0].base_model_id, "unsloth/Qwen2.5-0.5B-Instruct");
@@ -1364,11 +1412,20 @@ mod tests {
             load_in_4bit: true,
         };
         // hf_base is irrelevant here — the None base_model_id fails loud first.
-        let err = run_export_gguf_lora(&cust, &p, "unsloth/Qwen2.5-0.5B-Instruct", &tmp_manifest("nobase"))
-            .await
-            .expect_err("missing base must error");
+        let err = run_export_gguf_lora(
+            &cust,
+            &p,
+            "unsloth/Qwen2.5-0.5B-Instruct",
+            &tmp_manifest("nobase"),
+        )
+        .await
+        .expect_err("missing base must error");
         assert!(err.contains("base_model_id"), "got: {err}");
-        assert_eq!(cust.exports.lock().unwrap().len(), 0, "custodian never called");
+        assert_eq!(
+            cust.exports.lock().unwrap().len(),
+            0,
+            "custodian never called"
+        );
     }
 
     // what this catches: a custodian whose gguf-lora export fails is surfaced
@@ -1386,9 +1443,14 @@ mod tests {
             max_seq_length: 2048,
             load_in_4bit: true,
         };
-        let err = run_export_gguf_lora(&cust, &p, "unsloth/Qwen2.5-0.5B-Instruct", &tmp_manifest("custfail"))
-            .await
-            .expect_err("must error");
+        let err = run_export_gguf_lora(
+            &cust,
+            &p,
+            "unsloth/Qwen2.5-0.5B-Instruct",
+            &tmp_manifest("custfail"),
+        )
+        .await
+        .expect_err("must error");
         assert!(err.contains("gguf-lora) failed"), "got: {err}");
     }
 
@@ -1421,12 +1483,24 @@ mod tests {
             .unwrap();
 
         let all = crate::forge::adapter_manifest::load_from(&path).unwrap();
-        let matched =
-            crate::forge::adapter_manifest::for_base(&all, "continuum-ai/qwen3.5-4b-code-forged-GGUF");
-        assert_eq!(matched.len(), 1, "the produced gene is registered under its continuum id");
+        let matched = crate::forge::adapter_manifest::for_base(
+            &all,
+            "continuum-ai/qwen3.5-4b-code-forged-GGUF",
+        );
+        assert_eq!(
+            matched.len(),
+            1,
+            "the produced gene is registered under its continuum id"
+        );
         // The fake mirrors the custodian's `{save_dir}/{ckpt_stem}-<job>.gguf` path.
-        assert_eq!(matched[0].path, std::path::PathBuf::from("/genes/asha-code-testjob.gguf"));
-        assert_eq!(matched[0].alias, "asha-code-testjob", "alias = gene file stem");
+        assert_eq!(
+            matched[0].path,
+            std::path::PathBuf::from("/genes/asha-code-testjob.gguf")
+        );
+        assert_eq!(
+            matched[0].alias, "asha-code-testjob",
+            "alias = gene file stem"
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -1456,9 +1530,11 @@ mod tests {
             crate::forge::protocol::HealthResponse,
             crate::forge::custodian_client::ForgeCustodianError,
         > {
-            Err(crate::forge::custodian_client::ForgeCustodianError::Unreachable(
-                "connection refused".into(),
-            ))
+            Err(
+                crate::forge::custodian_client::ForgeCustodianError::Unreachable(
+                    "connection refused".into(),
+                ),
+            )
         }
         async fn export_gguf_lora(
             &self,
@@ -1482,8 +1558,14 @@ mod tests {
             CommandResult::Json(v) => v,
             other => panic!("expected Json, got {other:?}"),
         };
-        assert_eq!(v["contract_version"], crate::forge::protocol::CONTRACT_VERSION);
-        assert_eq!(v["capability"], crate::forge::protocol::CAPABILITY_GGUF_LORA);
+        assert_eq!(
+            v["contract_version"],
+            crate::forge::protocol::CONTRACT_VERSION
+        );
+        assert_eq!(
+            v["capability"],
+            crate::forge::protocol::CAPABILITY_GGUF_LORA
+        );
         assert_eq!(v["ready"], true);
     }
 
@@ -1492,7 +1574,9 @@ mod tests {
     // see the truth (route elsewhere), not be told a down custodian is up.
     #[tokio::test]
     async fn forge_health_fails_loud_when_custodian_down() {
-        let err = run_health(&DownForgeCustodian).await.expect_err("down custodian must error");
+        let err = run_health(&DownForgeCustodian)
+            .await
+            .expect_err("down custodian must error");
         assert!(err.contains("connection refused"), "got: {err}");
     }
 
@@ -1576,5 +1660,4 @@ mod tests {
         };
         assert_eq!(v["action"], "train");
     }
-
 }

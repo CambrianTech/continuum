@@ -172,9 +172,7 @@ pub enum DiscoveryFailure {
     )]
     UnparseableRoomOutput(String),
 
-    #[error(
-        "no default room set — run `airc room <name>` to subscribe the scope to a room"
-    )]
+    #[error("no default room set — run `airc room <name>` to subscribe the scope to a room")]
     NoDefaultRoom,
 }
 
@@ -229,10 +227,8 @@ mod tests {
     /// EACCES, or "file exists but not a socket."
     #[test]
     fn stale_socket_carries_path_and_io_reason() {
-        let reason = DiscoveryFailure::StaleSocket(
-            PathBuf::from("/tmp/dead.sock"),
-            "ECONNREFUSED".into(),
-        );
+        let reason =
+            DiscoveryFailure::StaleSocket(PathBuf::from("/tmp/dead.sock"), "ECONNREFUSED".into());
         let display = format!("{reason}");
         assert!(display.contains("/tmp/dead.sock"));
         assert!(display.contains("ECONNREFUSED"));

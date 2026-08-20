@@ -52,18 +52,14 @@ use uuid::Uuid;
 use crate::ai::adapter::AIProviderAdapter;
 use crate::ai::types::{ActiveAdapterRequest, TextGenerationRequest, TextGenerationResponse};
 use crate::identity::PeerId;
-use crate::inference::coordinator::{
-    CoordinatorError, InferenceCoordinator, OpenLaneRequest,
-};
+use crate::inference::coordinator::{CoordinatorError, InferenceCoordinator, OpenLaneRequest};
 use crate::inference::handle_store::{
     InferenceHandleStore, OpenSessionRequest, HANDLE_OWNER, HANDLE_TYPE_TAG,
 };
 use crate::inference::lane::LaneClass;
 use crate::inference::recipe_budget::TaskKind;
 use crate::runtime::cell_shapes::HandleRef;
-use crate::runtime::{
-    CommandRequest, CommandResult, ModuleConfig, ModulePriority, ServiceModule,
-};
+use crate::runtime::{CommandRequest, CommandResult, ModuleConfig, ModulePriority, ServiceModule};
 
 // ── Command name constants ─────────────────────────────────────────
 
@@ -114,6 +110,7 @@ pub struct OpenParams {
     /// this handle MUST carry a matching persona_id. Defense in
     /// depth at the inference layer.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "string")]
     pub persona_id: Option<Uuid>,
     /// What the persona is doing — drives the lane's KV budget +
@@ -225,7 +222,6 @@ pub struct InspectResult {
     #[ts(type = "number")]
     pub active_adapter_count: u32,
     // ── Lane fields (populated when the module is coordinator-wired) ──
-
     /// The persona's task class for this lane. None = non-coordinator
     /// mode (handle store only).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -241,15 +237,18 @@ pub struct InspectResult {
     pub seed_kv_tokens: Option<u32>,
     /// Max KV tokens the lane is allowed to grow to.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub max_kv_tokens: Option<u32>,
     /// Bytes accounted in FootprintRegistry for this lane.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub bytes_accounted: Option<u64>,
     /// Lease expiration wall-clock — observers track approaching
     /// expiry to renew or close.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub lease_expires_at_ms: Option<u64>,
     /// True when the lease is `Pinned` (Realtime) and the pressure
@@ -338,7 +337,11 @@ struct OpenHandler<'a>(&'a InferenceHandleModule);
 #[async_trait]
 impl CommandHandler for OpenHandler<'_> {
     type Spec = OpenCommand;
-    async fn execute(&self, _ctx: &Ctx, p: OpenParams) -> Result<Outcome<OpenResult>, CommandError> {
+    async fn execute(
+        &self,
+        _ctx: &Ctx,
+        p: OpenParams,
+    ) -> Result<Outcome<OpenResult>, CommandError> {
         let (handle, payload) = self.0.open(p).await?;
         Ok(Outcome::with_handle(payload, handle)) // mint — framework places it on the envelope
     }
@@ -475,18 +478,11 @@ impl ServiceModule for InferenceHandleModule {
         }
     }
 
-    async fn initialize(
-        &self,
-        _ctx: &crate::runtime::ModuleContext,
-    ) -> Result<(), String> {
+    async fn initialize(&self, _ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
         Ok(())
     }
 
-    async fn handle_command(
-        &self,
-        command: &str,
-        params: Value,
-    ) -> Result<CommandResult, String> {
+    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
         // Each arm is one line: build the typed handler (borrowing self for shared
         // state) and hand it to the framework dispatch, which parses the envelope,
         // runs the handler's typed `execute`, shapes the reply per WireShape, and
@@ -956,14 +952,8 @@ mod tests {
         let handle = opened_handle.clone();
         // Generate twice — same handle, two responses (increments
         // generation_count to 2).
-        let r1 = m
-            .generate(handle.clone(), empty_request())
-            .await
-            .unwrap();
-        let r2 = m
-            .generate(handle.clone(), empty_request())
-            .await
-            .unwrap();
+        let r1 = m.generate(handle.clone(), empty_request()).await.unwrap();
+        let r2 = m.generate(handle.clone(), empty_request()).await.unwrap();
         // Same prompt → same response (determinism contract).
         assert_eq!(r1.text, r2.text);
         // Inspect sees 2 generations.

@@ -41,14 +41,27 @@ Your machines form **[the Grid](#the-grid)** — an encrypted mesh where AI pers
 
 **Runs on a MacBook Air.** Add a second machine and the Grid discovers it automatically — your laptop orchestrates, your tower trains. From an iPhone you access the full shared intelligence of every node you own. Your power is the sum of every machine on your Grid — not the one in your hand.
 
-> **Where we are — honestly.** This README was written about our **prototype**, and every
-> screenshot and number in it was real when captured. The **alpha** is being built right now on
-> the `canary` branch — a ground-up Rust rebuild of cognition, serving, memory, and the live
-> desktop that has already left parts of this page behind. When the alpha is feature-complete,
-> the **beta** releases and this page's claims get re-measured against it, number by number,
-> from the same [append-only ledger](benchmarks/RESULTS.jsonl). Prototype → alpha → beta,
-> with receipts at every step.
+> **Where we are — honestly.** Every screenshot and number on this page was **real when captured**,
+> from an [append-only ledger](benchmarks/RESULTS.jsonl) you can re-run yourself. The **alpha** now
+> on the `canary` branch — a ground-up Rust rebuild of cognition, serving, memory, and the live
+> desktop — has **already left parts of this page behind**: the organism moved faster than the doc.
+> When it's feature-complete, the **beta** re-measures every claim against it, number by number.
+> Prototype → alpha → beta, receipts at every step.
 > See the [Alpha Gap Analysis](docs/planning/ALPHA-GAP-ANALYSIS.md) and [open issues](https://github.com/CambrianTech/continuum/issues) for progress.
+
+---
+
+### What that looks like in practice
+
+In a live video huddle these personas described what the person on camera was wearing, then turned the conversation into working code — because every citizen has [multimodal perception](docs/architecture/PERCEPTION-SURFACE.md) (eyes, ears, a voice) and [real hands](docs/cognition/ACTING-ORGANISM.md) that run tools, not a chat box that describes them. That isn't a demo reel; it's the [substrate](docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md) — the same thing that lets a persona [remember and learn across sessions](docs/architecture/GENOME-FOUNDRY-SENTINEL.md) while a cloud loop forgets you the moment the tab closes.
+
+**Prove it yourself — nothing here is a screenshot you have to trust:**
+
+- [`./setup.sh`](#getting-started) brings up a real citizen on your own GPU — [local, no API key](docs/architecture/INFERENCE-LANES-REALISTIC.md).
+- `continuum benchmark/swe-solve --instance <id>` drops her into a real GitHub issue and grades the patch with the [official SWE-bench scorer](benchmarks/) — every number appends to the [committed ledger](benchmarks/RESULTS.jsonl), yours to re-run.
+- Hand her a lesson from one machine and [watch it travel to another's memory](docs/architecture/PEER-LEARNING-COMPACTION.md) — the mesh gets *smarter*, not just faster.
+
+The claims below are big on purpose. Each one links to the design doc, the paper, or the result that backs it. Read the terminology, then click the receipt.
 
 ---
 
@@ -144,14 +157,17 @@ One command -- bootstraps WSL2 + Docker Desktop via winget if missing, auto-togg
 <details>
 <summary>Development (from source)</summary>
 
-Requires Node.js 20+. `npm run setup:rust` provisions the rest of the native build chain — the pinned Rust toolchain (1.95, via `rust-toolchain.toml`), **cmake**, and the **vendored git submodules** (llama.cpp/whisper.cpp) that `continuum-core` compiles. Same Docker Desktop AI toggles apply — `npm start` uses the same DMR for inference; the difference is `continuum-core` runs natively from `cargo` instead of from the published image.
+The system is a **headless Rust core**. `setup:rust` provisions the native build chain — the pinned Rust toolchain (1.95, via `rust-toolchain.toml`), **cmake**, and the **vendored git submodules** (llama.cpp/whisper.cpp) that `continuum-core` compiles. Node is needed only to build the **web** client, which is one client among several (mobile, SDK, TUI, MCP); the core itself boots and serves with no Node in the path. Same Docker Desktop AI toggles apply — the difference from the published image is that `continuum-core` runs natively from `cargo`.
 
 ```bash
 cd continuum
-npm install
+npm install               # web-client deps + the setup scripts below
 npm run setup:rust        # pinned Rust 1.95 + cmake + vendored submodules (native build prereqs)
 npm run setup:git-hooks   # optional, for commit/pre-push validation
-npm start
+
+continuum start           # build + run the headless Rust core, wait until ready
+continuum reboot          # after editing: rebuild, relaunch, VERIFY the running build SHA
+continuum ping            # is the core answering?
 ```
 
 Detailed dev environment + platform-specific gotchas: **[docs/SETUP.md](docs/SETUP.md)**.

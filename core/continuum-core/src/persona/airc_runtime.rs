@@ -176,6 +176,14 @@ pub struct PersonaAircRuntime {
     home: PathBuf,
     airc: Arc<Airc>,
     default_room: RoomId,
+    /// Bumped by [`Self::join_room`] whenever this citizen's room membership
+    /// GROWS at runtime. The perception stream's rebuild cue (P0 20b44763):
+    /// airc-lib's `subscribe_subscribed_filtered` snapshots the subscribed
+    /// channel list ONCE at subscribe time, so a room joined after `prime()`
+    /// (benchmark dispatch moving assignees into a fresh run room) never
+    /// enters an existing stream — the run room is born deaf. Watchers of
+    /// [`AircCitizen::membership_epoch`] re-open their stream when this moves.
+    membership_epoch: tokio::sync::watch::Sender<u64>,
     inbound_handle: Option<JoinHandle<()>>,
     /// Per-persona command inbound pump (task #222). When `Some`,
     /// this persona's airc handle is wired to receive cross-grid
@@ -560,9 +568,45 @@ impl PersonaAircRuntime {
             let hb_airc = airc_arc.clone();
             let hb_persona = persona_id;
             let hb_name = agent_name.clone();
+            // NO birth stamp — renewal is earned ONLY by cognition, never by
+            // booting. The grace stamp that used to sit here (one lease-length
+            // per spawn, meant to cover the post-boot deaf window #412) made
+            // convergence structurally impossible across restarts: every core
+            // restart re-armed 30 minutes of "earned" renewals, and the renewal
+            // loop below resurrected already-lapsed claims faster than the 180s
+            // lapsed-claim sweeper could observe them — an entire overnight round
+            // (2026-08-16) sat "actively held" with zero turns because of it.
+            // Never-stamped ⇒ `idle_ms` is None ⇒ renewal denied ⇒ holds lapse
+            // within one TTL of boot unless she actually thinks. A citizen who
+            // wakes later can re-claim; a finished artifact gets swept and graded.
             let handle = tokio::spawn(async move {
                 let mut ticker = tokio::time::interval(DEFAULT_HEARTBEAT_INTERVAL);
                 let mut last: Option<airc_lib::AgentAvailabilityState> = None;
+                // CLAIM RENEWAL RUNS ON ITS OWN, SLOWER CADENCE (Joel 2026-08-15:
+                // "Heartbeat needs fix. That is no good"). Presence needs the 60s
+                // pulse — roster liveness IS a fast question. A 30-minute claim
+                // lease does not: renewing it every presence tick emitted ~30× the
+                // events one lease needs, and that churn crossed the wire to EVERY
+                // subscriber on every node. Renew at TTL/3 — derived from the one
+                // lease constant, never a second magic number — which still gives a
+                // healthy citizen three renewal opportunities per lease. The stamp
+                // is only advanced on a fully-clean pass, so any roster-read or
+                // per-card failure falls back to retrying on the NEXT 60s tick
+                // (exactly the old cadence) until clean — degraded mode is the old
+                // behavior, never a wider gap.
+                let renewal_period = std::time::Duration::from_millis(
+                    crate::modules::work::DEFAULT_CLAIM_TTL_MS / 3,
+                );
+                let mut last_clean_renewal: Option<std::time::Instant> = None;
+                // Emit-on-transition for the renewal-denied probe: denial is a
+                // STANDING condition (an idle citizen stays idle for hours) and
+                // this loop ticks every 60s, so an unguarded probe here is the
+                // same stream-flooding shape as the per-tick serving.plan probe
+                // (#399 — measured 110 identical denial rows in 5 min across
+                // the roster). One row when denial BEGINS, one implicit end
+                // when renewals resume; the standing state stays queryable via
+                // the work board's lease column.
+                let mut renewal_denied = false;
                 loop {
                     ticker.tick().await;
                     let serving = crate::inference::llama_server::current_serving();
@@ -631,6 +675,58 @@ impl PersonaAircRuntime {
                     //
                     // Renewal is per-card WARN-and-continue: a failed renewal degrades
                     // to exactly the old lapse, and never takes down presence.
+                    let renewal_due =
+                        last_clean_renewal.map_or(true, |t| t.elapsed() >= renewal_period);
+                    if !renewal_due {
+                        continue;
+                    }
+                    // RENEWAL IS EARNED BY COGNITION, NOT BY BREATHING
+                    // (2026-08-16). The presence-bound renewal above this
+                    // comment's ancestor fixed #331 by overcorrecting: a
+                    // citizen whose cognition had been silent for HOURS still
+                    // renewed every minute, so a stalled round read as
+                    // "actively held" forever and the lapsed-claim sweeper
+                    // could never recover her finished artifact. The gate:
+                    // no turn within one lease-length → skip renewal → the
+                    // hold lapses naturally → the card becomes re-claimable
+                    // and any written artifact gets graded. A turn that
+                    // DEFERS on serving pressure still stamps the pulse —
+                    // trying to think counts; only true silence lapses.
+                    {
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as u64)
+                            .unwrap_or_default();
+                        let idle = crate::persona::cognition_pulse::idle_ms(hb_persona, now_ms);
+                        if !crate::persona::cognition_pulse::renewal_earned(
+                            idle,
+                            crate::modules::work::DEFAULT_CLAIM_TTL_MS,
+                        ) {
+                            if !renewal_denied {
+                                renewal_denied = true;
+                                crate::probe!(
+                                    class = "persona.claim.renewal_skipped_idle",
+                                    persona_id = %hb_persona,
+                                    agent_name = %hb_name,
+                                    idle_ms = idle.unwrap_or(u64::MAX),
+                                    ttl_ms = crate::modules::work::DEFAULT_CLAIM_TTL_MS,
+                                    "no cognition within one lease-length — renewals \
+                                     DENIED from here until she thinks again; holds \
+                                     lapse naturally so the work can be recovered"
+                                );
+                            }
+                            continue;
+                        }
+                        if renewal_denied {
+                            renewal_denied = false;
+                            crate::probe!(
+                                class = "persona.claim.renewal_resumed",
+                                persona_id = %hb_persona,
+                                agent_name = %hb_name,
+                                "cognition resumed — claim renewals earned again"
+                            );
+                        }
+                    }
                     match hb_airc
                         .work_roster_status(airc_lib::WorkRosterQuery::default())
                         .await
@@ -644,6 +740,7 @@ impl PersonaAircRuntime {
                                 .map(|r| r.active_claims)
                                 .unwrap_or_default();
                             let mut renewed = 0usize;
+                            let mut failed = 0usize;
                             for card in &mine {
                                 let Some(claim_id) = card.claim_id else {
                                     continue;
@@ -656,6 +753,7 @@ impl PersonaAircRuntime {
                                     })
                                     .await
                                 {
+                                    failed += 1;
                                     warn!(
                                         persona_id = %hb_persona,
                                         agent_name = %hb_name,
@@ -676,8 +774,13 @@ impl PersonaAircRuntime {
                                     renewed = renewed,
                                     held = mine.len(),
                                     ttl_ms = crate::modules::work::DEFAULT_CLAIM_TTL_MS,
-                                    "held work-card claims renewed on the presence pulse"
+                                    "held work-card claims renewed on the claim cadence (TTL/3)"
                                 );
+                            }
+                            // Only a fully-clean pass earns the slow cadence; any
+                            // failure retries on the next 60s presence tick.
+                            if failed == 0 {
+                                last_clean_renewal = Some(std::time::Instant::now());
                             }
                         }
                         Err(error) => {
@@ -685,7 +788,8 @@ impl PersonaAircRuntime {
                                 persona_id = %hb_persona,
                                 agent_name = %hb_name,
                                 error = %error,
-                                "claim-renewal roster read failed — holds may lapse this tick"
+                                "claim-renewal roster read failed — holds may lapse; retrying \
+                                 on the next presence tick"
                             );
                         }
                     }
@@ -808,12 +912,28 @@ impl PersonaAircRuntime {
             // state above) — before #298 this stored the passed-in operator
             // room, which could even diverge from the joined channel.
             default_room: RoomId::from_uuid(room.channel.as_uuid()),
+            membership_epoch: tokio::sync::watch::channel(0u64).0,
             inbound_handle: None,
             command_pump: Some(command_pump),
             heartbeat,
             identity_republish,
             source,
         })
+    }
+
+    /// Join a room UNDER THIS CITIZEN'S IDENTITY at runtime and bump the
+    /// membership epoch so her live perception stream re-opens with the
+    /// enlarged channel snapshot (P0 20b44763). This — not `airc().join`
+    /// directly — is the ONE runtime-join path for a living persona:
+    /// airc-lib's `subscribe_subscribed_filtered` collects the channel list
+    /// once at subscribe time, so a bare join grants durable membership to a
+    /// room whose events her existing stream will never carry (measured
+    /// 2026-08-15: three benchmark rounds, 12 addressed kickoffs each, zero
+    /// turns — every per-run room was born deaf).
+    pub async fn join_room(&self, name: &str) -> Result<(), AircError> {
+        self.airc.join(name).await?;
+        self.membership_epoch.send_modify(|e| *e += 1);
+        Ok(())
     }
 
     /// Wrap an already-attached + already-joined `Arc<Airc>` into a
@@ -858,6 +978,7 @@ impl PersonaAircRuntime {
             home,
             airc,
             default_room,
+            membership_epoch: tokio::sync::watch::channel(0u64).0,
             inbound_handle: None,
             // from_attached is sync + the pump install is async, so
             // we don't install at construction. Callers that want the
@@ -1005,8 +1126,15 @@ impl crate::persona::room_roster_source::AircRosterReader for PersonaAircRuntime
         &self,
         within: std::time::Duration,
         window: usize,
+        room: Option<uuid::Uuid>,
     ) -> Result<Vec<airc_lib::RoomMember>, AircError> {
-        self.airc.room_roster(within, window).await
+        crate::persona::room_roster_source::AircRosterReader::room_roster(
+            self.airc.as_ref(),
+            within,
+            window,
+            room,
+        )
+        .await
     }
 }
 
@@ -1014,8 +1142,13 @@ impl crate::persona::room_roster_source::AircRosterReader for PersonaAircRuntime
 impl crate::persona::room_doctrine_source::AircDoctrineReader for PersonaAircRuntime {
     async fn room_doctrine(
         &self,
+        room: Option<uuid::Uuid>,
     ) -> Result<Option<airc_core::doctrine::RoomDoctrinePublished>, AircError> {
-        self.airc.room_doctrine().await
+        crate::persona::room_doctrine_source::AircDoctrineReader::room_doctrine(
+            self.airc.as_ref(),
+            room,
+        )
+        .await
     }
 }
 
@@ -1078,12 +1211,16 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
         self.airc.peer_id().as_uuid()
     }
 
-    async fn subscribe(&self) -> Result<airc_lib::EventStream, AircError> {
-        self.airc.subscribe().await
+    async fn subscribe_all_rooms(&self) -> Result<airc_lib::FilteredEventStream, AircError> {
+        crate::persona::airc_citizen::subscribe_every_room(&self.airc).await
     }
 
-    async fn say(&self, text: &str) -> Result<EventId, AircError> {
-        self.airc.say(text).await
+    fn membership_epoch(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.membership_epoch.subscribe()
+    }
+
+    async fn say_in(&self, room_id: Uuid, text: &str) -> Result<EventId, AircError> {
+        crate::persona::airc_citizen::publish_text_in_room(&self.airc, room_id, text).await
     }
 
     /// #170: delegate to airc-lib's ephemeral stream-chunk publish.

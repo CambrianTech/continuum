@@ -4,4 +4,4 @@ import type { PipelineStep } from "./PipelineStep";
 /**
  * A complete pipeline definition
  */
-export type Pipeline = { name?: string | null, steps: Array<PipelineStep>, workingDir?: string | null, timeoutSecs?: bigint | null, inputs: Record<string, unknown>, };
+export type Pipeline = { name?: string, steps: Array<PipelineStep>, workingDir?: string, timeoutSecs?: bigint, inputs: Record<string, unknown>, };

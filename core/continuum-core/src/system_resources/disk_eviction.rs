@@ -356,19 +356,17 @@ fn entries_identical(a: &Path, b: &Path) -> bool {
             let Ok(entries) = std::fs::read_dir(a) else {
                 return false;
             };
-            let names_a: Vec<std::ffi::OsString> = entries
-                .flatten()
-                .map(|e| e.file_name())
-                .collect();
+            let names_a: Vec<std::ffi::OsString> =
+                entries.flatten().map(|e| e.file_name()).collect();
             let Ok(entries_b) = std::fs::read_dir(b) else {
                 return false;
             };
             let names_b: HashSet<std::ffi::OsString> =
                 entries_b.flatten().map(|e| e.file_name()).collect();
             names_a.len() == names_b.len()
-                && names_a.iter().all(|n| {
-                    names_b.contains(n) && entries_identical(&a.join(n), &b.join(n))
-                })
+                && names_a
+                    .iter()
+                    .all(|n| names_b.contains(n) && entries_identical(&a.join(n), &b.join(n)))
         }
         _ => false,
     }
@@ -401,7 +399,10 @@ fn copy_entry_durable(src: &Path, dst: &Path) -> std::io::Result<()> {
         // fsync on a read-only fd, which is why this survived on
         // macOS/Linux — [[dir-opened-as-file-windows-only]] is the same
         // family: a file-API assumption that only one platform enforces.
-        std::fs::OpenOptions::new().write(true).open(dst)?.sync_all()?;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(dst)?
+            .sync_all()?;
     }
     Ok(())
 }
@@ -451,7 +452,9 @@ impl ResourcePool for NvmeServingTierPool {
             if self.active.protects(&path) {
                 continue;
             }
-            let Some(name) = path.file_name() else { continue };
+            let Some(name) = path.file_name() else {
+                continue;
+            };
             let dest = cold_root.join(name);
 
             if dest.exists() {
@@ -668,6 +671,20 @@ mod tests {
         let deferred = [
             ("hf-hub", "#155: hub LRU keyed on last-access — downloads are re-fetchable"),
             ("citizens", "#155/#49: workspace CoW fix removes the bulk; stores are persona MEMORY, never auto-evicted"),
+            // Sibling of `citizens` and inherits its rule: a LIVE mind's longterm.db and
+            // working-set.json are MEMORY, never auto-evicted. What IS evictable is the
+            // GHOST sub-class — a dir whose uuid appears in no roster and which never
+            // recorded a turn, left by the spawn name-pool (#437). Measured 2026-08-20:
+            // 295 dirs, 286 of them under 100 KB, 2 real citizens. Small in bytes, which is
+            // exactly why it went unnoticed for so long — the hazard here is not capacity,
+            // it is that ghost identities pollute the roster and the demand ceiling. An
+            // owner pool must key on "has this uuid ever completed a turn", never on size.
+            (
+                "personas",
+                "#155/#437: per-persona MEMORY, never blind-LRU'd. Evictable sub-class is \
+                 GHOST dirs only — no roster entry AND no recorded turn — which needs a pool \
+                 that can ask the roster, not a size heuristic",
+            ),
             ("forge", "#155: export trimmer — intermediates only, published artifacts stay"),
             // Registered the day benchmark/swe-* landed, BEFORE a sweep ran. Everything under
             // it is re-creatable — repo clones from git, venvs from uv, the dataset from HF —
@@ -678,14 +695,21 @@ mod tests {
             (
                 "benchmarks",
                 "#155: LRU over per-instance dirs, skipping the in-flight set — clones/venvs \
-                 are re-creatable from git+uv, so only an active grade is at risk",
+                 are re-creatable from git+uv, so only an active grade is at risk. NOT \
+                 everything under it is re-creatable: `swe/captures/run-*/attempt-N.patch` \
+                 is a citizen's actual diff, deleted from her workspace the moment the next \
+                 attempt resets it (#379). An eviction pool here must treat captures as \
+                 EVIDENCE — small, and the only thing that can answer what she wrote — and \
+                 reclaim the bulky re-creatable clones/venvs instead. Corrected 2026-08-18: \
+                 this entry read \"everything under it is re-creatable\", which the 25 \
+                 patches already sitting there had falsified since before it was written",
             ),
         ];
         use super::super::disk_pressure::DiskReporter as _;
         for dir in super::super::disk_reporters::standard_tracked_dirs(Path::new("/h")) {
             let name = dir.report().name;
-            let decided = owned.contains(&name.as_str())
-                || deferred.iter().any(|(n, _)| *n == name);
+            let decided =
+                owned.contains(&name.as_str()) || deferred.iter().any(|(n, _)| *n == name);
             assert!(
                 decided,
                 "cache class '{name}' has NO eviction decision — register an owner pool or \
@@ -774,7 +798,10 @@ mod tests {
                 hot.path().join("served-model/model.gguf").exists(),
                 "the served model must survive unlimited eviction demand"
             );
-            assert!(!hot.path().join("stale-model").exists(), "frozen artifacts migrate");
+            assert!(
+                !hot.path().join("stale-model").exists(),
+                "frozen artifacts migrate"
+            );
             assert!(!hot.path().join("old.gguf").exists());
         }
 
@@ -805,8 +832,14 @@ mod tests {
                 cold.path().join("stale-model/model.gguf").exists(),
                 "verified cold copy exists"
             );
-            assert!(!hot.path().join("stale-model").exists(), "hot copy gone after verify");
-            assert!(hot.path().join("old.gguf").exists(), "later candidate untouched");
+            assert!(
+                !hot.path().join("stale-model").exists(),
+                "hot copy gone after verify"
+            );
+            assert!(
+                hot.path().join("old.gguf").exists(),
+                "later candidate untouched"
+            );
             assert_eq!(tracked.bytes(), usage_before - 4000);
 
             // Second round: old.gguf's twin is already frozen — pure drop.
@@ -849,7 +882,11 @@ mod tests {
                 "collision with different content: hot copy kept"
             );
             let cold_bytes = std::fs::read(cold.path().join("old.gguf")).expect("read");
-            assert_eq!(cold_bytes, vec![9u8; 3000], "cold artifact never overwritten");
+            assert_eq!(
+                cold_bytes,
+                vec![9u8; 3000],
+                "cold artifact never overwritten"
+            );
         }
 
         // what this catches: the capacity derivation (#287-style) — 10% of
@@ -880,7 +917,10 @@ mod tests {
                 set.protects(Path::new("/hot/served-model/model.gguf")),
                 "candidate under active dir is protected"
             );
-            assert!(set.protects(Path::new("/hot")), "parent of active is protected");
+            assert!(
+                set.protects(Path::new("/hot")),
+                "parent of active is protected"
+            );
             assert!(!set.protects(Path::new("/hot/other-model")));
             set.release(Path::new("/hot/served-model"));
             assert!(!set.protects(Path::new("/hot/served-model")));

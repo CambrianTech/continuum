@@ -259,9 +259,18 @@ mod tests {
     // expert the same way, or the pager pages in the wrong weights.
     #[test]
     fn expert_page_ref_is_distinct_and_deterministic() {
-        assert_eq!(expert_page_ref(GGUF, eid(0, 3)), expert_page_ref(GGUF, eid(0, 3)));
-        assert_ne!(expert_page_ref(GGUF, eid(0, 3)), expert_page_ref(GGUF, eid(0, 4)));
-        assert_ne!(expert_page_ref(GGUF, eid(0, 3)), expert_page_ref(GGUF, eid(1, 3)));
+        assert_eq!(
+            expert_page_ref(GGUF, eid(0, 3)),
+            expert_page_ref(GGUF, eid(0, 3))
+        );
+        assert_ne!(
+            expert_page_ref(GGUF, eid(0, 3)),
+            expert_page_ref(GGUF, eid(0, 4))
+        );
+        assert_ne!(
+            expert_page_ref(GGUF, eid(0, 3)),
+            expert_page_ref(GGUF, eid(1, 3))
+        );
         // MoEExpert kind + the right expert index.
         let p = expert_page_ref(GGUF, eid(2, 7));
         assert_eq!(p.kind, PageKind::MoEExpert);
@@ -281,10 +290,10 @@ mod tests {
         assert!(ops.contains(&ReconcileOp::PageIn(expert_page_ref(GGUF, eid(0, 3)))));
         assert!(ops.contains(&ReconcileOp::Evict(expert_page_ref(GGUF, eid(0, 1)))));
         // expert 2 stays — no op for it.
-        assert!(!ops
-            .iter()
-            .any(|op| matches!(op, ReconcileOp::PageIn(p) | ReconcileOp::Evict(p)
-                if *p == expert_page_ref(GGUF, eid(0, 2)))));
+        assert!(!ops.iter().any(
+            |op| matches!(op, ReconcileOp::PageIn(p) | ReconcileOp::Evict(p)
+                if *p == expert_page_ref(GGUF, eid(0, 2)))
+        ));
         assert_eq!(ops.len(), 2);
     }
 
@@ -311,21 +320,37 @@ mod tests {
     fn relaunch_pager_accumulates_and_relaunches_only_on_material_change() {
         let mut pager = RelaunchPager::new();
         // First launch: apply a hot set → served is empty → any set needs a relaunch.
-        let ops = reconcile_ops(&plan(&[eid(0, 1), eid(0, 2), eid(0, 3)]), GGUF, &HashSet::new());
+        let ops = reconcile_ops(
+            &plan(&[eid(0, 1), eid(0, 2), eid(0, 3)]),
+            GGUF,
+            &HashSet::new(),
+        );
         apply_reconcile(&mut pager, ops).unwrap();
         assert_eq!(pager.resident().len(), 3);
-        assert!(pager.relaunch_needed(0), "first non-empty residency set must relaunch");
+        assert!(
+            pager.relaunch_needed(0),
+            "first non-empty residency set must relaunch"
+        );
 
         pager.mark_relaunched();
-        assert!(!pager.relaunch_needed(0), "after relaunch, served == resident → no relaunch");
+        assert!(
+            !pager.relaunch_needed(0),
+            "after relaunch, served == resident → no relaunch"
+        );
 
         // Small drift: swap ONE expert (churn = 2: one out, one in). Under threshold 2 → no
         // relaunch (churn must EXCEED threshold); a churn of 3+ would.
         let current = pager.resident().clone();
         let ops = reconcile_ops(&plan(&[eid(0, 1), eid(0, 2), eid(0, 4)]), GGUF, &current);
         apply_reconcile(&mut pager, ops).unwrap();
-        assert!(!pager.relaunch_needed(2), "a 1-expert swap (churn 2) is noise under threshold 2");
-        assert!(pager.relaunch_needed(1), "the same swap DOES exceed threshold 1");
+        assert!(
+            !pager.relaunch_needed(2),
+            "a 1-expert swap (churn 2) is noise under threshold 2"
+        );
+        assert!(
+            pager.relaunch_needed(1),
+            "the same swap DOES exceed threshold 1"
+        );
     }
 
     // what this catches: expert_pager_step composes the WHOLE cycle into one call —
@@ -381,7 +406,10 @@ mod tests {
             out.hot_experts
         );
         assert!(!out.ops.is_empty(), "first pass pages experts in");
-        assert!(out.relaunch_needed, "first non-empty residency set needs a relaunch");
+        assert!(
+            out.relaunch_needed,
+            "first non-empty residency set needs a relaunch"
+        );
 
         pager.mark_relaunched();
         // Second pass, SAME activation: nothing changed → no ops, no relaunch (settled).

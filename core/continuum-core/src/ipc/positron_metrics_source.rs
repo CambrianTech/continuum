@@ -79,8 +79,16 @@ fn fold_sample(
             current: gb(snap.memory.used_bytes, snap.memory.total_bytes),
         },
     ];
-    if let Some(gpu) = snap.gpu.as_ref().filter(|g| g.total_bytes > 0) {
-        let used = gpu.total_bytes.saturating_sub(gpu.free_bytes);
+    // Needs BOTH a total and an actual free reading. With no reading the series is
+    // omitted rather than drawn — `total - 0` would paint a full bar and read as
+    // "the GPU is saturated", which is the opposite of "we don't know yet".
+    if let Some((gpu, free)) = snap
+        .gpu
+        .as_ref()
+        .filter(|g| g.total_bytes > 0)
+        .and_then(|g| g.free_bytes.map(|f| (g, f)))
+    {
+        let used = gpu.total_bytes.saturating_sub(free);
         let gpu_pct = ((used as f64 / gpu.total_bytes as f64) * 100.0).clamp(0.0, 100.0) as f32;
         push_ring(gpu_ring, gpu_pct);
         series.push(MetricSeriesView {
@@ -221,7 +229,7 @@ mod tests {
             platform: "metal".into(),
             device_name: "TestGPU".into(),
             total_bytes: 25 * g,
-            free_bytes: 25 * g - (6 * g + g / 2),
+            free_bytes: Some(25 * g - (6 * g + g / 2)),
             process_bytes: 0,
             utilization: 0.4,
             temperature_c: None,

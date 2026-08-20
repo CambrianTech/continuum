@@ -59,6 +59,7 @@ const chatState = (over: Partial<ChatState> = {}): ChatState => ({
   purpose: 'chat',
   messages: [],
   roster: [],
+  acts: [],
   ...over,
 });
 

@@ -13,7 +13,7 @@
 //!
 //! This module just AGGREGATES those per-command declarations into two generated
 //! indices (built once, cached), and is the surface-agnostic core every entry
-//! point shares — the persona tool-call path, the `cu` CLI, MCP. The mapping is
+//! point shares — the persona tool-call path, the `uu` CLI, MCP. The mapping is
 //! one thing; each surface renders it in its own native form.
 //!
 //! - [`from_wire_name`] — a wire tool-call name → the canonical command. Trained
@@ -208,7 +208,7 @@ fn classify(wire: &str) -> (String, Outcome) {
 }
 
 /// Resolve a wire tool-call name to the canonical command WITHOUT tallying — the
-/// shared resolver every dispatch seam (the `cu` CLI, the IPC/MCP socket route)
+/// shared resolver every dispatch seam (the `uu` CLI, the IPC/MCP socket route)
 /// funnels through so a trained reflex / former name / charset-legal form resolves
 /// the SAME way it does on the persona path. No recording here: these surfaces
 /// carry infra traffic (`commands/list`, health pings) that would drown the
@@ -320,7 +320,11 @@ mod tests {
         use super::*;
 
         fn call(name: &str, input: serde_json::Value) -> crate::ai::types::ToolCall {
-            crate::ai::types::ToolCall { id: "t1".into(), name: name.into(), input }
+            crate::ai::types::ToolCall {
+                id: "t1".into(),
+                name: name.into(),
+                input,
+            }
         }
 
         // what this catches: THE live #326 defect. Before the adapter handled this,
@@ -331,22 +335,34 @@ mod tests {
         fn a_name_carrying_its_arguments_resolves_and_keeps_the_arguments() {
             let mut c = call("work/list(state=open)", serde_json::json!({}));
             let note = normalize_call(&mut c).expect("repaired, so it must explain itself");
-            assert_eq!(c.name, "work/list", "the head must resolve to the real command");
+            assert_eq!(
+                c.name, "work/list",
+                "the head must resolve to the real command"
+            );
             assert_eq!(
                 c.input.get("state").and_then(|v| v.as_str()),
                 Some("open"),
                 "arguments welded into the name are real intent — they must survive"
             );
-            assert!(note.contains("work/list"), "the note names the canonical form: {note}");
+            assert!(
+                note.contains("work/list"),
+                "the note names the canonical form: {note}"
+            );
         }
 
         // what this catches: silently clobbering a well-formed call. Explicit input is
         // authoritative; the name is only a fallback source.
         #[test]
         fn explicit_input_always_wins_over_arguments_echoed_in_the_name() {
-            let mut c = call("work/list(state=open)", serde_json::json!({"state": "claimed"}));
+            let mut c = call(
+                "work/list(state=open)",
+                serde_json::json!({"state": "claimed"}),
+            );
             normalize_call(&mut c);
-            assert_eq!(c.input.get("state").and_then(|v| v.as_str()), Some("claimed"));
+            assert_eq!(
+                c.input.get("state").and_then(|v| v.as_str()),
+                Some("claimed")
+            );
         }
 
         // what this catches: an alias that ALSO carries args — both halves of the adapter
@@ -424,7 +440,11 @@ mod tests {
                 reflex,
                 "TrainedReflex offers {canonical} as {reflex}"
             );
-            assert_eq!(from_wire_name(reflex), canonical, "map {reflex} back to {canonical}");
+            assert_eq!(
+                from_wire_name(reflex),
+                canonical,
+                "map {reflex} back to {canonical}"
+            );
             // Canonical offers OUR name charset-legal; it maps back to canonical too.
             let canon_wire = canonical.replace('/', "_");
             assert_eq!(
@@ -466,8 +486,8 @@ mod tests {
     }
 
     // what this catches: the socket/CLI resolver (used at Runtime::route_command and
-    // the `cu` entry) maps IDENTICALLY to the persona path — alias, canonical
-    // (idempotent), charset-legal, unknown-passthrough — so `cu` / IPC / MCP accept
+    // the `uu` entry) maps IDENTICALLY to the persona path — alias, canonical
+    // (idempotent), charset-legal, unknown-passthrough — so `uu` / IPC / MCP accept
     // the same vocabulary a persona does. Non-recording is a structural guarantee
     // (resolve_wire_name == classify().0, and classify never calls record), so it's
     // asserted by construction, not by racy global-tally inspection.

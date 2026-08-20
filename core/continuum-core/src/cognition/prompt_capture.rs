@@ -90,7 +90,10 @@ impl JsonlPromptCaptureSink {
     pub fn open(dir: &Path, persona_id: Uuid) -> std::io::Result<Self> {
         std::fs::create_dir_all(dir)?;
         let path = dir.join(format!("{persona_id}.jsonl"));
-        if std::fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false) {
+        if std::fs::metadata(&path)
+            .map(|m| m.len() > 0)
+            .unwrap_or(false)
+        {
             // Best-effort roll — a rename failure just means we append to the
             // existing file (old behavior), never a spawn failure.
             let prev = dir.join(format!("{persona_id}.prev.jsonl"));

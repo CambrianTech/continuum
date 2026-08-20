@@ -267,8 +267,8 @@ fn convert_gguf_lora(req: &GgufLoraRequest, timeout: Duration) -> Result<ExportR
     let checkpoint = Path::new(&req.checkpoint);
     let mlx_safetensors = resolve_mlx_adapter(checkpoint)?;
     let config_path = checkpoint.join("adapter_config.json");
-    let config_bytes = std::fs::read(&config_path)
-        .map_err(|e| format!("read {}: {e}", config_path.display()))?;
+    let config_bytes =
+        std::fs::read(&config_path).map_err(|e| format!("read {}: {e}", config_path.display()))?;
     let mlx_config: Value = serde_json::from_slice(&config_bytes)
         .map_err(|e| format!("parse {}: {e}", config_path.display()))?;
     let (rank, alpha) = parse_mlx_lora_params(&mlx_config)?;
@@ -276,7 +276,12 @@ fn convert_gguf_lora(req: &GgufLoraRequest, timeout: Duration) -> Result<ExportR
     // R6: content-addressed job id over (weights ⊕ base ⊕ outtype). The output
     // name embeds it so an identical re-POST resolves to the same path and a
     // differing request can never silently clobber another gene.
-    let job = job_id(&mlx_safetensors, &config_bytes, &req.base_model_id, &req.outtype)?;
+    let job = job_id(
+        &mlx_safetensors,
+        &config_bytes,
+        &req.base_model_id,
+        &req.outtype,
+    )?;
     let save_dir = Path::new(&req.save_directory);
     let name = checkpoint
         .file_name()
@@ -320,8 +325,12 @@ fn convert_gguf_lora(req: &GgufLoraRequest, timeout: Duration) -> Result<ExportR
         .arg("--outfile")
         .arg(&outfile);
 
-    let output = run_with_deadline(cmd, timeout)
-        .map_err(|e| format!("convert_lora_to_gguf.py ({python} {}): {e}", converter.display()))?;
+    let output = run_with_deadline(cmd, timeout).map_err(|e| {
+        format!(
+            "convert_lora_to_gguf.py ({python} {}): {e}",
+            converter.display()
+        )
+    })?;
 
     if !output.status.success() {
         return Err(format!(
@@ -602,7 +611,10 @@ mod tests {
         let diff_base = job_id(&weights, cfg, "base-y", "f16").unwrap();
         assert_ne!(a, diff_base, "a different base must change the job id");
         let diff_outtype = job_id(&weights, cfg, "base-x", "q8_0").unwrap();
-        assert_ne!(a, diff_outtype, "a different outtype must change the job id");
+        assert_ne!(
+            a, diff_outtype,
+            "a different outtype must change the job id"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -631,6 +643,9 @@ mod tests {
         cmd.arg("hello-custodian");
         let out = run_with_deadline(cmd, Duration::from_secs(5)).expect("echo is fast");
         assert!(out.status.success());
-        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hello-custodian");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "hello-custodian"
+        );
     }
 }

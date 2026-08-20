@@ -11,7 +11,10 @@ use crate::commands::ai::AiRegistryQueryParams;
 /// Result of `ai/models/list`.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/ai/AiModelsListResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/AiModelsListResult.ts"
+)]
 pub struct AiModelsListResult {
     /// Flattened catalog across all available providers.
     pub models: Vec<ModelInfo>,

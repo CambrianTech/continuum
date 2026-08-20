@@ -184,7 +184,10 @@ impl GenomeFitnessSentinel {
                 ) else {
                     continue;
                 };
-                let at = row.get("capturedAtMs").and_then(|v| v.as_u64()).unwrap_or(0);
+                let at = row
+                    .get("capturedAtMs")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
                 match best.get(gene) {
                     Some((prev_at, _)) if *prev_at >= at => {}
                     _ => {
@@ -310,10 +313,26 @@ mod tests {
     fn assess_ranks_measured_flags_zero_lift_and_separates_unmeasured() {
         let gb = 1_000_000_000u64;
         let inputs = vec![
-            LayerInputs { alias: "strong".into(), cost_bytes: gb / 50, lift: Some(0.30) }, // high lift/GB
-            LayerInputs { alias: "weak".into(), cost_bytes: gb / 2, lift: Some(0.02) },   // low lift/GB
-            LayerInputs { alias: "dead".into(), cost_bytes: gb / 50, lift: Some(0.0) },   // lift 0 → retire
-            LayerInputs { alias: "new".into(), cost_bytes: gb / 50, lift: None },         // unmeasured
+            LayerInputs {
+                alias: "strong".into(),
+                cost_bytes: gb / 50,
+                lift: Some(0.30),
+            }, // high lift/GB
+            LayerInputs {
+                alias: "weak".into(),
+                cost_bytes: gb / 2,
+                lift: Some(0.02),
+            }, // low lift/GB
+            LayerInputs {
+                alias: "dead".into(),
+                cost_bytes: gb / 50,
+                lift: Some(0.0),
+            }, // lift 0 → retire
+            LayerInputs {
+                alias: "new".into(),
+                cost_bytes: gb / 50,
+                lift: None,
+            }, // unmeasured
         ];
         let out = assess_layers(&inputs);
         // Measured, ranked best-first, then unmeasured last.
@@ -321,8 +340,16 @@ mod tests {
         assert_eq!(order, vec!["strong", "weak", "dead", "new"]);
         assert_eq!(out[0].category, LayerCategory::Keep);
         assert_eq!(out[1].category, LayerCategory::Keep);
-        assert_eq!(out[2].category, LayerCategory::RetireCandidate, "lift 0 → retire candidate");
-        assert_eq!(out[3].category, LayerCategory::Unmeasured, "no lift → unmeasured, not retire");
+        assert_eq!(
+            out[2].category,
+            LayerCategory::RetireCandidate,
+            "lift 0 → retire candidate"
+        );
+        assert_eq!(
+            out[3].category,
+            LayerCategory::Unmeasured,
+            "no lift → unmeasured, not retire"
+        );
         assert!(out[0].value_density.unwrap() > out[1].value_density.unwrap());
         assert!(out[3].value_density.is_none());
     }

@@ -125,18 +125,15 @@ impl PersonaResolver for FilesystemPersonaResolver {
             .await
             .map_err(|e| format!("ensure airc home {}: {e}", airc_home.display()))?;
 
-        let airc = airc_lib::Airc::attach_as(
-            airc_home.clone(),
-            name,
-            self.airc_socket_path.clone(),
-        )
-        .await
-        .map_err(|e| {
-            format!(
-                "airc attach_as for persona '{name}' at {}: {e}",
-                airc_home.display()
-            )
-        })?;
+        let airc =
+            airc_lib::Airc::attach_as(airc_home.clone(), name, self.airc_socket_path.clone())
+                .await
+                .map_err(|e| {
+                    format!(
+                        "airc attach_as for persona '{name}' at {}: {e}",
+                        airc_home.display()
+                    )
+                })?;
 
         let adapter_id = self
             .default_adapter
@@ -243,21 +240,21 @@ mod tests {
     // `personas/<name>/` layout, so the inspector 404'd on every live persona.
     #[test]
     fn airc_home_for_matches_canonical_layout() {
-        let root = PathBuf::from("/Users/joel/.continuum");
+        let root = PathBuf::from("/Users/operator/.continuum");
         let home = FilesystemPersonaResolver::airc_home_for(&root, "Paige");
         assert_eq!(
             home,
-            PathBuf::from("/Users/joel/.continuum/citizens/personas/Paige/airc")
+            PathBuf::from("/Users/operator/.continuum/citizens/personas/Paige/airc")
         );
     }
 
     #[test]
     fn seed_path_matches_canonical_layout() {
-        let root = PathBuf::from("/Users/joel/.continuum");
+        let root = PathBuf::from("/Users/operator/.continuum");
         let p = seed_path_for(&root, "Paige");
         assert_eq!(
             p,
-            PathBuf::from("/Users/joel/.continuum/citizens/personas/Paige/seed.json")
+            PathBuf::from("/Users/operator/.continuum/citizens/personas/Paige/seed.json")
         );
     }
 
@@ -271,11 +268,9 @@ mod tests {
         use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
         let tmp = tempfile::tempdir().unwrap();
         let socket = tmp.path().join("airc.sock"); // doesn't exist; we won't attach
-        let adapter: Arc<dyn AIProviderAdapter> =
-            Arc::new(HeuristicInferenceAdapter::new());
-        let resolver =
-            FilesystemPersonaResolver::new(tmp.path().to_path_buf(), socket.clone())
-                .with_default_adapter(adapter.clone());
+        let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+        let resolver = FilesystemPersonaResolver::new(tmp.path().to_path_buf(), socket.clone())
+            .with_default_adapter(adapter.clone());
         // Adapter is stored — verified by Arc strong_count >= 2
         // (the resolver's clone + ours).
         assert!(Arc::strong_count(&adapter) >= 2);

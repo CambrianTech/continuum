@@ -169,11 +169,15 @@
 pub mod arbiter;
 pub mod broker;
 pub mod capacity;
+pub mod ceiling_prior;
+pub mod footprint_source;
+pub mod holders;
 pub mod consumer;
 pub mod daemon;
 pub mod governor;
-pub mod ledger;
 pub mod lease;
+pub mod ledger;
+pub mod mode_policy;
 pub mod placement;
 
 pub use crate::cognition::{
@@ -187,12 +191,19 @@ pub use broker::{
 };
 
 pub use arbiter::{ArbiterContext, LeaseArbiter, TieredArbiter};
-pub use capacity::{CapacitySource, GpuCapacitySource, MockCapacitySource};
-pub use daemon::{DaemonConfig, LeaseGuard, LeasePoolView, ResourceDaemon};
-pub use governor::{GovernorConfig, PlannedReclaim, ResourceGovernor};
+pub use capacity::{
+    default_ram_reserve_for, CapacitySource, GpuCapacitySource, HostMemoryReader,
+    HostRamCapacitySource, LiveHostMemory, MockCapacitySource, UnifiedMemoryPool,
+};
+pub use ceiling_prior::CeilingEvidence;
+pub use footprint_source::{FootprintReading, FootprintSource, LastKnown, Provenance};
+pub use holders::{standard_memory_holders, HolderStatus, MemoryHolder, Reconciliation};
 pub use consumer::{
     ConsumerFootprint, ReclaimOutcome, ReclaimReason, ReclaimRequest, ReclaimStatus,
     ResourceConsumer,
 };
-pub use ledger::{KindLedger, LeaseBoard, ResourceLeaseLedger};
+pub use daemon::{DaemonConfig, LeaseGuard, LeasePoolView, ResourceDaemon};
+pub use governor::{GovernorConfig, PlannedReclaim, ResourceGovernor};
 pub use lease::{LeaseError, LeaseRequest, ReclaimPolicy, ResourceKind, ResourceLease};
+pub use ledger::{KindLedger, LeaseBoard, ResourceLeaseLedger};
+pub use mode_policy::{ConsumerDemand, ConsumerRole, GovernorMode, PolicyFloor, Price};

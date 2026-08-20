@@ -76,7 +76,8 @@ impl Simulator {
             // to faculty scores, the gate composes them. A crash (OOM) zeroes the critical
             // faculties → the perceived-quality reward collapses, which is why shed-load beats
             // hold-and-crash on the number a learned policy climbs.
-            experience_sum += score_experience(&quality.faculties(&ev.capacity, &scenario.demand, &grant));
+            experience_sum +=
+                score_experience(&quality.faculties(&ev.capacity, &scenario.demand, &grant));
             last = Some(grant);
             grants.push(grant);
         }
@@ -106,11 +107,122 @@ pub fn opera_eats_gpu_mid_session() -> Scenario {
             spike_bytes: 2 * GB,
         },
         timeline: vec![
-            CapacityEvent { t_ms: 0, capacity: dev(13) },        // calm: room for 4
-            CapacityEvent { t_ms: 30_000, capacity: dev(7) },    // game opens → must shrink
-            CapacityEvent { t_ms: 900_000, capacity: dev(13) },  // game closes → must regrow
+            CapacityEvent {
+                t_ms: 0,
+                capacity: dev(13),
+            }, // calm: room for 4
+            CapacityEvent {
+                t_ms: 30_000,
+                capacity: dev(7),
+            }, // game opens → must shrink
+            CapacityEvent {
+                t_ms: 900_000,
+                capacity: dev(13),
+            }, // game closes → must regrow
         ],
     }
+}
+
+// ─────────────────────────── the symmetric grid ───────────────────────────
+// "All computers have both ends" (Joel): every node is the SAME role — consumer AND provider.
+// There is no node TYPE and no central demand a placer hands out (that's the abandoned
+// placement model in `grid.rs`, being deleted). A node PROVIDES exactly the surplus its
+// capacity has beyond its OWN demand, and CONSUMES exactly the deficit its demand has beyond
+// its capacity. An idle datacenter box is all-surplus THIS tick and can demand at any later
+// tick — same node, same rule, different instantaneous workload. The grid is N of the ONE
+// single-device primitive above: each node runs the SAME `FitPolicy` over its LOCAL free plus
+// the reachable surplus it can borrow. Node join, drop, partition, return, and the
+// provider→consumer flip are all just changes to who is present and to each node's demand.
+
+/// One node's live reading: its OWN capacity and its OWN demand. Both, always — no
+/// provider/consumer type split.
+#[derive(Debug, Clone)]
+pub struct NodeReading {
+    pub capacity: DeviceCapacity,
+    pub demand: LeaseRequest,
+}
+
+/// The surplus a node can lend to the pool: free GPU bytes beyond what its OWN demand needs.
+/// Zero demand ⇒ its whole free is surplus (a pure provider this tick); a node whose demand
+/// meets or exceeds its free lends nothing (all its free serves itself).
+///
+/// Free is CLAMPED to the node's own total first: a bad reading or a hostile offer reporting
+/// `free > total` cannot invent borrowable capacity for the whole grid — one broken number stays
+/// bounded by the one machine it came from (BigMama's `grid_budget` find; the per-node clamp is
+/// the sim sibling of her winner-ceiling clamp in `host_budget_from`).
+pub fn node_surplus(node: &NodeReading) -> u64 {
+    let free = node
+        .capacity
+        .gpu_free_bytes_live
+        .min(node.capacity.gpu_total_bytes);
+    let own_need = (node.demand.want_concurrency as u64).saturating_mul(node.demand.spike_bytes);
+    free.saturating_sub(own_need)
+}
+
+/// A symmetric grid scenario: N nodes over a shared virtual clock. `ticks[t]` is the set of
+/// nodes PRESENT at tick t (a node absent from a tick is partitioned / not-yet-joined / gone —
+/// it neither lends nor borrows). Pure data, like [`Scenario`] one level out.
+#[derive(Debug, Clone)]
+pub struct SymmetricGridScenario {
+    pub name: &'static str,
+    pub ticks: Vec<Vec<(&'static str, NodeReading)>>,
+}
+
+/// Per-node outcome at one tick: the effective free it fit against (local + borrowed surplus)
+/// and the grant that fell out of the ONE policy.
+#[derive(Debug, Clone)]
+pub struct NodeGrant {
+    pub node: &'static str,
+    pub effective_free_bytes: u64,
+    pub grant: Grant,
+}
+
+/// Play the symmetric grid through ONE policy per node — no placer. Each PRESENT node fits its
+/// OWN demand to its LOCAL free PLUS a fair share of the reachable surplus POOL it can borrow.
+/// The pool is FINITE — Σ of every present node's [`node_surplus`] — and it is split among the
+/// BORROWERS (nodes that cannot meet their own demand from local free alone), so the total
+/// borrowed can never exceed what the providers actually have. That is the no-double-lend
+/// guarantee: no hidden aggregate over-subscription while every per-node fit still looks safe —
+/// the exact failure [`super::lanes_that_fit`] warns against. In production the pool is the live
+/// tier-projection over reachable peers; here it is scenario data. Deterministic: same scenario
+/// + policy → same trace.
+///
+/// Fairness is EQUAL-SPLIT among borrowers for now; proportional-fair by deficit size (the
+/// wireless-MAC / market share) is the refinement, and it drops in at the `share` computation
+/// without touching the interface or the invariants.
+pub fn run_symmetric_grid(
+    scenario: &SymmetricGridScenario,
+    policy: &dyn AllocationPolicy,
+) -> Vec<Vec<NodeGrant>> {
+    // A node borrows iff it cannot meet its own demand from local free alone.
+    let is_borrower = |node: &NodeReading| -> bool {
+        policy.grant(&node.capacity, &node.demand).concurrency < node.demand.want_concurrency
+    };
+    let mut out = Vec::with_capacity(scenario.ticks.len());
+    for present in &scenario.ticks {
+        // The finite shared pool, and how many borrowers contend for it THIS tick.
+        let pool: u64 = present.iter().map(|e| node_surplus(&e.1)).sum();
+        let borrowers = present.iter().filter(|e| is_borrower(&e.1)).count() as u64;
+        let share = if borrowers == 0 { 0 } else { pool / borrowers };
+        let mut tick = Vec::with_capacity(present.len());
+        for entry in present {
+            let name: &'static str = entry.0;
+            let node: &NodeReading = &entry.1;
+            let borrowable = if is_borrower(node) { share } else { 0 };
+            let effective_free = node.capacity.gpu_free_bytes_live.saturating_add(borrowable);
+            let view = DeviceCapacity {
+                gpu_free_bytes_live: effective_free,
+                ..node.capacity
+            };
+            tick.push(NodeGrant {
+                node: name,
+                effective_free_bytes: effective_free,
+                grant: policy.grant(&view, &node.demand),
+            });
+        }
+        out.push(tick);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -147,7 +259,9 @@ mod tests {
     fn fit_policy_never_ooms_and_regrows_when_the_gpu_frees() {
         let result = Simulator::run(
             &opera_eats_gpu_mid_session(),
-            &FitPolicy { safety_margin_bytes: GB },
+            &FitPolicy {
+                safety_margin_bytes: GB,
+            },
             &LiveRoomServing,
         );
         assert_eq!(
@@ -159,8 +273,16 @@ mod tests {
         // Shape of adaptation: full at calm, shrunk during the game, back to full after.
         let c: Vec<u32> = result.grants.iter().map(|g| g.concurrency).collect();
         assert_eq!(c[0], 4, "calm: grants the full demand");
-        assert!(c[1] < c[0], "game opens: shrinks below full ({} !< {})", c[1], c[0]);
-        assert_eq!(c[2], 4, "game closes: REGROWS to full — capacity growth is first-class");
+        assert!(
+            c[1] < c[0],
+            "game opens: shrinks below full ({} !< {})",
+            c[1],
+            c[0]
+        );
+        assert_eq!(
+            c[2], 4,
+            "game closes: REGROWS to full — capacity growth is first-class"
+        );
     }
 
     // what this catches: THE PERCEPTION REWARD — the number a learned policy actually climbs.
@@ -172,8 +294,18 @@ mod tests {
     #[test]
     fn fit_beats_static_on_perceived_experience_not_just_oom_count() {
         let scenario = opera_eats_gpu_mid_session();
-        let fit = Simulator::run(&scenario, &FitPolicy { safety_margin_bytes: GB }, &LiveRoomServing);
-        let stat = Simulator::run(&scenario, &StaticConcurrencyPolicy { fixed: 4 }, &LiveRoomServing);
+        let fit = Simulator::run(
+            &scenario,
+            &FitPolicy {
+                safety_margin_bytes: GB,
+            },
+            &LiveRoomServing,
+        );
+        let stat = Simulator::run(
+            &scenario,
+            &StaticConcurrencyPolicy { fixed: 4 },
+            &LiveRoomServing,
+        );
         assert!(
             fit.score.mean_experience > stat.score.mean_experience,
             "shedding a lane to stay alive must score HIGHER perceived experience than holding \
@@ -186,5 +318,223 @@ mod tests {
             "the fit policy keeps the room a good experience throughout, got {}",
             fit.score.mean_experience
         );
+    }
+
+    // ── the symmetric grid: every node consumer AND provider, ONE FitPolicy per node, no placer.
+    // "All computers have both ends" — join/drop/partition/return and the provider→consumer flip
+    // are all just changes to who is present and to each node's own demand, and accommodation
+    // falls out of the SAME single-device fit applied over local + reachable surplus.
+    mod symmetric_grid {
+        use super::*;
+
+        const MARGIN: u64 = GB;
+
+        fn node(free_gb: u64, want: u32, spike_gb: u64) -> NodeReading {
+            NodeReading {
+                capacity: DeviceCapacity {
+                    gpu_total_bytes: 64 * GB,
+                    gpu_free_bytes_live: free_gb * GB,
+                    system_ram_free_bytes: 40 * GB,
+                },
+                demand: LeaseRequest {
+                    consumer: "serving".into(),
+                    want_concurrency: want,
+                    spike_bytes: spike_gb * GB,
+                },
+            }
+        }
+
+        fn conc(tick: &[NodeGrant], name: &str) -> u32 {
+            tick.iter()
+                .find(|g| g.node == name)
+                .expect("node present this tick")
+                .grant
+                .concurrency
+        }
+
+        // what this catches: THE GRID GROWS CAPABILITY ON JOIN. A laptop with a deficit (wants 4
+        // spikes, local free fits only 2) grants 2 alone. When an idle provider joins (demand 0 →
+        // all free is surplus), the laptop borrows it and grants its full 4 — one FitPolicy over
+        // local+reachable, no placer. If it stops growing, the Σ-spare fold or the join drifted.
+        #[test]
+        fn a_joining_provider_grows_a_deficit_nodes_grant() {
+            let scenario = SymmetricGridScenario {
+                name: "join-grows",
+                ticks: vec![
+                    vec![("laptop", node(10, 4, 4))],
+                    vec![("laptop", node(10, 4, 4)), ("server", node(40, 0, 4))],
+                ],
+            };
+            let trace = run_symmetric_grid(
+                &scenario,
+                &FitPolicy {
+                    safety_margin_bytes: MARGIN,
+                },
+            );
+            assert_eq!(
+                conc(&trace[0], "laptop"),
+                2,
+                "alone: (10-1)/4 = 2 fit locally"
+            );
+            assert_eq!(
+                conc(&trace[1], "laptop"),
+                4,
+                "provider joins → laptop borrows 40GB surplus → grants its full demand of 4"
+            );
+        }
+
+        // what this catches: A LONE NODE NEVER BLOCKS — the "works without grid" end. Total
+        // partition, tiny local free that fits zero full spikes, still grants ≥1: a resident model
+        // runs at least one prefill or it shouldn't be resident. Same code, zero peers, never zero.
+        #[test]
+        fn a_partitioned_node_never_blocks() {
+            let scenario = SymmetricGridScenario {
+                name: "partition-never-blocks",
+                ticks: vec![vec![("solo", node(2, 4, 4))]],
+            };
+            let trace = run_symmetric_grid(
+                &scenario,
+                &FitPolicy {
+                    safety_margin_bytes: MARGIN,
+                },
+            );
+            assert!(
+                conc(&trace[0], "solo") >= 1,
+                "a lone node with no borrowable spare still grants ≥1"
+            );
+        }
+
+        // what this catches: SHRINK-THEN-REGROW across a peer leaving and returning. Down is half
+        // the law: when the provider partitions the laptop sheds to its local fit, and when it
+        // returns the laptop regrows — same node, same policy, capacity events in both directions.
+        #[test]
+        fn a_node_sheds_when_its_peer_leaves_and_regrows_when_it_returns() {
+            let full = || vec![("laptop", node(10, 4, 4)), ("server", node(40, 0, 4))];
+            let scenario = SymmetricGridScenario {
+                name: "shed-then-regrow",
+                ticks: vec![full(), vec![("laptop", node(10, 4, 4))], full()],
+            };
+            let trace = run_symmetric_grid(
+                &scenario,
+                &FitPolicy {
+                    safety_margin_bytes: MARGIN,
+                },
+            );
+            let c: Vec<u32> = (0..3).map(|t| conc(&trace[t], "laptop")).collect();
+            assert_eq!(c[0], 4, "borrowing the peer's surplus");
+            assert!(
+                c[1] < c[0],
+                "peer partitions → shed to local fit ({} !< {})",
+                c[1],
+                c[0]
+            );
+            assert_eq!(c[2], 4, "peer returns → REGROW — down is symmetric with up");
+        }
+
+        // what this catches: THE PROVIDER→CONSUMER FLIP — the richest invariant, and proof there is
+        // no node "type". A server lends its whole free (demand 0) so the laptop runs 4. When the
+        // SAME server picks up its OWN work (demand rises), it reclaims that surplus for itself and
+        // the laptop must shed gracefully — no OOM against its shrunken effective view. A lender's
+        // rising demand IS the grid shrinking for its borrowers: same mechanism as a partial drop.
+        #[test]
+        fn a_lenders_rising_demand_makes_its_borrower_shed_without_oom() {
+            let scenario = SymmetricGridScenario {
+                name: "provider-to-consumer-flip",
+                ticks: vec![
+                    vec![("laptop", node(10, 4, 4)), ("server", node(40, 0, 4))],
+                    vec![("laptop", node(10, 4, 4)), ("server", node(40, 9, 4))],
+                ],
+            };
+            let trace = run_symmetric_grid(
+                &scenario,
+                &FitPolicy {
+                    safety_margin_bytes: MARGIN,
+                },
+            );
+            assert_eq!(
+                conc(&trace[0], "laptop"),
+                4,
+                "server all-surplus → laptop runs full 4"
+            );
+            let borrower = trace[1].iter().find(|g| g.node == "laptop").unwrap();
+            assert!(
+                borrower.grant.concurrency < 4,
+                "server reclaims its surplus → laptop sheds"
+            );
+            assert!(
+                (borrower.grant.concurrency as u64) * (4 * GB) <= borrower.effective_free_bytes,
+                "the shed grant fits the shrunken effective free — graceful, never OOM"
+            );
+            assert!(
+                conc(&trace[1], "server") >= 1,
+                "the lender is now ALSO a consumer of its own work"
+            );
+        }
+
+        // what this catches: MULTI-BORROWER CONTENTION never double-lends. Two deficit laptops and
+        // one provider: the finite surplus pool is SPLIT between the borrowers, so the total they
+        // borrow never exceeds what the provider actually has. Without the finite pool each would
+        // greedily take the whole surplus and the grid would over-subscribe (aggregate OOM) while
+        // every per-node fit still looked safe — the hidden aggregate lanes_that_fit warns against.
+        #[test]
+        fn two_borrowers_split_a_finite_pool_and_never_double_lend() {
+            let scenario = SymmetricGridScenario {
+                name: "contention",
+                ticks: vec![vec![
+                    ("laptop-a", node(10, 4, 4)),
+                    ("laptop-b", node(10, 4, 4)),
+                    ("server", node(40, 0, 4)),
+                ]],
+            };
+            let trace = run_symmetric_grid(
+                &scenario,
+                &FitPolicy {
+                    safety_margin_bytes: MARGIN,
+                },
+            );
+            let local = node(10, 4, 4).capacity.gpu_free_bytes_live;
+            let borrowed = |name: &str| {
+                trace[0]
+                    .iter()
+                    .find(|g| g.node == name)
+                    .unwrap()
+                    .effective_free_bytes
+                    - local
+            };
+            let pool = node_surplus(&node(40, 0, 4));
+            assert!(
+                borrowed("laptop-a") + borrowed("laptop-b") <= pool,
+                "the two borrowers together never borrow more than the finite pool"
+            );
+            assert!(
+                conc(&trace[0], "laptop-a") > 2 && conc(&trace[0], "laptop-b") > 2,
+                "a pool big enough for both grows BOTH borrowers above their local-only fit of 2"
+            );
+        }
+
+        // what this catches: A LIAR CANNOT INFLATE THE GRID. A node reporting free > its own total
+        // (a bad reading or a hostile offer) is clamped to its total before it can lend anything, so
+        // one broken number never invents borrowable capacity for everyone else (BigMama's
+        // grid_budget silent-bug #2 — the per-node clamp, in the sim).
+        #[test]
+        fn a_node_reporting_free_above_its_total_cannot_inflate_the_pool() {
+            let liar = NodeReading {
+                capacity: DeviceCapacity {
+                    gpu_total_bytes: 8 * GB,
+                    gpu_free_bytes_live: 400 * GB, // absurd claim: 400GB free on an 8GB card
+                    system_ram_free_bytes: 40 * GB,
+                },
+                demand: LeaseRequest {
+                    consumer: "liar".into(),
+                    want_concurrency: 0,
+                    spike_bytes: 4 * GB,
+                },
+            };
+            assert!(
+                node_surplus(&liar) <= 8 * GB,
+                "surplus is bounded by the node's REAL total, never its lie — got {}",
+                node_surplus(&liar)
+            );
+        }
     }
 }

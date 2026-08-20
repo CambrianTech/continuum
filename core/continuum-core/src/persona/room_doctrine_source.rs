@@ -55,17 +55,40 @@ use crate::cognition::token_budget::estimate_prompt_tokens as estimate_tokens;
 /// daemon. Mirrors the `AircRosterReader` rail.
 #[async_trait]
 pub trait AircDoctrineReader: Send + Sync {
-    /// The latest published operating doctrine for this persona's
-    /// current room, or `None` if none has been published.
-    async fn room_doctrine(&self) -> Result<Option<RoomDoctrinePublished>, AircError>;
+    /// The latest published operating doctrine for a NAMED room, or `None` if
+    /// none has been published there.
+    ///
+    /// ROOM-PARAMETRIC (#443, measured live 2026-08-17). This took no `room` and
+    /// read whatever the scope's default subscription happened to be, so the
+    /// source could only be BOUND at bootstrap and had to abstain on any other
+    /// turn room — measured 39 abstains in 90 minutes with bound=academy,
+    /// turn=bench-room. A citizen answering a turn in a per-run bench room got
+    /// NO operating doctrine: she was handed the room's work with none of the
+    /// room's rules.
+    ///
+    /// `airc_lib::room_doctrine_in` already existed for exactly this, and its
+    /// own doc names the defect verbatim — *"A citizen who belongs to several
+    /// rooms answers a turn in the room it arrived in; reading doctrine from her
+    /// default instead grounds that answer in another room's rules."* The
+    /// capability was built and never wired. This is the wire.
+    ///
+    /// `None` keeps the pre-#443 behaviour exactly (the scope's current room),
+    /// which is what an UNSTAMPED context (background consolidation) still wants.
+    async fn room_doctrine(
+        &self,
+        room: Option<uuid::Uuid>,
+    ) -> Result<Option<RoomDoctrinePublished>, AircError>;
 }
 
 /// `airc_lib::Airc` satisfies the reader contract directly. Orphan rule
 /// OK — the trait is ours.
 #[async_trait]
 impl AircDoctrineReader for airc_lib::Airc {
-    async fn room_doctrine(&self) -> Result<Option<RoomDoctrinePublished>, AircError> {
-        airc_lib::Airc::room_doctrine(self).await
+    async fn room_doctrine(
+        &self,
+        room: Option<uuid::Uuid>,
+    ) -> Result<Option<RoomDoctrinePublished>, AircError> {
+        airc_lib::Airc::room_doctrine_in(self, room.map(airc_core::RoomId::from_uuid)).await
     }
 }
 
@@ -169,13 +192,30 @@ impl RagSource for RoomDoctrineSource {
         if ctx.persona_id != self.persona_id {
             return empty(ResolutionPreference::Placeholder);
         }
-        // Room-scoped: the ONE shared gate (`room_scope_allows`) — probes every
-        // abstain with both rooms named (see RoomBoardSource for the rationale).
-        if !crate::persona::rag_budget::room_scope_allows(self.room_id, ctx, SOURCE_ID) {
-            return empty(ResolutionPreference::Placeholder);
-        }
+        // Room resolution — TURN-PARAMETRIC (#443), the same shape RoomBoardSource
+        // already uses and for the same reason: the rules she needs are the rules
+        // OF THE ROOM SHE IS STANDING IN. The stamped turn room wins; the bound
+        // room is only the fallback for UNSTAMPED contexts (background
+        // consolidation, legacy construction — pre-gate behaviour, unchanged).
+        // A synthetic nil room still gets NOTHING and does NOT fall back (the
+        // exam-bleed pin).
+        let effective_room = match ctx.airc_room.as_ref().map(|r| r.as_uuid()) {
+            Some(t) if t.is_nil() => {
+                crate::probe!(
+                    class = "rag.room_gate.abstain",
+                    source = SOURCE_ID,
+                    bound_room = ?self.room_id,
+                    turn_room = %t,
+                    persona_id = %ctx.persona_id,
+                    "synthetic nil-room context — no doctrine, and no fallback to the bound room"
+                );
+                return empty(ResolutionPreference::Placeholder);
+            }
+            Some(t) => Some(t),
+            None => self.room_id,
+        };
 
-        let card = match self.reader.room_doctrine().await {
+        let card = match self.reader.room_doctrine(effective_room).await {
             Ok(Some(card)) => card,
             // No doctrine published for this room → no block (normal).
             Ok(None) => return empty(resolution),
@@ -258,6 +298,8 @@ mod tests {
     struct StubReader {
         doctrine: Option<RoomDoctrinePublished>,
         fail: Mutex<bool>,
+        /// The room the source last ASKED for — #443's regression pins it.
+        asked_room: Mutex<Option<Option<uuid::Uuid>>>,
     }
 
     impl StubReader {
@@ -265,7 +307,11 @@ mod tests {
             Self {
                 doctrine,
                 fail: Mutex::new(false),
+                asked_room: Mutex::new(None),
             }
+        }
+        fn asked_room(&self) -> Option<Option<uuid::Uuid>> {
+            *self.asked_room.lock().unwrap()
         }
         fn set_fail(&self, fail: bool) {
             *self.fail.lock().unwrap() = fail;
@@ -274,12 +320,63 @@ mod tests {
 
     #[async_trait]
     impl AircDoctrineReader for StubReader {
-        async fn room_doctrine(&self) -> Result<Option<RoomDoctrinePublished>, AircError> {
+        async fn room_doctrine(
+            &self,
+            room: Option<uuid::Uuid>,
+        ) -> Result<Option<RoomDoctrinePublished>, AircError> {
+            *self.asked_room.lock().unwrap() = Some(room);
             if *self.fail.lock().unwrap() {
                 return Err(AircError::UnknownPeer(PeerId::new()));
             }
             Ok(self.doctrine.clone())
         }
+    }
+
+    // what this catches: #443 — a citizen taking a turn in a per-run BENCH room
+    // was handed the ACADEMY's rules, or (before the room-parametric reader) none
+    // at all. Measured live 2026-08-17: 39 `rag.room_gate.abstain` rows in 90
+    // minutes with bound=academy, turn=bench-room, so every bench turn ran with no
+    // operating doctrine. The reader is now asked for the room she is STANDING in.
+    #[tokio::test]
+    async fn the_turn_room_wins_over_the_bound_room() {
+        let bound = uuid::Uuid::new_v4();
+        let turn = uuid::Uuid::new_v4();
+        let reader = Arc::new(StubReader::new(Some(card("be excellent"))));
+        let src = RoomDoctrineSource::new(persona(), reader.clone()).for_room(bound);
+
+        let ctx = RagContext::for_persona_in_room(persona(), 1_000_000, turn);
+        let out = src.deliver(&ctx, 4096, ResolutionPreference::Raw).await;
+
+        assert_eq!(
+            reader.asked_room(),
+            Some(Some(turn)),
+            "the reader must be asked for the TURN room, not the bound room"
+        );
+        assert!(
+            !out.items.is_empty(),
+            "a stamped turn in another room must still receive doctrine — abstaining \
+             here is exactly the #443 defect (she got the work, not the rules)"
+        );
+    }
+
+    // what this catches: the exam-bleed pin must survive the #443 change — a
+    // synthetic nil room gets NOTHING and must NOT silently fall back to the bound
+    // room, or an eval fork would read the live room's doctrine.
+    #[tokio::test]
+    async fn a_nil_room_gets_nothing_and_never_falls_back() {
+        let bound = uuid::Uuid::new_v4();
+        let reader = Arc::new(StubReader::new(Some(card("be excellent"))));
+        let src = RoomDoctrineSource::new(persona(), reader.clone()).for_room(bound);
+
+        let ctx = RagContext::for_persona_in_room(persona(), 1_000_000, uuid::Uuid::nil());
+        let out = src.deliver(&ctx, 4096, ResolutionPreference::Raw).await;
+
+        assert!(out.items.is_empty(), "a nil-room context must receive no doctrine");
+        assert_eq!(
+            reader.asked_room(),
+            None,
+            "the reader must not be consulted at all for a nil room"
+        );
     }
 
     // what this catches: a published doctrine surfaces as a delivery the
@@ -291,7 +388,9 @@ mod tests {
             "This is a coordination room. Respond sparingly; do not chat.",
         ))));
         let source = RoomDoctrineSource::new(persona(), reader);
-        let delivery = source.deliver(&ctx(), 1_000, ResolutionPreference::Raw).await;
+        let delivery = source
+            .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
+            .await;
         assert_eq!(delivery.items.len(), 1);
         assert!(delivery.items[0].content.contains("Respond sparingly"));
         assert_eq!(delivery.items[0].metadata["version"], "v1abc");
@@ -304,7 +403,9 @@ mod tests {
     async fn no_doctrine_delivers_nothing() {
         let reader = Arc::new(StubReader::new(None));
         let source = RoomDoctrineSource::new(persona(), reader);
-        let delivery = source.deliver(&ctx(), 1_000, ResolutionPreference::Raw).await;
+        let delivery = source
+            .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
+            .await;
         assert!(delivery.items.is_empty());
         assert_eq!(delivery.tokens_used, 0);
     }
@@ -316,7 +417,9 @@ mod tests {
         let reader = Arc::new(StubReader::new(Some(card("body"))));
         reader.set_fail(true);
         let source = RoomDoctrineSource::new(persona(), reader);
-        let delivery = source.deliver(&ctx(), 1_000, ResolutionPreference::Raw).await;
+        let delivery = source
+            .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
+            .await;
         assert!(delivery.items.is_empty());
     }
 
@@ -363,8 +466,8 @@ mod tests {
                 // A delivered block must carry real doctrine content, not
                 // just the truncation marker — else it spends tokens to
                 // say nothing.
-                let only_marker = item.content.trim_start().starts_with('…')
-                    || !item.content.contains('x');
+                let only_marker =
+                    item.content.trim_start().starts_with('…') || !item.content.contains('x');
                 assert!(
                     !only_marker,
                     "budget {budget}: delivered a content-free block: {:?}",

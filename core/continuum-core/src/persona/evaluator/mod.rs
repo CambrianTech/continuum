@@ -149,7 +149,10 @@ pub struct SocialSignals {
 
 /// Detailed gate information for diagnostics.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/GateDetails.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/GateDetails.ts"
+)]
 pub struct GateDetails {
     #[ts(optional, type = "number")]
     pub response_count: Option<u32>,
@@ -567,9 +570,7 @@ pub fn analyze_burst(
             }
         }
         CoherentInput::Other {
-            domain,
-            item_count,
-            ..
+            domain, item_count, ..
         } => {
             // Non-Chat domains drain into Other until their typed
             // views land (PR D for Audio). Cognition decides silent
@@ -998,11 +999,18 @@ mod tests {
             now_ms(),
         );
         assert!(result.should_respond);
-        assert!(
-            result.decision_time_ms < 10.0,
-            "Decision should be <10ms, was {}ms",
-            result.decision_time_ms
-        );
+        // The wall-clock assertion that used to live here (`decision_time_ms < 10.0`)
+        // is GONE, and deliberately not replaced with a looser bound. It failed CI at
+        // 10.73ms — not because the gates regressed, but because a shared runner was
+        // busy. A correctness test that a loaded machine can fail is not measuring the
+        // code; it is measuring the machine, and it spends the reviewer's trust every
+        // time it flakes. The performance claim it was making is real and worth
+        // keeping, so it MOVED to the stress block below, where `cargo test` does not
+        // adjudicate it (CLAUDE.md § test rules, item 2). Same treatment as the
+        // grounding-cost flake in PR #2330. Siblings of this class still exist and are
+        // NOT touched here because they are not failing and have 20-50x more headroom:
+        // command_executor.rs (<500ms), rag/engine.rs (<250ms), sentinel/parallel.rs
+        // (<180ms). If any of them starts flaking, this is the fix.
     }
 
     #[test]
@@ -1061,4 +1069,50 @@ mod tests {
     // moved to their respective submodules in continuum#1208:
     //   - rate_limiter::tests
     //   - adequacy::tests
+
+    /// Performance claims about the gate path. Compile-time gated so a busy shared
+    /// runner never adjudicates them (CLAUDE.md § test rules, item 2): default
+    /// `cargo test` skips this block entirely, and it is run deliberately, on a quiet
+    /// machine, when the claim is what you actually want to check.
+    #[cfg(feature = "stress-tests")]
+    mod stress {
+        use super::*;
+
+        // what this catches: the gate path taking a slow route — an added I/O call,
+        // a lock, an inference hop. Every gate is a pure function over in-memory
+        // state, so the decision is sub-millisecond work; a budget of 10ms is ~10x
+        // headroom over that and still catches a category change. Measured over
+        // repeated runs rather than one sample, because a single timing of a live
+        // system is not a fact about it — one scheduler hiccup is not a regression.
+        #[test]
+        fn gate_path_stays_off_the_slow_route() {
+            let (engine, persona_id) = test_engine("TestBot");
+            let request = test_request(persona_id, "TestBot");
+            let sleep = SleepState::default();
+            let rate_limiter = RateLimiterState::default();
+
+            const RUNS: usize = 50;
+            let mut times: Vec<f64> = (0..RUNS)
+                .map(|_| {
+                    full_evaluate(
+                        &request,
+                        &rate_limiter,
+                        &sleep,
+                        &engine,
+                        &RecentMessageCache::new(),
+                        now_ms(),
+                    )
+                    .decision_time_ms
+                })
+                .collect();
+            times.sort_by(|a, b| a.partial_cmp(b).expect("decision times are finite"));
+            let median = times[RUNS / 2];
+            assert!(
+                median < 10.0,
+                "median gate decision over {RUNS} runs should be <10ms, was {median}ms \
+                 (slowest {}ms) — something on the gate path is doing real work",
+                times[RUNS - 1]
+            );
+        }
+    }
 }

@@ -468,7 +468,9 @@ async fn ensure_llamacpp_qwen2vl_registered() -> Option<()> {
     continuum_core::model_registry::init_global().expect("model_registry::init_global");
     let registry = continuum_core::model_registry::global();
     let model_meta = registry.model("qwen2-vl-7b-instruct").or_else(|| {
-        eprintln!("[fixture-replay-behavior] 'qwen2-vl-7b-instruct' not in the Rust catalog (catalog.rs)");
+        eprintln!(
+            "[fixture-replay-behavior] 'qwen2-vl-7b-instruct' not in the Rust catalog (catalog.rs)"
+        );
         None
     })?;
     let gguf = model_meta.gguf_local_path.as_ref()?.clone();

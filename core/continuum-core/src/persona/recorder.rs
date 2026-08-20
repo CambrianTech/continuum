@@ -587,7 +587,7 @@ mod tests {
                 id: Uuid::new_v4(),
                 room_id,
                 sender_id: Uuid::new_v4(),
-                sender_name: "Joel".to_string(),
+                sender_name: "Operator".to_string(),
                 sender_type: SenderType::Human,
                 content: "what changed?".to_string(),
                 timestamp: 10_000,
@@ -640,9 +640,8 @@ mod tests {
             TEST_FIXTURE_ROOT.with(|r| *r.borrow_mut() = Some(home.to_path_buf()));
             // None mirrors the old remove_var: an inherited process-level
             // disable must not leak into a test that expects writes.
-            TEST_DISABLED.with(|d| {
-                *d.borrow_mut() = Some(matches!(disabled, Some("1" | "true" | "TRUE")))
-            });
+            TEST_DISABLED
+                .with(|d| *d.borrow_mut() = Some(matches!(disabled, Some("1" | "true" | "TRUE"))));
             Self
         }
     }
@@ -842,11 +841,11 @@ mod tests {
         assert_eq!(json["inboxFrame"]["metrics"]["messagesDrained"], 2);
         assert_eq!(
             json["consolidatedInbox"]["transcript"],
-            "Joel: what changed?\nMira: the frame records replay state"
+            "Operator: what changed?\nMira: the frame records replay state"
         );
         assert_eq!(
             json["ragSeed"]["queryText"],
-            "Joel: what changed?\nMira: the frame records replay state"
+            "Operator: what changed?\nMira: the frame records replay state"
         );
     }
 

@@ -155,9 +155,7 @@ impl EventPublisherState {
         }
         let subscription_id = Uuid::new_v4();
         let active = ActiveSubscription::new(subscriber_peer_id, topic, filter);
-        self.subscriptions
-            .write()
-            .insert(subscription_id, active);
+        self.subscriptions.write().insert(subscription_id, active);
         Ok(subscription_id)
     }
 
@@ -590,7 +588,8 @@ pub fn parse_publish_envelope(envelope: &TranscriptEvent) -> Result<ParsedPublis
         Body::Json(v) => v.clone(),
         Body::Binary(_) => {
             return Err(AdapterError::Consumer(
-                "inbound event publish body was Binary; expected Json(AircEventPublish)".to_string(),
+                "inbound event publish body was Binary; expected Json(AircEventPublish)"
+                    .to_string(),
             ));
         }
     };
@@ -615,8 +614,8 @@ pub fn build_subscribe_ack(subscription_id: Uuid, topic: &str) -> Result<(Header
         subscription_id,
         topic: topic.to_string(),
     };
-    let body_value = serde_json::to_value(&ack)
-        .map_err(|e| format!("serialize AircEventSubscribeAck: {e}"))?;
+    let body_value =
+        serde_json::to_value(&ack).map_err(|e| format!("serialize AircEventSubscribeAck: {e}"))?;
     let body = Body::Json(body_value);
 
     let mut headers = Headers::new();
@@ -831,7 +830,11 @@ mod tests {
 
         let info_payload = serde_json::json!({"level": "info", "msg": "hi"});
         let matches_info = state.lookup_matching("events", &info_payload);
-        assert_eq!(matches_info.len(), 2, "both subscriptions match info payload");
+        assert_eq!(
+            matches_info.len(),
+            2,
+            "both subscriptions match info payload"
+        );
 
         let warn_payload = serde_json::json!({"level": "warn", "msg": "watch out"});
         let matches_warn = state.lookup_matching("events", &warn_payload);
@@ -866,8 +869,12 @@ mod tests {
         // each have their own monotonic counter — the caller-side
         // drop detector treats them as separate streams.
         let state = EventPublisherState::new();
-        let a = state.register(PeerId::new(), "shared".into(), None).unwrap();
-        let b = state.register(PeerId::new(), "shared".into(), None).unwrap();
+        let a = state
+            .register(PeerId::new(), "shared".into(), None)
+            .unwrap();
+        let b = state
+            .register(PeerId::new(), "shared".into(), None)
+            .unwrap();
 
         let first = state.lookup_matching("shared", &Value::Null);
         let second = state.lookup_matching("shared", &Value::Null);
@@ -895,12 +902,9 @@ mod tests {
     #[test]
     fn build_publish_envelopes_empty_when_no_subscriptions_match() {
         let state = EventPublisherState::new();
-        let envs = AircEventPublisher::build_publish_envelopes(
-            &state,
-            "unsubscribed/topic",
-            &Value::Null,
-        )
-        .expect("build");
+        let envs =
+            AircEventPublisher::build_publish_envelopes(&state, "unsubscribed/topic", &Value::Null)
+                .expect("build");
         assert!(envs.is_empty(), "no matches → empty vec, not an error");
     }
 
@@ -917,7 +921,11 @@ mod tests {
         let payload = serde_json::json!({"cpu": 0.42});
         let envs = AircEventPublisher::build_publish_envelopes(&state, "metrics", &payload)
             .expect("build");
-        assert_eq!(envs.len(), 2, "two matches → two envelopes; other topic excluded");
+        assert_eq!(
+            envs.len(),
+            2,
+            "two matches → two envelopes; other topic excluded"
+        );
 
         for (matched, headers, body) in &envs {
             assert!(
@@ -925,7 +933,9 @@ mod tests {
                 "envelope's matched id must be one of the registered metrics subs"
             );
             assert_eq!(
-                headers.get(HEADER_EVENT_SUBSCRIPTION_ID).map(String::as_str),
+                headers
+                    .get(HEADER_EVENT_SUBSCRIPTION_ID)
+                    .map(String::as_str),
                 Some(matched.subscription_id.to_string().as_str()),
                 "subscription_id header demuxes correctly"
             );
@@ -939,8 +949,7 @@ mod tests {
                 Body::Json(v) => v.clone(),
                 other => panic!("expected Json body, got {other:?}"),
             };
-            let deliver: AircEventDeliver =
-                serde_json::from_value(value).expect("decode Deliver");
+            let deliver: AircEventDeliver = serde_json::from_value(value).expect("decode Deliver");
             assert_eq!(deliver.topic, "metrics");
             assert_eq!(deliver.subscription_id, matched.subscription_id);
             assert_eq!(deliver.payload, payload);
@@ -971,7 +980,10 @@ mod tests {
             AircEventPublisher::build_publish_envelopes(&state, "events", &warn).expect("warn");
 
         assert_eq!(info_envs.len(), 1, "info payload matches the filter");
-        assert!(warn_envs.is_empty(), "warn payload filtered out by server-side filter");
+        assert!(
+            warn_envs.is_empty(),
+            "warn payload filtered out by server-side filter"
+        );
     }
 
     #[test]
@@ -982,7 +994,9 @@ mod tests {
         // must hand back sequence 0 then 1 — the caller-side drop
         // detector relies on this monotonicity.
         let state = EventPublisherState::new();
-        let _id = state.register(PeerId::new(), "metrics".into(), None).unwrap();
+        let _id = state
+            .register(PeerId::new(), "metrics".into(), None)
+            .unwrap();
 
         let first =
             AircEventPublisher::build_publish_envelopes(&state, "metrics", &Value::Null).unwrap();
@@ -1182,12 +1196,17 @@ mod tests {
         envelope
             .headers
             .insert(HEADER_AIRC_REPLY_TO.to_string(), "not-a-uuid".to_string());
-        let err = parse_subscribe_envelope(&envelope)
-            .expect_err("invalid reply_to UUID must fail");
+        let err = parse_subscribe_envelope(&envelope).expect_err("invalid reply_to UUID must fail");
         match err {
             AdapterError::Consumer(msg) => {
-                assert!(msg.contains("not a valid UUID"), "must name the parse failure: {msg}");
-                assert!(msg.contains(HEADER_AIRC_REPLY_TO), "must name the header: {msg}");
+                assert!(
+                    msg.contains("not a valid UUID"),
+                    "must name the parse failure: {msg}"
+                );
+                assert!(
+                    msg.contains(HEADER_AIRC_REPLY_TO),
+                    "must name the header: {msg}"
+                );
             }
             other => panic!("expected Consumer error, got {other:?}"),
         }
@@ -1202,12 +1221,18 @@ mod tests {
             HEADER_AIRC_CORRELATION_ID.to_string(),
             "also-not-a-uuid".to_string(),
         );
-        let err = parse_subscribe_envelope(&envelope)
-            .expect_err("invalid correlation_id UUID must fail");
+        let err =
+            parse_subscribe_envelope(&envelope).expect_err("invalid correlation_id UUID must fail");
         match err {
             AdapterError::Consumer(msg) => {
-                assert!(msg.contains("not a valid UUID"), "must name the parse failure: {msg}");
-                assert!(msg.contains(HEADER_AIRC_CORRELATION_ID), "must name the header: {msg}");
+                assert!(
+                    msg.contains("not a valid UUID"),
+                    "must name the parse failure: {msg}"
+                );
+                assert!(
+                    msg.contains(HEADER_AIRC_CORRELATION_ID),
+                    "must name the header: {msg}"
+                );
             }
             other => panic!("expected Consumer error, got {other:?}"),
         }
@@ -1321,11 +1346,14 @@ mod tests {
         envelope
             .headers
             .insert(HEADER_AIRC_REPLY_TO.to_string(), "not-a-uuid".to_string());
-        let err = parse_unsubscribe_envelope(&envelope)
-            .expect_err("invalid reply_to UUID must fail");
+        let err =
+            parse_unsubscribe_envelope(&envelope).expect_err("invalid reply_to UUID must fail");
         match err {
             AdapterError::Consumer(msg) => {
-                assert!(msg.contains("not a valid UUID"), "must name the parse failure: {msg}");
+                assert!(
+                    msg.contains("not a valid UUID"),
+                    "must name the parse failure: {msg}"
+                );
             }
             other => panic!("expected Consumer error, got {other:?}"),
         }
@@ -1346,7 +1374,10 @@ mod tests {
             .expect_err("invalid correlation_id UUID must fail");
         match err {
             AdapterError::Consumer(msg) => {
-                assert!(msg.contains("not a valid UUID"), "must name the parse failure: {msg}");
+                assert!(
+                    msg.contains("not a valid UUID"),
+                    "must name the parse failure: {msg}"
+                );
             }
             other => panic!("expected Consumer error, got {other:?}"),
         }
@@ -1390,12 +1421,20 @@ mod tests {
         let topic = "events/test";
         let (headers, body) = build_subscribe_ack(sub_id, topic).expect("build");
 
-        assert_eq!(headers.get(HEADER_EVENT_KIND).map(String::as_str), Some("ack"));
         assert_eq!(
-            headers.get(HEADER_EVENT_SUBSCRIPTION_ID).map(String::as_str),
+            headers.get(HEADER_EVENT_KIND).map(String::as_str),
+            Some("ack")
+        );
+        assert_eq!(
+            headers
+                .get(HEADER_EVENT_SUBSCRIPTION_ID)
+                .map(String::as_str),
             Some(sub_id.to_string().as_str())
         );
-        assert_eq!(headers.get(HEADER_EVENT_TOPIC).map(String::as_str), Some(topic));
+        assert_eq!(
+            headers.get(HEADER_EVENT_TOPIC).map(String::as_str),
+            Some(topic)
+        );
         assert_eq!(
             headers.get(HEADER_CONTINUUM_BODY_HINT).map(String::as_str),
             Some(EVENT_ACK_BODY_HINT)
@@ -1416,12 +1455,11 @@ mod tests {
     fn build_unsubscribe_ack_active_preserves_closed_true() {
         let sub_id = Uuid::new_v4();
         let (_headers, body) = build_unsubscribe_ack(sub_id, true).expect("build");
-        let ack: AircEventUnsubscribeAck =
-            serde_json::from_value(match body {
-                Body::Json(v) => v,
-                other => panic!("expected Json, got {other:?}"),
-            })
-            .expect("decode");
+        let ack: AircEventUnsubscribeAck = serde_json::from_value(match body {
+            Body::Json(v) => v,
+            other => panic!("expected Json, got {other:?}"),
+        })
+        .expect("decode");
         assert!(ack.closed);
         assert_eq!(ack.subscription_id, sub_id);
     }
@@ -1431,14 +1469,19 @@ mod tests {
         let sub_id = Uuid::new_v4();
         let (headers, body) = build_unsubscribe_ack(sub_id, false).expect("build");
         // headers should still indicate ack
-        assert_eq!(headers.get(HEADER_EVENT_KIND).map(String::as_str), Some("ack"));
-        let ack: AircEventUnsubscribeAck =
-            serde_json::from_value(match body {
-                Body::Json(v) => v,
-                other => panic!("expected Json, got {other:?}"),
-            })
-            .expect("decode");
-        assert!(!ack.closed, "idempotent unsubscribe must preserve closed=false");
+        assert_eq!(
+            headers.get(HEADER_EVENT_KIND).map(String::as_str),
+            Some("ack")
+        );
+        let ack: AircEventUnsubscribeAck = serde_json::from_value(match body {
+            Body::Json(v) => v,
+            other => panic!("expected Json, got {other:?}"),
+        })
+        .expect("decode");
+        assert!(
+            !ack.closed,
+            "idempotent unsubscribe must preserve closed=false"
+        );
     }
 
     // ─── build_deliver_frame ─────────────────────────────────────────
@@ -1453,10 +1496,18 @@ mod tests {
         };
         let (headers, body) = build_deliver_frame(&deliver).expect("build");
 
-        assert_eq!(headers.get(HEADER_EVENT_KIND).map(String::as_str), Some("deliver"));
-        assert_eq!(headers.get(HEADER_EVENT_TOPIC).map(String::as_str), Some(deliver.topic.as_str()));
         assert_eq!(
-            headers.get(HEADER_EVENT_SUBSCRIPTION_ID).map(String::as_str),
+            headers.get(HEADER_EVENT_KIND).map(String::as_str),
+            Some("deliver")
+        );
+        assert_eq!(
+            headers.get(HEADER_EVENT_TOPIC).map(String::as_str),
+            Some(deliver.topic.as_str())
+        );
+        assert_eq!(
+            headers
+                .get(HEADER_EVENT_SUBSCRIPTION_ID)
+                .map(String::as_str),
             Some(deliver.subscription_id.to_string().as_str())
         );
         assert_eq!(
@@ -1566,6 +1617,9 @@ mod tests {
         let ack = AircEventTransport::decode_unsubscribe_ack(Some(body))
             .expect("decode must accept what build produces, idempotent variant");
         assert_eq!(ack.subscription_id, sub_id);
-        assert!(!ack.closed, "idempotent unsubscribe must round-trip closed=false");
+        assert!(
+            !ack.closed,
+            "idempotent unsubscribe must round-trip closed=false"
+        );
     }
 }

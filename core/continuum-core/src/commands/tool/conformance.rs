@@ -21,7 +21,10 @@ use crate::sdk_codegen::{ActionCommand, CommandError, Ctx};
 /// Empty ⇒ the whole surface.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/tool/ToolConformanceParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/tool/ToolConformanceParams.ts"
+)]
 pub struct ToolConformanceParams {
     /// Optional substring filter on the offending tool name (case-insensitive).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -33,7 +36,10 @@ pub struct ToolConformanceParams {
 /// the fix (the detail doubles as the how-to-fix).
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/tool/ToolConformanceViolationInfo.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/tool/ToolConformanceViolationInfo.ts"
+)]
 pub struct ToolConformanceViolationInfo {
     /// The offending tool's name.
     pub tool: String,
@@ -46,7 +52,10 @@ pub struct ToolConformanceViolationInfo {
 /// Result of `tool/conformance` — the audit outcome.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/tool/ToolConformanceReport.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/tool/ToolConformanceReport.ts"
+)]
 pub struct ToolConformanceReport {
     /// True when NO tool (matching the filter) fails the floor — declared first so
     /// the verdict serializes at the head of the JSON even if the array is folded.

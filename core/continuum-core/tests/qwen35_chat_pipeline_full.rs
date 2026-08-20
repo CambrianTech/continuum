@@ -49,9 +49,7 @@ fn qwen35_persona_style_chat_produces_coherent_short_reply() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(32_768);
-    eprintln!(
-        "[full] backend config: n_gpu_layers={n_gpu_layers} context_length={context_length}"
-    );
+    eprintln!("[full] backend config: n_gpu_layers={n_gpu_layers} context_length={context_length}");
     let backend = LlamaCppBackend::load(LlamaCppConfig {
         model_path: PathBuf::from(model_path()),
         n_gpu_layers,

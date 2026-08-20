@@ -21,13 +21,13 @@ pub mod rotation_log_pool;
 
 pub use concurrency::local_inference_capacity;
 
-pub use disk_pressure::{
-    is_disk_gate_closed, DiskPathReport, DiskPressureLevel, DiskPressureMonitor,
-    DiskPressureSnapshot, DiskReporter,
-};
 pub use disk_eviction::{
     serving_active_artifacts, serving_tier_capacity_bytes, ActiveArtifactSet, CargoTargetPool,
     NvmeServingTierPool, DEFAULT_CARGO_TARGET_BUDGET_BYTES,
+};
+pub use disk_pressure::{
+    is_disk_gate_closed, DiskPathReport, DiskPressureLevel, DiskPressureMonitor,
+    DiskPressureSnapshot, DiskReporter,
 };
 pub use disk_reporters::{
     install_tracked_dirs, standard_tracked_dirs, tracked_dir, DiskUsageScanner, TrackedDir,
@@ -37,10 +37,10 @@ pub use memory_pressure::{
     MemoryBudgetSpec, MemoryPressureMonitor, MemoryPriority, MemoryReporter, ModuleMemoryReport,
     PressureLevel, PressureSnapshot,
 };
-pub use rotation_log_pool::RotationLogPool;
 pub use monitor::{
     CpuStats, MemoryStats, ProcessStats, SystemResourceMonitor, SystemResourceSnapshot, TopProcess,
 };
+pub use rotation_log_pool::RotationLogPool;
 
 /// Get current process RSS in MB. Reads directly from OS (no caching).
 pub fn process_rss_mb() -> u64 {

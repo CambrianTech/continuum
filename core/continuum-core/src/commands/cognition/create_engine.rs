@@ -16,7 +16,10 @@ use crate::modules::cognition::CognitionState;
 use crate::persona::PersonaCognition;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/CreateEngineParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/CreateEngineParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateEngineParams {
     /// Persona to create a cognition engine for.
@@ -27,7 +30,10 @@ pub struct CreateEngineParams {
 }
 
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/CreateEngineResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/CreateEngineResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateEngineResult {
     pub created: bool,

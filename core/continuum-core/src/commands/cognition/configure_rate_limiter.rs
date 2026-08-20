@@ -23,7 +23,10 @@ fn default_max_responses() -> u32 {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/ConfigureRateLimiterParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/ConfigureRateLimiterParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigureRateLimiterParams {
     /// Persona whose rate limiter is configured.
@@ -40,7 +43,10 @@ pub struct ConfigureRateLimiterParams {
 }
 
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/ConfigureRateLimiterResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/ConfigureRateLimiterResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigureRateLimiterResult {
     pub configured: bool,

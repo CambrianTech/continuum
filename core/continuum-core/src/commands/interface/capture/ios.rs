@@ -91,8 +91,9 @@ impl Screenshotter for IosSimShot {
     }
 
     async fn capture(&self, req: &CaptureRequest) -> Result<(), String> {
-        let xcrun = Self::xcrun()
-            .ok_or_else(|| "xcrun disappeared between availability check and capture".to_string())?;
+        let xcrun = Self::xcrun().ok_or_else(|| {
+            "xcrun disappeared between availability check and capture".to_string()
+        })?;
         let device = Self::device_arg(req);
         let out = req.out_path.to_string_lossy().to_string();
 
@@ -152,8 +153,10 @@ mod tests {
         assert_eq!(IosSimShot.target(), "ios");
         match IosSimShot.availability().await {
             Availability::Unavailable(msg) => {
-                assert!(msg.contains("Xcode") || msg.contains("Simulator") || msg.contains("simctl"),
-                    "actionable reason: {msg}");
+                assert!(
+                    msg.contains("Xcode") || msg.contains("Simulator") || msg.contains("simctl"),
+                    "actionable reason: {msg}"
+                );
             }
             Availability::Ready => {}
         }

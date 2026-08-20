@@ -1,13 +1,57 @@
 {
+  "id": "fed332c3-383c-45bb-a205-b54b02c43916",
+  "version": 1,
   "purpose": "benchmark/hard-rs",
   "regions": [
-    { "name": "scoreboard", "kind": "benchmark", "scope": "activity", "role": "primary", "slot": "context", "live": true },
-    { "name": "central", "kind": "benchmark", "scope": "activity", "role": "primary", "slot": "content", "live": true },
-    { "name": "feed", "kind": "benchmark", "scope": "activity", "role": "peripheral", "slot": "content", "live": true }
+    {
+      "name": "scoreboard",
+      "kind": "benchmark",
+      "scope": "activity",
+      "role": "primary",
+      "slot": "context",
+      "live": true
+    },
+    {
+      "name": "central",
+      "kind": "benchmark",
+      "scope": "activity",
+      "role": "primary",
+      "slot": "content",
+      "live": true
+    },
+    {
+      "name": "feed",
+      "kind": "benchmark",
+      "scope": "activity",
+      "role": "peripheral",
+      "slot": "content",
+      "live": true
+    }
   ],
   "affordances": [
-    { "verb": "observe", "command": "cognition/observe" }
+    {
+      "verb": "observe",
+      "command": "cognition/observe"
+    }
   ],
+  "params": {
+    "suite": {
+      "default": "hard-rs",
+      "doc": "which task manifest to import (task + oracle only, see benchmark/list)"
+    },
+    "instances": {
+      "default": [],
+      "doc": "explicit instance ids to run, in order; empty = suite order"
+    },
+    "team": {
+      "default": [],
+      "doc": "assignee display names; empty = the whole live roster, resolved at dispatch"
+    },
+    "budget": {
+      "default": "4h",
+      "doc": "wall-clock ceiling per attempt"
+    }
+  },
   "layout": {
     "container": "row",
     "children": [
@@ -15,13 +59,31 @@
         "node": {
           "container": "col",
           "children": [
-            { "node": { "container": "region", "name": "central" }, "weight": 2.0 },
-            { "node": { "container": "region", "name": "feed" }, "weight": 3.0 }
+            {
+              "node": {
+                "container": "region",
+                "name": "central"
+              },
+              "weight": 2.0
+            },
+            {
+              "node": {
+                "container": "region",
+                "name": "feed"
+              },
+              "weight": 3.0
+            }
           ]
         },
         "weight": 3.0
       },
-      { "node": { "container": "region", "name": "scoreboard" }, "weight": 1.0 }
+      {
+        "node": {
+          "container": "region",
+          "name": "scoreboard"
+        },
+        "weight": 1.0
+      }
     ]
   }
 }

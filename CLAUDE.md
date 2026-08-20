@@ -48,6 +48,38 @@ We already wrote the test infrastructure. The recurring slop pattern is the mode
 
 **The cost of skipping this doc is the model rebuilding `RecordingModule` inline in every test file, refusing to gate stress tests, growing the test surface by N tests per PR without curating any of them, and turning `cargo test` into a 14-minute build for tests that were each individually justified at sign-off but collectively duplicate.** Don't.
 
+## 🛑 STOP — If You Are About To Touch Benchmarks, agent/solve, Grading, Or Run State
+
+**Required first read** before editing ANY of `commands/benchmark.rs`,
+`commands/agent/solve.rs`, `cognition/swe_bench.rs`, or anything that writes run
+state, grades, or benchmark receipts:
+
+→ **[docs/architecture/BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md](docs/architecture/BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md)**
+
+**Benchmarks are ADAPTERS into recipes/activities. They are NOT a parallel runner.**
+Import task + oracle only; project into a recipe; the ROOM is the runner; grading is
+the activity's outcome score.
+
+**The consequence that makes this law:** the learning flywheel consumes ROOM TURNS
+(L1 lifts tool-traces from captured turns, L2 triggers on turn-completion). A
+detached `agent/solve` writing `progress/<run>.grade.json` produces **no turns**, so
+a citizen can burn 12 acts, write a patch, take a verdict — and **none of it reaches
+the curriculum.** Maximum effort, zero learning. That, not the pass rate, is why
+benchmarks have failed.
+
+**The acceptance test for any change here:** *can a citizen standing in the room
+perceive the run's state through the same ViewState pipe the human's screen uses?*
+If answering needs a file read or a log parse, it is disconnected and it failed.
+
+**The smell to catch yourself on:** if you are adding a field to a benchmark probe so
+an external consumer can parse it better — STOP. The consumer should not be external.
+(Done on 2026-08-13, in good faith, while the real defect was that the subsystem
+exists at all.)
+
+**The cost of skipping this doc is rebuilding the parallel runner — it is locally the
+shortest path to "a number" every single time, and every patch to it deepens the
+hole.** Don't.
+
 ## 📐 Canonical Substrate Docs (read first)
 
 If you're new to the substrate, or you're picking up runtime/cognition work, read these in order before anything else in this file. They are the precedence-winning truth on substrate-shaped questions:
@@ -419,31 +451,56 @@ let results = algo.execute(&input);
 
 ## 🚨 CRITICAL WORKFLOW (READ FIRST!)
 
+### THE SYSTEM IS A HEADLESS RUST CORE. NODE IS ONE CLIENT.
+
+Read this before you reach for `npm` anything. Joel, 2026-08-13:
+
+> *"Headless rust period. No need for node to run everything except for the web
+> interface which is one of many, including mobile apps/sdk."*
+
+The core is a Rust process. It builds, boots, serves models, runs cognition, and
+answers commands with **no Node in the picture** — `continuum --help` says so in its
+own first line: *"build + run the headless Rust core"*. Node exists to build the WEB
+desktop, which is **one client among several** (mobile app, SDK, TUI, MCP, another
+node's core over the grid). A feature that lives in a client only exists for that
+client — which is exactly how voice ended up web-only and every other citizen was
+structurally mute (#58). Behaviour goes in the core. Clients render.
+
 ### EVERY TIME YOU EDIT CODE:
 1. **Edit files**
-2. **Run `npm start`** (MANDATORY - waits 90+ seconds)
-3. **Test with screenshot** or command
+2. **`continuum reboot`** — rebuilds and relaunches the core, and **verifies the
+   RUNNING core's build SHA** before reporting success (that verification exists
+   because a reboot once shipped a stale binary and reported success anyway, #194).
+3. **Exercise the change through a command** — and read the receipt, not the exit code
 4. **Repeat**
 
 ```bash
-cd src
-npm start                    # DEPLOYS code changes, takes 130s or so
-
-uu ping #check for server and browser connection
-uu interface/screenshot            # Verify any visual changes
-uu collaboration/chat/send --room="general" --message="Try using the ping command" #be sure to randomlize this, check for list, help, etc, or they think it's a repeat 
-uu collaboration/chat/export --room="general" --limit=20 | tail -20 #Wait about 30 seconds and get the last 20 messages
+continuum reboot                 # THE deploy path. Rust build + relaunch + SHA verify.
+continuum deploy-verify          # prove the running core matches the deployed source
+continuum ping                   # is the core answering? (check the version trio)
+continuum commands/list          # discover the live command surface — never guess a verb
+continuum commands/list --filter data/
 ```
 
-**IF YOU FORGET `npm start`, THE BROWSER SHOWS OLD CODE!**
+**Verify the deploy, always.** A fix you cannot prove reached the running binary is a
+fix you have not made — stale binaries have silently poisoned whole debugging sessions.
+That is what the SHA check and the version trio (build # + sha + built-at) are for.
 
-**NEVER CALL `cargo build` DIRECTLY!**
-- ALL Rust binaries MUST be built via `npm start`
-- If you run `cargo build --release` manually, that binary only exists on YOUR machine
-- When someone else clones the repo and runs `npm start`, that step doesn't happen
-- The repo is BROKEN for everyone except you
-- Manual build steps = broken repo for all other users
-- If a Rust binary needs to be built, it MUST be wired into the `npm start` build scripts
+**`cargo build` is not the deploy path** — not because Rust builds are forbidden, but
+because a binary you built by hand exists only on your machine, and the next person to
+clone the repo gets a system that doesn't work. Anything a running core needs must be
+wired into the path `continuum start` / `continuum reboot` actually takes, so a fresh
+clone works with no manual steps (#291). For type-checking while you work,
+`cargo check -p continuum-core` is the right tool — always after
+`export CARGO_TARGET_DIR="$HOME/.continuum/cache/cargo-target"`.
+
+**`npm` is for building the web client, and only that.** If you are changing core
+behaviour and find yourself running `npm start`, you are in the wrong tier.
+
+> **⚠️ `./jtag` is the LEGACY Node CLI**, from when the Node shell was the system.
+> Where you see it below and elsewhere in this file, the current equivalent is
+> `continuum <command>` against the headless core. The old invocations are kept
+> because their *command names* are still accurate; the `./jtag` driver is not.
 
 Don't panic and stash changes first before anything drastic. Use the stash to your advantage and you will be safe from catastrophe. Remember we have git for a reason!
 
@@ -452,13 +509,13 @@ Don't panic and stash changes first before anything drastic. Use the stash to yo
 **Basic Usage:**
 ```bash
 # Send message to chat room (direct DB, no UI)
-uu collaboration/chat/send --room="general" --message="Hello team" 
-uu collaboration/chat/send --room="general" --message="Reply" --replyToId="abc123"
+./jtag collaboration/chat/send --room="general" --message="Hello team" 
+./jtag collaboration/chat/send --room="general" --message="Reply" --replyToId="abc123"
 
 # Export chat messages to markdown
-uu collaboration/chat/export --room="general" --limit=50                    # Print to stdout
-uu collaboration/chat/export --room="general" --output="/tmp/export.md"    # Save to file
-uu collaboration/chat/export --limit=100 --includeSystem=true               # All rooms with system messages
+./jtag collaboration/chat/export --room="general" --limit=50                    # Print to stdout
+./jtag collaboration/chat/export --room="general" --output="/tmp/export.md"    # Save to file
+./jtag collaboration/chat/export --limit=100 --includeSystem=true               # All rooms with system messages
 ```
 
 **Interactive Workflow - Working WITH the AI Team:**
@@ -467,7 +524,7 @@ When you send a message, `chat/send` returns a message ID. Use this to track res
 
 ```bash
 # 1. Send message (captures the JSON response with messageId)
-RESPONSE=$(uu collaboration/chat/send --room="general" --message="Deployed new tool error visibility fix. Can you see errors clearly now?")
+RESPONSE=$(./jtag collaboration/chat/send --room="general" --message="Deployed new tool error visibility fix. Can you see errors clearly now?")
 
 # 2. Extract message ID (using jq if available, or manual)
 MESSAGE_ID=$(echo "$RESPONSE" | jq -r '.shortId')
@@ -477,19 +534,19 @@ echo "My message ID: $MESSAGE_ID"
 sleep 10
 
 # 4. Check their responses
-uu collaboration/chat/export --room="general" --limit=20
+./jtag collaboration/chat/export --room="general" --limit=20
 
 # 5. Reply to specific AI feedback
-uu collaboration/chat/send --room="general" --replyToId="<their-message-id>" --message="Good catch! Let me fix that..."
+./jtag collaboration/chat/send --room="general" --replyToId="<their-message-id>" --message="Good catch! Let me fix that..."
 ```
 
 **CRITICAL**: Don't just broadcast to the AI team - WORK WITH THEM. Use their feedback, reply to their questions, iterate based on what they're saying. The chat export shows message IDs as `#abcd123` - use those to reply.
 
 ### Debug Commands
 ```bash
-uu debug/logs --tailLines=50 --includeErrorsOnly=true
-uu debug/widget-events --widgetSelector="chat-widget"
-uu ai/report                       # AI performance metrics
+./jtag debug/logs --tailLines=50 --includeErrorsOnly=true
+./jtag debug/widget-events --widgetSelector="chat-widget"
+./jtag ai/report                       # AI performance metrics
 ```
 
 ### Persona Logging (Cognition Visibility)
@@ -511,16 +568,16 @@ Persona logging is **opt-in** and controlled by `.continuum/logging.json`. Categ
 **Commands**:
 ```bash
 # Enable logging for a persona (persists to logging.json)
-uu logging/enable --persona="helper" --category="cognition"
+./jtag logging/enable --persona="helper" --category="cognition"
 
 # Disable logging for a persona
-uu logging/disable --persona="helper"
+./jtag logging/disable --persona="helper"
 
 # Show logging status for all personas
-uu logging/status
+./jtag logging/status
 
 # Show logging status for a specific persona
-uu logging/status --persona="helper"
+./jtag logging/status --persona="helper"
 ```
 
 **Log locations**:
@@ -544,7 +601,7 @@ tail -f .continuum/sessions/user/shared/*/logs/browser.log
 
 ```
 1. Edit code
-2. Deploy with npm start (90+ seconds)
+2. Deploy with `continuum reboot` (Rust build + relaunch + SHA verify)
 3. Test manually (verify basic functionality)
 4. ✨ ASK AI TEAM TO QA TEST ✨
 5. Wait for AI feedback (they WILL find issues)
@@ -581,7 +638,7 @@ mkdir daemons/logger-daemon && touch LoggerDaemon.ts
 
 **What generators provide:**
 - Auto-generated README with usage examples
-- Help text that AIs can access via `uu command/name --help`
+- Help text that AIs can access via `./jtag command/name --help`
 - Package.json integration for `npm run` scripts
 - Consistent structure across all modules
 - Proper discovery mechanisms
@@ -597,16 +654,16 @@ mkdir daemons/logger-daemon && touch LoggerDaemon.ts
 
 ```bash
 # 1. Deploy your changes
-npm start
+continuum reboot
 
 # 2. Ask AI team to test
-uu collaboration/chat/send --room="general" --message="I just added a new 'collaboration/wall/write' command. Can you try writing a document to the wall and let me know if the error messages make sense?"
+./jtag collaboration/chat/send --room="general" --message="I just added a new 'collaboration/wall/write' command. Can you try writing a document to the wall and let me know if the error messages make sense?"
 
 # 3. Wait for responses (30-60 seconds)
 sleep 60
 
 # 4. Check their feedback
-uu collaboration/chat/export --room="general" --limit=30
+./jtag collaboration/chat/export --room="general" --limit=30
 
 # 5. Fix issues they found
 # - Improve error messages
@@ -615,7 +672,7 @@ uu collaboration/chat/export --room="general" --limit=30
 # - Clarify parameters
 
 # 6. Test again with AIs
-uu collaboration/chat/send --room="general" --message="Fixed the error messages. Can you try again?"
+./jtag collaboration/chat/send --room="general" --message="Fixed the error messages. Can you try again?"
 
 # 7. Once AIs confirm it works, THEN commit
 git commit -m "Add wall/write with AI-validated UX"
@@ -963,7 +1020,7 @@ The system bridges capability gaps so every persona gets the same senses:
 - Autonomous polling loop integrated into PersonaUser
 
 **🚧 IN PROGRESS (Phase 4)**:
-- Task database and CLI commands (`uu task/create`, `task/list`, `task/complete`)
+- Task database and CLI commands (`./jtag task/create`, `task/list`, `task/complete`)
 - Self-task generation (AIs create own work)
 
 **📋 PLANNED (Phases 5-7)**:
@@ -1018,14 +1075,14 @@ async serviceInbox(): Promise<void> {
 **Phase 4: Task Database & Commands** (NEXT)
 ```bash
 # Create task
-uu task/create --assignee="helper-ai-id" \
+./jtag task/create --assignee="helper-ai-id" \
   --description="Review main.ts" --priority=0.7 --domain="code"
 
 # List tasks
-uu task/list --assignee="helper-ai-id"
+./jtag task/list --assignee="helper-ai-id"
 
 # Complete task
-uu task/complete --taskId="001" --outcome="Found 3 issues"
+./jtag task/complete --taskId="001" --outcome="Found 3 issues"
 ```
 
 **Phase 5: Self-Task Generation**
@@ -1071,9 +1128,9 @@ npx vitest tests/integration/genome-paging.test.ts
 npx vitest tests/integration/continuous-learning.test.ts
 
 # System tests (end-to-end)
-npm start
+continuum reboot
 # Wait 1 hour, check for self-created tasks
-uu task/list --assignee="helper-ai-id" \
+./jtag task/list --assignee="helper-ai-id" \
   --filter='{"createdBy":"helper-ai-id"}'
 ```
 
@@ -1112,7 +1169,31 @@ commands/example/
 
 **Never import server/browser code IN shared files!**
 
-### Rust-Backed Commands (IPC Mixin Pattern)
+### Rust-Backed Commands (IPC Mixin Pattern) — ⚠️ LEGACY (Node-era), read the rule first
+
+> **⚠️ This section describes the NODE-ERA command system and reads as if it were current.
+> It is not the architecture.** It cost a full misdiagnosis on 2026-08-07: reading the
+> three-layer chain below as the intended design led to "a Rust command called from
+> TypeScript is correct, so port the legacy TS voice bridge" — which would have moved core
+> orchestration *into* the presentation tier, the exact bottleneck this project forbids.
+>
+> **THE RULE (Joel, 2026-08-07):** *"Node nor Python are ever part of core. They bottleneck.
+> Node is presentation only."* And only for the **optional** web desktop — there are iOS,
+> Android and TUI clients too.
+>
+> So: the **Rust core owns the behaviour**. Clients render. If logic lives in a client, only
+> that client has the feature — which is why voice existed solely in the web desktop and
+> iOS/Android/TUI citizens were structurally voiceless (#58,
+> [docs/architecture/LIVE-CALL-POSITRON-CONTROLS.md](docs/architecture/LIVE-CALL-POSITRON-CONTROLS.md)).
+>
+> For anything that must reach every interface, the current pattern is a **positron
+> `ViewState` + source** (eight exist: chat, roster, kanban, nav, serving, wall, foundry,
+> metrics) — one truth in Rust, N renderers, ts-rs exporting the type to
+> `protocol/typescript/positron/`. Not a per-client mixin.
+>
+> The mixin chain below remains accurate **only** for exposing a Rust command to the Node
+> web desktop's `./jtag` CLI. It is a presentation-tier convenience, never where behaviour
+> belongs.
 
 When a command is backed by Rust (via continuum-core IPC), it requires **THREE layers**:
 
@@ -1155,8 +1236,8 @@ npx tsx generator/CommandGenerator.ts generator/specs/gpu-stats.json
 #    const stats = await this.rustClient.gpuStats();
 
 # 7. Build and verify
-npm run build:ts && npm start
-uu gpu/stats
+continuum reboot
+continuum gpu/stats
 ```
 
 **The three-layer architecture:**
@@ -1167,7 +1248,7 @@ uu gpu/stats
 | TS Mixin | `bindings/modules/gpu.ts` | snake_case→camelCase, typed wrapper |
 | TS Command | `commands/gpu/stats/` | Generated scaffold, uses mixin |
 
-**Without the mixin + command layer**, Rust IPC commands exist but are invisible to `uu` and the command system. The generator creates discoverability (README, help text, CLI params).
+**Without the mixin + command layer**, Rust IPC commands exist but are invisible to `./jtag` and the command system. The generator creates discoverability (README, help text, CLI params).
 
 ---
 
@@ -1188,7 +1269,7 @@ Never guess - logs tell the truth
 
 ### 2. USE VISUAL VERIFICATION
 ```bash
-uu interface/screenshot --querySelector="chat-widget" --filename="debug.png"
+./jtag interface/screenshot --querySelector="chat-widget" --filename="debug.png"
 ```
 Screenshots don't lie - don't trust success messages
 
@@ -1196,7 +1277,7 @@ Screenshots don't lie - don't trust success messages
 ```typescript
 console.log('🔧 CLAUDE-FIX-' + Date.now() + ': My change');
 ```
-Then verify markers appear in browser console after `npm start`
+Then verify the marker appears in the RUNNING core's output after `continuum reboot` — a marker that never prints means you are testing a stale binary
 
 ### 4. BACK-OF-MIND CHECK
 What's nagging at you? That's usually the real issue.
@@ -1213,12 +1294,12 @@ Local PersonaUsers (Helper AI, Teacher AI, CodeReview AI, Local Assistant, and 5
 
 ```bash
 # STEP 1: Ask a question in the general room (no room ID needed!)
-uu collaboration/chat/send --room="general" --message="How should I implement connection pooling for websockets?"
+./jtag collaboration/chat/send --room="general" --message="How should I implement connection pooling for websockets?"
 
 # STEP 2: Wait 5-10 seconds for responses
 
 # STEP 3: View responses in chat widget
-uu interface/screenshot --querySelector="chat-widget"
+./jtag interface/screenshot --querySelector="chat-widget"
 
 # STEP 4: Export conversation to markdown (coming soon - see workflow below)
 ```
@@ -1227,25 +1308,25 @@ uu interface/screenshot --querySelector="chat-widget"
 
 ```bash
 # 1. Send your question and capture the message ID
-MESSAGE_ID=$(uu collaboration/chat/send --room="general" --message="What's the best way to handle rate limiting?" | jq -r '.messageId')
+MESSAGE_ID=$(./jtag collaboration/chat/send --room="general" --message="What's the best way to handle rate limiting?" | jq -r '.messageId')
 
 # 2. Wait for AI responses (they respond within 5-10 seconds)
 sleep 10
 
 # 3. Get all messages after your question
-uu data/list --collection=chat_messages \
+./jtag data/list --collection=chat_messages \
   --filter="{\"roomId\":\"ROOM_UUID\",\"timestamp\":{\"\$gte\":\"$MESSAGE_ID_TIMESTAMP\"}}" \
   --orderBy='[{"field":"timestamp","direction":"asc"}]'
 
 # 4. View in browser
-uu interface/screenshot --querySelector="chat-widget"
+./jtag interface/screenshot --querySelector="chat-widget"
 ```
 
 ### Future Workflow (Planned)
 
 ```bash
 # Export conversation thread to markdown
-uu collaboration/chat/export --messageId="UUID" --format="markdown" --output="solution.md"
+./jtag collaboration/chat/export --messageId="UUID" --format="markdown" --output="solution.md"
 
 # This will include:
 # - Your question
@@ -1303,28 +1384,15 @@ The AIs will:
 
 ## 🚨 CLAUDE'S COMMON MISTAKES
 
-### 1. FORGET TO RUN `npm start` AFTER EDITING
+### 1. FORGET TO DEPLOY (`continuum reboot`) AFTER EDITING
 **Result**: Browser shows old code, nothing works
 
 ### 2. ASSUME SUCCESS WITHOUT TESTING
 **Fix**: Always take screenshot after deployment
 
-### 3. WRONG COMMAND NAME
-**The command is `uu`.** Not `./jtag`, not `ctm`, and not `./continuum` from a
-directory — `uu` is on `$PATH` after install.
-
-This entry used to say *"Always work from `src`"* and *"Commands: `./jtag` NOT
-`./continuum`"*. Both were wrong, and wrong in the way that costs a fresh
-session its first ten minutes: `src/` was the Node monolith and no longer
-exists, `jtag` was its CLI and is not installed by anything, and `continuum` —
-the one it told you to avoid — is a real alias that works.
-
-`uu` and `continuum` are the SAME binary under two names; `uu` is canonical
-because it is shortest and it is what people reach for. The binary derives its
-own name from `argv[0]`, so `uu --help` says `uu` and any future alias is
-correct the moment it exists. `uu version` reports the build number + sha of the
-binary in your hand, which is a different question from what the running core
-is — ask both when they might disagree.
+### 3. WRONG WORKING DIRECTORY
+**Always work from**: `src`
+**Commands**: `./jtag` NOT `./continuum`
 
 ### 4. IGNORE EXISTING TYPES
 **Fix**: Search for types first: `find . -name "*Types.ts"`
@@ -1346,9 +1414,9 @@ is — ask both when they might disagree.
 
 ## ⚡ ESSENTIAL FACTS
 
-- **npm start takes 90+ seconds** - BE PATIENT
+- **A core rebuild takes a while** - BE PATIENT, and verify the SHA when it returns
 - **One server, many clients** - All tests connect to running server
-- **"browserConnected: false" is a red herring** - Use `uu ping` instead
+- **"browserConnected: false" is a red herring** - Use `./jtag ping` instead
 - **Precommit hook is sacred** - TypeScript + CRUD tests must pass
 - **AI response testing is manual** - Hook doesn't test this, you must
 
@@ -1362,7 +1430,7 @@ npm run data:clear     # Clear all data
 npm run data:seed      # Create default users + rooms
 ```
 
-**Integrated into `npm start`** - fresh data every deployment
+**Integrated into the core's start path** - fresh data every deployment
 
 **Default seeded data:**
 - Joel (human owner)
@@ -1632,15 +1700,15 @@ Generators and OOP are intertwined parallel forces:
 ---
 
 **File reduced from 61k to ~20k characters**
-- if you only edit a test, and not the api itself, you don't need to redeploy with npm start, just edit and test again e.g npx tsx tests/integration/genome-fine-tuning-e2e.test.ts
-- need to remember to npm run build:ts before deploying with npm start, just to make sure there's no compilation issues
-- uu collaboration/chat/export --room="general" --limit=30 will let you see ai opinions after chat/send to ask
+- if you only edit a test, and not the api itself, you don't need to redeploy — just run the test again (`cargo test -p continuum-core --lib <filter>`)
+- type-check before you deploy: `cargo check -p continuum-core` (after `export CARGO_TARGET_DIR="$HOME/.continuum/cache/cargo-target"`). `npm run build:ts` checks the WEB CLIENT only — it says nothing about whether the core compiles
+- ./jtag collaboration/chat/export --room="general" --limit=30 will let you see ai opinions after chat/send to ask
 - Tool logging is in PersonaToolExecutor
 - make sure to put any markdown architecture or design documents other than readmes in docs/* into the appropriate directort OR document if they exist. run tree there.
 - assume a new concept or group of functions ought to be in its own file and most likely own class. Use good OOP, interfaces, like java, dot net, or ts
   practices, and in some ways like C++ templating with generics. These are your superpowers
 - for getters in typescript we do not prefix methods with get, we use get or set like good properties and often this is backed by _theProperty type private var
-- never commit code until you validate it works. deploy and validate first, make sure it compiles, npm run build:ts before that
+- never commit code until you validate it works. deploy and validate first, make sure it compiles (`cargo check` for the core; `npm run build:ts` only if you touched the web client)
 - never use `--no-verify` on commit or push. If hooks fail because of a stale worktree, missing submodule, missing generated file, or a bug in the hook itself, fix the underlying problem; never bypass the shared validation path.
 - commit often per logical unit once validated. merging to main is the only step that requires my approval — commits to feature branches do not.
 - **clean as you go.** Cargo target dirs balloon — a `cargo test` of continuum-core consumes ~10 GB of test-binary artifacts on top of the shared cache. Discipline: (1) ALWAYS `export CARGO_TARGET_DIR="$HOME/.continuum/cache/cargo-target"` before any cargo invocation so artifacts land in the ONE shared cache, not in a per-invocation ghost workspace `target/` dir. (2) After each cargo cycle, `df -h /` — if free space dropped to < 20 GB, sweep ghost target dirs (`rm -rf core/target` when it ghost-grew from RA / manual cargo bypassing the env var) and report the number BEFORE running another cargo. (3) Prefer `cargo check` over `cargo test` when validating type-correctness; only escalate to test when behavior changed. (4) Slice 3 in `core/.cargo/config.toml` is the opt-in fix that pins target-dir at the workspace level — uncomment for your operator absolute path when ready.

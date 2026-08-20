@@ -6,11 +6,12 @@ use crate::modules::data::DataState;
 use crate::orm::types::{BatchOperation, StorageResult};
 
 /// Params for `data/batch`.
-#[derive(
-    Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/data/DataBatchParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/data/DataBatchParams.ts"
+)]
 pub struct DataBatchParams {
     /// The operations to apply (each names its own collection + type).
     pub operations: Vec<BatchOperation>,

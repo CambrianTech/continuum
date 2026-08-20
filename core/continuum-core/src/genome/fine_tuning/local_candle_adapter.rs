@@ -148,10 +148,7 @@ impl FineTuningAdapter for LocalCandleFineTuner {
         }
     }
 
-    async fn create_job(
-        &self,
-        request: TrainingJobRequest,
-    ) -> Result<JobHandle, FineTuningError> {
+    async fn create_job(&self, request: TrainingJobRequest) -> Result<JobHandle, FineTuningError> {
         // Resolve output path. The substrate's convention is
         // `~/.continuum/genome/<persona>/<trait>/<uuid>.safetensors`
         // — when the caller doesn't pin one, default to that under
@@ -238,7 +235,13 @@ fn default_output_path(
 /// shouldn't be able to escape the genome dir via `../`.
 fn sanitize_segment(s: &str) -> String {
     s.chars()
-        .map(|c| if matches!(c, '/' | '\\' | '\0') { '_' } else { c })
+        .map(|c| {
+            if matches!(c, '/' | '\\' | '\0') {
+                '_'
+            } else {
+                c
+            }
+        })
         .collect()
 }
 
@@ -362,11 +365,26 @@ mod tests {
                 .iter()
                 .any(|p| base.starts_with(p))
         };
-        assert!(matches("synthetic"), "synthetic-only stand-in must accept its own prefix");
-        assert!(matches("synthetic-tiny"), "longer synthetic-prefixed variants accepted");
-        assert!(!matches("gpt-4o-mini"), "cloud base must NOT match local-candle");
-        assert!(!matches("qwen3.5-4b"), "real model name must NOT match local-candle");
-        assert!(!matches("mistral-large-latest"), "Mistral base must NOT match");
+        assert!(
+            matches("synthetic"),
+            "synthetic-only stand-in must accept its own prefix"
+        );
+        assert!(
+            matches("synthetic-tiny"),
+            "longer synthetic-prefixed variants accepted"
+        );
+        assert!(
+            !matches("gpt-4o-mini"),
+            "cloud base must NOT match local-candle"
+        );
+        assert!(
+            !matches("qwen3.5-4b"),
+            "real model name must NOT match local-candle"
+        );
+        assert!(
+            !matches("mistral-large-latest"),
+            "Mistral base must NOT match"
+        );
     }
 
     // what this catches: create_job spawns an actor + returns a

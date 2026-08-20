@@ -48,7 +48,10 @@ use uuid::Uuid;
 /// executor may use it for routing decisions (e.g., a game pipeline
 /// only acts on `FrameUpdate` or `AutonomousTick`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/recipe/SignalKind.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/recipe/SignalKind.ts"
+)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum SignalKind {
     /// Chat message authored by a user or a persona in a room.

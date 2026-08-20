@@ -156,8 +156,7 @@ impl DeferredFaculty {
                     continue; // sentinel / not a real burst
                 }
                 let room_id = input.room_id;
-                let ws = Workspace::in_room(input.world_state, room_id)
-                    .with_cycle(input.cycle);
+                let ws = Workspace::in_room(input.world_state, room_id).with_cycle(input.cycle);
 
                 // The inner faculty's contribute is async (real inference/IPC).
                 // Catch a panic so a flawed backend degrades the lane to stale,
@@ -478,7 +477,10 @@ mod tests {
         // finding; it also publishes it as last-good.
         let ws1 = Workspace::in_room("burst one", Uuid::nil()).with_cycle(CycleId(1));
         let r1 = deferred.contribute(&ws1).await;
-        assert!(r1.is_some(), "cold start self-warms: the first tick carries grounding");
+        assert!(
+            r1.is_some(),
+            "cold start self-warms: the first tick carries grounding"
+        );
 
         // Tick 2 immediately after (before the worker publishes anything): the
         // warm finding serves as last-good, NON-BLOCKING — the cold cost is
@@ -580,7 +582,11 @@ mod tests {
         let ws_a2 = Workspace::in_room("back in A", room_a).with_cycle(CycleId(3));
         let in_a = deferred.contribute(&ws_a2).await;
         let found = in_a.expect("the room-A finding is ours to serve back in room A");
-        assert_eq!(found.cycle, CycleId(1), "still stamped with its original cycle");
+        assert_eq!(
+            found.cycle,
+            CycleId(1),
+            "still stamped with its original cycle"
+        );
     }
 
     // what this catches: reproject-to-now (slice 3) — the cheap synchronous "bring
@@ -606,13 +612,17 @@ mod tests {
 
         // On-topic burst (shares "slow late recall finding") → high relevance, the
         // finding keeps most of its salience and is served, cycle preserved.
-        let on_topic =
-            Workspace::in_room("the slow late recall finding is relevant", room).with_cycle(CycleId(4));
+        let on_topic = Workspace::in_room("the slow late recall finding is relevant", room)
+            .with_cycle(CycleId(4));
         let kept = deferred
             .contribute(&on_topic)
             .await
             .expect("same-room finding is served");
-        assert_eq!(kept.cycle, CycleId(1), "reproject preserves the original cycle stamp");
+        assert_eq!(
+            kept.cycle,
+            CycleId(1),
+            "reproject preserves the original cycle stamp"
+        );
         assert!(
             kept.salience > 0.4,
             "on-topic reproject keeps salience high, got {}",

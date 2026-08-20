@@ -71,16 +71,20 @@ mod tests {
     #[test]
     fn family_exposes_all_three_airc_verbs() {
         let queue_client: Arc<dyn AircQueueClient> = Arc::new(NoopQueueClient);
-        let event_transport: Arc<dyn AircEventTransport> = Arc::new(
-            StoreAircEventTransport::new(Arc::new(InMemoryAircRealtimeStore::default())),
-        );
+        let event_transport: Arc<dyn AircEventTransport> = Arc::new(StoreAircEventTransport::new(
+            Arc::new(InMemoryAircRealtimeStore::default()),
+        ));
         let names: Vec<&str> = command_objects(queue_client, event_transport)
             .iter()
             .map(|o| o.name())
             .collect();
         assert_eq!(
             names,
-            vec!["airc/queue-scan", "airc/realtime-publish", "airc/realtime-replay"]
+            vec![
+                "airc/queue-scan",
+                "airc/realtime-publish",
+                "airc/realtime-replay"
+            ]
         );
     }
 }

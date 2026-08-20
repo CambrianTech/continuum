@@ -3,7 +3,7 @@
 //!
 //! These once lived ONLY in [`DataModule::handle_command`](crate::modules::data)'s
 //! stringly `match` (the `migration/` prefix arms) — dispatchable, but with no
-//! descriptor in the registry, so invisible to the grid ACL, codegen, and `cu`. As
+//! descriptor in the registry, so invisible to the grid ACL, codegen, and `uu`. As
 //! typed commands they get a descriptor AND route through the O(1) lock-free typed
 //! object map. The wire name mirrors the file path — `commands/migration/start.rs`
 //! ⟺ `migration/start`.
@@ -39,11 +39,12 @@ use verify::MigrationVerifyCmd;
 
 /// Shared params for the no-argument control commands (`status`/`pause`/`resume`/
 /// `verify`): they all operate on the single active migration and take no input.
-#[derive(
-    Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/migration/MigrationControlParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/migration/MigrationControlParams.ts"
+)]
 pub struct MigrationControlParams {}
 
 /// The dep-holding `migration/*` command objects [`DataModule`](crate::modules::data::DataModule)
@@ -52,12 +53,24 @@ pub struct MigrationControlParams {}
 /// `migration/` prefix arm is deleted.
 pub fn command_objects(state: Arc<DataState>) -> Vec<Arc<dyn DynCommand>> {
     vec![
-        Arc::new(MigrationStart { state: state.clone() }),
-        Arc::new(MigrationStatusCmd { state: state.clone() }),
-        Arc::new(MigrationPause { state: state.clone() }),
-        Arc::new(MigrationResume { state: state.clone() }),
-        Arc::new(MigrationVerifyCmd { state: state.clone() }),
-        Arc::new(MigrationCutoverCmd { state: state.clone() }),
+        Arc::new(MigrationStart {
+            state: state.clone(),
+        }),
+        Arc::new(MigrationStatusCmd {
+            state: state.clone(),
+        }),
+        Arc::new(MigrationPause {
+            state: state.clone(),
+        }),
+        Arc::new(MigrationResume {
+            state: state.clone(),
+        }),
+        Arc::new(MigrationVerifyCmd {
+            state: state.clone(),
+        }),
+        Arc::new(MigrationCutoverCmd {
+            state: state.clone(),
+        }),
         Arc::new(MigrationRollbackCmd { state }),
     ]
 }

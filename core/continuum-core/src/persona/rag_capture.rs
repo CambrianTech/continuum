@@ -308,10 +308,7 @@ impl<S: RagSource + 'static> RagSource for RecordingRagSource<S> {
         budget: u32,
     ) -> Option<RagDelivery> {
         let cursor_for_event = cursor.clone();
-        let delivery = self
-            .inner
-            .deliver_continuation(ctx, cursor, budget)
-            .await?;
+        let delivery = self.inner.deliver_continuation(ctx, cursor, budget).await?;
         let event = RagCaptureEvent::SourceDelivered {
             captured_at_ms: ctx.now_ms,
             persona_id: ctx.persona_id,
@@ -496,14 +493,12 @@ mod tests {
 
     #[tokio::test]
     async fn recording_decorator_passes_through_delivery() {
-        let inner = StubRagSource::new(
-            "stub",
-            persona(),
-            vec![item("hello", 5), item("world", 5)],
-        );
+        let inner = StubRagSource::new("stub", persona(), vec![item("hello", 5), item("world", 5)]);
         let sink: Arc<dyn RagCaptureSink> = Arc::new(InMemoryRagCaptureSink::new());
         let recorder = RecordingRagSource::new(inner, sink.clone());
-        let delivery = recorder.deliver(&ctx(), 100, ResolutionPreference::Raw).await;
+        let delivery = recorder
+            .deliver(&ctx(), 100, ResolutionPreference::Raw)
+            .await;
         // Wrapped source's items pass through.
         assert_eq!(delivery.items.len(), 2);
         // source_id pass-through.
@@ -516,7 +511,9 @@ mod tests {
         let sink = Arc::new(InMemoryRagCaptureSink::new());
         let sink_dyn: Arc<dyn RagCaptureSink> = sink.clone();
         let recorder = RecordingRagSource::new(inner, sink_dyn);
-        recorder.deliver(&ctx(), 100, ResolutionPreference::Raw).await;
+        recorder
+            .deliver(&ctx(), 100, ResolutionPreference::Raw)
+            .await;
         let events = sink.events();
         assert_eq!(events.len(), 1);
         match &events[0] {

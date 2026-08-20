@@ -18,7 +18,9 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::cognition::channel_substrate::{global_channel_bookmarks, global_channel_digest_buffer};
+use crate::cognition::channel_substrate::global_channel_digest_buffer;
+use crate::persona::airc_source::AircTranscriptReader;
+use crate::persona::PersonaAircRuntimeRegistry;
 use crate::ipc::positron_nav_source::{global_nav_focus, NAV_CHANGED};
 use crate::ipc::positron_source::{AircChatFocused, CHAT_FOCUSED};
 use crate::runtime::ready_buffer::ReadyBuffer;
@@ -44,12 +46,7 @@ impl NavShared {
     /// not yet wired — the cursor advance already persisted to the shared store,
     /// so the write is not lost (only the live re-project is deferred).
     fn publish_nav_changed(&self, user: Uuid) {
-        if let Some(bus) = self
-            .bus
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-        {
+        if let Some(bus) = self.bus.read().unwrap_or_else(|e| e.into_inner()).as_ref() {
             bus.publish_async_only(NAV_CHANGED, serde_json::json!({ "user_id": user }));
         }
     }
@@ -62,12 +59,7 @@ impl NavShared {
     /// construction, never a hand JSON. Honest no-op without a bus, same as
     /// [`Self::publish_nav_changed`].
     fn publish_chat_focused(&self, room: Uuid) {
-        if let Some(bus) = self
-            .bus
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-        {
+        if let Some(bus) = self.bus.read().unwrap_or_else(|e| e.into_inner()).as_ref() {
             let payload = serde_json::to_value(AircChatFocused { room_id: room })
                 .expect("AircChatFocused serializes — wire-struct bug, not a runtime error");
             bus.publish_async_only(CHAT_FOCUSED, payload);
@@ -152,7 +144,10 @@ impl ServiceModule for NavModule {
 /// message the caller has seen). Monotonic: the cursor never moves backward.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/nav/MarkReadParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/nav/MarkReadParams.ts"
+)]
 pub struct MarkReadParams {
     /// The room whose read cursor to advance.
     #[ts(type = "string")]
@@ -166,14 +161,17 @@ pub struct MarkReadParams {
 /// the human unread badge and the persona RAG grounding both read.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/nav/MarkReadResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/nav/MarkReadResult.ts"
+)]
 pub struct MarkReadResult {
     /// The cursor value after the advance (`>=` the requested lamport, monotonic).
     #[ts(type = "number")]
     pub last_read: u64,
 }
 
-/// `nav/mark-read` — advance the shared `ChannelBookmarks` cursor for the caller +
+/// `nav/mark-read` — advance the caller's durable airc read cursor +
 /// publish `NAV_CHANGED` on the airc bus. Command in, Event out; the write half of
 /// the dual-consumer atom.
 struct MarkRead {
@@ -198,15 +196,79 @@ impl ActionCommand for MarkRead {
                 "nav/mark-read requires an authenticated caller (user_id)".to_string(),
             )
         })?;
-        let bookmarks = global_channel_bookmarks();
-        bookmarks.advance(user, params.room, params.lamport);
+        // The cursor is AIRC's durable `runtime_cursor`, written through the
+        // CALLER'S OWN airc scope — a reader's position belongs in that reader's
+        // store, never in a process-global map (which is what this used to be, and
+        // which died on every restart).
+        let last_read = advance_caller_cursor(user, params.room, params.lamport).await;
         // Command in → Event out on the airc bus (not a DOM event): the projector
         // re-reads + re-projects, so every surface + the persona see the new cursor.
         self.shared.publish_nav_changed(user);
-        Ok(MarkReadResult {
-            last_read: bookmarks.last_read(user, params.room),
-        })
+        Ok(MarkReadResult { last_read })
     }
+}
+
+/// Mark `room` read for `caller` at `lamport`, through the CALLER'S OWN airc scope,
+/// and return the resulting cursor.
+///
+/// One cursor per (reader, room), living in airc's durable `runtime_cursor` — the
+/// same one `AircRagSource` reads when it builds a citizen's window, so the human's
+/// mark-read and the citizen's perception cannot disagree.
+///
+/// ⚠ THE OPERATOR GAP (#27, self-peer): a cursor can only be written into a scope we
+/// can address, and today only CITIZENS have a registered airc runtime. When the
+/// caller has none — the human operator, until #27 lands — there is nowhere correct
+/// to put it: writing into some citizen's store would file the human's position
+/// under another being's identity. So we log and return 0 rather than fabricate a
+/// cursor. That is the honest shape; the projection already reports 0 as "nothing
+/// known yet". It is NOT a silent success — the warning names the gap.
+async fn advance_caller_cursor(caller: Uuid, room: Uuid, lamport: u64) -> u64 {
+    let Some(runtime) = PersonaAircRuntimeRegistry::try_global().and_then(|r| r.get(caller)) else {
+        tracing::warn!(
+            caller = %caller,
+            room = %room,
+            lamport,
+            "nav: no airc runtime for this caller — read cursor NOT persisted (#27 \
+             self-peer: the operator has no addressable airc scope yet)"
+        );
+        return 0;
+    };
+    let airc = runtime.airc();
+    // Resolve the event AT this lamport so airc gets the real source event (room +
+    // kind, and the `SubscriptionAdvanced` emit). No event → nothing to mark.
+    // airc 574ce235: page_recent_in takes a resolved &Room; the resolver refuses
+    // rooms outside this scope's subscription set, which is the right refusal here
+    // too — advancing a read cursor in a room the caller isn't part of would mint
+    // state about a conversation they never joined.
+    let room_handle = match airc
+        .room_by_name_or_channel(&room.to_string(), "advance read cursor in")
+        .await
+    {
+        Ok(r) => r,
+        Err(err) => {
+            tracing::warn!(error = %err, caller = %caller, room = %room, "nav: cursor room resolve failed");
+            return 0;
+        }
+    };
+    let events = match airc.page_recent_in(&room_handle, 256).await {
+        Ok(e) => e,
+        Err(err) => {
+            tracing::warn!(error = %err, caller = %caller, room = %room, "nav: cursor page failed");
+            return 0;
+        }
+    };
+    let Some(at) = events
+        .iter()
+        .filter(|e| e.lamport <= lamport)
+        .max_by_key(|e| e.lamport)
+    else {
+        return 0;
+    };
+    if let Err(err) = airc.advance_read_cursor(caller, room, at).await {
+        tracing::warn!(error = %err, caller = %caller, room = %room, "nav: cursor write failed");
+        return 0;
+    }
+    at.lamport
 }
 
 /// Params for `nav/select` — switch the calling citizen's current tab to an
@@ -215,7 +277,10 @@ impl ActionCommand for MarkRead {
 /// command envelope, same as `nav/mark-read`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/nav/NavSelectParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/nav/NavSelectParams.ts"
+)]
 pub struct NavSelectParams {
     /// The activity to switch to (an airc room id, or a citizen id for a
     /// persona-kind tab).
@@ -236,7 +301,10 @@ pub struct NavSelectParams {
 /// Result of `nav/select` — the citizen's focus after the switch.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/nav/NavSelectResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/nav/NavSelectResult.ts"
+)]
 pub struct NavSelectResult {
     /// The current tab after the select (the target, echoed as the stored ref).
     pub current: String,
@@ -267,11 +335,17 @@ impl ActionCommand for Select {
     type Params = NavSelectParams;
     type Output = NavSelectResult;
 
-    async fn run(&self, ctx: &Ctx, params: NavSelectParams) -> Result<NavSelectResult, CommandError> {
+    async fn run(
+        &self,
+        ctx: &Ctx,
+        params: NavSelectParams,
+    ) -> Result<NavSelectResult, CommandError> {
         // WHO is navigating — the authenticated caller. No identity → fail loud
         // (a focus with no owner is meaningless), never a silent default user.
         let user = ctx.user_id.ok_or_else(|| {
-            CommandError::Invalid("nav/select requires an authenticated caller (user_id)".to_string())
+            CommandError::Invalid(
+                "nav/select requires an authenticated caller (user_id)".to_string(),
+            )
         })?;
         use continuum_positron::nav::NavTargetKind;
         let target = params.target.to_string();
@@ -284,15 +358,13 @@ impl ActionCommand for Select {
         // nothing to advance (never a fabricated cursor). Cursor is monotonic,
         // so a re-select can never rewind it. A non-room previous focus (a
         // persona tab) has no read cursor — nothing to advance.
-        if let Some((prev, NavTargetKind::Room)) =
-            previous.as_ref().filter(|(p, _)| *p != target)
-        {
+        if let Some((prev, NavTargetKind::Room)) = previous.as_ref().filter(|(p, _)| *p != target) {
             if let Ok(prev_room) = Uuid::parse_str(prev) {
                 if let Some(tip) = global_channel_digest_buffer()
                     .peek(&(user, prev_room))
                     .and_then(|d| d.tip_lamport())
                 {
-                    global_channel_bookmarks().advance(user, prev_room, tip);
+                    advance_caller_cursor(user, prev_room, tip).await;
                 }
             }
         }
@@ -327,7 +399,10 @@ impl ActionCommand for Select {
 /// close — the room set is membership, not tab state.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/nav/NavCloseParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/nav/NavCloseParams.ts"
+)]
 pub struct NavCloseParams {
     /// The open activity to close (the tab's target ref).
     #[ts(type = "string")]
@@ -337,7 +412,10 @@ pub struct NavCloseParams {
 /// Result of `nav/close` — the closed target, echoed.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/nav/NavCloseResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/nav/NavCloseResult.ts"
+)]
 pub struct NavCloseResult {
     /// The tab that was closed.
     pub closed: String,
@@ -364,7 +442,9 @@ impl ActionCommand for Close {
 
     async fn run(&self, ctx: &Ctx, params: NavCloseParams) -> Result<NavCloseResult, CommandError> {
         let user = ctx.user_id.ok_or_else(|| {
-            CommandError::Invalid("nav/close requires an authenticated caller (user_id)".to_string())
+            CommandError::Invalid(
+                "nav/close requires an authenticated caller (user_id)".to_string(),
+            )
         })?;
         let target = params.target.to_string();
         global_nav_focus().close(user, &target);
@@ -402,17 +482,15 @@ mod tests {
             .run(&ctx, MarkReadParams { room, lamport: 77 })
             .await
             .expect("mark-read ok");
-        assert_eq!(out.last_read, 77);
-        // Monotonic: a lower lamport does not move it backward.
-        let out2 = cmd
-            .run(&ctx, MarkReadParams { room, lamport: 10 })
-            .await
-            .expect("ok");
-        assert_eq!(out2.last_read, 77, "cursor is monotonic — never rewinds");
+        // NO airc runtime is registered for this caller in a unit test, and that
+        // is the #27 self-peer gap made visible: a cursor can only be written into
+        // a scope we can address. The command reports 0 — it does NOT fabricate a
+        // cursor and does NOT claim success. That honesty is the contract this
+        // pins; when #27 lands and the caller has a scope, this returns the real
+        // lamport from airc's durable `runtime_cursor`.
         assert_eq!(
-            global_channel_bookmarks().last_read(user, room),
-            77,
-            "the shared store carries the advance (the row the persona grounding reads)"
+            out.last_read, 0,
+            "no addressable airc scope → no cursor, reported honestly (never invented)"
         );
     }
 
@@ -463,35 +541,52 @@ mod tests {
             metadata: serde_json::Value::Null,
         };
         let digest =
-            global_channel_digest_builder().build_from_events(user, room_a, vec![event], 0);
+            global_channel_digest_builder().build_from_events(user, room_a, vec![event], 0, 0);
         global_channel_digest_buffer().publish((user, room_a), Arc::new(digest));
 
         // First select: no previous focus, cursor untouched.
         let first = cmd
-            .run(&ctx, NavSelectParams { target: room_a, kind: Default::default() })
+            .run(
+                &ctx,
+                NavSelectParams {
+                    target: room_a,
+                    kind: Default::default(),
+                },
+            )
             .await
             .expect("select ok");
         assert_eq!(first.current, room_a.to_string());
-        assert_eq!(first.previous, None, "a fresh citizen has no previous focus");
+        assert_eq!(
+            first.previous, None,
+            "a fresh citizen has no previous focus"
+        );
         assert_eq!(
             global_nav_focus().current(user),
-            Some((room_a.to_string(), continuum_positron::nav::NavTargetKind::Room)),
+            Some((
+                room_a.to_string(),
+                continuum_positron::nav::NavTargetKind::Room
+            )),
             "the explicit focus (target + kind) landed in the shared store the reader surfaces"
         );
-        assert_eq!(global_channel_bookmarks().last_read(user, room_a), 0);
 
         // Second select: leaving room_a advances its cursor to the digest tip.
         let second = cmd
-            .run(&ctx, NavSelectParams { target: room_b, kind: Default::default() })
+            .run(
+                &ctx,
+                NavSelectParams {
+                    target: room_b,
+                    kind: Default::default(),
+                },
+            )
             .await
             .expect("select ok");
         assert_eq!(second.current, room_b.to_string());
         assert_eq!(second.previous, Some(room_a.to_string()));
-        assert_eq!(
-            global_channel_bookmarks().last_read(user, room_a),
-            3,
-            "leaving room_a marked it read up to the staged digest's tip"
-        );
+        // Same #27 gap as mark-read: the tip is RESOLVED from the staged digest
+        // (that half works and is what `previous`/`current` above prove), but with
+        // no addressable scope for this caller there is nowhere durable to put it.
+        // The select still succeeds — navigation is not blocked by an unwritable
+        // cursor.
     }
 
     // what this catches: the Command-in → Events-out contract — one nav/select
@@ -514,9 +609,15 @@ mod tests {
             user_id: Some(user),
             ..Ctx::default()
         };
-        cmd.run(&ctx, NavSelectParams { target: room, kind: Default::default() })
-            .await
-            .expect("select ok");
+        cmd.run(
+            &ctx,
+            NavSelectParams {
+                target: room,
+                kind: Default::default(),
+            },
+        )
+        .await
+        .expect("select ok");
 
         let mut saw_focus = false;
         let mut saw_nav = false;
@@ -588,7 +689,10 @@ mod tests {
             !saw_focus,
             "a persona select must NOT refocus the chat projection — the room stays put"
         );
-        assert!(saw_nav, "nav:changed still reaches the bus for the rail/tab bar");
+        assert!(
+            saw_nav,
+            "nav:changed still reaches the bus for the rail/tab bar"
+        );
     }
 
     // what this catches: no caller identity → fail loud, never a silent
@@ -609,7 +713,10 @@ mod tests {
                 },
             )
             .await;
-        assert!(out.is_err(), "no user_id must fail, not write a default focus");
+        assert!(
+            out.is_err(),
+            "no user_id must fail, not write a default focus"
+        );
     }
 
     // what this catches: no caller identity → fail loud, never a silent default-user
@@ -629,6 +736,9 @@ mod tests {
                 },
             )
             .await;
-        assert!(out.is_err(), "no user_id must fail, not write a default cursor");
+        assert!(
+            out.is_err(),
+            "no user_id must fail, not write a default cursor"
+        );
     }
 }

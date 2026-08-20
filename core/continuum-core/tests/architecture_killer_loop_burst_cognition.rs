@@ -73,9 +73,7 @@ use continuum_core::persona::cognition::PersonaCognitionEngine;
 use continuum_core::persona::message_cache::RecentMessageCache;
 use continuum_core::persona::persona_identity::PersonaIdentity;
 use continuum_core::persona::types::{PersonaState, SenderType};
-use continuum_core::persona::{
-    analyze_burst, BurstEvaluateResult, RateLimiterState, SleepState,
-};
+use continuum_core::persona::{analyze_burst, BurstEvaluateResult, RateLimiterState, SleepState};
 use continuum_core::rag::RagEngine;
 
 fn now_ms() -> u64 {
@@ -205,11 +203,8 @@ fn analyze_burst_fires_exactly_once_per_channel_tick_for_n_arrivals() {
 
     // ONE service tick — drain everything, get the demand-pull Vec
     // of inputs back, walk it, count gate calls.
-    let inputs = registry.service_cycle_batched(
-        &mut state,
-        &harness.identity,
-        DEFAULT_BURST_WINDOW_MS,
-    );
+    let inputs =
+        registry.service_cycle_batched(&mut state, &harness.identity, DEFAULT_BURST_WINDOW_MS);
 
     for input in &inputs {
         let _result = harness.analyze_burst_counted(input);
@@ -272,11 +267,8 @@ fn analyze_burst_call_count_is_constant_across_arrival_count_sweep() {
                 .expect("route");
         }
 
-        let inputs = registry.service_cycle_batched(
-            &mut state,
-            &harness.identity,
-            DEFAULT_BURST_WINDOW_MS,
-        );
+        let inputs =
+            registry.service_cycle_batched(&mut state, &harness.identity, DEFAULT_BURST_WINDOW_MS);
 
         for input in &inputs {
             let _ = harness.analyze_burst_counted(input);

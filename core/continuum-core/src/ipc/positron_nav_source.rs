@@ -42,7 +42,9 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::watch;
 use uuid::Uuid;
 
-use crate::ipc::positron_source::{AircPresenceUpdate, CHAT_FOCUSED, CHAT_POSTED, PRESENCE_UPDATED};
+use crate::ipc::positron_source::{
+    AircPresenceUpdate, CHAT_FOCUSED, CHAT_POSTED, PRESENCE_UPDATED,
+};
 use crate::runtime::MessageBus;
 
 /// The bus signal that a citizen's nav state changed (a tab opened/closed, a
@@ -107,7 +109,13 @@ pub fn project_nav(user: Uuid, snap: NavSnapshot) -> NavViewState {
             if let Some(ts) = a.last_read {
                 last_read.insert(a.id.clone(), ts);
             }
-            NavTab { id: a.id, title: a.title, kind: a.kind, unread: a.unread, purpose: a.purpose }
+            NavTab {
+                id: a.id,
+                title: a.title,
+                kind: a.kind,
+                unread: a.unread,
+                purpose: a.purpose,
+            }
         })
         .collect();
     NavViewState {
@@ -408,7 +416,11 @@ pub struct ChannelBookmarksNavReader {
 
 impl ChannelBookmarksNavReader {
     pub fn new(rooms: watch::Receiver<RoomSet>, members: watch::Receiver<MemberSet>) -> Self {
-        Self { rooms, members, purpose: crate::ipc::room_purpose::default_source() }
+        Self {
+            rooms,
+            members,
+            purpose: crate::ipc::room_purpose::default_source(),
+        }
     }
 
     /// A reader over a FIXED room set — test/fixture construction (no fold
@@ -422,24 +434,35 @@ impl ChannelBookmarksNavReader {
     pub fn fixed_with_members(rooms: Vec<(Uuid, String)>, members: Vec<(Uuid, String)>) -> Self {
         let (_rtx, rrx) = watch::channel(rooms.into_iter().collect::<RoomSet>());
         let (_mtx, mrx) = watch::channel(members.into_iter().collect::<MemberSet>());
-        Self { rooms: rrx, members: mrx, purpose: crate::ipc::room_purpose::default_source() }
+        Self {
+            rooms: rrx,
+            members: mrx,
+            purpose: crate::ipc::room_purpose::default_source(),
+        }
     }
 }
 
 impl NavReader for ChannelBookmarksNavReader {
     fn nav_snapshot(&self, user: Uuid) -> NavSnapshot {
-        use crate::cognition::channel_substrate::{
-            global_channel_bookmarks, global_channel_digest_buffer,
-        };
+        use crate::cognition::channel_substrate::global_channel_digest_buffer;
         use crate::runtime::ready_buffer::ReadyBuffer;
-        let bookmarks = global_channel_bookmarks();
+        // The cursor comes off the STAGED DIGEST, not a separate store: a digest
+        // carries the exact `bookmark` it split on, so the projection and the
+        // reader's window agree by construction. (The durable cursor itself is
+        // airc's `runtime_cursor`, read async at build time; this projection is
+        // sync, and the staged digest is the sync-side truth it already has.)
         let digests = global_channel_digest_buffer();
         let rooms = self.rooms.borrow().clone();
         let activities = rooms
             .iter()
             .map(|(room, title)| {
-                // REAL cursor — the same (user, room) mark advance()/markRead writes.
-                let last = bookmarks.last_read(user, *room);
+                // REAL cursor — the split point of the digest this citizen was
+                // last built. No staged digest → 0 (nothing known yet), the same
+                // honest "no info" the unread branch below reports.
+                let last = digests
+                    .peek(&(user, *room))
+                    .map(|d| d.bookmark)
+                    .unwrap_or(0);
                 // REAL unread from the pre-staged digest when one is staged for
                 // this (citizen, room); no staged digest → no unread info yet (an
                 // honestly-absent badge, never a fabricated "all read").
@@ -502,7 +525,11 @@ impl NavReader for ChannelBookmarksNavReader {
         let current = focus
             .map(|(target, _)| target)
             .or_else(|| rooms.keys().next().map(|r| r.to_string()));
-        NavSnapshot { current, activities, bookmarks: Vec::new() }
+        NavSnapshot {
+            current,
+            activities,
+            bookmarks: Vec::new(),
+        }
     }
 }
 
@@ -604,7 +631,12 @@ impl NavProjectorRegistry {
         per_user: Arc<PerUserSubstrates>,
         reader: Arc<dyn NavReader>,
     ) -> Self {
-        Self { bus, per_user, reader, spawned: Mutex::new(HashSet::new()) }
+        Self {
+            bus,
+            per_user,
+            reader,
+            spawned: Mutex::new(HashSet::new()),
+        }
     }
 
     /// Ensure `citizen`'s nav projector is running. Must be called from within
@@ -612,7 +644,10 @@ impl NavProjectorRegistry {
     /// registry lock is unrecoverable state corruption, so it panics loud
     /// rather than double-spawning.
     pub fn ensure(&self, citizen: Uuid) {
-        let mut spawned = self.spawned.lock().expect("nav projector registry lock poisoned");
+        let mut spawned = self
+            .spawned
+            .lock()
+            .expect("nav projector registry lock poisoned");
         if !spawned.insert(citizen) {
             return;
         }
@@ -679,18 +714,29 @@ mod tests {
         assert_eq!(view.bookmarks.len(), 1);
     }
 
-    // what this catches: the LIVE reader reads the real ChannelBookmarks cursor
-    // — advancing the mark the persona's grounding uses (its markRead write path)
-    // is exactly what the nav's last_read reflects. The dual-consumer atom: one
-    // (user, room) mark, read by both the persona and the nav view.
+    // what this catches: the LIVE reader surfaces the SAME split point the
+    // citizen's own window was built at — the digest's `bookmark`. One value, two
+    // consumers (her perception and the nav view), so they cannot disagree. The
+    // durable cursor behind it is airc's `runtime_cursor`; the staged digest is
+    // what this sync projection can see of it.
     #[test]
     fn live_reader_reflects_the_real_shared_bookmark() {
-        use crate::cognition::channel_substrate::global_channel_bookmarks;
-        // Unique ids so the process-global bookmark store can't collide with
-        // another test advancing a different (user, room).
+        use crate::cognition::channel_substrate::global_channel_digest_buffer;
+        use crate::runtime::ready_buffer::ReadyBuffer;
+        // Unique ids so the process-global digest buffer can't collide with
+        // another test staging a different (user, room).
         let asha = Uuid::from_u128(0xa54a_u128);
         let room = Uuid::from_u128(0x9e21_u128);
-        global_channel_bookmarks().advance(asha, room, 42);
+        global_channel_digest_buffer().publish(
+            (asha, room),
+            std::sync::Arc::new(crate::cognition::channel_digest::ChannelDigest {
+                room_id: room,
+                persona_id: asha,
+                bookmark: 42,
+                elements: Vec::new(),
+                unread_start: 0,
+            }),
+        );
         let reader = ChannelBookmarksNavReader::fixed(vec![(room, "General".into())]);
         let snap = reader.nav_snapshot(asha);
         let view = project_nav(asha, snap);
@@ -704,7 +750,10 @@ mod tests {
     // view (no fabricated default tab), and the reader seam drives it.
     #[test]
     fn empty_snapshot_projects_honest_empty_nav() {
-        let view = project_nav(Uuid::from_u128(9), StubNav(NavSnapshot::default()).nav_snapshot(Uuid::from_u128(9)));
+        let view = project_nav(
+            Uuid::from_u128(9),
+            StubNav(NavSnapshot::default()).nav_snapshot(Uuid::from_u128(9)),
+        );
         assert!(view.current_tab.is_none());
         assert!(view.open_tabs.is_empty());
         assert!(view.last_read.is_empty());
@@ -719,9 +768,15 @@ mod tests {
     fn room_set_fold_registers_names_and_skips_noops() {
         let room = Uuid::from_u128(0xf00d);
         let mut set = RoomSet::new();
-        assert!(fold_observed_room(&mut set, room, None), "first sighting registers");
+        assert!(
+            fold_observed_room(&mut set, room, None),
+            "first sighting registers"
+        );
         assert_eq!(set.get(&room).map(String::as_str), Some(""));
-        assert!(!fold_observed_room(&mut set, room, None), "repeat chat = no-op");
+        assert!(
+            !fold_observed_room(&mut set, room, None),
+            "repeat chat = no-op"
+        );
         assert!(
             fold_observed_room(&mut set, room, Some("general".into())),
             "presence names the room"
@@ -753,7 +808,10 @@ mod tests {
         // would collide with a parallel test's write.
         let room_a = Uuid::from_u128(0x50a);
         let room_b = Uuid::from_u128(0x50b);
-        let rooms = vec![(room_a, "General".to_string()), (room_b, "Code".to_string())];
+        let rooms = vec![
+            (room_a, "General".to_string()),
+            (room_b, "Code".to_string()),
+        ];
         let reader = ChannelBookmarksNavReader::fixed(rooms.clone());
 
         let fresh = Uuid::from_u128(0x50f1);
@@ -798,7 +856,10 @@ mod tests {
         assert_eq!(persona_tab.purpose, "persona");
         assert_eq!(persona_tab.unread, 0);
         // The room tab is still there — a persona tab ADDS, never displaces.
-        assert!(snap.activities.iter().any(|a| a.kind == NavTargetKind::Room));
+        assert!(snap
+            .activities
+            .iter()
+            .any(|a| a.kind == NavTargetKind::Room));
     }
 
     // what this catches: a persona focus whose name the fold hasn't observed
@@ -817,7 +878,10 @@ mod tests {
             .iter()
             .find(|a| a.kind == NavTargetKind::Persona)
             .expect("persona tab surfaced");
-        assert_eq!(tab.title, stranger.to_string().chars().take(8).collect::<String>());
+        assert_eq!(
+            tab.title,
+            stranger.to_string().chars().take(8).collect::<String>()
+        );
     }
 
     // what this catches: a room the fold has seen but presence hasn't named
@@ -864,6 +928,9 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        assert!(seen, "the citizen's nav view materialized in their per-user substrate");
+        assert!(
+            seen,
+            "the citizen's nav view materialized in their per-user substrate"
+        );
     }
 }

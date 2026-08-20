@@ -105,10 +105,18 @@ pub trait AircRosterReader: Send + Sync {
     /// `within`, over the most recent `window` transcript events.
     /// Newest-wins per peer; peers that signalled `Leaving` are excluded
     /// by airc; `display_name` is `None` for a present-but-unnamed peer.
+    /// ROOM-PARAMETRIC (#443, measured live 2026-08-17). This took no `room`, so
+    /// the source could only be BOUND at bootstrap and had to abstain on any
+    /// other turn room — measured 42 abstains in 90 minutes with bound=academy,
+    /// turn=bench-room. A citizen answering a turn in a per-run bench room saw
+    /// NO ONE: no teammates, no peers to address, in the room she was actually
+    /// standing in. `airc_lib::room_roster_in` already existed; it was never
+    /// wired. `None` keeps the pre-#443 behaviour (the scope's current room).
     async fn room_roster(
         &self,
         within: Duration,
         window: usize,
+        room: Option<uuid::Uuid>,
     ) -> Result<Vec<RoomMember>, AircError>;
 
     /// The CARDS-flavored roster (#262): presence + each peer's FULL
@@ -121,9 +129,10 @@ pub trait AircRosterReader: Send + Sync {
         &self,
         within: Duration,
         window: usize,
+        room: Option<uuid::Uuid>,
     ) -> Result<Vec<airc_lib::RoomMemberCard>, AircError> {
         Ok(self
-            .room_roster(within, window)
+            .room_roster(within, window, room)
             .await?
             .into_iter()
             .map(|m| airc_lib::RoomMemberCard {
@@ -149,16 +158,25 @@ impl AircRosterReader for airc_lib::Airc {
         &self,
         within: Duration,
         window: usize,
+        room: Option<uuid::Uuid>,
     ) -> Result<Vec<RoomMember>, AircError> {
-        airc_lib::Airc::room_roster(self, within, window).await
+        airc_lib::Airc::room_roster_in(self, room.map(airc_core::RoomId::from_uuid), within, window)
+            .await
     }
 
     async fn room_roster_cards(
         &self,
         within: Duration,
         window: usize,
+        room: Option<uuid::Uuid>,
     ) -> Result<Vec<airc_lib::RoomMemberCard>, AircError> {
-        airc_lib::Airc::room_roster_cards(self, within, window).await
+        airc_lib::Airc::room_roster_cards_in(
+            self,
+            room.map(airc_core::RoomId::from_uuid),
+            within,
+            window,
+        )
+        .await
     }
 }
 
@@ -303,22 +321,41 @@ impl RagSource for RoomRosterSource {
                 resolution_used: ResolutionPreference::Placeholder,
             };
         }
-        // Room-scoped: the ONE shared gate (`room_scope_allows`) — probes every
-        // abstain with both rooms named (see RoomBoardSource for the rationale).
-        if !crate::persona::rag_budget::room_scope_allows(self.room_id, ctx, SOURCE_ID) {
-            return RagDelivery {
-                source_id: SOURCE_ID.to_string(),
-                items: Vec::new(),
-                tokens_used: 0,
-                continuation: None,
-                resolution_used: ResolutionPreference::Placeholder,
-            };
-        }
+        // Room resolution — TURN-PARAMETRIC (#443), the same shape RoomBoardSource
+        // uses. The peers she needs to see are the peers OF THE ROOM SHE IS
+        // STANDING IN; the stamped turn room wins, the bound room is only the
+        // fallback for UNSTAMPED contexts. A synthetic nil room gets NOTHING and
+        // does NOT fall back (the exam-bleed pin).
+        let effective_room = match ctx.airc_room.as_ref().map(|r| r.as_uuid()) {
+            Some(t) if t.is_nil() => {
+                crate::probe!(
+                    class = "rag.room_gate.abstain",
+                    source = SOURCE_ID,
+                    bound_room = ?self.room_id,
+                    turn_room = %t,
+                    persona_id = %ctx.persona_id,
+                    "synthetic nil-room context — no roster, and no fallback to the bound room"
+                );
+                return RagDelivery {
+                    source_id: SOURCE_ID.to_string(),
+                    items: Vec::new(),
+                    tokens_used: 0,
+                    continuation: None,
+                    resolution_used: ResolutionPreference::Placeholder,
+                };
+            }
+            Some(t) => Some(t),
+            None => self.room_id,
+        };
 
         // ONE airc call returns presence joined with display names
         // (airc#1232). A failure is non-fatal — empty delivery, cognition
         // stays up (good-citizen doctrine).
-        let members = match self.reader.room_roster(PRESENCE_WINDOW, ROSTER_SCAN).await {
+        let members = match self
+            .reader
+            .room_roster(PRESENCE_WINDOW, ROSTER_SCAN, effective_room)
+            .await
+        {
             Ok(m) => m,
             Err(err) => {
                 tracing::warn!(
@@ -428,6 +465,9 @@ mod tests {
         self_peer: PeerId,
         members: Vec<RoomMember>,
         fail: Mutex<bool>,
+        /// The room the source last ASKED for. #443's regression pins this:
+        /// asking for the wrong room is invisible when the stub ignores it.
+        asked_room: Mutex<Option<Option<uuid::Uuid>>>,
     }
 
     impl StubReader {
@@ -436,7 +476,11 @@ mod tests {
                 self_peer,
                 members,
                 fail: Mutex::new(false),
+                asked_room: Mutex::new(None),
             }
+        }
+        fn asked_room(&self) -> Option<Option<uuid::Uuid>> {
+            *self.asked_room.lock().unwrap()
         }
         fn set_fail(&self, fail: bool) {
             *self.fail.lock().unwrap() = fail;
@@ -452,7 +496,9 @@ mod tests {
             &self,
             _within: Duration,
             _window: usize,
+            room: Option<uuid::Uuid>,
         ) -> Result<Vec<RoomMember>, AircError> {
+            *self.asked_room.lock().unwrap() = Some(room);
             if *self.fail.lock().unwrap() {
                 return Err(AircError::UnknownPeer(PeerId::new()));
             }
@@ -507,7 +553,7 @@ mod tests {
             me,
             vec![
                 member(agent, "persona", Some("Anwen")),
-                member(human, "interactive", Some("Joel")),
+                member(human, "interactive", Some("Operator")),
             ],
         ));
         let source = RoomRosterSource::new(persona(), reader);

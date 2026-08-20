@@ -327,7 +327,10 @@ mod tests {
         ));
         // DOES NOT FIRE: a name prefix WAS stripped and the remainder is the bare token —
         // that is a real, intended silence (looks_like_silence_token owns it), not a loss.
-        assert!(!label_strip_caused_silence("Anwen: hello there", "hello there"));
+        assert!(!label_strip_caused_silence(
+            "Anwen: hello there",
+            "hello there"
+        ));
     }
 
     // what this catches (#271/#264): the RESERVED TOKEN used as a declaration of silence, in
@@ -345,7 +348,11 @@ mod tests {
              please let me know! Otherwise, PASS.",
             "I've been repeating myself without adding value. Otherwise, PASS",
         ] {
-            assert_eq!(decision_from_response(live), Decision::Pass, "must silence: {live:?}");
+            assert_eq!(
+                decision_from_response(live),
+                Decision::Pass,
+                "must silence: {live:?}"
+            );
         }
         // THE LINES WE CHOSE NOT TO CROSS — two positions built and deleted the same night.
         // Every string below reaches the room as speech, and that is the accepted cost of
@@ -464,7 +471,11 @@ mod tests {
              have any modifications in mind, please let me know! Otherwise, I'll remain \
              silent (PASS) for now.",
         ] {
-            assert_eq!(decision_from_response(drift), Decision::Pass, "must silence: {drift:?}");
+            assert_eq!(
+                decision_from_response(drift),
+                Decision::Pass,
+                "must silence: {drift:?}"
+            );
         }
         // Cap recalibration regression (live 2026-08-01, post-#2096 deploy):
         // this VERBATIM 511-char turn matched the collocations but posted as
@@ -478,13 +489,17 @@ mod tests {
              If you have any particular areas you'd like me to investigate further or any \
              questions about the project, please let me know! Otherwise, I will PASS to allow \
              for more productive interactions in this space.";
-        assert!(over_old_cap.len() > 500, "regression fixture must exceed the old cap");
+        assert!(
+            over_old_cap.len() > 500,
+            "regression fixture must exceed the old cap"
+        );
         assert_eq!(decision_from_response(over_old_cap), Decision::Pass);
         // Two-tier regression (live 2026-08-01, the cap arms race's second
         // escapee): VERBATIM 714-char turn — strong closure mid-message,
         // wake-briefing parrot appended after it, 14 chars over the 700 cap.
         // Strong closures lift regardless of length; only weak ones are capped.
-        let over_new_cap = "I see that my actions so far in this concern involve work/claim \u{d7}1, \
+        let over_new_cap =
+            "I see that my actions so far in this concern involve work/claim \u{d7}1, \
              perception/look \u{d7}1, and perception/observe \u{d7}1. I've been repeating the same \
              sentiment about my actions being unproductive and redundant.\n\n\
              To avoid further redundancy, I'll focus on addressing specific tasks or questions \
@@ -495,12 +510,21 @@ mod tests {
              project, feel free to ask!\n\n\
              My session was interrupted under a minute ago and my memory restored; nothing was \
              in flight.";
-        assert!(over_new_cap.len() > 700, "regression fixture must exceed the tier-2 cap");
+        assert!(
+            over_new_cap.len() > 700,
+            "regression fixture must exceed the tier-2 cap"
+        );
         assert_eq!(decision_from_response(over_new_cap), Decision::Pass);
         // Length fail-open: a long substantive message ending in a pass phrase
         // keeps speaking.
-        let long = format!("{} I'll pass for now.", "Real finding: the bank offset math drifts under X. ".repeat(15));
-        assert!(long.len() > 700, "fail-open fixture must exceed the current cap");
+        let long = format!(
+            "{} I'll pass for now.",
+            "Real finding: the bank offset math drifts under X. ".repeat(15)
+        );
+        assert!(
+            long.len() > 700,
+            "fail-open fixture must exceed the current cap"
+        );
         match decision_from_response(&long) {
             Decision::Speak { .. } => {}
             other => panic!("long substantive message silenced: {other:?}"),

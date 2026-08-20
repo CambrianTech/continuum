@@ -6,7 +6,7 @@
 //! `data/*` once lived ONLY in [`DataModule::handle_command`](crate::modules::data)'s
 //! stringly `match` (via `DataState::dispatch`) — dispatchable, but with no descriptor
 //! in the registry, so invisible to the persona tool surface, the grid ACL, codegen, and
-//! `cu`. As typed commands they get a descriptor AND route through the O(1) lock-free
+//! `uu`. As typed commands they get a descriptor AND route through the O(1) lock-free
 //! typed object map. The wire name mirrors the file path — `commands/data/list.rs` ⟺
 //! `data/list`.
 //!
@@ -56,17 +56,39 @@ use update::DataUpdate;
 /// legacy `data/` prefix arm (which shrinks toward deletion as arms migrate).
 pub fn command_objects(state: Arc<DataState>) -> Vec<Arc<dyn DynCommand>> {
     vec![
-        Arc::new(DataList { state: state.clone() }),
-        Arc::new(DataRead { state: state.clone() }),
-        Arc::new(DataCreate { state: state.clone() }),
-        Arc::new(DataUpdate { state: state.clone() }),
-        Arc::new(DataDelete { state: state.clone() }),
-        Arc::new(DataCount { state: state.clone() }),
-        Arc::new(DataListCollections { state: state.clone() }),
-        Arc::new(DataCollectionStats { state: state.clone() }),
-        Arc::new(DataBatch { state: state.clone() }),
-        Arc::new(DataEnsureSchema { state: state.clone() }),
-        Arc::new(DataTruncate { state: state.clone() }),
+        Arc::new(DataList {
+            state: state.clone(),
+        }),
+        Arc::new(DataRead {
+            state: state.clone(),
+        }),
+        Arc::new(DataCreate {
+            state: state.clone(),
+        }),
+        Arc::new(DataUpdate {
+            state: state.clone(),
+        }),
+        Arc::new(DataDelete {
+            state: state.clone(),
+        }),
+        Arc::new(DataCount {
+            state: state.clone(),
+        }),
+        Arc::new(DataListCollections {
+            state: state.clone(),
+        }),
+        Arc::new(DataCollectionStats {
+            state: state.clone(),
+        }),
+        Arc::new(DataBatch {
+            state: state.clone(),
+        }),
+        Arc::new(DataEnsureSchema {
+            state: state.clone(),
+        }),
+        Arc::new(DataTruncate {
+            state: state.clone(),
+        }),
         Arc::new(DataClearAll { state }),
     ]
 }

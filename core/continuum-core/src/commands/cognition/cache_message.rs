@@ -19,7 +19,10 @@ use crate::persona::message_cache::{CachedMessage, SenderCategory};
 use crate::sdk_codegen::CommandError;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/CacheMessageParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/CacheMessageParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct CacheMessageParams {
     /// Persona whose recent-message cache receives the message.
@@ -48,7 +51,10 @@ pub struct CacheMessageParams {
 }
 
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/CacheMessageResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/CacheMessageResult.ts"
+)]
 pub struct CacheMessageResult {
     pub success: bool,
     pub cached: bool,

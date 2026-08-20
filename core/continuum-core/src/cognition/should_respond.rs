@@ -231,11 +231,7 @@ pub async fn evaluate_gating(
     // wrongly excluded CPU-only adapters even when they were the
     // only ones claiming the requested model.
     let (_provider_id, adapter) = registry
-        .select(
-            Some(GATING_PROVIDER),
-            Some(&model),
-            InferenceDevice::Auto,
-        )
+        .select(Some(GATING_PROVIDER), Some(&model), InferenceDevice::Auto)
         .ok_or_else(|| ShouldRespondError::NoAdapter {
             provider: GATING_PROVIDER.to_string(),
             model: Some(model.clone()),
@@ -478,7 +474,7 @@ mod tests {
             room_id: "room-1".to_string(),
             trigger_message: GatingTriggerMessage {
                 id: "message-1".to_string(),
-                sender_name: "Joel".to_string(),
+                sender_name: "Operator".to_string(),
                 content: GatingMessageContent {
                     text: "who is here?".to_string(),
                 },
@@ -487,7 +483,7 @@ mod tests {
                 conversation_history: vec![GatingConversationMessage {
                     role: "user".to_string(),
                     content: "who is here?".to_string(),
-                    name: Some("Joel".to_string()),
+                    name: Some("Operator".to_string()),
                     timestamp: Some(1),
                 }],
                 recipe_strategy: Some(GatingRecipeStrategy {
@@ -507,7 +503,7 @@ mod tests {
     fn build_prompt_marks_trigger_and_includes_recipe_rules() {
         let prompt = build_gating_prompt(&context());
         assert!(prompt.contains("You are \"Ada\""));
-        assert!(prompt.contains(">>> Joel: who is here? <<<"));
+        assert!(prompt.contains(">>> Operator: who is here? <<<"));
         assert!(prompt.contains("RECIPE RULES (from standup)"));
         assert!(prompt.contains("- answer direct questions"));
     }

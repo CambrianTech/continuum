@@ -27,6 +27,7 @@ const vm: ChatViewModel = {
   roomName: 'general',
   roomId: 'room-1',
   purpose: 'chat',
+  transcript: [],
   memberCount: 2,
   activeCount: 1,
   members: [
@@ -157,19 +158,19 @@ describe('persona home → pattern projections', () => {
         {
           card_id: 'c-old', room_id: 'room-1', title: 'Old claim', state: 'review', priority: 'p2',
           lane_id: null, creator_id: 'joel', creator_name: 'Joel', creator_kind: { kind: 'human' },
-          integrations: {}, provenance: { runtime: '' }, assignee_id: 'asha', assignee_name: 'Asha',
+          integrations: {}, provenance: { runtime: '' }, hold: 'held', assignee_id: 'asha', assignee_name: 'Asha',
           created_at: 1, updated_at: 1_000,
         },
         {
           card_id: 'c-new', room_id: 'room-1', title: 'New claim', state: 'in_progress', priority: 'p1',
           lane_id: null, creator_id: 'joel', creator_name: 'Joel', creator_kind: { kind: 'human' },
-          integrations: {}, provenance: { runtime: '' }, assignee_id: 'asha', assignee_name: 'Asha',
+          integrations: {}, provenance: { runtime: '' }, hold: 'held', assignee_id: 'asha', assignee_name: 'Asha',
           created_at: 2, updated_at: 2_000,
         },
         {
           card_id: 'c-other', room_id: 'room-1', title: 'Not hers', state: 'open', priority: 'p2',
           lane_id: null, creator_id: 'joel', creator_name: 'Joel', creator_kind: { kind: 'human' },
-          integrations: {}, provenance: { runtime: '' }, assignee_id: 'solenne', assignee_name: 'S',
+          integrations: {}, provenance: { runtime: '' }, hold: 'held', assignee_id: 'solenne', assignee_name: 'S',
           created_at: 3, updated_at: 3_000,
         },
       ],

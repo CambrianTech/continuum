@@ -37,6 +37,7 @@
 //! core (the #7 `$HOME`-pollution class). Public wrappers resolve the one
 //! canonical directory and delegate.
 
+use super::lane_pidfile;
 use super::lane_process;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -64,17 +65,99 @@ pub struct LaneRecord {
     pub port: u16,
     pub role: LaneRole,
     /// The base model id the lane serves — for operator legibility in the sweep
-    /// log, not a control input.
+    /// log, AND (since 2026-08-19) the key a successor core sizes it by.
     #[serde(default)]
     pub model: String,
+    /// The per-slot context window this lane was launched with.
+    ///
+    /// # Why the record carries the SHAPE, not just the identity
+    ///
+    /// A successor core must be able to answer "how many bytes do my past forms
+    /// hold?" — Joel's third quantity — *before* it plans anything. Residency is
+    /// `weights + KV(window, lanes)`, so a record naming only the model cannot
+    /// answer it, and a core that cannot answer it counts its own predecessor's
+    /// 50 GB as FOREIGN. Measured 2026-08-19: that misfiling read as
+    /// `usable_gb = 2` on a 64 GB machine, so the planner chose a 3B and reaped a
+    /// healthy 27B to make room for it — twice in one boot.
+    ///
+    /// `0` means an older record that predates these fields. That is UNKNOWN, and
+    /// callers must refuse to size it rather than treat it as a zero-byte lane
+    /// ([[an-absence-is-an-unfinished-measurement]]).
+    #[serde(default)]
+    pub context_window: u32,
+    /// The continuous-batching slot count (`--parallel` / `n_seq_max`) this lane
+    /// was launched with. `0` is UNKNOWN — see [`Self::context_window`].
+    #[serde(default)]
+    pub lanes: u32,
 }
 
-/// What [`sweep_orphans`] did to one record — exhaustive so every branch is
+/// The LIVE-role lane left behind by a previous generation of this core, if one
+/// is still running — a **past form of ourself**.
+///
+/// # Two authorities, one question each (corrected 2026-08-19, measured)
+///
+/// The first cut of this function scanned `read_dir` for any `Live` record whose pid
+/// was `is_alive`. Both halves were wrong, and the live board caught it:
+/// `serving = 0.81 GB — "qwen2.5-0.5b … inherited from a previous generation"` while
+/// the actual live lane was a 27B holding ~50 GB. Two defects compounding:
+///
+/// 1. **`read_dir` order is arbitrary.** A crashed generation can leave several `Live`
+///    records; the loop returned whichever the filesystem listed first, which was a
+///    stale 0.5B.
+/// 2. **`is_alive` is not identity.** A dead lane's pid gets REUSED by an unrelated
+///    process, and then a stale record reads as live forever. `lane_pidfile::reclaim`
+///    has always been "identity-verified (never a reused pid)" and
+///    [`lane_process::is_llama_server`] exists precisely for this; the first cut simply
+///    did not call it.
+///
+/// So: the **pidfile** answers *which* lane is live (it holds exactly one canonical
+/// pid), the **registry record** supplies that lane's *shape*, and `is_llama_server`
+/// proves the pid still belongs to a lane rather than to whoever inherited its number.
+/// One authority per question, which is why neither can drift from the other.
+///
+/// The shape fields may still be `0` (a record predating them); sizing remains the
+/// caller's judgement and it must refuse rather than guess.
+pub fn live_lane() -> Option<LaneRecord> {
+    let pid = lane_pidfile::read()?;
+    if !lane_process::is_llama_server(pid) {
+        // Dead, or the number now belongs to something else. Either way this machine
+        // has no past form of itself to count — an absence, not a zero-byte lane.
+        return None;
+    }
+    let body = std::fs::read_to_string(lanes_dir()?.join(format!("{pid}.lane"))).ok()?;
+    let rec = serde_json::from_str::<LaneRecord>(&body).ok()?;
+    (rec.role == LaneRole::Live && rec.pid == pid).then_some(rec)
+}
+
+/// WHY a sweep is running — the one axis on which boot and shutdown differ.
+///
+/// They differ in exactly one judgement: what a still-alive LIVE-role record
+/// means. At boot it may be a perfectly good server this core can adopt, so the
+/// decision belongs to `lane_pidfile`'s canonical-port reclaim. At shutdown
+/// nothing is adoptable by definition — the core is going away — so a survivor is
+/// a leak. Encoding that as a MODE on one sweep (rather than a second sweep
+/// function) is what stops the two paths from drifting: every other rule —
+/// never-blind-kill, GC dead records, drop unparseable garbage — is shared by
+/// construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SweepMode {
+    /// A fresh core starting up. Ephemeral records are definitionally orphans;
+    /// the LIVE record is left for `lane_pidfile` to adopt-or-reap.
+    Boot,
+    /// This core is shutting down. EVERY lane it owns must die with it, live
+    /// included — `stop` that leaves a server holding VRAM has not stopped.
+    Shutdown,
+}
+
+/// What a sweep did to one record — exhaustive so every branch is
 /// loggable and a new state can't be silently dropped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SweepOutcome {
     /// Killed a live ephemeral orphan and removed its record.
     ReapedEphemeral { pid: u32, port: u16 },
+    /// Killed the LIVE lane and removed its record. [`SweepMode::Shutdown`] only —
+    /// at boot a live survivor is adoptable, at shutdown it is a leak.
+    ReapedLive { pid: u32, port: u16 },
     /// Record named a pid that is no longer alive — stale file removed, no kill.
     RemovedDead { pid: u32 },
     /// Pid is alive but NOT a `llama-server` (reused number) — record removed, the
@@ -116,10 +199,30 @@ pub fn remove(pid: u32) {
 
 /// Reap every orphaned ephemeral lane recorded by a crashed predecessor and
 /// garbage-collect dead records. Resolves the canonical directory then delegates
-/// to the pure [`sweep_orphans_in`]. Returns what it did, for the caller to log.
+/// to the pure [`sweep_in`]. Returns what it did, for the caller to log.
 pub fn sweep_orphans() -> Vec<SweepOutcome> {
     match lanes_dir() {
-        Some(dir) => sweep_orphans_in(&dir),
+        Some(dir) => sweep_in(&dir, SweepMode::Boot),
+        None => Vec::new(),
+    }
+}
+
+/// Reap EVERY lane this install owns — live and ephemeral — for shutdown.
+///
+/// `stop` reaps cores ([`crate::runtime::core_bind_guard`]) and owned engine
+/// orphans, but until this existed it never touched a `llama-server`: the whole
+/// registry was swept only on the NEXT boot, so shutting Continuum down left
+/// every lane resident. Measured 2026-08-17 on the M5: an ephemeral 27B lane
+/// (19 GB) and the live 14B lane were up simultaneously; the planner sized its
+/// window against what was left and served citizens a 2,816-token context, which
+/// cannot even hold the tool surface. `reboot` could not clear it — reboot is
+/// stop + start, and neither half owned lanes.
+///
+/// Role-blind on purpose. The live/ephemeral split exists to decide ADOPTION, and
+/// nothing is adoptable by a core that is exiting.
+pub fn sweep_all() -> Vec<SweepOutcome> {
+    match lanes_dir() {
+        Some(dir) => sweep_in(&dir, SweepMode::Shutdown),
         None => Vec::new(),
     }
 }
@@ -177,8 +280,8 @@ fn remove_in(dir: &Path, pid: u32) {
     let _ = std::fs::remove_file(record_path(dir, pid));
 }
 
-/// The pure sweep against an explicit `dir`. See [`sweep_orphans`].
-fn sweep_orphans_in(dir: &Path) -> Vec<SweepOutcome> {
+/// The pure sweep against an explicit `dir`. See [`sweep_orphans`] / [`sweep_all`].
+fn sweep_in(dir: &Path, mode: SweepMode) -> Vec<SweepOutcome> {
     let mut outcomes = Vec::new();
     // A missing directory is the normal first-run / all-graceful-prior-shutdown
     // state — nothing to sweep, not a fallback.
@@ -209,26 +312,39 @@ fn sweep_orphans_in(dir: &Path) -> Vec<SweepOutcome> {
             continue;
         }
 
-        match rec.role {
+        // At BOOT a live survivor may be adoptable, so the decision defers to
+        // `lane_pidfile`'s canonical-port reclaim. At SHUTDOWN nothing is
+        // adoptable — this core is exiting — so every role is reaped.
+        let reap = match (rec.role, mode) {
+            (LaneRole::Ephemeral, _) => true,
+            (LaneRole::Live, SweepMode::Shutdown) => true,
             // The live lane's port is `lane_pidfile`'s job (adopt-or-reap). Leave
             // both the process and its record; if `lane_pidfile` reaps it, the next
             // boot sees a dead pid here and GCs the file.
-            LaneRole::Live => outcomes.push(SweepOutcome::LeftLive { pid: rec.pid }),
-            LaneRole::Ephemeral => {
-                if lane_process::is_llama_server(rec.pid) {
-                    lane_process::kill9(rec.pid);
-                    let _ = std::fs::remove_file(&path);
-                    outcomes.push(SweepOutcome::ReapedEphemeral {
-                        pid: rec.pid,
-                        port: rec.port,
-                    });
-                } else {
-                    // Alive but not one of ours — a reused pid. Drop the stale
-                    // record; never signal an unrelated process.
-                    let _ = std::fs::remove_file(&path);
-                    outcomes.push(SweepOutcome::RemovedReused { pid: rec.pid });
-                }
-            }
+            (LaneRole::Live, SweepMode::Boot) => false,
+        };
+        if !reap {
+            outcomes.push(SweepOutcome::LeftLive { pid: rec.pid });
+            continue;
+        }
+        if lane_process::is_llama_server(rec.pid) {
+            lane_process::kill9(rec.pid);
+            let _ = std::fs::remove_file(&path);
+            outcomes.push(match rec.role {
+                LaneRole::Live => SweepOutcome::ReapedLive {
+                    pid: rec.pid,
+                    port: rec.port,
+                },
+                LaneRole::Ephemeral => SweepOutcome::ReapedEphemeral {
+                    pid: rec.pid,
+                    port: rec.port,
+                },
+            });
+        } else {
+            // Alive but not one of ours — a reused pid. Drop the stale
+            // record; never signal an unrelated process.
+            let _ = std::fs::remove_file(&path);
+            outcomes.push(SweepOutcome::RemovedReused { pid: rec.pid });
         }
     }
     outcomes
@@ -254,6 +370,10 @@ mod tests {
             port,
             role,
             model: "test-model".into(),
+            // A realistic shape: these tests exercise sweep/reap, but a record with a
+            // real shape is what production writes, so the fixture matches it.
+            context_window: 16_384,
+            lanes: 4,
         }
     }
 
@@ -316,7 +436,7 @@ mod tests {
         let me = std::process::id();
         record_in(&dir, &rec(me, 58200, LaneRole::Ephemeral)).expect("record");
 
-        let outcomes = sweep_orphans_in(&dir);
+        let outcomes = sweep_in(&dir, SweepMode::Boot);
         assert_eq!(outcomes, vec![SweepOutcome::RemovedReused { pid: me }]);
         assert!(
             lane_process::is_alive(me),
@@ -336,7 +456,7 @@ mod tests {
         let me = std::process::id();
         record_in(&dir, &rec(me, 58057, LaneRole::Live)).expect("record");
 
-        let outcomes = sweep_orphans_in(&dir);
+        let outcomes = sweep_in(&dir, SweepMode::Boot);
         assert_eq!(outcomes, vec![SweepOutcome::LeftLive { pid: me }]);
         assert!(
             record_path(&dir, me).exists(),
@@ -358,7 +478,7 @@ mod tests {
         child.wait().expect("reap");
         record_in(&dir, &rec(dead, 58200, LaneRole::Ephemeral)).expect("record");
 
-        let outcomes = sweep_orphans_in(&dir);
+        let outcomes = sweep_in(&dir, SweepMode::Boot);
         // (Tiny PID-reuse window is acceptable in a unit test; assert the invariant
         // "a reaped pid is GC'd or safely treated as reused, never a kill+reap of
         // the living".)
@@ -371,6 +491,58 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // what this catches: the boot/shutdown difference, on the ONE record where they
+    // disagree. A LIVE record is LEFT at boot (it may be adoptable) and REAPED at
+    // shutdown (nothing is adoptable by a core that is exiting). Regression for the
+    // 2026-08-17 M5 incident: `stop` never swept lanes at all, so shutting Continuum
+    // down left llama-servers holding VRAM and `reboot` (= stop + start) could not
+    // clear them. Uses OUR OWN pid as the recorded lane: it is definitely alive and
+    // definitely NOT a llama-server, so the never-blind-kill guard must classify it
+    // RemovedReused under Shutdown — proving the shutdown path still refuses to
+    // signal a process it cannot positively identify, while boot still returns
+    // LeftLive without even looking. Asserting we are still alive afterwards is the
+    // real safety claim.
+    #[test]
+    fn shutdown_reaps_the_live_lane_that_boot_leaves_alone() {
+        let me = std::process::id();
+
+        let boot_dir = temp_dir("mode-boot");
+        let _ = std::fs::remove_dir_all(&boot_dir);
+        record_in(&boot_dir, &rec(me, 58057, LaneRole::Live)).expect("record");
+        assert_eq!(
+            sweep_in(&boot_dir, SweepMode::Boot),
+            vec![SweepOutcome::LeftLive { pid: me }],
+            "boot defers the live lane to lane_pidfile's adopt-or-reap"
+        );
+        assert!(
+            record_path(&boot_dir, me).exists(),
+            "boot must KEEP the live record so the next pass can still see it"
+        );
+
+        let stop_dir = temp_dir("mode-shutdown");
+        let _ = std::fs::remove_dir_all(&stop_dir);
+        record_in(&stop_dir, &rec(me, 58057, LaneRole::Live)).expect("record");
+        let outcomes = sweep_in(&stop_dir, SweepMode::Shutdown);
+        assert!(
+            !matches!(outcomes.as_slice(), [SweepOutcome::LeftLive { .. }]),
+            "shutdown must NEVER leave a live lane running, got {outcomes:?}"
+        );
+        assert_eq!(
+            outcomes,
+            vec![SweepOutcome::RemovedReused { pid: me }],
+            "our own pid is alive but is not a llama-server — the never-blind-kill \
+             guard must hold on the shutdown path too"
+        );
+        assert!(
+            lane_process::is_alive(me),
+            "the shutdown sweep must never signal a non-llama process"
+        );
+        assert!(!record_path(&stop_dir, me).exists(), "record cleared");
+
+        let _ = std::fs::remove_dir_all(&boot_dir);
+        let _ = std::fs::remove_dir_all(&stop_dir);
+    }
+
     // what this catches: an unparseable `.lane` file is removed as garbage, never
     // acted on — a corrupt record can't wedge the sweep or trigger a bogus kill.
     #[test]
@@ -381,7 +553,7 @@ mod tests {
         let junk = dir.join("99999.lane");
         std::fs::write(&junk, "not json at all").expect("write junk");
 
-        let outcomes = sweep_orphans_in(&dir);
+        let outcomes = sweep_in(&dir, SweepMode::Boot);
         assert_eq!(
             outcomes,
             vec![SweepOutcome::RemovedUnparseable { path: junk.clone() }]
@@ -396,6 +568,6 @@ mod tests {
     fn sweep_missing_dir_is_noop() {
         let dir = temp_dir("absent");
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(sweep_orphans_in(&dir).is_empty());
+        assert!(sweep_in(&dir, SweepMode::Boot).is_empty());
     }
 }

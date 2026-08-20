@@ -308,7 +308,11 @@ mod tests {
         board.register(watched(id, "local-candle"));
 
         assert_eq!(board.len(), 1, "registered job must be in flight");
-        assert_eq!(board.snapshot().len(), 1, "snapshot sees the registered job");
+        assert_eq!(
+            board.snapshot().len(),
+            1,
+            "snapshot sees the registered job"
+        );
 
         let claimed = board.claim(id).expect("first claim returns the job");
         assert_eq!(claimed.handle.local_id, id);

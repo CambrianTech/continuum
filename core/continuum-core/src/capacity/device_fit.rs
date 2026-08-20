@@ -154,7 +154,9 @@ fn context_fitting(
     }
     let per_lane = kv_budget_bytes / lanes as u64;
     let tokens = per_lane / kv_bytes_per_token;
-    u32::try_from(tokens).unwrap_or(u32::MAX).min(model_max_context)
+    u32::try_from(tokens)
+        .unwrap_or(u32::MAX)
+        .min(model_max_context)
 }
 
 /// Plan how a model's resident tier fits the device, the context the leftover

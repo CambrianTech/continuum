@@ -3,6 +3,7 @@
 //!
 //! ```text
 //! continuum start            # build + run the headless Rust core (detached), wait until ready
+//!                     # refuses if a core is running but not answering — `--force` reclaims it
 //! continuum reboot           # rebuild + relaunch, replacing any running core (~0 downtime)
 //!                     # refuses while training (mlx_lm) is live — `--force` overrides
 //! continuum stop             # stop the running core
@@ -25,7 +26,11 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use continuum_client::Connection;
+use continuum_core::runtime::core_bind_guard::BindDecision;
 use continuum_core::runtime::core_ipc_transport::CoreIpcTransport;
+use continuum_core::runtime::deploy_provenance::{
+    cli_self_build, cli_staleness_note, deploy_verdict, CliSelfBuild,
+};
 use serde_json::Value;
 
 /// Where `continuum start` records the detached core's PID so `continuum stop` can find it.
@@ -60,7 +65,19 @@ async fn run() -> Result<(), String> {
             println!("{}", version_line());
             Ok(())
         }
-        "start" => start().await,
+        "start" => {
+            // Collect once: `args.any(..)` consumes the iterator, so reading a
+            // second flag off it afterwards would silently always be false.
+            let flags: Vec<String> = args.collect();
+            // `--from-source` is the EXPLICIT opt-in to compiling before
+            // starting. Without it, `start` execs the installed server; a
+            // build is never the silent default (see `launch_core`).
+            if flags.iter().any(|a| a == "--from-source") {
+                // SAFETY: single-threaded CLI startup, before any task spawns.
+                unsafe { std::env::set_var("CONTINUUM_FROM_SOURCE", "1") };
+            }
+            start(flags.iter().any(|a| a == "--force")).await
+        }
         "reboot" | "restart" => {
             let force = args.any(|a| a == "--force");
             reboot(force).await
@@ -78,7 +95,11 @@ async fn run() -> Result<(), String> {
             } else {
                 println!(
                     "live core pid(s): {} — their descendants are in service and excluded",
-                    cores.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",")
+                    cores
+                        .iter()
+                        .map(|p| p.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",")
                 );
             }
             if orphans.is_empty() {
@@ -92,7 +113,7 @@ async fn run() -> Result<(), String> {
         }
         // Standalone #194 check: prove the RUNNING core is built from current HEAD,
         // without a full reboot. Prints "✅ deploy verified" or fails loud on mismatch.
-        "deploy-verify" | "verify" => verify_deployed_build().await,
+        "deploy-verify" | "verify" => verify_deployed_build(false).await,
         // Anything else is a command name. `--help`/`-h` renders the manual in the
         // CLI's paradigm (bash flags), adapted from the SAME schema the AI gets as
         // a tool spec. Otherwise dispatch, params adapted procedurally.
@@ -118,7 +139,7 @@ async fn run() -> Result<(), String> {
 /// then render it as bash usage. Same single source the AI tool adapter reads;
 /// only the rendering differs by paradigm ("the manual matches the paradigm").
 async fn help_for(command: &str) -> Result<(), String> {
-    ensure_core_running(command).await?;   // the manual comes from the live registry
+    ensure_core_running(command).await?; // the manual comes from the live registry
     let list = connection()
         .commands()
         .execute_value("commands/list", serde_json::json!({ "filter": command }))
@@ -304,11 +325,33 @@ fn params_from_args(args: &[String], canonical: &[String]) -> Result<Value, Stri
         .iter()
         .map(|c| (normalize_key(c), c.as_str()))
         .collect();
+    // Universally-common flag synonyms. If the user typed one spelling and the
+    // SCHEMA uses the other, resolve to the schema's canonical field — so muscle
+    // memory ("--command" for a shell, the name Claude's Bash tool + most CLIs use)
+    // is served, not bounced (Joel's rule #328: canonical follows the common
+    // standard, aliases resolve). Only consulted when the raw flag is NOT itself a
+    // canonical field; data-driven, so it never overrides a command's real param.
+    const SYNONYMS: &[(&str, &str)] = &[("command", "cmd")];
     let field = |raw: &str| -> String {
-        canon_by_norm
-            .get(&normalize_key(raw))
-            .map(|c| (*c).to_string())
-            .unwrap_or_else(|| to_camel_case(raw))
+        let norm = normalize_key(raw);
+        if let Some(c) = canon_by_norm.get(&norm) {
+            return (*c).to_string();
+        }
+        for (a, b) in SYNONYMS {
+            let other = if normalize_key(a) == norm {
+                Some(*b)
+            } else if normalize_key(b) == norm {
+                Some(*a)
+            } else {
+                None
+            };
+            if let Some(o) = other {
+                if let Some(c) = canon_by_norm.get(&normalize_key(o)) {
+                    return (*c).to_string();
+                }
+            }
+        }
+        to_camel_case(raw)
     };
 
     let mut map = serde_json::Map::new();
@@ -407,16 +450,43 @@ fn connection() -> Connection<CoreIpcTransport> {
     Connection::new(CoreIpcTransport::new(socket_path()))
 }
 
+/// How long a `ping` may take before we call the core "not answering".
+///
+/// Measured on a healthy local core: 20ms, five samples, no variance — this is a
+/// unix-socket round trip, not a network call. 5s is 250× that, so it cannot fire on
+/// a merely-busy core; it exists solely to bound a core that will NEVER answer.
+const PING_BUDGET: Duration = Duration::from_secs(5);
+
 /// Is a core already answering on the socket? A real ping round-trip, not just a
-/// socket-file existence check (a stale socket file lies).
+/// socket-file existence check (a stale socket file lies) — and BOUNDED, which is
+/// load-bearing rather than defensive.
+///
+/// An unbounded ping does not fail against an unresponsive core, it HANGS: the kernel
+/// completes `connect()` into the listen backlog whether or not the process is
+/// scheduled, the write succeeds, and the read then waits for a reply that never comes.
+/// A timeout counts as NOT answering, which is the safe direction — paired with a
+/// visible core process it yields `Occupied`, so the caller refuses and names the pids
+/// rather than launching a competitor.
+///
+/// This bound is what makes the [`BindDecision::Occupied`] arm REACHABLE, not a
+/// nicety. Glass-boxed 2026-08-14 on this box, both directions:
+///
+/// - unbounded: SIGSTOP every core, run `start` → no output, no decision, still hung
+///   at 90s. The guard was green in unit tests and dead on the live path.
+/// - bounded:   same setup → exits 1 in 8s with the refusal naming both live pids
+///   (5s here plus the process-table read), and the cores resume unharmed on SIGCONT.
+///
+/// The 90s figure came from a binary whose build had failed, so it measures the
+/// unbounded path either way — but it is the OLD behaviour, not evidence against the
+/// timeout, which the 8s run then confirmed directly.
 async fn core_is_up() -> bool {
-    matches!(
-        connection()
-            .commands()
-            .execute_value("ping", Value::Object(Default::default()))
-            .await,
-        Ok(_)
-    )
+    // Bound to locals: `connection()` and `.commands()` yield temporaries that the
+    // future borrows, so building the future inline drops them at the end of the
+    // statement (E0716).
+    let conn = connection();
+    let cmds = conn.commands();
+    let ping = cmds.execute_value("ping", Value::Object(Default::default()));
+    matches!(tokio::time::timeout(PING_BUDGET, ping).await, Ok(Ok(_)))
 }
 
 /// Make sure a core is answering before dispatching, launching one if not. See the
@@ -426,9 +496,30 @@ async fn core_is_up() -> bool {
 /// machine-parseable) so an operator who typed one command and got a 60s pause knows
 /// exactly what is happening instead of assuming it hung.
 async fn ensure_core_running(command: &str) -> Result<(), String> {
-    if core_is_up().await {
-        return Ok(());
+    // Same reclaim-or-refuse guard `start` uses, minus the reclaim: an implicit
+    // autostart exists to get the caller a live core, and killing someone else's
+    // core is never part of that errand. Occupied therefore always refuses here.
+    match bind_decision().await {
+        BindDecision::AlreadyServing { .. } => return Ok(()),
+        BindDecision::Occupied { pids } => {
+            return Err(format!(
+                "`{command}` needs a running core, and {} core process(es) are running \
+                 (pid(s) {}) but NONE is answering on {}. Starting another would bind a \
+                 second core on the same socket — whichever one the kernel hands a \
+                 connection to would answer, so results would be non-deterministic. \
+                 Either wait (a core that is still booting answers shortly), or clear it \
+                 with `continuum stop`.",
+                pids.len(),
+                pids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(","),
+                socket_path()
+            ));
+        }
+        BindDecision::Free => {}
     }
+    // A deploy in flight is the one state the bind guard above cannot see: mid-build no
+    // core answers and no core pid exists, which reads as "safe to start" and is exactly
+    // when starting is wrong.
+    deploy_gate(command)?;
     if std::env::var("CONTINUUM_NO_AUTOSTART").is_ok_and(|v| v != "0") {
         return Err(format!(
             "no core is answering on {} and CONTINUUM_NO_AUTOSTART is set, so `{command}` \
@@ -437,24 +528,87 @@ async fn ensure_core_running(command: &str) -> Result<(), String> {
         ));
     }
     eprintln!("▶ no core running — starting one for `{command}` (continuum start)");
-    let secs = launch_core(&[]).await.map_err(|e| {
+    let secs = launch_core(&[], LaunchSource::Installed).await.map_err(|e| {
         format!("`{command}` needs a running core and one could not be started: {e}")
     })?;
     eprintln!("✅ core ready after ~{secs}s — dispatching `{command}`");
     Ok(())
 }
 
+/// Gather the two observations [`BindDecision`] is a function of — a real `ping`
+/// round-trip and the core process table — and hand them to the shared truth table.
+///
+/// The observation half lives here because it is platform- and transport-shaped; the
+/// DECISION half lives in the lib so it is unit-tested by the `--lib` CI gate. Both
+/// `start` and `ensure_core_running` go through this one seam, which is the point:
+/// the split brain existed because each launch path had its own ad-hoc guard.
+async fn bind_decision() -> BindDecision {
+    let ping_ok = core_is_up().await;
+    let running: Vec<i32> = running_core_pids().into_iter().filter(|p| pid_alive(*p)).collect();
+    continuum_core::runtime::core_bind_guard::decide(ping_ok, &running)
+}
+
 /// `continuum start` — build + run the headless Rust core (detached), wait until it
 /// answers `ping`. Idempotent: a no-op if a core is already up.
-async fn start() -> Result<(), String> {
+///
+/// Reclaim-or-refuse, never blind-bind. The old guard was `core_is_up()` alone, so a
+/// core that was RUNNING but not answering (wedged, mid-boot, bound where this CLI
+/// cannot reach) was invisible and `start` launched a second one on top of it. That is
+/// the same missing constraint `stop` got in #2287, on the other side of the lifecycle.
+async fn start(force: bool) -> Result<(), String> {
     let socket = socket_path();
 
-    if core_is_up().await {
-        println!("core already running (socket={socket})");
-        return Ok(());
+    match bind_decision().await {
+        BindDecision::AlreadyServing { .. } => {
+            println!("core already running (socket={socket})");
+            return Ok(());
+        }
+        // Only the path that actually LAUNCHES consults the deploy claim. An already-serving
+        // core is a no-op and must stay one — gating a no-op would turn a mid-deploy
+        // `continuum start` into a spurious error about a core that is already fine.
+        // `--force` is the documented override, consistent with the Occupied arm below.
+        BindDecision::Free => {
+            if !force {
+                deploy_gate("start")?;
+            }
+        }
+        BindDecision::Occupied { pids } => {
+            let list = pids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",");
+            if !force {
+                return Err(format!(
+                    "{} core process(es) are running (pid(s) {list}) but NONE is answering on \
+                     {socket}. Refusing to start a second core: both would hold the same socket \
+                     and whichever one the kernel hands a connection to would answer, which is \
+                     how a shipped fix comes to look intermittently broken.\n  \
+                     • still booting? wait — a healthy core answers shortly, then `continuum start` \
+                     is a no-op\n  \
+                     • wedged? `continuum stop` reaps every core, then start\n  \
+                     • sure it is dead weight? `continuum start --force` reclaims it here",
+                    pids.len()
+                ));
+            }
+            // Explicit reclaim. `reboot` guards destructive restarts behind live-training
+            // and live-benchmark leases; `start --force` deliberately carries no such
+            // lease check, so say plainly what is being killed rather than implying a
+            // vetted teardown.
+            println!(
+                "⚠ --force: reclaiming {} unresponsive core(s) (pid(s) {list}) — no training or \
+                 benchmark lease is checked on this path; use `continuum reboot` if those matter",
+                pids.len()
+            );
+            for pid in &pids {
+                kill_pid_tree(*pid);
+            }
+            // Hand the reaped pids to launch_core as its death-wait set, so readiness is
+            // only reported once the OLD cores are gone and the ping provably came from
+            // the NEW one — the same honesty check reboot relies on.
+            let secs = launch_core(&pids, LaunchSource::Installed).await?;
+            println!("✅ core ready (socket={socket}) after ~{secs}s");
+            return Ok(());
+        }
     }
 
-    let secs = launch_core(&[]).await?;
+    let secs = launch_core(&[], LaunchSource::Installed).await?;
     println!("✅ core ready (socket={socket}) after ~{secs}s");
     Ok(())
 }
@@ -549,15 +703,31 @@ async fn reboot(force: bool) -> Result<(), String> {
     // script, and one decision belongs in exactly one place. `launch_core`'s
     // `wait_for_death` on `old` is then trivially satisfied on Windows and
     // still does the real work on Unix, where the overlapping build stands.
-    let secs = launch_core(&old).await?;
+    // Publish the claim for the WHOLE build+swap. Held until this function returns, so a
+    // concurrent `continuum <verb>` refuses instead of autostarting the pre-swap installed
+    // image and stealing the socket (the DEPLOY MISMATCH measured 2026-08-17).
+    let _deploy_claim = DeployClaimGuard::take(
+        git_head_short_sha().as_deref().unwrap_or("unknown"),
+    );
+    let secs = launch_core(&old, LaunchSource::FromSource).await?;
     // Deploy-verification (#194): a new core is up — but is it the FRESHLY-BUILT one? If
     // start-server.sh's build was a stale cache no-op or silently failed, an OLD binary would
     // answer on the same socket and this reboot would report success while running dead code.
     // NO success line before provenance is proven ("core ready" without provenance is a false
     // deploy receipt — the 2026-08-01 Windows-node incident): announce liveness neutrally,
     // then verify, and let "✅ deploy verified" be the ONLY checkmark a reboot prints.
-    println!("core answering (socket={socket}) after ~{secs}s — verifying deploy provenance (#194)");
-    verify_deployed_build().await
+    println!(
+        "core answering (socket={socket}) after ~{secs}s — verifying deploy provenance (#194)"
+    );
+    // Did THIS reboot replace the installed CLI? Only when it went through the build script
+    // (a source tree exists — the same condition `plan_launch` uses to pick `Script` for a
+    // FromSource launch) AND the platform allows a self-build. Both terms matter: on an
+    // installed node with no checkout nothing was rebuilt, and on Windows `cli_self_build`
+    // deliberately skips. Getting this wrong in either direction re-creates the noise this
+    // flag exists to remove, or hides a genuinely stale CLI behind a reassuring handoff line.
+    let rebuilt_cli = locate_start_script().is_ok()
+        && matches!(cli_self_build(std::env::consts::OS), CliSelfBuild::Rebuild);
+    verify_deployed_build(rebuilt_cli).await
 }
 
 /// Prove the running core is built from the source this deploy shipped — the honest half of
@@ -578,7 +748,17 @@ async fn reboot(force: bool) -> Result<(), String> {
 /// NEVER skips soft: any gap (no core answering, a pre-#194 core without `buildSha`,
 /// `unknown` provenance, no resolvable artifact) is an ERROR — a reboot must not print a
 /// success line it cannot back with provenance ([[fallbacks-are-illegal-fail-loud]]).
-async fn verify_deployed_build() -> Result<(), String> {
+/// This CLI's own build SHA, stamped at compile time by `build.rs` for the whole crate —
+/// the `continuum` bin lives in `continuum-core`, so it gets the same constant the core does,
+/// describing the binary you are RUNNING rather than one found on disk.
+const CLI_BUILD_SHA: &str = env!("CONTINUUM_BUILD_GIT_SHA");
+
+/// `rebuilt_cli` says whether THIS invocation replaced the installed CLI — true from
+/// `reboot` (start-server.sh rebuilds + reinstalls it unless `cli_self_build` skips the
+/// platform), false from a bare `deploy-verify`. It is what lets the CLI-provenance note
+/// tell a HANDOFF ("the next run gets the new CLI") apart from real STALENESS, instead of
+/// warning on every successful deploy.
+async fn verify_deployed_build(rebuilt_cli: bool) -> Result<(), String> {
     let socket = socket_path();
     // The RUNNING core's provenance, from the process itself.
     let reply = connection()
@@ -602,66 +782,27 @@ async fn verify_deployed_build() -> Result<(), String> {
     };
 
     let running_desc = describe_running_core(&socket);
-    match deploy_verdict(actual.as_deref(), &expected, &expected_source, &running_desc) {
+    // The CLI's own provenance rides alongside the core's, on BOTH outcomes: a stale CLI
+    // is relevant whether or not the core swap took.
+    let cli_note = cli_staleness_note(CLI_BUILD_SHA, &expected, &expected_source, rebuilt_cli);
+    match deploy_verdict(
+        actual.as_deref(),
+        &expected,
+        &expected_source,
+        &running_desc,
+    ) {
         Ok(line) => {
             println!("{line}");
+            if let Some(note) = cli_note {
+                println!("{note}");
+            }
             Ok(())
         }
-        Err(e) => Err(e),
+        Err(e) => Err(match cli_note {
+            Some(note) => format!("{e}\n{note}"),
+            None => e,
+        }),
     }
-}
-
-/// The pure compare at the heart of deploy-verify: running core's self-reported SHA vs the
-/// SHA the deploy shipped. Ok(success line) only on a REAL match; every gap is a loud error
-/// naming both SHAs and both identities. Pure (strings in, strings out) so it's unit-testable
-/// without a running core.
-fn deploy_verdict(
-    actual: Option<&str>,
-    expected: &str,
-    expected_source: &str,
-    running_desc: &str,
-) -> Result<String, String> {
-    let actual = match actual {
-        Some(a) if !a.is_empty() => a,
-        _ => {
-            return Err(format!(
-                "DEPLOY MISMATCH (#194): the running core ({running_desc}) does not report a build \
-                 SHA on ping — it is a pre-#194 (or otherwise stale) binary, so the swap did NOT \
-                 happen. Expected build {expected} ({expected_source}). Do not trust any live test: \
-                 stop the old core and reboot again."
-            ))
-        }
-    };
-    if actual == "unknown" || expected == "unknown" {
-        return Err(format!(
-            "DEPLOY UNVERIFIABLE (#194): build provenance is 'unknown' (running core \
-             ({running_desc}) reports {actual}; expected {expected} from {expected_source}) — a \
-             binary was built outside a git tree, so freshness cannot be proven. Rebuild inside \
-             the git checkout and reboot again; never trust an unverifiable deploy."
-        ));
-    }
-    if sha_matches(actual, expected) {
-        Ok(format!(
-            "✅ deploy verified: core is running build {actual} (== {expected_source})"
-        ))
-    } else {
-        Err(format!(
-            "DEPLOY MISMATCH (#194): the running core ({running_desc}) is build {actual}, but the \
-             deploy shipped build {expected} ({expected_source}). The swap did NOT take — a \
-             stale binary is still serving while the reboot would have claimed success. Do not \
-             trust any live test until this is fixed: rebuild cleanly (`cargo build -p \
-             continuum-core --bin continuum-core-server`) and reboot again."
-        ))
-    }
-}
-
-/// Two short/long git SHAs refer to the same commit when one prefixes the other (git's
-/// `--short` abbreviation length varies over a repo's life). Both must be real hex SHAs of
-/// credible length — never matches `""` or `"unknown"`.
-fn sha_matches(a: &str, b: &str) -> bool {
-    let credible =
-        |s: &str| s.len() >= 7 && s.chars().all(|c| c.is_ascii_hexdigit());
-    credible(a) && credible(b) && (a.starts_with(b) || b.starts_with(a))
 }
 
 /// Best-effort human identity of the running core for error messages: socket + pid(s) +
@@ -673,7 +814,10 @@ fn describe_running_core(socket: &str) -> String {
     if !pids.is_empty() {
         desc.push_str(&format!(
             ", pid(s) {}",
-            pids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",")
+            pids.iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
         ));
     }
     if let Some(img) = running_core_binary() {
@@ -737,6 +881,95 @@ fn core_artifact_candidates(home: &str, cargo_target_dir: Option<&str>) -> Vec<P
     out.push(PathBuf::from(&target).join("release").join(exe));
     out.push(PathBuf::from(&target).join("debug").join(exe));
     out
+}
+
+/// The continuum root (`~/.continuum`) — where the deploy claim lives.
+fn continuum_root() -> Result<PathBuf, String> {
+    Ok(PathBuf::from(home_dir()?).join(".continuum"))
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Consult the deploy claim before minting a core, and REPORT what it found.
+///
+/// Returns `Err` only while a deploy is genuinely in flight. See
+/// [`continuum_core::runtime::deploy_claim`] for the incident: mid-build there is no core
+/// answering AND the installed image is still the PREVIOUS build, so any autostart in that
+/// window launches stale code, wins the socket, and defeats the deploy.
+///
+/// A claim whose owner is gone or that has aged out is swept and announced rather than
+/// silently obeyed — a claim must never be able to wedge the machine (#355's failure mode).
+fn deploy_gate(verb: &str) -> Result<(), String> {
+    use continuum_core::runtime::deploy_claim::{self, DeployGate};
+    let Ok(root) = continuum_root() else {
+        return Ok(()); // no HOME → no claim file → nothing to honour
+    };
+    let claim = deploy_claim::read(&root);
+    let alive = claim.as_ref().is_some_and(|c| pid_alive(c.pid));
+    match deploy_claim::decide(claim.as_ref(), alive, now_ms()) {
+        DeployGate::Clear => Ok(()),
+        DeployGate::Abandoned { pid, age_ms, why } => {
+            eprintln!(
+                "⚠ sweeping an abandoned deploy claim (pid {pid}, {}s old, {why:?}) — \
+                 proceeding with `{verb}`",
+                age_ms / 1000
+            );
+            let _ = deploy_claim::clear(&root);
+            Ok(())
+        }
+        DeployGate::InProgress { pid, age_ms, target_sha } => Err(format!(
+            "a deploy is in flight (pid {pid} shipping build {target_sha}, {}s in) and no core \
+             is answering yet. Starting one now would launch the PRE-SWAP installed binary, \
+             which would then hold the socket and make the deploy report the OLD build — \
+             measured 2026-08-17. Wait for the deploy to finish; `{verb}` works the moment it \
+             does. (If that deploy is dead, its claim is swept automatically once its process \
+             exits.)",
+            age_ms / 1000
+        )),
+    }
+}
+
+/// RAII deploy claim: published for the length of a swap, released on EVERY exit path
+/// (Ok, Err, `?`, panic-unwind). A claim that leaked past its deploy would block autostarts
+/// until its owner died, so the release cannot be a line at the end of the happy path.
+struct DeployClaimGuard {
+    root: PathBuf,
+}
+
+impl DeployClaimGuard {
+    /// Best-effort by design: if the claim cannot be written the deploy still proceeds —
+    /// losing the guard degrades to the old behaviour (which `deploy-verify` still catches),
+    /// whereas refusing to deploy over an unwritable advisory file turns a hint into an outage.
+    fn take(target_sha: &str) -> Option<Self> {
+        use continuum_core::runtime::deploy_claim::{self, DeployClaim};
+        let root = continuum_root().ok()?;
+        let claim = DeployClaim {
+            pid: std::process::id() as i32,
+            started_ms: now_ms(),
+            target_sha: target_sha.to_string(),
+        };
+        match deploy_claim::write(&root, &claim) {
+            Ok(()) => Some(Self { root }),
+            Err(e) => {
+                eprintln!(
+                    "⚠ could not publish a deploy claim ({e}) — a concurrent command could \
+                     autostart a stale core during this build; deploy-verify still catches it"
+                );
+                None
+            }
+        }
+    }
+}
+
+impl Drop for DeployClaimGuard {
+    fn drop(&mut self) {
+        let _ = continuum_core::runtime::deploy_claim::clear(&self.root);
+    }
 }
 
 /// The user's home dir — `HOME` (unix) or `USERPROFILE` (Windows). Loud when absent: the
@@ -957,7 +1190,11 @@ fn owned_engine_orphans(keep: &[i32]) -> Vec<(i32, String)> {
     };
     let owned_root = home.join(".continuum").join("bin");
     let mut sys = System::new();
-    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::everything());
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::everything(),
+    );
 
     // Snapshot child -> parent once, then decide with pure logic. Reading the
     // live table inside the walk would let a process exiting mid-scan change
@@ -965,7 +1202,10 @@ fn owned_engine_orphans(keep: &[i32]) -> Vec<(i32, String)> {
     let parents: std::collections::HashMap<i32, i32> = sys
         .processes()
         .values()
-        .filter_map(|p| p.parent().map(|par| (p.pid().as_u32() as i32, par.as_u32() as i32)))
+        .filter_map(|p| {
+            p.parent()
+                .map(|par| (p.pid().as_u32() as i32, par.as_u32() as i32))
+        })
         .collect();
 
     sys.processes()
@@ -1035,9 +1275,64 @@ fn locate_bash() -> Result<PathBuf, String> {
     continuum_core::shell_portable::locate_bash()
 }
 
-async fn launch_core(wait_for_death: &[i32]) -> Result<u64, String> {
+/// What the CALLER needs out of a launch — not what happens to be on disk.
+///
+/// `start` needs a core RUNNING. `reboot` needs the core to be built FROM THE
+/// SOURCE IN THIS CHECKOUT, because that is the whole meaning of the deploy
+/// verb. Collapsing the two is what produced a `reboot` that re-ran a
+/// month-old artifact under a banner promising a fresh build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LaunchSource {
+    /// Whatever is already installed is fine — the caller wants a live core.
+    Installed,
+    /// Build first. The caller is deploying source they just edited.
+    FromSource,
+}
+
+/// The resolved launch, given the policy and what actually exists on this machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LaunchPlan {
+    /// Run the build-and-start script (compiles, then execs).
+    Script,
+    /// Exec the installed artifact — what the caller asked for.
+    Installed,
+    /// Exec the installed artifact even though a source build was wanted, because
+    /// this machine has no source tree. Legal, but it must SAY SO: it is a restart,
+    /// not a deploy.
+    InstalledWithoutRebuild,
+    /// Nothing to run.
+    NoLaunchable,
+}
+
+/// Pure resolution so the policy is testable without a filesystem, a build, or a
+/// process. Every branch below cost a real outage or a false success line at some
+/// point; the table in the tests is the record of which.
+fn plan_launch(
+    policy: LaunchSource,
+    env_from_source: bool,
+    have_script: bool,
+    have_installed: bool,
+) -> LaunchPlan {
+    let want_source = env_from_source || policy == LaunchSource::FromSource;
+    match (want_source, have_script, have_installed) {
+        (true, true, _) => LaunchPlan::Script,
+        // An explicit CONTINUUM_FROM_SOURCE is an operator DEMAND to compile: silently
+        // running a prebuilt binary instead would answer a different question than the
+        // one asked. Fail loud rather than substitute.
+        (true, false, _) if env_from_source => LaunchPlan::NoLaunchable,
+        // `reboot` on an installed node (no checkout): restarting the artifact is the
+        // only meaningful thing reboot can do there, and deploy-verify still proves the
+        // running SHA against that artifact.
+        (true, false, true) => LaunchPlan::InstalledWithoutRebuild,
+        (true, false, false) => LaunchPlan::NoLaunchable,
+        (false, _, true) => LaunchPlan::Installed,
+        (false, true, false) => LaunchPlan::Script,
+        (false, false, false) => LaunchPlan::NoLaunchable,
+    }
+}
+
+async fn launch_core(wait_for_death: &[i32], policy: LaunchSource) -> Result<u64, String> {
     let socket = socket_path();
-    let script = locate_start_script()?;
     let logfile = start_logfile();
     let log = std::fs::File::create(&logfile)
         .map_err(|e| format!("cannot open start log {logfile}: {e}"))?;
@@ -1045,22 +1340,137 @@ async fn launch_core(wait_for_death: &[i32]) -> Result<u64, String> {
         .try_clone()
         .map_err(|e| format!("cannot clone start log handle: {e}"))?;
 
-    // stderr, not stdout: stdout carries the dispatched command's JSON result and has to stay
-    // machine-parseable when a command auto-starts the core on its way through.
-    eprintln!("▶ starting core via {} (log: {logfile})", script.display());
+    // THE INSTALLED BINARY IS THE DEFAULT START PATH — for `start`, not for `reboot`.
+    //
+    // `start` used to shell unconditionally into tools/scripts/start-server.sh,
+    // which runs a full cargo build. That made a "governed" lifecycle verb a
+    // wrapper around a bash file that only exists inside a repo checkout, with
+    // three consequences (BigMama, 2026-08-13):
+    //   - a user holding ONLY the installed binary, with no source tree, could
+    //     not start a core at all;
+    //   - the CLI printed one line and went silent for the length of a compile,
+    //     which reads as HUNG and was called hung three separate times;
+    //   - the façade's honesty depended entirely on the script underneath.
+    //
+    // All true — but `launch_core` is shared with `reboot`, and reboot is THE
+    // DEPLOY PATH ("edit → reboot → exercise"). Giving it the installed artifact
+    // made the verb structurally unable to ship an edit: it printed "building
+    // fresh binary, then swapping" and then exec'd a MONTH-OLD binary. That is
+    // why the source policy is now an explicit argument instead of an ambient
+    // default — the two callers want opposite things and neither should have to
+    // infer the other's intent.
+    let env_from_source = std::env::var("CONTINUUM_FROM_SOURCE").is_ok();
+    let script = locate_start_script().ok();
+    let server_bin = locate_core_server_binary();
+    let plan = plan_launch(
+        policy,
+        env_from_source,
+        script.is_some(),
+        server_bin.is_some(),
+    );
 
-    // Spawn the pure-Rust start script in its OWN session (setsid) so it survives
-    // `continuum` exiting — a detached daemon, not a child tied to this process.
-    let mut cmd = std::process::Command::new(locate_bash()?);
-    cmd.arg(&script)
-        .env("CONTINUUM_CORE_SOCKET", &socket)
-        // We ARE the continuum binary. On Windows a running image cannot be
-        // replaced, so letting the script `cargo build --bin continuum` fails the
-        // whole cargo invocation, skips every later build (including the CORE),
-        // and `reboot` dies after its full timeout having rebuilt nothing —
-        // measured 772s to that failure on BIGMAMA. Tell the script to leave our
-        // own image alone; it still rebuilds the core, which is reboot's contract.
-        .env("CONTINUUM_SKIP_SELF_BUILD", "1")
+    let mut cmd = match plan {
+        LaunchPlan::Script => {
+            let script = script.expect("plan_launch only picks Script when one was found");
+            if env_from_source || policy == LaunchSource::FromSource {
+                eprintln!(
+                    "▶ building from source, then starting via {} (log: {logfile}) — \
+                     this compiles and can take minutes",
+                    script.display()
+                );
+            } else {
+                eprintln!(
+                    "▶ no installed continuum-core-server found; falling back to {} \
+                     (log: {logfile}) — this COMPILES FIRST and can take minutes. \
+                     Install the binary to start without a source tree.",
+                    script.display()
+                );
+            }
+            let mut c = std::process::Command::new(locate_bash()?);
+            c.arg(&script);
+            c
+        }
+        LaunchPlan::Installed | LaunchPlan::InstalledWithoutRebuild => {
+            // borrow: the spawn-failure diagnostic below reports which binary it
+            // tried, so `server_bin` has to outlive this arm.
+            let bin = server_bin
+                .as_ref()
+                .expect("plan_launch only picks Installed when one was found");
+            if plan == LaunchPlan::InstalledWithoutRebuild {
+                // Say it. A reboot that restarts the same artifact is a legitimate
+                // operation on an installed node, but calling it a deploy without
+                // saying "no source tree, nothing was rebuilt" is exactly the false
+                // deploy receipt #194 exists to prevent.
+                eprintln!(
+                    "▶ no source tree here — restarting the installed artifact, NOT rebuilding \
+                     (deploy provenance is still verified below)"
+                );
+            }
+            // stderr, not stdout: stdout carries the dispatched command's JSON
+            // result and has to stay machine-parseable when a command
+            // auto-starts the core on its way through.
+            eprintln!("▶ starting core: {} (log: {logfile})", bin.display());
+            let mut c = std::process::Command::new(bin);
+            // THE SOCKET PATH IS A POSITIONAL ARGUMENT, and this call site is the
+            // only one that ever forgot it. `main.rs` requires argv[1] and exits 1
+            // with its usage text when it is missing — so from the moment the
+            // direct-exec path landed, every `start`/`reboot` on a machine with an
+            // installed binary died in ~2s having printed "Usage:" into the start
+            // log. The env var below is set too (and `endpoint_paths::core_socket`
+            // now honours it server-side), but argv is the binary's documented
+            // contract and is what `ps` shows an operator.
+            c.arg(&socket);
+            c
+        }
+        LaunchPlan::NoLaunchable => {
+            return Err(if env_from_source || policy == LaunchSource::FromSource {
+                "a source build was requested but no start script was found — \
+                 run from a checkout, or set CONTINUUM_START_SCRIPT"
+                    .to_string()
+            } else {
+                "no continuum-core-server binary and no start script — nothing to launch. \
+                 Install the binary (tools/scripts/install-service.sh) or run from a checkout."
+                    .to_string()
+            });
+        }
+    };
+    // ~/.continuum/config.env reaches the core on EVERY launch path, not just the
+    // scripted one.
+    //
+    // start-server.sh `source`s this file under `set -a`, so a core launched through
+    // the script inherits every key. The direct-exec path set none of them — the child
+    // simply inherited the calling CLI's environment. Measured 2026-08-14: a core
+    // auto-started by a dispatched command was running with the agent session's env
+    // (CLAUDECODE=1, CLAUDE_CODE_SESSION_ID=…) and NO `CONTINUUM_PROBE_DIR`, while
+    // config.env sets it on line 24 — so the glass box was OFF, silently, on an
+    // installed node. `ping`, `serving/status` and `deploy-verify` all read healthy;
+    // only `debug/probes/query` said otherwise, and only when asked.
+    //
+    // Applied BEFORE the explicit `.env()` calls below so per-launch facts (the socket
+    // this invocation is binding, the self-build guard) still win over the file, and in
+    // file order so duplicate assignments resolve last-wins exactly as `source` would.
+    // On the Script path the script re-sources the same file afterwards — same values,
+    // so this is idempotent there rather than a second source of truth.
+    for (k, v) in continuum_core::config_env::read_all() {
+        cmd.env(k, v);
+    }
+    // We ARE the continuum binary — may this deploy rebuild our own image?
+    //
+    // The guard below used to be unconditional, and that is the whole of #422: a
+    // Windows file-locking accommodation charged to every platform, which made the
+    // documented deploy path structurally unable to ship a fix living in the CLI.
+    // The decision now names the ONE platform it is for; everywhere else the script
+    // builds the CLI and installs it with the temp+mv swap it already performs.
+    match cli_self_build(std::env::consts::OS) {
+        CliSelfBuild::Rebuild => {}
+        CliSelfBuild::Skip { reason } => {
+            // Say it out loud. A skipped build that looks like a completed one is how
+            // stale binaries survive a "successful" deploy — #194, one tier up.
+            eprintln!("▶ {reason}");
+            cmd.env("CONTINUUM_SKIP_SELF_BUILD", "1");
+        }
+    }
+    cmd.env("CONTINUUM_CORE_SOCKET", &socket)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err));
@@ -1090,12 +1500,13 @@ async fn launch_core(wait_for_death: &[i32]) -> Result<u64, String> {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
     }
-    let mut child = cmd.spawn().map_err(|e| {
-        format!(
-            "failed to spawn `bash {}`: {e}. The start script is bash; on Windows that needs \
-             bash on PATH (Git Bash).",
-            script.display()
-        )
+    let mut child = cmd.spawn().map_err(|e| match &server_bin {
+        Some(bin) => format!("failed to spawn the core server {}: {e}", bin.display()),
+        None => format!(
+            "failed to spawn the source-build start script via bash: {e}. The start script \
+             is bash; on Windows that needs bash on PATH (Git Bash). Installing \
+             continuum-core-server avoids the script entirely."
+        ),
     })?;
 
     // Record the PID so `continuum stop` can find the detached process group.
@@ -1175,36 +1586,78 @@ async fn stop() -> Result<(), String> {
     let socket = socket_path();
     let pidfile = pidfile_for(&socket);
 
-    let mut stopped = false;
+    let mut pidfile_core: Option<i32> = None;
     if let Ok(contents) = std::fs::read_to_string(&pidfile) {
         if let Ok(pid) = contents.trim().parse::<i32>() {
             kill_pid_tree(pid);
-            stopped = true;
+            pidfile_core = Some(pid);
             println!("stopping core (pid {pid})");
         }
         let _ = std::fs::remove_file(&pidfile);
     }
+    let stopped = pidfile_core.is_some();
 
-    if !stopped {
-        // No pidfile (started another way). This fallback WAS `pkill -f
-        // continuum-core-server`, which does not exist on Windows: the spawn
-        // failed, `.unwrap_or(false)` swallowed it, and stop printed "no
-        // running core found" while the core was running — the identical bug,
-        // in the identical shape, to the `pgrep` one documented on
-        // `processes_named` a few hundred lines up. That fix ported the finder
-        // to sysinfo and missed this sibling call site, so a repaired function
-        // sat directly above an unrepaired twin. Same enumerator now, one
-        // implementation, both platforms.
-        let cores = running_core_pids();
-        if cores.is_empty() {
+    // The pidfile names ONE core. It is not evidence that only one is running.
+    //
+    // This sweep used to be gated behind `if !stopped` — a pidfile present meant
+    // "handled, nothing else to look for". Measured 2026-08-14: two cores were
+    // alive at once, both with /tmp/continuum-core.sock open (a debug build at
+    // 23:51 and the installed release at 23:54, the second having unlinked and
+    // re-bound the path). `stop` printed "stopping core (pid 70240)" — singular —
+    // reaped that one, and left the other serving. The `reap_owned_orphans` sweep
+    // below could not catch it either: ownership there is keyed on
+    // `~/.continuum/bin`, and a core built into the project's mandated
+    // CARGO_TARGET_DIR is not under that root, so a dev-built core is invisible to
+    // it by construction.
+    //
+    // A second core on this machine is never benign — whichever one the kernel
+    // hands a connection to is the one that answers, so a shipped fix can look
+    // intermittently broken and an unshipped one intermittently fixed. `stop`
+    // must therefore always enumerate, and must be LOUD about a survivor: an
+    // extra core is evidence of a lifecycle bug, exactly as an orphan is.
+    //
+    // (The enumerator itself was `pkill -f continuum-core-server`, which does not
+    // exist on Windows: the spawn failed, `.unwrap_or(false)` swallowed it, and
+    // stop printed "no running core found" while the core was running — the same
+    // shape as the `pgrep` bug documented on `processes_named` above. That fix
+    // ported the finder to sysinfo and missed this sibling call site.)
+    // Exclude the pidfile core: SIGTERM is asynchronous, so it is very likely
+    // still in the process table on the next line. Counting it here would report
+    // a SPLIT BRAIN on every ordinary stop — a false alarm on a message whose
+    // whole value is that it only fires when something is genuinely wrong.
+    let survivors: Vec<i32> = running_core_pids()
+        .into_iter()
+        .filter(|pid| Some(*pid) != pidfile_core)
+        .filter(|pid| pid_alive(*pid))
+        .collect();
+    if survivors.is_empty() {
+        if !stopped {
             println!("no running core found");
-        } else {
-            for pid in &cores {
-                kill_pid_tree(*pid);
-            }
+        }
+    } else {
+        if stopped {
+            println!(
+                "  SPLIT BRAIN: {} core(s) still running after the pidfile core was stopped \
+                 — reaping (pid(s) {})",
+                survivors.len(),
+                survivors
+                    .iter()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+        }
+        for pid in &survivors {
+            kill_pid_tree(*pid);
+        }
+        if !stopped {
             println!(
                 "stopped continuum-core-server (pid(s) {})",
-                cores.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",")
+                survivors
+                    .iter()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
             );
         }
     }
@@ -1213,6 +1666,36 @@ async fn stop() -> Result<(), String> {
     // to every tree reap above. Sweep them by OWNERSHIP — nothing is left
     // holding a port or VRAM once `stop` returns.
     reap_owned_orphans(&[]);
+
+    // Serving lanes are NOT descended from any core we just reaped (the daemon
+    // spawns them detached) and are NOT under `~/.continuum/bin`, so neither the
+    // tree kill nor the ownership sweep above can see them. Until this call
+    // existed, `stop` left every `llama-server` running and the registry was
+    // swept only on the NEXT boot — measured 2026-08-17 on the M5 as two lanes
+    // resident at once (a 19 GB ephemeral 27B beside the live 14B), which
+    // starved the planner into serving a 2,816-token window that cannot hold the
+    // tool surface. `reboot` could not clear it either: reboot is stop + start,
+    // and neither half owned lanes.
+    for outcome in continuum_core::inference::lane_registry::sweep_all() {
+        use continuum_core::inference::lane_registry::SweepOutcome as S;
+        match outcome {
+            S::ReapedLive { pid, port } => {
+                println!("  reaping serving lane (pid {pid}, port {port}) — live lane, this core is stopping")
+            }
+            S::ReapedEphemeral { pid, port } => {
+                println!("  reaping serving lane (pid {pid}, port {port}) — ephemeral lane, owner gone")
+            }
+            // A record whose pid is dead / recycled / unparseable is bookkeeping,
+            // not an event: garbage-collected silently so the loud lines above
+            // stay meaningful.
+            S::RemovedDead { .. } | S::RemovedReused { .. } | S::RemovedUnparseable { .. } => {}
+            // Unreachable under Shutdown (every role is reaped) — but matched
+            // explicitly so adding a mode can never silently fall through here.
+            S::LeftLive { pid } => {
+                println!("  WARNING: serving lane (pid {pid}) left running by a shutdown sweep — report this")
+            }
+        }
+    }
 
     let _ = std::fs::remove_file(&socket);
     Ok(())
@@ -1234,6 +1717,68 @@ fn reap_owned_orphans(keep: &[i32]) {
 
 /// Find `tools/scripts/start-server.sh`: an explicit `CONTINUUM_START_SCRIPT`
 /// override, else walk up from the cwd until the repo's script is found.
+/// Find the INSTALLED `continuum-core-server` binary — the thing `start`
+/// should be launching. Returns `None` when no built server exists, which is
+/// the only case that justifies falling back to a source build.
+///
+/// Search order is "closest to how this binary was invoked" first, so a
+/// developer running out of a target dir gets that server, and an installed
+/// user gets the installed one:
+///   1. `CONTINUUM_CORE_SERVER` — explicit override, same shape as
+///      `CONTINUUM_START_SCRIPT`. Refuses loudly if set and not a file, rather
+///      than silently searching on (a wrong override must not look like an
+///      absent one).
+///   2. next to the running `continuum` executable (how an install lays out).
+///   3. `~/.continuum/bin`.
+///   4. `target/{release,debug}` walking up from cwd — the dev case.
+fn locate_core_server_binary() -> Option<PathBuf> {
+    const BIN: &str = if cfg!(windows) {
+        "continuum-core-server.exe"
+    } else {
+        "continuum-core-server"
+    };
+
+    if let Ok(explicit) = std::env::var("CONTINUUM_CORE_SERVER") {
+        let p = PathBuf::from(&explicit);
+        if p.is_file() {
+            return Some(p);
+        }
+        eprintln!(
+            "continuum: CONTINUUM_CORE_SERVER={explicit} is not a file — ignoring the \
+             override and searching normally"
+        );
+    }
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.join(BIN);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        let candidate = home.join(".continuum").join("bin").join(BIN);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        for profile in ["release", "debug"] {
+            let candidate = dir.join("target").join(profile).join(BIN);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
 fn locate_start_script() -> Result<PathBuf, String> {
     if let Ok(explicit) = std::env::var("CONTINUUM_START_SCRIPT") {
         let p = PathBuf::from(&explicit);
@@ -1278,6 +1823,96 @@ mod tests {
         pairs.iter().copied().collect()
     }
 
+    mod launch_policy {
+        use super::*;
+
+        /// what this catches: `reboot` — THE deploy path — silently running a
+        /// prebuilt artifact instead of the source just edited. Regression for
+        /// 7e0c5469a, which made the installed binary the default for BOTH
+        /// callers of `launch_core`; the reboot banner still promised "building
+        /// fresh binary, then swapping" while exec'ing a month-old binary, so no
+        /// edit could reach the running core at all.
+        #[test]
+        fn reboot_builds_from_source_even_when_an_installed_binary_exists() {
+            assert_eq!(
+                plan_launch(LaunchSource::FromSource, false, true, true),
+                LaunchPlan::Script
+            );
+        }
+
+        /// what this catches: re-breaking `start` for the no-source-tree user
+        /// (the case 7e0c5469a was written for) while fixing reboot. `start`
+        /// wants a RUNNING core, not a fresh one — it must never compile when an
+        /// artifact is sitting right there.
+        #[test]
+        fn start_prefers_the_installed_binary_over_a_compile() {
+            assert_eq!(
+                plan_launch(LaunchSource::Installed, false, true, true),
+                LaunchPlan::Installed
+            );
+        }
+
+        /// what this catches: a reboot on an installed node (no checkout) either
+        /// dying with "no start script" or — worse — quietly calling itself a
+        /// deploy. It restarts the artifact, and the distinct variant is what
+        /// forces the caller to SAY nothing was rebuilt.
+        #[test]
+        fn reboot_without_a_source_tree_restarts_the_artifact_and_says_so() {
+            assert_eq!(
+                plan_launch(LaunchSource::FromSource, false, false, true),
+                LaunchPlan::InstalledWithoutRebuild
+            );
+        }
+
+        /// what this catches: substituting a prebuilt binary for an explicit
+        /// operator demand to compile. CONTINUUM_FROM_SOURCE asks a specific
+        /// question; answering a different one silently is the fallback class
+        /// this codebase forbids.
+        #[test]
+        fn an_explicit_from_source_request_fails_loud_with_no_script() {
+            assert_eq!(
+                plan_launch(LaunchSource::Installed, true, false, true),
+                LaunchPlan::NoLaunchable
+            );
+        }
+
+        /// what this catches: the env override being ignored on the `start` path
+        /// once the policy argument existed — two ways to ask for a source build
+        /// and only one honoured.
+        #[test]
+        fn the_env_override_still_forces_a_source_build_on_start() {
+            assert_eq!(
+                plan_launch(LaunchSource::Installed, true, true, true),
+                LaunchPlan::Script
+            );
+        }
+
+        /// what this catches: a bare machine (no artifact, no checkout) getting a
+        /// launch attempt against nothing instead of one clear error.
+        #[test]
+        fn nothing_installed_and_no_script_is_a_loud_nothing_to_launch() {
+            assert_eq!(
+                plan_launch(LaunchSource::Installed, false, false, false),
+                LaunchPlan::NoLaunchable
+            );
+            assert_eq!(
+                plan_launch(LaunchSource::FromSource, false, false, false),
+                LaunchPlan::NoLaunchable
+            );
+        }
+
+        /// what this catches: `start` in a fresh checkout before anything is
+        /// installed — the fresh-clone front door (#291). Compiling is correct
+        /// here; refusing is not.
+        #[test]
+        fn start_in_a_checkout_with_no_installed_binary_builds() {
+            assert_eq!(
+                plan_launch(LaunchSource::Installed, false, true, false),
+                LaunchPlan::Script
+            );
+        }
+    }
+
     /// what this catches: the orphan classifier deciding to KILL a live serving
     /// lane. `reboot` reaps every owned engine process not descended from a live
     /// core, so a wrong answer here terminates a 21 GB in-service llama-server
@@ -1287,7 +1922,10 @@ mod tests {
     fn in_service_descendants_are_never_orphans() {
         // core 100 -> shim 200 -> engine 300
         let parents = ptable(&[(300, 200), (200, 100)]);
-        assert!(descends_from(&parents, 300, &[100]), "grandchild is in service");
+        assert!(
+            descends_from(&parents, 300, &[100]),
+            "grandchild is in service"
+        );
         assert!(descends_from(&parents, 200, &[100]));
         assert!(descends_from(&parents, 100, &[100]), "the core itself");
     }
@@ -1312,7 +1950,10 @@ mod tests {
     #[test]
     fn a_cyclic_parent_chain_terminates() {
         let parents = ptable(&[(1, 2), (2, 3), (3, 1)]);
-        assert!(!descends_from(&parents, 1, &[999]), "must terminate, not hang");
+        assert!(
+            !descends_from(&parents, 1, &[999]),
+            "must terminate, not hang"
+        );
         // A cycle that CONTAINS a kept pid still resolves as in-service.
         assert!(descends_from(&parents, 1, &[3]));
     }
@@ -1462,47 +2103,6 @@ mod tests {
         assert!(help.contains("<integer>"), "type label: {help}");
     }
 
-    // what this catches (#194, 2026-08-01 Windows-node incident): the deploy receipt must
-    // NEVER pass soft. Every gap — a running core that reports no buildSha (pre-#194 =
-    // stale), an 'unknown' provenance, an outright SHA mismatch — is an ERROR naming both
-    // SHAs and both identities, and the success line only appears on a REAL match. A
-    // regression that turns any of these back into a warning + Ok re-creates "core ready"
-    // as a false deploy receipt.
-    #[test]
-    fn deploy_verdict_never_passes_soft() {
-        let running = "socket=/tmp/x.sock, pid(s) 42, image /t/debug/continuum-core-server";
-
-        // real match (including short-vs-long SHA abbreviation drift) → the ONE success line
-        let ok = deploy_verdict(Some("abc123f"), "abc123f", "git HEAD of this checkout", running)
-            .expect("matching SHAs verify");
-        assert!(ok.contains("✅ deploy verified"), "got {ok}");
-        assert!(ok.contains("abc123f"), "names the build: {ok}");
-        assert!(
-            deploy_verdict(Some("abc123f00d"), "abc123f", "src", running).is_ok(),
-            "prefix-tolerant across git --short abbreviation drift"
-        );
-
-        // mismatch → loud, names BOTH SHAs and BOTH identities, never a success glyph
-        let err = deploy_verdict(Some("dead111"), "beef222", "artifact /usr/local/bin/x", running)
-            .expect_err("mismatch must fail");
-        for needle in ["dead111", "beef222", running, "/usr/local/bin/x", "MISMATCH"] {
-            assert!(err.contains(needle), "error names {needle}: {err}");
-        }
-        assert!(!err.contains('✅'), "no success glyph in a failure: {err}");
-
-        // running core has no buildSha at all (pre-#194 binary still serving) → stale, loud
-        let err = deploy_verdict(None, "beef222", "src", running).expect_err("no sha = stale");
-        assert!(err.contains("MISMATCH") && err.contains("beef222"), "got {err}");
-
-        // 'unknown' on either side is unverifiable — never a pass
-        assert!(deploy_verdict(Some("unknown"), "beef222", "src", running).is_err());
-        assert!(deploy_verdict(Some("dead111"), "unknown", "src", running).is_err());
-
-        // sha_matches never matches junk (empty, non-hex, too short to be credible)
-        assert!(!sha_matches("", ""));
-        assert!(!sha_matches("unknown", "unknown"));
-        assert!(!sha_matches("abc", "abc"));
-    }
 
     // what this catches (#194): the artifact resolution ORDER is a shared contract with
     // tools/scripts/install-service.sh::resolve_core_bin — installed locations before the
@@ -1527,7 +2127,9 @@ mod tests {
         );
         #[cfg(windows)]
         {
-            assert!(shown.iter().all(|p| p.ends_with("continuum-core-server.exe")));
+            assert!(shown
+                .iter()
+                .all(|p| p.ends_with("continuum-core-server.exe")));
             assert!(
                 !shown.iter().any(|p| p.starts_with("/usr/local/bin")),
                 "no unix-only install location on Windows"
@@ -1536,7 +2138,8 @@ mod tests {
         // explicit CARGO_TARGET_DIR overrides the default cache location
         let c = core_artifact_candidates("/home/u", Some("/tgt"));
         assert!(
-            c.iter().any(|p| p.starts_with("/tgt/release")) && c.iter().any(|p| p.starts_with("/tgt/debug")),
+            c.iter().any(|p| p.starts_with("/tgt/release"))
+                && c.iter().any(|p| p.starts_with("/tgt/debug")),
             "CARGO_TARGET_DIR is honored: {c:?}"
         );
     }
@@ -1610,7 +2213,8 @@ fn usage_legacy() -> String {
     "usage: continuum <start|reboot|stop|command> [json | --key value ...]\n\
      \n\
      Lifecycle:\n  \
-       continuum start                 build + run the headless Rust core (detached), wait until ready\n  \
+       continuum start                 build + run the headless Rust core (detached), wait until ready;\n                                       refuses if a core is running but not answering (a second core on\n                                       one socket makes results non-deterministic)\n  \
+       continuum start --force         reclaim those unresponsive core(s) first, then start\n  \
        continuum reboot                rebuild + relaunch, replacing any running core (~0 downtime);\n                                       verifies the RUNNING core's build SHA before reporting success\n  \
        continuum stop                  stop the running core\n  \
        continuum deploy-verify         prove the running core's build SHA matches the deployed source\n\

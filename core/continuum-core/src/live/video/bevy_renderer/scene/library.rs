@@ -48,7 +48,10 @@ fn embedded_for(reference: &str) -> Option<(&'static str, &'static str)> {
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or(reference);
-    EMBEDDED_SCENES.iter().find(|(name, _)| *name == base).copied()
+    EMBEDDED_SCENES
+        .iter()
+        .find(|(name, _)| *name == base)
+        .copied()
 }
 
 /// Comma-joined list of every embedded scene basename, for fail-loud
@@ -57,13 +60,17 @@ fn embedded_names() -> String {
     if EMBEDDED_SCENES.is_empty() {
         return "(none committed yet)".to_string();
     }
-    EMBEDDED_SCENES.iter().map(|(name, _)| *name).collect::<Vec<_>>().join(", ")
+    EMBEDDED_SCENES
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Parse RON text into a [`SceneDescription`] and validate its schema version.
 fn parse_and_validate(origin: &str, text: &str) -> Result<SceneDescription, String> {
-    let scene: SceneDescription = ron::from_str(text)
-        .map_err(|e| format!("scene '{origin}' is not valid scene RON: {e}"))?;
+    let scene: SceneDescription =
+        ron::from_str(text).map_err(|e| format!("scene '{origin}' is not valid scene RON: {e}"))?;
     if scene.version != SCENE_DESCRIPTION_VERSION {
         return Err(format!(
             "scene '{origin}' is schema version {found}, but this build reads \
@@ -144,8 +151,14 @@ mod tests {
     #[test]
     fn unknown_reference_fails_loud() {
         let err = resolve_scene("does/not/exist/nope.ron").unwrap_err();
-        assert!(err.contains("nope.ron"), "error must name the reference: {err}");
-        assert!(err.contains("Committed scenes"), "error must list candidates: {err}");
+        assert!(
+            err.contains("nope.ron"),
+            "error must name the reference: {err}"
+        );
+        assert!(
+            err.contains("Committed scenes"),
+            "error must list candidates: {err}"
+        );
     }
 
     // what this catches: a scene authored against a different schema version
@@ -160,7 +173,10 @@ mod tests {
         std::fs::write(&path, ron::ser::to_string(&scene).unwrap()).unwrap();
 
         let err = resolve_scene(path.to_str().unwrap()).unwrap_err();
-        assert!(err.contains("schema version"), "error must cite the version: {err}");
+        assert!(
+            err.contains("schema version"),
+            "error must cite the version: {err}"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

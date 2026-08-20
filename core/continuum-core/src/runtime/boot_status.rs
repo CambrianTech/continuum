@@ -119,7 +119,10 @@ mod tests {
     #[test]
     fn ok_line_uses_check_icon_and_canonical_prefix() {
         let line = format_boot_status_line("probes", BootStatusKind::Ok, "landing at /tmp/p.jsonl");
-        assert_eq!(line, "[continuum-core-server] probes: ✓ landing at /tmp/p.jsonl");
+        assert_eq!(
+            line,
+            "[continuum-core-server] probes: ✓ landing at /tmp/p.jsonl"
+        );
     }
 
     /// What this catches: degraded uses the warn icon (operator distinguishes

@@ -56,7 +56,7 @@
 //! Two concerns, two types.
 
 use crate::persona::airc_source::AircTranscriptReader;
-use airc_lib::{AircError, EventId, EventStream};
+use airc_lib::{AircError, EventId, FilteredEventStream};
 use async_trait::async_trait;
 use uuid::Uuid;
 
@@ -87,18 +87,82 @@ pub trait AircCitizen:
     /// it as part of the persona's tracing span.
     fn peer_id(&self) -> Uuid;
 
-    /// Open a live event stream on the citizen's default room. The
-    /// stream yields every event the citizen sees — including her own
-    /// echoes; consumers self-filter via `peer_id()`. Used by
+    /// Open a live event stream over EVERY room this citizen is
+    /// subscribed to — deliberately NOT narrowed to her default.
+    ///
+    /// This is the substrate's ONE perception surface, and it is the
+    /// non-narrowing one on purpose. airc-lib ships both shapes:
+    /// `Airc::subscribe()` silently narrows to `current_room()` (a
+    /// single channel), while `subscribe_subscribed_filtered()` is
+    /// documented as *"the monitor/hook surface: no hidden narrowing
+    /// to current room"*. Continuum called the narrowing one
+    /// everywhere and the widening one nowhere.
+    ///
+    /// Measured 2026-08-08 on BigMama AND M5, the same shape on both:
+    /// every citizen scope was subscribed to exactly ONE room while
+    /// the operator scope held several (BigMama: citizens in
+    /// `cambriantech`, operator in `cambriantech` + `general`; M5:
+    /// citizens in `general`, operator across five). Same socket, one
+    /// daemon — M5 falsified the scope/fan-out theories directly. So
+    /// every operator message sent to any other room was dropped by
+    /// the daemon's own `Filter::channel`, correctly, and a persona
+    /// who was addressed all evening never perceived a word of it.
+    /// Citizens heard EACH OTHER precisely because they shared one
+    /// room, which is what made the failure look like inattention
+    /// rather than a wire that structurally could not reach them.
+    ///
+    /// The stream yields every event the citizen sees — including her
+    /// own echoes; consumers self-filter via `peer_id()`. Used by
     /// [`AircPersonaConversation::next_message`](super::airc_persona_conversation::AircPersonaConversation)
     /// to drive the service loop.
-    async fn subscribe(&self) -> Result<EventStream, AircError>;
+    async fn subscribe_all_rooms(&self) -> Result<FilteredEventStream, AircError>;
 
-    /// Publish a text message under the citizen's identity in her
-    /// default room. Returns the daemon-assigned event id so callers
-    /// can correlate with the subscribe stream's echo (not required
-    /// today, but the wire shape preserves it).
-    async fn say(&self, text: &str) -> Result<EventId, AircError>;
+    /// Watch receiver whose value increments whenever this citizen's room
+    /// membership GROWS at runtime (a join after spawn) — the perception
+    /// stream's rebuild cue (P0 20b44763). airc-lib's
+    /// `subscribe_subscribed_filtered` snapshots the subscribed-channel
+    /// list ONCE at subscribe time, so a room joined later (benchmark
+    /// dispatch moving assignees into a fresh run room) never enters an
+    /// existing stream — the run room is born deaf. Consumers select on
+    /// this beside the stream and re-open it (via
+    /// [`subscribe_all_rooms`](Self::subscribe_all_rooms)) when the epoch
+    /// moves. The sibling of the 2026-08-08 narrowing bug documented on
+    /// `subscribe_all_rooms` above: that one snapshotted the WRONG SET,
+    /// this one snapshots the right set at the WRONG TIME.
+    ///
+    /// Default: a receiver whose sender is already dropped — membership
+    /// never changes for stubs/fixtures. Consumers MUST treat a closed
+    /// channel as "never fires" (park on `pending()`), never as an event,
+    /// or a stub conversation would busy-loop on `changed() == Err`.
+    fn membership_epoch(&self) -> tokio::sync::watch::Receiver<u64> {
+        tokio::sync::watch::channel(0u64).1
+    }
+
+    /// Publish a text message under the citizen's identity INTO A
+    /// SPECIFIC ROOM — normally the room the turn being answered
+    /// arrived in ([`IncomingMessage::room_id`](super::service_loop::IncomingMessage),
+    /// already carried since A.6).
+    ///
+    /// Answering is room-targeted for the same reason perception is
+    /// non-narrowing, and the two are one fix, not two: widening
+    /// perception while replies still went to `current_room()` would
+    /// let a persona hear a question in one room and answer it in
+    /// another — a strictly worse failure than silence, because it
+    /// looks like a non-sequitur rather than a missing wire.
+    ///
+    /// `room_id` of `Uuid::nil()` means the source predates room
+    /// stamping (scripted / test conversations, per the documented
+    /// `IncomingMessage::room_id` contract) and routes to the
+    /// citizen's default room. That is the existing typed contract
+    /// being honoured, not a fallback for an unroutable id: a real
+    /// wire event always carries its room, and a NAMED room that
+    /// cannot be resolved fails loud out of airc-lib rather than
+    /// quietly landing somewhere else.
+    ///
+    /// Returns the daemon-assigned event id so callers can correlate
+    /// with the subscribe stream's echo (not required today, but the
+    /// wire shape preserves it).
+    async fn say_in(&self, room_id: Uuid, text: &str) -> Result<EventId, AircError>;
 
     /// #170: publish ONE ephemeral streaming token chunk (typing-indicator
     /// class, NOT durable transcript) via airc-lib's `publish_stream_chunk`.
@@ -108,12 +172,99 @@ pub trait AircCitizen:
     /// VISIBLE). Default no-op — only the production runtime streams; scripted /
     /// stub citizens don't. Returns `Ok(())` (the event id isn't needed by the
     /// forwarder).
-    async fn publish_stream_chunk(
-        &self,
-        _chunk: &airc_lib::StreamChunk,
-    ) -> Result<(), AircError> {
+    async fn publish_stream_chunk(&self, _chunk: &airc_lib::StreamChunk) -> Result<(), AircError> {
         Ok(())
     }
+}
+
+/// THE implementation of [`AircCitizen::subscribe_all_rooms`] over a
+/// raw airc handle — every impl that wraps an `Airc` calls this one
+/// rather than re-deciding which subscribe shape to use.
+///
+/// The whole defect this fixes was two shapes existing and continuum
+/// picking the narrowing one at every call site independently. Making
+/// the choice ONCE is what stops it drifting back, so a future citizen
+/// impl inherits the right answer instead of re-choosing.
+pub(crate) async fn subscribe_every_room(
+    airc: &airc_lib::Airc,
+) -> Result<FilteredEventStream, AircError> {
+    // #445: liveness beacons were 84% of a persona subscription's inbound
+    // (measured 2026-08-15: 149 of 177 events in the window, 100% discarded
+    // post-decode as no_continuum_body_hint). Heartbeats already stamp their
+    // class header at publish, so exclude them at the ROUTER — they never
+    // cross the socket, never cost a decode. Exclusion, never an allowlist:
+    // unstamped events keep flowing, so nothing a publisher hasn't classified
+    // yet can be silently dropped. The same filter still applies client-side
+    // on the in-process (non-daemon) fallback, which has no router.
+    let mut filter = airc_lib::EventFilter::default();
+    filter.headers_filter = airc_core::HeaderFilter::Not(Box::new(airc_core::HeaderFilter::Has {
+        key: airc_lib::HEADER_HEARTBEAT_KIND.to_string(),
+    }));
+    // #445 second cut (measured 2026-08-16, post daemon-heal): with delivery
+    // restored, EphemeralLatest projection re-publishes fanned to EVERY persona
+    // subscription (router counters: matched=68 per publish) and 100% were
+    // discarded as non_chat_schema — 1,196 decode-and-drop events in minutes.
+    // This pump's contract is PERCEPTUAL ROOM TURNS + work events (#146/#177/
+    // #450), and both of those are Durable-class by construction (a message or
+    // board mutation that didn't persist would be a worse bug than a missed
+    // fanout). So attach ROUTER-SIDE as a Durable-only consumer — the shape
+    // `subscribe_subscribed_delivery` was built for; its doc cites this exact
+    // persona measurement.
+    //
+    // FOR WHOEVER EXTENDS THIS (read before widening):
+    // - If a persona ever needs an ephemeral signal (peer stream chunks, live
+    //   presence), do NOT widen this delivery list — those belong to their own
+    //   consumer with its own narrow attach (positron/TTS taps StreamChunk,
+    //   roster taps presence). One subscription per consumer shape; widening
+    //   the perception pump re-creates the decode-everything flood this line
+    //   removes (#297 is what happens next: personas deaf under their own
+    //   fan-in).
+    // - If a NEW durable event class starts flooding, the fix is a class
+    //   header at ITS publisher + a `HeaderFilter::Not` arm here (the
+    //   heartbeat exclusion above is the template), never client-side
+    //   filtering after a paid decode.
+    airc.subscribe_subscribed_delivery(filter, Some(vec![airc_ipc::IpcDelivery::Durable]))
+        .await
+}
+
+/// Where a reply for `room_id` should be published — the ONE place
+/// that decision is made, extracted so it can be asserted without an
+/// airc daemon.
+///
+/// Nil = the documented "source predates room stamping" contract
+/// (scripted / test conversations) → her default room. A real wire
+/// turn always carries its room.
+///
+/// Everything else routes by the channel id itself: `RoomByName`
+/// resolves a channel NAME *or* the channel id a caller already holds,
+/// and refuses to auto-join. That refusal is the safety property —
+/// answering can never silently change which rooms she belongs to, and
+/// a room she cannot address fails loud instead of the reply landing
+/// somewhere she was never spoken to.
+pub(crate) fn publish_target_for(room_id: Uuid) -> airc_lib::PublishTarget {
+    if room_id.is_nil() {
+        airc_lib::PublishTarget::CurrentRoom
+    } else {
+        airc_lib::PublishTarget::RoomByName(room_id.to_string())
+    }
+}
+
+/// THE implementation of [`AircCitizen::say_in`] over a raw airc
+/// handle. Same reason as [`subscribe_every_room`]: the nil-room
+/// contract and the no-auto-join publish target are decided once.
+pub(crate) async fn publish_text_in_room(
+    airc: &airc_lib::Airc,
+    room_id: Uuid,
+    text: &str,
+) -> Result<EventId, AircError> {
+    airc.publish(
+        publish_target_for(room_id),
+        airc_protocol::FrameKind::Message,
+        airc_core::Body::text(text),
+        airc_core::Headers::default(),
+    )
+    .await
+    .map(|receipt| receipt.event_id)
 }
 
 /// Test fixture implementing [`AircCitizen`] without standing up the
@@ -144,11 +295,9 @@ impl StubAircCitizen {
     /// [[test-fixtures-are-system-primitives]] — every supervisor
     /// test that exercises materialize_adapters without a real airc
     /// daemon leases this closure shape.
-    pub fn fresh_lookup(
-    ) -> impl Fn(Uuid) -> Option<std::sync::Arc<dyn AircCitizen>> + Clone {
+    pub fn fresh_lookup() -> impl Fn(Uuid) -> Option<std::sync::Arc<dyn AircCitizen>> + Clone {
         |_pid| {
-            Some(std::sync::Arc::new(Self::new(Uuid::new_v4()))
-                as std::sync::Arc<dyn AircCitizen>)
+            Some(std::sync::Arc::new(Self::new(Uuid::new_v4())) as std::sync::Arc<dyn AircCitizen>)
         }
     }
 }
@@ -173,6 +322,7 @@ impl crate::persona::room_roster_source::AircRosterReader for StubAircCitizen {
         &self,
         _within: std::time::Duration,
         _window: usize,
+        _room: Option<uuid::Uuid>,
     ) -> Result<Vec<airc_lib::RoomMember>, AircError> {
         // No daemon in tests → no presence. RAG runs through cleanly
         // with an empty roster (no [Present in this room] block).
@@ -184,6 +334,7 @@ impl crate::persona::room_roster_source::AircRosterReader for StubAircCitizen {
 impl crate::persona::room_doctrine_source::AircDoctrineReader for StubAircCitizen {
     async fn room_doctrine(
         &self,
+        _room: Option<uuid::Uuid>,
     ) -> Result<Option<airc_core::doctrine::RoomDoctrinePublished>, AircError> {
         // No daemon in tests → no published doctrine. Cognition runs
         // through cleanly with no [Room operating doctrine] block.
@@ -202,9 +353,7 @@ impl crate::persona::active_work_source::AircWorkReader for StubAircCitizen {
 
 #[async_trait]
 impl crate::persona::wall_source::WallReader for StubAircCitizen {
-    async fn wall_posts(
-        &self,
-    ) -> Result<Vec<airc_core::doctrine::WallPostPublished>, AircError> {
+    async fn wall_posts(&self) -> Result<Vec<airc_core::doctrine::WallPostPublished>, AircError> {
         // No daemon in tests → no pinned wall posts. Cognition runs through
         // cleanly with no [room-board] grounding block.
         Ok(vec![])
@@ -248,24 +397,27 @@ impl AircCitizen for StubAircCitizen {
         self.peer_id
     }
 
-    async fn subscribe(&self) -> Result<EventStream, AircError> {
-        // No service-loop test drives the stub's subscribe — the
-        // service loop receives messages through StubConversation
-        // directly, never through the citizen's stream. If a future
-        // test ever wires the stub into the conversation, this panics
-        // visibly per [[no-fallbacks-ever]] rather than silently
-        // returning an empty stream or fabricating an AircError
-        // variant that doesn't fit ("Transport"/"Route"/etc).
-        unreachable!(
-            "StubAircCitizen::subscribe must not be called — \
-             service-loop tests should drive the loop through \
-             StubConversation directly, not through the citizen handle"
-        );
+    async fn subscribe_all_rooms(&self) -> Result<FilteredEventStream, AircError> {
+        // This USED to `unreachable!()` on the premise that nothing drives the
+        // stub's subscribe — true when it was written, false since #398 slice 3
+        // (bf11a66a7) gave `PersonaSupervisor::materialize` a subscribe call to
+        // wire the doctrine/wall cache invalidators. Five supervisor tests have
+        // been panicking here ever since; the assertion outlived its premise.
+        //
+        // Returning `Transport` rather than an empty stream is the honest answer
+        // and NOT a fallback: a stub has no transport, and that is exactly the
+        // condition the caller already handles explicitly — it keeps both sources
+        // uncached ("correct, just slow") and logs loud. So the supervisor tests
+        // now exercise the real degradation branch instead of dying, and a stub
+        // still never pretends to carry a live stream.
+        Err(AircError::Transport(
+            "StubAircCitizen has no transport — no event stream to subscribe to".to_string(),
+        ))
     }
 
-    async fn say(&self, _text: &str) -> Result<EventId, AircError> {
+    async fn say_in(&self, _room_id: Uuid, _text: &str) -> Result<EventId, AircError> {
         unreachable!(
-            "StubAircCitizen::say must not be called — \
+            "StubAircCitizen::say_in must not be called — \
              service-loop tests should reply through StubConversation, \
              not through the citizen handle"
         );
@@ -286,11 +438,78 @@ mod tests {
         assert!(events.is_empty());
     }
 
+    // what this catches: the stub must REFUSE to subscribe, and must refuse in the
+    // shape the caller already handles. It used to panic, on the premise that nothing
+    // called it — false since #398 slice 3 gave PersonaSupervisor::materialize a
+    // subscribe call, which killed 5 supervisor tests for as long as that premise
+    // stood. An `Err` keeps the refusal honest AND lets the caller take its documented
+    // degradation path (sources stay uncached, logged loud). What must never happen is
+    // an Ok(empty stream): that would look like a live subscription that silently never
+    // invalidates — the actual fallback.
+    // what this catches: the default `membership_epoch` contract (P0 20b44763) —
+    // a CLOSED receiver (sender already dropped). The conversation's select loop
+    // parks on `pending()` when `changed()` errs; if a future default swapped to
+    // a live-but-never-moving channel (or a consumer treated Err as an event),
+    // stub-driven conversations would either deadlock waiting on a phantom
+    // membership change or busy-loop resubscribing. Closed = "membership never
+    // changes", and this pins that both ways.
     #[tokio::test]
-    #[should_panic(expected = "service-loop tests should drive the loop")]
-    async fn stub_subscribe_panics_loudly() {
+    async fn default_membership_epoch_is_a_closed_channel() {
         let stub: Arc<dyn AircCitizen> = Arc::new(StubAircCitizen::new(Uuid::new_v4()));
-        let _ = stub.subscribe().await;
+        let mut rx = stub.membership_epoch();
+        assert!(
+            rx.changed().await.is_err(),
+            "default epoch sender must be dropped — consumers park, never poll"
+        );
+    }
+
+    #[tokio::test]
+    async fn stub_subscribe_refuses_rather_than_faking_a_stream() {
+        let stub: Arc<dyn AircCitizen> = Arc::new(StubAircCitizen::new(Uuid::new_v4()));
+        // `FilteredEventStream` is not Debug, so match rather than `expect_err`.
+        match stub.subscribe_all_rooms().await {
+            Err(AircError::Transport(_)) => {}
+            Err(other) => {
+                panic!("refusal must be Transport (what the caller branches on), got: {other:?}")
+            }
+            Ok(_) => panic!("a stub has no transport — it must not hand back a stream"),
+        }
+    }
+
+    // what this catches: a reply addressed to the room that asked, rather than
+    // to the citizen's ambient default. Measured 2026-08-08 on BigMama AND M5:
+    // citizens were subscribed to exactly ONE room while the operator held
+    // several, so operator messages were dropped by the daemon's own channel
+    // filter and personas looked inattentive when they were structurally deaf.
+    // Widening perception without this half is WORSE than the original bug —
+    // she would hear a question in one room and answer it to a different
+    // audience, which reads as a non-sequitur rather than a missing wire.
+    // A regression that collapsed this back to `CurrentRoom` would be invisible
+    // on a single-room box and only surface once citizens are convened (#54).
+    #[test]
+    fn a_reply_targets_the_room_that_asked_not_the_default() {
+        let asked_in = Uuid::new_v4();
+        assert_eq!(
+            publish_target_for(asked_in),
+            airc_lib::PublishTarget::RoomByName(asked_in.to_string()),
+            "a stamped arrival room must route the reply BY THAT ROOM"
+        );
+    }
+
+    // what this catches: the nil-room contract. `IncomingMessage::room_id` is
+    // nil only for sources that predate room stamping (scripted / test
+    // conversations); that means "no room was stated", which resolves to her
+    // default. It must NOT become `RoomByName("00000000-0000-…")`, a room that
+    // exists nowhere — that would turn every scripted turn into a publish error
+    // instead of an ordinary reply, and it is the exact shape a "simplify the
+    // branch away" refactor produces.
+    #[test]
+    fn a_nil_room_means_unstated_not_a_room_named_nil() {
+        assert_eq!(
+            publish_target_for(Uuid::nil()),
+            airc_lib::PublishTarget::CurrentRoom,
+            "nil is the absence of a stated room, never a room whose name is nil"
+        );
     }
 
     /// The whole point of this refactor: `Arc<dyn AircCitizen>` should

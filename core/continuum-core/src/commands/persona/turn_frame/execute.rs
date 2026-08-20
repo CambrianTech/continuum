@@ -242,6 +242,11 @@ crate::action_command! {
         // command-seeded message is put TO the persona, so we withhold the silent-PASS
         // hatch — the same exam-is-directed measurement control the eval driver documents
         // (a structural harness fact fed to the mind, never a filter on her output).
+        // Per-frame causal thread: this surface executes ONE settle step per
+        // invocation, so the chain starts fresh each frame. Cross-frame
+        // CausedBy linking (frame N+1's act → frame N's) needs the chain to
+        // live with the frame session — CAUSAL-MEMORY-GRAPH.md follow-on.
+        let chain = crate::cognition::act_observe::ActChain::new();
         let (step, metrics) = crate::cognition::act_observe::settle_step(
             &cycle,
             burst,
@@ -250,6 +255,7 @@ crate::action_command! {
             crate::cognition::workspace::TurnFraming::message(true),
             // One-shot directed tick: a fresh ask, so fuller grounding.
             crate::cognition::workspace::Situation::FreshContext,
+            &chain,
         )
         .await;
 
@@ -315,7 +321,7 @@ mod tests {
     // inbox. NOTE: this seeds only the command-side inbox (the deterministic doorbell) —
     // it deliberately does NOT register a live WorkspaceCycle in persona_workspace::global()
     // (that needs a real adapter + model). So a turn WITH messages here exercises the
-    // not-hosted fail-loud path; the real settle_step outcome is validated live via `cu`.
+    // not-hosted fail-loud path; the real settle_step outcome is validated live via `uu`.
     fn command_with_persona(persona_id: Uuid) -> (TurnExecute, Arc<CognitionState>) {
         let rag_engine = Arc::new(RagEngine::new());
         let state = Arc::new(CognitionState::new(rag_engine.clone()));
@@ -323,16 +329,24 @@ mod tests {
             persona_id,
             PersonaCognition::new(persona_id, "Test Persona".to_string(), rag_engine),
         );
-        (TurnExecute { state: state.clone() }, state)
+        (
+            TurnExecute {
+                state: state.clone(),
+            },
+            state,
+        )
     }
 
     fn enqueue_message(state: &CognitionState, persona_id: Uuid, content: &str, timestamp: u64) {
-        let persona = state.personas.get(&persona_id).expect("test persona exists");
+        let persona = state
+            .personas
+            .get(&persona_id)
+            .expect("test persona exists");
         persona.inbox.enqueue(InboxMessage {
             id: Uuid::new_v4(),
             room_id: Uuid::new_v4(),
             sender_id: Uuid::new_v4(),
-            sender_name: "Joel".to_string(),
+            sender_name: "Operator".to_string(),
             sender_type: SenderType::Human,
             content: content.to_string(),
             timestamp,
@@ -381,7 +395,10 @@ mod tests {
             .await
             .expect("absent persona is a no-op, not an error");
         assert!(out.replay_record.is_none(), "no inbox → null replayRecord");
-        assert!(out.inference_response.is_none(), "no inbox → null inferenceResponse");
+        assert!(
+            out.inference_response.is_none(),
+            "no inbox → null inferenceResponse"
+        );
     }
 
     // what this catches: an empty inbox short-circuits to the null pair BEFORE resolving
@@ -395,7 +412,10 @@ mod tests {
             .run(&Ctx::default(), params(persona_id))
             .await
             .expect("empty drain is a no-op, not an error");
-        assert!(out.replay_record.is_none(), "empty drain → null replayRecord");
+        assert!(
+            out.replay_record.is_none(),
+            "empty drain → null replayRecord"
+        );
         assert!(
             out.inference_response.is_none(),
             "empty drain → null inferenceResponse (brain never resolved)"
@@ -421,7 +441,10 @@ mod tests {
         match err {
             CommandError::Invalid(msg) => {
                 assert!(msg.contains("not hosted"), "got: {msg}");
-                assert!(msg.contains(&persona_id.to_string()), "must name the persona: {msg}");
+                assert!(
+                    msg.contains(&persona_id.to_string()),
+                    "must name the persona: {msg}"
+                );
             }
             other => panic!("expected Invalid naming not-hosted, got {other:?}"),
         }
@@ -454,7 +477,10 @@ mod tests {
         // No metrics ⇒ no metrics key (never a fabricated zero-cost row).
         let passed = settle_step_to_json(&SettleStep::Passed, None);
         assert_eq!(passed["outcome"], "passed");
-        assert!(passed.get("metrics").is_none(), "absent metrics must not synthesize a row");
+        assert!(
+            passed.get("metrics").is_none(),
+            "absent metrics must not synthesize a row"
+        );
 
         // A FAILED model call projects a distinct, NAMED `inferenceFailed` outcome —
         // never a serene `passed`. This is what lets the sweep harness tell an infra

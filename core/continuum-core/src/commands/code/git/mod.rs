@@ -7,7 +7,7 @@
 //! stringly `match` — dispatchable, but with no descriptor in the registry, so a
 //! persona was never OFFERED git as a tool. A "coder" with no `git status`, no
 //! `commit`. As typed commands each gets a descriptor (so it appears in the persona
-//! tool surface, the grid ACL, codegen, `cu`) AND routes through the O(1) lock-free
+//! tool surface, the grid ACL, codegen, `uu`) AND routes through the O(1) lock-free
 //! typed path. The wire name mirrors the file path — `commands/code/git/status.rs`
 //! ⟺ `code/git/status` — so the source tree IS the namespace a persona reads.
 //!
@@ -75,12 +75,24 @@ where
 /// shared `Arc<CodeState>`.
 pub fn command_objects(state: Arc<CodeState>) -> Vec<Arc<dyn DynCommand>> {
     vec![
-        Arc::new(CodeGitStatus { state: state.clone() }),
-        Arc::new(CodeGitDiff { state: state.clone() }),
-        Arc::new(CodeGitLog { state: state.clone() }),
-        Arc::new(CodeGitAdd { state: state.clone() }),
-        Arc::new(CodeGitCommit { state: state.clone() }),
-        Arc::new(CodeGitPush { state: state.clone() }),
+        Arc::new(CodeGitStatus {
+            state: state.clone(),
+        }),
+        Arc::new(CodeGitDiff {
+            state: state.clone(),
+        }),
+        Arc::new(CodeGitLog {
+            state: state.clone(),
+        }),
+        Arc::new(CodeGitAdd {
+            state: state.clone(),
+        }),
+        Arc::new(CodeGitCommit {
+            state: state.clone(),
+        }),
+        Arc::new(CodeGitPush {
+            state: state.clone(),
+        }),
         Arc::new(CodeGitApply { state }),
     ]
 }

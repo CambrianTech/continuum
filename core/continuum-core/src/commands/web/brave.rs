@@ -150,7 +150,8 @@ mod tests {
     // an empty hit list, never a parse error — an empty search is legitimate.
     #[test]
     fn no_web_results_is_empty_not_error() {
-        let parsed: BraveResp = serde_json::from_str(r#"{"query":{"original":"x"}}"#).expect("parse");
+        let parsed: BraveResp =
+            serde_json::from_str(r#"{"query":{"original":"x"}}"#).expect("parse");
         assert!(parsed.web.is_none());
     }
 }

@@ -208,7 +208,10 @@ pub struct PriorContribution {
 /// can dispatch on a canonical enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/LeverName.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/LeverName.ts"
+)]
 pub enum LeverName {
     RequestDeeperAnalysis,
     EscalateToOwnThinkPass,
@@ -227,7 +230,10 @@ pub enum LeverName {
 /// helper structs in `lever_evaluator.rs` cast to the right shape).
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/LeverCall.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/LeverCall.ts"
+)]
 pub struct LeverCall {
     #[ts(type = "string")]
     pub persona_id: Uuid,

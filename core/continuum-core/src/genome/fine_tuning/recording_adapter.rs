@@ -143,10 +143,7 @@ impl FineTuningAdapter for RecordingFineTuningAdapter {
         }
     }
 
-    async fn create_job(
-        &self,
-        request: TrainingJobRequest,
-    ) -> Result<JobHandle, FineTuningError> {
+    async fn create_job(&self, request: TrainingJobRequest) -> Result<JobHandle, FineTuningError> {
         self.captures.lock().unwrap().push(request.clone());
         Ok(JobHandle {
             provider_id: RECORDING_PROVIDER_ID.to_string(),
@@ -177,9 +174,7 @@ impl FineTuningAdapter for RecordingFineTuningAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::genome::fine_tuning::types::{
-        TrainingDataset, TrainingExample, TrainingSource,
-    };
+    use crate::genome::fine_tuning::types::{TrainingDataset, TrainingExample, TrainingSource};
 
     fn ex(p: &str, c: &str) -> TrainingExample {
         TrainingExample {

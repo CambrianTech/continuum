@@ -313,14 +313,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => {}
         }
     }
-    if args.len() < 2 {
-        eprintln!("Usage: {} [--mode=<MODE>] <socket-path>", args[0]);
-        eprintln!("Example: {} /tmp/continuum-core.sock", args[0]);
-        eprintln!("Try `{} --help` for more.", args[0]);
-        std::process::exit(1);
-    }
-
-    let socket_path = args[1].clone();
+    // argv[1] wins; otherwise resolve the socket the SAME way every client does.
+    //
+    // This binary used to be the one component in the tree that hand-rolled its own
+    // socket resolution — argv or die — while `continuum`, `continuum-mcp` and every
+    // library caller went through `endpoint_paths::core_socket_path()` (which honours
+    // `CONTINUUM_CORE_SOCKET`, then the platform default). That disagreement is not
+    // cosmetic: `launch_core` communicated the socket over exactly that env var and
+    // omitted the positional, so the server exited 1 with its usage text ~2s into every
+    // `start`/`reboot` on a machine with an installed binary. The launcher's bug is
+    // fixed on its side too, but a resolver that everyone else shares and this process
+    // ignores is a standing invitation to the same defect.
+    let socket_path = match args.get(1) {
+        Some(explicit) => explicit.clone(),
+        None => continuum_core::ipc::endpoint_paths::core_socket_path(),
+    };
 
     info!("🦀 Continuum Core Server starting...");
     info!("   IPC Socket: {socket_path}");

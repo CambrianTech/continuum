@@ -43,43 +43,127 @@ use crate::live::avatar::types::AvatarGender;
 /// they ARE real-sounding names — the Grid's polyglot community
 /// doesn't quarantine its sci-fi citizens.
 const FEMALE_NAMES: &[&str] = &[
-    "Maya", "Quorra", "Yori", "Camille", "Hisako", "Lila", "Idra", "Sara",
-    "Anwen", "Iris", "Asha", "Zara", "Mei", "Inara", "Saoirse", "Octavia",
-    "Ines", "Cyra", "Riva", "Tessa", "Jiya", "Nia", "Astra", "Lumen",
-    "Solenne", "Mira", "Tara", "Esi", "Yuki", "Aliya", "Eda", "Nori",
-    "Mathilde", "Vesna", "Liora", "Anya", "Sofia", "Aria", "Nova", "Vera",
-    "Pia", "Senna", "Aoi", "Nadia", "Renee", "Anais", "Tikva", "Mara",
-    "Paige", "Imani", "Sahar", "Daria", "Tova", "Suri", "Beck", "Niamh",
-    "Linnea", "Yael", "Anika", "Petra",
+    "Maya", "Quorra", "Yori", "Camille", "Hisako", "Lila", "Idra", "Sara", "Anwen", "Iris", "Asha",
+    "Zara", "Mei", "Inara", "Saoirse", "Octavia", "Ines", "Cyra", "Riva", "Tessa", "Jiya", "Nia",
+    "Astra", "Lumen", "Solenne", "Mira", "Tara", "Esi", "Yuki", "Aliya", "Eda", "Nori", "Mathilde",
+    "Vesna", "Liora", "Anya", "Sofia", "Aria", "Nova", "Vera", "Pia", "Senna", "Aoi", "Nadia",
+    "Renee", "Anais", "Tikva", "Mara", "Paige", "Imani", "Sahar", "Daria", "Tova", "Suri", "Beck",
+    "Niamh", "Linnea", "Yael", "Anika", "Petra",
     // Widened pool (#200 follow-up): the name is a cosmetic projection of the unique
     // peer_id — collisions are harmless, but a bigger pool makes births feel varied
     // ([[persona-birth-is-a-first-class-handle-command]]). Kept disjoint from MALE_NAMES
     // (a dual-pool name breaks `gender_from_name`) — pinned by `pools_are_disjoint`.
-    "Naima", "Freya", "Leila", "Priya", "Rania", "Suki", "Delia", "Marisol",
-    "Chiara", "Noor", "Amara", "Sinead", "Talia", "Rosa", "Ingrid", "Fatima",
-    "Elodie", "Kira", "Sana", "Yara", "Dalia", "Bruna", "Aiko", "Livia",
-    "Neve", "Zuri", "Halima", "Ondine", "Mirela", "Saanvi", "Thea", "Lucia",
-    "Esme", "Runa", "Cleo", "Aisha", "Nyla", "Isolde", "Ambika", "Soraya",
+    "Naima", "Freya", "Leila", "Priya", "Rania", "Suki", "Delia", "Marisol", "Chiara", "Noor",
+    "Amara", "Sinead", "Talia", "Rosa", "Ingrid", "Fatima", "Elodie", "Kira", "Sana", "Yara",
+    "Dalia", "Bruna", "Aiko", "Livia", "Neve", "Zuri", "Halima", "Ondine", "Mirela", "Saanvi",
+    "Thea", "Lucia", "Esme", "Runa", "Cleo", "Aisha", "Nyla", "Isolde", "Ambika", "Soraya",
 ];
 
 /// Male-tagged name pool. Same diversity criteria, same blending of
 /// Tron-flavored (Tron, Sark, Clu, Cyrus, Anon, Dyson) with everyone
 /// else.
 const MALE_NAMES: &[&str] = &[
-    "Niko", "Diego", "Tron", "Sark", "Idris", "Pravin", "Sami", "Kaito",
-    "Anders", "Sébastien", "Anil", "Tariq", "Davi", "Jules", "Kenji",
-    "Sigurd", "Casper", "Anwar", "Yusuf", "Mateo", "Caius", "Soren",
-    "Mathis", "Roan", "Cyrus", "Akira", "Levi", "Wren", "Anon", "Felix",
-    "Magnus", "Demetri", "Ozias", "Saul", "Edwin", "Quill", "Indra",
-    "Theo", "Zane", "Otto", "Rafe", "Aris", "Atlas", "Ivar", "Linus",
-    "Erik", "Solomon", "Yuto", "Clu", "Dyson", "Tomi", "Hiroshi", "Senan",
-    "Amari", "Bao", "Vidar", "Eitan", "Pax", "Rhys", "Tiago",
+    "Niko",
+    "Diego",
+    "Tron",
+    "Sark",
+    "Idris",
+    "Pravin",
+    "Sami",
+    "Kaito",
+    "Anders",
+    "Sébastien",
+    "Anil",
+    "Tariq",
+    "Davi",
+    "Jules",
+    "Kenji",
+    "Sigurd",
+    "Casper",
+    "Anwar",
+    "Yusuf",
+    "Mateo",
+    "Caius",
+    "Soren",
+    "Mathis",
+    "Roan",
+    "Cyrus",
+    "Akira",
+    "Levi",
+    "Wren",
+    "Anon",
+    "Felix",
+    "Magnus",
+    "Demetri",
+    "Ozias",
+    "Saul",
+    "Edwin",
+    "Quill",
+    "Indra",
+    "Theo",
+    "Zane",
+    "Otto",
+    "Rafe",
+    "Aris",
+    "Atlas",
+    "Ivar",
+    "Linus",
+    "Erik",
+    "Solomon",
+    "Yuto",
+    "Clu",
+    "Dyson",
+    "Tomi",
+    "Hiroshi",
+    "Senan",
+    "Amari",
+    "Bao",
+    "Vidar",
+    "Eitan",
+    "Pax",
+    "Rhys",
+    "Tiago",
     // Widened pool (#200 follow-up) — see FEMALE_NAMES note. Disjoint from FEMALE_NAMES.
-    "Ravi", "Bjorn", "Dmitri", "Hassan", "Omar", "Nikolai", "Tobias", "Emeka",
-    "Rashid", "Lucas", "Mikael", "Arjun", "Cormac", "Dario", "Elias", "Finnian",
-    "Gideon", "Hamza", "Isamu", "Joaquin", "Kwame", "Lorcan", "Marek", "Nestor",
-    "Osman", "Pietro", "Quinlan", "Ronan", "Silas", "Taavi", "Ulf", "Viktor",
-    "Xavier", "Yannick", "Zoltan", "Amadou", "Ciaran", "Desmond", "Ephraim", "Malik",
+    "Ravi",
+    "Bjorn",
+    "Dmitri",
+    "Hassan",
+    "Omar",
+    "Nikolai",
+    "Tobias",
+    "Emeka",
+    "Rashid",
+    "Lucas",
+    "Mikael",
+    "Arjun",
+    "Cormac",
+    "Dario",
+    "Elias",
+    "Finnian",
+    "Gideon",
+    "Hamza",
+    "Isamu",
+    "Joaquin",
+    "Kwame",
+    "Lorcan",
+    "Marek",
+    "Nestor",
+    "Osman",
+    "Pietro",
+    "Quinlan",
+    "Ronan",
+    "Silas",
+    "Taavi",
+    "Ulf",
+    "Viktor",
+    "Xavier",
+    "Yannick",
+    "Zoltan",
+    "Amadou",
+    "Ciaran",
+    "Desmond",
+    "Ephraim",
+    "Malik",
 ];
 
 /// Pick the persona's name from their identity.
@@ -105,8 +189,11 @@ pub fn agent_name_from_identity(identity: &str) -> &'static str {
         // name isn't locked to a binary presentation (a they/them persona can carry
         // any name). Stable per identity via the same salt.
         AvatarGender::Neutral => {
-            let combined: Vec<&'static str> =
-                FEMALE_NAMES.iter().chain(MALE_NAMES.iter()).copied().collect();
+            let combined: Vec<&'static str> = FEMALE_NAMES
+                .iter()
+                .chain(MALE_NAMES.iter())
+                .copied()
+                .collect();
             *deterministic_pick(identity, &combined, "agent_name")
         }
     }
@@ -217,8 +304,16 @@ mod tests {
     fn pools_are_disjoint_and_deduped() {
         let f: HashSet<&&str> = FEMALE_NAMES.iter().collect();
         let m: HashSet<&&str> = MALE_NAMES.iter().collect();
-        assert_eq!(f.len(), FEMALE_NAMES.len(), "duplicate name within FEMALE_NAMES");
-        assert_eq!(m.len(), MALE_NAMES.len(), "duplicate name within MALE_NAMES");
+        assert_eq!(
+            f.len(),
+            FEMALE_NAMES.len(),
+            "duplicate name within FEMALE_NAMES"
+        );
+        assert_eq!(
+            m.len(),
+            MALE_NAMES.len(),
+            "duplicate name within MALE_NAMES"
+        );
         let overlap: Vec<&&str> = FEMALE_NAMES.iter().filter(|n| m.contains(n)).collect();
         assert!(
             overlap.is_empty(),
@@ -233,9 +328,20 @@ mod tests {
         // compile-time-of-test, so future "let me just add a default"
         // PRs fail loud here.
         let forbidden = [
-            "helper", "Helper", "helper-ai", "teacher", "Teacher",
-            "assistant", "Assistant", "default", "Default", "anon",
-            "Anonymous", "Persona", "AI", "Bot",
+            "helper",
+            "Helper",
+            "helper-ai",
+            "teacher",
+            "Teacher",
+            "assistant",
+            "Assistant",
+            "default",
+            "Default",
+            "anon",
+            "Anonymous",
+            "Persona",
+            "AI",
+            "Bot",
         ];
         for name in FEMALE_NAMES.iter().chain(MALE_NAMES.iter()) {
             for bad in &forbidden {

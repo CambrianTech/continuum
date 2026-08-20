@@ -19,10 +19,6 @@ use crate::runtime::{CommandExecutor, LateBound};
 use crate::sdk_codegen::DynCommand;
 
 pub mod admit_inbox_message;
-pub mod dream_now;
-pub mod forget_context;
-pub mod redact_memory;
-pub mod observe;
 pub mod cache_message;
 pub mod check_adequacy;
 pub mod check_content_dedup;
@@ -30,8 +26,10 @@ pub mod check_redundancy;
 pub mod classify_domain;
 pub mod configure_rate_limiter;
 pub mod create_engine;
+pub mod dream_now;
 pub mod embed_tools;
 pub mod enqueue_message;
+pub mod forget_context;
 pub mod full_evaluate;
 pub mod generate_recipe;
 pub mod generate_response;
@@ -47,12 +45,14 @@ pub mod has_evaluated;
 pub mod inbox_create;
 pub mod inbox_drain_frame;
 pub mod mark_evaluated;
+pub mod observe;
 pub mod plan_turn_batch;
 pub mod rate_proposals;
 pub mod recall_engrams;
 pub mod record_content;
-pub mod respond;
+pub mod redact_memory;
 pub mod register_domain_keywords;
+pub mod respond;
 pub mod score_interaction;
 pub mod select_model;
 pub mod semantic_search_tools;
@@ -65,15 +65,14 @@ pub mod validate_response_decision;
 pub mod vision_describe;
 
 use admit_inbox_message::AdmitInboxMessage;
-use dream_now::DreamNow;
-use forget_context::ForgetContext;
-use redact_memory::RedactMemory;
 use cache_message::CacheMessage;
 use check_content_dedup::CheckContentDedup;
 use classify_domain::ClassifyDomain;
 use configure_rate_limiter::ConfigureRateLimiter;
 use create_engine::CreateEngine;
+use dream_now::DreamNow;
 use enqueue_message::EnqueueMessage;
+use forget_context::ForgetContext;
 use full_evaluate::FullEvaluate;
 use genome_activate_skill::GenomeActivateSkill;
 use genome_coverage_report::GenomeCoverageReport;
@@ -89,8 +88,9 @@ use inbox_drain_frame::InboxDrainFrame;
 use mark_evaluated::MarkEvaluated;
 use recall_engrams::RecallEngrams;
 use record_content::RecordContent;
-use respond::Respond;
+use redact_memory::RedactMemory;
 use register_domain_keywords::RegisterDomainKeywords;
+use respond::Respond;
 use select_model::SelectModel;
 use set_sleep_mode::SetSleepMode;
 use sync_adapters::SyncAdapters;
@@ -103,7 +103,7 @@ use vision_describe::VisionDescribe;
 /// [`CommandExecutor`] slot (it re-enters the bus to run `ai/generate`), same as the
 /// `chat/*` family. Called from
 /// [`CognitionModule::commands`](crate::modules::cognition::CognitionModule) so they
-/// reach `command_registry()`, the persona tool surface, the ACL, codegen, and `cu`.
+/// reach `command_registry()`, the persona tool surface, the ACL, codegen, and `uu`.
 ///
 /// The stateless oxidizer commands ([`should_respond`], [`check_redundancy`],
 /// [`generate_response`], [`embed_tools`], [`semantic_search_tools`],

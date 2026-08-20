@@ -77,7 +77,9 @@ impl RenderSlot {
 
     /// Borrow an object of concrete type `T` by id, if present and of that type.
     pub fn object_as<T: 'static>(&self, id: &str) -> Option<&T> {
-        self.objects.get(id).and_then(|obj| obj.as_any().downcast_ref::<T>())
+        self.objects
+            .get(id)
+            .and_then(|obj| obj.as_any().downcast_ref::<T>())
     }
 
     /// Mutably borrow an object of concrete type `T` by id.
@@ -97,7 +99,9 @@ impl RenderSlot {
     /// Mutably iterate all objects of concrete type `T` in this scene.
     pub fn objects_of_mut<T: 'static>(&mut self) -> impl Iterator<Item = (&str, &mut T)> {
         self.objects.iter_mut().filter_map(|(id, obj)| {
-            obj.as_any_mut().downcast_mut::<T>().map(|t| (id.as_str(), t))
+            obj.as_any_mut()
+                .downcast_mut::<T>()
+                .map(|t| (id.as_str(), t))
         })
     }
 

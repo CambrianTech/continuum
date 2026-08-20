@@ -9,7 +9,7 @@
 //! persona** ([`RegionContext::for_persona`]). It is **algorithmic and runs
 //! itself** — independent of any "fuzzy" persona cognition — and its state is
 //! **observable + tunable by commands** (`governor/status` here; tuning verbs land
-//! as more commands), so a persona, a human widget, or `cu` all steer it the same
+//! as more commands), so a persona, a human widget, or `uu` all steer it the same
 //! way. That is the whole design: control is inherent because it's commands
 //! ([[control-and-collaboration-are-inherent-in-commands]]).
 //!
@@ -108,7 +108,6 @@ use uuid::Uuid;
 
 use crate::persona::PersonaAircRuntimeRegistry;
 use crate::runtime::governor_bus::{publish_persona_scheduled, PersonaScheduled};
-use crate::system_resources::{PressureLevel, PressureSnapshot};
 use crate::runtime::message_bus::MessageBus;
 use crate::runtime::registry::ModuleRegistry;
 use crate::runtime::{
@@ -117,6 +116,7 @@ use crate::runtime::{
     RegionContext, ServiceModule, ShareController, ORIENTATIONS,
 };
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand};
+use crate::system_resources::{PressureLevel, PressureSnapshot};
 
 /// Governor base cadence. Moderate (memory consolidation is not realtime); the
 /// per-region adaptive cadence (from `CadenceHint`) refines this later. Chosen
@@ -237,10 +237,7 @@ impl SubstrateGovernor {
     /// injected (not discovered) so the boot path owns what runs — add a region by
     /// passing it here; the governor needs no edit. Defaults to the open-loop share
     /// policy and an uncapped budget (every due pair runs); tune via the builders.
-    pub fn new(
-        regions: Vec<Arc<dyn BrainRegion>>,
-        personas: PersonaAircRuntimeRegistry,
-    ) -> Self {
+    pub fn new(regions: Vec<Arc<dyn BrainRegion>>, personas: PersonaAircRuntimeRegistry) -> Self {
         let (snapshot, _) = watch::channel(GovernorSnapshot::default());
         Self {
             regions,
@@ -323,7 +320,9 @@ impl ServiceModule for SubstrateGovernor {
     ) -> Result<CommandResult, String> {
         // The governor's commands are typed objects (see `commands`); nothing is
         // prefix-routed here.
-        Err(format!("substrate-governor: '{command}' is a typed command object"))
+        Err(format!(
+            "substrate-governor: '{command}' is a typed command object"
+        ))
     }
 
     /// One scheduling pass, in two phases:
@@ -349,8 +348,7 @@ impl ServiceModule for SubstrateGovernor {
         // ── Phase 1: collect due pairs, grouped by orientation class ──────────────
         // One lock spanning a purely synchronous loop (no await inside) → released
         // before any region tick. `groups[i]` holds the due pairs for `ORIENTATIONS[i]`.
-        let mut groups: [Vec<(usize, Uuid, Orientation)>; 3] =
-            [Vec::new(), Vec::new(), Vec::new()];
+        let mut groups: [Vec<(usize, Uuid, Orientation)>; 3] = [Vec::new(), Vec::new(), Vec::new()];
         let mut skipped = 0usize;
         {
             let cadence = self.cadence.lock().unwrap();
@@ -492,7 +490,7 @@ impl ServiceModule for SubstrateGovernor {
     }
 
     /// The governor's command surface — observe (and later tune) the daemon. This
-    /// is what makes it steerable by a persona / human / cu identically.
+    /// is what makes it steerable by a persona / human / uu identically.
     fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
         vec![Arc::new(GovernorStatusCommand {
             snapshot: self.snapshot.subscribe(),
@@ -627,7 +625,11 @@ impl ActionCommand for GovernorStatusCommand {
     type Params = GovernorStatusParams;
     type Output = GovernorSnapshot;
 
-    async fn run(&self, _ctx: &Ctx, _p: GovernorStatusParams) -> Result<GovernorSnapshot, CommandError> {
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        _p: GovernorStatusParams,
+    ) -> Result<GovernorSnapshot, CommandError> {
         Ok(self.snapshot.borrow().clone())
     }
 }
@@ -696,8 +698,14 @@ mod tests {
             by.record(*o);
         }
         assert_eq!(by.total(), 10);
-        assert!(by.reactive > by.self_directed, "reactive (7) gets the largest share");
-        assert!(by.self_directed >= by.speciation, "self_directed (2) ≥ speciation (1)");
+        assert!(
+            by.reactive > by.self_directed,
+            "reactive (7) gets the largest share"
+        );
+        assert!(
+            by.self_directed >= by.speciation,
+            "self_directed (2) ≥ speciation (1)"
+        );
     }
 
     // what this catches: cross-pass fairness. When a class is capped, the rotation by tick
@@ -706,18 +714,18 @@ mod tests {
     #[test]
     fn admit_pass_rotates_capped_class_across_ticks() {
         // One class, 4 due pairs, budget admits only 2 → which 2 must rotate with tick.
-        let groups = [
-            group(0, Orientation::Reactive, 4),
-            Vec::new(),
-            Vec::new(),
-        ];
+        let groups = [group(0, Orientation::Reactive, 4), Vec::new(), Vec::new()];
         let shares = OrientationShares::new(1, 1, 0);
         let (pass0, _) = admit_pass(&groups, &shares, Some(2), 0);
         let (pass1, _) = admit_pass(&groups, &shares, Some(2), 1);
         let ids = |v: &[(usize, Uuid, Orientation)]| v.iter().map(|p| p.1).collect::<Vec<_>>();
         assert_eq!(pass0.len(), 2);
         assert_eq!(pass1.len(), 2);
-        assert_ne!(ids(&pass0), ids(&pass1), "rotation serves different members each pass");
+        assert_ne!(
+            ids(&pass0),
+            ids(&pass1),
+            "rotation serves different members each pass"
+        );
     }
 
     // what this catches: a constrained node with speciation OFF (0 tickets) never schedules
@@ -737,9 +745,15 @@ mod tests {
         // The measured signal must show ALL 5 speciation pairs deferred — a 0-ticket
         // class registers as pure unmet demand, exactly what a controller would read to
         // decide whether growth is being starved by policy vs. simply not due.
-        assert_eq!(deferred.get(Orientation::Speciation), 5, "all growth demand deferred");
+        assert_eq!(
+            deferred.get(Orientation::Speciation),
+            5,
+            "all growth demand deferred"
+        );
         assert!(
-            admitted.iter().all(|(_, _, o)| *o != Orientation::Speciation),
+            admitted
+                .iter()
+                .all(|(_, _, o)| *o != Orientation::Speciation),
             "0-ticket class is never admitted"
         );
     }
