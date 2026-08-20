@@ -871,6 +871,52 @@ pub async fn clone_at(instance: &SweInstance, repo_dir: &Path) -> Result<(), Str
     Ok(())
 }
 
+/// Every path a unified diff targets, read off its `+++ b/<path>` headers.
+///
+/// `/dev/null` is skipped (a deletion has no post-image path). Quoted paths — git emits
+/// `+++ "b/odd name.py"` when a name needs escaping — are unquoted, because a path we fail to
+/// recognise is a path we would fail to restore, and a silent miss here reintroduces exactly
+/// the dirty-tree apply this exists to prevent.
+fn diff_target_paths(diff: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in diff.lines() {
+        let Some(rest) = line.strip_prefix("+++ ") else {
+            continue;
+        };
+        // Trailing tab-separated timestamp is legal in unified diffs; git omits it, others don't.
+        let rest = rest.split('\t').next().unwrap_or(rest).trim();
+        let rest = rest.strip_prefix('"').map_or(rest, |r| r.trim_end_matches('"'));
+        if rest == "/dev/null" {
+            continue;
+        }
+        // `b/` prefix under the default `--src-prefix`/`--dst-prefix`; `-p1` strips it.
+        let path = rest.strip_prefix("b/").unwrap_or(rest);
+        if !path.is_empty() && !out.iter().any(|p| p == path) {
+            out.push(path.to_string());
+        }
+    }
+    out
+}
+
+/// Restore the paths a patch targets to their committed state, discarding any working-tree
+/// edits to them. See the call site in the grade path for why this is the test patch's
+/// precondition — in one line: the tests are not the solver's to touch.
+///
+/// A path the patch CREATES does not exist at HEAD; `git checkout` fails on it and that is
+/// correct and harmless, so failures are per-path and non-fatal. The error case we do care
+/// about — a path that exists at HEAD and refuses to restore — surfaces at the apply that
+/// follows, with the patch's own diagnostics.
+async fn restore_paths_to_base(repo_dir: &Path, patch: &str) -> Result<(), String> {
+    let paths = diff_target_paths(patch);
+    if paths.is_empty() {
+        return Ok(());
+    }
+    for path in &paths {
+        let _ = run("git", &["checkout", "HEAD", "--", path], Some(repo_dir)).await;
+    }
+    Ok(())
+}
+
 /// Apply a patch, tolerating the whitespace drift that trips a strict apply.
 pub async fn apply_patch(repo_dir: &Path, text: &str, what: &str) -> Result<(), String> {
     if text.trim().is_empty() {
@@ -1159,7 +1205,26 @@ fn era_sdist_build_deps(repo: &str) -> &'static [&'static str] {
     match repo {
         // pyerfa's sdist build runs `erfa_generator`, which imports jinja2
         // (astropy__astropy-12907 live at dispatch, 2026-08-16).
-        "astropy/astropy" => &["jinja2"],
+        //
+        // numpy is here for a DIFFERENT reason, and it is the one that made every astropy
+        // instance die at dispatch (measured 2026-08-20, a 10-instance Lite round: 6938 and
+        // 7746 both failed env build, 2 of 10 gone before a citizen saw them):
+        //
+        //     File ".../astropy/__init__.py", line 116, in <module>
+        //       _check_numpy()
+        //   ImportError: Numpy version 1.10.0 or later must be installed to use Astropy
+        //
+        // astropy's `setup.py` IMPORTS ITS OWN PACKAGE at build time, and the `-e .` install
+        // below runs `--no-build-isolation` — so the build backend resolves against whatever
+        // is already in the venv, with no PEP-517 scratch env to pull numpy into. numpy is
+        // therefore a BUILD dependency of astropy itself, not merely a runtime one, and the
+        // only place it can be satisfied is here, ahead of `-e .`.
+        //
+        // Still era-pinned like everything else in this pre-install: the version that lands
+        // is the one the instance's own cutoff allows (the two failures above wanted >=1.10
+        // and >=1.13 respectively — both far below any era cap we set), so this widens what
+        // BUILDS without smuggling a modern numpy into a date-pinned subject graph.
+        "astropy/astropy" => &["jinja2", "numpy"],
         _ => &[],
     }
 }
@@ -2551,6 +2616,29 @@ pub async fn grade(
             return verdict;
         }
     }
+    // THE TESTS ARE NOT THE SOLVER'S TO TOUCH. Restore every path the test patch targets to
+    // its pristine base state before applying it. Two things this buys, and the second is the
+    // one that matters more than the ungradeable it fixes:
+    //
+    // 1. The test patch always applies. Measured 2026-08-20 on a live Lite round:
+    //    `pallets__flask-4992` produced a real 1,192-byte patch, and grading died with
+    //    "could not apply test patch — the tree is not what the patch expects", scoring
+    //    UNGRADEABLE. The four-arm ladder in `apply_patch` (exact → ignore-whitespace →
+    //    -C1 → --3way) is a fuzz ladder: it can only rescue an overlap it can still merge,
+    //    and `--3way` additionally needs the patch's pre-image blobs in the object database.
+    //    Fuzzing harder was never the fix; not fighting the solver's edit is.
+    //
+    // 2. A solver CANNOT influence its own grade. Before this, a candidate patch that edited
+    //    a test file either broke the apply (visible, an ungradeable) or — where the edits
+    //    merged — silently graded the solver's OWN tests. That second case is the dangerous
+    //    one precisely because it looks like a clean pass.
+    //
+    // Restoring only the test patch's own paths is the minimum that achieves both: every
+    // source edit the solver made is preserved and is exactly what gets scored.
+    if let Err(e) = restore_paths_to_base(repo_dir, &instance.test_patch).await {
+        verdict.error = Some(format!("could not restore test files to pristine: {e}"));
+        return verdict;
+    }
     if let Err(e) = apply_patch(repo_dir, &instance.test_patch, "test").await {
         verdict.error = Some(e);
         return verdict;
@@ -2640,6 +2728,55 @@ pub async fn grade(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the path parse behind "the tests are not the solver's to touch".
+    // If this under-reads, a test file the solver edited is NOT restored, and the grade either
+    // dies ungradeable (visible) or silently scores the solver's own tests (not visible) —
+    // the second being why this is parsed strictly rather than best-effort. Measured cause:
+    // pallets__flask-4992 graded UNGRADEABLE on a live round, 2026-08-20.
+    #[test]
+    fn diff_target_paths_reads_every_post_image_path() {
+        let diff = "\
+diff --git a/tests/test_cli.py b/tests/test_cli.py
+--- a/tests/test_cli.py
++++ b/tests/test_cli.py
+@@ -1 +1 @@
+-x
++y
+diff --git a/src/flask/app.py b/src/flask/app.py
+--- a/src/flask/app.py
++++ b/src/flask/app.py\t2020-01-01
+@@ -1 +1 @@
+-a
++b
+diff --git a/gone.py b/gone.py
+--- a/gone.py
++++ /dev/null
+diff --git a/odd name.py b/odd name.py
+--- \"a/odd name.py\"
++++ \"b/odd name.py\"
+";
+        let got = diff_target_paths(diff);
+        assert_eq!(
+            got,
+            vec![
+                "tests/test_cli.py".to_string(),
+                "src/flask/app.py".to_string(), // trailing \t timestamp stripped
+                "odd name.py".to_string(),      // quotes stripped
+            ],
+            "a deletion has no post-image path and must not be restored; \
+             a quoted or timestamped header must still yield its path"
+        );
+    }
+
+    // what this catches: an empty/whitespace patch must be a no-op, not a git invocation on
+    // an empty path — the guard that keeps the restore harmless for instances whose test
+    // patch is absent.
+    #[test]
+    fn diff_target_paths_is_empty_for_a_patchless_instance() {
+        assert!(diff_target_paths("").is_empty());
+        assert!(diff_target_paths("\n  \n").is_empty());
+    }
 
     // what this catches: the env installs `-e .` — RUNTIME deps only — and astropy's
     // conftest.py opens with `import hypothesis`, a TEST dep. pytest then dies loading
