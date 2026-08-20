@@ -2428,9 +2428,9 @@ pub(crate) async fn grade_swe(p: SweGradeParams) -> Result<SweGradeResult, Comma
     // with WHY, and an `error` is contractually an ABSENCE, never a tallied failure
     // (see `SweVerdict::error`). One path, so every caller inherits the labelling.
     let verdict = if p.gold.unwrap_or(false) {
-        swe_bench::gold_gate(&instance, &repo).await
+        swe_bench::gold_gate(&instance).await
     } else {
-        swe_bench::grade(&instance, &repo, candidate.as_deref()).await
+        swe_bench::grade(&instance, candidate.as_deref()).await
     };
 
     // PERSIST THE VERDICT before anything else consumes it. Until 2026-08-18 this arm

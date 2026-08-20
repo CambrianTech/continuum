@@ -2539,8 +2539,8 @@ fn compose_failure_excerpt(
 /// failure: it means FAIL_TO_PASS already passed on the pristine tree, so the instance
 /// carries no bug here. Callers must not conflate "this task cannot distinguish a fix"
 /// with "this environment is broken".
-pub async fn gold_gate(instance: &SweInstance, repo_dir: &Path) -> SweVerdict {
-    let mut verdict = grade(instance, repo_dir, Some(&instance.patch)).await;
+pub async fn gold_gate(instance: &SweInstance) -> SweVerdict {
+    let mut verdict = grade(instance, Some(&instance.patch)).await;
     // An env that cannot score its own gold patch is disqualified, and the reason has to
     // survive into the receipt — a bare `resolved: false` here would read downstream as a
     // capability zero, which is the exact confusion this gate exists to end.
@@ -2562,14 +2562,42 @@ pub async fn gold_gate(instance: &SweInstance, repo_dir: &Path) -> SweVerdict {
     verdict
 }
 
-pub async fn grade(
-    instance: &SweInstance,
-    repo_dir: &Path,
-    model_patch: Option<&str>,
-) -> SweVerdict {
+/// The GRADE's own checkout — one stable path per instance, owned by the grading phase and
+/// never shared with a solver.
+///
+/// # A phase owns its path for the phase's whole life (Joel, 2026-08-20)
+///
+/// Grading used to be handed the SOLVER's working tree and mutate it in place:
+/// `reset_worktree` → apply model patch → apply test patch. That makes one path mean different
+/// things at different instants — the citizen's workspace is reset out from under her, carries
+/// a patch she didn't write, and ends in a state neither phase asked for. Every downstream
+/// confusion in this file's history has that shape: `-e .` pinned to whichever tree built the
+/// venv first, pristine `p2p` reading 0/N because the grade imported a dirty workspace, the
+/// "already passes on the pristine tree" gate firing against a tree that was not pristine.
+///
+/// So the grade gets its own directory and builds its own state in it, from the base commit,
+/// every time. The solver's path stays the solver's for the whole recipe. `clone_at` already
+/// clears and re-stages, so the checkout is pristine by construction rather than by a reset we
+/// have to remember to call.
+async fn ensure_grade_checkout(instance: &SweInstance) -> Result<PathBuf, String> {
+    let dir = swe_cache_dir().join("grades").join(&instance.instance_id);
+    clone_at(instance, &dir).await?;
+    Ok(dir)
+}
+
+pub async fn grade(instance: &SweInstance, model_patch: Option<&str>) -> SweVerdict {
     let mut verdict = SweVerdict {
         instance_id: instance.instance_id.clone(),
         ..Default::default()
+    };
+    // The grade's OWN path — see `ensure_grade_checkout`. Shadowed as `repo_dir` so every use
+    // below reads the grade's tree and there is no way to reach a caller's tree from here.
+    let repo_dir = &match ensure_grade_checkout(instance).await {
+        Ok(d) => d,
+        Err(e) => {
+            verdict.error = Some(format!("could not stage the grade checkout: {e}"));
+            return verdict;
+        }
     };
     let f2p = instance.f2p();
     let p2p: Vec<String> = instance.p2p().into_iter().take(P2P_SAMPLE).collect();
