@@ -753,6 +753,36 @@ impl ServingDaemonModule {
     /// plan — reacting to the authority's decision, not deciding). Weak handle so the
     /// observer never keeps the module alive past shutdown. Called once at wiring time,
     /// after the module is Arc-wrapped.
+    /// Tell the memory authority who we are and how big the device is — **before** the planner
+    /// is allowed to run on its tick.
+    ///
+    /// # Why this is wiring-time and not `initialize` (#438, measured 2026-08-19)
+    ///
+    /// `governed_vram_ceiling` budgets serving through
+    /// [`budget_for_replacing`](crate::resources::ResourceDaemon::budget_for_replacing) —
+    /// available PLUS serving's own resident bytes, because a consumer choosing its successor
+    /// releases what it holds. That add-back is what makes a past form of ourself count as OURS
+    /// rather than as an external squeeze. It is keyed on serving being a *registered consumer*:
+    /// with no registration there is no footprint to add back, and the credit silently becomes 0.
+    ///
+    /// These two calls used to live in `initialize`, which the runtime invokes AFTER the module
+    /// is registered — while [`Self::register_planner_on_authority_tick`] attaches the planner at
+    /// wiring time. The authority could therefore tick a plan in the gap, and did: a successor
+    /// core booting on top of its predecessor's resident 27B read `usable_gb = 0` on a 53 GiB
+    /// board for ~0.6 s, because its own 44 GB were filed under nobody. The downshift debounce
+    /// held the plan and nothing was actuated — but a guard covering for a budget that is
+    /// momentarily lying is not the same as the budget being honest
+    /// ([[hand-rolled-ops-are-waste-that-masks-the-real-defect]]).
+    ///
+    /// Ordering, not duplication: `seed_device_vram_prior` is a set-once prior and
+    /// `add_consumer` clears any stale quarantine for the id, so calling this early is safe.
+    /// The device's total VRAM is a static hardware fact available immediately — there is no
+    /// reason to learn it later than the first tick that plans against it.
+    pub fn declare_to_memory_authority(&self) {
+        seed_device_vram_prior(self.gpu.total_vram_bytes());
+        self.register_as_consumer();
+    }
+
     pub fn register_planner_on_authority_tick(self: &Arc<Self>) {
         let weak = Arc::downgrade(self);
         self.resource_daemon
@@ -855,7 +885,7 @@ impl ServingDaemonModule {
     /// measured axis. The footprint resolver is the SAME catalog + footprint
     /// estimator that feeds the serving plan, so there is ONE footprint authority
     /// on the box, not two.
-    fn register_as_consumer(&self) {
+    pub fn register_as_consumer(&self) {
         // The live servable-model candidates, sized to whatever shape serving is running,
         // so the tier-down ranker re-homes only to a model the autonomic plan itself could
         // serve (same suppress/pin/eligibility filter → one catalog, never two). Reads the
@@ -3611,17 +3641,13 @@ impl ServiceModule for ServingDaemonModule {
         // free functions + adapters read "what's live" as a pointer instead of
         // each probing /v1/models. Set-once (singleton daemon).
         let _ = crate::inference::llama_server::install_serving_state(self.subscribe_serving());
-        // Register serving as a MEASURED ResourceConsumer with the one per-machine
-        // authority (#79). See `register_as_consumer` — this is monitor-not-reserve:
-        // no lease acquired, `available` math untouched, the authority simply stops
-        // being blind to the ~multi-GB model actually resident.
-        // SEED THE COLD-BOOT PRIOR FIRST — before register_as_consumer, before the first
-        // reconcile, before anything can plan. The device's physical VRAM is a static
-        // hardware fact available immediately; without it the very first plan runs on the
-        // Unknown rung and floors, which is exactly the #438 boot transient.
-        seed_device_vram_prior(self.gpu.total_vram_bytes());
-
-        self.register_as_consumer();
+        // NOTE: the VRAM prior is seeded and serving is registered as a ResourceConsumer at
+        // WIRING time ([`declare_to_memory_authority`], called from `ipc/mod.rs` before
+        // `register_planner_on_authority_tick`) — NOT here. `initialize` runs after the module
+        // is handed to the runtime, and the authority's tick can fire a plan in between; a plan
+        // computed while serving is not yet a registered consumer gets NO add-back for its own
+        // residency, which is the #438 `usable_gb = 0` window. Both calls are idempotent, so
+        // this is an ordering constraint, not a duplication hazard.
         // Reap orphaned llama-server lanes left by a crashed/SIGKILLed predecessor
         // BEFORE reconciling to the new plan — a mid-eval crash leaves ephemeral
         // lanes (their own scanned ports, no pidfile) holding ~6 GB each with zero

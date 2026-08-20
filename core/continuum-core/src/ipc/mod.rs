@@ -1316,6 +1316,13 @@ pub fn start_server(
         resource_daemon.clone(),
         model_catalog.clone(),
     ));
+    // DECLARE OURSELVES TO THE AUTHORITY BEFORE THE PLANNER CAN TICK (#438). The authority
+    // budgets serving via `budget_for_replacing` — available PLUS serving's own residency —
+    // and that add-back is keyed on serving being a registered consumer. Attaching the planner
+    // first left a window where a plan could run with serving unregistered, so its OWN resident
+    // model counted as an external squeeze: `usable_gb = 0` on a 53 GiB board. See
+    // `declare_to_memory_authority`. These two lines are ORDER-DEPENDENT; do not swap them.
+    serving_daemon.declare_to_memory_authority();
     // The lane plan is a MEMORY decision, so it runs on the ONE memory authority's tick,
     // not serving's own (MEMORY-AUTHORITY-DAEMON slice 1b). Serving's tick only reconciles
     // the llama-server to the authority-published plan.
