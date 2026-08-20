@@ -44,6 +44,20 @@ pub struct PersonaRosterEntry {
     /// SWE instances already staged in her workspace (`workspace/swe/<id>` with a `.git`).
     /// Non-empty here is the REUSE signal: dispatch found the checkout and skipped cloning.
     pub staged_swe: Vec<String>,
+    /// Is she RESIDENT — a live service loop, i.e. actually in the room and able to take
+    /// a turn?
+    ///
+    /// REGISTRATION IS NOT RESIDENCY, and this row used to report only the former.
+    /// Measured 2026-08-18: for ~15 minutes after a reboot this command listed Atlas and
+    /// Benchy while `persona.inbound.subscribe_opened` was 0 — hosting was correctly parked
+    /// waiting for the serving lane to prove it could decode (#363), so neither had a
+    /// perception stream. A round was staged into that window on the strength of THIS
+    /// roster: cards posted, `kickoffs: 2`, `kickoff_errors: []`, zero turns.
+    ///
+    /// `false` means she exists but is not in the room yet — usually hosting waiting on a
+    /// serving lane (watch `inference.lane_relaunch_retry`), which self-heals on the next
+    /// serving-plan edge. Work must NOT be staged for a citizen whose `resident` is false.
+    pub resident: bool,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -52,10 +66,18 @@ pub struct PersonaRosterEntry {
     export_to = "../../../protocol/typescript/persona/PersonaRosterResult.ts"
 )]
 pub struct PersonaRosterResult {
-    /// How many citizens are online right now (the roster `benchmark/dispatch` targets when
-    /// `--assignees` is omitted). Zero means dispatch would be Denied — spawn a persona.
+    /// How many citizens are REGISTERED on this machine. This is an inventory count, not a
+    /// readiness signal — read `resident_count` before staging any work.
     #[ts(type = "number")]
     pub count: u32,
+    /// How many are RESIDENT — service loop live, perception stream primed, able to take a
+    /// turn. THIS is the number a caller staging work must gate on.
+    ///
+    /// `count > 0 && resident_count == 0` is the exact state that silently ate a benchmark
+    /// round on 2026-08-18: two citizens listed, neither in the room (hosting parked while
+    /// the serving lane proved it could decode), cards + kickoffs posted anyway, zero turns.
+    #[ts(type = "number")]
+    pub resident_count: u32,
     /// Every live citizen, sorted by name (the stable round-robin order).
     pub citizens: Vec<PersonaRosterEntry>,
 }
@@ -112,16 +134,21 @@ impl ActionCommand for PersonaRoster {
         _p: PersonaRosterParams,
     ) -> Result<PersonaRosterResult, CommandError> {
         let snap = self.registry.roster_snapshot();
-        let citizens: Vec<PersonaRosterEntry> = snap
-            .into_iter()
-            .map(|(agent_name, peer)| PersonaRosterEntry {
+        let mut citizens: Vec<PersonaRosterEntry> = Vec::with_capacity(snap.len());
+        for (agent_name, peer) in snap {
+            citizens.push(PersonaRosterEntry {
+                // Residency is ASKED, per citizen, at read time — never inferred from
+                // presence in the registry. See `PersonaRosterEntry::resident`.
+                resident: self.registry.is_resident(peer).await,
                 agent_name,
                 peer_id: crate::identity::PeerId::from_uuid(peer),
                 staged_swe: staged_swe_for(&peer),
-            })
-            .collect();
+            });
+        }
+        let resident_count = citizens.iter().filter(|c| c.resident).count() as u32;
         Ok(PersonaRosterResult {
             count: citizens.len() as u32,
+            resident_count,
             citizens,
         })
     }
@@ -151,6 +178,7 @@ mod tests {
                 b"a93ec5cc-e183-427a-ab8f-784ffe8805cc",
             )),
             staged_swe: vec!["astropy__astropy-12907".into()],
+            resident: true,
         };
         let v = serde_json::to_value(&e).unwrap();
         assert_eq!(v["agent_name"], "Yori");
@@ -164,7 +192,14 @@ mod tests {
             .to_string()
         );
         assert_eq!(v["staged_swe"][0], "astropy__astropy-12907");
+        assert_eq!(v["resident"], true);
     }
+
+    // NOTE on residency coverage: a `PersonaAircRuntime` cannot be constructed without a
+    // live airc daemon (see `clone_shares_roster` in airc_runtime_registry), so the
+    // registered-but-not-resident row is pinned where it IS testable — as the pure truth
+    // table `persona::airc_runtime_registry::resident_from_loop_state`. Do not build a
+    // parallel runtime fixture here to reach it.
 
     // what this catches: an empty registry yields count=0 with an empty citizen list — the
     // honest "nobody online, dispatch would be Denied" signal, never a panic or a fake row.

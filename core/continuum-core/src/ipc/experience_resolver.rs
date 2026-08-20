@@ -62,7 +62,7 @@ impl LiveExperienceResolver {
         roles: &BTreeMap<String, Standing>,
     ) -> Option<Experience> {
         let manifest = self.source.experience_for(room_id)?;
-        let members = match self.roster.room_roster(PRESENCE_WINDOW, ROSTER_SCAN).await {
+        let members = match self.roster.room_roster(PRESENCE_WINDOW, ROSTER_SCAN, None).await {
             Ok(members) => project_membership(&members, roles),
             Err(error) => {
                 tracing::warn!(
@@ -108,6 +108,7 @@ mod tests {
             &self,
             _within: Duration,
             _window: usize,
+            _room: Option<uuid::Uuid>,
         ) -> Result<Vec<RoomMember>, airc_lib::AircError> {
             Ok(self.members.clone())
         }

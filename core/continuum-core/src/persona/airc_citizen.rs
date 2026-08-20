@@ -322,6 +322,7 @@ impl crate::persona::room_roster_source::AircRosterReader for StubAircCitizen {
         &self,
         _within: std::time::Duration,
         _window: usize,
+        _room: Option<uuid::Uuid>,
     ) -> Result<Vec<airc_lib::RoomMember>, AircError> {
         // No daemon in tests → no presence. RAG runs through cleanly
         // with an empty roster (no [Present in this room] block).
@@ -333,6 +334,7 @@ impl crate::persona::room_roster_source::AircRosterReader for StubAircCitizen {
 impl crate::persona::room_doctrine_source::AircDoctrineReader for StubAircCitizen {
     async fn room_doctrine(
         &self,
+        _room: Option<uuid::Uuid>,
     ) -> Result<Option<airc_core::doctrine::RoomDoctrinePublished>, AircError> {
         // No daemon in tests → no published doctrine. Cognition runs
         // through cleanly with no [Room operating doctrine] block.

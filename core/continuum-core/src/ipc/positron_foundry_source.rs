@@ -68,6 +68,8 @@ mod tests {
         // model" is meaningless); only the fields under test carry meaning here.
         LiveModel {
             model: Model {
+                weights_bytes: None,
+                mmproj_bytes: None,
                 id: id.to_string(),
                 name: name.map(str::to_string),
                 provider: provider.to_string(),

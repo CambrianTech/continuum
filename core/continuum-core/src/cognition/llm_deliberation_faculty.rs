@@ -1281,7 +1281,8 @@ impl LlmDeliberationFaculty {
             ),
         );
 
-        // #266 KV-cache fix lives in the block ORDER (see `deliberation_prompt::compose`):
+        // #266 KV-cache fix lives in the block ORDER (see `deliberation_prompt::stable_blocks`
+        // and `volatile_blocks`, assembled by `compose_split`):
         // the per-turn presence/own-time framing now renders LAST in the system message,
         // AFTER the standing grounding context, instead of before it. The raw
         // prompt-captures caught the framing sitting at char ~7607, ahead of the context,

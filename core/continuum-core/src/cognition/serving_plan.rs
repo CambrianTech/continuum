@@ -690,9 +690,8 @@ pub fn plan_serving_stable(
     // is STILL resident and serving fine — its memory is its own. Tearing that
     // down to "nothing" is the exact harm we're guarding against, so `fresh` is
     // an Option we fall back to only when the incumbent genuinely can't hold.
-    let fresh = plan_serving(host, candidates, demand);
     let Some(inc_id) = incumbent else {
-        return fresh;
+        return plan_serving(host, candidates, demand);
     };
     // NOTE (2026-08-04): there used to be an early return here — "fresh already chose the
     // incumbent → nothing to stabilize" — and it was the lane-flap bug. `fresh` is computed
@@ -714,7 +713,7 @@ pub fn plan_serving_stable(
     // Incumbent dropped off disk entirely → honour whatever `fresh` chose
     // (possibly None = nothing servable).
     let Some(inc) = candidates.iter().find(|m| m.model_id == inc_id) else {
-        return fresh;
+        return plan_serving(host, candidates, demand);
     };
     // The incumbent is ALREADY resident: its own weights read as "used" in live
     // free memory, which is exactly what depresses `usable_bytes` while it loads.
@@ -726,16 +725,49 @@ pub fn plan_serving_stable(
         usable_bytes: host.usable_bytes.saturating_add(inc.weights_bytes),
         perf_cores: host.perf_cores,
     };
+    // `fresh` is computed against the POST-EVICTION budget, and that is the whole fix.
+    //
+    // It used to use `host` — the live budget WITH the incumbent still resident — so the
+    // planner asked "does the better model fit in the memory left over beside the one already
+    // loaded?". That question is wrong, because a swap is never co-resident: `serve()` kills
+    // the incumbent llama-server child and THEN launches the candidate, exactly as
+    // `pin_fit_decision` documents ("the candidate only needs to fit AFTER the incumbent's
+    // VRAM is reclaimed"). So the eviction credit-back was written, proven, and wired to the
+    // PIN path only, while the autonomic planner kept asking the co-resident question.
+    //
+    // MEASURED on this M5 (2026-08-19): `serving.plan` chose Devstral-24B at `usable_gb: 18`
+    // on a 64 GB box, because Devstral + the vision lane + embeddings were already resident.
+    // Qwen3.8-27B (18.97 GB of weights) cannot fit a lane inside 18 GB, so it never entered
+    // the plan. `serving/pin` — same models, same instant, same machine — computed
+    // `budget_gb: 34.09` via this credit and the 27B fit with 15 GB to spare. Two answers to
+    // one question, and only the operator-driven path could reach the better model.
+    //
+    // This is the third sighting of ONE defect: the planner could not reason about a budget
+    // the incumbent was occupying. #214 fixed it for the WINDOW (grow-back), the pin path had
+    // it for the MODEL, and #266's warm slots starve for the same reason — lanes are sized
+    // from a budget the resident model has already eaten, so 3 of 4 citizens got no warm slot
+    // and re-prefilled cold every turn. One credit, three cards.
+    //
+    // SAFE because it is still gated: the switch-up below additionally requires strictly
+    // greater `capability_rank` AND `SWITCH_UP_HEADROOM` of margin, so a bigger model is
+    // adopted only when it is genuinely better AND genuinely fits post-eviction. A transient
+    // budget bump cannot flap it. An EXTERNAL squeeze is still not credited back — only the
+    // incumbent's own committed weights are — so a real over-commit still forces the
+    // down-switch. [[never-thrash-sticky-hysteresis-on-every-lane]]
+    let fresh = plan_serving(at_rest, candidates, demand);
     // Even crediting its own residency, can the incumbent still hold a lane? If
     // not, a real squeeze has genuinely evicted it → take `fresh`.
     if inc.weights_bytes.saturating_add(inc.kv_at(MIN_SERVE_CTX)) > at_rest.usable_bytes {
         return fresh;
     }
-    // Switch UP to `fresh` ONLY if it is strictly more capable AND fits the REAL
-    // (un-credited) budget with headroom — loading a bigger NEW model needs actual
-    // free memory, so this test uses `host`, not `at_rest`, and the headroom stops
-    // a transient budget bump from flapping up.
-    let headroom_budget = (host.usable_bytes as f64 * (1.0 - SWITCH_UP_HEADROOM)) as u64;
+    // Switch UP to `fresh` ONLY if it is strictly more capable AND fits the POST-EVICTION
+    // budget with headroom. This used to test against `host` on the reasoning that "loading a
+    // bigger NEW model needs actual free memory" — true for a co-resident load, false for the
+    // swap `serve()` actually performs (kill incumbent, then launch). Testing against `host`
+    // made the gate unreachable for any model larger than the free remainder, which on a
+    // healthy box IS every upgrade worth making. `SWITCH_UP_HEADROOM` still supplies the
+    // anti-flap margin; it is now margin on the right budget.
+    let headroom_budget = (at_rest.usable_bytes as f64 * (1.0 - SWITCH_UP_HEADROOM)) as u64;
     // The plan HOLDS its model, so this is a field read, not a search. It used to be
     // `candidates.iter().find(|c| c.model_id == f.base_model_id)` — a name lookup that
     // returned None whenever the planned name wasn't in the candidate list, silently
@@ -1582,23 +1614,43 @@ mod tests {
         // upgrade worth flapping for. Before the model-choice floor landed, the old
         // MIN_SERVE_CTX bar admitted big here on 184MB of KV and this fixture read as
         // "fresh would pick big" when what fresh actually had was a 2048-token 9GB model.
-        // Sized instead so big genuinely clears a full turn (18 + 1.47 = 19.5 <= 20) yet
-        // still exceeds the headroom bar (18.18 > 0.9 * 20 = 18).
+        // PREMISE CHANGE (2026-08-19), stated as such: this fixture was sized against the
+        // UN-CREDITED budget, because the switch-up bar used to be `0.9 * host`. The bar now
+        // sits on the POST-EVICTION budget (`host` + the incumbent's own weights), since
+        // `serve()` kills the incumbent before launching the candidate and the two are never
+        // co-resident. Crediting `small`'s 1GB moved the bar 18.0 → 18.9, and the old `big`
+        // (18GB + 0.18 KV = 18.18) slid under it — so the test began asserting the OPPOSITE of
+        // its own name. The INVARIANT is untouched: a model that lacks headroom must not be
+        // adopted. Only the fixture is restated for the corrected budget.
+        //
+        // Re-sized so big still clears a full turn at the at-rest budget (19 + 1.47 = 20.47 <=
+        // 21) — a legitimate upgrade target selection would really pick — yet still exceeds the
+        // headroom bar (19 + 0.18 = 19.18 > 0.9 * 21 = 18.9).
         let host = HostBudget {
             usable_bytes: 20 * GB,
             perf_cores: 6,
         };
         let models = vec![
             fp("small", 1, 4_000, 32_768, 1),
-            fp("big", 18, 90_000, 262_144, 3),
+            fp("big", 19, 90_000, 262_144, 3),
         ];
+        // Setup assertion: big IS what selection would choose, so the refusal below is a real
+        // headroom refusal and not "big was never a candidate". This asks the question at the
+        // budget `fresh` is now computed against — the at-rest one — because that is where the
+        // stabilizer does its selecting. Asking it at `host` would make the setup vacuous: big
+        // (19 + 1.47 = 20.47) does not clear a full turn in 20GB at all, so the test would pass
+        // for the wrong reason, asserting a refusal of something never on offer.
+        let at_rest_for_setup = HostBudget {
+            usable_bytes: host.usable_bytes + 1 * GB, // small's credited weights
+            perf_cores: host.perf_cores,
+        };
         assert_eq!(
-            plan_serving(host, &models, ServingDemand::new(MAX_LANES, None))
+            plan_serving(at_rest_for_setup, &models, ServingDemand::new(MAX_LANES, None))
                 .unwrap()
                 .base_model
                 .model_id,
             "big",
-            "fresh would pick big"
+            "fresh would pick big at the post-eviction budget — so the refusal below is real"
         );
         let stable = plan_serving_stable(
             host,
@@ -1765,5 +1817,100 @@ mod tests {
             "incumbent survives its OWN load dip — no flap"
         );
         assert!(stable.lanes >= 1, "kept model still gets ≥1 lane");
+    }
+
+    // what this catches: the autonomic planner being structurally unable to reach a BETTER
+    // model that fits — because it measured the candidate against a budget the incumbent was
+    // still occupying, while `serve()` evicts before it launches.
+    //
+    // These are THIS MacBook's real numbers on 2026-08-19, not invented ones. The live
+    // `serving.plan` chose Devstral (24B, ~14 GB) at `usable_gb: 18` on a 64 GB box, so
+    // Qwen3.8-27B (18.97 GB) "did not fit" and never entered the plan. `serving/pin`, same
+    // instant, credited the incumbent back and reported `budget_gb: 34.09` — the 27B fit with
+    // 15 GB spare and served at 17.2 tok/s. Two answers to one question; only the operator
+    // path could reach the better model.
+    #[test]
+    fn a_more_capable_model_that_fits_after_eviction_is_adopted_not_starved() {
+        // 18 GB free WITH the ~14 GB incumbent resident — the measured live condition.
+        let live = HostBudget {
+            usable_bytes: 18 * GB,
+            perf_cores: 10,
+        };
+        let models = vec![
+            fp("devstral-24b", 14, 100_000, 131_072, 5),
+            fp("qwen3.8-27b", 19, 100_000, 262_144, 9), // strictly more capable
+        ];
+
+        // The un-credited question — "fits BESIDE the incumbent?" — answers the wrong thing.
+        assert_eq!(
+            plan_serving(live, &models, ServingDemand::new(2, None))
+                .unwrap()
+                .base_model
+                .model_id,
+            "devstral-24b",
+            "against the live budget the 27B cannot fit — this is the state that stranded it"
+        );
+
+        // The stabilizer credits the eviction and takes the upgrade.
+        let plan = plan_serving_stable(
+            live,
+            &models,
+            Some("devstral-24b"),
+            ServingDemand::new(2, None),
+        )
+        .expect("a plan exists");
+        assert_eq!(
+            plan.base_model.model_id, "qwen3.8-27b",
+            "a strictly more capable model that fits POST-EVICTION must be adopted — the swap \
+             kills the incumbent before launching, so the co-resident test was never the right \
+             question"
+        );
+    }
+
+    // what this catches: the credit-back turning into a thrash engine. Crediting eviction must
+    // NOT hand the upgrade gate a blank cheque — a marginally-fitting or no-better model still
+    // has to lose, or the planner swaps models on budget noise and every flip bounces the live
+    // lane under in-flight requests (the wedge that killed three benchmark runs).
+    #[test]
+    fn the_eviction_credit_still_refuses_a_marginal_or_no_better_swap() {
+        let live = HostBudget {
+            usable_bytes: 18 * GB,
+            perf_cores: 10,
+        };
+
+        // (a) Equal capability → never swap, however well it fits.
+        let equal = vec![
+            fp("devstral-24b", 14, 100_000, 131_072, 5),
+            fp("sibling-24b", 14, 100_000, 131_072, 5),
+        ];
+        assert_eq!(
+            plan_serving_stable(live, &equal, Some("devstral-24b"), ServingDemand::new(2, None))
+                .unwrap()
+                .base_model
+                .model_id,
+            "devstral-24b",
+            "equal capability is not an upgrade — the incumbent holds"
+        );
+
+        // (b) More capable but it consumes the ENTIRE post-eviction budget, leaving nothing
+        // for KV — SWITCH_UP_HEADROOM must reject it rather than swap into a lane that
+        // cannot hold a window.
+        let marginal = vec![
+            fp("devstral-24b", 14, 100_000, 131_072, 5),
+            fp("hog-70b", 32, 100_000, 262_144, 9),
+        ];
+        assert_eq!(
+            plan_serving_stable(
+                live,
+                &marginal,
+                Some("devstral-24b"),
+                ServingDemand::new(2, None)
+            )
+            .unwrap()
+            .base_model
+            .model_id,
+            "devstral-24b",
+            "a better model with no headroom left is refused — the credit is not a blank cheque"
+        );
     }
 }

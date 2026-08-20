@@ -40,9 +40,43 @@ use ts_rs::TS;
 /// Each implementation talks to its platform's actual monitoring API.
 /// The trait normalizes the shape so the policy doesn't care which
 /// platform produced the signals.
+/// Whether the GPU draws on its own memory or shares the host's.
+///
+/// Detected from the platform (Metal's `hasUnifiedMemory`), never inferred from the
+/// OS — an Intel Mac with a discrete AMD card runs macOS and is NOT unified, so a
+/// `cfg!(target_os = "macos")` guard would be wrong on real hardware.
+///
+/// This used to live inside `metal_monitor` as a private sampling detail, on the
+/// stated assumption that "production callers should use the trait methods, which
+/// abstract the mode away". That assumption held for pressure (a ratio is a ratio)
+/// and broke for the ResourceGovernor, which must know whether VRAM and RAM are two
+/// pools or one before it can hand out bytes of either — see
+/// [`UnifiedMemoryPool`](crate::resources::UnifiedMemoryPool).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryMode {
+    /// Apple Silicon — GPU and CPU share one address space and one physical pool.
+    /// System VM free pages ARE the GPU free signal, and a byte leased as VRAM is
+    /// the same byte as one leased as RAM.
+    Unified,
+    /// Discrete GPU — its own VRAM pool, physically separate from system DRAM.
+    /// The two axes are genuinely independent.
+    Discrete,
+}
+
 pub trait GpuMonitor: Send + Sync {
     /// Platform identifier — "metal" | "cuda" | "vulkan" | "cpu" | "mock".
     fn platform(&self) -> &'static str;
+
+    /// Whether this device shares the host's physical memory.
+    ///
+    /// Defaults to [`MemoryMode::Discrete`] — the correct answer for every discrete
+    /// card, and the behavior the governor had before unified memory was modeled at
+    /// all, so an adapter that does not override this is unchanged rather than
+    /// silently wrong. Metal overrides it with the real `hasUnifiedMemory` answer.
+    /// A future UMA backend (an ARM iGPU via Vulkan) MUST override it.
+    fn memory_mode(&self) -> MemoryMode {
+        MemoryMode::Discrete
+    }
 
     /// Human-readable device name (e.g. "Apple M5 Pro", "NVIDIA RTX 5090",
     /// "CPU (no GPU)"). For logs and the policy's "what hardware are we

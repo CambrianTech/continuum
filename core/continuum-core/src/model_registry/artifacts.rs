@@ -13,6 +13,31 @@ pub fn resolve_model_artifacts(model: &mut Model) {
     if let Some(p) = model.mmproj_local_path.take() {
         model.mmproj_local_path = Some(expand_user_path(&p));
     }
+    hydrate_artifact_sizes(model);
+}
+
+/// Stamp the resolved artifacts' sizes onto the row, ONCE, here — where the paths are
+/// discovered. Every residency estimate downstream reads these instead of `stat`ing per
+/// call, which is what keeps filesystem I/O off the governor's accounting tick.
+///
+/// `None` on an unreadable or unresolvable artifact, deliberately: a missing size is
+/// "not known", and a consumer that turns that into `0` is the silent-zero defect this
+/// exists to prevent. Callers that resolve a path by another route (`attach_local_artifact`
+/// after a pull) call this too, so a row never carries a path without its size.
+pub fn hydrate_artifact_sizes(model: &mut Model) {
+    model.weights_bytes = resolve_gguf_for_model(model)
+        .and_then(|p| fs::metadata(p).ok())
+        .map(|md| md.len())
+        .filter(|n| *n > 0);
+    // `Some(0)` when the model HAS NO PROJECTOR — that is a real, known fact, not a
+    // missing measurement. `None` is reserved for "we could not resolve it", so a
+    // consumer can tell "this model holds no projector bytes" apart from "nobody has
+    // looked yet". Collapsing both to `None` (and then to 0 downstream) is the same
+    // defect as the capacity zero, one field over.
+    model.mmproj_bytes = match resolve_mmproj_for_model(model) {
+        None => Some(0),
+        Some(path) => fs::metadata(path).ok().map(|md| md.len()),
+    };
 }
 
 pub fn resolve_gguf_for_model(model: &Model) -> Option<PathBuf> {
@@ -594,6 +619,8 @@ mod tests {
 
     fn model(id: &str, hint: Option<&str>, explicit: Option<PathBuf>) -> Model {
         Model {
+            weights_bytes: None,
+            mmproj_bytes: None,
             id: id.to_string(),
             name: None,
             provider: "llamacpp-local".into(),

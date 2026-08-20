@@ -90,10 +90,21 @@ pub fn deploy_verdict(
 /// and making it an error would break deploy-verify for every operator whose CLI predates
 /// their core — today, all of them. Loud and non-blocking kills the silent case without
 /// turning a true green into a red. See #422 for fixing the rebuild itself.
+/// `rebuilt_this_run` is what makes this note honest, and it was missing until 2026-08-17.
+/// `reboot` rebuilds AND reinstalls the CLI (#422/PR #2293), but the invocation doing the
+/// rebuild is by construction the one it REPLACES — a running image cannot be the artifact
+/// it just installed. So a successful `reboot` always diverged here and always printed
+/// "⚠ STALE CLI", whose text additionally said "`reboot` rebuilds the CORE and never the
+/// CLI" — false since #2293. A warning that fires on every success is not a warning; it is
+/// noise that trains the operator to skip the line where a REAL stale CLI would appear.
+/// With the flag, a self-replacing run reports the handoff as information, and the ⚠ is
+/// reserved for the case that actually means something: a CLI that diverged and is NOT
+/// being replaced (a bare `deploy-verify`, or a platform where `cli_self_build` skipped).
 pub fn cli_staleness_note(
     cli_sha: &str,
     expected: &str,
     expected_source: &str,
+    rebuilt_this_run: bool,
 ) -> Option<String> {
     // Unjudgeable provenance is reported, not swallowed — but briefly, because a binary
     // built outside a git tree is a legitimate state, unlike a core with no SHA at all.
@@ -109,12 +120,21 @@ pub fn cli_staleness_note(
     if sha_matches(cli_sha, expected) {
         return None;
     }
+    if rebuilt_this_run {
+        return Some(format!(
+            "↻ CLI updated (#422): this invocation is build {cli_sha} — it predates the CLI it \
+             just installed, which is expected and not a fault. The NEXT `continuum` runs \
+             {expected} ({expected_source}). CLI-side behaviour in THIS run is still the old \
+             build, so re-run any lifecycle verb whose fix lives in the CLI."
+        ));
+    }
     Some(format!(
         "⚠ STALE CLI (#422): the core verdict above stands, but the `continuum` you just ran is \
-         build {cli_sha}, not {expected} ({expected_source}). `reboot` rebuilds the CORE and never \
-         the CLI, so any lifecycle fix that lives in the CLI — `start`/`stop`/`reboot`/\
-         `deploy-verify` itself — is NOT deployed on this machine. Rebuild and reinstall the CLI \
-         before trusting CLI-side behaviour."
+         build {cli_sha}, not {expected} ({expected_source}), and nothing in this run replaced \
+         it. Any lifecycle fix that lives in the CLI — `start`/`stop`/`reboot`/`deploy-verify` \
+         itself — is NOT deployed on this machine. `continuum reboot` rebuilds and reinstalls \
+         it (except where cli_self_build skips the platform); do that before trusting CLI-side \
+         behaviour."
     ))
 }
 
@@ -238,21 +258,49 @@ mod tests {
     #[test]
     fn a_stale_cli_is_reported_and_a_fresh_one_is_silent() {
         assert_eq!(
-            cli_staleness_note("abc123f", "abc123f", "git HEAD of this checkout"),
+            cli_staleness_note("abc123f", "abc123f", "git HEAD of this checkout", false),
             None,
             "a CLI that matches the deploy says nothing"
         );
         assert_eq!(
-            cli_staleness_note("abc123f00d", "abc123f", "src"),
+            cli_staleness_note("abc123f00d", "abc123f", "src", false),
             None,
             "prefix-tolerant, same as the core verdict — abbreviation drift is not staleness"
         );
 
-        let note = cli_staleness_note("dead111", "beef222", "git HEAD of this checkout")
+        let note = cli_staleness_note("dead111", "beef222", "git HEAD of this checkout", false)
             .expect("a diverged CLI must be reported");
         for needle in ["dead111", "beef222", "#422", "STALE CLI"] {
             assert!(note.contains(needle), "note names {needle}: {note}");
         }
+    }
+
+    // what this catches: a warning that fires on every SUCCESS. `reboot` reinstalls the CLI,
+    // so the invocation doing the reinstall always diverges from HEAD — before 2026-08-17
+    // that printed "⚠ STALE CLI" on every healthy deploy, with text claiming reboot "never"
+    // rebuilds the CLI (false since #2293). Both readings must stay distinguishable: a
+    // self-replacing run reports a HANDOFF, a non-replacing run reports STALENESS.
+    #[test]
+    fn a_self_replacing_run_reports_a_handoff_not_staleness() {
+        let handoff = cli_staleness_note("old1234", "new5678", "git HEAD of this checkout", true)
+            .expect("the handoff is still worth stating — this run's CLI is the old one");
+        assert!(
+            !handoff.contains("STALE CLI"),
+            "a reboot that reinstalls the CLI must not cry stale at itself: {handoff}"
+        );
+        assert!(handoff.contains("new5678"), "it names what the NEXT run gets: {handoff}");
+
+        let stale = cli_staleness_note("old1234", "new5678", "git HEAD of this checkout", false)
+            .expect("a diverged CLI nobody replaced is the real warning");
+        assert!(stale.contains("STALE CLI"), "got {stale}");
+        assert!(
+            !stale.contains("never"),
+            "the corrected text must not repeat the false 'reboot never rebuilds the CLI': {stale}"
+        );
+
+        // A MATCHING cli stays silent in both modes — the flag must not invent a note.
+        assert_eq!(cli_staleness_note("abc123f", "abc123f", "src", true), None);
+        assert_eq!(cli_staleness_note("abc123f", "abc123f", "src", false), None);
     }
 
     // what this catches: swallowing the unjudgeable case. A CLI built outside a git tree
@@ -261,7 +309,7 @@ mod tests {
     #[test]
     fn unverifiable_cli_provenance_is_stated_not_swallowed() {
         for (cli, expected) in [("unknown", "beef222"), ("dead111", "unknown"), ("", "beef222")] {
-            let note = cli_staleness_note(cli, expected, "src")
+            let note = cli_staleness_note(cli, expected, "src", false)
                 .unwrap_or_else(|| panic!("cli={cli} expected={expected} must report"));
             assert!(note.contains("unverifiable"), "got {note}");
             assert!(

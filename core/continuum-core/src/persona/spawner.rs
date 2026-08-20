@@ -146,6 +146,8 @@ mod tests {
             capabilities: crate::model_registry::types::ProviderCapabilities::default(),
         };
         let qwen25_05b = Model {
+            weights_bytes: None,
+            mmproj_bytes: None,
             id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
             name: Some("Qwen2.5 0.5B Instruct".to_string()),
             provider: "llamacpp-local".to_string(),

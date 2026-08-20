@@ -851,6 +851,21 @@ pub struct ServingSnapshot {
     #[serde(default)]
     #[ts(optional)]
     pub vision_model: Option<String>,
+    /// THE MODEL THIS NODE IS BRINGING UP RIGHT NOW, if a lane is loading.
+    ///
+    /// Before this field the snapshot was BINARY — ready with a model, or not-ready with
+    /// `active_model: None` — so throughout the entire load window the pipe FORGOT what
+    /// it was loading. Measured live 2026-08-19 on a cold boot: physical climbed
+    /// 29.90 → 36.88 GB while `serving` attributed 0.00 GB, because the consumer had
+    /// nothing to name. Those bytes read as unowned, unowned reads as immovable,
+    /// `available` fell to 18.79 GB, and a planner running in that window sizes against a
+    /// machine that looks two thirds full of someone else's memory.
+    ///
+    /// The bytes exist from the moment the process is spawned, not from the moment it
+    /// answers `/props`. Readiness is a claim about SERVICE; residency is a fact about
+    /// MEMORY, and they do not start together.
+    #[ts(optional)]
+    pub loading_model: Option<String>,
 }
 
 impl ServingSnapshot {
@@ -892,6 +907,7 @@ impl ServingSnapshot {
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
+            loading_model: None,
         }
     }
 
@@ -1322,6 +1338,8 @@ pub async fn probe_external_serving(timeout: Duration) -> Option<ServingSnapshot
     );
 
     Some(ServingSnapshot {
+        // A lane with a verified window is serving, not loading.
+        loading_model: None,
         active_model: Some(active_model),
         ready: true,
         // Personas point their inference adapter here; `serving_v1_url()` already
@@ -1457,6 +1475,31 @@ pub trait LlamaServerControl: Send + Sync {
     /// answering (pre-spawn), or a ready server whose `/props` shape is missing
     /// `n_ctx` (a loud invariant violation — never a guessed window).
     async fn served_context_window(&self) -> Result<u32, LlamaServerError>;
+
+    /// The REAL number of continuous-batching slots the running server serves,
+    /// read from its own `/props` (`total_slots`) — the LANE sibling of
+    /// [`Self::served_context_window`], and for the same reason.
+    ///
+    /// # Why this must be probed and not remembered (measured 2026-08-19)
+    ///
+    /// The adopt-or-relaunch decision has two operands. The window one always
+    /// asked the process. The lane one asked `current_serving().lanes` — our own
+    /// process-local snapshot. For a lane THIS core spawned those agree, so the
+    /// asymmetry was invisible. For a lane it did NOT spawn — a **past form of
+    /// ourself**, surviving a crash on the canonical port and named in our own
+    /// custody record — the snapshot describes nothing, and a healthy 4-lane
+    /// 27B was declined, reaped, and rebuilt over ~110s only to come back at 3
+    /// lanes and a smaller window than the lane that was already there.
+    ///
+    /// One operand asking the lane and the other asking our memory of it is the
+    /// whole defect. Both now ask the lane.
+    ///
+    /// Error policy is deliberately identical to the window's: a probe failure
+    /// returns `Err` and the CALLER treats it as "lanes OK" so a transient
+    /// `/props` hiccup can never spuriously relaunch a healthy lane. `Ok(0)`
+    /// means the server named no slot count — nothing to compare, not zero
+    /// capacity ([[an-absence-is-an-unfinished-measurement]]).
+    async fn served_lanes(&self) -> Result<u32, LlamaServerError>;
 
     /// The multimodal capabilities the running server ITSELF reports in `/props`
     /// (`modalities.vision` / `modalities.audio`) — the endpoint-side truth of
@@ -1726,17 +1769,46 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
             // cannot hot-resize n_seq_max any more than the window, so a lane increase
             // needs a relaunch. Grow-only + discrete: served 0 = nothing to compare;
             // target ≤ served is fine (a down-plan is the daemon's sticky choice); only
-            // target > served relaunches. `served_lanes` is the process's own truth
-            // (ServingSnapshot.lanes), never a recomputed plan value.
-            let served_lanes = current_serving().lanes;
-            let lanes_ok = served_lanes == 0 || target.lanes <= served_lanes;
+            // target > served relaunches.
+            //
+            // ASK THE LANE, NOT OUR MEMORY OF IT (fixed 2026-08-19). This read used to
+            // be `current_serving().lanes` — the process-local snapshot — while the
+            // window operand three lines up probed the running server. That asymmetry
+            // is invisible for a lane we spawned (snapshot == process) and wrong for a
+            // PAST FORM OF OURSELF: a lane that survived a crash on the canonical port,
+            // named in our own custody record, has no entry in a fresh core's snapshot.
+            // Measured cost of the old read: a healthy 4-lane 27B declined, reaped and
+            // rebuilt over ~110s, returning at 3 lanes and a SMALLER window than the
+            // lane that was already running. Both operands now ask the process.
+            let served_lanes_probe = ctrl.served_lanes().await;
+            let lanes_ok = match &served_lanes_probe {
+                Ok(served) => *served == 0 || target.lanes <= *served,
+                Err(e) => {
+                    // Deliberate, and identical to the window's policy above: a probe
+                    // error must not spuriously relaunch a healthy lane. The error is
+                    // still evidence — if lanes stop growing, this line is the reason.
+                    tracing::warn!(
+                        error = %e,
+                        "could not read the served lane count — treating lanes as OK (no \
+                         spurious relaunch); a starved lane will not grow while this probe \
+                         keeps failing"
+                    );
+                    true
+                }
+            };
+            // Report what the LANE said, and say so when it could not be asked — a
+            // probe that silently substitutes a number is how the old bug hid.
+            let served_lanes = match &served_lanes_probe {
+                Ok(n) => n.to_string(),
+                Err(e) => format!("unreadable ({e})"),
+            };
             if !window_ok || !lanes_ok {
                 crate::probe!(
                     class = "serving.grow",
                     model = target.model_id(),
                     target_window = target.context_window,
                     target_lanes = target.lanes,
-                    served_lanes,
+                    served_lanes = served_lanes.as_str(),
                     window_ok,
                     lanes_ok,
                     "served capacity is below target (window and/or lanes) — relaunching to \
@@ -2255,6 +2327,46 @@ impl LlamaServerControl for LlamaServerProcess {
                 LlamaServerError::Unreachable(
                     "/props missing default_generation_settings.n_ctx (server up but shape \
                      unexpected — refusing to guess the served window)"
+                        .to_string(),
+                )
+            })
+    }
+
+    async fn served_lanes(&self) -> Result<u32, LlamaServerError> {
+        // Same root-level `/props` as the served window. llama.cpp publishes the
+        // slot count it was launched with (`--parallel` / `n_seq_max`) as the
+        // top-level `total_slots`. A connection error means nothing is up (the
+        // normal pre-spawn state) → Unreachable, which the caller reads as
+        // "lanes OK" so a probe hiccup never relaunches a healthy lane.
+        let url = format!("{}/props", self.root);
+        let resp = self
+            .client
+            .get(&url)
+            .timeout(PROBE_TIMEOUT)
+            .send()
+            .await
+            .map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(LlamaServerError::Unreachable(format!(
+                "status {}",
+                resp.status()
+            )));
+        }
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
+        // An older build that publishes no `total_slots` is UNKNOWN, not zero —
+        // and unknown must not be dressed up as a number the grow-gate compares
+        // against. Returning `Err` routes it to the caller's no-spurious-relaunch
+        // arm, the same place a probe failure lands.
+        body.get("total_slots")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as u32)
+            .ok_or_else(|| {
+                LlamaServerError::Unreachable(
+                    "/props carries no total_slots (server up but this build does not report \
+                     its slot count — refusing to guess the served lane count)"
                         .to_string(),
                 )
             })
@@ -2812,6 +2924,11 @@ impl LlamaServerControl for LlamaServerProcess {
                 port,
                 role,
                 model: target.model_id().to_string(),
+                // The SHAPE, so a successor core can size this lane as its own
+                // without probing it — the difference between counting our
+                // predecessor's bytes as ours and counting them as foreign.
+                context_window: target.context_window,
+                lanes: target.lanes,
             };
             if let Err(e) = crate::inference::lane_registry::record(&rec) {
                 crate::probe!(
@@ -3342,6 +3459,11 @@ mod tests {
         /// an adopted orphan (the conservative default that exercises the
         /// smoke-probe gate).
         owns: bool,
+        /// The slot count the fake's `/props` reports (`total_slots`). Defaults to
+        /// 0 = "the server named no slot count, nothing to compare", which is the
+        /// same lanes-OK verdict these tests had before the lane operand was probed
+        /// — so every pre-existing case still exercises the WINDOW axis alone.
+        served_lanes: u32,
         /// The per-slot window the fake's `/props` reports. Defaults to the tests'
         /// target window so the window-grow relaunch check (which only fires when
         /// target > served + tolerance) is a no-op for the model/adapter/decode
@@ -3358,6 +3480,7 @@ mod tests {
                 serves: AtomicUsize::new(0),
                 decode_ok: true,
                 owns: false,
+                served_lanes: 0,
                 served_window: 32768,
             }
         }
@@ -3365,6 +3488,13 @@ mod tests {
         /// the starved boot-floor case the window-grow relaunch must catch.
         fn with_served_window(mut self, n: u32) -> Self {
             self.served_window = n;
+            self
+        }
+        /// Model a lane whose live `/props total_slots` is what it is — the LANE
+        /// axis of the same grow-vs-adopt decision. Used to pin that a past form of
+        /// ourself already serving enough slots is ADOPTED, not reaped.
+        fn with_served_lanes(mut self, n: u32) -> Self {
+            self.served_lanes = n;
             self
         }
         fn serve_fails(mut self) -> Self {
@@ -3415,6 +3545,12 @@ mod tests {
             // check is a no-op unless a test deliberately floors it.
             Ok(self.served_window)
         }
+        async fn served_lanes(&self) -> Result<u32, LlamaServerError> {
+            // The slot count the fake's /props reports (configurable via
+            // `with_served_lanes`). Defaults to 0 = "nothing to compare", so the
+            // lane axis is inert unless a test deliberately sets it.
+            Ok(self.served_lanes)
+        }
         async fn decode_smoke_ok(&self) -> bool {
             self.decode_ok
         }
@@ -3431,6 +3567,8 @@ mod tests {
         use crate::model_registry::types::{Arch, MultiPartyChatStrategy};
         ServingTarget {
             model: Model {
+                weights_bytes: None,
+                mmproj_bytes: None,
                 id: id.to_string(),
                 name: None,
                 provider: "llamacpp-local".to_string(),
@@ -3542,6 +3680,55 @@ mod tests {
             ctrl.serves.load(Ordering::SeqCst),
             1,
             "exactly one relaunch to the larger window"
+        );
+    }
+
+    // what this catches: THE 2026-08-19 DEFECT — a PAST FORM OF OURSELF being reaped
+    // instead of adopted. A lane this core did not spawn (crash survivor on the
+    // canonical port, named in our own custody record) already serves 4 slots at the
+    // target window. It must be ADOPTED with zero relaunches. Regression here — reading
+    // the lane count from `current_serving()` instead of the lane's own `/props` — makes
+    // a fresh core see 0 lanes for a lane it didn't spawn, decline, reap, and rebuild:
+    // measured live at ~110s of downtime, returning at 3 lanes and a SMALLER window than
+    // the lane that was already running.
+    #[tokio::test]
+    async fn a_past_form_of_ourself_serving_enough_lanes_is_adopted_not_reaped() {
+        // NOT owned (we did not spawn it) + decode-healthy + already at the target
+        // shape: the exact live crash-survivor case.
+        let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
+            .with_served_lanes(4)
+            .with_served_window(32768);
+        let mut t = target("coder-14b");
+        t.lanes = 4;
+        let outcome = ensure_model_serving(&ctrl, &t, false).await;
+        assert_eq!(
+            outcome,
+            EnsureOutcome::AlreadyServing,
+            "a healthy past form of ourself already at the target shape must be adopted"
+        );
+        assert_eq!(
+            ctrl.serves.load(Ordering::SeqCst),
+            0,
+            "adoption is FREE — reaping and reloading a lane that already fits is the bug"
+        );
+    }
+
+    // what this catches: the fix above must not disable lane grow-back (#214's sibling).
+    // A lane genuinely serving FEWER slots than the plan wants still has to relaunch —
+    // llama.cpp cannot hot-resize n_seq_max. Without this, "adopt more eagerly" would
+    // silently freeze every citizen at the squeezed slot count forever.
+    #[tokio::test]
+    async fn a_lane_serving_fewer_slots_than_planned_still_relaunches_to_grow() {
+        let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
+            .owned()
+            .with_served_lanes(1)
+            .with_served_window(32768); // window is FINE — only the lane count is short
+        let mut t = target("coder-14b");
+        t.lanes = 4;
+        let outcome = ensure_model_serving(&ctrl, &t, false).await;
+        assert!(
+            matches!(outcome, EnsureOutcome::Spawned { .. }),
+            "1 served slot against a 4-lane plan must relaunch to grow, got {outcome:?}"
         );
     }
 
@@ -3870,6 +4057,7 @@ mod tests {
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
+            loading_model: None,
         });
         assert!(!pred(&rx.borrow()));
         // not-ready but has a model → unsatisfied.
@@ -3886,6 +4074,7 @@ mod tests {
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
+            loading_model: None,
         });
         assert!(!pred(&rx.borrow()));
         // ready AND a model → satisfied, and wait_for resolves to it at once.
@@ -3902,6 +4091,7 @@ mod tests {
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
+            loading_model: None,
         });
         let got = tokio::time::timeout(Duration::from_millis(100), rx.wait_for(pred))
             .await

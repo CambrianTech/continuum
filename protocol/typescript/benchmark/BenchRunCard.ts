@@ -25,7 +25,10 @@ solver?: string,
  * `resolved` | `failed` (loud infra marker, incl. #2180 stalls the
  * deadline caught) | `active` (artifact activity within the stall
  * window) | `quiet` (non-terminal AND silent past the window — the
- * shape the projection exists to make visible).
+ * shape the projection exists to make visible) | `ungraded` (a staged
+ * workspace holds a real diff that no grade has ever seen — durable
+ * work awaiting a verdict, NOT a stall; see
+ * [`scan_workspace_artifact_cards`]).
  */
 phase: string, 
 /**

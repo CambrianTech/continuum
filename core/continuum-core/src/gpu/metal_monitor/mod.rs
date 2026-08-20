@@ -65,20 +65,21 @@ use tokio::time::Duration;
 /// Memory accounting mode chosen at construction time based on the
 /// Metal device's `hasUnifiedMemory` property.
 ///
-/// The pressure-broker treats both modes uniformly via the
-/// `GpuMonitor` trait; the distinction is internal to the sampler.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MemoryMode {
-    /// Apple Silicon — GPU and CPU share one address space. System
-    /// VM free pages ARE the GPU free signal.
-    Unified,
-    /// Intel Mac with discrete GPU (AMD / NVIDIA) — GPU has its own
-    /// VRAM pool separate from system DRAM. System VM stats would
-    /// conflate the pools and report `free > total`. Use
-    /// `MTLDevice.currentAllocatedSize()` for this-process GPU
-    /// usage; derive free from the device's working-set bound.
-    Discrete,
-}
+/// This was a sampler-private detail on the stated assumption that the
+/// distinction could stay internal. It could not: the ResourceGovernor
+/// must know whether VRAM and RAM are one pool or two before it can hand
+/// out bytes of either. The canonical enum now lives on the `GpuMonitor`
+/// trait, and this is a re-export so the sampler's own `match` arms and
+/// tests read unchanged.
+/// On THIS platform the two arms mean:
+///
+/// - `Unified`: Apple Silicon — GPU and CPU share one address space. System VM
+///   free pages ARE the GPU free signal.
+/// - `Discrete`: Intel Mac with a discrete GPU (AMD / NVIDIA) — its own VRAM pool,
+///   separate from system DRAM. System VM stats would conflate the pools and report
+///   `free > total`, so this arm uses `MTLDevice.currentAllocatedSize()` for
+///   this-process GPU usage and derives free from the device's working-set bound.
+pub use crate::gpu::monitor::MemoryMode;
 
 /// Tick cadence for the background sampler. 1Hz keeps Activity-Monitor
 /// parity (its baseline cadence) and is essentially free per call —
@@ -232,6 +233,14 @@ fn sample_memory(mode: MemoryMode, total: u64, device: &metal::Device) -> (u64, 
 impl GpuMonitor for MetalMonitor {
     fn platform(&self) -> &'static str {
         "metal"
+    }
+
+    /// The real `hasUnifiedMemory` answer, detected at construction. This is the
+    /// signal that tells the ResourceGovernor whether its VRAM and RAM ledgers
+    /// describe one physical pool or two — never inferred from `target_os`, since
+    /// an Intel Mac with a discrete AMD card also runs macOS and is NOT unified.
+    fn memory_mode(&self) -> MemoryMode {
+        self.memory_mode
     }
     fn device_name(&self) -> &str {
         &self.device_name

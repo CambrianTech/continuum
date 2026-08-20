@@ -29,6 +29,7 @@ use crate::cognition::serving_plan::{
     MIN_SERVE_CTX,
 };
 use crate::gpu::GpuMemoryManager;
+use crate::inference::lane_registry::LaneRecord;
 use crate::inference::llama_server::{
     ensure_model_serving, serving_v1_url, AdapterEntry, EnsureOutcome, LlamaServerControl,
     LlamaServerProcess, ServingSnapshot, ServingTarget, READY_TIMEOUT,
@@ -176,6 +177,60 @@ const MOE_PLAN_WINDOW_K: u32 = 8;
 /// — resolve once, pass the struct, never re-fetch ([[pass-the-model-struct-no-param-hell]]).
 type ModelResolver = Arc<dyn Fn(&str) -> Option<Model> + Send + Sync>;
 
+/// How the planner learns about a lane inherited from a PREVIOUS GENERATION of this core —
+/// a past form of ourself, still resident, still holding its weights + KV.
+///
+/// This exists because of a measured boot defect (#438, glass-boxed 2026-08-19 from the probe
+/// ledger). A core crashed with a healthy Qwen3.8-27B serving 4 lanes at a 25,075 window
+/// (`serving.grow served_lanes=4 target_window=25075`). The successor booted while that lane was
+/// STILL ALIVE holding ~45 GB, so the very first plan sampled `usable_gb=6` — an entirely HONEST
+/// reading of free VRAM — and, seeing 6 GB, selected a 7B, then a 14B at `MIN_SERVE_CTX`. The old
+/// lane was reclaimed 1.2 SECONDS LATER (`serving.lane_reclaim outcome=Reclaimed { pid: 11341 }`),
+/// freeing all 45 GB; by then the downshift had already been actuated and the 14B was resident.
+/// Ten seconds on, the planner was asking for the 27B again at `usable_gb=29..47` and could not
+/// get back — a model swap needs the relaunch the plan had already spent.
+///
+/// The mechanism is NOT a bogus sample and NOT a reap-ordering race in the reclaim itself. It is
+/// that BOTH anti-thrash defenses key on an incumbent, and boot has none:
+///   * [`plan_serving_stable`]'s at-rest credit (which exists precisely so "a model's OWN
+///     load/residency can never flap it out") never fires, because it credits back the
+///     INCUMBENT's weights and `plan_tx` is empty on a fresh boot;
+///   * [`downshift_gate`]'s sustained-ticks debounce (#368) is a no-op for the same reason —
+///     with no incumbent there is nothing to debounce against.
+///
+/// So the one moment when a transient squeeze is GUARANTEED — the successor overlapping its
+/// predecessor — is the exact moment every defense against transients is disabled. The comment
+/// on [`ServingDaemonModule::publish_plan`] stated this as intent ("Boot's first plan has no
+/// incumbent → plain selection"); it is the bug.
+///
+/// The fix is Joel's own framing of the governor: know our footprint, the system with us removed,
+/// and **any past forms of ourself** — then work within that. An inherited lane is the third
+/// category. It is ours, its memory is ours to reclaim, and it is therefore the incumbent the
+/// first plan should reason against, not an external squeeze to flee from.
+///
+/// A seam and not a direct call to [`crate::inference::lane_registry::live_lane`] for the same
+/// reason [`DecodeAgeSource`] is one: that function reads a filesystem singleton (the pidfile
+/// plus `~/.continuum`), so under `cargo test` — one process, shared HOME — it would report the
+/// OPERATOR's real 27B into unrelated unit tests. That exact leak was caught by measurement in
+/// `serving_consumer` and fixed the same way.
+type InheritedLaneSource = Arc<dyn Fn() -> Option<LaneRecord> + Send + Sync>;
+
+/// Which model the plan should treat as the incumbent, given what we have already PUBLISHED and
+/// what we INHERITED from a previous generation of this core.
+///
+/// A published plan always wins: once this core has decided, its own decision is the incumbent
+/// and the inherited lane is either already adopted or already reclaimed. The inherited lane
+/// only speaks for the window where `plan_tx` is still empty — the first plan after boot — which
+/// is precisely the window the #438 downshift lives in.
+///
+/// Deliberately does NOT verify that the inherited model is still on disk or still servable:
+/// [`plan_serving_stable`] already refuses an incumbent that is not among the candidates
+/// (falling straight through to a plain plan), so a stale record degrades to today's behaviour
+/// instead of pinning a model that no longer exists.
+fn incumbent_for_plan(published: Option<String>, inherited: Option<&LaneRecord>) -> Option<String> {
+    published.or_else(|| inherited.map(|rec| rec.model.clone()))
+}
+
 /// How the heartbeat learns whether a REAL generation delivered tokens recently — the input
 /// to the "trust busy lanes, probe quiet ones" short-circuit in
 /// [`ServingDaemonModule::spawn_health_heartbeat_if_due`]. Milliseconds since the last real
@@ -290,6 +345,10 @@ pub struct ServingDaemonModule {
     /// exonerate a later freeze. `std::sync::Mutex` — held only for a copy, never
     /// across an await.
     last_miss_slots_fp: Arc<std::sync::Mutex<Option<u64>>>,
+    /// Where the first plan after boot learns about a PAST FORM OF OURSELF still holding VRAM.
+    /// Defaults to the lane registry; tests own it ([`Self::set_inherited_lane`]). See
+    /// [`InheritedLaneSource`] for the measured defect this closes (#438).
+    inherited_lane: InheritedLaneSource,
     /// Where the heartbeat reads the real-turn failure streak (#363). Sustained real
     /// failure is wedge evidence that OUTRANKS a passing smoke probe — the undersized-slot
     /// wedge class rejects the fleet's real prompts while a tiny probe still succeeds.
@@ -550,6 +609,7 @@ impl ServingDaemonModule {
             }),
             decode_age: Arc::new(crate::inference::llama_server::ms_since_real_work),
             last_miss_slots_fp: Arc::new(std::sync::Mutex::new(None)),
+            inherited_lane: Arc::new(crate::inference::lane_registry::live_lane),
             real_fails: Arc::new(crate::inference::llama_server::consecutive_real_decode_failures),
             last_healthy_window: Arc::new(AtomicU32::new(0)),
             last_healthy_lanes: Arc::new(AtomicU32::new(0)),
@@ -693,6 +753,36 @@ impl ServingDaemonModule {
     /// plan — reacting to the authority's decision, not deciding). Weak handle so the
     /// observer never keeps the module alive past shutdown. Called once at wiring time,
     /// after the module is Arc-wrapped.
+    /// Tell the memory authority who we are and how big the device is — **before** the planner
+    /// is allowed to run on its tick.
+    ///
+    /// # Why this is wiring-time and not `initialize` (#438, measured 2026-08-19)
+    ///
+    /// `governed_vram_ceiling` budgets serving through
+    /// [`budget_for_replacing`](crate::resources::ResourceDaemon::budget_for_replacing) —
+    /// available PLUS serving's own resident bytes, because a consumer choosing its successor
+    /// releases what it holds. That add-back is what makes a past form of ourself count as OURS
+    /// rather than as an external squeeze. It is keyed on serving being a *registered consumer*:
+    /// with no registration there is no footprint to add back, and the credit silently becomes 0.
+    ///
+    /// These two calls used to live in `initialize`, which the runtime invokes AFTER the module
+    /// is registered — while [`Self::register_planner_on_authority_tick`] attaches the planner at
+    /// wiring time. The authority could therefore tick a plan in the gap, and did: a successor
+    /// core booting on top of its predecessor's resident 27B read `usable_gb = 0` on a 53 GiB
+    /// board for ~0.6 s, because its own 44 GB were filed under nobody. The downshift debounce
+    /// held the plan and nothing was actuated — but a guard covering for a budget that is
+    /// momentarily lying is not the same as the budget being honest
+    /// ([[hand-rolled-ops-are-waste-that-masks-the-real-defect]]).
+    ///
+    /// Ordering, not duplication: `seed_device_vram_prior` is a set-once prior and
+    /// `add_consumer` clears any stale quarantine for the id, so calling this early is safe.
+    /// The device's total VRAM is a static hardware fact available immediately — there is no
+    /// reason to learn it later than the first tick that plans against it.
+    pub fn declare_to_memory_authority(&self) {
+        seed_device_vram_prior(self.gpu.total_vram_bytes());
+        self.register_as_consumer();
+    }
+
     pub fn register_planner_on_authority_tick(self: &Arc<Self>) {
         let weak = Arc::downgrade(self);
         self.resource_daemon
@@ -727,6 +817,15 @@ impl ServingDaemonModule {
     #[cfg(test)]
     fn set_model_resolver(&mut self, resolver: ModelResolver) {
         self.model_resolver = resolver;
+    }
+
+    /// Test seam: own the inherited-lane evidence instead of reading the operator's real
+    /// pidfile + registry. See [`InheritedLaneSource`] for why this MUST be injected — the
+    /// production default reads a filesystem singleton, and the identical leak was already
+    /// caught by measurement in `serving_consumer`.
+    #[cfg(test)]
+    fn set_inherited_lane(&mut self, source: InheritedLaneSource) {
+        self.inherited_lane = source;
     }
 
     /// Test seam: own the heartbeat's real-decode evidence instead of inheriting whatever
@@ -786,7 +885,7 @@ impl ServingDaemonModule {
     /// measured axis. The footprint resolver is the SAME catalog + footprint
     /// estimator that feeds the serving plan, so there is ONE footprint authority
     /// on the box, not two.
-    fn register_as_consumer(&self) {
+    pub fn register_as_consumer(&self) {
         // The live servable-model candidates, sized to whatever shape serving is running,
         // so the tier-down ranker re-homes only to a model the autonomic plan itself could
         // serve (same suppress/pin/eligibility filter → one catalog, never two). Reads the
@@ -829,6 +928,35 @@ impl ServingDaemonModule {
             Arc::new(crate::modules::serving_tier_down::CatalogTierDownPolicy::new(candidates)),
         );
         self.resource_daemon.add_consumer(Arc::new(consumer));
+
+        // THE VISION HOLDER declares itself (#106/#395/#56). Measured on the live board
+        // before this: vram physUsed 50.95G / attributed 6.81G / UNOWNED 44.14G — the
+        // governor could see the bytes were gone and not who had them, and unowned reads
+        // as immovable, so a model that physically fits was refused. The vision provider
+        // was one of the largest unowned blocks (~9.4G for the VL-7B sidecar).
+        //
+        // Monitor-only, and deliberately so: it declares the bytes but refuses reclaim
+        // out loud, because the release path is the serving reconcile
+        // (`if main_sees { sidecar = None }`), not an inbound handler. Declaring a
+        // reclaim it cannot perform would have the authority plan against a release that
+        // silently never happens.
+        let vision_source = Arc::new(crate::modules::serving_footprints::CatalogFootprintSource::vision(
+            self.catalog.clone(),
+            self.subscribe_serving(),
+        ));
+        crate::probe!(
+            class = "resources.footprint.wired",
+            holder = "vision",
+            source = "CatalogFootprintSource::vision",
+            "vision footprint source registered with the authority",
+        );
+        self.resource_daemon
+            .add_consumer(Arc::new(crate::modules::serving_footprints::MonitoredHolder::new(
+                vision_source,
+                "vision provider (sidecar or main lane)",
+                "no on-demand release: vision residency is dropped by the serving \
+                 reconcile when the main lane can see (#106/#395)",
+            )));
     }
 
     /// Honest serving budget for this host, RIGHT NOW — from the live free
@@ -2381,13 +2509,22 @@ impl ServingDaemonModule {
     /// global registry / live GPU.
     fn publish_plan(&self, budget: HostBudget, candidates: &[ModelFootprint]) {
         // Hysteresis: pass the currently-served model as the incumbent so a
-        // transient free-memory dip doesn't thrash the served model. Boot's
-        // first plan has no incumbent (plan_tx holds None) → plain selection.
-        let incumbent = self
-            .plan_tx
-            .borrow()
-            .as_ref()
-            .map(|p| p.base_model.model_id.clone());
+        // transient free-memory dip doesn't thrash the served model.
+        //
+        // Boot's first plan used to have no incumbent (plan_tx holds None) and fall through to
+        // plain selection — and THAT was #438. A successor core boots while its predecessor's
+        // lane is still resident, so the one moment a squeeze is GUARANTEED is the one moment
+        // both the at-rest credit and the downshift debounce are disabled. Measured: the 27B's
+        // successor sampled `usable_gb=6`, downshifted to a 14B at MIN_SERVE_CTX, and reclaimed
+        // the 27B 1.2s later — freeing 45 GB it could no longer use. An inherited lane is not an
+        // external squeeze; it is a past form of ourself, and it is the incumbent.
+        let incumbent = incumbent_for_plan(
+            self.plan_tx
+                .borrow()
+                .as_ref()
+                .map(|p| p.base_model.model_id.clone()),
+            (self.inherited_lane)().as_ref(),
+        );
         let demand = self.serving_demand();
         match plan_serving_stable(budget, candidates, incumbent.as_deref(), demand) {
             Some(plan) => {
@@ -2841,6 +2978,45 @@ impl Drop for ServingLudicrousHold {
 
 /// True while at least one caller demands Ludicrous (Performance) serving — [`host_budget`]
 /// pins `PowerMode::Performance` regardless of the pressure read.
+/// Last VRAM ceiling the governed board actually reported this process, and when.
+/// The middle rung of the substitute-value ladder: when the board goes quiet, an old
+/// REAL number keeps the planner honest where a fabricated zero floors it.
+static LAST_GOOD_VRAM_CEILING: AtomicU64 = AtomicU64::new(0);
+static LAST_GOOD_VRAM_CEILING_AT_MS: AtomicU64 = AtomicU64::new(0);
+
+/// The device's PHYSICAL VRAM, seeded once at boot from the GPU monitor. A static
+/// hardware fact, known long before any pressure sample — which is precisely why a cold
+/// boot never has to guess zero. 0 = no GPU reported a size.
+static DEVICE_VRAM_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+/// Epoch milliseconds for the ladder's staleness arithmetic. Local because `now_ms` is
+/// currently hand-rolled in five files tree-wide; adding a sixth private copy here would
+/// be worse than reusing one, and hoisting all five is its own change, not this one.
+fn epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        // JUSTIFIED unwrap_or: the error case is a system clock set before 1970, and the
+        // 0 it yields is not a fabricated quantity — it is the sentinel this module
+        // already defines as "never recorded" (`LAST_GOOD_VRAM_CEILING_AT_MS == 0`), which
+        // makes the last-known rung correctly UNAVAILABLE rather than falsely fresh. The
+        // failure direction is toward less trust, not more, which is the only direction a
+        // default may ever move a decision.
+        .unwrap_or(0)
+}
+
+/// Seed the cold-boot prior. Called once as the serving daemon starts, BEFORE the first
+/// plan, so the very first tick already has a real number to stand on.
+pub fn seed_device_vram_prior(total_bytes: u64) {
+    DEVICE_VRAM_TOTAL.store(total_bytes, Ordering::Relaxed);
+    crate::probe!(
+        class = "serving.vram_ceiling_prior.seeded",
+        total_bytes = total_bytes,
+        gib = format!("{:.2}", total_bytes as f64 / 1024.0 / 1024.0 / 1024.0).as_str(),
+        "cold-boot VRAM prior seeded from the device",
+    );
+}
+
 pub fn serving_ludicrous_active() -> bool {
     SERVING_LUDICROUS_HOLDS.load(Ordering::Acquire) > 0
 }
@@ -2876,7 +3052,28 @@ fn governed_vram_ceiling(resource_daemon: &ResourceDaemon) -> Option<u64> {
         .kinds
         .iter()
         .find(|k| k.kind == ResourceKind::Vram)
-        .map(|_| resource_daemon.available_for(SERVING_CONSUMER_ID, ResourceKind::Vram))
+        // THE LAST FABRICATION POINT IN THE CHAIN (#438). A row can EXIST while its
+        // capacity reads 0 — `ledger.rs`'s `capacity.get(&kind).unwrap_or(0)` invents
+        // that zero for a kind whose capacity source has not reported yet, which at boot
+        // is simply true for a second. The ceiling ladder then classified it `Measured(0)`
+        // and passed it straight through, correctly by its own rules, because a zero that
+        // arrives as a number is indistinguishable from one that was observed.
+        //
+        // A governed VRAM kind with ZERO CAPACITY is never a true fact about a machine
+        // that reports a GPU: capacity is the device's size, not its free space, and a
+        // device does not shrink to nothing. So a zero-capacity row is treated as NO
+        // READING — the ladder falls to last-known, then to the device prior — while a
+        // zero AVAILABLE on a real capacity stays a genuine measurement (a full GPU).
+        .filter(|k| k.capacity_bytes > 0)
+        // budget_for_replacing, NOT available_for. The serving planner's whole job is to
+        // decide what should be resident NEXT, and the swap releases what is resident now
+        // — so counting serving's own weights against serving's own plan is circular. It
+        // was measured doing exactly that on 2026-08-19: 30.25 GB resident subtracted from
+        // a 55.1 GB ceiling handed the planner 16.9 GB, a 27B does not fit in 16.9 GB, so
+        // it abandoned the 27B it was ALREADY RUNNING for a 7B, then a 0.5B. `acquire`
+        // still uses available_for — a lease must never be granted against bytes not yet
+        // released; only the replace-myself DECISION gets the add-back.
+        .map(|_| resource_daemon.budget_for_replacing(SERVING_CONSUMER_ID, ResourceKind::Vram))
 }
 
 /// The governed VRAM ceiling for a planner that has no way to represent "unknown",
@@ -2899,25 +3096,83 @@ fn governed_vram_ceiling(resource_daemon: &ResourceDaemon) -> Option<u64> {
 /// Joel, 2026-08-05: "this philosophy of 'errors are bad' has ruined most of my
 /// projects" — a fallback value is only legitimate when the fallback is VISIBLE.
 fn governed_vram_ceiling_or_report(resource_daemon: &ResourceDaemon, site: &'static str) -> u64 {
-    match governed_vram_ceiling(resource_daemon) {
-        Some(bytes) => bytes,
-        None => {
+    // THE SUBSTITUTE-VALUE LADDER (#438). This used to be `.unwrap_or(0)`, and that zero
+    // — which no monitor ever measured — is what handed the planner `usable_gb = 0` at
+    // boot and got a 0.5B spawned on a 64 GB machine. See
+    // [`crate::resources::ceiling_prior`] for why 0 is safe for a GRANTER and
+    // catastrophic for a PLANNER, and why every rung below beats it.
+    // DISCRIMINATOR (#438): if a Vram row exists but carries zero capacity, say so with
+    // the numbers, so the next boot PROVES the mechanism instead of leaving it inferred.
+    if let Some(row) = resource_daemon
+        .board()
+        .kinds
+        .iter()
+        .find(|k| k.kind == ResourceKind::Vram)
+    {
+        if row.capacity_bytes == 0 {
             crate::probe!(
-                class = "serving.vram_ceiling_unknown",
+                class = "serving.vram_capacity_absent",
                 site = site,
-                planning_with_bytes = 0u64,
-                "governed VRAM ceiling UNKNOWN at {site} — no Vram row on the resource board. \
-                 Planning as 0 bytes, which is NOT evidence the GPU is full."
+                capacity_bytes = row.capacity_bytes,
+                physical_used_bytes = row.physical_used_bytes,
+                available_bytes = row.available_bytes,
+                "a Vram row exists with ZERO CAPACITY — the capacity source has not \
+                 reported. Falling to the prior ladder; this is NOT evidence of a GPU \
+                 that shrank to nothing.",
             );
-            tracing::warn!(
-                site,
-                "governed VRAM ceiling UNKNOWN (no Vram row on the resource board) — \
-                 planning as 0 bytes. If serving is floored or refusing lanes on a machine \
-                 with free VRAM, this is why: the governor has not reported, not that the \
-                 GPU is full."
-            );
-            0
         }
+    }
+
+    let board = governed_vram_ceiling(resource_daemon);
+
+    // Record every real reading so the NEXT silent tick has something honest to stand on.
+    if let Some(bytes) = board {
+        LAST_GOOD_VRAM_CEILING.store(bytes, Ordering::Relaxed);
+        LAST_GOOD_VRAM_CEILING_AT_MS.store(epoch_ms(), Ordering::Relaxed);
+    }
+
+    let last_at = LAST_GOOD_VRAM_CEILING_AT_MS.load(Ordering::Relaxed);
+    let reading = crate::resources::ceiling_prior::decide(crate::resources::CeilingEvidence {
+        board_bytes: board,
+        last_good: (last_at > 0).then(|| {
+            (
+                LAST_GOOD_VRAM_CEILING.load(Ordering::Relaxed),
+                epoch_ms().saturating_sub(last_at),
+            )
+        }),
+        device_total_bytes: match DEVICE_VRAM_TOTAL.load(Ordering::Relaxed) {
+            0 => None,
+            n => Some(n),
+        },
+    });
+
+    // Only NON-measured rungs are worth a probe row: a healthy board reading every tick
+    // is the steady state and would drown the stream (#399). A prior in use is exactly
+    // the condition an operator needs to see, so it always speaks.
+    if reading.provenance != crate::resources::Provenance::Measured {
+        crate::probe!(
+            class = "serving.vram_ceiling_prior",
+            site = site,
+            bytes = reading.bytes,
+            gib = format!("{:.2}", reading.bytes as f64 / 1024.0 / 1024.0 / 1024.0).as_str(),
+            provenance = format!("{:?}", reading.provenance).as_str(),
+            why = reading.note,
+            "planning against a SUBSTITUTE ceiling, not a measurement",
+        );
+    }
+
+    // A NAMED BRANCH, NOT `unwrap_or(0)`. The value is the same; the difference is that
+    // the zero is now a decision someone wrote down and a reviewer can argue with,
+    // instead of a default that reads like punctuation. `unwrap_or` states no reason and
+    // leaves no place to put one — which is exactly how the original zero survived
+    // review at six call sites.
+    match reading.usable_bytes() {
+        Some(bytes) => bytes,
+        // No board, no history, no device. Planning against 0 makes the planner decline,
+        // and declining is the honest outcome when nothing on this machine can say how
+        // much VRAM exists. Unreachable on any host with a GPU — it is the ladder's last
+        // rung, not (as before) the first thing a cold boot hit.
+        None => 0,
     }
 }
 
@@ -3050,8 +3305,22 @@ fn moe_host_cache_lease_inputs(
 }
 
 pub fn footprint_for(model: &Model) -> Option<ModelFootprint> {
-    let path = crate::model_registry::artifacts::resolve_gguf_for_model(model)?;
-    let weights_bytes = std::fs::metadata(&path).ok()?.len();
+    // THE ROW IS THE SOURCE OF TRUTH. `weights_bytes` is stamped once, where the GGUF
+    // path is resolved (`artifacts::hydrate_artifact_sizes`). This function runs on the
+    // governor's accounting tick, so re-`stat`ing the file per call put filesystem I/O
+    // on a hot path for a number that cannot change while the path is valid.
+    //
+    // The stat REMAINS as the fallback, and it is not dead code: rows built by hand in
+    // tests, fixtures, and any construction path that never went through the resolver
+    // carry `weights_bytes: None`. Falling back keeps those honest rather than sizing
+    // them at zero — but the fallback is the exception, not the steady state.
+    let weights_bytes = match model.weights_bytes {
+        Some(n) => n,
+        None => {
+            let path = crate::model_registry::artifacts::resolve_gguf_for_model(model)?;
+            std::fs::metadata(&path).ok()?.len()
+        }
+    };
     let mut fp = footprint_from_parts(
         &model.id,
         weights_bytes,
@@ -3280,6 +3549,8 @@ fn snapshot_from_outcome(
             if served_context_window > 0 =>
         {
             ServingSnapshot {
+                // A lane with a verified window is serving, not loading.
+                loading_model: None,
                 // The claim carries the age of its evidence. Stamped HERE, at the
                 // moment the reconcile confirmed readiness — not at read time, which
                 // is what let `ready:true` survive a SIGKILLed process for as long as
@@ -3324,7 +3595,21 @@ fn snapshot_from_outcome(
         // a ready snapshot with a zero window; that would poison every binding
         // persona's budget. Publish "nothing live"; the server stays up and the
         // next reconcile re-reads /props.
-        EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. } => ServingSnapshot::empty(),
+        // LOADING. The lane is up (spawned or already serving) but `/props` has not yet
+        // given us a real window, so it is not READY. This arm used to return
+        // `ServingSnapshot::empty()` and DISCARD `desired` — throwing away the only
+        // knowledge of what is being brought up, for the whole load window. Measured on a
+        // cold boot 2026-08-19: physical climbed 29.90 → 36.88 GB while serving attributed
+        // 0.00 GB, because the consumer had nothing to name. Those bytes read as unowned,
+        // and a plan computed in that window sizes against a machine that looks two thirds
+        // full of someone else's memory.
+        //
+        // The bytes exist from spawn, not from readiness. Name the model so the consumer
+        // can charge them.
+        EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. } => ServingSnapshot {
+            loading_model: Some(desired.to_string()),
+            ..ServingSnapshot::empty()
+        },
         // A Degraded reconcile PUBLISHES its reason — the spawn/probe failure
         // (e.g. a missing llama-server binary, its path in the text) reaches
         // `serving/status` instead of dying as an anonymous empty snapshot
@@ -3356,11 +3641,13 @@ impl ServiceModule for ServingDaemonModule {
         // free functions + adapters read "what's live" as a pointer instead of
         // each probing /v1/models. Set-once (singleton daemon).
         let _ = crate::inference::llama_server::install_serving_state(self.subscribe_serving());
-        // Register serving as a MEASURED ResourceConsumer with the one per-machine
-        // authority (#79). See `register_as_consumer` — this is monitor-not-reserve:
-        // no lease acquired, `available` math untouched, the authority simply stops
-        // being blind to the ~multi-GB model actually resident.
-        self.register_as_consumer();
+        // NOTE: the VRAM prior is seeded and serving is registered as a ResourceConsumer at
+        // WIRING time ([`declare_to_memory_authority`], called from `ipc/mod.rs` before
+        // `register_planner_on_authority_tick`) — NOT here. `initialize` runs after the module
+        // is handed to the runtime, and the authority's tick can fire a plan in between; a plan
+        // computed while serving is not yet a registered consumer gets NO add-back for its own
+        // residency, which is the #438 `usable_gb = 0` window. Both calls are idempotent, so
+        // this is an ordering constraint, not a duplication hazard.
         // Reap orphaned llama-server lanes left by a crashed/SIGKILLed predecessor
         // BEFORE reconciling to the new plan — a mid-eval crash leaves ephemeral
         // lanes (their own scanned ports, no pidfile) holding ~6 GB each with zero
@@ -4001,6 +4288,12 @@ mod tests {
             // so the reconcile publishes a READY snapshot carrying a real window.
             Ok(11008)
         }
+        async fn served_lanes(&self) -> Result<u32, LlamaServerError> {
+            // 0 = "this fake's /props names no slot count", i.e. nothing to compare
+            // on the lane axis. These daemon tests assert the window/readiness path,
+            // so the lane operand stays inert exactly as it was before it was probed.
+            Ok(0)
+        }
         async fn decode_smoke_ok(&self) -> bool {
             // Driven by `smoke_ok` so a test can wedge the COMPUTE path (the #175
             // liveness-heartbeat tests) independently of the control plane; defaults
@@ -4021,6 +4314,8 @@ mod tests {
     fn fake_model(id: &str) -> Model {
         use crate::model_registry::types::{Arch, MultiPartyChatStrategy};
         Model {
+            weights_bytes: None,
+            mmproj_bytes: None,
             id: id.to_string(),
             name: None,
             provider: "llamacpp-local".to_string(),
@@ -4088,6 +4383,12 @@ mod tests {
         // can stamp (`llama_server`'s `note_real_decode` coverage does), which silently turns
         // the trust short-circuit on and reds these tests by scheduling order alone.
         daemon.set_decode_age_source(Arc::new(|| None));
+        // NO inherited lane — the fresh-machine state every plan test below assumes. Left to the
+        // default this reads the OPERATOR's real pidfile + lane registry, so a developer with a
+        // 27B serving would silently hand every planning test an incumbent it never declared.
+        // Same class of leak as the decode-age global above; caught by measurement in
+        // `serving_consumer` before it could ever be caught by a red.
+        daemon.set_inherited_lane(Arc::new(|| None));
         daemon
     }
 
@@ -4426,6 +4727,98 @@ mod tests {
         assert_eq!(wedge_heal_floor(9_984, 2, false, 0, 0), 9_984);
     }
 
+    /// The #438 boot geometry, in the shape taken from the live ledger (2026-08-19): a 27B whose
+    /// weights are ~19 GB is still resident from the previous generation, so the successor's
+    /// first sample of free VRAM reads ~6 GB. Only something small fits that; the 27B does not.
+    fn boot_squeeze() -> (HostBudget, Vec<ModelFootprint>) {
+        (
+            HostBudget {
+                usable_bytes: 6 * GB,
+                perf_cores: 6,
+            },
+            vec![
+                footprint_from_parts("qwen3-27b", 19 * GB, 8192, true).unwrap(),
+                footprint_from_parts("coder-4b", 3 * GB, 8192, true).unwrap(),
+            ],
+        )
+    }
+
+    fn inherited_27b() -> LaneRecord {
+        LaneRecord {
+            pid: 11341,
+            port: 58057,
+            role: crate::inference::lane_registry::LaneRole::Live,
+            model: "qwen3-27b".into(),
+            context_window: 25_075,
+            lanes: 4,
+        }
+    }
+
+    // what this catches: THE #438 boot downshift, measured live 2026-08-19. A successor core
+    // boots while its predecessor's 27B still holds ~45 GB, so the first plan honestly samples
+    // ~6 GB free and — with no incumbent — plainly selects the biggest thing that fits: a 14B at
+    // the floor. The predecessor was then reclaimed 1.2s later, freeing memory the plan had
+    // already spent. Counting the inherited lane as the incumbent re-arms the at-rest credit
+    // that exists for exactly this ("a model's OWN residency can never flap it out"), so the
+    // 27B holds. Regression here = every crash-and-restart silently demotes the served model.
+    #[tokio::test]
+    async fn a_lane_inherited_from_a_previous_generation_is_the_incumbent_the_first_plan_defends() {
+        let mut daemon = daemon_with(Arc::new(FakeServer::healthy(
+            Arc::new(AtomicUsize::new(0)),
+            true,
+        )));
+        daemon.set_inherited_lane(Arc::new(|| Some(inherited_27b())));
+
+        let (budget, candidates) = boot_squeeze();
+        daemon.publish_plan(budget, &candidates);
+
+        let plan = daemon.plan_tx.borrow().clone().expect("a plan");
+        assert_eq!(
+            plan.base_model.model_id, "qwen3-27b",
+            "the inherited 27B is ours and its bytes are ours to reclaim — the successor must \
+             not flee its own predecessor onto a 14B"
+        );
+    }
+
+    // what this catches: the NEGATIVE control for the test above — proof the fixture really is
+    // a squeeze and the assertion is not vacuous. Same budget, same candidates, no inherited
+    // lane: the planner correctly downshifts, because on a genuinely 6 GB machine a 27B does
+    // not fit. If this ever also returns the 27B, the test above proves nothing.
+    #[tokio::test]
+    async fn without_a_past_form_of_ourself_a_six_gigabyte_box_really_does_downshift() {
+        let daemon = daemon_with(Arc::new(FakeServer::healthy(
+            Arc::new(AtomicUsize::new(0)),
+            true,
+        )));
+
+        let (budget, candidates) = boot_squeeze();
+        daemon.publish_plan(budget, &candidates);
+
+        let plan = daemon.plan_tx.borrow().clone().expect("a plan");
+        assert_eq!(
+            plan.base_model.model_id, "coder-4b",
+            "with no incumbent to credit, 6 GB genuinely cannot hold a 19 GB model"
+        );
+    }
+
+    // what this catches: precedence. Once THIS core has published a decision, its own plan is
+    // the incumbent and a stale registry record must never override it — otherwise a leftover
+    // .lane file would pin the model forever against every later replan.
+    #[test]
+    fn a_published_plan_outranks_an_inherited_lane() {
+        assert_eq!(
+            incumbent_for_plan(Some("coder-14b".into()), Some(&inherited_27b())).as_deref(),
+            Some("coder-14b"),
+        );
+        // …and with nothing published, the inherited lane speaks.
+        assert_eq!(
+            incumbent_for_plan(None, Some(&inherited_27b())).as_deref(),
+            Some("qwen3-27b"),
+        );
+        // …and a true cold boot still has no incumbent at all.
+        assert_eq!(incumbent_for_plan(None, None), None);
+    }
+
     // what this catches: a published plan drives a reconcile that brings the
     // server up and publishes a ready ServingSnapshot for that model — the
     // plan→reality wiring. Regression here = the daemon decides but never acts.
@@ -4475,6 +4868,7 @@ mod tests {
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
+            loading_model: None,
         });
         let budget = HostBudget {
             usable_bytes: 45 * GB,
@@ -4539,6 +4933,7 @@ mod tests {
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
+            loading_model: None,
         });
         (daemon, plan_window)
     }
@@ -4726,6 +5121,7 @@ mod tests {
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
+            loading_model: None,
         }
     }
 
@@ -5100,6 +5496,7 @@ mod tests {
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
+            loading_model: None,
         });
         // A quarter of the plan is a 300% shortfall — far past the margin — but the
         // gain must still PERSIST before it buys a relaunch (BigMama's sustained-delta
@@ -5131,6 +5528,7 @@ mod tests {
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
+            loading_model: None,
         });
         assert!(
             daemon.reconcile_to_plan().is_none(),
@@ -5161,6 +5559,7 @@ mod tests {
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
+            loading_model: None,
         });
         let budget = HostBudget {
             usable_bytes: 45 * GB,

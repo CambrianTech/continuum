@@ -104,10 +104,16 @@ pub(super) fn compose_split(p: &SystemPromptParts<'_>) -> ComposedSystemPrompt {
 }
 
 /// Assemble the WHOLE system prompt as one string — `stable ++ trailing`, byte-identical
-/// to the pre-split output. Kept so callers/tests that want the composed whole are
-/// unchanged; the live message builder uses [`compose_split`] to place `stable` in the
-/// cacheable system message and `trailing` on the newest turn (the #266 KV-reuse fix).
-pub(super) fn compose(p: &SystemPromptParts<'_>) -> String {
+/// to the pre-split output.
+///
+/// TEST-ONLY, and gated so it says so: production has exactly one composer,
+/// [`compose_split`], which places `stable` in the cacheable system message and `trailing`
+/// on the newest turn (the #266 KV-reuse fix). This exists because the assertions below
+/// are about prompt CONTENT — what appears, in what order — which is easier to state
+/// against the whole string than against the halves. It is not a second composer: it is
+/// [`compose_split`]'s own output concatenated, so it cannot drift from it.
+#[cfg(test)]
+fn compose(p: &SystemPromptParts<'_>) -> String {
     let c = compose_split(p);
     let mut s = c.stable;
     s.push_str(&c.trailing);

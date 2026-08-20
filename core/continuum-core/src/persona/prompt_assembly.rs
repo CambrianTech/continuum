@@ -1044,6 +1044,7 @@ mod tests {
                 &self,
                 _within: Duration,
                 _window: usize,
+                _room: Option<uuid::Uuid>,
             ) -> Result<Vec<RoomMember>, AircError> {
                 Ok(vec![RoomMember {
                     peer_id: self.other,

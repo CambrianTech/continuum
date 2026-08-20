@@ -74,6 +74,8 @@ pub struct AgentSolveParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub room: Option<Uuid>,
+    // See `RunVisibility` below: the roomless case is now DECLARED rather than defaulted,
+    // because a silent invisible run is how 13,209 of them accumulated unnoticed (#425).
     /// Fire-and-poll (#86): when true, the solve is spawned DETACHED — `run` returns a job
     /// handle NOW (arms empty, `detached: true`) and the REAL result (patch + acts) lands in
     /// `~/.continuum/progress/agent-solve-<run_id>.json`. A real agentic drive (N full-generation
@@ -176,6 +178,68 @@ pub struct AgentSolveParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "number")]
     pub attempts: Option<u32>,
+}
+
+/// Whether this run's acts will be PERCEIVABLE, decided once and named.
+///
+/// # Why this is a type and not `p.room.unwrap_or_else(Uuid::nil)`
+///
+/// It was that `unwrap_or_else` (#425). A nil room makes `apply_act` skip receipt radiation
+/// entirely, so the run executes normally and lands in NO transcript — and nothing anywhere
+/// said so. 13,209 turns accumulated in that state (8.7% of all turns; 35% for one citizen)
+/// before anyone measured it, because an invisible run and a visible one produce identical
+/// logs. That is the same defect shape as a fetch cap that silently truncates: the system
+/// took a consequential branch and declined to mention it.
+///
+/// A roomless run is still LEGITIMATE — a bare `agent/solve` with no activity behind it has
+/// no room to radiate into, and inventing one would put receipts on a phantom (live-proven
+/// 2026-08-12, it stole the single-room chat projection). So this does not refuse. It
+/// DECLARES, so the invisibility is a stated property of the run rather than a silence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunVisibility {
+    /// Acts radiate `persona:act` receipts into this room — perceivable by a human screen
+    /// and a citizen mind through the one ViewState pipe.
+    InRoom(Uuid),
+    /// No room: the work executes and is perceived by nobody, and no curriculum-visible
+    /// room turn is produced.
+    Invisible,
+}
+
+impl RunVisibility {
+    /// The single place the room param becomes a decision.
+    pub fn resolve(room: Option<Uuid>) -> Self {
+        match room {
+            // A caller passing the nil uuid EXPLICITLY means the same thing as omitting it;
+            // treating them differently would let a nil slip through as "in room", which is
+            // exactly the silent branch this type exists to close.
+            Some(r) if !r.is_nil() => RunVisibility::InRoom(r),
+            _ => RunVisibility::Invisible,
+        }
+    }
+
+    /// The uuid the act pipeline expects — nil for the invisible case, which is the shape
+    /// `apply_act` already keys its skip on.
+    pub fn room_id(&self) -> Uuid {
+        match self {
+            RunVisibility::InRoom(r) => *r,
+            RunVisibility::Invisible => Uuid::nil(),
+        }
+    }
+
+    /// What to say when the run will be invisible. `None` when it is perceivable — a
+    /// visible run needs no announcement, and warning on the happy path trains people to
+    /// ignore the warning.
+    pub fn warning(&self) -> Option<&'static str> {
+        match self {
+            RunVisibility::InRoom(_) => None,
+            RunVisibility::Invisible => Some(
+                "this run has NO room: its acts execute but radiate no receipts, so nobody \
+                 — human or citizen — can perceive the work, and it produces no room turn. \
+                 Pass `room` (benchmark/dispatch supplies its per-run activity room) to make \
+                 the run perceivable.",
+            ),
+        }
+    }
 }
 
 /// What the caller grades when the solve returns. Two genuinely different contracts,
@@ -557,13 +621,48 @@ impl ActionCommand for AgentSolve {
                                     Ok(diff) => {
                                         use sha2::{Digest, Sha256};
                                         let sha = format!("{:x}", Sha256::digest(diff.as_bytes()));
-                                        if let Some(dir) = inner.capture_dir.as_ref() {
-                                            let _ = std::fs::create_dir_all(dir);
-                                            let _ = std::fs::write(
-                                                std::path::Path::new(dir)
-                                                    .join(format!("attempt-{attempt}.patch")),
-                                                &diff,
-                                            );
+                                        // CUSTODY IS NOT OPTIONAL. The workspace is reset for
+                                        // the next attempt, so this write is the only moment
+                                        // her diff exists anywhere durable. Every failure to
+                                        // keep it is announced — a silent drop is how a whole
+                                        // round of evidence was lost (see `run_artifact_dir`).
+                                        match run_artifact_dir(&run_id, inner.capture_dir.as_deref())
+                                        {
+                                            Some(dir) => {
+                                                let path = dir
+                                                    .join(format!("attempt-{attempt}.patch"));
+                                                if let Err(e) = std::fs::create_dir_all(&dir)
+                                                    .and_then(|_| std::fs::write(&path, &diff))
+                                                {
+                                                    tracing::error!(
+                                                        run_id = %run_id,
+                                                        attempt,
+                                                        path = %path.display(),
+                                                        error = %e,
+                                                        "PATCH CUSTODY LOST — her diff could not \
+                                                         be persisted and the workspace is about \
+                                                         to be reset; this attempt's verdict will \
+                                                         have no evidence behind it"
+                                                    );
+                                                } else {
+                                                    crate::probe!(
+                                                        class = "benchmark.patch.kept",
+                                                        run_id = %run_id,
+                                                        attempt,
+                                                        bytes = diff.len(),
+                                                        sha256 = %sha,
+                                                        path = %path.display(),
+                                                        "attempt patch persisted — the verdict has \
+                                                         evidence behind it"
+                                                    );
+                                                }
+                                            }
+                                            None => tracing::error!(
+                                                run_id = %run_id,
+                                                attempt,
+                                                "PATCH CUSTODY LOST — no artifact directory could \
+                                                 be resolved (no CONTINUUM_HOME, no home dir)"
+                                            ),
                                         }
                                         sha
                                     }
@@ -872,14 +971,57 @@ impl ActionCommand for AgentSolve {
 
 /// Result file for a detached solve run, polled after the ack (mirrors the eval/competition
 /// progress-ledger convention: `~/.continuum/progress/agent-solve-<run_id>.json`).
+///
+/// Both the directory and the file name come from `cognition::swe_bench`, which is also where
+/// the boot reaper and the reboot guard READ them. They were spelled out independently here
+/// until 2026-08-18 and the names did not match, so neither reader ever saw a run this writer
+/// produced ([`crate::cognition::swe_bench::SOLVE_LEDGER_PREFIX`] carries the measurement).
 fn agent_solve_ledger_path(run_id: &str) -> Option<std::path::PathBuf> {
-    let base = std::env::var("CONTINUUM_HOME")
-        .map(std::path::PathBuf::from)
-        .ok()
-        .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))?;
-    let dir = base.join("progress");
+    let dir = crate::cognition::swe_bench::solve_ledger_dir();
     let _ = std::fs::create_dir_all(&dir);
-    Some(dir.join(format!("agent-solve-{run_id}.json")))
+    Some(crate::cognition::swe_bench::solve_ledger_path(&dir, run_id))
+}
+
+/// Where THIS run's artifacts live — the patch above all. One definition, so a run's
+/// evidence never depends on how it happened to be launched.
+///
+/// `capture_dir` is an OPTIONAL caller courtesy (a hand-launched run naming its own
+/// folder). It was also, until 2026-08-18, the ONLY thing standing between an attempt
+/// and total evidence loss: the patch write sat behind `if let Some(dir) =
+/// capture_dir` with no else, so every run that did not pass one silently discarded
+/// the diff. Measured that day: all 25 patches on this box live under
+/// `benchmarks/swe/captures/run-*` — hand-launched runs. Every CITIZEN-dispatched run
+/// (`claim-*`, i.e. the entire path the benchmark actually runs on) kept none. A
+/// citizen wrote 41,166 bytes against sympy-13480, broke 40 previously-passing tests,
+/// and the one artifact that could say whether that was a surgical edit or a clobber
+/// was gone before anyone could read it.
+///
+/// So custody stops being a parameter. Absent an explicit dir, it derives from
+/// [`swe_cache_dir`] — the benchmarks root, whose own doc says to read it from there and
+/// never from a remembered path.
+///
+/// It lands in `benchmarks/swe/captures/run-<id>/`, which is EXACTLY where the 25
+/// hand-launched patches already live. That is deliberate on two counts, and my first cut
+/// got both wrong by inventing `progress/run-<id>/` instead (caught by Joel the same
+/// hour):
+///
+/// 1. **One home per artifact class.** A second location for "her patch" is the parallel
+///    allocator this codebase keeps paying for — the exact sin I had written down that
+///    morning and then committed.
+/// 2. **It must be a GOVERNED directory.** `benchmarks` is a registered `TrackedDir` with
+///    a decided eviction story; `progress` is neither tracked nor decided, so patches
+///    there would have been unbounded growth in an unmanaged dir — precisely what
+///    CLAUDE.md's "no new cache dir without an eviction decision" rule exists to stop
+///    (the 460 GB incident).
+fn run_artifact_dir(run_id: &str, capture_dir: Option<&str>) -> Option<std::path::PathBuf> {
+    if let Some(d) = capture_dir {
+        return Some(std::path::PathBuf::from(d));
+    }
+    Some(
+        crate::cognition::swe_bench::swe_cache_dir()
+            .join("captures")
+            .join(format!("run-{run_id}")),
+    )
 }
 
 /// Global admission gate for scored solve DRIVES — the fix for the lane-thrash death
@@ -1172,7 +1314,20 @@ impl AgentSolve {
             // honest roomless fallback for a bare `agent/solve` with no activity
             // behind it; a DISPATCHED run always carries one, and that is what
             // turns her acts into room receipts instead of invisible work.
-            let room = p.room.unwrap_or_else(Uuid::nil);
+            let visibility = RunVisibility::resolve(p.room);
+            if let Some(why) = visibility.warning() {
+                // Announce ONCE, at the one place the branch is taken. This is the whole
+                // fix for #425's remaining half: the roomless state was never wrong, it was
+                // never SAID, and 13,209 turns went by in it.
+                crate::probe!(
+                    class = "agent.solve.roomless",
+                    run_id = %p.run_id.clone().unwrap_or_default(),
+                    persona_id = %p.persona_id,
+                    "solve run is INVISIBLE — no room, so no receipts and no room turn (#425)",
+                );
+                tracing::warn!(run_id = ?p.run_id, "agent/solve: {why}");
+            }
+            let room = visibility.room_id();
             // The workspace-grounding sentence counters the observed "new project ritual"
             // (glass-boxed 2026-07-22 via turn capture: her first act on a seeded task was
             // code/create-workspace("my_stack_project") + a Rust hello-world + git/commit —
@@ -1186,9 +1341,10 @@ impl AgentSolve {
             //
             // The old text said "writing files with code/write" and "graded on the files your tools
             // WRITE". That was written for from-scratch build gyms, where new files ARE the
-            // deliverable. Nested beneath it, `swe_task_prompt` says the opposite: "do not add new
-            // top-level files — fix it IN PLACE with code/edit. The fix must land in the existing
-            // files."
+            // deliverable. Nested beneath it, the SWE task text says the opposite: "do not add new
+            // top-level files … find the existing source of the fault and edit it in place." That
+            // text is the dispatch CARD BODY (`benchmark::BenchmarkSweSetup`) — the card IS the
+            // task, so the card owns the deliverable shape.
             //
             // Outer contract first, inner constraint buried under "Task:" — and she obeyed the
             // outer one. Three consecutive sympy-21379 runs, all full-effort, all writing NEW files
@@ -1693,22 +1849,11 @@ fn transfer_solve_experience(
     }
 }
 
-/// Git pathspecs excluding the universal never-a-solution byproducts a verification run leaves
-/// behind — Python bytecode/caches, tool caches, JS deps, OS cruft. Glass-boxed 2026-07-22: a
-/// `python3 -c "from calc import ..."` verify step left `__pycache__/calc.cpython-314.pyc` in the
-/// patch, polluting the graded artifact — real SWE-bench/aider patches are SOURCE-only. These are
-/// never a solution, so they're excluded from both the diff and files_changed; anything a task
-/// might legitimately produce (incl. `build`/`dist`/`target`) is kept.
-const PATCH_EXCLUDES: &[&str] = &[
-    ":(exclude,glob)**/__pycache__/**",
-    ":(exclude,glob)**/*.pyc",
-    ":(exclude,glob)**/*.pyo",
-    ":(exclude,glob)**/.pytest_cache/**",
-    ":(exclude,glob)**/.mypy_cache/**",
-    ":(exclude,glob)**/.ruff_cache/**",
-    ":(exclude,glob)**/node_modules/**",
-    ":(exclude,glob)**/.DS_Store",
-];
+/// What is NOT part of a solution lives in ONE place, beside the other reading of her work:
+/// [`crate::commands::benchmark::SOLUTION_PATH_EXCLUDES`]. This file used to carry its own
+/// near-copy that omitted `.airc`, which is precisely the drift `workspace_candidate_diff`'s
+/// doc warned about — see the shared constant for the two incidents.
+use crate::commands::benchmark::SOLUTION_PATH_EXCLUDES as PATCH_EXCLUDES;
 
 /// Unified diff of the SOLUTION changes in the workspace (tracked edits + new files), and the
 /// touched paths — build/cache byproducts ([`PATCH_EXCLUDES`]) filtered out so the graded artifact
@@ -1866,9 +2011,11 @@ crate::register_stateless_command!(AgentSolve);
 /// deliverable looks like — the task owns that, and the two used to contradict each other.
 ///
 /// The old text said "writing files with code/write" and "graded on the files your tools WRITE",
-/// which is right for a from-scratch build gym. Nested beneath it, `swe_task_prompt` says the
-/// opposite: "do not add new top-level files — fix it IN PLACE with code/edit. The fix must land
-/// in the existing files." Outer contract first, inner constraint under "Task:" — and she obeyed
+/// which is right for a from-scratch build gym. Nested beneath it, the SWE task text says the
+/// opposite: "do not add new top-level files … find the existing source of the fault and edit it
+/// in place" — that text is the dispatch CARD BODY (`benchmark::BenchmarkSweSetup`), which owns
+/// the deliverable shape because the card IS the task.
+/// Outer contract first, inner constraint under "Task:" — and she obeyed
 /// the outer one. Three consecutive full-effort sympy-21379 runs wrote NEW repro scripts and never
 /// edited the library (v3: 1 file, v4: 3 files, v5: 2 files; 0 edits every time). That read as a
 /// judgement gap for a whole session; it was two halves of one framing disagreeing.
@@ -1902,10 +2049,105 @@ fn frame_task(task: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    mod run_visibility {
+        use super::super::RunVisibility;
+        use uuid::Uuid;
+
+        // what this catches: the roomless branch going quiet again. It was
+        // `p.room.unwrap_or_else(Uuid::nil)` — a consequential branch taken in silence — and
+        // 13,209 turns (8.7% of all turns; 35% for one citizen) executed invisibly before
+        // anyone measured it, because an invisible run and a visible one log identically.
+        // The type exists so the branch has a NAME and the invisible case carries a sentence.
+        #[test]
+        fn a_roomless_run_is_declared_invisible_and_says_why() {
+            let v = RunVisibility::resolve(None);
+            assert_eq!(v, RunVisibility::Invisible);
+            assert!(v.room_id().is_nil(), "the act pipeline keys its skip on nil");
+            let why = v.warning().expect("an invisible run MUST announce itself");
+            assert!(
+                why.contains("NO room") && why.contains("perceive"),
+                "the warning must say what is lost, not just that a field was absent: {why}"
+            );
+            assert!(
+                why.contains("room"),
+                "and name the param that fixes it: {why}"
+            );
+        }
+
+        // what this catches: an EXPLICIT nil uuid slipping through as "in room". A caller
+        // passing Uuid::nil() means exactly what omitting it means; treating the two
+        // differently would reopen the silent branch through the other door.
+        #[test]
+        fn an_explicit_nil_room_is_the_same_as_no_room() {
+            assert_eq!(
+                RunVisibility::resolve(Some(Uuid::nil())),
+                RunVisibility::Invisible
+            );
+        }
+
+        // what this catches: warning on the happy path. A visible run needs no announcement,
+        // and a warning that fires every time trains everyone to ignore it.
+        #[test]
+        fn a_run_with_a_real_room_is_visible_and_stays_quiet() {
+            let room = Uuid::from_u128(7);
+            let v = RunVisibility::resolve(Some(room));
+            assert_eq!(v, RunVisibility::InRoom(room));
+            assert_eq!(v.room_id(), room, "the room must survive unchanged");
+            assert!(v.warning().is_none(), "a perceivable run must not warn");
+        }
+    }
+
+    mod patch_custody {
+        // what this catches: patch custody going back to being a caller courtesy. It WAS
+        // one — the write sat behind `if let Some(capture_dir)` with no else — and the
+        // consequence was measured on 2026-08-18: every hand-launched run kept its diff
+        // (25 patches under benchmarks/swe/captures/run-*), and every citizen-dispatched
+        // `claim-*` run, which is the entire path the benchmark actually runs on, kept
+        // none. A 41,166-byte patch that broke 40 passing tests was unrecoverable hours
+        // later because the workspace had already been reset. A run that cannot produce
+        // the artifact behind its own verdict is an anecdote, not a measurement.
+        #[test]
+        fn a_run_that_names_no_capture_dir_still_gets_one() {
+            let derived = super::super::run_artifact_dir("claim-abc123", None)
+                .expect("a run always resolves an artifact dir");
+            assert!(
+                derived.ends_with("run-claim-abc123"),
+                "custody must be derived from the run itself, not left to the caller: {}",
+                derived.display()
+            );
+            // It lands under the GOVERNED benchmarks root, in the same `captures/` folder
+            // the 25 hand-launched patches already occupy. Two invariants in one
+            // assertion, both of which my first cut broke by inventing `progress/`:
+            // one home per artifact class, and that home is a registered TrackedDir with
+            // a decided eviction story (an unmanaged dir growing patches forever is the
+            // 460 GB shape).
+            let expected =
+                crate::cognition::swe_bench::swe_cache_dir().join("captures");
+            assert_eq!(
+                derived.parent(),
+                Some(expected.as_path()),
+                "patches belong where patches already live, under the tracked benchmarks \
+                 root — never a second location: {}",
+                derived.display()
+            );
+        }
+
+        // what this catches: an explicit capture_dir being ignored once the fallback
+        // exists — the hand-launched runs that DO name a folder must keep landing there,
+        // or the 25 existing patches stop being where every prior receipt says they are.
+        #[test]
+        fn an_explicit_capture_dir_still_wins() {
+            let dir = super::super::run_artifact_dir("run-18057-h1", Some("/tmp/named-run"))
+                .expect("explicit dir resolves");
+            assert_eq!(dir, std::path::PathBuf::from("/tmp/named-run"));
+        }
+    }
+
     // what this catches: the wrapper asserting a DELIVERABLE SHAPE that the task contradicts.
     // The generic framing exists to kill narration ("only tool calls take effect"). It must not
-    // also claim the grade is about "files your tools WRITE" — `swe_task_prompt` says the
-    // opposite ("do not add new top-level files … fix it IN PLACE with code/edit"), and the
+    // also claim the grade is about "files your tools WRITE" — the SWE dispatch card body
+    // (`benchmark::BenchmarkSweSetup`) says the opposite ("do not add new top-level files …
+    // edit it in place"), and the
     // wrapper comes FIRST. Three consecutive sympy-21379 runs obeyed the wrapper and wrote new
     // repro scripts instead of editing the library. The contract may describe HOW acts take
     // effect; only the task may describe WHAT to change.
@@ -1994,6 +2236,48 @@ mod tests {
         assert!(files.iter().any(|f| f == "brand_new.rs"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // what this catches: a CREDENTIAL reaching a graded patch, files_changed, or the curriculum.
+    // Live 2026-08-18: sympy-22714's tree held `.airc/identity.key` (a private keypair) at git
+    // status `A` — already intent-added, because this path's exclude list omitted `.airc` while
+    // the grader's inline list had it. airc creates its scope at the enclosing git root, so a
+    // citizen working inside a cloned bench repo gets one written under the repo she is graded
+    // on. files_changed feeds format_solve_lesson, so an unexcluded key becomes the training
+    // sentence "I changed: .airc/identity.key". Also the b34f7eb5 shape: 91KB of staged .airc
+    // blobs once voided a REAL fix because the fresh clone refused the whole candidate.
+    #[tokio::test]
+    async fn workspace_patch_never_carries_agent_scope_state_or_credentials() {
+        let dir = std::env::temp_dir().join(format!("cu-agent-solve-airc-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join(".airc/work-board-cache")).unwrap();
+        git(&dir, &["init", "-q"]).await;
+        git(&dir, &["config", "user.email", "t@t"]).await;
+        git(&dir, &["config", "user.name", "t"]).await;
+        // her actual solution
+        std::fs::write(dir.join("point.py"), "def dot(a, b):\n    return a * b\n").unwrap();
+        // what the SUBSTRATE wrote into her tree — never authored by the solver
+        std::fs::write(dir.join(".airc/identity.key"), "SUPERSECRETKEYMATERIAL").unwrap();
+        std::fs::write(dir.join(".airc/events.sqlite"), b"SQLite format 3\x00").unwrap();
+        std::fs::write(dir.join(".airc/work-board-cache/x.json"), "{}").unwrap();
+
+        let (patch, files) = workspace_patch(dir.to_str().unwrap()).await;
+        assert!(
+            patch.contains("point.py"),
+            "her solution must still be in the patch:\n{patch}"
+        );
+        assert!(
+            !patch.contains("SUPERSECRETKEYMATERIAL"),
+            "KEY MATERIAL must never reach a patch:\n{patch}"
+        );
+        assert!(
+            !patch.contains(".airc"),
+            "no agent-scope path may appear in the patch:\n{patch}"
+        );
+        assert_eq!(
+            files,
+            vec!["point.py".to_string()],
+            "files_changed feeds the curriculum lesson — it must name only her work"
+        );
     }
 
     // what this catches: verification byproducts (Python bytecode, __pycache__) must NOT pollute
