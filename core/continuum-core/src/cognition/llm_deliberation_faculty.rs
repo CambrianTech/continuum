@@ -1136,15 +1136,52 @@ impl LlmDeliberationFaculty {
                 );
             }
         }
-        // SERIALIZATION (by volatility): stable standing-framing FIRST (roster,
-        // doctrine, map) so it lands in the cacheable KV-prefix region adjacent to
-        // the static system prompt it resembles; volatile grounding (recall, working
-        // memory) LAST, nearest the generation point. A stable sort preserves the
-        // salience order WITHIN each tier, so attention ranking is untouched — this
-        // is a pure emit-order choice that maximizes cross-turn prefix reuse AND puts
-        // the live, actionable context closest to where the model writes. `false`
-        // (stable) sorts before `true` (volatile). See [`Contribution::stable`].
-        selected.sort_by_key(|(c, _)| u8::from(!c.stable));
+        // SERIALIZATION (by volatility, then CANONICALLY within the stable tier):
+        // stable standing-framing FIRST (roster, doctrine, map) so it lands in the
+        // cacheable KV-prefix region adjacent to the static system prompt it resembles;
+        // volatile grounding (recall, working memory) LAST, nearest the generation point.
+        //
+        // WHY THE SECOND KEY EXISTS — this tier-split alone did NOT deliver reuse.
+        // The original comment here said a stable sort "preserves the salience order
+        // WITHIN each tier, so attention ranking is untouched", and treated that as
+        // harmless. It is the remaining half of the #266 cache defect. Salience is
+        // recomputed EVERY turn, so preserving it as EMIT ORDER re-shuffles the very
+        // tier whose whole purpose is to be byte-identical across turns.
+        //
+        // Measured live 2026-08-21 in Atlas's `pallets__flask-4045` run, from her own
+        // captures: consecutive system prompts shared only ~82% of their prefix, and the
+        // divergence points were stable-tier blocks trading places —
+        // `[room-kanban]` → `[active-work]` → `[workspace-map]` at chars 8216 / 7879 /
+        // 8133. Because the system prompt is FIRST, a swap at token ~2,000 invalidates
+        // the KV for EVERYTHING after it, including a 34,000-token conversation tail.
+        // `--cache-reuse 256` was passed the whole time and every turn reported
+        // `cachedTokens: 0` — the cache was correct; we were destroying the prefix.
+        // Cost at the measured 111 tok/s prefill: ~306s of re-prefill PER ACT, growing
+        // as her conversation grows. One observed turn was 20 minutes of apparent
+        // silence that was a single 36k re-prefill.
+        //
+        // So within the stable tier, order is CANONICAL (by faculty name), not by
+        // salience. Attention ranking is genuinely untouched: salience still decides
+        // WHICH contributions are selected — that happened above, against the budget.
+        // It simply stops deciding WHERE the survivors sit, which it never needed to.
+        // Same set in, same bytes out, every turn.
+        //
+        // The volatile tier deliberately KEEPS salience order: it is re-prefilled by
+        // construction (it changes every turn), so ordering it canonically would buy no
+        // reuse and would cost the "most salient nearest the write point" placement
+        // that #205 put there on purpose.
+        //
+        // `false` (stable) sorts before `true` (volatile). See [`Contribution::stable`].
+        selected.sort_by(|(a, _), (b, _)| {
+            u8::from(!a.stable).cmp(&u8::from(!b.stable)).then_with(|| {
+                match (a.stable, b.stable) {
+                    // Stable tier: canonical, so the cacheable prefix is deterministic.
+                    (true, true) => a.faculty.as_str().cmp(b.faculty.as_str()),
+                    // Volatile tier: leave salience order alone (stable sort keeps it).
+                    _ => std::cmp::Ordering::Equal,
+                }
+            })
+        });
         let mut block = String::new();
         for (c, body) in selected {
             block.push_str("\n[");
@@ -2345,7 +2382,7 @@ fn metrics_from(resp: &TextGenerationResponse) -> crate::cognition::workspace::T
     // wall-clock split that lets the harness see where Metal time actually goes.
     // Absent (cloud / older endpoints) → 0, and the breakdown rows read "n/a".
     let t = resp.timing.as_ref();
-    crate::cognition::workspace::TurnMetrics {
+    let m = crate::cognition::workspace::TurnMetrics {
         input_tokens: resp.usage.input_tokens,
         output_tokens: resp.usage.output_tokens,
         latency_ms: resp.response_time_ms,
@@ -2353,7 +2390,45 @@ fn metrics_from(resp: &TextGenerationResponse) -> crate::cognition::workspace::T
         prefill_tokens: t.map(|t| t.prefill_tokens).unwrap_or(0),
         prefill_ms: t.map(|t| t.prefill_ms.round() as u64).unwrap_or(0),
         decode_ms: t.map(|t| t.decode_ms.round() as u64).unwrap_or(0),
+    };
+
+    // THE CACHE-REUSE GLASS BOX — the row whose ABSENCE cost two weeks.
+    //
+    // Every generation funnels through here, so one probe covers every turn of every
+    // citizen with no caller change. Emitted only when the lane actually reported
+    // timings (cloud/older endpoints omit them); a fabricated 0.0 hit-rate for a
+    // provider that never measured one is a lying receipt, so those stay silent.
+    //
+    // Why this did not exist and why that mattered: `delib` carried `turn.demand` and
+    // `context.render` — how big the prompt WAS — and nothing about what the lane did
+    // with it. So a prompt whose prefix we were destroying every turn looked identical
+    // in the probe stream to one served entirely from cache. The only way to see it on
+    // 2026-08-21 was hand-diffing a citizen's raw prompt captures, which is exactly the
+    // manual step a probe exists to delete.
+    //
+    // What it proves, in one row: `hit_rate` near 0 with a large `prefill_tokens` means
+    // the prefix is being invalidated upstream — measured that day at ~306s of wasted
+    // re-prefill PER ACT while `--cache-reuse 256` was set and working. After the
+    // canonical stable-tier ordering above, the same row is the verification: hit_rate
+    // should climb off the floor from the second act of a task onward, WITHOUT anyone
+    // re-reading a capture by hand.
+    if t.is_some() {
+        crate::probe!(
+            class = "delib.generate.cache",
+            cached_tokens = m.cached_tokens,
+            prefill_tokens = m.prefill_tokens,
+            // The ratio the humans and the citizens both read. 1.0 = fully warm prefix;
+            // near 0 = re-encoding the prompt every act, the inefficiency to attack.
+            hit_rate = m.cache_hit_rate(),
+            prefill_ms = m.prefill_ms,
+            decode_ms = m.decode_ms,
+            input_tokens = m.input_tokens,
+            output_tokens = m.output_tokens,
+            latency_ms = m.latency_ms,
+            "prompt cache reuse for this generation"
+        );
     }
+    m
 }
 
 #[cfg(test)]

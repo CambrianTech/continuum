@@ -34,6 +34,7 @@ pub mod bench_round;
 pub mod bench_staging;
 pub mod bench_task;
 pub mod round_readiness;
+pub mod activity;
 pub mod benchmark;
 pub mod benchmark_humaneval;
 pub mod channel_digest;
