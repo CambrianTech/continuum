@@ -195,9 +195,26 @@ static ROUNDS: LazyLock<Mutex<HashMap<Uuid, BenchRound>>> =
 /// Where in-flight rounds persist — one JSON file per round, removed at Done. The same
 /// durable-state family as the airc attach cursor (`~/.continuum/state`): tiny, per-key,
 /// self-evicting at terminal state, so the directory only ever holds in-flight rounds.
+///
+/// Under `cfg(test)` this is a per-process temp dir, NEVER the real state dir. The first
+/// cut resolved to `$HOME` unconditionally, and the existing tests — which exercise the
+/// PUBLIC `open_round`/`add_card` — persisted their fixture rounds into the operator's
+/// real state: two `cargo test` runs minted four phantom rounds that the next live core
+/// faithfully reloaded and reported as in-flight (measured 2026-08-21, `in_flight: 5`
+/// with one real round). A durable layer's tests must be durable somewhere disposable.
 fn rounds_state_dir() -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    std::path::PathBuf::from(home).join(".continuum/state/bench-rounds")
+    #[cfg(test)]
+    {
+        static TEST_DIR: LazyLock<std::path::PathBuf> = LazyLock::new(|| {
+            std::env::temp_dir().join(format!("bench-rounds-test-proc-{}", std::process::id()))
+        });
+        TEST_DIR.clone()
+    }
+    #[cfg(not(test))]
+    {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        std::path::PathBuf::from(home).join(".continuum/state/bench-rounds")
+    }
 }
 
 /// Persist one round. Failure degrades to the pre-2026-08-21 behaviour (the round
