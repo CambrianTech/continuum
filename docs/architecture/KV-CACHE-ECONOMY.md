@@ -200,12 +200,41 @@ emphatically not a new manager. `ResourceGovernor` remains the one per-machine a
 
 | # | Work | Gate |
 |---|---|---|
-| 0 | ✅ Canonical stable-tier head (`40075d7ea`) + `delib.generate.cache` (`faf8c07c9`) | Live: `hit_rate` climbs off the floor from act 2. **Owed — the flask run holds the core.** |
+| 0 | ✅ Canonical stable-tier head (`40075d7ea`) + `delib.generate.cache` (`faf8c07c9`) | Live: `hit_rate` climbs off the floor from act 2. **BASELINE PINNED (below); after-number owed.** |
 | 1 | Measure `prompt_save`/`prompt_load` wall-clock at ~36k tokens | A number. If restore ≈ re-prefill, §3.2's eviction policy must avoid spilling rather than lean on it. |
 | 2 | `--cache-ram` as a governed lease (§4) | Governor accounts it; no un-owned cache class. |
 | 3 | Declared slot affinity, `id_slot` per resident citizen (§3.2) | Two citizens alternating on 2 slots, both `hit_rate > 0.8`. |
 | 4 | Kill the duplicate tool surface (#333) | ~1,000 tok back on every turn; grounding budget rises. |
 | 5 | Shared head + head identity hash (§3.3) | A second citizen's *first* act on a warm lane reports nonzero `cached_tokens`. |
+
+### The pre-fix baseline, measured — so the delta is a number, not an argument
+
+Captured 2026-08-21 10:57 from a LIVE run: citizen `e5f4141d`, instance
+`pallets__flask-4045`, on the pre-fix binary (`b10196-fa7e0d8e9`), read from her own
+prompt captures.
+
+| act | cached_tokens | prefill_tokens | hit rate |
+|---|---|---|---|
+| 1 | 0 | 9,847 | 0.000 |
+| 2 | 0 | 11,172 | 0.000 |
+| 3 | 0 | 19,434 | 0.000 |
+| 4 | 0 | 16,552 | 0.000 |
+
+**57,005 tokens re-prefilled across four acts. Zero reuse on every single turn.** At the
+measured ~111 tok/s that is ~513 seconds — roughly 8.5 minutes of a 4.3h attempt budget
+spent re-reading, four acts in, with the cost per act still climbing.
+
+This is the number the ordering fix has to move, and it is now pinned to a specific
+citizen on a specific instance, so the after-measurement is a comparison rather than a
+claim. Re-run the same read (or simply query `delib.generate.cache`, which reports the
+same fields directly once the fix is deployed) on the same instance.
+
+**Method note, because it nearly went wrong:** `pgrep` for a solve process finds NOTHING
+even while a run is live — `agent/solve` executes INSIDE the core, not as a subprocess.
+Checking for the process and concluding the run had finished was a wrong-instrument read
+of the exact class this document keeps cataloguing, and it would have rebooted the box out
+from under a citizen at act 4. The authoritative signal is
+`~/.continuum/progress/agent-solve-claim-<run>.json` (`state`, `acts`, mtime).
 
 Steps 1 and 2 are independent of the flask run and can start now. Step 3 needs step 1's
 number. Step 5 must not precede step 3 — per §2 it makes slot theft *more* likely, and
