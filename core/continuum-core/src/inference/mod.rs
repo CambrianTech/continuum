@@ -40,6 +40,7 @@ pub mod handle_module;
 pub mod handle_store;
 pub mod kv_quant;
 pub mod lane_args;
+pub mod lane_health;
 pub mod lane;
 pub mod lane_pidfile;
 pub mod lane_process;
