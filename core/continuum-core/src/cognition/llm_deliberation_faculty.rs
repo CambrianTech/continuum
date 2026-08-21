@@ -1092,13 +1092,13 @@ impl LlmDeliberationFaculty {
         // mine, in the instrument built to end exactly this).
         let worst_dropped = dropped_salience
             .iter()
-            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)) // safe: salience is a finite f32; only NaN returns None, and a NaN salience is an upstream bug the SENSOR must survive to report, never panic on
             .cloned();
         if let Some((worst_name, worst_sal)) = worst_dropped {
             let cheapest_kept = selected
                 .iter()
                 .map(|(c, _)| c.salience)
-                .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)); // safe: same NaN-only case as the max_by above — an unorderable salience must not take down the instrument that exists to report it
             // `None` = nothing survived at all, which is maximal harm, never "no finding".
             let fires = cheapest_kept.is_none_or(|kept| worst_sal >= kept);
             if fires {
@@ -1117,7 +1117,12 @@ impl LlmDeliberationFaculty {
                     persona = %self.persona_name,
                     dropped_faculty = %worst_name,
                     dropped_salience = worst_sal,
-                    kept_min_salience = cheapest_kept.unwrap_or(-1.0),
+                    // -1.0 is an OUT-OF-DOMAIN sentinel, not a fabricated quantity: salience is
+                    // [0,1], so -1 cannot be misread as a real one. `None` here is a KNOWN state
+                    // ("nothing survived the budget"), never an unknown one — which is the case
+                    // the ratchet's doc warns about — and `verdict` states it in words besides.
+                    kept_min_salience = cheapest_kept.unwrap_or(-1.0), // safe: see the two lines above
+
                     kept_count = selected.len(),
                     verdict = %verdict,
                     budget_tokens,
