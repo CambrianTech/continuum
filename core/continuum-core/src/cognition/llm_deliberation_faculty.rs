@@ -923,6 +923,11 @@ impl LlmDeliberationFaculty {
         // saying "there are no open tasks available" about a 61-card board.
         let mut selected: Vec<(&Contribution, String)> = Vec::with_capacity(ctx.len());
         let mut dropped: Vec<String> = Vec::new();
+        // The SALIENCE of each whole-drop, kept structured beside the formatted
+        // string so the inversion check below reads a number instead of parsing one
+        // back out of a display string (that parse-your-own-log shape is how a
+        // sensor starts lying the first time the format changes).
+        let mut dropped_salience: Vec<(String, f32)> = Vec::new();
         let mut partial: Vec<String> = Vec::new();
         let mut used = 0usize;
         for c in ctx {
@@ -962,6 +967,7 @@ impl LlmDeliberationFaculty {
                     c.salience,
                     piece
                 ));
+                dropped_salience.push((c.faculty.as_str().to_string(), c.salience));
                 continue;
             }
             // A truncated LIST must SAY it is truncated, or the persona reads a
@@ -1035,6 +1041,101 @@ impl LlmDeliberationFaculty {
             partial = %partial.join(","),
             "assembled context: {}/{} contributions fit", selected.len(), received
         );
+        // SALIENCE INVERSION — the sufficiency sensor this seam never had.
+        //
+        // `min_window_for_agentic_surface` answers "can this window hold framing +
+        // tools + a reply at all", and its own doc is explicit that clearing it proves
+        // nothing: "Necessary, NOT sufficient — clearing it does not mean she can hear
+        // you… never 'you are fine above it'." Measured 2026-08-20 that warning came
+        // true exactly as written. Served window 22,528 against a bound of ~16.9k, so
+        // the necessary-condition sensor was correctly SILENT — while across 25
+        // consecutive turns `workspace-map` (salience 0.90, the top tier) was dropped
+        // WHOLE on 20 of them and grounding ran 62-1,083 tokens. Atlas could not see
+        // the repo she was staged to edit, produced 0 acts for 3 days, and every
+        // instrument said healthy.
+        //
+        // What makes it detectable WITHOUT inventing a threshold: contributions are
+        // taken highest-salience-FIRST, so ranking alone can never drop a 0.90 while
+        // keeping a 0.30. When that happens anyway it is the SIZE interaction — a big
+        // essential block did not fit, then a small unimportant one did. The budget
+        // bought the cheap thing and lost the important one. That inversion is a
+        // structural fact with no magic constant behind it, which is why it is the
+        // signal rather than "salience >= 0.9", a number that would be a snapshot of
+        // one day's tuning ([[a-perception-fact-is-honesty-not-an-actuator]]).
+        //
+        // Divisible blocks are deliberately NOT counted: a prefix-truncated list
+        // announces itself in the prompt ("…N more not shown"), so it is degraded but
+        // never silent. Only WHOLE drops vanish without a trace — the failure this
+        // exists to end. SENSOR, never a clamp: refusing to render, or amputating the
+        // tool surface to make room, is the deleted #206 cliff. It reports; the fix
+        // for the budget itself is #460 and is not a decision this function may make.
+        // TWO holes were in the first cut of this, and the FIRST live turn after deploy
+        // found both (2026-08-20, Atlas/Kira/Benchy on build 2281e8b81). Recorded here
+        // because the shape is the one this codebase keeps paying for.
+        //
+        // HOLE 1 — strict `>` against a population with NO salience spread. The live
+        // rows: Atlas kept `roster(0.90), room-kanban(0.90)` and dropped
+        // `workspace-map(0.90)`; Benchy kept `room-board(0.90)` and dropped
+        // `workspace-map(0.90), room-kanban(0.90)`. EVERYTHING essential bids exactly
+        // 0.90, so `0.90 > 0.90` is false and the sensor stayed silent through the
+        // precise condition it was written for. The premise "ranking cannot drop a 0.90
+        // while keeping a 0.30" is TRUE and VACUOUS: production has no 0.30 at this
+        // tier. What actually decides who survives is arrival order and byte size — a
+        // coin flip among equals — and losing the repo map to that flip is the whole
+        // harm. `>=` is therefore the honest predicate, and a genuine ranking success
+        // (0.30 dropped, 0.90 kept) still cannot fire it.
+        //
+        // HOLE 2, worse — TOTAL starvation was invisible. `min_by` over an EMPTY
+        // `selected` yields `None`, the `if let` fell through, and nothing fired. The
+        // one state where the citizen got NO grounding at all was the one state the
+        // sensor could not report ([[an-absence-is-an-unfinished-measurement]], and
+        // mine, in the instrument built to end exactly this).
+        let worst_dropped = dropped_salience
+            .iter()
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)) // safe: salience is a finite f32; only NaN returns None, and a NaN salience is an upstream bug the SENSOR must survive to report, never panic on
+            .cloned();
+        if let Some((worst_name, worst_sal)) = worst_dropped {
+            let cheapest_kept = selected
+                .iter()
+                .map(|(c, _)| c.salience)
+                .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)); // safe: same NaN-only case as the max_by above — an unorderable salience must not take down the instrument that exists to report it
+            // `None` = nothing survived at all, which is maximal harm, never "no finding".
+            let fires = cheapest_kept.is_none_or(|kept| worst_sal >= kept);
+            if fires {
+                let verdict = match cheapest_kept {
+                    None => "TOTAL: nothing survived the budget".to_string(),
+                    Some(k) if (worst_sal - k).abs() < f32::EPSILON => {
+                        format!("TIE at sal={worst_sal:.2} — decided by size, not by rank")
+                    }
+                    Some(k) => format!("dropped {worst_sal:.2} while keeping {k:.2}"),
+                };
+                // Bound as a local: the message interpolates it, and a probe FIELD
+                // assignment is not a binding the format string can see.
+                let tool_tokens = self.describe_tool_tokens();
+                crate::probe!(
+                    class = "delib.context.salience_inversion",
+                    persona = %self.persona_name,
+                    dropped_faculty = %worst_name,
+                    dropped_salience = worst_sal,
+                    // -1.0 is an OUT-OF-DOMAIN sentinel, not a fabricated quantity: salience is
+                    // [0,1], so -1 cannot be misread as a real one. `None` here is a KNOWN state
+                    // ("nothing survived the budget"), never an unknown one — which is the case
+                    // the ratchet's doc warns about — and `verdict` states it in words besides.
+                    kept_min_salience = cheapest_kept.unwrap_or(-1.0), // safe: see the two lines above
+
+                    kept_count = selected.len(),
+                    verdict = %verdict,
+                    budget_tokens,
+                    context_window,
+                    tool_tokens,
+                    framing_tokens,
+                    "GROUNDING LOST: {worst_name} dropped WHOLE ({verdict}) — the grounding \
+                     budget was {budget_tokens} tok against a {context_window} window with \
+                     {tool_tokens} in tool schemas and {framing_tokens} in framing. The citizen \
+                     is reasoning without what attention ranked top (#460)."
+                );
+            }
+        }
         // SERIALIZATION (by volatility): stable standing-framing FIRST (roster,
         // doctrine, map) so it lands in the cacheable KV-prefix region adjacent to
         // the static system prompt it resembles; volatile grounding (recall, working
@@ -1678,10 +1779,33 @@ impl LlmDeliberationFaculty {
     /// Conservative token estimate of the ONE natively-offered tool spec
     /// (`commands/help`) the gateway injects via the chat template — its serialized
     /// function schema plus a small template framing margin. 0 when the persona has
-    /// no tools (`describe_spec` is `None`). Counted with the same conservative
-    /// guard ratio as the rest of the prompt (round UP — under-counting risks the
-    /// 500). Cheap and pure; `describe_spec` is a single tiny schema, so this is a
-    /// handful of tokens, not the old full-registry dump.
+    /// no tools. Counted with the same conservative guard ratio as the rest of the
+    /// prompt (round UP — under-counting risks the 500). Cheap and pure.
+    ///
+    /// # This is THOUSANDS of tokens, and the sentence that used to live here said otherwise
+    ///
+    /// It read "a single tiny schema, so this is a handful of tokens, not the old
+    /// full-registry dump" — true when the surface WAS the two-tool discovery pair,
+    /// false since #206 deliberately restored the full native set. The probe site in
+    /// `render_assembled_context_within` has carried a comment calling this sentence
+    /// out as stale since 2026-08-06 ("reading that stale sentence is exactly why the
+    /// right suspect got dismissed") — 700 lines from the function it describes, so
+    /// anyone reading the function itself still got the lie. Deleting it here is the
+    /// half that never got done.
+    ///
+    /// MEASURED: **4,609 tokens on 2026-08-06. 7,013 on 2026-08-20** — 31% of a 22,528
+    /// window, subtracted before framing or a single message, on every turn.
+    ///
+    /// # It grows on its own, and nothing watches it
+    ///
+    /// [`persona_tools::native_tool_specs`] is DERIVED — every command declaring
+    /// `NATIVE = true` is offered automatically. That is the right architecture (no
+    /// central array to edit) and it means the per-turn cost of the tool surface is an
+    /// unbounded side effect of a flag set in another file: +52% in two weeks, noticed
+    /// by nobody. Nothing connects "I marked my command native" to "every citizen
+    /// permanently lost N tokens of grounding" (#460). Do NOT respond by trimming the
+    /// set — the amputated surface is the #206 cliff and measured 14/14 SWE acts as
+    /// `commands/help` with 0 edits.
     fn describe_tool_tokens(&self) -> usize {
         // context-budget-exempt: fixed per-tool schema overhead in the template — same reason as PER_MESSAGE_TEMPLATE_TOKENS
         const PER_TOOL_TEMPLATE_MARGIN_TOKENS: usize = 8;
@@ -2740,6 +2864,73 @@ mod tests {
                 est_tokens(&block) <= budget * 2,
                 "the prefix must respect the budget it was given (got {} for budget {budget})\n{block}",
                 est_tokens(&block)
+            );
+        }
+
+        // what this catches: the SALIENCE INVERSION that `delib.context.salience_inversion`
+        // reports — an INDIVISIBLE top-salience block vanishing whole while a cheap
+        // low-salience one rides along. Measured live 2026-08-20 across 25 consecutive
+        // turns: `workspace-map` (sal=0.90) dropped on 20 of them, grounding at 62-183
+        // tokens, and Atlas produced 0 acts for 3 days against a checkout she could not
+        // see. The divisible case is already covered above (a board contributes its
+        // leads); this is its opposite number — nothing to cut, so it goes to zero.
+        //
+        // It also pins the PREMISE THE SENSOR RESTS ON: selection is
+        // highest-salience-FIRST, so ranking alone can never produce this. If that
+        // ordering is ever lost, the inversion stops meaning "the budget could not
+        // afford what mattered" and the probe becomes noise — silently. This test is
+        // what makes that regression loud.
+        #[test]
+        fn an_indivisible_top_salience_block_can_lose_its_slot_to_a_cheaper_lesser_one() {
+            let persona = Uuid::new_v4();
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter);
+            let mut ws = Workspace::new("what should I work on?");
+
+            // The repo map: essential, expensive, and INDIVISIBLE — no `with_parts`,
+            // so there is no prefix to fall back to. This is the live shape.
+            let map_body = (0..120)
+                .map(|i| format!("src/module_{i:03}/mod.rs"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            ws.broadcast.push(Contribution::context(
+                FacultyId::Custom("workspace-map".to_string()),
+                map_body.clone(),
+                0.90,
+                "map",
+            ));
+            // A cheap block that comfortably fits — AT THE SAME SALIENCE. This is the
+            // LIVE shape, not a constructed one: on the first turns after the
+            // 2281e8b81 deploy every essential source bid exactly 0.90 (Atlas kept
+            // `roster(0.90), room-kanban(0.90)` and dropped `workspace-map(0.90)`;
+            // Benchy kept `room-board(0.90)` and dropped two others at 0.90). There is
+            // no 0.30 to lose to. The first cut of this test used one, which is why it
+            // passed against a sensor that could not fire in production.
+            ws.broadcast.push(Contribution::context(
+                FacultyId::Custom("recall".to_string()),
+                "you once renamed a file".to_string(),
+                0.90,
+                "recall",
+            ));
+
+            // Budget affords the small one and nowhere near the map — the live ratio.
+            let budget = 40;
+            assert!(
+                est_tokens(&map_body) > budget * 5,
+                "fixture must reproduce the live ratio (map {} tok vs budget {budget})",
+                est_tokens(&map_body)
+            );
+            let block = faculty.render_assembled_context_within(&ws, budget, (0, 0, 0, 0, 0));
+
+            assert!(
+                !block.contains("[workspace-map]"),
+                "fixture is not reproducing the inversion — the map was supposed to be \
+                 unaffordable at this budget\n{block}"
+            );
+            assert!(
+                block.contains("[recall]"),
+                "the cheap low-salience block IS what rides along; without it there is no \
+                 inversion, just an empty budget\n{block}"
             );
         }
 
