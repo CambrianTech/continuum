@@ -182,10 +182,17 @@ It is also directly load-bearing for §3.2 — the prompt cache *is* the spill s
 makes eviction survivable, so its size is not an incidental setting, it is the depth of
 the buffer the whole affinity policy leans on.
 
-**Action, independent of everything above:** `--cache-ram` becomes a governed lease
-derived by the daemon at spawn from real free RAM, exactly as
-`GGML_MOE_HOST_CACHE_GB` was governed (#287) rather than left as a scratchpad constant.
-`ResourceGovernor` is the one per-machine authority (#56); serving leases from it.
+**Action — and it is far smaller than it looks, because the machinery exists.**
+`capacity/host_cache_lease.rs` is already the governed host-cache lease (#287); it already
+runs **on the governor tick rather than once at spawn**, and its module doc already states
+the exact reason that matters here: *"KV grows as slots fill, so this derivation runs on
+the governor tick, never once at spawn."* It was written for the pinned expert cache after
+the 2026-08-01 overcommit (95.9 GB committed on a 63 GB box → 33 GB pagefile → fetch
+collapsed 2.5 GB/s → 205 MB/s), and it already encodes "commit can never exceed physical."
+
+So `--cache-ram` is **one more term on an existing lease** — not a new lease, and
+emphatically not a new manager. `ResourceGovernor` remains the one per-machine authority
+(#56); serving leases from it.
 
 ---
 
@@ -206,7 +213,93 @@ shipping it alone would look like a regression and be read as "caching doesn't h
 
 ---
 
-## 6. What this document is not
+## 6. Policy is an ADAPTER, never a rule (Joel, 2026-08-21)
+
+> *"It's solvable, just not too hard coded into one paradigm here — better add proper
+> adapters and break the module down into concerns. We could do a ton with plugin ML here,
+> especially RL."*
+
+Everything in §3 describes *decisions under scarcity*: which conversation keeps a slot,
+what a tail is worth, when to spill. Written as `if f_keep < 0.5 { … }` those become
+exactly the hardcoded paradigm this project keeps having to tear back out. They are a
+**policy**, and policy belongs behind a seam with at least two implementations.
+
+**And the seam already exists, with a learned implementation in it.** This is the third
+time today that reading first changed the answer:
+
+| In tree | What it is |
+|---|---|
+| `capacity/expert_tier_policy.rs` | `trait TierPolicy { fn plan(&self, inputs: &TierPolicyInputs) -> ExpertTierPlan }` — decisions returned as a **plan**, not applied inline. `ClassicTierPolicy` is the v1 heuristic (#273). |
+| `expert-pager-policy` **leaf crate** | Policy already extracted into its own crate (windows-msvc driver requirement) — the plugin boundary, already cut. |
+| `capacity/bandit_plan_controller.rs` | A **bandit controller**, re-exported from that crate. RL is not greenfield here (#276, #281). |
+| `expert_predictor.rs`, `expert_decay_policy.rs`, `expert_residency.rs`, `expert_observer.rs` | Predict / decay / residency / observe, already separate concerns. |
+
+**The generalisation is now earned, not speculative.** CLAUDE.md's rule is: identify the
+pattern at 2–3 similar implementations, then design, then validate with a maximally
+different outlier. We have **three** instances of *paged resource under scarcity with a
+learnable value function* — MoE experts (built), LoRA genome paging (built), and KV slots
+(this doc). Three is the threshold, and KV slots are the ideal outlier B precisely because
+they are *maximally different* from experts: the unit is a whole conversation rather than a
+tensor, the cost of a miss is seconds of prefill rather than bytes of fetch, and the
+population is tiny (2–8) rather than thousands. **If one seam fits both ends, it fits
+everything between.**
+
+So: KV slot residency implements the same shape rather than inventing a rival.
+
+- **Outlier A — heuristic.** `cost_of_loss = tail_tokens / prefill_rate`, in seconds. Not a
+  magic ratio: a quantity with a unit, derived from measurement, comparable across
+  candidates. Ships first, is legible, and is the baseline everything else must beat.
+- **Outlier B — learned / RL.** Slot eviction is a textbook sequential decision problem:
+  *state* = per-slot (tail length, recency, citizen, task phase) + arriving request;
+  *action* = which slot to seat it in; *reward* = **prefill seconds saved**.
+
+**And the reward signal is already instrumented — I shipped it this morning without
+noticing it was one.** `delib.generate.cache` (`faf8c07c9`) emits `cached_tokens`,
+`prefill_tokens`, `prefill_ms`, `hit_rate` on *every* generation. That is a labelled
+transition per turn, continuously, in production. The bandit needs a reward and the probe
+is already producing it — which also means the honest baseline (A vs B, same workload)
+is measurable from day one rather than argued.
+
+**Guardrails, so "plugin ML" does not become "unexplainable serving":**
+
+1. **Policies return plans, never side effects** — same as `TierPolicy::plan`. A plan can be
+   logged, replayed, diffed against the heuristic, and refused. This is what makes an RL
+   policy auditable instead of a black box wired to a GPU.
+2. **The heuristic is the floor, permanently.** A learned policy that loses to
+   `ClassicKvPolicy` on measured prefill-seconds gets switched off by the comparison, not by
+   an argument. Keep A callable forever.
+3. **Learned policy is opt-in per lane, and its identity is on the receipt.** Which policy
+   decided is part of the plan, so a latency regression can be attributed instead of
+   investigated.
+4. **Never learn on a broken substrate.** Until §3.1's deterministic head shipped, the
+   reward signal was ~0 for structural reasons; a bandit trained through that would have
+   learned that nothing helps. Order matters for learning, not just for correctness.
+
+## 7. Break the module into concerns
+
+`inference/llama_server.rs` is **4,190 lines** — eight times the decomposition law in
+CLAUDE.md ("assume a new concept or group of functions ought to be in its own file and most
+likely its own class"), and it is where every one of §3's changes would otherwise land. The
+KV work is the forcing function, not the excuse: adding slot affinity, a policy seam, and a
+cache-ram lease to a 4k-line file is how it becomes 5k.
+
+Concerns visible in the file today, each of which is a module:
+
+| Concern | What it owns |
+|---|---|
+| `spawn/args` | Flag construction — `-c`/`--parallel`/`--cache-reuse`/`--ubatch-size`/`--no-context-shift`, each with its incident comment. Pure, therefore unit-testable without a process. |
+| `readiness` | Health, generation-verified readiness (#363 — a wedged server passed `/health` while every turn died), port-holder verification. |
+| `slots` | The registry §3.2 needs: slot ↔ citizen, occupancy, `id_slot` on requests. Does not exist yet — this is where it goes, rather than a new manager. |
+| `request` | Payload construction, timing extraction (`metrics_from`), the cache probe. |
+| `lifecycle` | Spawn / reclaim / orphan sweep / teardown (#90, #452, #454). |
+| `policy` (leaf crate) | §6's seam. Sits beside `expert-pager-policy`, not inside the server. |
+
+Constraint from the concurrency guide: this is a **decomposition, not a re-architecture**.
+No new tokio task, no new watch channel, no second registry. Same behaviour, same tests,
+moved — and the flag comments travel with their flags, because those comments are the only
+record of the incidents that set each value.
+
+## 8. What this document is not
 
 - **Not a budget/packing design.** How much grounding a citizen gets is #460 and the
   `ContextBudget` work; the two interact (a smaller volatile tail is both cheaper to fit
