@@ -2566,6 +2566,14 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         let mut phase = crate::inference::stream_liveness::StreamPhase::Queued;
         // One `inference.prefill.rescued` row per stream, not per frame.
         let mut prefill_rescued = false;
+        // When the FIRST prompt_progress frame arrived. llama.cpp emits the 0% frame
+        // at the moment the slot is ASSIGNED ("signal the client that the request has
+        // started processing"), so open→first-frame is QUEUE WAIT and
+        // first-frame→complete is INGEST. The first cut of these probes conflated the
+        // two into one `elapsed_ms`, and the numbers were absurd in exactly the way a
+        // conflation is: a 467-token prompt "prefilling" for 231s at 1 tok/s. It was
+        // queued 230 of those seconds. A probe that mixes two regimes measures neither.
+        let mut first_prefill_frame: Option<Instant> = None;
         loop {
             let idle = crate::inference::stream_liveness::idle_budget(
                 phase,
@@ -2693,6 +2701,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                         // frozen counter cannot hold the watchdog open (#385).
                         let was = phase;
                         phase = phase.on_prefill(p.processed, p.total);
+                        let first_frame = *first_prefill_frame.get_or_insert_with(Instant::now);
 
                         // PROVE THE FIX IS LOAD-BEARING. Without this the change is
                         // invisible: "no retries" is an ABSENCE, and an absence cannot
@@ -2712,6 +2721,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                                 class = "inference.prefill.rescued",
                                 provider = self.config.name.as_str(),
                                 elapsed_s = elapsed.as_secs(),
+                                queued_s = first_frame.duration_since(stream_opened).as_secs(),
                                 old_budget_s = live_budget.as_secs(),
                                 processed = p.processed,
                                 total = p.total,
@@ -2721,14 +2731,19 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                                  would have been killed here and retried forever",
                             );
                         }
-                        // The whole-ingest timing, emitted once at the prefill→decode
-                        // edge. This is the number the 90s constant was implicitly
-                        // guessing at, and the one the budget should eventually be
-                        // DERIVED from per model/device (#441).
+                        // Per-stream ingest receipt, emitted once at the prefill→decode
+                        // edge, with QUEUE and INGEST separated: llama.cpp's 0% frame
+                        // marks slot ASSIGNMENT, so open→first-frame is time spent
+                        // waiting for a slot and first-frame→now is real ingest work.
+                        // `ingest_tok_per_s` is the number the 90s constant was
+                        // implicitly guessing at and the one a derived budget should
+                        // come from per model+device (#441); `queued_ms` is the
+                        // admission/oversubscription signal (#234 QoS).
                         if matches!(was, crate::inference::stream_liveness::StreamPhase::Prefilling { .. })
                             && matches!(phase, crate::inference::stream_liveness::StreamPhase::Decoding)
                         {
-                            let ms = elapsed.as_millis().max(1) as u64;
+                            let queued_ms = first_frame.duration_since(stream_opened).as_millis() as u64;
+                            let ingest_ms = (first_frame.elapsed().as_millis().max(1)) as u64;
                             let fresh = p.total.saturating_sub(p.cache);
                             crate::probe!(
                                 class = "inference.prefill.complete",
@@ -2736,11 +2751,12 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                                 total = p.total,
                                 cached = p.cache,
                                 fresh = fresh,
-                                elapsed_ms = ms,
-                                tok_per_s = (fresh as f64 * 1000.0 / ms as f64) as u64,
+                                queued_ms = queued_ms,
+                                ingest_ms = ingest_ms,
+                                ingest_tok_per_s = (fresh as f64 * 1000.0 / ingest_ms as f64) as u64,
                                 would_have_died = u8::from(elapsed > live_budget) as u64,
-                                "prefill complete — ingest wall-clock and the cache's \
-                                 real contribution, per stream",
+                                "prefill complete — queue wait vs real ingest, and the \
+                                 cache's actual contribution, per stream",
                             );
                         }
                         if p.processed > last_prefill_processed {
