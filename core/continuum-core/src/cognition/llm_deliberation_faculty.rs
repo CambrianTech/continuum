@@ -2784,6 +2784,121 @@ mod tests {
             );
         }
 
+        // what this catches: the OTHER half of the #266 cache defect — a fixed SET of
+        // stable contributions emitting DIFFERENT bytes because salience re-ranked them.
+        //
+        // Its sibling above pins the tier split (stable before volatile). That shipped,
+        // and reuse did not follow. The sort under it read
+        // `sort_by_key(|(c, _)| u8::from(!c.stable))` with a comment calling the
+        // preserved within-tier salience order harmless. It was the bug: salience is
+        // recomputed EVERY turn, so the tier whose only job is byte-identity re-shuffled.
+        // Measured live 2026-08-21 in Atlas's flask-4045 run — consecutive prompts shared
+        // ~82% of their prefix and diverged where stable blocks traded places, costing
+        // ~306s of re-prefill per act with `cachedTokens: 0` throughout.
+        //
+        // So the tier-split assertion alone could not catch it, and this one is what
+        // makes the fix hold: SAME SET IN, SAME BYTES OUT, whatever attention ranked.
+        // If someone reverts to a salience-ordered stable tier, this fails and the
+        // sibling above still passes.
+        #[test]
+        fn stable_tier_bytes_are_identical_however_salience_ranks_them() {
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let faculty = LlmDeliberationFaculty::new(
+                Uuid::new_v4(),
+                "Ivar",
+                "You are Ivar.",
+                Arc::clone(&adapter),
+            );
+
+            // Same three stable blocks, built with per-turn salience + push order.
+            // These are the exact faculties that were caught trading places.
+            let render = |sal: [f32; 3], order: [usize; 3]| {
+                let bodies = [
+                    ("room-roster", "STABLE_ROSTER: alice, bob, carol present"),
+                    ("workspace-map", "STABLE_MAP: src/ tests/ docs/"),
+                    ("room-kanban", "STABLE_BOARD: you hold 9 cards here"),
+                ];
+                let mut ws = Workspace::new("teammate: what's the plan?");
+                for &i in order.iter() {
+                    ws.broadcast.push(
+                        Contribution::context(
+                            FacultyId::Custom(bodies[i].0.to_string()),
+                            bodies[i].1,
+                            sal[i],
+                            "framing",
+                        )
+                        .session_stable(),
+                    );
+                }
+                // Generous budget so all three fit — this isolates ORDER, never truncation.
+                faculty.render_assembled_context_within(&ws, 4096, (0, 0, 0, 0, 0))
+            };
+
+            let turn0 = render([0.90, 0.50, 0.30], [0, 1, 2]);
+            // Turn 1: attention completely re-ranks them, and they arrive in a new order.
+            let turn1 = render([0.30, 0.90, 0.50], [2, 0, 1]);
+            // Turn 2: a third ranking, reversed arrival.
+            let turn2 = render([0.50, 0.30, 0.90], [2, 1, 0]);
+
+            assert_eq!(
+                turn0, turn1,
+                "a re-ranked stable tier must emit IDENTICAL bytes — this is the whole \
+                 cacheable prefix (#266)\nturn0:\n{turn0}\nturn1:\n{turn1}"
+            );
+            assert_eq!(
+                turn0, turn2,
+                "third ranking must also be byte-identical\nturn0:\n{turn0}\nturn2:\n{turn2}"
+            );
+
+            // And it is CANONICAL, not merely "whatever arrived first" — an insertion-order
+            // block would satisfy the equalities above only by accident of this test's
+            // orders. Pin the actual rule so the guarantee is legible.
+            let (kanban, map, roster) = (
+                turn0.find("[room-kanban]").expect("kanban present"),
+                turn0.find("[workspace-map]").expect("map present"),
+                turn0.find("[room-roster]").expect("roster present"),
+            );
+            assert!(
+                kanban < roster && roster < map,
+                "stable tier orders canonically by faculty name (room-kanban < room-roster \
+                 < workspace-map is alphabetical; note room-roster sits between)\n{turn0}"
+            );
+
+            // The volatile tier keeps salience order ON PURPOSE (#205: most salient
+            // nearest the write point). It re-prefills by construction, so canonical
+            // ordering would buy no reuse and would cost that placement. Guard the
+            // asymmetry, so a future "make it all deterministic" pass has to read this.
+            //
+            // NOT `active-work`: it is pinned FIRST by an explicit rule ABOVE salience
+            // (the ctx_floor reservation only holds if its claimant also leads the
+            // greedy walk). Probing the asymmetry with the one salience-immune faculty
+            // reports "salience does nothing" about a tier where it does plenty —
+            // which is exactly what the first draft of this assertion did.
+            let volatile = |sal: (f32, f32)| {
+                let mut ws = Workspace::new("teammate: what's the plan?");
+                ws.broadcast.push(Contribution::context(
+                    FacultyId::Recall,
+                    "VOLATILE_RECALL: deploy was red, fixed 4pm",
+                    sal.0,
+                    "recalled",
+                ));
+                ws.broadcast.push(Contribution::context(
+                    FacultyId::Custom("affect".to_string()),
+                    "VOLATILE_AFFECT: mild time pressure",
+                    sal.1,
+                    "felt",
+                ));
+                faculty.render_assembled_context_within(&ws, 4096, (0, 0, 0, 0, 0))
+            };
+            let recall_leads = volatile((0.9, 0.2));
+            let work_leads = volatile((0.2, 0.9));
+            assert_ne!(
+                recall_leads, work_leads,
+                "the VOLATILE tier must still follow salience (#205) — if this ever \
+                 matches, canonical ordering leaked into the tier that must not have it"
+            );
+        }
+
         /// A grounding block built from a LIST of units, sized like the live work
         /// board (leads first, then one line per card).
         fn board_like(units: usize) -> Contribution {
