@@ -69,6 +69,7 @@ pub mod persona_rag_inspect_filesystem;
 pub mod plasticity;
 pub mod pressure_broker_module;
 pub mod probe_query;
+pub mod prompt_reuse;
 pub mod probe_stream;
 pub mod python_adapter;
 pub mod rag;
