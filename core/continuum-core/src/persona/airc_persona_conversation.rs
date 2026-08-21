@@ -88,6 +88,13 @@ pub struct AircPersonaConversation {
     /// terminal-`None` arm below: that masks a wire fault; this answers a
     /// REAL membership event, the system-law event-driven shape.
     membership_epoch: tokio::sync::watch::Receiver<u64>,
+    /// Highest lamport this conversation has SEEN on its raw stream (or replayed).
+    /// The rejoin replay's dedupe watermark: only events strictly newer are ever
+    /// replayed, so a reopen can never re-feed history as fresh perception.
+    last_lamport: u64,
+    /// Room-turns recovered by the rejoin replay, yielded ahead of the live
+    /// stream. See the epoch-reopen branch in `next_message`.
+    rejoin_backlog: std::collections::VecDeque<IncomingMessage>,
 }
 
 impl AircPersonaConversation {
@@ -101,6 +108,8 @@ impl AircPersonaConversation {
             own_peer_id,
             stream: None,
             membership_epoch,
+            last_lamport: 0,
+            rejoin_backlog: std::collections::VecDeque::new(),
         }
     }
 
@@ -145,6 +154,10 @@ impl PersonaConversation for AircPersonaConversation {
             "persona chat subscribe stream opened (#146)"
         );
         self.stream = Some(stream);
+        // Seed the rejoin-replay watermark at the CURRENT transcript head, so the
+        // first runtime room-join can never replay pre-subscribe history as fresh
+        // perception (the #131 "room starts at join" rule, preserved under replay).
+        self.last_lamport = self.high_water_mark(64).await.unwrap_or(0);
         Ok(())
     }
 
@@ -188,6 +201,12 @@ impl PersonaConversation for AircPersonaConversation {
         // over-counts skips for events the conversation already
         // knows aren't relevant.
         loop {
+            // Rejoin-replayed turns first — they are OLDER than anything the live
+            // stream will yield, and ordering is what keeps an addressed kickoff
+            // ahead of the chatter that follows it.
+            if let Some(replayed) = self.rejoin_backlog.pop_front() {
+                return Ok(Some(replayed));
+            }
             // Wait on EITHER the next event OR a membership-epoch move. The
             // epoch branch is the P0 20b44763 fix: a room joined at runtime
             // (benchmark dispatch) never enters the existing stream's channel
@@ -224,6 +243,57 @@ impl PersonaConversation for AircPersonaConversation {
                     .await
                     .map_err(|e| format!("resubscribe after membership change failed: {e}"))?;
                 self.stream = Some(stream);
+                // REPLAY THE GAP (2026-08-21, the FOURTH deaf-kickoff variant). The
+                // reopened stream is live-tail: anything published between the
+                // membership change and this reopen was delivered to nobody — and
+                // the benchmark kickoff is published milliseconds after join_room,
+                // so it lost this race BY CONSTRUCTION on every dispatch (event
+                // durably in the room, `kickoffs: 1`, zero raw_event rows). The
+                // reopen pages the recent transcript and queues every room turn
+                // strictly newer than the watermark; the same decode + self-skip
+                // rules as the live path apply, and the work-event bridge dedups
+                // by event id, so a replayed card event cannot double-fire.
+                match self.runtime.page_recent(32).await {
+                    Ok(events) => {
+                        let scanned = events.len();
+                        let mut replayed = 0usize;
+                        let mut events = events;
+                        events.sort_by_key(|e| e.lamport);
+                        for event in &events {
+                            if event.lamport <= self.last_lamport
+                                || crate::airc::realtime_wire::is_stream_chunk(event)
+                            {
+                                continue;
+                            }
+                            self.last_lamport = event.lamport;
+                            crate::modules::work::bridge_wire_work_event(event).await;
+                            let Ok(message) = perceptual_from_event(event) else {
+                                continue;
+                            };
+                            if message.peer_id == self.own_peer_id {
+                                continue;
+                            }
+                            replayed += 1;
+                            self.rejoin_backlog.push_back(message);
+                        }
+                        tracing::info!(
+                            persona = %self.own_peer_id,
+                            scanned,
+                            replayed,
+                            watermark = self.last_lamport,
+                            probe_class = "persona.inbound.rejoin_replayed",
+                            "membership-change reopen replayed the gap — room turns \
+                             published between join and reopen are now perceivable \
+                             instead of live-tail-lost"
+                        );
+                    }
+                    Err(e) => tracing::warn!(
+                        persona = %self.own_peer_id,
+                        error = %e,
+                        "rejoin replay page failed — events published between join \
+                         and reopen stay unheard until something else surfaces them"
+                    ),
+                }
                 continue;
             };
             match polled {
@@ -282,6 +352,9 @@ impl PersonaConversation for AircPersonaConversation {
                     if crate::airc::realtime_wire::is_stream_chunk(&event) {
                         continue;
                     }
+                    // Every non-chunk event advances the rejoin-replay watermark, so a
+                    // later reopen replays only what this stream genuinely never saw.
+                    self.last_lamport = self.last_lamport.max(event.lamport);
                     // #146 diagnostic: EVERY raw event this persona's subscribe
                     // stream yields, before any filter. If this probe never fires
                     // under a room burst, the stream is empty → airc-lib delivery
