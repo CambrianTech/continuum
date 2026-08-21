@@ -2573,57 +2573,29 @@ impl LlamaServerControl for LlamaServerProcess {
         // the prior bug). See `served_total_ctx` / `parallel_lanes`.
         let lanes = target.parallel_lanes();
         let total_ctx = target.served_total_ctx();
+        // The unconditional flag spine moved to `lane_args` (decomposition slice 1,
+        // docs/architecture/KV-CACHE-ECONOMY.md §7). It lives there because it is PURE
+        // there — primitives in, an invocation out — and therefore assertable without
+        // spawning a GPU process. From HERE it never could be, which is exactly how
+        // `--parallel` silently quartered every citizen's window: the arithmetic was
+        // welded into a Command chain no unit test could reach. Every flag's incident
+        // comment moved WITH it; that comment is the only record of the failure that
+        // set the value.
         let mut cmd = tokio::process::Command::new(&self.bin);
-        cmd.arg("-m")
-            .arg(&gguf)
-            .arg("--alias")
-            .arg(&target.model.id)
-            .arg("--host")
-            .arg(host)
-            .arg("--port")
-            .arg(port.to_string())
-            // Total KV = per-lane window × lanes; split back to one full window
-            // per slot by `--parallel` below. The plan budgeted this exact total
-            // (`kv_at(context_window) * lanes`) against the host, so it fits.
-            .arg("-c")
-            .arg(total_ctx.to_string())
-            .arg("--parallel")
-            .arg(lanes.to_string())
-            // KV PREFIX REUSE across a persona's turns. `cache_prompt:true` (sent
-            // per-request) only reuses a slot's prior content when the *exact*
-            // prefix still sits in that slot; with the volatile grounding tail
-            // changing every turn and embedding requests sharing these same slots,
-            // measured cross-turn reuse was ZERO (`cachedTokens: 0` over every
-            // captured live turn, forcing a full re-prefill of the ~720-token
-            // static identity/doctrine/tool prefix each turn). `--cache-reuse`
-            // lets llama.cpp reuse cached chunks ≥ N tokens via KV shifting even
-            // when a later span differs — so the stable prefix is kept, not
-            // recomputed. 256 is the llama.cpp-recommended min chunk. This is a
-            // pure optimization flag: absent it we just re-prefill (correct, slow);
-            // present it we reuse (correct, fast) — no fallback, no behavior change.
-            .arg("--cache-reuse")
-            .arg("256")
-            // PREFILL THROUGHPUT (#139). Live personas are prefill-bound: a real turn
-            // re-prefills ~4k tokens of fresh RAG context at ~109 tok/s → 30–110s turns
-            // (decode is tiny and fast; the mind is NOT slow, the re-read is). The
-            // physical micro-batch (`--ubatch-size`, llama.cpp default 512) is how many
-            // prompt tokens Metal processes per compute pass — bigger batch = more
-            // parallel prefill = higher tok/s, traded against a larger per-slot compute
-            // buffer. 1024 doubles prefill parallelism; the compute-buffer growth is the
-            // same axis that OOMs (kIOGPUCommandBufferCallbackErrorOutOfMemory) so it is
-            // sized WITH the 2-lane headroom, not blindly. Measured knob: watch prefill
-            // tok/s in the captures and back off if the lane 500s "Compute error".
-            .arg("--ubatch-size")
-            .arg("1024")
-            // Overflow must FAIL, never silently amputate. With context shift on
-            // (the llama.cpp default), a prompt larger than the slot's window has
-            // its MIDDLE evicted and generation proceeds on the mutilated prompt —
-            // exam-corrupting amnesia no log line reports (#139: 44k-token prompts
-            // observed riding ~13.4k slots with no error anywhere). Disabled, the
-            // server 400s ("exceeds context size") and the caller's fail-loud path
-            // surfaces the real defect: a RAG budget that overshot the served
-            // window ([[fallbacks-are-illegal-fail-loud]]).
-            .arg("--no-context-shift");
+        let base = crate::inference::lane_args::base_invocation(
+            &gguf,
+            &target.model.id,
+            &host,
+            port,
+            lanes,
+            total_ctx,
+        );
+        for a in &base.args {
+            cmd.arg(a);
+        }
+        for (k, v) in &base.envs {
+            cmd.env(k, v);
+        }
         // KV CACHE QUANTIZATION (#232, opt-in field-proven technique). f16 KV is the
         // default; q8_0 is ~half the resident KV footprint at near-lossless quality,
         // freeing memory the elastic window (#234) can spend on a BIGGER context or MORE
