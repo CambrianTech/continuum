@@ -31,16 +31,37 @@ Personality and role stay unlimited: teacher / QA / student are **genome + recip
 selection**, never hardcoded relationships. Only the adapters in/out and the judging are
 structural. See [[model-the-literal-institution-not-the-ml-abstraction]].
 
-## Three tiers
+## ONE kind: adapters, list-valued, empty allowed
 
-| Tier | Who judges | Where it's declared | Example |
-|---|---|---|---|
-| **None** | nobody | recipe declares nothing | `chat.json` — open-ended; a forced score would be a lie |
-| **Formulaic** | a scoring expression over observed facts | **recipe DATA** | did the artifact appear, do the tests pass, how many acts, did she ask for help |
-| **Adapter** | `BenchmarkAdapter::grade` | recipe names the adapter | SWE-bench (apply patch, run the repo's tests), a robot trajectory replay |
+**Corrected 2026-08-21 (Joel).** An earlier draft of this doc proposed three *tiers* —
+none / formulaic / adapter. That was a false trichotomy and it would have cost a DSL:
 
-Formulaic is expected to be the COMMON case for learning activities. Adapter is for
-judgment that genuinely requires execution.
+> "Or just always adapter(s) with none as an option and maybe an ability to chain or
+> interlink them. So formulaic or not, anything can plug in. Just build the ones you
+> initially need is my motto."
+
+There is ONE concept:
+
+- **A judge is an adapter.** `BenchmarkAdapter` — already the interface.
+- **"None" is the empty list.** `chat.json` names no adapters; nothing scores it, and no
+  code path special-cases "the ungraded kind".
+- **"Formulaic" is an adapter that evaluates a formula.** Not a tier, not a schema
+  variant — one implementation among many, written once and then named by any recipe
+  that wants it, parameterised like anything else.
+- **Several adapters compose.** This is where #371's "gates multiply, objectives weigh"
+  lives: a gate adapter and an objective adapter, both named, their results combined —
+  rather than a scoring grammar invented up front to express the same thing inside one
+  field.
+
+The trichotomy would have forced a scoring-expression language into the substrate with
+no live consumer. One interface, N implementations, is the polymorphism rule this
+codebase already runs on (CLAUDE.md § POLYMORPHISM PATTERN): one interface, many
+implementations, runtime selection by name, no recompilation.
+
+**Chaining / interlinking is deliberately left open.** Sequential composition is
+obvious; whether adapters can feed each other (one's output as another's input), and how
+gate-vs-objective results combine, is not settled here and should be settled by the
+first activity that actually needs it — not speculated now.
 
 ## Where it lives: `params`, not the base type
 
@@ -49,8 +70,12 @@ authored as JSON, invisible to recipes that don't declare them (#433). `benchmar
 already uses this for `suite` (documented as *"which task manifest to import — task and
 oracle only"*, i.e. the adapter-IN), plus `instances`, `team`, `budget`.
 
-The judge is another param of the same kind. **Zero schema change to the base type**, and
-`chat.json` / `profile.json` / `video-chat.json` never grow a field they'd have to ignore.
+The judge(s) are another param of the same kind — a LIST of adapter names (with their own
+params), defaulting to empty. **Zero schema change to the base type**, and `chat.json` /
+`profile.json` / `video-chat.json` never grow a field they'd have to ignore: they simply
+don't declare it, and "not declared" already means "no judge" without any special case.
+
+Empty-by-default is what makes "none" free rather than a third code path.
 
 ## The finding that motivated this
 
@@ -75,20 +100,33 @@ around it. No evidence this was a deliberate removal (unlike the `NO birth stamp
 `airc_runtime.rs`, which documents its own deletion) — but that is an inference from the
 absence of a marker, so treat it as likely rather than certain until someone confirms.
 
-## Build order
+## Build order — "just build the ones you initially need"
 
-1. **Formulaic first.** It is the common case, it is pure data, and it needs no adapter.
-   A scoring expression over facts the activity already records; per #371 gates multiply
-   and objectives weigh.
-2. **Then route the adapter tier through the registry** — dispatch resolves the named
-   adapter and calls `grade`, deleting the hardcoded SWE branch rather than adding a field.
-3. **`TaskOutcome` grows when a real second modality forces it.** It carries mouth + hands
-   + workspace today, which covers code and answers. A drawing or a robot trajectory will
-   want more. Grow it against a real activity, never speculatively.
+1. **Route what already exists through the registry.** `benchmark/dispatch` resolves the
+   adapter(s) the recipe names and calls `grade`, DELETING the hardcoded `swe_bench::grade`
+   branch rather than adding a field beside it. This is a subtraction, and after it the
+   one live benchmark runs on the same path any future activity will.
+2. **Write a second adapter only when a second activity exists.** Not a formula DSL, not a
+   speculative "generic scorer" — the actual judge the actual next activity needs. The
+   registry is `inventory`-based, so a new adapter is a file that self-registers; there is
+   no central list to grow and no reason to pre-build.
+3. **Composition when two adapters are genuinely named together.** Chaining is cheap to
+   add once a real recipe wants a gate AND an objective. Designing the combination rule
+   before that is guessing.
+4. **`TaskOutcome` grows when a real second modality forces it.** Mouth + hands +
+   workspace covers code and answers today. A drawing or a robot trajectory will want
+   more. Grow it against a real activity, never speculatively.
+
+The through-line: every step is triggered by something real needing it. The failure mode
+this ordering exists to prevent is building the general mechanism first and discovering
+its shape was wrong when the second case finally arrives.
 
 ## Acceptance
 
-The same sentence must describe an exam, a life-drawing critique, and a robot that either
-picked up the block or didn't: *the activity declares its judge; the substrate runs it.*
-If adding a new kind of activity requires editing the base recipe type or a `match` in the
-benchmark subsystem, this is not done.
+The same sentence must describe an exam, a life-drawing critique, a robot that either
+picked up the block or didn't, and a chat room nobody scores:
+*the activity declares its judge(s); the substrate runs them; declaring none is normal.*
+
+If adding a new kind of activity requires editing the base recipe type, adding a `match`
+in the benchmark subsystem, or introducing a second KIND of judge alongside adapters,
+this is not done.
