@@ -63,12 +63,6 @@ const DEFAULT_RECALL_LIMIT: usize = 16;
 /// (significance vs the MEASURED null).
 const RECALL_RELEVANCE_FLOOR: f32 = 0.15;
 
-/// Fraction of the served context window recall may spend, in tokens. Recall is
-/// ONE perception faculty among many (roster, doctrine, working memory) plus the
-/// room transcript and the identity prompt — it must never crowd them out. 10%
-/// keeps the live message dominant while still carrying the relevant past.
-const RECALL_WINDOW_FRACTION: f32 = 0.10;
-
 /// Recall count budgeted by the served model's capability, proxied by its context
 /// window (the metric the registry reliably carries today; param-size feeds in via
 /// #74 when the Model row hydrates it). A small model juggles fewer working items,
@@ -90,7 +84,7 @@ fn recall_count_for_window(context_window: u32) -> usize {
 /// token ceiling recall may not exceed in the served window. Derived from the
 /// model's served capability — a small model is not buried under memory it cannot
 /// hold, and recall never eats the window. See [`recall_count_for_window`],
-/// [`RECALL_RELEVANCE_FLOOR`], [`RECALL_WINDOW_FRACTION`].
+/// [`RECALL_RELEVANCE_FLOOR`], [`ContextBudget::recall_tokens`].
 struct RecallBudget {
     max_count: usize,
     token_ceiling: usize,
@@ -101,7 +95,9 @@ impl RecallBudget {
         let token_ceiling = if context_window == 0 {
             usize::MAX // window unknown → don't token-gate (count + floor still apply)
         } else {
-            (((context_window as f32) * RECALL_WINDOW_FRACTION) as usize).max(MIN_RECALL_TOKENS)
+            crate::cognition::context_budget::ContextBudget::from_window(context_window)
+                .recall_tokens()
+                .max(MIN_RECALL_TOKENS)
         };
         Self {
             max_count: recall_count_for_window(context_window),

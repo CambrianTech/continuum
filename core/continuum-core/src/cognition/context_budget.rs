@@ -129,6 +129,9 @@ impl ContextBudget {
         Self { total_chars: None }
     }
 
+/// Share of the served window recall may spend. See [`ContextBudget::recall_tokens`].
+const RECALL_DENOM: usize = 10;
+
     /// `1/denom` of the window in chars; `usize::MAX` (no bound) when the window is unknown.
     fn fraction(&self, denom: usize) -> usize {
         match self.total_chars {
@@ -220,6 +223,25 @@ impl ContextBudget {
             // total_chars = window * GUARD_CHARS_PER_TOKEN, so /8 in tokens is /(8*ratio) here.
             Some(total) => ((total / GUARD_CHARS_PER_TOKEN) / 8).min(u32::MAX as usize) as u32,
             None => u32::MAX,
+        }
+    }
+
+    /// Tokens recall may spend surfacing past memories.
+    ///
+    /// Recall is ONE perception faculty among many (roster, doctrine, working memory)
+    /// plus the room transcript and the identity prompt — it must never crowd them
+    /// out. `1/RECALL_DENOM` keeps the live message dominant while still carrying the
+    /// relevant past, and it SCALES: a 1M-context model gets proportionally more
+    /// recall instead of a fixed 4k-shaped slice.
+    ///
+    /// Moved here 2026-08-20 from `recall_faculty.rs`, where it lived as
+    /// `RECALL_WINDOW_FRACTION: f32 = 0.10` — a bare float that this module's own
+    /// guard could not see, because the guard's type list stopped at the integers.
+    /// Widening it to floats surfaced this on the first run.
+    pub fn recall_tokens(&self) -> usize {
+        match self.total_chars {
+            Some(total) => (total / GUARD_CHARS_PER_TOKEN) / Self::RECALL_DENOM,
+            None => usize::MAX,
         }
     }
 
@@ -472,14 +494,30 @@ mod tests {
                     let Some((ty, value)) = tail.split_once('=') else {
                         continue;
                     };
-                    // Only sizes. A &str / bool / Duration named "...CONTEXT..." is not a bound.
-                    if !["u32", "usize", "u64", "i32", "i64"].contains(&ty.trim()) {
+                    // Only sizes and RATIOS. A &str / bool / Duration named "...CONTEXT..." is
+                    // not a bound.
+                    //
+                    // The float types are here because of a hole this test had for its whole
+                    // life, found 2026-08-20 the first time anyone wrote a window-relative
+                    // constant that wasn't a token COUNT: `WINDOW_COMPARABILITY_FACTOR: f64 =
+                    // 2.0` (#2339, mine). Name matched, value was a bare literal, and it
+                    // sailed through — because the type list stopped at the integers. A guard
+                    // against invented numbers that a `f64` annotation defeats teaches exactly
+                    // one lesson: type your magic number as a float. A ratio over the window is
+                    // as much a fresh guess as a count of its tokens, and is caught the same way.
+                    if !["u32", "usize", "u64", "i32", "i64", "f32", "f64"].contains(&ty.trim()) {
                         continue;
                     }
-                    // A bare decimal literal is the defect. An expression built from another
-                    // named bound (`MIN_SERVE_CTX * 8`) is a derivation, not a fresh guess.
+                    // A bare literal is the defect — decimal or float, since both are equally
+                    // guessed. An expression built from another named bound (`MIN_SERVE_CTX * 8`)
+                    // is a derivation, not a fresh guess.
                     let v = value.trim().trim_end_matches(';').trim();
-                    if v.chars().all(|c| c.is_ascii_digit() || c == '_') && !v.is_empty() {
+                    let bare_literal = !v.is_empty()
+                        && v.chars().all(|c| c.is_ascii_digit() || c == '_' || c == '.')
+                        // `.` only as a decimal point: `1.5` yes, `A.b` / `1..2` no.
+                        && v.matches('.').count() <= 1
+                        && v.starts_with(|c: char| c.is_ascii_digit());
+                    if bare_literal {
                         offenders.push(format!(
                             "{}:{} — const {}: {} = {}",
                             path.file_name().unwrap_or_default().to_string_lossy(),

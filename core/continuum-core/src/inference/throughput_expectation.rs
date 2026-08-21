@@ -43,41 +43,23 @@ pub struct ThroughputBaseline {
     /// baseline as fact" — an unwindowed one is the same class.
     ///
     /// `None` means the window was genuinely not recorded when the number was
-    /// taken. That is an honest absence, NOT a zero: consumers must treat it
-    /// as "no like-for-like comparison available" rather than silently
-    /// assuming the live window matches ([[unknown-is-not-a-quantity]]).
-    pub measured_at_window: Option<u32>,
-}
-
-/// How far apart two served windows must be before a throughput comparison
-/// between them stops being like-for-like.
-///
-/// Decode cost per token grows with resident KV, so the same lane legitimately
-/// reads slower at a larger window with NOTHING wrong. 2× is deliberately
-/// coarse — same order of magnitude is still a fair comparison, and this gate
-/// exists to suppress mis-attribution, not to excuse real collapse.
-const WINDOW_COMPARABILITY_FACTOR: f64 = 2.0;
-
-impl ThroughputBaseline {
-    /// Whether this baseline can be fairly compared against a lane serving
-    /// `live_window` tokens.
+    /// taken. That is an honest absence, NOT a zero ([[unknown-is-not-a-quantity]]).
     ///
-    /// `false` does NOT mean "healthy" — it means this baseline cannot say.
-    /// A caller that still wants to alarm must say out loud that the
-    /// expectation was taken at a different window, or it will send a reader
-    /// hunting the wrong cause.
-    pub fn comparable_at(&self, live_window: u32) -> bool {
-        let Some(measured) = self.measured_at_window else {
-            // Never recorded → no basis to claim comparability either way.
-            return false;
-        };
-        if measured == 0 || live_window == 0 {
-            return false;
-        }
-        let (a, b) = (measured as f64, live_window as f64);
-        let spread = if a > b { a / b } else { b / a };
-        spread <= WINDOW_COMPARABILITY_FACTOR
-    }
+    /// This field is PROVENANCE — it says what the number describes. It does not
+    /// come with a comparability predicate, and that omission is deliberate:
+    /// deciding whether two operating points are comparable is a CONSUMER's
+    /// judgement, made against the lease/handle it already holds, not a rule this
+    /// data struct gets to assert for every caller in the tree.
+    ///
+    /// (Removed 2026-08-20, same day it landed: this carried a
+    /// `comparable_at(live_window)` predicate gated on a bare
+    /// `WINDOW_COMPARABILITY_FACTOR: f64 = 2.0`. It had ZERO production callers,
+    /// the 2× was invented, and the doc comments on the seed rows below promised
+    /// that "consumers get `comparable_at() == false`" — describing consumers
+    /// that did not exist. Speculative interface + magic number + a comment
+    /// asserting a reader that was never written. When a real consumer needs
+    /// this, it reads the field and decides through its own interface.)
+    pub measured_at_window: Option<u32>,
 }
 
 /// How measured decode throughput compares to the expected baseline. `ratio`
@@ -201,8 +183,8 @@ pub const SEED_BASELINES: &[ThroughputBaseline] = &[
         expected_tok_s: 67.8,
         source: "MEASURED: continuum tests/llamacpp_metal_throughput.rs single-seq, 2026-06",
         // Window not recorded when this number was taken (pre-#440). Honest
-        // absence: consumers get `comparable_at() == false` rather than a
-        // silent assumption that the live lane matches.
+        // absence: the window this rate was taken at was never written down,
+        // and stating that plainly beats inventing one.
         measured_at_window: None,
     },
     ThroughputBaseline {
@@ -215,8 +197,8 @@ pub const SEED_BASELINES: &[ThroughputBaseline] = &[
         expected_tok_s: 221.7,
         source: "MEASURED: DMR llama.cpp-cuda slot timing, RTX 5090 32GB, 2026-06-15",
         // Window not recorded when this number was taken (pre-#440). Honest
-        // absence: consumers get `comparable_at() == false` rather than a
-        // silent assumption that the live lane matches.
+        // absence: the window this rate was taken at was never written down,
+        // and stating that plainly beats inventing one.
         measured_at_window: None,
     },
     ThroughputBaseline {
@@ -231,8 +213,8 @@ pub const SEED_BASELINES: &[ThroughputBaseline] = &[
         expected_tok_s: 180.0,
         source: "ESTIMATE: conservative floor (8B measured 221.7 same GPU); REFINE with a 4B run",
         // Window not recorded when this number was taken (pre-#440). Honest
-        // absence: consumers get `comparable_at() == false` rather than a
-        // silent assumption that the live lane matches.
+        // absence: the window this rate was taken at was never written down,
+        // and stating that plainly beats inventing one.
         measured_at_window: None,
     },
 ];
