@@ -3387,6 +3387,15 @@ diff --git a/sympy/solvers/tests/test_other.py b/sympy/solvers/tests/test_other.
             in_flight_solve_runs_in(p).is_empty(),
             "after the reap nothing is in flight — a second boot must not re-reap"
         );
+        // SECOND CONSUMER, and this assertion is now load-bearing for it:
+        // `dispatch_staged_swe_solve` refuses to start a solve when this card's run is
+        // already in flight (one card, one live run — the 2026-08-21 duplicate-dispatch
+        // fix). That gate's ONLY release valve is the reap above clearing `state` off
+        // `running`. If a reap ever stopped clearing it, the two failures compose into
+        // something far worse than either alone: every restart-killed card would be
+        // permanently un-dispatchable, and the board would look "busy" forever with no
+        // run alive to finish it. So this line pins the gate's escape hatch, not just
+        // reap idempotence — do not relax it to `<= 1` or drop it.
     }
 
     // what this catches: a REAL verdict must survive the process that produced it, and the
