@@ -3,6 +3,20 @@
 **Status:** measured defect + design, 2026-08-21, M5, core `eb33af7b3`, lane
 `Qwen3.8-27B` on 4 slots, 58,112-token served window.
 
+> **RESOLUTION LOG (same day, measured on each successive build):**
+>
+> | Build | Change | Live proof |
+> |---|---|---|
+> | `9e2f95820` | `stream_liveness` phase machine — prefill gets the bulk budget | retries 44 → **0** |
+> | `312c4a9c8` | `prefill.rescued` / `prefill.complete` probes | 4 rescued rows, each `would_have_died=1` — 163–192s prefills now complete |
+> | `6dea7c435` | queue/ingest split in the receipts | `queued_ms=0` on ALL streams — §2's slot-theft-during-queue hypothesis **dead**; residual is ingest-share under continuous batching (~95–100 tok/s on big prompts) |
+> | `cfe606c55` | §"one more root": the `/props` 503 boot-race latch — **slot affinity had been silently OFF on virtually every boot since 2026-07-11** | `slot_affinity.pinned` ×3 (first pins ever observed); `prefill.complete` with `cached: 1155 / total: 1159` — **~99.7% KV reuse on a byte-stable prompt** |
+>
+> The serving governor also replanned mid-day to `lanes: 4, window: 125,184` (from
+> 58,112), so the §1 demands now FIT (`over_window` 0.70–0.78). The remaining open
+> measurement is a citizen's own second-turn reuse through her pinned slot, and a
+> completed `persona.turn.*` on the citizen-driver bench path.
+
 **The one-line version:** citizens demand 1.3–2.1× the served window, prefill of a
 window-sized prompt takes ~170s at the measured rate, our liveness watchdog gives it 90s,
 and every turn dies and retries forever. The ambient-permit starvation everyone can see is
