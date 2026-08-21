@@ -17,8 +17,13 @@
 //! failure would be #384-class unfairness. Only true cognition silence lapses.
 //!
 //! One module owns the stamp (compression law). Keyed by persona uuid because
-//! the two writers live on opposite sides of the persona structs: the service
-//! loop (turn start) and the airc runtime's heartbeat task (renewal gate).
+//! the participants live on opposite sides of the persona structs and never
+//! share a struct to hang it off: two WRITERS — the service loop (turn start)
+//! and a live `agent/solve` drive tick — and one READER, the airc runtime's
+//! heartbeat task (the renewal gate).
+//!
+//! Both writers stamp on WORK ACTUALLY HAPPENING. That is the whole contract,
+//! and the reason there is no spawn/boot/presence writer — see `touch`.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -30,8 +35,22 @@ fn pulse() -> &'static Mutex<HashMap<Uuid, u64>> {
     PULSE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Stamp "she is thinking NOW". Called at spawn (grace window covers the
-/// post-boot deaf period, #412) and at every service-loop turn start.
+/// Stamp "she is thinking NOW". Called at every service-loop turn start, and
+/// on each tick of a live `agent/solve` drive (a running solve IS cognition,
+/// and produces no airc turn — #425).
+///
+/// THERE IS DELIBERATELY NO SPAWN STAMP, and this doc used to claim one.
+/// A birth stamp lived in `airc_runtime.rs` and was REMOVED on purpose: it
+/// re-armed a full lease-length of "earned" renewals on every core restart, so
+/// the renewal loop resurrected already-lapsed claims faster than the 180s
+/// sweeper could observe them, and an entire overnight round (2026-08-16) sat
+/// "actively held" with zero turns. The removal site carries the full account
+/// — see the `NO birth stamp` comment above the heartbeat task. Read it before
+/// adding any caller that stamps on a lifecycle event rather than on work.
+///
+/// (Corrected 2026-08-21, after this stale sentence talked me into re-adding
+/// exactly the stamp that had been deleted. A doc describing a writer that no
+/// longer exists reads identically to missing wiring.)
 pub fn touch(persona_id: Uuid, now_ms: u64) {
     if let Ok(mut map) = pulse().lock() {
         map.insert(persona_id, now_ms);
@@ -41,8 +60,12 @@ pub fn touch(persona_id: Uuid, now_ms: u64) {
 /// Milliseconds since her last stamped cognition. `None` = never stamped in
 /// this process — callers decide the posture; the renewal gate treats it as
 /// NOT earned (an unstamped persona renewing forever is the exact lie this
-/// module exists to end; spawn stamps immediately, so live citizens are
-/// always stamped).
+/// module exists to end).
+///
+/// `None` is therefore the EXPECTED reading for a freshly-booted citizen who
+/// has not yet thought, and her holds lapsing within one TTL of boot is the
+/// designed outcome, not a bug: she can re-claim, and the sweeper grades any
+/// artifact she left behind. Do not "fix" it with a lifecycle stamp.
 pub fn idle_ms(persona_id: Uuid, now_ms: u64) -> Option<u64> {
     pulse()
         .lock()
@@ -83,45 +106,5 @@ mod tests {
         // she thinks again → earned again
         touch(persona, 2_000 + ttl);
         assert!(renewal_earned(idle_ms(persona, 2_000 + ttl), ttl));
-    }
-
-    // what this catches: THE SPAWN STAMP GOING MISSING AGAIN. This module's
-    // doc promises two writers ("called at spawn … and at every service-loop
-    // turn start") and rests its `None`-is-not-earned posture on the first one
-    // ("spawn stamps immediately, so live citizens are always stamped"). For
-    // as long as that sentence existed the spawn writer did NOT, so a citizen
-    // who had not yet taken her first turn was indistinguishable from one
-    // silent for hours: renewals denied from birth, holds lapsing un-renewed,
-    // bench cards claimed → lapsed → re-claimed in a spin that produced
-    // nothing (found live 2026-08-21; `renewal_resumed` had ZERO rows ever).
-    //
-    // A semantic test cannot catch this — the contract above is satisfied by
-    // an unwired module. The only thing that catches it is asserting the call
-    // SITE exists, with comments stripped so this file's own prose can never
-    // stand in for the wiring (the #344 audit predicate, same reasoning).
-    #[test]
-    fn spawn_stamps_the_pulse_so_a_prefirst_turn_citizen_is_not_read_as_idle() {
-        let host_rs = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("src/persona/host.rs");
-        let src = std::fs::read_to_string(&host_rs)
-            .unwrap_or_else(|e| panic!("cannot read {}: {e}", host_rs.display()));
-        // Drop `//`-prefixed content: a doc comment describing the stamp is
-        // exactly what masked its absence, so prose must not count as wiring.
-        let code_only: String = src
-            .lines()
-            .map(|line| match line.find("//") {
-                Some(idx) => &line[..idx],
-                None => line,
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            code_only.contains("cognition_pulse::touch"),
-            "persona/host.rs no longer stamps the cognition pulse at spawn. \
-             Without it `idle_ms` returns None for every citizen who has not \
-             yet taken a turn, `renewal_earned(None, _)` is false, and her \
-             claims lapse un-renewed from birth — restore the stamp after \
-             `prime()` rather than relaxing the renewal gate."
-        );
     }
 }
