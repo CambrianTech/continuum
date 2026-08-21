@@ -53,6 +53,46 @@ A turn's prompt is roughly:
 stable framing into the cacheable prefix. That work is **correct and currently
 mostly wasted.**
 
+> ### ⚠️ Prior art: half of this is already written, and unmerged
+>
+> `fix/system-prompt-cache-stability` — 9 commits, **2026-08-09**, local-only for 11
+> days, pushed 08-20 purely to preserve it, **158 commits behind canary**. It already
+> implements the *self*-stability reorder, and its forensics are sharper than this
+> doc's:
+>
+> - Consecutive turns shared only **7,607 of ~14,706 chars**, because the
+>   presence/own-time framing block sat *before* the assembled context and hard-flips
+>   every turn (DIRECTED / WORKING / SILENCE). Each flip truncated the reusable prefix
+>   at that point and re-prefilled the entire tail.
+> - The fix is pure block **order**: `compose` emits `stable ++ trailing`, so the
+>   flipping framing renders *after* the grounding. Grounding lands inside the
+>   reusable prefix.
+> - Gated by two VDD tests, one asserting the longest shared leading run of
+>   `prompt_view(directed)` vs `prompt_view(undirected)` reaches *through* the
+>   `[What you are working with]` block. **RED before the reorder.** Cognition suite
+>   947 passed / 0 failed at the time.
+> - It explicitly rejected moving framing onto a trailing USER turn: that broke the
+>   "ask stays last" invariant and would end an undirected turn on the PASS
+>   affordance — biasing toward the exact idle silence of #264.
+>
+> **And it named this doc's central hypothesis eleven days earlier:**
+>
+> > *"the measured 0% reuse (vs the ~50% a 7.6k common prefix implies) hints slot-KV
+> > eviction is a CO-cause the prompt fix alone won't move — settle with a
+> > stable-prompt A/B before claiming the 10x."*
+>
+> So **Defect 1 below is independent corroboration, not a discovery.** And step 2's
+> reorder is a *different axis* from that branch's: it did **self** stability (one
+> persona across turns); step 2 does **cross-persona** sharing. They compose — step 2
+> belongs on top of that branch, not instead of it.
+>
+> Its sibling spec, `docs/cognition/TYPED-OBSERVATION-REFACTOR.md`, was untracked for
+> the same 11 days and is preserved in the same sweep. Spec and implementation were
+> both one `git clean` from gone.
+>
+> **Status: preserved, not ready.** Unrebased and unvalidated against 158 commits of
+> drift. Rebase and re-run the cognition suite before building on it.
+
 ### Defect 1 — nothing pins a persona to a slot
 
 llama.cpp keeps KV **per slot**. `--cache-reuse 256` reuses a common prefix
@@ -214,7 +254,7 @@ this long.
 | # | Step | Repetition it kills | Kill condition |
 |---|---|---|---|
 | 1 | **Probe the hit rate.** `prompt_tokens` vs `cached_tokens` come back on every llama-server response and we discard them. Emit as `serving.kv.reuse`. | none — it makes the rest measurable | — |
-| 2 | **Reorder** → `[tools][identity][framing]`. Input-level dedup, no runtime cost. | prerequisite for cross-persona | cross-persona hit rate does not rise |
+| 2 | **Reorder** → `[tools][identity][framing]`. Input-level dedup, no runtime cost. **Rebase `fix/system-prompt-cache-stability` first** — it already did the self-stability half. | prerequisite for cross-persona | cross-persona hit rate does not rise |
 | 3 | **Slot affinity** — persona→`id_slot`, our scheduler, no llama.cpp patch. | **self** (turn to turn) | own-prefix hit rate does not rise |
 | 4 | **Base layer** — `llama_state_seq_save/load_file`, content-addressed, with a drain. | **cross-persona** + cold-boot | restore into a live slot corrupts or does not reduce prefill |
 | 5 | **Unified KV** — check whether the 404 upstream commits brought cross-slot sharing. | may subsume 3 | — |
