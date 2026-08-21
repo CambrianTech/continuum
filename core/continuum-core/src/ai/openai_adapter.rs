@@ -406,6 +406,16 @@ fn apply_llamacpp_sampling_knobs(
     }
 }
 
+/// Does this `/props` status PROVE the endpoint does not exist — the only verdict
+/// allowed to latch [`SlotAffinity::Unsupported`] for the process's life? 404/501
+/// are the server saying "no such surface"; everything else (above all the 503 of a
+/// model still loading) is a statement about NOW, and a permanent conclusion drawn
+/// from a transient state is the [[unknown-is-not-a-quantity]] error with a cache
+/// bolted on.
+fn props_status_proves_endpoint_absent(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::NOT_IMPLEMENTED
+}
+
 impl SlotAffinity {
     /// Lease a warm slot for `persona` (see [`SlotAffinity`] doc). Reuse the slot it
     /// already holds → take a free slot → evict the least-recently-active holder.
@@ -437,6 +447,15 @@ impl SlotAffinity {
         // 2. A free slot → take it.
         if let Some(slot) = holders.iter().position(|h| h.is_none()) {
             holders[slot] = Some((persona.to_string(), now));
+            // Fires once per persona per process (plus re-pins after eviction), so
+            // the ledger can PROVE pinning is live — its silent predecessor ran
+            // latched-off for weeks with nothing to say so (2026-08-21).
+            crate::probe!(
+                class = "inference.slot_affinity.pinned",
+                persona = persona,
+                slot = slot as u64,
+                "persona pinned to a free llama-server slot — her prefix warms HERE",
+            );
             return Some(slot as u32);
         }
         // 3. All held → evict the least-recently-active holder (min tick).
@@ -445,6 +464,20 @@ impl SlotAffinity {
             .enumerate()
             .min_by_key(|(_, h)| h.as_ref().map(|(_, t)| *t).unwrap_or(0))
             .map(|(i, _)| i)?;
+        // Cross-persona eviction IS the KV-clobber event — the evicted citizen's
+        // warm tail is gone and her next turn re-prefills from zero. More personas
+        // than slots makes this legitimate; the probe is what makes it PRICED
+        // (KV-CACHE-ECONOMY: eviction must be a decision, not an accident).
+        if let Some((evicted, _)) = &holders[slot] {
+            crate::probe!(
+                class = "inference.slot_affinity.evicted",
+                persona = persona,
+                evicted = evicted.as_str(),
+                slot = slot as u64,
+                "all slots held — least-recently-active persona evicted; her warm \
+                 prefix is forfeit and her next turn re-prefills from zero",
+            );
+        }
         holders[slot] = Some((persona.to_string(), now));
         Some(slot as u32)
     }
@@ -759,13 +792,44 @@ impl OpenAICompatibleAdapter {
             }
         };
         if !resp.status().is_success() {
-            slot_tables().insert(root, SlotAffinity::Unsupported);
+            let status = resp.status();
+            // ONLY "this endpoint does not exist" may latch Unsupported. Any other
+            // status — above all the 503 a llama-server answers while the model is
+            // still LOADING — is transient, and latching on it killed slot affinity
+            // on effectively EVERY boot: personas start deliberating before the lane
+            // is warm (`inference.lane_relaunch_retry` ×93, reason=503_loading, same
+            // ledger), so the first probe raced the load window, latched Unsupported
+            // for the process's life, and prefix-similarity slot theft quietly
+            // replaced pinning — measured as `cached: 0` mid-conversation on
+            // 2026-08-21. A verdict about what a server IS must never be reached
+            // while the server is mid-transition (#442's rule, one layer down).
+            if props_status_proves_endpoint_absent(status) {
+                crate::probe!(
+                    class = "inference.slot_affinity.unsupported",
+                    status = status.as_u16() as u64,
+                    "props endpoint absent — slot affinity latched OFF for this server",
+                );
+                slot_tables().insert(root, SlotAffinity::Unsupported);
+            } else {
+                crate::probe!(
+                    class = "inference.slot_affinity.deferred",
+                    status = status.as_u16() as u64,
+                    "props not ready (transient status) — affinity deferred, NOT latched; \
+                     will re-probe on the next persona request",
+                );
+            }
             return None;
         }
         let body: serde_json::Value = match resp.json().await {
             Ok(v) => v,
             Err(_) => {
-                slot_tables().insert(root, SlotAffinity::Unsupported);
+                // A malformed body from a live server is also not proof of absence —
+                // mid-load llama-server can answer partial/HTML bodies. Defer, don't latch.
+                crate::probe!(
+                    class = "inference.slot_affinity.deferred",
+                    status = 200u64,
+                    "props answered but body did not parse — affinity deferred, NOT latched",
+                );
                 return None;
             }
         };
@@ -3696,6 +3760,36 @@ mod tests {
     // personas take distinct free slots; once full, a NEW persona evicts the
     // LEAST-recently-active holder, not a fixed round-robin victim — so the active
     // set keeps its warm slots and co-active minds never share one. This is the
+    // what this catches: the boot-race latch that killed slot affinity on effectively
+    // EVERY boot (2026-08-21). Personas start deliberating while llama-server still
+    // answers 503_loading (measured ×93 in the same ledger); the old code latched
+    // Unsupported on ANY non-success status, so one probe racing the load window
+    // disabled pinning for the process's life and prefix-similarity slot theft took
+    // over (`cached: 0` mid-conversation). Only "no such endpoint" may be permanent.
+    #[test]
+    fn a_loading_lane_must_not_latch_slot_affinity_off() {
+        use reqwest::StatusCode;
+        for transient in [
+            StatusCode::SERVICE_UNAVAILABLE, // llama-server mid-load — THE incident
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::BAD_GATEWAY,
+            StatusCode::TOO_MANY_REQUESTS,
+        ] {
+            assert!(
+                !props_status_proves_endpoint_absent(transient),
+                "{transient} is a statement about NOW, not about what the server IS — \
+                 latching Unsupported on it re-opens the boot race"
+            );
+        }
+        for absent in [StatusCode::NOT_FOUND, StatusCode::NOT_IMPLEMENTED] {
+            assert!(
+                props_status_proves_endpoint_absent(absent),
+                "{absent} genuinely proves the surface is missing — without the latch \
+                 every cloud provider would be re-probed per persona request forever"
+            );
+        }
+    }
+
     // regression guard on the old first-touch pin that let two permanent slot-mates
     // clobber each other every turn (cachedTokens≈4). Non-Table states never pin.
     #[test]
