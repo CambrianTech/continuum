@@ -16,6 +16,22 @@
 > 58,112), so the §1 demands now FIT (`over_window` 0.70–0.78). The remaining open
 > measurement is a citizen's own second-turn reuse through her pinned slot, and a
 > completed `persona.turn.*` on the citizen-driver bench path.
+>
+> **Also observed same day:** a full citizen act→observe cycle post-fix (Kira,
+> `persona.act.think_only` → `persona.act.observed`, tools:1), and three more
+> window-scale prefills (16k–30k tokens, 163–293s) completed with `would_have_died=1`.
+>
+> **Next distinct defect, scoped but not fixed — the deaf kickoff.** The dispatch
+> chat kickoff reached no persona inbound (zero `persona.inbound.raw_event` rows for
+> the addressee). The consumer-cursor layer is EXONERATED — `inbound_attach.rs`'s
+> watermark discipline (#261) only ever persists already-delivered positions. The
+> surviving suspect is subscription COVERAGE: `run_daemon_attach` is "single-attach
+> today" (one default channel), and persona subscriptions opened at boot don't cover
+> a bench room created mid-session until their next re-open — the kickoff landed
+> exactly in that gap. Per the standing law, room events must be INTERRUPTS: a
+> `join_room` must extend the live subscription at join time, not at the next
+> stream restart. (This round survived because the citizen driver PRE-CLAIMS the
+> card through her own runtime, so the work arrived via the board pipe.)
 
 **The one-line version:** citizens demand 1.3–2.1× the served window, prefill of a
 window-sized prompt takes ~170s at the measured rate, our liveness watchdog gives it 90s,
