@@ -264,6 +264,61 @@ everything else. Step 4 is where the constraint above is actually met.
 
 ---
 
+## Field evidence from an independent build on the SAME model (2026-08-21)
+
+`syv-ai/qwen38-27b-rtx3090` serves **Qwen3.8-27B** — our exact model — on one RTX 3090
+via vLLM. Different stack (CUDA/vLLM vs Metal/llama.cpp), and roughly half that repo is
+patches against vLLM internals with no llama.cpp counterpart. But the *measurements* are
+on our model, and three of them change this doc.
+
+**1. Prefix caching is confirmed as the top lever — and now it is PRICED.**
+
+> *"Turn-2+ of a chat with a 24k document goes from ~23 s to ~1 s; costs one extra state
+> page per request (~16% of the KV pool). Hybrid models keep this opt-in upstream."*
+
+Independent confirmation of this doc's thesis from someone who measured it, plus the
+thing the doc was missing: **a cost shape.** ~16% of pool for a ~20× TTFT. It is opt-in
+in vLLM too — `PREFIX_CACHE=0` by default. So step 4 is not "unknown cost, probably
+worth it"; it is a known trade to take deliberately.
+
+**2. NEW ITEM, not previously in this doc — draft-vocabulary calibration.**
+Their measurement, on this model:
+
+| draft vocab | coverage of its own output | on CODE | greedy tok/s |
+|---|---|---|---|
+| counted over the model's OWN outputs | 97.5% | **96%** | 108 |
+| generic web-text list | 92% | **83%** | 98 |
+
+Every miss is a forced rejection. ~10% throughput from calibration alone — and the gap
+is **widest on code**, which is our workload.
+
+This is ours by construction and nobody else's: we capture every turn, and we have a
+foundry. A draft vocab calibrated on our citizens' actual code output is exactly the
+"recipe entity → foundry → artifact" shape CLAUDE.md specifies, and it is the
+frozen-backbone/own-corpus thesis applied to *drafting* instead of weights.
+
+**3. Lookup-augmented drafting is the agentic-coding multiplier, and they say so.**
+Their note: *"+50% where the model reproduces its context (388 vs 259 tok/s), +9% on the
+short-prompt set… Worth setting for a coding assistant applying edits or a RAG front-end
+quoting sources; the default stays 7."* Reached independently of our reasoning that a
+citizen emitting a patch is mostly re-emitting tokens already in her prompt. Honest cost
+they document: reproduction mode drops 8 request slots → 4 and 64k → 56k, which at our
+`--parallel 4` is a real trade, not free.
+
+**Where we already stand on their ladder.** Their rungs: ~46 tok/s no speculation →
+~108–114 with MTP → ~259 DFlash2 → ~381 with lookup + 16-token verify (document
+reproduction only; ~133 on ordinary chat). Our live lane on 2026-08-21 carries
+`--spec-draft-model … --spec-draft-n-max 4` (#440), and a direct probe of the running
+server returned `draft_n: 2, draft_n_accepted: 2` — **speculative decode is live and
+accepting.** So we are at their MTP rung, not the unaccelerated one. What we do not have
+is lookup drafting.
+
+**No comparison of our tok/s to theirs appears here on purpose.** We have no clean
+single-stream measurement — the only recent sample was 3.75 tok/s against a 17.2
+expectation with `inflight_model_calls: 3`, which is contention arithmetic. Their numbers
+are 250W CUDA; ours are Metal. Putting the two side by side would be the benchmaxx the
+skeptic in that thread was right to distrust.
+
 ## Connections
 
 - [`COGNITION-CACHE-HIERARCHY.md`](COGNITION-CACHE-HIERARCHY.md) — the *other*
