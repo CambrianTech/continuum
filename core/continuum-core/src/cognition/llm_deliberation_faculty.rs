@@ -1069,32 +1069,65 @@ impl LlmDeliberationFaculty {
         // exists to end. SENSOR, never a clamp: refusing to render, or amputating the
         // tool surface to make room, is the deleted #206 cliff. It reports; the fix
         // for the budget itself is #460 and is not a decision this function may make.
-        if let (Some((worst_name, worst_dropped)), Some(cheapest_kept)) = (
-            dropped_salience
-                .iter()
-                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-                .cloned(),
-            selected
+        // TWO holes were in the first cut of this, and the FIRST live turn after deploy
+        // found both (2026-08-20, Atlas/Kira/Benchy on build 2281e8b81). Recorded here
+        // because the shape is the one this codebase keeps paying for.
+        //
+        // HOLE 1 — strict `>` against a population with NO salience spread. The live
+        // rows: Atlas kept `roster(0.90), room-kanban(0.90)` and dropped
+        // `workspace-map(0.90)`; Benchy kept `room-board(0.90)` and dropped
+        // `workspace-map(0.90), room-kanban(0.90)`. EVERYTHING essential bids exactly
+        // 0.90, so `0.90 > 0.90` is false and the sensor stayed silent through the
+        // precise condition it was written for. The premise "ranking cannot drop a 0.90
+        // while keeping a 0.30" is TRUE and VACUOUS: production has no 0.30 at this
+        // tier. What actually decides who survives is arrival order and byte size — a
+        // coin flip among equals — and losing the repo map to that flip is the whole
+        // harm. `>=` is therefore the honest predicate, and a genuine ranking success
+        // (0.30 dropped, 0.90 kept) still cannot fire it.
+        //
+        // HOLE 2, worse — TOTAL starvation was invisible. `min_by` over an EMPTY
+        // `selected` yields `None`, the `if let` fell through, and nothing fired. The
+        // one state where the citizen got NO grounding at all was the one state the
+        // sensor could not report ([[an-absence-is-an-unfinished-measurement]], and
+        // mine, in the instrument built to end exactly this).
+        let worst_dropped = dropped_salience
+            .iter()
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .cloned();
+        if let Some((worst_name, worst_sal)) = worst_dropped {
+            let cheapest_kept = selected
                 .iter()
                 .map(|(c, _)| c.salience)
-                .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)),
-        ) {
-            if worst_dropped > cheapest_kept {
+                .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            // `None` = nothing survived at all, which is maximal harm, never "no finding".
+            let fires = cheapest_kept.is_none_or(|kept| worst_sal >= kept);
+            if fires {
+                let verdict = match cheapest_kept {
+                    None => "TOTAL: nothing survived the budget".to_string(),
+                    Some(k) if (worst_sal - k).abs() < f32::EPSILON => {
+                        format!("TIE at sal={worst_sal:.2} — decided by size, not by rank")
+                    }
+                    Some(k) => format!("dropped {worst_sal:.2} while keeping {k:.2}"),
+                };
+                // Bound as a local: the message interpolates it, and a probe FIELD
+                // assignment is not a binding the format string can see.
+                let tool_tokens = self.describe_tool_tokens();
                 crate::probe!(
                     class = "delib.context.salience_inversion",
                     persona = %self.persona_name,
                     dropped_faculty = %worst_name,
-                    dropped_salience = worst_dropped,
-                    kept_min_salience = cheapest_kept,
+                    dropped_salience = worst_sal,
+                    kept_min_salience = cheapest_kept.unwrap_or(-1.0),
+                    kept_count = selected.len(),
+                    verdict = %verdict,
                     budget_tokens,
                     context_window,
-                    tool_tokens = self.describe_tool_tokens(),
+                    tool_tokens,
                     framing_tokens,
-                    "GROUNDING INVERTED: dropped {worst_name} (sal={worst_dropped:.2}) WHOLE while \
-                     keeping a contribution at sal={cheapest_kept:.2} — the grounding budget \
-                     ({budget_tokens} tok) could not afford what attention ranked highest, so the \
-                     citizen is reasoning without it. Not a ranking bug: selection is \
-                     highest-salience-first, so this is the size interaction (#460)."
+                    "GROUNDING LOST: {worst_name} dropped WHOLE ({verdict}) — the grounding \
+                     budget was {budget_tokens} tok against a {context_window} window with \
+                     {tool_tokens} in tool schemas and {framing_tokens} in framing. The citizen \
+                     is reasoning without what attention ranked top (#460)."
                 );
             }
         }
@@ -2861,11 +2894,17 @@ mod tests {
                 0.90,
                 "map",
             ));
-            // A cheap afterthought that comfortably fits.
+            // A cheap block that comfortably fits — AT THE SAME SALIENCE. This is the
+            // LIVE shape, not a constructed one: on the first turns after the
+            // 2281e8b81 deploy every essential source bid exactly 0.90 (Atlas kept
+            // `roster(0.90), room-kanban(0.90)` and dropped `workspace-map(0.90)`;
+            // Benchy kept `room-board(0.90)` and dropped two others at 0.90). There is
+            // no 0.30 to lose to. The first cut of this test used one, which is why it
+            // passed against a sensor that could not fire in production.
             ws.broadcast.push(Contribution::context(
                 FacultyId::Custom("recall".to_string()),
                 "you once renamed a file".to_string(),
-                0.30,
+                0.90,
                 "recall",
             ));
 
