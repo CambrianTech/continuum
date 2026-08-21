@@ -242,3 +242,7 @@ benchmarks/swe/.venv/
 # minted inside subdirectories (that is exactly how the #424 key nearly
 # became repo content).
 **/.airc/identity.key
+
+# Agent scratch probes (shot/rowcount/msgcount) + a compiled _check_bin.
+# Ad-hoc instruments, not project tooling; regenerated on demand.
+.gymtool/

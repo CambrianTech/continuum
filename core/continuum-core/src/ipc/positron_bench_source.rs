@@ -74,11 +74,25 @@ pub fn spawn_bench_emitter(
             // Ledger scan is blocking fs I/O — off the async worker per the
             // concurrency guide. A scan error (progress dir absent on a fresh
             // node) folds as the honest empty board.
+            // `.cards` only: the board renders a fixed-height rail, so `BOARD_LIMIT` is a
+            // DISPLAY bound, not a claim about how many runs exist. The scan's `matched`
+            // total belongs on the `benchmark/runs` receipt, where a caller is asking
+            // "how is the benchmark going" and a silent truncation would answer wrongly.
+            // If the rail ever grows a "+N more" affordance, that is what it reads.
             let cards = tokio::task::spawn_blocking(|| {
-                scan_run_cards(None, BOARD_LIMIT).unwrap_or_default()
+                scan_run_cards(None, BOARD_LIMIT)
+                    .map(|s| s.cards)
+                    // safe: a scan error means the progress dir is absent (fresh node) or
+                    // unreadable. Empty is the HONEST board for that — the module header
+                    // states the rule: never a fabricated row. An emitter that panicked
+                    // here would take the whole board down for every viewer instead.
+                    .unwrap_or_default() // safe: see the 4 lines above
             })
             .await
-            .unwrap_or_default();
+            // safe: JoinError only if the blocking task panicked or was cancelled at
+            // shutdown. Same answer for the same reason — publish the empty board, do
+            // not propagate a panic into the emitter's own tick loop.
+            .unwrap_or_default(); // safe: see the 3 lines above
             let view = BenchViewState {
                 runs: cards.into_iter().map(row_of).collect(),
                 sample_interval_ms: SAMPLE_INTERVAL.as_millis() as u64,

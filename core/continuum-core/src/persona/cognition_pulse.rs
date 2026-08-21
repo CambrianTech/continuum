@@ -17,8 +17,13 @@
 //! failure would be #384-class unfairness. Only true cognition silence lapses.
 //!
 //! One module owns the stamp (compression law). Keyed by persona uuid because
-//! the two writers live on opposite sides of the persona structs: the service
-//! loop (turn start) and the airc runtime's heartbeat task (renewal gate).
+//! the participants live on opposite sides of the persona structs and never
+//! share a struct to hang it off: two WRITERS — the service loop (turn start)
+//! and a live `agent/solve` drive tick — and one READER, the airc runtime's
+//! heartbeat task (the renewal gate).
+//!
+//! Both writers stamp on WORK ACTUALLY HAPPENING. That is the whole contract,
+//! and the reason there is no spawn/boot/presence writer — see `touch`.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -30,8 +35,22 @@ fn pulse() -> &'static Mutex<HashMap<Uuid, u64>> {
     PULSE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Stamp "she is thinking NOW". Called at spawn (grace window covers the
-/// post-boot deaf period, #412) and at every service-loop turn start.
+/// Stamp "she is thinking NOW". Called at every service-loop turn start, and
+/// on each tick of a live `agent/solve` drive (a running solve IS cognition,
+/// and produces no airc turn — #425).
+///
+/// THERE IS DELIBERATELY NO SPAWN STAMP, and this doc used to claim one.
+/// A birth stamp lived in `airc_runtime.rs` and was REMOVED on purpose: it
+/// re-armed a full lease-length of "earned" renewals on every core restart, so
+/// the renewal loop resurrected already-lapsed claims faster than the 180s
+/// sweeper could observe them, and an entire overnight round (2026-08-16) sat
+/// "actively held" with zero turns. The removal site carries the full account
+/// — see the `NO birth stamp` comment above the heartbeat task. Read it before
+/// adding any caller that stamps on a lifecycle event rather than on work.
+///
+/// (Corrected 2026-08-21, after this stale sentence talked me into re-adding
+/// exactly the stamp that had been deleted. A doc describing a writer that no
+/// longer exists reads identically to missing wiring.)
 pub fn touch(persona_id: Uuid, now_ms: u64) {
     if let Ok(mut map) = pulse().lock() {
         map.insert(persona_id, now_ms);
@@ -41,8 +60,12 @@ pub fn touch(persona_id: Uuid, now_ms: u64) {
 /// Milliseconds since her last stamped cognition. `None` = never stamped in
 /// this process — callers decide the posture; the renewal gate treats it as
 /// NOT earned (an unstamped persona renewing forever is the exact lie this
-/// module exists to end; spawn stamps immediately, so live citizens are
-/// always stamped).
+/// module exists to end).
+///
+/// `None` is therefore the EXPECTED reading for a freshly-booted citizen who
+/// has not yet thought, and her holds lapsing within one TTL of boot is the
+/// designed outcome, not a bug: she can re-claim, and the sweeper grades any
+/// artifact she left behind. Do not "fix" it with a lifecycle stamp.
 pub fn idle_ms(persona_id: Uuid, now_ms: u64) -> Option<u64> {
     pulse()
         .lock()

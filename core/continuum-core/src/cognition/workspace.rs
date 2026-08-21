@@ -1385,6 +1385,30 @@ pub struct WorkspaceCycle {
     /// seam bumps Act. PURE OBSERVABILITY — no decision path ever reads it. `Arc` so the
     /// radiator can hold a cheap clone without the cycle lock. See [`FacultyPulse`].
     faculty_pulse: Arc<super::faculty_pulse::FacultyPulse>,
+    /// #266 KV-PREFILL ECONOMY: lifetime `cache_n` / `prompt_n` for THIS persona,
+    /// folded once per generation at the settle seam. Interior-mutable (like
+    /// `cycle_counter`) because the settle path holds `&self`.
+    ///
+    /// WHY A LIFETIME ACCUMULATOR AND NOT THE LAST TICK: [`Workspace::metrics`]
+    /// carries the winning verdict of ONE tick, and one sample of a live system is
+    /// not a fact about it — a single cold turn reads 0% and a single warm one
+    /// reads 90%. The rate that answers "is this citizen's prefix staying resident"
+    /// is over her turns, not her latest. Same reasoning FacultyPulse applies to
+    /// axis levels; this is its prefill sibling.
+    ///
+    /// SEPARATE COUNTERS, RATIO DERIVED ON READ — never a stored rate. Averaging
+    /// rates lies (the same rule [`TurnMetrics::accumulate`] states for tok/s), so
+    /// the meter divides totals, and a persona whose turns are mostly-warm cannot
+    /// have one cold turn drag the mean.
+    ///
+    /// PURE OBSERVABILITY — no decision path reads these; nothing routes, budgets,
+    /// or gates on them. They exist so live citizens' cache behaviour is visible at
+    /// all: before this, `cache_n` was parsed, typed, threaded through
+    /// [`TurnMetrics`] and then dropped at turn end, and the ONLY consumer that ever
+    /// turned it into a number was the eval harness. Components green, wiring to the
+    /// place it matters absent — the shape that produced `[no reporters]`.
+    kv_cached_tokens: std::sync::atomic::AtomicU64,
+    kv_prefill_tokens: std::sync::atomic::AtomicU64,
 }
 
 /// RAII guard for a memory-isolated measurement window over a cycle's
@@ -1491,11 +1515,73 @@ impl WorkspaceCycle {
             cycle_counter: std::sync::atomic::AtomicU64::new(0),
             token_sink: std::sync::Mutex::new(None),
             faculty_pulse: Arc::new(super::faculty_pulse::FacultyPulse::new()),
+            kv_cached_tokens: std::sync::atomic::AtomicU64::new(0),
+            kv_prefill_tokens: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
     /// The live cognition-compass accumulator (#186). The tick seam + acting seam bump
     /// it; the vitals radiator samples [`FacultyPulse::levels`]. `Arc` clone is cheap.
+    /// #266 Fold ONE generation's prefill accounting into this persona's lifetime
+    /// KV totals, and emit the per-generation probe. Called once per live turn from
+    /// the settle seam — the single place a completed generation's [`TurnMetrics`]
+    /// is known — so there is exactly one writer and no parallel accumulator.
+    ///
+    /// A generation the lane reported no timings for (cloud provider, older
+    /// endpoint) folds in as 0/0 and moves neither counter: absent stays absent
+    /// rather than being counted as a miss, which would slander a lane that simply
+    /// never told us.
+    pub fn note_generation(&self, m: &TurnMetrics) {
+        use std::sync::atomic::Ordering;
+        if m.cached_tokens == 0 && m.prefill_tokens == 0 {
+            return; // no timings reported — an absence, never a 0% datum
+        }
+        let cached = self
+            .kv_cached_tokens
+            .fetch_add(u64::from(m.cached_tokens), Ordering::Relaxed)
+            + u64::from(m.cached_tokens);
+        let prefill = self
+            .kv_prefill_tokens
+            .fetch_add(u64::from(m.prefill_tokens), Ordering::Relaxed)
+            + u64::from(m.prefill_tokens);
+        let lifetime = cached + prefill;
+        crate::probe!(
+            class = "serving.kv.reuse",
+            turn_cached = m.cached_tokens,
+            turn_prefill = m.prefill_tokens,
+            turn_rate = m.cache_hit_rate(),
+            lifetime_cached = cached,
+            lifetime_prefill = prefill,
+            lifetime_rate = if lifetime == 0 {
+                0.0
+            } else {
+                cached as f64 / lifetime as f64
+            },
+            prefill_ms = m.prefill_ms,
+            decode_ms = m.decode_ms,
+            "KV reuse: {} of {} prompt tokens served from cache this generation",
+            m.cached_tokens,
+            m.cached_tokens.saturating_add(m.prefill_tokens)
+        );
+    }
+
+    /// #266 This persona's lifetime KV-prefix reuse — `cached / (cached + prefilled)`
+    /// across every generation she has run. `None` until at least one generation
+    /// reported timings, so a citizen who has not yet spoken radiates NOTHING rather
+    /// than a fabricated 0% (the honest-empty rule the vitals meters already follow
+    /// for a dark cognition axis and an un-paged genome).
+    ///
+    /// The ratio is derived from totals on every read, never stored and never
+    /// averaged across turns — averaging rates lies, the same reason
+    /// [`TurnMetrics::accumulate`] re-derives tok/s from totals.
+    pub fn kv_reuse(&self) -> Option<f64> {
+        use std::sync::atomic::Ordering;
+        let cached = self.kv_cached_tokens.load(Ordering::Relaxed);
+        let prefill = self.kv_prefill_tokens.load(Ordering::Relaxed);
+        let total = cached + prefill;
+        (total > 0).then(|| cached as f64 / total as f64)
+    }
+
     pub fn faculty_pulse(&self) -> Arc<super::faculty_pulse::FacultyPulse> {
         self.faculty_pulse.clone()
     }

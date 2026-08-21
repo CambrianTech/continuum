@@ -3109,6 +3109,38 @@ pub struct BenchRunCard {
 )]
 pub struct BenchmarkRunsResult {
     pub runs: Vec<BenchRunCard>,
+    /// How many cards MATCHED before `limit` truncated — so a page is never mistaken
+    /// for the whole set.
+    ///
+    /// Measured cost of not having this (2026-08-21, on me): `benchmark/runs` returned
+    /// 20 rows carrying 1 resolved instance, and I read that as the system's whole
+    /// history and as evidence that grades were being lost on the way to the board.
+    /// Both wrong. The projection reads grade siblings AND durable verdicts correctly;
+    /// there were simply 37 graded instances and `limit.unwrap_or(20)` showed the 20
+    /// most recent. The SECOND real pass (`sympy__sympy-13480`) was older than the
+    /// window, so the board looked like a 1-pass history and nobody knew otherwise.
+    ///
+    /// Same convention `debug/probes/query` already uses ("MATCHED versus returned, so
+    /// a page is never mistaken for the whole"). Silent truncation reads as "that's
+    /// everything" — on the command an operator uses to ask how the benchmark is going,
+    /// that is the worst possible failure shape.
+    #[ts(type = "number")]
+    pub matched: u32,
+    /// Human-readable statement of the two numbers, so the truncation is visible in a
+    /// glance at the receipt and not only to a caller who compares two fields.
+    pub summary: String,
+}
+
+/// One run-ledger scan: the cards a caller asked for, plus how many there were BEFORE
+/// truncation.
+///
+/// Returned as a struct rather than a bare `Vec` so the count cannot be dropped on the
+/// way out — the positron board consumes `.cards` and ignores the total, while the
+/// command reports both. A tuple would have let either caller silently discard it.
+pub(crate) struct RunScan {
+    pub cards: Vec<BenchRunCard>,
+    /// Cards that matched the filter before `limit` was applied.
+    pub matched: usize,
 }
 
 /// Fold one run's on-disk ledgers into a card. Pure over the two JSON values +
@@ -3243,9 +3275,33 @@ impl ActionCommand for BenchmarkRuns {
         _ctx: &Ctx,
         p: BenchmarkRunsParams,
     ) -> Result<BenchmarkRunsResult, CommandError> {
-        let runs = scan_run_cards(p.run_id.as_deref(), p.limit.unwrap_or(20).max(1) as usize)
+        // safe: `limit` is an OPTIONAL page size, so None means "caller didn't ask", not
+        // "unknown quantity" — 20 is this command's documented default page and the value
+        // the board already uses. `.max(1)` keeps an explicit 0 from returning nothing
+        // silently. The count that must never be defaulted is `matched`, which comes from
+        // the scan itself and is reported separately.
+        let scan = scan_run_cards(p.run_id.as_deref(), p.limit.unwrap_or(20).max(1) as usize) // safe: see the 5 lines above
             .map_err(CommandError::Internal)?;
-        Ok(BenchmarkRunsResult { runs })
+        let returned = scan.cards.len();
+        let matched = scan.matched;
+        // Say which of the two this is, in words. A caller comparing `runs.len()` to
+        // `matched` would also learn it, but the receipt is what a human (or a citizen
+        // reading the board) actually looks at, and the whole point is that truncation
+        // must not be invisible there.
+        let summary = if returned < matched {
+            format!(
+                "showing {returned} of {matched} run(s) — NEWEST first, older runs truncated \
+                 by `limit`. Raise `--limit` to see the rest; this is a PAGE, not the whole \
+                 history."
+            )
+        } else {
+            format!("all {matched} run(s) — this is the complete set for these filters, not a page.")
+        };
+        Ok(BenchmarkRunsResult {
+            runs: scan.cards,
+            matched: matched as u32,
+            summary,
+        })
     }
 }
 
@@ -3428,7 +3484,7 @@ fn scan_verdict_cards(now_ms: u64) -> Vec<BenchRunCard> {
 pub(crate) fn scan_run_cards(
     run_id_filter: Option<&str>,
     limit: usize,
-) -> Result<Vec<BenchRunCard>, String> {
+) -> Result<RunScan, String> {
     let base = std::env::var("CONTINUUM_HOME")
         .map(std::path::PathBuf::from)
         .ok()
@@ -3508,6 +3564,11 @@ pub(crate) fn scan_run_cards(
         cards.extend(scan_workspace_artifact_cards(&graded, now_ms));
     }
     cards.sort_by(|a, b| b.last_activity_ms.cmp(&a.last_activity_ms));
+    // Counted BEFORE the truncate, and carried out with the cards. Every consumer that
+    // shows a bounded page has to be able to say how much it bounded away, or the page
+    // reads as the whole history — see `BenchmarkRunsResult::matched` for the hour that
+    // cost.
+    let matched = cards.len();
     cards.truncate(limit);
     // The ledger stores the solver as her PERSONA UUID; the board speaks NAMES.
     // Resolve against the live workspace roster here — the ONE scan — so every
@@ -3527,7 +3588,7 @@ pub(crate) fn scan_run_cards(
             }
         }
     }
-    Ok(cards)
+    Ok(RunScan { cards, matched })
 }
 
 // ---------------------------------------------------------------------------

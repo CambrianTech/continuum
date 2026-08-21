@@ -1449,6 +1449,40 @@ impl AgentSolve {
                     tokio::select! {
                         outcome = &mut drive => break outcome,
                         _ = ticker.tick() => {
+                            // COGNITION PULSE: a running solve IS her working, and the
+                            // claim-renewal gate must be able to see it.
+                            //
+                            // `cognition_pulse::touch` had exactly two callers — the
+                            // service loop's airc turn start, and (as of the sibling fix)
+                            // spawn. A detached solve is NEITHER: it drives acts for hours
+                            // without producing a single airc turn (#425), so the renewal
+                            // gate read a genuinely-working citizen as silent, denied her
+                            // renewals, and let the 30-minute lease lapse UNDER a live run.
+                            // The card then returned to claimable and was re-claimed —
+                            // spawning a fresh run that discarded the first one's work.
+                            // Observed live 2026-08-21 on pallets__flask-4045: the same
+                            // citizen re-claimed the same card three times in one evening,
+                            // each new run starting at `acts: 0`.
+                            //
+                            // The tick IS the proof, which is why this is unconditional:
+                            // `select!` only reaches this arm while the drive future is
+                            // still pending, so a tick firing means the drive is live this
+                            // instant. That is a STRONGER witness than the act counter
+                            // below (which can legitimately read 0 or None early in a run,
+                            // and would then deny a renewal to a citizen mid-first-act).
+                            // The gate's policy is untouched — it simply stops being blind
+                            // to the one path where the hardest work happens.
+                            crate::persona::cognition_pulse::touch(
+                                persona_uuid,
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_millis() as u64)
+                                    // safe: Err only if the clock is before 1970. 0 then means
+                                    // "never pulsed", which DENIES a renewal — the conservative
+                                    // direction, and the same state as no stamp at all. A wall
+                                    // clock behind the epoch must not hand out lease extensions.
+                                    .unwrap_or_default(), // safe: see the 4 lines above
+                            );
                             // Best-effort by construction: a failed pulse must never
                             // disturb the work it is only reporting on.
                             if let (Some(p), Some(acts)) =

@@ -757,6 +757,68 @@ pub(crate) async fn dispatch_staged_swe_solve(
             return;
         }
     };
+    // ONE CARD, ONE LIVE RUN — a STOPGAP, and named as one (2026-08-21).
+    //
+    // WHAT THIS IS, honestly: a doorman with a clipboard. A citizen re-affirming a claim
+    // is an ordinary, legitimate act — a student saying "this one's mine" a second time.
+    // The school's answer today is to seat a SECOND her at a second desk with a copy of
+    // the same worksheet, in the same room, both writing on it. This gate turns that into
+    // a refusal at the door. It stops the damage; it does not remove the incoherence.
+    //
+    // THE INCOHERENCE, which is the real defect: we keep TWO REGISTRIES FOR ONE FACT.
+    // The board holds "this citizen holds this card" (enrollment). A JSON file on disk
+    // holds "run claim-<id> is running" (attendance). Two records of one truth, so they
+    // can and do disagree — and this gate is a clerk reconciling them on every claim.
+    // The structural fix is that the ENROLLMENT IS THE SESSION: re-affirming a claim
+    // finds the work already under way and continues it, because there is only one place
+    // the fact lives and nothing to duplicate. That is #371 (round lifecycle as
+    // recipe-owned state) plus #49 (the workspace held for the life of the claim, so the
+    // worksheet is hers rather than a directory two runs can both open). Neither is
+    // built; until they are, this doorman is the thing standing between a citizen and a
+    // clobbered afternoon.
+    //
+    // `run_id` is DETERMINISTIC per card (`claim-<uuid>`), and this dispatch had no
+    // guard, so every re-claim of the same card fired ANOTHER detached solve. Two runs
+    // then shared, simultaneously: one ledger file (their pulse ticks overwrite each
+    // other, so `benchmark/runs` reports whichever wrote last — an honest-looking
+    // `acts: 0` that is really run B stomping run A's marker), one WORKSPACE (two sets
+    // of hands editing the same repo, which is a live candidate for the empty
+    // `files_changed` this box keeps producing), and one exclusive warm slot they each
+    // ask to quiesce the other out of.
+    //
+    // Observed: Atlas re-claimed card df9f4ad5 three times in one evening on
+    // pallets__flask-4045; `benchmark/runs` caught the third at `age_secs: 8, acts: 0`.
+    // A re-claim is LEGAL (airc permits claiming a lapsed card, and #331/#2286 both
+    // depend on that) — what is not legal is a second RUN. The claim is the citizen's
+    // intent; the run is the machinery, and the machinery must be idempotent under a
+    // repeated intent.
+    //
+    // Keyed on `in_flight_solve_runs` — the SAME `state: "running"` predicate the boot
+    // reaper uses, so this gate and the reaper can never disagree about what "live"
+    // means. That also gives the gate its release valve for free: a run whose core died
+    // is reaped to `state: "failed"` at next boot, so a dead run never blocks its card
+    // forever. It is a refusal, not a kill: the live run keeps working, and nothing
+    // touches the citizen's claim.
+    let run_id = format!("claim-{}", card_id.as_uuid());
+    if let Some((_, live_instance)) = crate::cognition::swe_bench::in_flight_solve_runs()
+        .into_iter()
+        .find(|(id, _)| id == &run_id)
+    {
+        crate::probe!(
+            class = "benchmark.dispatch",
+            card_id = %card_id.as_uuid(),
+            claimer = %claimer,
+            instance = %instance,
+            run_id = %run_id,
+            live_instance = %live_instance,
+            "re-claim of a card whose run is ALREADY IN FLIGHT — refusing to start a \
+             second solve. A duplicate would share this run's ledger, its workspace and \
+             its warm slot, and silently discard whichever half lost the race. The live \
+             run continues; the claim stands."
+        );
+        return;
+    }
+
     // WAIT for the boot-gate, don't guard against it. A claim can land while the serving lane
     // is still proving it can decode (the ~10-15s window after core-ready); parking here until
     // the lane is decode-verified means the solve fires the moment serving is up instead of the
@@ -797,7 +859,10 @@ pub(crate) async fn dispatch_staged_swe_solve(
         deliverable: Some(crate::commands::agent::solve::Deliverable::Workspace),
         scored: Some(true),
         detach: Some(true),
-        run_id: Some(format!("claim-{}", card_id.as_uuid())),
+        // The SAME expression the in-flight gate above keyed on — one definition of
+        // "this card's run id", so the guard can never check a different id than the
+        // dispatch actually uses.
+        run_id: Some(run_id.clone()),
         capture_dir: None,
         learn: crate::cognition::learning_policy::LearningPolicy::LearnFromThisWork,
         max_acts: None,

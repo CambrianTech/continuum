@@ -249,7 +249,15 @@ pub fn in_flight_solve_runs() -> Vec<(String, String)> {
 /// patch is still on disk, and nothing on the board can say where. That is the same class of
 /// harm as reaping a finished verdict, and the reason the existing keys are preserved here
 /// and only the failure fields are added.
-pub fn reap_orphaned_solve_runs_in(dir: &Path) -> Vec<String> {
+/// Returns `(run_id, instance)` for every run it reaped — the SAME pair
+/// [`in_flight_solve_runs_in`] returns, and for the same reason: the caller has to be able
+/// to NAME what died. Returning bare ids was a measured loss of the only fact that makes a
+/// reap actionable. On 2026-08-21, 8 of 20 runs on this box carried
+/// `killed by a core restart`, and the boot probe could say only that A run died — not
+/// WHICH INSTANCE — so recovering the round meant hand-opening ledger files. The instance
+/// is written into the record three lines below; dropping it on the way out was pure
+/// discard.
+pub fn reap_orphaned_solve_runs_in(dir: &Path) -> Vec<(String, String)> {
     let mut reaped = Vec::new();
     for (run_id, instance) in in_flight_solve_runs_in(dir) {
         let path = solve_ledger_path(dir, &run_id);
@@ -273,7 +281,10 @@ pub fn reap_orphaned_solve_runs_in(dir: &Path) -> Vec<String> {
         // its OWN ledger family; that is a different family and stays as it is.)
         obj.entry("run_id")
             .or_insert_with(|| serde_json::Value::String(run_id.clone()));
-        obj.insert("instance".into(), serde_json::Value::String(instance));
+        obj.insert(
+            "instance".into(),
+            serde_json::Value::String(instance.clone()),
+        );
         obj.insert(
             "error".into(),
             serde_json::Value::String(
@@ -283,14 +294,14 @@ pub fn reap_orphaned_solve_runs_in(dir: &Path) -> Vec<String> {
             ),
         );
         if std::fs::write(&path, record.to_string()).is_ok() {
-            reaped.push(run_id);
+            reaped.push((run_id, instance));
         }
     }
     reaped
 }
 
 /// Convenience over the real ledger dir.
-pub fn reap_orphaned_solve_runs() -> Vec<String> {
+pub fn reap_orphaned_solve_runs() -> Vec<(String, String)> {
     reap_orphaned_solve_runs_in(&solve_ledger_dir())
 }
 
@@ -3329,7 +3340,16 @@ diff --git a/sympy/solvers/tests/test_other.py b/sympy/solvers/tests/test_other.
         );
 
         let reaped = reap_orphaned_solve_runs_in(p);
-        assert_eq!(reaped, vec!["alive".to_string()]);
+        // PREMISE CHANGE, not a weakening: the reaper now returns `(run_id, instance)`, the
+        // same pair `in_flight_solve_runs_in` returns. What this catches is the regression
+        // that motivated it — a reap that reports only an opaque id leaves the caller unable
+        // to name WHICH task went unmeasured, which is what made 8 restart-killed runs on
+        // this box unrecoverable without hand-opening ledger files.
+        assert_eq!(
+            reaped,
+            vec![("alive".to_string(), "sympy__sympy-22005".to_string())],
+            "the reap must NAME the instance it killed, not just the run id"
+        );
 
         let after = std::fs::read_to_string(solve_ledger_path(p, "alive")).unwrap();
         assert!(
@@ -3367,6 +3387,15 @@ diff --git a/sympy/solvers/tests/test_other.py b/sympy/solvers/tests/test_other.
             in_flight_solve_runs_in(p).is_empty(),
             "after the reap nothing is in flight — a second boot must not re-reap"
         );
+        // SECOND CONSUMER, and this assertion is now load-bearing for it:
+        // `dispatch_staged_swe_solve` refuses to start a solve when this card's run is
+        // already in flight (one card, one live run — the 2026-08-21 duplicate-dispatch
+        // fix). That gate's ONLY release valve is the reap above clearing `state` off
+        // `running`. If a reap ever stopped clearing it, the two failures compose into
+        // something far worse than either alone: every restart-killed card would be
+        // permanently un-dispatchable, and the board would look "busy" forever with no
+        // run alive to finish it. So this line pins the gate's escape hatch, not just
+        // reap idempotence — do not relax it to `<= 1` or drop it.
     }
 
     // what this catches: a REAL verdict must survive the process that produced it, and the

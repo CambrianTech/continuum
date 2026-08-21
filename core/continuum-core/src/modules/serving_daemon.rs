@@ -3680,11 +3680,26 @@ impl ServiceModule for ServingDaemonModule {
         // still marked `running` belonged to the core we just replaced — journal it as
         // killed-by-restart so a poller sees a cause instead of waiting forever on a file that
         // will never appear (#137's train-job shape, applied to benchmarks).
-        for run_id in crate::cognition::swe_bench::reap_orphaned_solve_runs() {
+        // NAME THE INSTANCE, not just the run. A reap that reports only an opaque run id is
+        // unactionable: recovering the round means hand-opening ledger files to learn WHICH
+        // task needs re-measuring. Measured 2026-08-21 — 8 of 20 runs on this box carried
+        // `killed by a core restart`, 40% of every run ever attempted here, and the ledger
+        // knew each instance the whole time.
+        //
+        // THIS STILL DOES NOT RE-DISPATCH, and says so rather than implying it did. The
+        // instance goes back on the board through `benchmark/dispatch` — the ONE adapter into
+        // kanban — never from here: this is the SERVING daemon, and a serving daemon that
+        // posts work cards is the parallel-runner shape
+        // (docs/architecture/BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md). Auto-re-post belongs on
+        // the benchmark side, consuming this report.
+        for (run_id, instance) in crate::cognition::swe_bench::reap_orphaned_solve_runs() {
             crate::probe!(
                 class = "benchmark.swe.orphan_reaped",
                 run_id = run_id.as_str(),
-                "benchmark run orphaned by a core restart — journaled as failed",
+                instance = instance.as_str(),
+                needs_redispatch = true,
+                "benchmark run orphaned by a core restart — {instance} was NOT measured and \
+                 nothing re-dispatches it; re-post via benchmark/dispatch to recover it",
             );
         }
         // Plan once at boot so the decision is published before the first tick,
