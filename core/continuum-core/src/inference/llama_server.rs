@@ -2612,6 +2612,16 @@ impl LlamaServerControl for LlamaServerProcess {
         }
         let mtp_draft = crate::model_registry::artifacts::resolve_mtp_draft_for_model(&target.model);
 
+        // Slice-3 resolution, same rule as above: look things up HERE, let `lane_args`
+        // decide what they mean on a command line.
+        let chat_template = gguf
+            .parent()
+            .map(|d| d.join("chat_template.jinja"))
+            .filter(|p| p.is_file());
+        let lora_paths: Vec<std::path::PathBuf> =
+            target.adapters.iter().map(|a| a.path.clone()).collect();
+        let expert_ot = target.expert_ot_value();
+
         let mut cmd = tokio::process::Command::new(&self.bin);
         let invocation = crate::inference::lane_args::base_invocation(
             &gguf,
@@ -2628,72 +2638,15 @@ impl LlamaServerControl for LlamaServerProcess {
             mtp_draft: mtp_draft.as_deref(),
             resident_override: target.resident_override.as_deref(),
             cpu_only: target.placement == LanePlacement::Cpu,
+            chat_template: chat_template.as_deref(),
+            loras: &lora_paths,
+            expert_ot: expert_ot.as_deref(),
         });
         for a in &invocation.args {
             cmd.arg(a);
         }
         for (k, v) in &invocation.envs {
             cmd.env(k, v);
-        }
-        // Native tool-calling needs the model's TOOL-CAPABLE chat template. The
-        // mlx→gguf conversion can strip the embedded template down to a bare
-        // ChatML loop (no `<tools>`/`<tool_call>` rendering) — which silently
-        // disables native function-calling, so the gateway ignores the `tools`
-        // param and the persona's hands go dead (verified live 2026-06-26: the
-        // forged GGUF carried a 208-char template, zero tool support). When the
-        // forge writes a `chat_template.jinja` sidecar next to the GGUF, hand it
-        // to llama-server with --jinja so it renders tools and does
-        // grammar-constrained native tool calls — VALID tool-call JSON guaranteed
-        // by the sampler, not hand-escaped by a 4B model into a JSON string (the
-        // failure that made multi-line code calls unparseable). This is an
-        // explicit override file, not a silent fallback: present → it's the
-        // truth the GGUF should have carried; absent → the embedded template
-        // stands.
-        // --jinja is UNCONDITIONAL: it makes llama-server render the `tools` we send and do
-        // grammar-constrained parsing of the model's NATIVE tool-call format, using the
-        // model's OWN chat template. That is the tool-trained shape a Qwen/Hermes/etc GGUF
-        // expects — infinitely more reliable than us reverse-engineering tool calls out of
-        // prose after the fact. A normal pulled GGUF carries a tool-capable embedded template;
-        // this switch was previously gated on a forge sidecar existing, so pulled models
-        // silently ran with tools DISABLED (the gateway ignored the `tools` param → the
-        // persona narrated tool calls instead of emitting them). The sidecar, when the forge
-        // wrote one, now OVERRIDES the embedded template (for forged GGUFs that shipped a
-        // thin, tool-less 208-char template) — present → override, absent → the embedded
-        // tool-capable template stands, tools ON either way.
-        cmd.arg("--jinja");
-        if let Some(tpl) = gguf
-            .parent()
-            .map(|d| d.join("chat_template.jinja"))
-            .filter(|p| p.is_file())
-        {
-            cmd.arg("--chat-template-file").arg(tpl);
-        }
-        // Load each trained genome layer into the `/lora-adapters` catalog at
-        // index order; the per-request `"lora":[{id,scale}]` field pages them in.
-        // ONE comma-separated `--lora` value: llama.cpp (b8784+) deprecated
-        // repeated `--lora` flags and SILENTLY keeps only the last — which was
-        // collapsing every multi-layer genome stack to a single adapter
-        // (glass-boxed 2026-07-23 in the lane's own stderr: 'DEPRECATED:
-        // --lora specified multiple times... only last value will be used' ×4
-        // while a 4-layer stack served). The genome's whole premise is layers
-        // that STACK; this arg shape is what actually stacks them.
-        if !target.adapters.is_empty() {
-            let joined = target
-                .adapters
-                .iter()
-                .map(|a| a.path.to_string_lossy().into_owned())
-                .collect::<Vec<_>>()
-                .join(",");
-            cmd.arg("--lora").arg(joined);
-        }
-        // K3 slice-1 physical expert paging: if the residency planner handed us a layer
-        // placement, offload the COLD layers' stacked expert tensors to CPU via -ot, keeping
-        // the hot layers GPU-resident. Experts are stacked (one blk.N.ffn_*_exps tensor per
-        // layer), so -ot — which places whole tensors — pages at LAYER granularity. None /
-        // all-hot → no flag (an empty -ot is rejected by llama-server). A change to the hot
-        // set is honored on the next relaunch (the pager decides when).
-        if let Some(ot) = target.expert_ot_value() {
-            cmd.arg("--override-tensor").arg(ot);
         }
         // MoE glass-box env seam (#278): when expert paging is active, the DAEMON
         // hands the fork its capture + plan file locations. Previously these envs

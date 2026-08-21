@@ -191,6 +191,18 @@ pub fn base_invocation(
             // surfaces the real defect: a RAG budget that overshot the served
             // window ([[fallbacks-are-illegal-fail-loud]]).
             arg("--no-context-shift"),
+            // NATIVE TOOL CALLING, unconditional. `--jinja` makes llama-server render the
+            // `tools` we send and do GRAMMAR-CONSTRAINED parsing of the model's own native
+            // tool-call format, using the model's OWN chat template — the tool-trained
+            // shape a Qwen/Hermes GGUF expects, infinitely more reliable than
+            // reverse-engineering tool calls out of prose after the fact.
+            //
+            // It is unconditional because gating it was a silent capability kill: the
+            // switch used to require a forge-written sidecar to exist, so every normally
+            // PULLED GGUF ran with tools DISABLED — the gateway ignored the `tools` param
+            // and the persona NARRATED tool calls instead of emitting them. A model with
+            // hands, holding them behind its back, because of a file that was never there.
+            arg("--jinja"),
         ],
         envs: Vec::new(),
     }
@@ -220,6 +232,18 @@ pub struct LaneOptions<'a> {
     pub resident_override: Option<&'a Path>,
     /// CPU-pinned lane: never contend for VRAM a living lane already holds.
     pub cpu_only: bool,
+    /// A forge-written `chat_template.jinja` sidecar, when one sits beside the GGUF.
+    /// OVERRIDES the embedded template — for forged GGUFs whose mlx→gguf conversion
+    /// stripped it to a thin tool-less ChatML loop (measured 2026-06-26: a 208-char
+    /// template, zero tool support, the persona's hands dead). Absent → the embedded
+    /// tool-capable template stands. Explicit override, never a silent fallback.
+    pub chat_template: Option<&'a Path>,
+    /// Trained genome layers to load into the `/lora-adapters` catalog, in index order;
+    /// the per-request `"lora":[{id,scale}]` field pages them in.
+    pub loras: &'a [std::path::PathBuf],
+    /// K3 expert paging (#278): `-ot` tensor placement for COLD layers, from the
+    /// residency planner. `None` / all-hot → no flag (llama-server rejects an empty one).
+    pub expert_ot: Option<&'a str>,
 }
 
 impl LaneInvocation {
@@ -309,6 +333,34 @@ impl LaneInvocation {
         // budget; absent = resident fits as-shipped. [[device-fit-repeatable-primitive]].
         //
         // An ENV var, not a flag — which is precisely why `LaneInvocation` carries `envs`.
+        // The sidecar template, when the forge wrote one (see `chat_template`).
+        if let Some(tpl) = opts.chat_template {
+            pair(&mut self.args, "--chat-template-file", tpl);
+        }
+        // ONE comma-separated `--lora` value. llama.cpp (b8784+) DEPRECATED repeated
+        // `--lora` flags and SILENTLY keeps only the LAST — which was collapsing every
+        // multi-layer genome stack to a single adapter. Glass-boxed 2026-07-23 in the
+        // lane's own stderr: "DEPRECATED: --lora specified multiple times... only last
+        // value will be used" x4, while a 4-layer stack was supposedly serving. The
+        // genome's whole premise is layers that STACK; this arg SHAPE is what stacks them,
+        // which is why the join lives here with the flag rather than at a call site.
+        if !opts.loras.is_empty() {
+            let joined = opts
+                .loras
+                .iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join(",");
+            pair(&mut self.args, "--lora", joined);
+        }
+        // K3 slice-1 physical expert paging: offload COLD layers' stacked expert tensors
+        // to CPU while hot layers stay GPU-resident. Experts are stacked (one
+        // blk.N.ffn_*_exps per layer), so `-ot` — which places WHOLE tensors — pages at
+        // LAYER granularity. A change to the hot set is honored on the next relaunch (the
+        // pager decides when).
+        if let Some(ot) = opts.expert_ot {
+            pair(&mut self.args, "--override-tensor", ot);
+        }
         if let Some(ov) = opts.resident_override {
             self.envs
                 .push(("LLAMA_RESIDENT_OVERRIDE".to_string(), ov.to_string_lossy().into_owned()));
