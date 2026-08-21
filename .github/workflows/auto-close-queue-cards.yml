@@ -25,6 +25,13 @@ jobs:
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
 
+    env:
+      # ONE name for the built CLI. Every step below refers to this and nothing
+      # else, so the path cannot drift between the verify step and the callers —
+      # which is exactly how the old `.airc-src/airc` outlived the layout it
+      # described.
+      AIRC_BIN: .airc-src/target/release/airc
+
     permissions:
       issues: write
       pull-requests: read
@@ -41,6 +48,25 @@ jobs:
           ref: canary
           path: .airc-src
 
+      # BUILD IT. This step did not exist, and its absence is why this workflow
+      # has failed on every merge since ~2026-08-05: the checkout above fetches
+      # airc SOURCE (a Rust workspace, no committed binary, and the repo publishes
+      # no releases), then `test -x .airc-src/airc` asserted an executable that
+      # nothing had ever produced. The job died in Verify environment and never
+      # reached `queue close-merged`, so merged PRs silently stopped closing their
+      # queue cards and the board drifted from reality on every merge.
+      # Cache keyed on airc's OWN lockfile, so a Continuum-side merge does not
+      # rebuild airc unless airc itself moved. MUST precede the build it serves.
+      - name: Cache AIRC build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .airc-src
+
+      - name: Build AIRC CLI
+        run: |
+          set -euo pipefail
+          cargo build --release --manifest-path .airc-src/Cargo.toml -p airc-cli
+
       - name: Verify environment
         run: |
           set -euo pipefail
@@ -48,14 +74,21 @@ jobs:
           gh --version | head -1
           python3 --version
           bash --version | head -1
-          test -x .airc-src/airc
+          # Fail LOUD and say which artifact is missing — the old form asserted a
+          # path with no explanation, so the failure read as "environment broken".
+          if [ ! -x "$AIRC_BIN" ]; then
+            echo "::error::airc CLI not built at $AIRC_BIN — the Build AIRC CLI step did not produce it"
+            ls -la .airc-src/target/release/ 2>/dev/null | head -20 || true
+            exit 1
+          fi
+          "$AIRC_BIN" --version || true
 
       - name: Run airc queue close-merged
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          .airc-src/airc queue close-merged \
+          "$AIRC_BIN" queue close-merged \
             "${{ github.event.pull_request.html_url }}" \
             --merge-sha "${{ github.event.pull_request.merge_commit_sha }}" \
             --actor "github-actions[continuum#1142]"
@@ -93,11 +126,11 @@ jobs:
           # per-author personalization. Personalization comes back in
           # a follow-up PR once --owner is guaranteed across all
           # consumer airc builds.
-          if ! .airc-src/airc queue next --help >/dev/null 2>&1; then
+          if ! "$AIRC_BIN" queue next --help >/dev/null 2>&1; then
             echo "::notice::airc queue next not available in this airc build; skipping post-merge nudge"
             exit 0
           fi
-          NEXT_OUT=$(.airc-src/airc queue next CambrianTech/continuum --limit 5 2>&1) || {
+          NEXT_OUT=$("$AIRC_BIN" queue next CambrianTech/continuum --limit 5 2>&1) || {
             echo "::warning::queue next failed; skipping nudge"
             echo "$NEXT_OUT" | head -20
             exit 0

@@ -29,7 +29,19 @@ on:
       # ts-rs export root: the binding-drift gate below diffs it, so an edit
       # to a generated .ts alone must still run this job.
       - 'protocol/typescript/**'
-      - '.github/workflows/continuum-rust-tests.yml'
+      # ANY workflow change runs this gate — not just edits to this file.
+      #
+      # Found 2026-08-20 via PR #2343, which touched only
+      # auto-close-queue-cards.yml: this filter matched nothing, so all three
+      # REQUIRED checks stayed "expected" forever, GitHub reported "3 expected,
+      # 2 successful", and auto-merge waited on checks that could never report.
+      # A required check behind a narrow path filter makes every PR outside
+      # those paths permanently unmergeable — the gate stops being a gate and
+      # becomes a deadlock.
+      #
+      # CI config changes SHOULD run CI. Cheap, and it keeps the required
+      # contexts always reported.
+      - '.github/workflows/**'
   push:
     branches: [canary, main]
 
