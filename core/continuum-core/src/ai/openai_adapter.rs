@@ -2557,20 +2557,23 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         let mut last_prefill_processed: u64 = 0;
         let stream_opened = Instant::now();
         let mut last_progress = stream_opened;
+        // PREFILL IS NOT DECODE (2026-08-21, the round-killer). `live_budget` is a
+        // DECODE watchdog by its own doc — "a token every few hundred ms". Selecting
+        // it the moment ANY progress arrived meant llama.cpp's 0%-ingestion signalling
+        // frame dropped us from 300s to 90s seconds into a prefill that measured ~170s
+        // for a window-sized prompt, so every big turn died and retried forever. The
+        // phase machine keeps the two regimes apart; see `inference::stream_liveness`.
+        let mut phase = crate::inference::stream_liveness::StreamPhase::Queued;
         loop {
-            // `last_progress` only ever moves when the SERVER did something for us
-            // (prefill advanced, token, tool delta, finish). So "has it moved since
-            // we opened the stream" is exactly "has the slot started our work" —
-            // no extra flag to keep in sync with the activity sites below.
-            let idle = if last_progress > stream_opened {
-                live_budget
-            } else {
-                queue_budget
-            };
+            let idle = crate::inference::stream_liveness::idle_budget(
+                phase,
+                queue_budget,
+                live_budget,
+            );
             let next = tokio::time::timeout(idle, byte_stream.next())
                 .await
                 .map_err(|_| {
-                    let started = last_progress > stream_opened;
+                    let started = phase.has_started();
                     if local_lane {
                         if started {
                             // Started-then-stopped is per-slot evidence about OUR
@@ -2681,6 +2684,12 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                     // `>` so a REPEATED frame carrying the same count (the wedge
                     // signature) cannot hold the watchdog open forever.
                     if let Some(p) = parsed.prompt_progress {
+                        // Phase advances on EVERY frame (including the 0% signalling
+                        // one), because "the slot is assigned and ingesting" is true
+                        // from the first frame — that is what picks the bulk budget.
+                        // The liveness STAMP below still requires strict advance, so a
+                        // frozen counter cannot hold the watchdog open (#385).
+                        phase = phase.on_prefill(p.processed, p.total);
                         if p.processed > last_prefill_processed {
                             last_prefill_processed = p.processed;
                             last_progress = Instant::now();
@@ -2697,6 +2706,12 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                             });
                         }
                     }
+                    // Any REAL output (token, reasoning, tool delta, finish) means
+                    // prefill is definitionally over. Detected once here, by observing
+                    // whether the sites below moved the liveness stamp, rather than
+                    // repeating a phase assignment at each of the four — one decision,
+                    // one place, and a new output kind cannot forget to declare itself.
+                    let progress_before_output = last_progress;
                     if let Some(choice) = parsed.choices.into_iter().next() {
                         if let Some(fr) = choice.finish_reason {
                             finish_reason_str = Some(fr);
@@ -2724,6 +2739,9 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                                 }
                             }
                         }
+                    }
+                    if last_progress != progress_before_output {
+                        phase = phase.on_output();
                     }
                 }
             }
