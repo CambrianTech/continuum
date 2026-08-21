@@ -82,10 +82,17 @@ pub fn spawn_bench_emitter(
             let cards = tokio::task::spawn_blocking(|| {
                 scan_run_cards(None, BOARD_LIMIT)
                     .map(|s| s.cards)
-                    .unwrap_or_default()
+                    // safe: a scan error means the progress dir is absent (fresh node) or
+                    // unreadable. Empty is the HONEST board for that — the module header
+                    // states the rule: never a fabricated row. An emitter that panicked
+                    // here would take the whole board down for every viewer instead.
+                    .unwrap_or_default() // safe: see the 4 lines above
             })
             .await
-            .unwrap_or_default();
+            // safe: JoinError only if the blocking task panicked or was cancelled at
+            // shutdown. Same answer for the same reason — publish the empty board, do
+            // not propagate a panic into the emitter's own tick loop.
+            .unwrap_or_default(); // safe: see the 3 lines above
             let view = BenchViewState {
                 runs: cards.into_iter().map(row_of).collect(),
                 sample_interval_ms: SAMPLE_INTERVAL.as_millis() as u64,

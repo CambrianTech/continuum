@@ -3275,7 +3275,12 @@ impl ActionCommand for BenchmarkRuns {
         _ctx: &Ctx,
         p: BenchmarkRunsParams,
     ) -> Result<BenchmarkRunsResult, CommandError> {
-        let scan = scan_run_cards(p.run_id.as_deref(), p.limit.unwrap_or(20).max(1) as usize)
+        // safe: `limit` is an OPTIONAL page size, so None means "caller didn't ask", not
+        // "unknown quantity" — 20 is this command's documented default page and the value
+        // the board already uses. `.max(1)` keeps an explicit 0 from returning nothing
+        // silently. The count that must never be defaulted is `matched`, which comes from
+        // the scan itself and is reported separately.
+        let scan = scan_run_cards(p.run_id.as_deref(), p.limit.unwrap_or(20).max(1) as usize) // safe: see the 5 lines above
             .map_err(CommandError::Internal)?;
         let returned = scan.cards.len();
         let matched = scan.matched;

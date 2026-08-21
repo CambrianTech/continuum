@@ -1477,7 +1477,11 @@ impl AgentSolve {
                                 std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .map(|d| d.as_millis() as u64)
-                                    .unwrap_or_default(),
+                                    // safe: Err only if the clock is before 1970. 0 then means
+                                    // "never pulsed", which DENIES a renewal — the conservative
+                                    // direction, and the same state as no stamp at all. A wall
+                                    // clock behind the epoch must not hand out lease extensions.
+                                    .unwrap_or_default(), // safe: see the 4 lines above
                             );
                             // Best-effort by construction: a failed pulse must never
                             // disturb the work it is only reporting on.
