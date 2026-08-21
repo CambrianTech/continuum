@@ -1513,6 +1513,22 @@ fn warn_if_decode_collapsed(model_id: &str, decode_tokens: u32, measured_tps: f6
         f64::INFINITY,
     );
     if verdict.is_degraded() {
+        // CONCURRENCY AT THE MOMENT OF MEASUREMENT (#441). The expectation is a
+        // SINGLE-STREAM rate; this decode may have shared the box with N-1 other
+        // model calls, and a shared decode is legitimately slower with NOTHING
+        // wrong. Measured 2026-08-20 on the 27B: 6.56 t/s median against a 17.2
+        // pinned expectation — ratio 0.38, which is real contention, not a defect.
+        //
+        // ANNOTATE, DO NOT GATE. This alarm's own contract names "contended GPU"
+        // as a thing it exists to catch, so suppressing on concurrency would
+        // defeat it. Reporting the count lets a reader attribute the ratio
+        // instead of hunting a CPU fallback that isn't there — the failure mode
+        // this line previously invited by listing three suspects and no evidence.
+        //
+        // Reuses the existing gauge (`resource_admission::inflight_model_calls`,
+        // "lane-queue + prefill + decode") rather than counting again — the
+        // concurrency sibling of the window axis on `ThroughputBaseline`.
+        let inflight = crate::cognition::resource_admission::inflight_model_calls();
         tracing::warn!(
             probe_class = "serving.throughput.degraded",
             model = model_id,
@@ -1520,9 +1536,12 @@ fn warn_if_decode_collapsed(model_id: &str, decode_tokens: u32, measured_tps: f6
             expected_tps = expected,
             ratio = verdict.ratio(),
             decode_tokens = decode_tokens,
+            inflight_model_calls = inflight,
             "THROUGHPUT COLLAPSE: decode {measured_tps:.1} t/s vs expected {expected:.0} t/s \
-             — this lane is serving at a fraction of its catalog rate. Suspect CPU fallback \
-             (see serving.placement.cpu_fallback), pager thrash, or GPU contention (#441)."
+             (single-stream) with {inflight} model call(s) in flight — this lane is serving at \
+             a fraction of its catalog rate. With >1 in flight the expectation is not \
+             like-for-like and contention alone may explain it; at 1 in flight suspect CPU \
+             fallback (see serving.placement.cpu_fallback) or pager thrash (#441)."
         );
     }
 }
