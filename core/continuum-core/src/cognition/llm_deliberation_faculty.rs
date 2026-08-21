@@ -2382,7 +2382,7 @@ fn metrics_from(resp: &TextGenerationResponse) -> crate::cognition::workspace::T
     // wall-clock split that lets the harness see where Metal time actually goes.
     // Absent (cloud / older endpoints) → 0, and the breakdown rows read "n/a".
     let t = resp.timing.as_ref();
-    crate::cognition::workspace::TurnMetrics {
+    let m = crate::cognition::workspace::TurnMetrics {
         input_tokens: resp.usage.input_tokens,
         output_tokens: resp.usage.output_tokens,
         latency_ms: resp.response_time_ms,
@@ -2390,7 +2390,45 @@ fn metrics_from(resp: &TextGenerationResponse) -> crate::cognition::workspace::T
         prefill_tokens: t.map(|t| t.prefill_tokens).unwrap_or(0),
         prefill_ms: t.map(|t| t.prefill_ms.round() as u64).unwrap_or(0),
         decode_ms: t.map(|t| t.decode_ms.round() as u64).unwrap_or(0),
+    };
+
+    // THE CACHE-REUSE GLASS BOX — the row whose ABSENCE cost two weeks.
+    //
+    // Every generation funnels through here, so one probe covers every turn of every
+    // citizen with no caller change. Emitted only when the lane actually reported
+    // timings (cloud/older endpoints omit them); a fabricated 0.0 hit-rate for a
+    // provider that never measured one is a lying receipt, so those stay silent.
+    //
+    // Why this did not exist and why that mattered: `delib` carried `turn.demand` and
+    // `context.render` — how big the prompt WAS — and nothing about what the lane did
+    // with it. So a prompt whose prefix we were destroying every turn looked identical
+    // in the probe stream to one served entirely from cache. The only way to see it on
+    // 2026-08-21 was hand-diffing a citizen's raw prompt captures, which is exactly the
+    // manual step a probe exists to delete.
+    //
+    // What it proves, in one row: `hit_rate` near 0 with a large `prefill_tokens` means
+    // the prefix is being invalidated upstream — measured that day at ~306s of wasted
+    // re-prefill PER ACT while `--cache-reuse 256` was set and working. After the
+    // canonical stable-tier ordering above, the same row is the verification: hit_rate
+    // should climb off the floor from the second act of a task onward, WITHOUT anyone
+    // re-reading a capture by hand.
+    if t.is_some() {
+        crate::probe!(
+            class = "delib.generate.cache",
+            cached_tokens = m.cached_tokens,
+            prefill_tokens = m.prefill_tokens,
+            // The ratio the humans and the citizens both read. 1.0 = fully warm prefix;
+            // near 0 = re-encoding the prompt every act, the inefficiency to attack.
+            hit_rate = m.cache_hit_rate(),
+            prefill_ms = m.prefill_ms,
+            decode_ms = m.decode_ms,
+            input_tokens = m.input_tokens,
+            output_tokens = m.output_tokens,
+            latency_ms = m.latency_ms,
+            "prompt cache reuse for this generation"
+        );
     }
+    m
 }
 
 #[cfg(test)]
