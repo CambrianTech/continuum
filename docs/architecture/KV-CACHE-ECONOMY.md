@@ -275,6 +275,39 @@ is measurable from day one rather than argued.
    reward signal was ~0 for structural reasons; a bandit trained through that would have
    learned that nothing helps. Order matters for learning, not just for correctness.
 
+## 6b. STDERR IS NEVER AN INTERFACE (Joel, 2026-08-21)
+
+> *"STDERR/out is never a place for interfacing, just debug."*
+
+A law, and we are currently breaking it twice. Both were written in good faith for real
+incidents, and both make llama.cpp's **debug text** load-bearing in our control plane:
+
+| Site | Parses | Drives |
+|---|---|---|
+| `inference::wedge::WedgeWatch` | stderr for an impossible slot progress (`progress = 1.10`) | raises a flag **the serving daemon reaps a lane on** |
+| `inference::placement_watch::OffloadWatch` | llama.cpp's **load banner** for layers offloaded | fires `serving.placement.cpu_fallback` — treated as a lease violation (#441) |
+
+Why it must change even though it currently works: stderr is unstructured, unversioned,
+and drifts with upstream's logging taste. The failure mode when it drifts is not an error
+— it is **silence**. The watcher stops matching, the flag stops rising, and the wedge that
+burned four hours on 2026-08-05 becomes invisible again with every component still green.
+That is the same shape as every other defect in this document: an absence that looks like
+normal operation.
+
+**The structured channels exist.** `/slots` carries per-slot state and progress; `/props`
+carries the load configuration; the per-request `timings` block already reaches us and is
+what `delib.generate.cache` reports. The sentinel work (#441) should read the same
+`prefill_tokens`/`prefill_ms` we already parse rather than scrape a banner for tok/s.
+
+**What is NOT a violation, and the line between them:** `stderr_log_tail()` on spawn
+failure — a human asking "why did it die" and getting llama.cpp's own last words. Reading
+stderr to **SHOW** is debug and correct. Parsing stderr to **DECIDE** is an interface and
+forbidden. The test is whether a control path branches on it.
+
+**Status: named, not fixed.** Rewriting both watchers onto `/slots` + `/props` needs the
+endpoint payloads verified against our pinned build first (`b10196-fa7e0d8e9`) — asserting
+a field exists because upstream documents it is the same mistake in a different channel.
+
 ## 7. Break the module into concerns
 
 `inference/llama_server.rs` is **4,190 lines** — eight times the decomposition law in
