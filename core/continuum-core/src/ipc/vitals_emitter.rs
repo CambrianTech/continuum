@@ -137,6 +137,28 @@ pub(crate) fn sample_vitals(
             }
         }
 
+        // #266 KV REUSE: the fraction of this persona's prompt tokens the lane
+        // served from cache instead of re-prefilling. Prefill is ~96% of persona
+        // compute, so this meter reads "how much of her thinking is being paid for
+        // twice". High = her identity+tool prefix stayed resident; low = the lane is
+        // re-encoding the same thousands of tokens every act.
+        //
+        // Omitted entirely until a generation has actually reported timings — a
+        // citizen who has not spoken radiates NO meter rather than a fabricated 0%,
+        // the same honest-empty rule as a dark cognition axis and an un-paged genome.
+        // That distinction matters here more than elsewhere: 0% is also the value of
+        // a REAL total-miss, so fabricating it on an idle persona would manufacture
+        // the exact alarm this meter exists to raise.
+        if let Some(rate) = cycle.kv_reuse() {
+            // `rate` is cached/(cached+prefill) so it cannot exceed 1.0; the clamp is
+            // belt-and-braces against a future accounting change silently producing a
+            // >100 that would wrap the u8 meter into a small number and read as HEALTHY.
+            vitals.insert(
+                "kv_reuse".to_string(),
+                (rate * 100.0).round().clamp(0.0, 100.0) as u8,
+            );
+        }
+
         // LOADOUT: the model backing this persona — the display strip
         // (`model · size · ctx`). Model id + EFFECTIVE window come from
         // the live binding (`model_loadout` resolves a None binding id to the

@@ -475,6 +475,13 @@ pub async fn settle_step(
     // (the eval driver, or the live heartbeat) can accumulate per-turn speed and
     // latency without re-timing the brain. `None` when no verdict carried metrics.
     let metrics = ws.metrics();
+    // #266 Fold this generation's prefill accounting into the persona's lifetime KV
+    // totals BEFORE any early return below — an inference FAULT still consumed real
+    // prefill on the lane, and a measurement that only counts successful turns would
+    // flatter exactly the failure mode we are hunting. One writer, one place.
+    if let Some(m) = metrics.as_ref() {
+        cycle.note_generation(m);
+    }
     // A FAILED model call is not a verdict and not a silence — surface it LOUD so no
     // failure ever masquerades as a chosen `Pass` ([[fallbacks-are-illegal-fail-loud]]).
     // Checked BEFORE the decision so a fault can never collapse into `Passed` (the
