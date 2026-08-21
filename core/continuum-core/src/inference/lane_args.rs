@@ -42,6 +42,44 @@
 
 use std::path::Path;
 
+/// One conversion for anything that can be a CLI argument.
+///
+/// Joel, 2026-08-21: *"Templates are underutilized by you in both cpp and rust… it
+/// reduces code size a lot sometimes."* Correct, and this is the place it pays. Without
+/// it every value is hand-converted at its call site — `total_ctx.to_string()`,
+/// `p.to_string_lossy().into_owned()`, a bare `"256".into()` — which is three different
+/// spellings of one idea and, worse, three chances to write the VALUE without its FLAG.
+/// That adjacency is exactly the class that broke serving on 2026-08-20.
+///
+/// A trait plus [`pair`] makes the flag-and-its-value a single indivisible call, so the
+/// bug becomes unrepresentable rather than merely tested for. The Rust monomorphises it
+/// the same way a C++ template would — one generic definition, zero runtime cost.
+pub trait AsArg {
+    fn as_arg(&self) -> String;
+}
+impl AsArg for &str {
+    fn as_arg(&self) -> String { (*self).to_string() }
+}
+impl AsArg for String {
+    fn as_arg(&self) -> String { self.clone() }
+}
+impl AsArg for &Path {
+    fn as_arg(&self) -> String { self.to_string_lossy().into_owned() }
+}
+impl AsArg for u16 {
+    fn as_arg(&self) -> String { self.to_string() }
+}
+impl AsArg for u32 {
+    fn as_arg(&self) -> String { self.to_string() }
+}
+
+/// Push a flag and its value together — the only way this module emits a valued flag,
+/// so a value can never be orphaned from its flag.
+fn pair<V: AsArg>(args: &mut Vec<String>, flag: &str, value: V) {
+    args.push(flag.to_string());
+    args.push(value.as_arg());
+}
+
 /// A fully-specified llama-server invocation: what to pass, and what environment to
 /// pass it in. Returned rather than applied, so it can be asserted in a test and
 /// logged on a receipt.
@@ -158,6 +196,127 @@ pub fn base_invocation(
     }
 }
 
+/// The per-lane CONDITIONAL surface — flags that depend on the model's artifacts, the
+/// governor's plan, or an operator opt-in. Slice 2 of the extraction.
+///
+/// Every field is an ALREADY-RESOLVED value, never a thing to look up. Resolution
+/// (reading `config_env`, probing the registry for an mmproj or an MTP head, deciding a
+/// placement) stays with the caller, which owns the I/O and the receipts; this module
+/// only decides what that resolution MEANS on a command line. That split is what keeps
+/// the function pure and the flags assertable — and it is the same split as
+/// `TierPolicy`: gather inputs, then compute a plan.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LaneOptions<'a> {
+    /// KV cache quantization (#232) — `Some("q8_0")` etc. `None` (or `f16` upstream)
+    /// leaves llama.cpp's f16 default, byte-identical to passing nothing.
+    pub kv_cache_type: Option<&'a str>,
+    /// Flash attention (#232), operator opt-in.
+    pub flash_attn: bool,
+    /// Multimodal projector (#106) — the model actually SEES when present.
+    pub mmproj: Option<&'a Path>,
+    /// Native MTP speculative-decode draft head (#440).
+    pub mtp_draft: Option<&'a Path>,
+    /// Device-fit resident override (#29) — an ENV var, not a flag.
+    pub resident_override: Option<&'a Path>,
+    /// CPU-pinned lane: never contend for VRAM a living lane already holds.
+    pub cpu_only: bool,
+}
+
+impl LaneInvocation {
+    /// Fold the conditional surface onto a base invocation.
+    pub fn with_options(mut self, opts: &LaneOptions<'_>) -> Self {
+        let mut push = |s: String| self.args.push(s);
+        // KV CACHE QUANTIZATION (#232, opt-in field-proven technique). f16 KV is the
+        // default; q8_0 is ~half the resident KV footprint at near-lossless quality,
+        // freeing memory the elastic window (#234) can spend on a BIGGER context or MORE
+        // warm lanes. OFF by default: not every backend/build ships Metal KV-quant
+        // kernels, so this is an operator opt-in, never a blind assumption
+        // ([[verify-real-device-numbers-not-a-clamp-premise]]). NOTE: to have the plan
+        // actually GROW the window on the freed memory (not just leave it as extra
+        // headroom), the fit math must also scale kv_per_token — that footprint coupling
+        // is the follow-up; this is the safe enablement.
+        if let Some(kv) = opts.kv_cache_type {
+            push("--cache-type-k".into());
+            push(kv.to_string());
+            push("--cache-type-v".into());
+            push(kv.to_string());
+        }
+        // FLASH ATTENTION (#232, opt-in). Fused attention is faster on BOTH prefill and
+        // decode and lowers peak memory — directly attacking prefill-bound turn latency
+        // (#139). OFF by default: Metal/backend support + quality vary by build.
+        //
+        // MUST carry an explicit VALUE. Upstream changed this from a bare boolean switch
+        // to `-fa, --flash-attn [on|off|auto]`. A bare `--flash-attn` now EATS THE NEXT
+        // ARGUMENT as its value and the server refuses to start:
+        //
+        //   error while handling argument "--flash-attn": unknown value for
+        //   --flash-attn: '--mmproj'
+        //
+        // Found 2026-08-20 the first time anyone ever set SERVING_FLASH_ATTN=1 — the flag
+        // shipped, was never exercised because it was opt-in and nobody opted in, and
+        // rotted against upstream in the meantime. The whole lane failed to spawn and
+        // serving sat at 0 lanes. An opt-in that has never once been switched on is
+        // untested code with a config-shaped trigger
+        // ([[an-absence-is-an-unfinished-measurement]]). `every_flag_that_takes_a_value_
+        // is_followed_by_one` is the regression test that class earned.
+        if opts.flash_attn {
+            push("--flash-attn".into());
+            push("on".into());
+        }
+        // MULTIMODAL PROJECTOR (#106): a vision/audio-capable model needs its mmproj GGUF
+        // so llama-server loads the encoder and can tokenize image/audio parts. Absent on
+        // a Vision-capable row the server serves TEXT only and silently ignores images,
+        // which is a capability LIE — the caller warns LOUD rather than fabricate sight
+        // ([[fallbacks-are-illegal-fail-loud]]). Safe on a generation lane (unlike
+        // `--embeddings`): the projector only adds the encoder, it does not switch the
+        // server out of causal-generation mode.
+        if let Some(p) = opts.mmproj {
+            push("--mmproj".into());
+            push(p.to_string_lossy().into_owned());
+        }
+        // NATIVE MTP SPECULATIVE DECODE (#440): an `mtp-*.gguf` draft head shipped beside
+        // the main GGUF (the ggml-org Qwen3.8 layout) loads as the spec-decode draft. MTP
+        // heads are trained WITH the model, so acceptance is high and there is no external
+        // draft model to fit: field-measured on Qwen3.8-27B (RTX 4090, 2026-08-15) decode
+        // went 40.7 → 60.1 t/s for ~0.1GB extra state. Artifact presence IS the capability
+        // signal (the mmproj pattern): no draft file → no flags → byte-identical serving.
+        // n-max 4 / p-min 0.7 are the upstream-recommended MTP operating point from that
+        // same field benchmark — per-model tuning, if ever needed, belongs on the Model
+        // row beside `sampling`, not here.
+        if let Some(d) = opts.mtp_draft {
+            push("--spec-type".into());
+            push("draft-mtp".into());
+            push("--spec-draft-model".into());
+            push(d.to_string_lossy().into_owned());
+            push("--spec-draft-n-max".into());
+            push("4".into());
+            push("--spec-draft-p-min".into());
+            push("0.7".into());
+        }
+        // Placement: CPU lanes pin every layer to RAM so they never contend for the GPU
+        // VRAM a living lane already holds (the Metal decode-time OOM that muted the
+        // eval). GPU lanes omit the flag — llama-server offloads all it can by default.
+        // [[ServingTarget::placement]] / #59 / #56.
+        if opts.cpu_only {
+            push("--n-gpu-layers".into());
+            push("0".into());
+        }
+        // Device-fit resident-override (#29): source the RESIDENT (non-expert) tensors
+        // from the precision-shrunk fit GGUF so the whole resident tier fits VRAM
+        // offloaded to GPU, while the primary GGUF streams the experts. The loader hook
+        // lazy-maps only the override's resident bytes (its experts are ignored). Set by
+        // the governor's device_fit plan when as-shipped resident overflows the VRAM
+        // budget; absent = resident fits as-shipped. [[device-fit-repeatable-primitive]].
+        //
+        // An ENV var, not a flag — which is precisely why `LaneInvocation` carries `envs`.
+        if let Some(ov) = opts.resident_override {
+            self.envs
+                .push(("LLAMA_RESIDENT_OVERRIDE".to_string(), ov.to_string_lossy().into_owned()));
+        }
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,5 +409,61 @@ mod tests {
     #[test]
     fn the_base_invocation_needs_no_environment() {
         assert!(inv(2, 16_384).envs.is_empty());
+    }
+
+    // what this catches: a conditional silently becoming unconditional (or vice versa).
+    // Every flag below costs memory, changes numerics, or claims a capability, so
+    // "present when it should be absent" is a real defect — the mmproj case literally
+    // decides whether a citizen can SEE.
+    #[test]
+    fn no_options_means_no_conditional_flags() {
+        let i = inv(2, 8192).with_options(&LaneOptions::default());
+        for f in ["--cache-type-k", "--flash-attn", "--mmproj", "--spec-type", "--n-gpu-layers"] {
+            assert!(!i.has(f), "{f} must be absent with default options\n{:?}", i.args);
+        }
+        assert!(i.envs.is_empty(), "no options must mean no environment");
+    }
+
+    // what this catches: THE 2026-08-20 SPAWN FAILURE, as a test instead of an outage.
+    // Upstream turned --flash-attn from a switch into one taking [on|off|auto]; the bare
+    // form ate the NEXT argument ("unknown value for --flash-attn: '--mmproj'") and the
+    // lane refused to start, so serving sat at 0 lanes. The pairing below is the exact
+    // adjacency that broke.
+    #[test]
+    fn flash_attn_carries_its_value_even_next_to_mmproj() {
+        let mm = PathBuf::from("/models/mmproj.gguf");
+        let i = inv(1, 4096).with_options(&LaneOptions {
+            flash_attn: true,
+            mmproj: Some(&mm),
+            ..Default::default()
+        });
+        assert_eq!(i.value_of("--flash-attn"), Some("on"));
+        assert_eq!(i.value_of("--mmproj"), Some("/models/mmproj.gguf"));
+    }
+
+    // what this catches: the resident override degrading into a command-line flag, or
+    // being dropped entirely. It is an ENV var read by a loader hook (#29) — the reason
+    // LaneInvocation models envs at all rather than returning a bare Vec<String>.
+    #[test]
+    fn resident_override_rides_the_environment_not_the_args() {
+        let ro = PathBuf::from("/models/fit.gguf");
+        let i = inv(1, 4096).with_options(&LaneOptions {
+            resident_override: Some(&ro),
+            ..Default::default()
+        });
+        assert_eq!(
+            i.envs,
+            vec![("LLAMA_RESIDENT_OVERRIDE".to_string(), "/models/fit.gguf".to_string())]
+        );
+        assert!(!i.args.iter().any(|a| a.contains("fit.gguf")), "must not leak into args");
+    }
+
+    // what this catches: KV quant emitting only one half of the pair. K and V are
+    // separate flags; setting one and not the other is a silent asymmetry in the cache.
+    #[test]
+    fn kv_quant_sets_both_k_and_v() {
+        let i = inv(1, 4096).with_options(&LaneOptions { kv_cache_type: Some("q8_0"), ..Default::default() });
+        assert_eq!(i.value_of("--cache-type-k"), Some("q8_0"));
+        assert_eq!(i.value_of("--cache-type-v"), Some("q8_0"));
     }
 }
