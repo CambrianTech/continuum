@@ -20,28 +20,29 @@
 name: Continuum Rust Tests
 
 on:
+  # NO `paths:` FILTER — deliberately, and this must stay that way.
+  #
+  # All three jobs below are REQUIRED contexts on canary. A required check
+  # that never RUNS never REPORTS: GitHub holds the PR at "expected" forever,
+  # and auto-merge waits on a result that cannot arrive. The PR is not slow,
+  # it is permanently unmergeable, and nothing on the page says why.
+  #
+  # This was found once before (2026-08-20, PR #2343 — workflow-only edit) and
+  # "fixed" by adding `.github/workflows/**` to the filter. That fixed the
+  # instance, not the constraint: on 2026-08-21 PR #2346 (docs-only) deadlocked
+  # exactly the same way, because a docs path was not on the list either. Any
+  # path list is a list of the deadlocks you have already hit; the next PR that
+  # touches something unlisted hits a fresh one.
+  #
+  # So the rule is structural: a required check runs on EVERY pull request.
+  # The cost is a cargo build on PRs that could not have broken the build. That
+  # is the cheaper half of the trade — the other half is a PR that can never
+  # merge and a human having to discover why.
+  #
+  # If this ever needs to be cheap, the fix is a relevance gate INSIDE the job
+  # (detect no-op changes, skip the heavy steps, still report success) — never
+  # a trigger filter that suppresses the report itself.
   pull_request:
-    paths:
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'rust-toolchain.toml'
-      - 'core/**'
-      # ts-rs export root: the binding-drift gate below diffs it, so an edit
-      # to a generated .ts alone must still run this job.
-      - 'protocol/typescript/**'
-      # ANY workflow change runs this gate — not just edits to this file.
-      #
-      # Found 2026-08-20 via PR #2343, which touched only
-      # auto-close-queue-cards.yml: this filter matched nothing, so all three
-      # REQUIRED checks stayed "expected" forever, GitHub reported "3 expected,
-      # 2 successful", and auto-merge waited on checks that could never report.
-      # A required check behind a narrow path filter makes every PR outside
-      # those paths permanently unmergeable — the gate stops being a gate and
-      # becomes a deadlock.
-      #
-      # CI config changes SHOULD run CI. Cheap, and it keeps the required
-      # contexts always reported.
-      - '.github/workflows/**'
   push:
     branches: [canary, main]
 
