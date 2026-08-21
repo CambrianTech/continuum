@@ -6,16 +6,55 @@ name: auto-close-queue-cards
 # lands in the default branch. Continuum lands work in canary first, so queue
 # cards otherwise remain open until someone cleans them up manually.
 #
-# On PR merge into canary, this workflow parses the PR body for queue-card refs,
-# verifies each target has an airc-queue-card-v1 envelope, marks it merged with
-# a status-log entry, and closes it. The AIRC CLI is checked out from
-# CambrianTech/airc because Continuum intentionally does not vendor it.
+# ─── WHY THIS WAS DEAD, AND WHY THE FIRST FIX DIDN'T REVIVE IT ───────────
+#
+# This job failed on EVERY merge from ~2026-08-05 until 2026-08-21. It had
+# two independent breaks stacked on top of each other, and fixing only the
+# first left it just as dead:
+#
+#   1. NO BINARY. The job checked out airc SOURCE (a Rust workspace with no
+#      committed binary and no published releases) and then asserted
+#      `test -x .airc-src/airc` — a path nothing had ever produced. Fixed
+#      earlier by adding a real build step.
+#
+#   2. NO SUCH VERB — the break that survived. The step called
+#      `airc queue close-merged <url>`, which does not exist. The Rust CLI
+#      never had it: it exposes `queue-card close-merged-meta` and
+#      `queue-card close-merged-refs`, two JSON transforms over `gh pr view`
+#      output, and leaves the CLOSING to the caller. So a one-shot verb that
+#      also closed cards was never a thing to call. Error, verbatim:
+#      `error: unrecognized subcommand 'queue'` / `tip: a similar subcommand
+#      exists: 'queue-card'`.
+#
+# The composition below is not invented here. AIRC HIT THIS EXACT BUG IN ITS
+# OWN COPY OF THIS WORKFLOW AND FIXED IT ON 2026-08-13 (airc#576). Continuum's
+# copy is a fork of the pre-fix version that never received the update — so
+# the authoritative shape is airc's, and this file now matches it. If this
+# breaks again, diff against `CambrianTech/airc:.github/workflows/
+# auto-close-queue-cards.yml` FIRST; it is the upstream of this file in
+# everything but the build path.
+#
+# Nobody read the red X because it lands AFTER merge, when attention has
+# already moved on. The visible cost was a board full of cards whose PRs
+# shipped days ago — which then read as idle lanes and drew nudges, the exact
+# litter this job exists to prevent.
+#
+# Scope:
+#   - Same-repo only. Cross-repo refs are REPORTED but not closed: the
+#     workflow GITHUB_TOKEN is repo-scoped. Cross-repo auto-close needs an
+#     org-scoped token and is a follow-up.
+#   - Idempotent. Already-closed cards and loose #N refs to non-queue issues
+#     skip silently. Manual `gh issue close` remains the fallback.
+#   - Only explicit closing keywords (Closes/Fixes/Resolves) close a card.
+#     "Refs #N" / "See #N" do not — they often point at follow-up work.
 
 on:
   pull_request:
     types: [closed]
     branches: [canary]
 
+# Multiple PRs may close in quick succession; serialize so status-log entries
+# cannot race on the same card.
 concurrency:
   group: auto-close-queue-cards
   cancel-in-progress: false
@@ -26,11 +65,15 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # ONE name for the built CLI. Every step below refers to this and nothing
-      # else, so the path cannot drift between the verify step and the callers —
-      # which is exactly how the old `.airc-src/airc` outlived the layout it
-      # described.
-      AIRC_BIN: .airc-src/target/release/airc
+      # ONE name for the built CLI, so the path cannot drift between the
+      # verify step and its callers — which is exactly how the old
+      # `.airc-src/airc` outlived the layout it described.
+      #
+      # DEBUG, not release: these subcommands are JSON transforms whose
+      # runtime is microseconds. Optimising them would only lengthen the
+      # build this job pays for on every single merge (airc's own reasoning,
+      # kept deliberately identical).
+      AIRC_BIN: .airc-src/target/debug/airc
 
     permissions:
       issues: write
@@ -41,6 +84,9 @@ jobs:
       - name: Checkout Continuum
         uses: actions/checkout@v4
 
+      # Continuum intentionally does not vendor the airc CLI, so it is built
+      # from source here. This is the ONE place this file diverges from
+      # airc's upstream copy, which builds from its own checkout root.
       - name: Checkout AIRC CLI
         uses: actions/checkout@v4
         with:
@@ -48,15 +94,8 @@ jobs:
           ref: canary
           path: .airc-src
 
-      # BUILD IT. This step did not exist, and its absence is why this workflow
-      # has failed on every merge since ~2026-08-05: the checkout above fetches
-      # airc SOURCE (a Rust workspace, no committed binary, and the repo publishes
-      # no releases), then `test -x .airc-src/airc` asserted an executable that
-      # nothing had ever produced. The job died in Verify environment and never
-      # reached `queue close-merged`, so merged PRs silently stopped closing their
-      # queue cards and the board drifted from reality on every merge.
-      # Cache keyed on airc's OWN lockfile, so a Continuum-side merge does not
-      # rebuild airc unless airc itself moved. MUST precede the build it serves.
+      # Keyed on airc's OWN lockfile, so a Continuum-side merge does not
+      # rebuild airc unless airc itself moved. MUST precede the build.
       - name: Cache AIRC build
         uses: Swatinem/rust-cache@v2
         with:
@@ -65,96 +104,83 @@ jobs:
       - name: Build AIRC CLI
         run: |
           set -euo pipefail
-          cargo build --release --manifest-path .airc-src/Cargo.toml -p airc-cli
+          cargo build --manifest-path .airc-src/Cargo.toml -p airc-cli --bin airc
 
-      - name: Verify environment
+      - name: Close the queue cards this PR merged
+        env:
+          # gh reads GH_TOKEN; GITHUB_TOKEN carries issues:write on THIS repo
+          # only, per the permissions block above.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          which gh python3 bash
-          gh --version | head -1
-          python3 --version
-          bash --version | head -1
-          # Fail LOUD and say which artifact is missing — the old form asserted a
-          # path with no explanation, so the failure read as "environment broken".
+
+          # Fail LOUD and name the missing artifact. An absent tool and a tool
+          # that found nothing to close are different outcomes and must never
+          # print the same way — that conflation is how this job spent two
+          # weeks looking like "no cards to close".
           if [ ! -x "$AIRC_BIN" ]; then
-            echo "::error::airc CLI not built at $AIRC_BIN — the Build AIRC CLI step did not produce it"
-            ls -la .airc-src/target/release/ 2>/dev/null | head -20 || true
+            echo "::error::airc CLI not built at $AIRC_BIN — nothing was closed."
+            ls -la .airc-src/target/debug/ 2>/dev/null | head -20 || true
             exit 1
           fi
-          "$AIRC_BIN" --version || true
 
-      - name: Run airc queue close-merged
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          "$AIRC_BIN" queue close-merged \
-            "${{ github.event.pull_request.html_url }}" \
-            --merge-sha "${{ github.event.pull_request.merge_commit_sha }}" \
-            --actor "github-actions[continuum#1142]"
+          gh pr view "$PR_URL" \
+            --json mergedAt,baseRefName,mergeCommit,url,title,body > pr.json
 
-      # ─── Post-merge auto-nudge (continuum#1179) ─────────────────────
-      # When a PR merges, fire 'airc queue next' for the PR author so
-      # they see a tailored candidate list as a comment on their just-
-      # merged PR. Closes the "I forgot to look for next work" gap that
-      # leaves agents idle between events.
-      #
-      # Identity assumption (v1): PR author's GH login == airc work
-      # identity. Most contributors today have matching identities;
-      # an identity-mapping table is a future PR (continuum#?).
-      #
-      # Best-effort: never fails the workflow if the nudge step errors.
-      # The auto-close above is the load-bearing primitive; the nudge
-      # is a UX win on top.
-      - name: Post-merge auto-nudge (queue next candidates)
-        if: always()
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          set -uo pipefail
-          # Get top-5 next candidates from the queue. We intentionally
-          # do NOT pass --owner here — codex review on continuum#1181
-          # caught that the workflow's airc binary (checked out from
-          # CambrianTech/airc:canary) may not yet support that flag in
-          # all build envs, and the nudge silently soft-fails when an
-          # unsupported flag is passed. Until that's stable, the
-          # post-merge comment shows the top-5 unowned-or-stale cards
-          # — useful as a "here's pickable work" surface even without
-          # per-author personalization. Personalization comes back in
-          # a follow-up PR once --owner is guaranteed across all
-          # consumer airc builds.
-          if ! "$AIRC_BIN" queue next --help >/dev/null 2>&1; then
-            echo "::notice::airc queue next not available in this airc build; skipping post-merge nudge"
+          # Merge facts for the audit trail.
+          "$AIRC_BIN" queue-card close-merged-meta --pr-file pr.json
+
+          # No refs is a legitimate, COMMON outcome — most PRs close no card.
+          # Report it as the distinct fact it is; do not dress it as work.
+          refs="$("$AIRC_BIN" queue-card close-merged-refs --pr-file pr.json --repo "$REPO")"
+          if [ -z "$refs" ]; then
+            echo "No queue-card closing refs in this PR — nothing to close."
             exit 0
           fi
-          NEXT_OUT=$("$AIRC_BIN" queue next CambrianTech/continuum --limit 5 2>&1) || {
-            echo "::warning::queue next failed; skipping nudge"
-            echo "$NEXT_OUT" | head -20
-            exit 0
-          }
-          # If the candidate list is empty (queue clean), don't post a
-          # comment — empty nudge is noise.
-          if ! printf '%s' "$NEXT_OUT" | grep -qE '^## [0-9]+\.'; then
-            echo "::notice::no candidates available — skipping nudge comment"
-            exit 0
-          fi
-          # Post as a PR comment with a clear header + the candidate list.
-          # --body-file via a temp file so the markdown content (backticks,
-          # code spans) doesn't get shell-interpreted (continuum#1142 lesson).
-          BODY_FILE=$(mktemp)
-          {
-            printf '## 🎯 Next pickable from the queue\n\n'
-            printf '@%s — your PR just merged. ' "$PR_AUTHOR"
-            printf 'Auto-fired by [post-merge nudge](https://github.com/CambrianTech/continuum/issues/1179) — closes the "I forgot to look for next work" gap that leaves agents idle between events.\n\n'
-            printf '<details>\n<summary>Top candidates from `airc queue next`</summary>\n\n```\n'
-            printf '%s\n' "$NEXT_OUT"
-            printf '```\n</details>\n\n'
-            printf '_To claim, run `airc queue claim <issue-url>` from your scope._\n'
-          } > "$BODY_FILE"
-          gh pr comment "$PR_NUMBER" --repo CambrianTech/continuum \
-            --body-file "$BODY_FILE" || \
-            echo "::warning::posting nudge comment failed (non-fatal)"
-          rm -f "$BODY_FILE"
+
+          while IFS= read -r ref; do
+            [ -n "$ref" ] || continue
+            case "$ref" in
+              "$REPO"#*) ;;
+              *)
+                echo "::notice::cross-repo ref $ref not closed (token is repo-scoped)"
+                continue
+                ;;
+            esac
+            number="${ref##*#}"
+            echo "closing $ref"
+            gh issue close "$number" --repo "$REPO" \
+              --comment "Closed by automation: merged via $PR_URL ($MERGE_SHA). — github-actions[continuum#1142]"
+          done <<< "$refs"
+
+      # ─── Post-merge auto-nudge (continuum#1179) — REMOVED, NOT DISABLED ───
+      #
+      # A step here used to comment the top pickable queue cards on the
+      # just-merged PR. It called `airc queue next`, which has never existed
+      # (see above: the namespace is `queue-card`). It is deleted rather than
+      # repaired, deliberately, and the reason is the whole point of this file:
+      #
+      #   It never once ran, and it never once looked broken. It probed with
+      #   `queue next --help` and `exit 0`-ed on failure, so every merge for
+      #   two weeks printed "not available in this airc build; skipping" —
+      #   which reads as a deliberate capability check, not a defect. A
+      #   soft-fail guard wrapped around a permanently-wrong verb is
+      #   indistinguishable from a feature being switched off. That is why it
+      #   outlived the LOUD break sitting directly beside it.
+      #
+      # It is not repaired here because repairing it would mean guessing.
+      # `queue-card next` takes `--repo`, `--owner` (required, no default) and
+      # `--raw-json-file` (required — it is a pure transform over a JSON blob
+      # the caller must fetch first), and takes NO `--limit`. The old call
+      # passed a `--limit` that does not exist and omitted both required args,
+      # and an earlier comment justified dropping `--owner` on the belief the
+      # flag might be unsupported — the opposite of true. Writing a fresh
+      # invocation from assumptions about what `--owner` means would recreate
+      # exactly the failure this commit exists to end.
+      #
+      # If the nudge is wanted back: fetch the candidate JSON with `gh`, then
+      # call `queue-card next` with all three real arguments, and verify it
+      # against a live run — do not restore a version that cannot fail loudly.
