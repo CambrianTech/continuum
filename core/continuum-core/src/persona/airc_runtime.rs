@@ -704,11 +704,19 @@ impl PersonaAircRuntime {
                         ) {
                             if !renewal_denied {
                                 renewal_denied = true;
+                                // `idle` is None when she has NEVER thought this
+                                // process — that is a state, not a duration, and
+                                // stamping it u64::MAX printed a 584-million-year
+                                // idle into the ledger (seen live 2026-08-21).
+                                // [[unknown-is-not-a-quantity]]: the unknown gets a
+                                // word, never a sentinel number.
                                 crate::probe!(
                                     class = "persona.claim.renewal_skipped_idle",
                                     persona_id = %hb_persona,
                                     agent_name = %hb_name,
-                                    idle_ms = idle.unwrap_or(u64::MAX),
+                                    idle = %idle
+                                        .map(|ms| ms.to_string())
+                                        .unwrap_or_else(|| "never-thought".to_string()),
                                     ttl_ms = crate::modules::work::DEFAULT_CLAIM_TTL_MS,
                                     "no cognition within one lease-length — renewals \
                                      DENIED from here until she thinks again; holds \

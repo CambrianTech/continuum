@@ -406,6 +406,16 @@ fn apply_llamacpp_sampling_knobs(
     }
 }
 
+/// Does this `/props` status PROVE the endpoint does not exist — the only verdict
+/// allowed to latch [`SlotAffinity::Unsupported`] for the process's life? 404/501
+/// are the server saying "no such surface"; everything else (above all the 503 of a
+/// model still loading) is a statement about NOW, and a permanent conclusion drawn
+/// from a transient state is the [[unknown-is-not-a-quantity]] error with a cache
+/// bolted on.
+fn props_status_proves_endpoint_absent(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::NOT_IMPLEMENTED
+}
+
 impl SlotAffinity {
     /// Lease a warm slot for `persona` (see [`SlotAffinity`] doc). Reuse the slot it
     /// already holds → take a free slot → evict the least-recently-active holder.
@@ -437,6 +447,15 @@ impl SlotAffinity {
         // 2. A free slot → take it.
         if let Some(slot) = holders.iter().position(|h| h.is_none()) {
             holders[slot] = Some((persona.to_string(), now));
+            // Fires once per persona per process (plus re-pins after eviction), so
+            // the ledger can PROVE pinning is live — its silent predecessor ran
+            // latched-off for weeks with nothing to say so (2026-08-21).
+            crate::probe!(
+                class = "inference.slot_affinity.pinned",
+                persona = persona,
+                slot = slot as u64,
+                "persona pinned to a free llama-server slot — her prefix warms HERE",
+            );
             return Some(slot as u32);
         }
         // 3. All held → evict the least-recently-active holder (min tick).
@@ -445,6 +464,20 @@ impl SlotAffinity {
             .enumerate()
             .min_by_key(|(_, h)| h.as_ref().map(|(_, t)| *t).unwrap_or(0))
             .map(|(i, _)| i)?;
+        // Cross-persona eviction IS the KV-clobber event — the evicted citizen's
+        // warm tail is gone and her next turn re-prefills from zero. More personas
+        // than slots makes this legitimate; the probe is what makes it PRICED
+        // (KV-CACHE-ECONOMY: eviction must be a decision, not an accident).
+        if let Some((evicted, _)) = &holders[slot] {
+            crate::probe!(
+                class = "inference.slot_affinity.evicted",
+                persona = persona,
+                evicted = evicted.as_str(),
+                slot = slot as u64,
+                "all slots held — least-recently-active persona evicted; her warm \
+                 prefix is forfeit and her next turn re-prefills from zero",
+            );
+        }
         holders[slot] = Some((persona.to_string(), now));
         Some(slot as u32)
     }
@@ -759,13 +792,44 @@ impl OpenAICompatibleAdapter {
             }
         };
         if !resp.status().is_success() {
-            slot_tables().insert(root, SlotAffinity::Unsupported);
+            let status = resp.status();
+            // ONLY "this endpoint does not exist" may latch Unsupported. Any other
+            // status — above all the 503 a llama-server answers while the model is
+            // still LOADING — is transient, and latching on it killed slot affinity
+            // on effectively EVERY boot: personas start deliberating before the lane
+            // is warm (`inference.lane_relaunch_retry` ×93, reason=503_loading, same
+            // ledger), so the first probe raced the load window, latched Unsupported
+            // for the process's life, and prefix-similarity slot theft quietly
+            // replaced pinning — measured as `cached: 0` mid-conversation on
+            // 2026-08-21. A verdict about what a server IS must never be reached
+            // while the server is mid-transition (#442's rule, one layer down).
+            if props_status_proves_endpoint_absent(status) {
+                crate::probe!(
+                    class = "inference.slot_affinity.unsupported",
+                    status = status.as_u16() as u64,
+                    "props endpoint absent — slot affinity latched OFF for this server",
+                );
+                slot_tables().insert(root, SlotAffinity::Unsupported);
+            } else {
+                crate::probe!(
+                    class = "inference.slot_affinity.deferred",
+                    status = status.as_u16() as u64,
+                    "props not ready (transient status) — affinity deferred, NOT latched; \
+                     will re-probe on the next persona request",
+                );
+            }
             return None;
         }
         let body: serde_json::Value = match resp.json().await {
             Ok(v) => v,
             Err(_) => {
-                slot_tables().insert(root, SlotAffinity::Unsupported);
+                // A malformed body from a live server is also not proof of absence —
+                // mid-load llama-server can answer partial/HTML bodies. Defer, don't latch.
+                crate::probe!(
+                    class = "inference.slot_affinity.deferred",
+                    status = 200u64,
+                    "props answered but body did not parse — affinity deferred, NOT latched",
+                );
                 return None;
             }
         };
@@ -2557,20 +2621,33 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         let mut last_prefill_processed: u64 = 0;
         let stream_opened = Instant::now();
         let mut last_progress = stream_opened;
+        // PREFILL IS NOT DECODE (2026-08-21, the round-killer). `live_budget` is a
+        // DECODE watchdog by its own doc — "a token every few hundred ms". Selecting
+        // it the moment ANY progress arrived meant llama.cpp's 0%-ingestion signalling
+        // frame dropped us from 300s to 90s seconds into a prefill that measured ~170s
+        // for a window-sized prompt, so every big turn died and retried forever. The
+        // phase machine keeps the two regimes apart; see `inference::stream_liveness`.
+        let mut phase = crate::inference::stream_liveness::StreamPhase::Queued;
+        // One `inference.prefill.rescued` row per stream, not per frame.
+        let mut prefill_rescued = false;
+        // When the FIRST prompt_progress frame arrived. llama.cpp emits the 0% frame
+        // at the moment the slot is ASSIGNED ("signal the client that the request has
+        // started processing"), so open→first-frame is QUEUE WAIT and
+        // first-frame→complete is INGEST. The first cut of these probes conflated the
+        // two into one `elapsed_ms`, and the numbers were absurd in exactly the way a
+        // conflation is: a 467-token prompt "prefilling" for 231s at 1 tok/s. It was
+        // queued 230 of those seconds. A probe that mixes two regimes measures neither.
+        let mut first_prefill_frame: Option<Instant> = None;
         loop {
-            // `last_progress` only ever moves when the SERVER did something for us
-            // (prefill advanced, token, tool delta, finish). So "has it moved since
-            // we opened the stream" is exactly "has the slot started our work" —
-            // no extra flag to keep in sync with the activity sites below.
-            let idle = if last_progress > stream_opened {
-                live_budget
-            } else {
-                queue_budget
-            };
+            let idle = crate::inference::stream_liveness::idle_budget(
+                phase,
+                queue_budget,
+                live_budget,
+            );
             let next = tokio::time::timeout(idle, byte_stream.next())
                 .await
                 .map_err(|_| {
-                    let started = last_progress > stream_opened;
+                    let started = phase.has_started();
                     if local_lane {
                         if started {
                             // Started-then-stopped is per-slot evidence about OUR
@@ -2681,6 +2758,71 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                     // `>` so a REPEATED frame carrying the same count (the wedge
                     // signature) cannot hold the watchdog open forever.
                     if let Some(p) = parsed.prompt_progress {
+                        // Phase advances on EVERY frame (including the 0% signalling
+                        // one), because "the slot is assigned and ingesting" is true
+                        // from the first frame — that is what picks the bulk budget.
+                        // The liveness STAMP below still requires strict advance, so a
+                        // frozen counter cannot hold the watchdog open (#385).
+                        let was = phase;
+                        phase = phase.on_prefill(p.processed, p.total);
+                        let first_frame = *first_prefill_frame.get_or_insert_with(Instant::now);
+
+                        // PROVE THE FIX IS LOAD-BEARING. Without this the change is
+                        // invisible: "no retries" is an ABSENCE, and an absence cannot
+                        // distinguish "prefills now survive" from "nothing is running"
+                        // — the exact ambiguity that cost a full day of diagnosis.
+                        // This fires ONCE per stream, only for a prefill that has
+                        // already outlived the OLD decode budget while still advancing.
+                        // Every row is therefore a turn that would previously have been
+                        // killed and retried forever.
+                        let elapsed = stream_opened.elapsed();
+                        if !prefill_rescued
+                            && matches!(phase, crate::inference::stream_liveness::StreamPhase::Prefilling { .. })
+                            && elapsed > live_budget
+                        {
+                            prefill_rescued = true;
+                            crate::probe!(
+                                class = "inference.prefill.rescued",
+                                provider = self.config.name.as_str(),
+                                elapsed_s = elapsed.as_secs(),
+                                queued_s = first_frame.duration_since(stream_opened).as_secs(),
+                                old_budget_s = live_budget.as_secs(),
+                                processed = p.processed,
+                                total = p.total,
+                                cached = p.cache,
+                                "prefill outlived the OLD decode watchdog and is STILL \
+                                 advancing — under the previous flat budget this turn \
+                                 would have been killed here and retried forever",
+                            );
+                        }
+                        // Per-stream ingest receipt, emitted once at the prefill→decode
+                        // edge, with QUEUE and INGEST separated: llama.cpp's 0% frame
+                        // marks slot ASSIGNMENT, so open→first-frame is time spent
+                        // waiting for a slot and first-frame→now is real ingest work.
+                        // `ingest_tok_per_s` is the number the 90s constant was
+                        // implicitly guessing at and the one a derived budget should
+                        // come from per model+device (#441); `queued_ms` is the
+                        // admission/oversubscription signal (#234 QoS).
+                        if matches!(was, crate::inference::stream_liveness::StreamPhase::Prefilling { .. })
+                            && matches!(phase, crate::inference::stream_liveness::StreamPhase::Decoding)
+                        {
+                            let queued_ms = first_frame.duration_since(stream_opened).as_millis() as u64;
+                            let ingest_ms = (first_frame.elapsed().as_millis().max(1)) as u64;
+                            let fresh = p.total.saturating_sub(p.cache);
+                            crate::probe!(
+                                class = "inference.prefill.complete",
+                                provider = self.config.name.as_str(),
+                                total = p.total,
+                                cached = p.cache,
+                                fresh = fresh,
+                                queued_ms = queued_ms,
+                                ingest_ms = ingest_ms,
+                                ingest_tok_per_s = (fresh as f64 * 1000.0 / ingest_ms as f64) as u64,
+                                would_have_died = u8::from(elapsed > live_budget) as u64,
+                                "prefill complete — queue wait vs real ingest, and the \
+                                 cache's actual contribution, per stream",
+                            );
+                        }
                         if p.processed > last_prefill_processed {
                             last_prefill_processed = p.processed;
                             last_progress = Instant::now();
@@ -2697,6 +2839,12 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                             });
                         }
                     }
+                    // Any REAL output (token, reasoning, tool delta, finish) means
+                    // prefill is definitionally over. Detected once here, by observing
+                    // whether the sites below moved the liveness stamp, rather than
+                    // repeating a phase assignment at each of the four — one decision,
+                    // one place, and a new output kind cannot forget to declare itself.
+                    let progress_before_output = last_progress;
                     if let Some(choice) = parsed.choices.into_iter().next() {
                         if let Some(fr) = choice.finish_reason {
                             finish_reason_str = Some(fr);
@@ -2724,6 +2872,9 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                                 }
                             }
                         }
+                    }
+                    if last_progress != progress_before_output {
+                        phase = phase.on_output();
                     }
                 }
             }
@@ -3609,6 +3760,36 @@ mod tests {
     // personas take distinct free slots; once full, a NEW persona evicts the
     // LEAST-recently-active holder, not a fixed round-robin victim — so the active
     // set keeps its warm slots and co-active minds never share one. This is the
+    // what this catches: the boot-race latch that killed slot affinity on effectively
+    // EVERY boot (2026-08-21). Personas start deliberating while llama-server still
+    // answers 503_loading (measured ×93 in the same ledger); the old code latched
+    // Unsupported on ANY non-success status, so one probe racing the load window
+    // disabled pinning for the process's life and prefix-similarity slot theft took
+    // over (`cached: 0` mid-conversation). Only "no such endpoint" may be permanent.
+    #[test]
+    fn a_loading_lane_must_not_latch_slot_affinity_off() {
+        use reqwest::StatusCode;
+        for transient in [
+            StatusCode::SERVICE_UNAVAILABLE, // llama-server mid-load — THE incident
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::BAD_GATEWAY,
+            StatusCode::TOO_MANY_REQUESTS,
+        ] {
+            assert!(
+                !props_status_proves_endpoint_absent(transient),
+                "{transient} is a statement about NOW, not about what the server IS — \
+                 latching Unsupported on it re-opens the boot race"
+            );
+        }
+        for absent in [StatusCode::NOT_FOUND, StatusCode::NOT_IMPLEMENTED] {
+            assert!(
+                props_status_proves_endpoint_absent(absent),
+                "{absent} genuinely proves the surface is missing — without the latch \
+                 every cloud provider would be re-probed per persona request forever"
+            );
+        }
+    }
+
     // regression guard on the old first-touch pin that let two permanent slot-mates
     // clobber each other every turn (cachedTokens≈4). Non-Table states never pin.
     #[test]

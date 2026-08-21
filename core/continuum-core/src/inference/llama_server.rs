@@ -2573,118 +2573,34 @@ impl LlamaServerControl for LlamaServerProcess {
         // the prior bug). See `served_total_ctx` / `parallel_lanes`.
         let lanes = target.parallel_lanes();
         let total_ctx = target.served_total_ctx();
-        let mut cmd = tokio::process::Command::new(&self.bin);
-        cmd.arg("-m")
-            .arg(&gguf)
-            .arg("--alias")
-            .arg(&target.model.id)
-            .arg("--host")
-            .arg(host)
-            .arg("--port")
-            .arg(port.to_string())
-            // Total KV = per-lane window × lanes; split back to one full window
-            // per slot by `--parallel` below. The plan budgeted this exact total
-            // (`kv_at(context_window) * lanes`) against the host, so it fits.
-            .arg("-c")
-            .arg(total_ctx.to_string())
-            .arg("--parallel")
-            .arg(lanes.to_string())
-            // KV PREFIX REUSE across a persona's turns. `cache_prompt:true` (sent
-            // per-request) only reuses a slot's prior content when the *exact*
-            // prefix still sits in that slot; with the volatile grounding tail
-            // changing every turn and embedding requests sharing these same slots,
-            // measured cross-turn reuse was ZERO (`cachedTokens: 0` over every
-            // captured live turn, forcing a full re-prefill of the ~720-token
-            // static identity/doctrine/tool prefix each turn). `--cache-reuse`
-            // lets llama.cpp reuse cached chunks ≥ N tokens via KV shifting even
-            // when a later span differs — so the stable prefix is kept, not
-            // recomputed. 256 is the llama.cpp-recommended min chunk. This is a
-            // pure optimization flag: absent it we just re-prefill (correct, slow);
-            // present it we reuse (correct, fast) — no fallback, no behavior change.
-            .arg("--cache-reuse")
-            .arg("256")
-            // PREFILL THROUGHPUT (#139). Live personas are prefill-bound: a real turn
-            // re-prefills ~4k tokens of fresh RAG context at ~109 tok/s → 30–110s turns
-            // (decode is tiny and fast; the mind is NOT slow, the re-read is). The
-            // physical micro-batch (`--ubatch-size`, llama.cpp default 512) is how many
-            // prompt tokens Metal processes per compute pass — bigger batch = more
-            // parallel prefill = higher tok/s, traded against a larger per-slot compute
-            // buffer. 1024 doubles prefill parallelism; the compute-buffer growth is the
-            // same axis that OOMs (kIOGPUCommandBufferCallbackErrorOutOfMemory) so it is
-            // sized WITH the 2-lane headroom, not blindly. Measured knob: watch prefill
-            // tok/s in the captures and back off if the lane 500s "Compute error".
-            .arg("--ubatch-size")
-            .arg("1024")
-            // Overflow must FAIL, never silently amputate. With context shift on
-            // (the llama.cpp default), a prompt larger than the slot's window has
-            // its MIDDLE evicted and generation proceeds on the mutilated prompt —
-            // exam-corrupting amnesia no log line reports (#139: 44k-token prompts
-            // observed riding ~13.4k slots with no error anywhere). Disabled, the
-            // server 400s ("exceeds context size") and the caller's fail-loud path
-            // surfaces the real defect: a RAG budget that overshot the served
-            // window ([[fallbacks-are-illegal-fail-loud]]).
-            .arg("--no-context-shift");
-        // KV CACHE QUANTIZATION (#232, opt-in field-proven technique). f16 KV is the
-        // default; q8_0 is ~half the resident KV footprint at near-lossless quality,
-        // freeing memory the elastic window (#234) can spend on a BIGGER context or MORE
-        // warm lanes — faster for multiple personas AND more room for hard coding.
-        // OFF by default: not every backend/build ships Metal KV-quant kernels, so this
-        // is an operator opt-in, never a blind assumption ([[verify-real-device-numbers-not-a-clamp-premise]]).
-        // Set SERVING_KV_CACHE_TYPE=q8_0 (or q4_0) to enable; absent / `f16` → byte-identical
-        // f16 behavior. NOTE: to have the plan actually GROW the window on the freed memory
-        // (not just leave it as extra headroom), the fit math must also scale kv_per_token —
-        // that footprint coupling is the follow-up; this slice is the safe enablement.
-        if let Some(kv_type) = crate::config_env::read("SERVING_KV_CACHE_TYPE")
+        // The unconditional flag spine moved to `lane_args` (decomposition slice 1,
+        // docs/architecture/KV-CACHE-ECONOMY.md §7). It lives there because it is PURE
+        // there — primitives in, an invocation out — and therefore assertable without
+        // spawning a GPU process. From HERE it never could be, which is exactly how
+        // `--parallel` silently quartered every citizen's window: the arithmetic was
+        // welded into a Command chain no unit test could reach. Every flag's incident
+        // comment moved WITH it; that comment is the only record of the failure that
+        // set the value.
+        // Resolution stays HERE (config_env reads, registry probes, the vision receipt);
+        // `lane_args` decides only what a resolved value MEANS on a command line. That is
+        // the split that keeps the flag surface pure and assertable — gather inputs, then
+        // compute a plan, exactly as `TierPolicy` does.
+        let kv_cache_type = crate::config_env::read("SERVING_KV_CACHE_TYPE")
             .map(|s| s.trim().to_ascii_lowercase())
-            .filter(|s| !s.is_empty() && s != "f16")
-        {
-            cmd.arg("--cache-type-k")
-                .arg(&kv_type)
-                .arg("--cache-type-v")
-                .arg(&kv_type);
-        }
-        // FLASH ATTENTION (#232, opt-in field-proven technique). The fused attention kernel
-        // is faster on BOTH prefill and decode and lowers peak memory — directly attacking
-        // the prefill-bound turn latency (#139) and freeing room the elastic window (#234)
-        // can spend. OFF by default: Metal/backend flash-attn support + quality vary by build
-        // ([[verify-real-device-numbers-not-a-clamp-premise]]), so it's an operator opt-in,
-        // never a blind assumption. SERVING_FLASH_ATTN=1|on|true → enable; absent → llama.cpp
-        // default (no flag), byte-identical.
-        // MUST carry an explicit VALUE. Upstream llama.cpp changed this from a bare
-        // boolean switch to `-fa, --flash-attn [on|off|auto]`. A bare `--flash-attn`
-        // now EATS THE NEXT ARGUMENT as its value, and the server refuses to start:
-        //
-        //   error while handling argument "--flash-attn": unknown value for
-        //   --flash-attn: '--mmproj'
-        //
-        // Found 2026-08-20 the first time anyone ever set SERVING_FLASH_ATTN=1 — the
-        // flag shipped, was never exercised because it was opt-in and nobody opted in,
-        // and rotted against upstream in the meantime. The whole lane failed to spawn
-        // and serving sat at 0 lanes. An opt-in that has never once been switched on is
-        // untested code with a config-shaped trigger ([[an-absence-is-an-unfinished-measurement]]).
-        if crate::config_env::read("SERVING_FLASH_ATTN")
+            .filter(|s| !s.is_empty() && s != "f16");
+        let flash_attn = crate::config_env::read("SERVING_FLASH_ATTN")
             .map(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "1" | "on" | "true" | "yes"))
-            .unwrap_or(false)
+            .unwrap_or(false);
+        let mmproj = crate::model_registry::artifacts::resolve_mmproj_for_model(&target.model);
+        if mmproj.is_none()
+            && target
+                .model
+                .capabilities
+                .contains(&crate::model_registry::Capability::Vision)
         {
-            cmd.arg("--flash-attn").arg("on");
-        }
-        // MULTIMODAL PROJECTOR (#106): a vision/audio-capable model needs its mmproj GGUF so
-        // llama-server loads the vision (or audio) encoder and can tokenize image/audio content
-        // parts. Present → the model actually SEES (the `ContentPart::Image` the persona render
-        // seam attaches gets mtmd-encoded). Absent on a Vision-capable row → the server serves
-        // TEXT only and silently ignores images, which is a capability LIE — so warn LOUD rather
-        // than fabricate sight ([[fallbacks-are-illegal-fail-loud]]). Safe on a generation lane
-        // (unlike `--embeddings` below): the projector only adds the encoder, it does not switch
-        // the server out of causal-generation mode.
-        if let Some(mmproj) =
-            crate::model_registry::artifacts::resolve_mmproj_for_model(&target.model)
-        {
-            cmd.arg("--mmproj").arg(&mmproj);
-        } else if target
-            .model
-            .capabilities
-            .contains(&crate::model_registry::Capability::Vision)
-        {
+            // A Vision row serving text-only is a capability LIE — warn loud rather than
+            // fabricate sight ([[fallbacks-are-illegal-fail-loud]]). This is a RECEIPT,
+            // not a flag, which is why it stays with resolution and not in `lane_args`.
             tracing::warn!(
                 probe_class = "serving.vision.no_mmproj",
                 model = %target.model.id,
@@ -2694,115 +2610,43 @@ impl LlamaServerControl for LlamaServerProcess {
                  mmproj_local_path) or drop the Vision capability so the row stops claiming sight."
             );
         }
-        // NATIVE MTP SPECULATIVE DECODE (#440): if the model ships an `mtp-*.gguf`
-        // draft head beside its main GGUF (the ggml-org Qwen3.8 layout), load it as
-        // the spec-decode draft. MTP heads are trained WITH the model, so acceptance
-        // is high and there is no external draft model to fit: field-measured on
-        // Qwen3.8-27B (RTX 4090, 2026-08-15) decode went 40.7 → 60.1 t/s for ~0.1GB
-        // extra state. Artifact presence IS the capability signal (the mmproj
-        // pattern): no draft file → no flags → byte-identical serving. n-max 4 /
-        // p-min 0.7 are the upstream-recommended MTP operating point from that same
-        // field benchmark — per-model tuning, if ever needed, belongs on the Model
-        // row beside `sampling`, not here.
-        if let Some(draft) =
-            crate::model_registry::artifacts::resolve_mtp_draft_for_model(&target.model)
-        {
-            cmd.arg("--spec-type")
-                .arg("draft-mtp")
-                .arg("--spec-draft-model")
-                .arg(&draft)
-                .arg("--spec-draft-n-max")
-                .arg("4")
-                .arg("--spec-draft-p-min")
-                .arg("0.7");
-        }
-        // Device-fit resident-override (#29): source the RESIDENT (non-expert)
-        // tensors from the precision-shrunk fit GGUF so the whole resident tier fits
-        // VRAM offloaded to GPU, while this primary GGUF streams the experts. The
-        // loader hook (`LLAMA_RESIDENT_OVERRIDE`) lazy-maps only the override's
-        // resident bytes (its experts are ignored). Set by the governor's device_fit
-        // plan when as-shipped resident overflows the VRAM budget; absent = resident
-        // fits as-shipped (no override, no env). [[device-fit-repeatable-primitive]].
-        if let Some(ov) = &target.resident_override {
-            cmd.env("LLAMA_RESIDENT_OVERRIDE", ov);
-        }
-        // `--embeddings` is deliberately NOT set on this GENERATION lane. On the
-        // current llama.cpp build it puts the server in embedding (non-causal)
-        // mode, which makes generation fail with `500 "Compute error."` on EVERY
-        // request — every persona turn went dark (and OAI /v1/embeddings still
-        // 400s with "pooling type 'none'", so it wasn't even serving embeddings
-        // correctly). One server cannot serve both causal generation and
-        // non-causal embeddings. Verified 2026-07-03: the base GGUF generates
-        // cleanly the instant this flag is removed. llama-server-hosted
-        // embeddings need their OWN lane (`--embeddings --pooling mean/last` on a
-        // separate port) — a follow-up; the live embedding path today is the
-        // fastembed/ONNX provider, unaffected by this lane.
-        // Placement: CPU lanes pin every layer to RAM so they never contend for
-        // the GPU VRAM a living lane already holds (the Metal decode-time OOM that
-        // muted the eval). GPU lanes omit the flag — llama-server offloads all it
-        // can by default. [[ServingTarget::placement]] / #59 / #56.
-        if target.placement == LanePlacement::Cpu {
-            cmd.arg("--n-gpu-layers").arg("0");
-        }
-        // Native tool-calling needs the model's TOOL-CAPABLE chat template. The
-        // mlx→gguf conversion can strip the embedded template down to a bare
-        // ChatML loop (no `<tools>`/`<tool_call>` rendering) — which silently
-        // disables native function-calling, so the gateway ignores the `tools`
-        // param and the persona's hands go dead (verified live 2026-06-26: the
-        // forged GGUF carried a 208-char template, zero tool support). When the
-        // forge writes a `chat_template.jinja` sidecar next to the GGUF, hand it
-        // to llama-server with --jinja so it renders tools and does
-        // grammar-constrained native tool calls — VALID tool-call JSON guaranteed
-        // by the sampler, not hand-escaped by a 4B model into a JSON string (the
-        // failure that made multi-line code calls unparseable). This is an
-        // explicit override file, not a silent fallback: present → it's the
-        // truth the GGUF should have carried; absent → the embedded template
-        // stands.
-        // --jinja is UNCONDITIONAL: it makes llama-server render the `tools` we send and do
-        // grammar-constrained parsing of the model's NATIVE tool-call format, using the
-        // model's OWN chat template. That is the tool-trained shape a Qwen/Hermes/etc GGUF
-        // expects — infinitely more reliable than us reverse-engineering tool calls out of
-        // prose after the fact. A normal pulled GGUF carries a tool-capable embedded template;
-        // this switch was previously gated on a forge sidecar existing, so pulled models
-        // silently ran with tools DISABLED (the gateway ignored the `tools` param → the
-        // persona narrated tool calls instead of emitting them). The sidecar, when the forge
-        // wrote one, now OVERRIDES the embedded template (for forged GGUFs that shipped a
-        // thin, tool-less 208-char template) — present → override, absent → the embedded
-        // tool-capable template stands, tools ON either way.
-        cmd.arg("--jinja");
-        if let Some(tpl) = gguf
+        let mtp_draft = crate::model_registry::artifacts::resolve_mtp_draft_for_model(&target.model);
+
+        // Slice-3 resolution, same rule as above: look things up HERE, let `lane_args`
+        // decide what they mean on a command line.
+        let chat_template = gguf
             .parent()
             .map(|d| d.join("chat_template.jinja"))
-            .filter(|p| p.is_file())
-        {
-            cmd.arg("--chat-template-file").arg(tpl);
+            .filter(|p| p.is_file());
+        let lora_paths: Vec<std::path::PathBuf> =
+            target.adapters.iter().map(|a| a.path.clone()).collect();
+        let expert_ot = target.expert_ot_value();
+
+        let mut cmd = tokio::process::Command::new(&self.bin);
+        let invocation = crate::inference::lane_args::base_invocation(
+            &gguf,
+            &target.model.id,
+            &host,
+            port,
+            lanes,
+            total_ctx,
+        )
+        .with_options(&crate::inference::lane_args::LaneOptions {
+            kv_cache_type: kv_cache_type.as_deref(),
+            flash_attn,
+            mmproj: mmproj.as_deref(),
+            mtp_draft: mtp_draft.as_deref(),
+            resident_override: target.resident_override.as_deref(),
+            cpu_only: target.placement == LanePlacement::Cpu,
+            chat_template: chat_template.as_deref(),
+            loras: &lora_paths,
+            expert_ot: expert_ot.as_deref(),
+        });
+        for a in &invocation.args {
+            cmd.arg(a);
         }
-        // Load each trained genome layer into the `/lora-adapters` catalog at
-        // index order; the per-request `"lora":[{id,scale}]` field pages them in.
-        // ONE comma-separated `--lora` value: llama.cpp (b8784+) deprecated
-        // repeated `--lora` flags and SILENTLY keeps only the last — which was
-        // collapsing every multi-layer genome stack to a single adapter
-        // (glass-boxed 2026-07-23 in the lane's own stderr: 'DEPRECATED:
-        // --lora specified multiple times... only last value will be used' ×4
-        // while a 4-layer stack served). The genome's whole premise is layers
-        // that STACK; this arg shape is what actually stacks them.
-        if !target.adapters.is_empty() {
-            let joined = target
-                .adapters
-                .iter()
-                .map(|a| a.path.to_string_lossy().into_owned())
-                .collect::<Vec<_>>()
-                .join(",");
-            cmd.arg("--lora").arg(joined);
-        }
-        // K3 slice-1 physical expert paging: if the residency planner handed us a layer
-        // placement, offload the COLD layers' stacked expert tensors to CPU via -ot, keeping
-        // the hot layers GPU-resident. Experts are stacked (one blk.N.ffn_*_exps tensor per
-        // layer), so -ot — which places whole tensors — pages at LAYER granularity. None /
-        // all-hot → no flag (an empty -ot is rejected by llama-server). A change to the hot
-        // set is honored on the next relaunch (the pager decides when).
-        if let Some(ot) = target.expert_ot_value() {
-            cmd.arg("--override-tensor").arg(ot);
+        for (k, v) in &invocation.envs {
+            cmd.env(k, v);
         }
         // MoE glass-box env seam (#278): when expert paging is active, the DAEMON
         // hands the fork its capture + plan file locations. Previously these envs

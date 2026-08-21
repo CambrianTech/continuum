@@ -738,9 +738,59 @@ pub(crate) async fn run_env(
     }
 }
 
+/// One live `clone_at` per DESTINATION. Keyed by `repo_dir`, not instance — the same
+/// instance staged at two different roots is two independent jobs, while two callers
+/// aiming at ONE path are a razed tree waiting to happen (see the guard below).
+static CLONE_AT_LOCKS: std::sync::LazyLock<
+    std::sync::Mutex<
+        std::collections::HashMap<std::path::PathBuf, std::sync::Arc<tokio::sync::Mutex<()>>>,
+    >,
+> = std::sync::LazyLock::new(Default::default);
+
+fn clone_lock_for(repo_dir: &Path) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    CLONE_AT_LOCKS
+        .lock()
+        .expect("clone-lock registry poisoned")
+        .entry(repo_dir.to_path_buf())
+        .or_default()
+        .clone()
+}
+
+/// The staging tree a fresh clone is built in before the rename commit-point.
+///
+/// Unique per INVOCATION, not per process: `cloning-{pid}` was a Node-era assumption
+/// (every clone its own process). In the headless core every clone shares ONE pid, so
+/// two concurrent stages of the same instance computed the same path and the
+/// stale-staging sweep deleted a LIVE clone mid-fetch — the 2026-08-18 grade loss
+/// (`repo.cloning-78289/.git/: No such file or directory`, sympy-18057's finished
+/// artifact voided at scoring). The per-destination lock in [`clone_at`] already
+/// serializes callers; the nonce keeps even a future unlocked path collision-free and
+/// keeps a crashed run's leftovers from ever matching a live invocation's name.
+fn staging_path_for(repo_dir: &Path) -> PathBuf {
+    static CLONE_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    repo_dir.with_extension(format!(
+        "cloning-{}-{}",
+        std::process::id(),
+        CLONE_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ))
+}
+
 /// Clone the repo at `base_commit`. The commit is the whole point — a clone left at HEAD is
 /// how eight runs got scored against a tree with the fix already in it.
 pub async fn clone_at(instance: &SweInstance, repo_dir: &Path) -> Result<(), String> {
+    // SERIALIZE PER DESTINATION (2026-08-21, from the 2026-08-18 grade loss). This
+    // function both REMOVES `repo_dir` at entry and razes/renames it at the commit
+    // point, and the protocol legitimately wants the same instance's tree more than
+    // once (her work tree + the pristine score tree, a lapsed-claim auto-grade racing
+    // a re-stage). Concurrent callers therefore delete each other's trees mid-use —
+    // measured: sympy-18057's FINISHED artifact died at grading with "clone from its
+    // local mirror failed: repo.cloning-78289/.git/: No such file or directory", which
+    // is caller B's stale-staging sweep removing caller A's clone WHILE git wrote into
+    // it (same pid → same staging name, see below). The tree is one resource; its
+    // builder is a critical section. tokio::Mutex (never a sync lock) because the
+    // section awaits on git subprocesses throughout.
+    let lock = clone_lock_for(repo_dir);
+    let _staged = lock.lock().await;
     // A stale tree here is not "probably fine" — it is the tree the score comes from. Removal
     // failing used to be SWALLOWED (`let _ =`), and the clone below then died on git's own
     // "destination path already exists and is not an empty directory", which reads like a
@@ -810,14 +860,20 @@ pub async fn clone_at(instance: &SweInstance, repo_dir: &Path) -> Result<(), Str
     // the receipt, from a grade voided by the harness — so close the window instead of
     // widening the diagnosis. Staging + rename also means a half-fetched tree is never
     // visible at `repo_dir`: the move is the commit point.
-    let staging = repo_dir.with_extension(format!(
-        "cloning-{}",
-        std::process::id()
-    ));
-    if staging.exists() {
-        std::fs::remove_dir_all(&staging).map_err(|e| {
-            format!("could not clear the stale staging tree {}: {e}", staging.display())
-        })?;
+    let staging = staging_path_for(repo_dir);
+    // Sweep DEAD staging trees for this destination — any `<name>.cloning-*` sibling.
+    // Under the per-destination lock nothing live matches, and a crashed run's leftovers
+    // (whose nonce-bearing names can never collide with ours) must not accumulate as
+    // unswept disk litter (the 2026-07-13 rule: no cache dir without an eviction story).
+    if let (Some(parent), Some(name)) = (repo_dir.parent(), repo_dir.file_name()) {
+        let dead_prefix = format!("{}.cloning-", name.to_string_lossy());
+        if let Ok(entries) = std::fs::read_dir(parent) {
+            for entry in entries.flatten() {
+                if entry.file_name().to_string_lossy().starts_with(&dead_prefix) {
+                    let _ = std::fs::remove_dir_all(entry.path());
+                }
+            }
+        }
     }
     let out = run(
         "git",
@@ -2816,6 +2872,49 @@ pub async fn grade(instance: &SweInstance, model_patch: Option<&str>) -> SweVerd
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the staging-collision half of the 2026-08-18 grade loss. Two
+    // concurrent stages of the same instance shared `cloning-{pid}` (one pid in the
+    // headless core), so the stale-staging sweep deleted a LIVE clone mid-fetch and
+    // sympy-18057's finished artifact died at scoring. Staging names must be unique
+    // per invocation while still carrying the sweepable `<name>.cloning-` prefix the
+    // dead-tree sweep keys on — silently changing that prefix would turn every crashed
+    // run's staging tree into permanent disk litter.
+    #[test]
+    fn staging_paths_never_collide_and_stay_sweepable() {
+        let repo = Path::new("/tmp/swe/work/sympy__sympy-18057/repo");
+        let a = staging_path_for(repo);
+        let b = staging_path_for(repo);
+        assert_ne!(a, b, "two invocations for the SAME destination must never share a tree");
+        for p in [&a, &b] {
+            let name = p.file_name().unwrap().to_string_lossy();
+            assert!(
+                name.starts_with("repo.cloning-"),
+                "staging name {name} lost the sweepable prefix — dead trees would accumulate"
+            );
+            assert_eq!(p.parent(), repo.parent(), "staging must be a sibling of its destination");
+        }
+    }
+
+    // what this catches: the serialization half of the same incident. clone_at both
+    // removes its destination at entry and razes it at the rename commit-point, so two
+    // concurrent callers for ONE destination delete each other's trees mid-use. The
+    // lock registry must hand the SAME lock to same-destination callers and different
+    // locks to different destinations (or a 300-instance sweep would serialize globally).
+    #[test]
+    fn clone_locks_are_per_destination() {
+        let a1 = clone_lock_for(Path::new("/tmp/swe/work/i-1/repo"));
+        let a2 = clone_lock_for(Path::new("/tmp/swe/work/i-1/repo"));
+        let b = clone_lock_for(Path::new("/tmp/swe/work/i-2/repo"));
+        assert!(
+            std::sync::Arc::ptr_eq(&a1, &a2),
+            "same destination must serialize on the same lock"
+        );
+        assert!(
+            !std::sync::Arc::ptr_eq(&a1, &b),
+            "different destinations must not contend"
+        );
+    }
 
     // what this catches: the path parse behind "the tests are not the solver's to touch".
     // If this under-reads, a test file the solver edited is NOT restored, and the grade either
