@@ -27,6 +27,7 @@
 //! on a different task, with nothing threaded between them.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::{LazyLock, Mutex};
 
 use serde_json::Value;
@@ -72,7 +73,8 @@ pub enum WorkDriver {
 /// posted and kickoffs sent); `Done` when every card in the round's set has reached a
 /// terminal card state. Two stages only — the smallest true lifecycle; claim/review
 /// granularity already lives on the cards themselves.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RoundStage {
     Working,
     Done,
@@ -109,6 +111,17 @@ enum SettleOutcome {
 /// One benchmark round: the card set a single `benchmark/dispatch` posted, tracked from
 /// dispatch (Working) to all-cards-terminal (Done). Identity is the run ROOM's uuid —
 /// the id dispatch already mints per run; a round IS its room's activity.
+///
+/// Serde is DURABILITY, not wire: an in-flight round persists to
+/// [`rounds_state_dir`] on every mutation and reloads on the next boot. Until
+/// 2026-08-21 this map was process-memory only, and the cost was measured twice in
+/// one day: `benchmark/rounds` answered `rounds: []` while a staged round was live
+/// (the operator re-derived the round from probe archaeology), and — worse, silent —
+/// a reboot mid-round made [`driver_for_card`] fall back to `DetachedSolve` for a
+/// `Citizen` round's remaining cards, quietly rebuilding the parallel runner the
+/// round was configured to avoid. A round must outlive the process that opened it:
+/// "kicked off by a command, owned by events" only holds if the owner survives.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct BenchRound {
     round_id: Uuid,
     benchmark: String,
@@ -172,8 +185,79 @@ impl BenchRound {
 /// Sync `Mutex`, never held across an await (every touch is a short pure mutation).
 /// A round is REMOVED the moment it completes, so the map only ever holds in-flight
 /// rounds — no unbounded growth, and "done fires once" is structural.
+///
+/// First touch RELOADS persisted in-flight rounds (see [`BenchRound`]'s serde note) —
+/// lazy so no boot hook is needed: the first `driver_for_card` after a reboot already
+/// answers from the reloaded round.
 static ROUNDS: LazyLock<Mutex<HashMap<Uuid, BenchRound>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+    LazyLock::new(|| Mutex::new(load_rounds_in(&rounds_state_dir())));
+
+/// Where in-flight rounds persist — one JSON file per round, removed at Done. The same
+/// durable-state family as the airc attach cursor (`~/.continuum/state`): tiny, per-key,
+/// self-evicting at terminal state, so the directory only ever holds in-flight rounds.
+fn rounds_state_dir() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    std::path::PathBuf::from(home).join(".continuum/state/bench-rounds")
+}
+
+/// Persist one round. Failure degrades to the pre-2026-08-21 behaviour (the round
+/// forgets on reboot) and WARNS — durability must never make a live dispatch fail.
+fn persist_round_in(dir: &Path, round: &BenchRound) {
+    let _ = std::fs::create_dir_all(dir);
+    let path = dir.join(format!("{}.json", round.round_id));
+    match serde_json::to_string(round) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&path, json) {
+                tracing::warn!(round = %round.round_id, error = %e, "bench round not persisted — it will not survive a core restart");
+            }
+        }
+        Err(e) => tracing::warn!(round = %round.round_id, error = %e, "bench round not serializable — it will not survive a core restart"),
+    }
+}
+
+/// Forget a completed round's file. Best-effort: a leftover file re-loads a Done round
+/// at next boot, and [`load_rounds_in`] drops those on read.
+fn remove_round_file_in(dir: &Path, round_id: Uuid) {
+    let _ = std::fs::remove_file(dir.join(format!("{round_id}.json")));
+}
+
+/// Reload the in-flight rounds a previous core persisted. Unreadable or Done entries
+/// are dropped (Done should have been removed at settle; tolerate the crash window).
+///
+/// HONEST LIMIT, by design: cards that reached a terminal state WHILE the core was
+/// down settle here as still-working until the next real event touches the round. The
+/// reconciler that re-derives card state from the board at boot is the follow-up —
+/// this reload restores the round's EXISTENCE (driver, card set, visibility), which is
+/// what a reboot was silently destroying.
+fn load_rounds_in(dir: &Path) -> HashMap<Uuid, BenchRound> {
+    let mut out = HashMap::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let Ok(text) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        let Ok(round) = serde_json::from_str::<BenchRound>(&text) else {
+            tracing::warn!(file = %entry.path().display(), "unreadable bench-round state file skipped (left in place for inspection)");
+            continue;
+        };
+        if round.stage == RoundStage::Done {
+            let _ = std::fs::remove_file(entry.path());
+            continue;
+        }
+        crate::probe!(
+            class = "bench.round.reloaded",
+            round_id = %round.round_id,
+            benchmark = %round.benchmark,
+            remaining = round.remaining(),
+            driver = ?round.driver,
+            "in-flight benchmark round reloaded after core restart — driver and card set restored"
+        );
+        out.insert(round.round_id, round);
+    }
+    out
+}
 
 /// Open a round BEFORE its first card is posted, so the driver is readable from the
 /// instant a card can be claimed.
@@ -187,11 +271,11 @@ static ROUNDS: LazyLock<Mutex<HashMap<Uuid, BenchRound>>> =
 ///
 /// Idempotent by round id: re-opening a live round leaves it untouched.
 pub fn open_round(round_id: Uuid, benchmark: &str, driver: WorkDriver) {
-    ROUNDS
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());
+    let round = rounds
         .entry(round_id)
         .or_insert_with(|| BenchRound::new(round_id, benchmark, &[], driver));
+    persist_round_in(&rounds_state_dir(), round);
 }
 
 /// Add a freshly posted card to an open round. Unknown round = no-op (dispatch always
@@ -203,6 +287,7 @@ pub fn add_card(round_id: Uuid, card_id: Uuid) {
         .get_mut(&round_id)
     {
         r.cards.entry(card_id).or_insert(None);
+        persist_round_in(&rounds_state_dir(), r);
     }
 }
 
@@ -227,6 +312,7 @@ pub fn seal_round(round_id: Uuid) {
     );
     if dispatched == 0 {
         rounds.remove(&round_id);
+        remove_round_file_in(&rounds_state_dir(), round_id);
         crate::probe!(
             class = "bench.round.done",
             round_id = %round_id,
@@ -286,6 +372,7 @@ pub fn observe_card_event(payload: &Value) {
     match round.settle_card(card, state) {
         SettleOutcome::NotOurs | SettleOutcome::AlreadySettled => {}
         SettleOutcome::Settled { remaining } => {
+            persist_round_in(&rounds_state_dir(), round);
             crate::probe!(
                 class = "bench.round.card_settled",
                 round_id = %round_id,
@@ -314,6 +401,7 @@ pub fn observe_card_event(payload: &Value) {
                 "benchmark round END — every card reached a terminal state"
             );
             rounds.remove(&round_id);
+            remove_round_file_in(&rounds_state_dir(), round_id);
         }
     }
 }
@@ -411,6 +499,50 @@ mod tests {
 
     fn cards(n: usize) -> Vec<Uuid> {
         (0..n).map(|_| Uuid::new_v4()).collect()
+    }
+
+    // what this catches: the reboot amnesia measured twice on 2026-08-21 — a live
+    // round answered `rounds: []` after restart, and (silent, worse) driver_for_card
+    // fell back to DetachedSolve for a Citizen round's remaining cards, quietly
+    // rebuilding the parallel runner the round was configured to avoid. A round must
+    // round-trip its FULL deciding state: driver, card set, and which cards settled.
+    #[test]
+    fn a_round_survives_a_core_restart_with_driver_and_settles_intact() {
+        let dir = std::env::temp_dir().join(format!("bench-rounds-test-{}", Uuid::new_v4()));
+        let (id, cs) = (Uuid::new_v4(), cards(3));
+        let mut round = BenchRound::new(id, "swe-bench-lite", &cs, WorkDriver::Citizen);
+        assert!(matches!(round.settle_card(cs[0], "closed"), SettleOutcome::Settled { remaining: 2 }));
+        persist_round_in(&dir, &round);
+
+        // "reboot": reload from disk into a fresh map.
+        let reloaded = load_rounds_in(&dir);
+        let r = reloaded.get(&id).expect("in-flight round must reload");
+        assert_eq!(r.driver, WorkDriver::Citizen, "driver reverting is the silent bug");
+        assert_eq!(r.dispatched(), 3);
+        assert_eq!(r.remaining(), 2, "the settled card must stay settled across the restart");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // what this catches: the state dir growing without an eviction story (the
+    // 2026-07-13 rule). Done is terminal — its file is removed at settle, and a
+    // Done file that survives a crash window is dropped (and deleted) on reload
+    // rather than resurrected as a round no event can ever settle.
+    #[test]
+    fn done_rounds_never_reload_and_their_files_self_evict() {
+        let dir = std::env::temp_dir().join(format!("bench-rounds-test-{}", Uuid::new_v4()));
+        let (id, cs) = (Uuid::new_v4(), cards(1));
+        let mut round = BenchRound::new(id, "swe-bench-lite", &cs, WorkDriver::Citizen);
+        persist_round_in(&dir, &round);
+        assert!(matches!(round.settle_card(cs[0], "closed"), SettleOutcome::RoundDone));
+        // Crash window: the round reached Done but its file removal never ran.
+        persist_round_in(&dir, &round);
+        let reloaded = load_rounds_in(&dir);
+        assert!(reloaded.is_empty(), "a Done round must not resurrect");
+        assert!(
+            !dir.join(format!("{id}.json")).exists(),
+            "the Done file must be evicted on the reload that drops it"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Open a round and add its cards — the dispatch sequence, for tests that only care
