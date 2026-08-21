@@ -1902,6 +1902,18 @@ pub struct LlamaServerProcess {
     /// carries it (live and ephemeral): a CPU-fallback eval lane silently corrupts a
     /// benchmark's wall-clock exactly like a live one starves citizens.
     offload: crate::inference::placement_watch::OffloadReport,
+    /// LEARNED, once per lane: the served model spends its quick smoke budget inside
+    /// the reasoning channel (a thinking model). Latched on the first `ThinkStarved`
+    /// verdict; every later readiness check then STARTS at the thinking budget instead
+    /// of re-proving the same property by burning a doomed 24-token generation first.
+    /// Measured before this latch: the identical `think_retry` fired ~30×/hour on a
+    /// contended lane — two generations per readiness check, forever, on the same
+    /// slots the citizens were starving for. Thinking-ness is a property of the MODEL;
+    /// a probe that rediscovers a known property by experiment on every tick is waste
+    /// (ADMISSION-IS-UNOBSERVABLE §4c). Lane-scoped (one lane serves one model), reset
+    /// naturally with the lane; the model catalog inherits this as a declared field
+    /// when the recipe/entity work lands.
+    smoke_proven_thinking: std::sync::atomic::AtomicBool,
 }
 
 impl LlamaServerProcess {
@@ -1922,6 +1934,7 @@ impl LlamaServerProcess {
             is_live_lane: true,
             wedge: Some(crate::inference::wedge::WedgeFlag::new()),
             offload: crate::inference::placement_watch::OffloadReport::new(),
+            smoke_proven_thinking: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -1949,6 +1962,7 @@ impl LlamaServerProcess {
             // down when the eval ends — a wedge report would have no consumer.
             wedge: None,
             offload: crate::inference::placement_watch::OffloadReport::new(),
+            smoke_proven_thinking: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -2421,6 +2435,22 @@ impl LlamaServerControl for LlamaServerProcess {
         // (~2 tokens) and the garbage-content lane both still read Dead on EITHER
         // budget. A 500 "Compute error" (the wedged-orphan signature) still fails
         // fast on status inside `smoke_attempt`.
+        // A lane that has PROVEN its model thinks starts at the thinking budget —
+        // the quick attempt is structurally incapable of succeeding there, and paying
+        // it anyway cost two generations per readiness check, ~30 identical
+        // `think_retry` rows/hour on a lane citizens were starving for. First check
+        // per lane still takes the cheap path; the latch below learns from it.
+        if self
+            .smoke_proven_thinking
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return match smoke_attempt(&self.client, &self.v1_url, THINKING_SMOKE_BUDGET).await {
+                Some((tok, visible, rlen)) => {
+                    matches!(smoke_verdict(tok, &visible, rlen), SmokeVerdict::Alive)
+                }
+                None => false,
+            };
+        }
         let Some((tok, visible, rlen)) =
             smoke_attempt(&self.client, &self.v1_url, QUICK_SMOKE_BUDGET).await
         else {
@@ -2430,13 +2460,17 @@ impl LlamaServerControl for LlamaServerProcess {
             SmokeVerdict::Alive => true,
             SmokeVerdict::Dead => false,
             SmokeVerdict::ThinkStarved => {
+                self.smoke_proven_thinking
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
                 crate::probe!(
                     class = "serving.smoke.think_retry",
                     quick_tokens = tok,
                     reasoning_len = rlen as u64,
                     retry_budget = THINKING_SMOKE_BUDGET,
                     "smoke decode proven but the whole quick budget went to private \
-                     reasoning — thinking model, not a wedge; retrying with room to answer"
+                     reasoning — thinking model, not a wedge; retrying with room to \
+                     answer, and LATCHING: this lane's checks start at the thinking \
+                     budget from now on (one discovery per lane, not one per tick)"
                 );
                 match smoke_attempt(&self.client, &self.v1_url, THINKING_SMOKE_BUDGET).await {
                     Some((tok, visible, rlen)) => {
