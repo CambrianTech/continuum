@@ -1136,15 +1136,52 @@ impl LlmDeliberationFaculty {
                 );
             }
         }
-        // SERIALIZATION (by volatility): stable standing-framing FIRST (roster,
-        // doctrine, map) so it lands in the cacheable KV-prefix region adjacent to
-        // the static system prompt it resembles; volatile grounding (recall, working
-        // memory) LAST, nearest the generation point. A stable sort preserves the
-        // salience order WITHIN each tier, so attention ranking is untouched — this
-        // is a pure emit-order choice that maximizes cross-turn prefix reuse AND puts
-        // the live, actionable context closest to where the model writes. `false`
-        // (stable) sorts before `true` (volatile). See [`Contribution::stable`].
-        selected.sort_by_key(|(c, _)| u8::from(!c.stable));
+        // SERIALIZATION (by volatility, then CANONICALLY within the stable tier):
+        // stable standing-framing FIRST (roster, doctrine, map) so it lands in the
+        // cacheable KV-prefix region adjacent to the static system prompt it resembles;
+        // volatile grounding (recall, working memory) LAST, nearest the generation point.
+        //
+        // WHY THE SECOND KEY EXISTS — this tier-split alone did NOT deliver reuse.
+        // The original comment here said a stable sort "preserves the salience order
+        // WITHIN each tier, so attention ranking is untouched", and treated that as
+        // harmless. It is the remaining half of the #266 cache defect. Salience is
+        // recomputed EVERY turn, so preserving it as EMIT ORDER re-shuffles the very
+        // tier whose whole purpose is to be byte-identical across turns.
+        //
+        // Measured live 2026-08-21 in Atlas's `pallets__flask-4045` run, from her own
+        // captures: consecutive system prompts shared only ~82% of their prefix, and the
+        // divergence points were stable-tier blocks trading places —
+        // `[room-kanban]` → `[active-work]` → `[workspace-map]` at chars 8216 / 7879 /
+        // 8133. Because the system prompt is FIRST, a swap at token ~2,000 invalidates
+        // the KV for EVERYTHING after it, including a 34,000-token conversation tail.
+        // `--cache-reuse 256` was passed the whole time and every turn reported
+        // `cachedTokens: 0` — the cache was correct; we were destroying the prefix.
+        // Cost at the measured 111 tok/s prefill: ~306s of re-prefill PER ACT, growing
+        // as her conversation grows. One observed turn was 20 minutes of apparent
+        // silence that was a single 36k re-prefill.
+        //
+        // So within the stable tier, order is CANONICAL (by faculty name), not by
+        // salience. Attention ranking is genuinely untouched: salience still decides
+        // WHICH contributions are selected — that happened above, against the budget.
+        // It simply stops deciding WHERE the survivors sit, which it never needed to.
+        // Same set in, same bytes out, every turn.
+        //
+        // The volatile tier deliberately KEEPS salience order: it is re-prefilled by
+        // construction (it changes every turn), so ordering it canonically would buy no
+        // reuse and would cost the "most salient nearest the write point" placement
+        // that #205 put there on purpose.
+        //
+        // `false` (stable) sorts before `true` (volatile). See [`Contribution::stable`].
+        selected.sort_by(|(a, _), (b, _)| {
+            u8::from(!a.stable).cmp(&u8::from(!b.stable)).then_with(|| {
+                match (a.stable, b.stable) {
+                    // Stable tier: canonical, so the cacheable prefix is deterministic.
+                    (true, true) => a.faculty.as_str().cmp(b.faculty.as_str()),
+                    // Volatile tier: leave salience order alone (stable sort keeps it).
+                    _ => std::cmp::Ordering::Equal,
+                }
+            })
+        });
         let mut block = String::new();
         for (c, body) in selected {
             block.push_str("\n[");
