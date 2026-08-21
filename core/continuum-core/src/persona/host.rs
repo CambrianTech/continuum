@@ -109,6 +109,39 @@ pub async fn spawn_persona_service(
     // and surfaces panics through `probe!` + per-module logger.
     let persona_name = ctx.identity.agent_name.to_string();
     let persona_id = ctx.identity.peer_id.as_uuid();
+
+    // THE SPAWN STAMP cognition_pulse.rs has always DOCUMENTED and never
+    // received (found live 2026-08-21). Its doc says "Called at spawn (grace
+    // window covers the post-boot deaf period, #412) and at every service-loop
+    // turn start", and its safety argument for treating `None` as not-earned is
+    // "spawn stamps immediately, so live citizens are always stamped". Both were
+    // false: `service_loop.rs` (turn start) was the ONLY writer tree-wide, so a
+    // citizen who had not yet taken her first turn read as NEVER-STAMPED, and
+    // `renewal_earned(None, _)` denied her claim renewals from birth.
+    //
+    // Measured consequence: four hosted citizens, `idle_ms` = None on every one
+    // (u64::MAX in the probe is the `unwrap_or` sentinel, not a duration),
+    // `persona.claim.renewal_skipped_idle` firing for all of them, and
+    // `persona.claim.renewal_resumed` at ZERO rows ever. The card spin that
+    // surfaced it: a citizen claims a bench card, never pulses, the 30-min lease
+    // lapses un-renewed, the card returns to claimable, she claims it again —
+    // three times on one card in one evening, looking like activity on the wire
+    // and producing nothing.
+    //
+    // Stamped HERE, after `prime()` succeeded, because that is the instant the
+    // substrate's own "hosted = ready" invariant holds — the same instant the
+    // supervisor is entitled to tick `summary.hosted`. This does NOT reopen the
+    // lease-immortality regression the pulse exists to prevent: it buys exactly
+    // one lease-length of grace (which is what #412's ~10-minute deaf window
+    // needs), after which a citizen who still has not thought lapses normally.
+    crate::persona::cognition_pulse::touch(
+        persona_id,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or_default(),
+    );
+
     Ok(rt_handle.spawn(async move {
         use futures::FutureExt;
         let outcome =
