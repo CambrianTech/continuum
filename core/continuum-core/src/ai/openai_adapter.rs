@@ -2564,6 +2564,8 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // for a window-sized prompt, so every big turn died and retried forever. The
         // phase machine keeps the two regimes apart; see `inference::stream_liveness`.
         let mut phase = crate::inference::stream_liveness::StreamPhase::Queued;
+        // One `inference.prefill.rescued` row per stream, not per frame.
+        let mut prefill_rescued = false;
         loop {
             let idle = crate::inference::stream_liveness::idle_budget(
                 phase,
@@ -2689,7 +2691,58 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                         // from the first frame — that is what picks the bulk budget.
                         // The liveness STAMP below still requires strict advance, so a
                         // frozen counter cannot hold the watchdog open (#385).
+                        let was = phase;
                         phase = phase.on_prefill(p.processed, p.total);
+
+                        // PROVE THE FIX IS LOAD-BEARING. Without this the change is
+                        // invisible: "no retries" is an ABSENCE, and an absence cannot
+                        // distinguish "prefills now survive" from "nothing is running"
+                        // — the exact ambiguity that cost a full day of diagnosis.
+                        // This fires ONCE per stream, only for a prefill that has
+                        // already outlived the OLD decode budget while still advancing.
+                        // Every row is therefore a turn that would previously have been
+                        // killed and retried forever.
+                        let elapsed = stream_opened.elapsed();
+                        if !prefill_rescued
+                            && matches!(phase, crate::inference::stream_liveness::StreamPhase::Prefilling { .. })
+                            && elapsed > live_budget
+                        {
+                            prefill_rescued = true;
+                            crate::probe!(
+                                class = "inference.prefill.rescued",
+                                provider = self.config.name.as_str(),
+                                elapsed_s = elapsed.as_secs(),
+                                old_budget_s = live_budget.as_secs(),
+                                processed = p.processed,
+                                total = p.total,
+                                cached = p.cache,
+                                "prefill outlived the OLD decode watchdog and is STILL \
+                                 advancing — under the previous flat budget this turn \
+                                 would have been killed here and retried forever",
+                            );
+                        }
+                        // The whole-ingest timing, emitted once at the prefill→decode
+                        // edge. This is the number the 90s constant was implicitly
+                        // guessing at, and the one the budget should eventually be
+                        // DERIVED from per model/device (#441).
+                        if matches!(was, crate::inference::stream_liveness::StreamPhase::Prefilling { .. })
+                            && matches!(phase, crate::inference::stream_liveness::StreamPhase::Decoding)
+                        {
+                            let ms = elapsed.as_millis().max(1) as u64;
+                            let fresh = p.total.saturating_sub(p.cache);
+                            crate::probe!(
+                                class = "inference.prefill.complete",
+                                provider = self.config.name.as_str(),
+                                total = p.total,
+                                cached = p.cache,
+                                fresh = fresh,
+                                elapsed_ms = ms,
+                                tok_per_s = (fresh as f64 * 1000.0 / ms as f64) as u64,
+                                would_have_died = u8::from(elapsed > live_budget) as u64,
+                                "prefill complete — ingest wall-clock and the cache's \
+                                 real contribution, per stream",
+                            );
+                        }
                         if p.processed > last_prefill_processed {
                             last_prefill_processed = p.processed;
                             last_progress = Instant::now();
