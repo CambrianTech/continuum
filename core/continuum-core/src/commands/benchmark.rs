@@ -1611,12 +1611,8 @@ impl ActionCommand for BenchmarkDispatch {
                 // produced ZERO turns while a detached solver did the work beside her
                 // (measured 2026-08-17). A bigger roster usually picked someone else,
                 // which is why it read as intermittent (#417) rather than structural.
-                let voice = match self
-                    .registry
-                    .any_live_citizen_other_than(Some(*who_peer))
-                    .map(|rt| rt.airc().clone())
-                {
-                    Some(a) => a,
+                let voice_rt = match self.registry.any_live_citizen_other_than(Some(*who_peer)) {
+                    Some(rt) => rt,
                     None => {
                         // The only live citizen IS the addressee. Refuse loudly instead of
                         // sending a message that cannot be heard — the card stays on the
@@ -1631,7 +1627,27 @@ impl ActionCommand for BenchmarkDispatch {
                         continue;
                     }
                 };
-                match voice.say(&kickoff).await {
+                // SAY IT IN THE ROUND'S ROOM — never `say()`. Plain `say` posts to the
+                // VOICE's current room, and the voice is by construction a different
+                // citizen than the addressee, standing wherever she happens to stand.
+                // Measured 2026-08-21 (the third deaf-kickoff variant): two dispatches
+                // reported `kickoffs: 1`, both messages landed in the voice's own room,
+                // the addressee's stream never carried them — and Atlas spent the
+                // afternoon solving a gym exercise she COULD see while her staged SWE
+                // card sat silent. The voice also JOINS the round room first (idempotent,
+                // epoch-bumping), because membership is what makes say_in deliverable —
+                // the same rule the assignee join-loop above encodes for hearing.
+                if let Err(e) = voice_rt.join_room(&room_name).await {
+                    kickoff_errors.push(format!("{short}: voice join: {e}"));
+                    continue;
+                }
+                match crate::persona::airc_citizen::publish_text_in_room(
+                    voice_rt.airc(),
+                    room.room_id.as_uuid(),
+                    &kickoff,
+                )
+                .await
+                {
                     Ok(_) => kickoffs += 1,
                     // The card stays claimable — a lost kickoff is REPORTED (never unwound
                     // or hidden); the citizen can still find and claim it off the board.
