@@ -374,3 +374,31 @@ record of the incidents that set each value.
 - **Not measured on the grid.** Everything here is single-box. Cross-node prefix sharing
   (a peer that already holds the head) is the natural sequel and belongs with the Grid
   Expert Share work (#315), not here.
+
+## Prior art worth stealing: FreeToken (UC Berkeley Sky Lab, 2026-08)
+
+Single-stream consumer-GPU serving — behind our system design (no multi-tenancy,
+affinity, governance, or learning) — but two mechanisms transfer:
+
+1. **KV checkpoints at special-token anchors** (`</think>`, `</tool_call>`,
+   `</tool_output>`): snapshot state at structural boundaries; after a mid-context
+   EDIT, resume from the last surviving anchor and re-prefill only the suffix. This
+   is our receipts-pruning problem exactly — prefix caching cannot help with a
+   mid-context edit, and we edit deliberately (tool receipts leave working memory by
+   design). Implementable atop llama-server's existing `prompt_save`/`prompt_load`
+   host cache, keyed by anchor hash. Additive to the ordering work: ordering
+   maximizes the shared prefix, anchors make edits cost only their suffix.
+
+2. **Closed-form fill-vs-compute split for MoE expert misses**:
+   `q* = m · B_PCIe / B_Host` with profiled bandwidths decides, per miss, between
+   shipping the expert to VRAM and computing it in place on CPU. Not applicable to
+   Apple unified memory; on CUDA grid peers it is a free PRIOR for
+   `expert-pager-policy`'s bandit instead of learning the tradeoff from zero.
+   (Their full-layer double-buffered prefill likewise maps only to tiny-VRAM edge
+   nodes.)
+
+On their "$0" framing: cost-savings-vs-cloud calculators were tried here and retired
+as a gimmick (Joel, 2026-08-21 — "it made more sense when cloud was included"). The
+grid's currency is capability-per-watt and lease terms, not simulated dollars.
+
+Ref: github.com/FlashML-org/FreeToken
