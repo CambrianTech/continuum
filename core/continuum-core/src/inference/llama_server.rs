@@ -2650,11 +2650,23 @@ impl LlamaServerControl for LlamaServerProcess {
         // ([[verify-real-device-numbers-not-a-clamp-premise]]), so it's an operator opt-in,
         // never a blind assumption. SERVING_FLASH_ATTN=1|on|true → enable; absent → llama.cpp
         // default (no flag), byte-identical.
+        // MUST carry an explicit VALUE. Upstream llama.cpp changed this from a bare
+        // boolean switch to `-fa, --flash-attn [on|off|auto]`. A bare `--flash-attn`
+        // now EATS THE NEXT ARGUMENT as its value, and the server refuses to start:
+        //
+        //   error while handling argument "--flash-attn": unknown value for
+        //   --flash-attn: '--mmproj'
+        //
+        // Found 2026-08-20 the first time anyone ever set SERVING_FLASH_ATTN=1 — the
+        // flag shipped, was never exercised because it was opt-in and nobody opted in,
+        // and rotted against upstream in the meantime. The whole lane failed to spawn
+        // and serving sat at 0 lanes. An opt-in that has never once been switched on is
+        // untested code with a config-shaped trigger ([[an-absence-is-an-unfinished-measurement]]).
         if crate::config_env::read("SERVING_FLASH_ATTN")
             .map(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "1" | "on" | "true" | "yes"))
             .unwrap_or(false)
         {
-            cmd.arg("--flash-attn");
+            cmd.arg("--flash-attn").arg("on");
         }
         // MULTIMODAL PROJECTOR (#106): a vision/audio-capable model needs its mmproj GGUF so
         // llama-server loads the vision (or audio) encoder and can tokenize image/audio content
