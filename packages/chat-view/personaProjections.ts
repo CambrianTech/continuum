@@ -140,6 +140,15 @@ export function personaClaims(
       state: c.state,
       priority: c.priority.toUpperCase(),
       updatedAtMs: c.updated_at,
+      // A lapsed LEASE is takeable, not busy — the substrate says it, the
+      // row renders it ([[fallbacks-are-illegal-fail-loud]]; six citizens
+      // stalled a night on a board that hid this, 2026-08-06).
+      holdLapsed: c.hold === 'lapsed',
+      ...(c.pull_request
+        ? {
+            prUrl: `https://github.com/${c.pull_request.repo}/pull/${c.pull_request.number}`,
+          }
+        : {}),
     }))
     .sort((a, b) => b.updatedAtMs - a.updatedAtMs);
 }
