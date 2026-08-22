@@ -162,6 +162,19 @@ pub fn known_benchmarks() -> &'static [BenchmarkSpec] {
             source_url: None,
         },
         BenchmarkSpec {
+            name: "super-masked",
+            description: "SUPER-Masked (AI2, EMNLP'24) — 152 checkpointed sub-scenarios of \
+                          'make a real research repo run': clone at commit, wrangle the env, \
+                          execute the prior-work scaffold, produce the answer JSON. Graded by \
+                          upstream's own evaluate() (float epsilon 1e-2) ported verbatim; \
+                          landmark partial-credit deferred and DECLARED in every receipt. \
+                          Fetch first (`benchmark/fetch --benchmark super-masked`).",
+            grader: Grader::Python,
+            tasks: 152,
+            eval_set: Some("super-masked.jsonl"),
+            source_url: Some("https://huggingface.co/datasets/allenai/super"),
+        },
+        BenchmarkSpec {
             name: "algotune",
             description: "AlgoTune (NeurIPS'25) — 150+ 'beat the reference library' tasks \
                           (SciPy/NumPy/sklearn/CVXPY): structurally contamination-proof (no \
@@ -3867,6 +3880,26 @@ impl ActionCommand for BenchmarkFetch {
         // rows are not runnable (their oracle is a program, not a test string), so a
         // fetch that stopped at rows would report "staged" for a suite nothing could
         // run — the exact #370 gap this command exists to close.
+        if spec.name == "super-masked" {
+            let (path, count) = crate::cognition::benchmark_super::materialize_gym(None)
+                .await
+                .map_err(CommandError::Invalid)?;
+            return Ok(BenchmarkFetchResult {
+                benchmark: spec.name.to_string(),
+                dataset: "allenai/super".to_string(),
+                config: "Masked".to_string(),
+                split: "all_examples".to_string(),
+                rows: count,
+                declared_tasks: spec.tasks,
+                denominator_matches: count as u32 == spec.tasks,
+                tasks: Some(count),
+                adapter_note: Some(format!(
+                    "converted onto the gym rails at {} — dispatch with \
+                     `benchmark/dispatch --name super-masked`",
+                    path.display()
+                )),
+            });
+        }
         if spec.name == "algotune" {
             let (path, count) = crate::cognition::benchmark_algotune::materialize_gym(None)
                 .await
