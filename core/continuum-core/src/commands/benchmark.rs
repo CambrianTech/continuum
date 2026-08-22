@@ -1065,6 +1065,10 @@ impl ActionCommand for BenchmarkDispatch {
             work: CardWork,
             /// Gym-only: a task needing a workspace re-break the card can't orchestrate yet.
             needs_setup: bool,
+            /// The gym task's workspace-preparation shell, staged into the ASSIGNEE's
+            /// workspace at dispatch (same contract as SWE checkout staging below) --
+            /// idempotent by adapter convention (mkdir -p + overwrite-decode).
+            setup_shell: Option<String>,
         }
 
         let prepared: Vec<PreparedCard> = if let Some(dataset) = spec.swe_dataset() {
@@ -1103,6 +1107,7 @@ impl ActionCommand for BenchmarkDispatch {
                     title: dispatch_card_title(spec.name, &i.instance_id, &i.problem_statement),
                     body: dispatch_swe_card_body(spec.name, &i),
                     needs_setup: false,
+                    setup_shell: None,
                     work: CardWork::Swe {
                         instance: Box::new(i),
                     },
@@ -1146,6 +1151,7 @@ impl ActionCommand for BenchmarkDispatch {
                         title: dispatch_card_title(spec.name, &t.id, &headline),
                         body: dispatch_card_body(spec.name, &t),
                         needs_setup: t.setup_shell.is_some(),
+                        setup_shell: t.setup_shell.clone(),
                         work: CardWork::Gym { solution_file },
                     })
                 })
@@ -1464,14 +1470,11 @@ impl ActionCommand for BenchmarkDispatch {
         let driver = p.drive.unwrap_or_default();
         crate::cognition::bench_round::open_round(room.room_id.as_uuid(), spec.name, driver);
         for pc in prepared.into_iter().take(take) {
-            // A gym setup_shell task needs its workspace re-broken before work
-            // starts — harness orchestration a claimed card can't provide yet.
-            // Skipping SILENTLY would report "dispatched" over fewer tasks
-            // than the benchmark holds; the count rides on the result instead.
-            if pc.needs_setup {
-                skipped_needs_setup += 1;
-                continue;
-            }
+            // A gym setup_shell card is prepared IN THE ASSIGNEE'S WORKSPACE at
+            // dispatch, below (same contract as SWE checkout staging) — the early
+            // unconditional skip that used to live here reported the entire ds-1000
+            // maiden dispatch as `skipped_needs_setup: 4` (2026-08-22): the eval
+            // path always ran setup_shell, but no card-dispatch orchestration did.
 
             // IDEMPOTENCE: this exact task already has a live card. Re-dispatching
             // would post a duplicate, and duplicates are not free — two citizens
@@ -1500,6 +1503,51 @@ impl ActionCommand for BenchmarkDispatch {
             // card is claimable, so `work/claim` finds it and launches the solve. Reuses the
             // proven swe_bench::clone_at (fast from the local mirror). Best-effort: a stage
             // failure is REPORTED and the card still posts — the loop never half-breaks.
+            // GYM setup: run the task's setup_shell in the assignee's workspace NOW,
+            // so the card she claims already has its context/grader staged. Adapter
+            // setups are idempotent (mkdir -p + overwrite-decode), so a re-dispatch
+            // re-stages harmlessly. Failure is REPORTED and the card is withheld —
+            // posting a card whose grader never staged manufactures a permanent
+            // infra-zero wearing a capability face.
+            if let Some(setup) = pc.setup_shell.as_deref() {
+                let ok = match stage_home.as_ref() {
+                    Some(home) => {
+                        let ws = home
+                            .join("citizens")
+                            .join("peers")
+                            .join(who_peer.to_string())
+                            .join("workspace");
+                        let _ = std::fs::create_dir_all(&ws);
+                        match tokio::process::Command::new("sh")
+                            .arg("-c")
+                            .arg(setup)
+                            .current_dir(&ws)
+                            .output()
+                            .await
+                        {
+                            Ok(out) if out.status.success() => true,
+                            Ok(out) => {
+                                let head: String = pc.title.chars().take(48).collect();
+                                kickoff_errors.push(format!(
+                                    "setup {head}: {}",
+                                    String::from_utf8_lossy(&out.stderr).trim()
+                                ));
+                                false
+                            }
+                            Err(e) => {
+                                kickoff_errors.push(format!("setup spawn: {e}"));
+                                false
+                            }
+                        }
+                    }
+                    None => false,
+                };
+                if !ok {
+                    skipped_needs_setup += 1;
+                    continue;
+                }
+            }
+
             let mut staged_ok = false;
             if let (CardWork::Swe { instance }, Some(home)) = (&pc.work, stage_home.as_ref()) {
                 let dir = home
