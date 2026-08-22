@@ -935,6 +935,25 @@ pub async fn clone_at(instance: &SweInstance, repo_dir: &Path) -> Result<(), Str
             ));
         }
     }
+    // SUBSTRATE ARTIFACTS NEVER ENTER HER PATCH (2026-08-22, seen live: an airc
+    // scope auto-minted itself INSIDE a staged checkout — `$PWD/.airc` resolution
+    // while her hands had cwd in the repo — and its sqlite/identity-key binaries
+    // landed in her diff, which is her graded artifact). `.git/info/exclude` is the
+    // right container: it suppresses the noise from every diff WITHOUT touching a
+    // tracked file (writing .gitignore would itself pollute the patch). The scope-
+    // minting itself is a separate airc-side follow-up; this makes every staged
+    // tree immune regardless of who writes scratch into it.
+    let exclude = repo_dir.join(".git/info/exclude");
+    if let Some(dir) = exclude.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Err(e) = std::fs::write(&exclude, ".airc/
+.DS_Store
+") {
+        // Best-effort: a missing exclude degrades to the old (noisy) diff, never a
+        // failed stage — but say so.
+        tracing::warn!(error = %e, repo = %repo_dir.display(), "could not write .git/info/exclude — substrate artifacts may pollute the graded diff");
+    }
     Ok(())
 }
 
