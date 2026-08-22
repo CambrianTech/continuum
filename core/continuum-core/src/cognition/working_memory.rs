@@ -141,6 +141,12 @@ struct DispatchedAction {
 /// is a quick sync snapshot/push with no `.await` held across the lock.
 #[derive(Debug)]
 pub struct WorkingMemory {
+    /// Process-unique construction ordinal. Purely diagnostic: lets any probe
+    /// that renders from this instance say WHICH instance it is, so a duplicate
+    /// cycle serving the same persona (two working memories alternating under
+    /// one mind — the 2026-08-21 split-brain, taken=3389 vs taken=0 in the same
+    /// room) is visible in one ledger row instead of by counter archaeology.
+    instance: u64,
     capacity: usize,
     /// This mind's live served context window, in tokens — the source of every re-injection
     /// bound below. `0` = not yet known (cold boot / mid-relaunch), which means NO clipping:
@@ -346,7 +352,9 @@ pub struct WmEntry {
 
 impl WorkingMemory {
     pub fn new(capacity: usize) -> Self {
+        static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
         Self {
+            instance: NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed),
             capacity: capacity.max(1),
             served_window: AtomicU32::new(0),
             entries: Mutex::new(VecDeque::new()),
@@ -567,6 +575,11 @@ impl WorkingMemory {
     /// head line that still fits the archive share. The steps-taken ledger renders its
     /// newest tail from here — the persona-facing path back to her own act history that
     /// semantic recall deliberately refuses to be (#166 / #414).
+    /// Process-unique construction ordinal — see the field doc. Diagnostic only.
+    pub fn instance_id(&self) -> u64 {
+        self.instance
+    }
+
     pub fn receipt_archive(&self) -> Vec<(Option<Uuid>, String)> {
         self.receipt_heads.lock().iter().cloned().collect()
     }
