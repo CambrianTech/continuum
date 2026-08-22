@@ -65,6 +65,19 @@ const BENCH_FIXTURE: BenchViewState = {
       pass_to_pass: '6/6', failed_tests: [],
     },
   ],
+  // In-flight ROUNDS (#371) — mirrors the real 2026-08-22 board the hour the
+  // rows landed: the DS-1000 maiden round at done (4/4, the first external
+  // round ever to complete) beside a working SWE round.
+  rounds: [
+    {
+      round_id: '2d6decb3-1beb-5ac7-9ded-ee186c7deb7f', benchmark: 'ds-1000',
+      stage: 'done', dispatched: 4, settled: 4, remaining: 0, driver: 'citizen',
+    },
+    {
+      round_id: 'bf08832d-c7e2-5bc9-a858-5447c15ccbfe', benchmark: 'swe-bench-lite',
+      stage: 'working', dispatched: 4, settled: 1, remaining: 3, driver: 'citizen',
+    },
+  ],
 };
 
 const member = (over: Partial<RosterSlotView>): RosterSlotView => ({

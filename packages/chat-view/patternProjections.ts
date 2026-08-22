@@ -85,13 +85,42 @@ function rosterCell(m: RosterMemberVM): ListingCell {
   return cell;
 }
 
+/** Live work summary for one member off the kanban board — the roster row's
+ *  who-is-working-what fact (peer visibility for humans; the same projection
+ *  later feeds citizen perception). Badges only when there IS work: `⚒ N`
+ *  (live-held cards), the hottest priority when any is P0/P1, and `lapsed`
+ *  when every claim's lease expired (takeable, not busy — the 2026-08-06
+ *  six-citizens-stalled distinction). */
+function workBadges(board: KanbanViewState | undefined, memberId: string): string[] {
+  if (!board) return [];
+  const mine = board.cards.filter(
+    (c) => c.assignee_id === memberId && c.state !== 'merged' && c.state !== 'closed',
+  );
+  if (mine.length === 0) return [];
+  const held = mine.filter((c) => c.hold === 'held');
+  const badges: string[] = [`⚒ ${held.length > 0 ? held.length : mine.length}`];
+  const hot = mine.some((c) => c.priority === 'p0')
+    ? 'P0'
+    : mine.some((c) => c.priority === 'p1')
+      ? 'P1'
+      : undefined;
+  if (hot) badges.push(hot);
+  if (held.length === 0) badges.push('lapsed');
+  return badges;
+}
+
 /** The chat activity's `who` panel projected as the `Listing` primitive. Same shape
- *  the rooms/DMs list and Foundry's model list use — one primitive, different data. */
-export function rosterListing(vm: ChatViewModel): ListingView {
+ *  the rooms/DMs list and Foundry's model list use — one primitive, different data.
+ *  With the board feed attached, each row also carries its live work badges. */
+export function rosterListing(vm: ChatViewModel, board?: KanbanViewState): ListingView {
   return {
     id: 'roster',
     title: 'Users & Agents',
-    cells: vm.members.map(rosterCell),
+    cells: vm.members.map((m) => {
+      const work = workBadges(board, m.id);
+      const cell = rosterCell(m);
+      return work.length > 0 ? { ...cell, badges: [...(cell.badges ?? []), ...work] } : cell;
+    }),
   };
 }
 
@@ -491,7 +520,7 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     systemPanelWidget(vm, live?.sys, live?.serving),
     ...(nodes ? [nodes] : []),
     listingWidget(rooms),
-    listingWidget(rosterListing(vm)),
+    listingWidget(rosterListing(vm, live?.board)),
   ];
   // The live benchmark board (#329) — joins the contextual rail whenever this
   // node has runs, filling the academy's dead right column.

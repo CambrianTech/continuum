@@ -110,11 +110,17 @@ function pathwayTile(p: PersonaPathwayVM): TemplateResult {
 /** One claims-feed row — a work-board card this persona owns. */
 function claimRow(c: PersonaClaimVM): TemplateResult {
   const ago = agoLabel(c.updatedAtMs);
-  return html`<li class="claim" data-state=${c.state}>
+  return html`<li class="claim" data-state=${c.state} data-lapsed=${c.holdLapsed ? '' : nothing}>
     <span class="claim-state">${c.state.replace('_', ' ')}</span>
     <span class="claim-title">${c.title}</span>
     <span class="claim-meta">
       <span class="claim-priority">${c.priority}</span>
+      ${c.holdLapsed
+        ? html`<span class="claim-lapsed" title="the claim's lease expired — the card is takeable; ask this persona before taking it">lease lapsed</span>`
+        : nothing}
+      ${c.prUrl
+        ? html`<a class="claim-pr" href=${c.prUrl} target="_blank" rel="noopener" title="the card's landing PR">PR</a>`
+        : nothing}
       ${ago ? html`<span class="claim-ago">${ago}</span>` : nothing}
     </span>
   </li>`;

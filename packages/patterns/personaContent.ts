@@ -83,6 +83,13 @@ export interface PersonaClaimVM {
   readonly priority: string;
   /** Raw epoch ms of the card's last event — the renderer formats recency. */
   readonly updatedAtMs: number;
+  /** True when the claim's LEASE expired — the holder stopped and the card is
+   *  takeable. Rendering a lapsed hold like live work is the defect that
+   *  stalled six citizens for a night (2026-08-06); the substrate SAYS it,
+   *  renderers never re-derive. */
+  readonly holdLapsed: boolean;
+  /** Landing link once a PR exists for the card. */
+  readonly prUrl?: string;
 }
 
 /** One published writing of the persona (blog / wonder-work feed). The feed is

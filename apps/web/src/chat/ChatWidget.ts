@@ -997,40 +997,93 @@ export class ChatWidget extends LitElement {
       gap: 4px;
     }
     .bench-round {
+      position: relative;
       display: grid;
       grid-template-columns: auto auto auto 1fr auto;
       align-items: center;
       gap: 8px;
-      padding: 4px 8px;
-      border: 1px solid var(--border-color, #2a2a3a);
-      border-radius: 4px;
+      padding: 6px 10px 6px 12px;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      background: color-mix(in srgb, var(--surface, #0b1220) 65%, transparent);
       font-size: 11px;
+      overflow: hidden;
+    }
+    /* Stage stripe: the round's lifecycle as a left edge of light —
+     * working breathes in the accent, done settles into success. */
+    .bench-round::before {
+      content: '';
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 3px;
+      background: var(--accent-primary);
+      box-shadow: 0 0 8px color-mix(in srgb, var(--accent-primary) 60%, transparent);
+      animation: bench-round-breathe 2.4s ease-in-out infinite;
+    }
+    .bench-round[data-stage='done']::before {
+      background: var(--status-success, #4caf7d);
+      box-shadow: 0 0 6px color-mix(in srgb, var(--status-success, #4caf7d) 50%, transparent);
+      animation: none;
+    }
+    @keyframes bench-round-breathe {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.45; }
     }
     .bench-round-name {
-      font-weight: 600;
+      font-weight: 700;
+      letter-spacing: 0.02em;
       white-space: nowrap;
+      color: var(--content-primary);
     }
     .bench-round-stage {
-      opacity: 0.7;
       text-transform: uppercase;
-      font-size: 9px;
-      letter-spacing: 0.06em;
+      font-size: 8.5px;
+      letter-spacing: 0.12em;
+      padding: 1px 6px;
+      border-radius: 999px;
+      border: 1px solid color-mix(in srgb, var(--accent-primary) 40%, transparent);
+      color: var(--accent-primary);
+      background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
+    }
+    .bench-round[data-stage='done'] .bench-round-stage {
+      border-color: color-mix(in srgb, var(--status-success, #4caf7d) 40%, transparent);
+      color: var(--status-success, #4caf7d);
+      background: color-mix(in srgb, var(--status-success, #4caf7d) 10%, transparent);
     }
     .bench-round-count {
       font-variant-numeric: tabular-nums;
+      font-weight: 700;
       white-space: nowrap;
+      color: var(--content-primary);
     }
     .bench-round .bench-bar {
       margin: 0;
     }
+    /* Settle bar earns a gradient + glow — progress is the row's headline. */
+    .bench-round .bench-bar-fill {
+      background: linear-gradient(
+        90deg,
+        color-mix(in srgb, var(--accent-primary) 75%, transparent),
+        var(--status-success, #4caf7d)
+      );
+      box-shadow: 0 0 6px color-mix(in srgb, var(--status-success, #4caf7d) 45%, transparent);
+    }
     .bench-round-driver {
-      font-size: 9px;
+      font-size: 8.5px;
       text-transform: uppercase;
-      letter-spacing: 0.06em;
-      opacity: 0.75;
+      letter-spacing: 0.1em;
+      padding: 1px 6px;
+      border-radius: 3px;
+      border: 1px solid var(--border-subtle);
+      color: var(--content-secondary);
     }
     .bench-round-detached {
       opacity: 0.45;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .bench-round::before {
+        animation: none;
+      }
     }
     .bench-stat {
       display: flex;
@@ -3304,6 +3357,27 @@ export class ChatWidget extends LitElement {
     }
     .claim-priority {
       color: var(--meter-par);
+    }
+    /* A lapsed LEASE is takeable, not busy (the 2026-08-06 distinction):
+     * grey the row, badge the fact, keep the holder named as who to ask. */
+    .claim[data-lapsed] .claim-title {
+      opacity: 0.55;
+    }
+    .claim-lapsed {
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      border: 1px solid var(--border-color, #2a2a3a);
+      border-radius: 3px;
+      padding: 0 4px;
+      opacity: 0.7;
+    }
+    .claim-pr {
+      font-size: 10px;
+      text-decoration: none;
+      border: 1px solid var(--border-color, #2a2a3a);
+      border-radius: 3px;
+      padding: 0 4px;
     }
     @media (prefers-reduced-motion: reduce) {
       .p-avatar[data-online],
