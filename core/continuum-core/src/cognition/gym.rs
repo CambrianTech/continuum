@@ -196,6 +196,10 @@ pub fn write_fetched_gym(
     Ok((path, lines.len()))
 }
 
+/// Every fetched-gym basename under the staleness contract — the iteration order
+/// of [`fetched_gym_statuses`] and the key set of [`fetched_fingerprint_for`].
+const FETCHED_GYM_BASENAMES: &[&str] = &["ds-1000.jsonl", "algotune.jsonl", "super-masked.jsonl"];
+
 /// Current adapter fingerprint per fetched-gym basename. A basename NOT listed
 /// here has no staleness contract (an operator's hand-placed cache file resolves
 /// as before); every `benchmark/fetch`-materialized suite must be. Same
@@ -207,6 +211,50 @@ fn fetched_fingerprint_for(basename: &str) -> Option<String> {
         "super-masked.jsonl" => Some(crate::cognition::benchmark_super::adapter_fingerprint()),
         _ => None,
     }
+}
+
+/// One fetched gym's cache health, as `benchmark/verify` reports it.
+pub struct FetchedGymStatus {
+    /// Cache file basename (`ds-1000.jsonl`).
+    pub basename: String,
+    /// `fresh` | `stale` | `not-fetched`.
+    pub state: &'static str,
+    /// The one command that fixes a non-fresh state, `None` when fresh.
+    /// (`not-fetched` is only a problem if you intend to dispatch that suite.)
+    pub action: Option<String>,
+}
+
+/// Cache health for every contracted fetched gym — the check `resolve_gym`
+/// performs per-reference, surfaced for all suites at once so an operator (or a
+/// weaker driver) never has to reconstruct tonight's stale-oracle audit by hand.
+pub fn fetched_gym_statuses() -> Vec<FetchedGymStatus> {
+    FETCHED_GYM_BASENAMES
+        .iter()
+        .map(|basename| {
+            let bench = basename.strip_suffix(".jsonl").unwrap_or(basename); // diagnostic text only, same as the freshness refusal
+            let refetch = format!("continuum benchmark/fetch --benchmark {bench}");
+            let cached = gym_cache_dir().join(basename);
+            if !cached.is_file() {
+                return FetchedGymStatus {
+                    basename: basename.to_string(),
+                    state: "not-fetched",
+                    action: Some(refetch),
+                };
+            }
+            let sidecar = std::fs::read_to_string(cached.with_extension("jsonl.fingerprint")).ok();
+            let fresh = fetched_gym_freshness(
+                basename,
+                sidecar.as_deref(),
+                fetched_fingerprint_for(basename).as_deref(),
+            )
+            .is_ok();
+            FetchedGymStatus {
+                basename: basename.to_string(),
+                state: if fresh { "fresh" } else { "stale" },
+                action: (!fresh).then_some(refetch),
+            }
+        })
+        .collect()
 }
 
 /// Pure freshness verdict for a cached fetched gym, split out so the refusal
