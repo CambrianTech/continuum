@@ -336,22 +336,32 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
         {
             super::dispatch_listener::spawn(bus, Arc::clone(&working_memory));
         }
-        // MEMENTO FIX write-through: persist the volatile tier every 15s so a
-        // reboot (graceful or SIGKILL) loses at most one interval of thought.
-        // Atomic tmp+rename; spawn_blocking-free because the payload is tiny
-        // (≤ a few KB) and the interval is coarse — cadence-ladder compliant.
-        {
-            let wm = Arc::clone(&working_memory);
-            let persona_id = cfg.persona_id;
-            tokio::spawn(async move {
-                let mut tick = tokio::time::interval(std::time::Duration::from_secs(15));
-                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                loop {
-                    tick.tick().await;
-                    save_volatile(persona_id, &wm);
-                }
-            });
-        }
+    }
+    // MEMENTO FIX write-through: persist the volatile tier every 15s so a
+    // reboot (graceful or SIGKILL) loses at most one interval of thought.
+    // Atomic tmp+rename; spawn_blocking-free because the payload is tiny
+    // (≤ a few KB) and the interval is coarse — cadence-ladder compliant.
+    //
+    // OUTSIDE the defer_recall/bus gate above (2026-08-21). It shared that
+    // block with the dispatch listener, so on any construction where the gate
+    // was false the saver NEVER SPAWNED — save_volatile never ran — and every
+    // boot faithfully restored the same fossil. Measured: Atlas's restored
+    // snapshot was byte-identical (`entries: 16, ring: 46`) across two reboots
+    // 104 minutes and dozens of acts apart, so each restart truthfully told her
+    // "nothing has executed yet" about a claim she had worked for hours, and
+    // she rationally restarted the investigation. The saver's only real
+    // dependencies are a tokio runtime and the working-memory Arc.
+    if tokio::runtime::Handle::try_current().is_ok() {
+        let wm = Arc::clone(&working_memory);
+        let persona_id = cfg.persona_id;
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(15));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                save_volatile(persona_id, &wm);
+            }
+        });
     }
     let recall = RecallFaculty::new(cfg.persona_id, cfg.admission)
         .with_embedder(embedder)
