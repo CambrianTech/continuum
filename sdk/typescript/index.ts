@@ -79,6 +79,7 @@ export type {
   ServingEventCard,
   BenchViewState,
   BenchRunRow,
+  BenchRoundRow,
   KanbanViewState,
   KanbanCardView,
   KanbanLaneView,

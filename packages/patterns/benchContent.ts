@@ -77,11 +77,31 @@ export interface BenchRunVM {
   readonly verdict?: BenchVerdictVM;
 }
 
+/** One IN-FLIGHT round — the lifecycle truth behind the scoreboard (#371).
+ *  Comes from the core's round tracker (reboot-durable), never derived by
+ *  counting run rows client-side: a count is a guess, this is the state. */
+export interface BenchRoundVM {
+  /** Round id, compacted for display (which IS its run room's id). */
+  readonly roundId: string;
+  /** Suite as catalogued ("swe-bench-lite", "ds-1000"). */
+  readonly benchmark: string;
+  /** `working` | `done` — on the wire means in flight. */
+  readonly stage: string;
+  readonly dispatched: number;
+  readonly settled: number;
+  readonly remaining: number;
+  /** `citizen` (in the room, feeds the curriculum) | `detached_solve`. */
+  readonly driver: string;
+}
+
 /** The bench board's content body. */
 export interface BenchContentBody {
   /** Rows, most recently active first. Empty = the awaiting frame (the frame
    *  is the promise). */
   readonly runs: readonly BenchRunVM[];
+  /** In-flight rounds from the round tracker — the scoreboard region's data.
+   *  Empty = no rounds (honest; a pre-rounds wire folds to empty). */
+  readonly rounds: readonly BenchRoundVM[];
   /** Lane pressure while runs contend — serving vs demanding lane counts from
    *  the live plan; absent when no serving feed. */
   readonly lanePressure?: { readonly serving: number; readonly demanding: number };

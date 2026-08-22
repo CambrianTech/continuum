@@ -70,6 +70,30 @@ pub struct BenchRunRow {
     pub infra_error: Option<String>,
 }
 
+/// One IN-FLIGHT round — the real lifecycle object behind the board's
+/// scoreboard region (#371: rounds are recipe-owned state, reboot-durable).
+/// Mirrors the core's `RoundSnapshot`; before this row existed the client
+/// derived a "round scoreboard" by counting run rows, which is a guess — the
+/// recipe's scoreboard region renders THIS, the round tracker's own truth.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/positron/BenchRoundRow.ts")]
+pub struct BenchRoundRow {
+    /// The round id — which IS its run room's id (a round is its room's activity).
+    pub round_id: String,
+    /// Suite name as catalogued ("swe-bench-lite", "ds-1000").
+    pub benchmark: String,
+    /// `working` | `done`. Present on the wire means in flight.
+    pub stage: String,
+    #[ts(type = "number")]
+    pub dispatched: u32,
+    #[ts(type = "number")]
+    pub settled: u32,
+    #[ts(type = "number")]
+    pub remaining: u32,
+    /// `citizen` | `detached_solve` — who works the cards.
+    pub driver: String,
+}
+
 /// The benchmark board — what the ACADEMY right-rail widget draws.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../protocol/typescript/positron/BenchViewState.ts")]
@@ -77,6 +101,11 @@ pub struct BenchViewState {
     /// Rows, most recently active first, bounded at the emitter. EMPTY =
     /// no runs on this node — the awaiting frame, never a fabricated row.
     pub runs: Vec<BenchRunRow>,
+    /// In-flight rounds from the round tracker (#371) — the scoreboard's
+    /// truth. `default` so a pre-rounds wire still deserializes (empty =
+    /// honest "no rounds", same contract as `runs`).
+    #[serde(default)]
+    pub rounds: Vec<BenchRoundRow>,
     /// Emitter cadence in ms so renderers label freshness from data.
     #[ts(type = "number")]
     pub sample_interval_ms: u64,
@@ -104,7 +133,7 @@ mod tests {
     #[test]
     fn kind_is_stable_and_empty_view_is_honest() {
         use positron_core::ViewState;
-        let view = BenchViewState { runs: vec![], sample_interval_ms: 5000 };
+        let view = BenchViewState { runs: vec![], rounds: vec![], sample_interval_ms: 5000 };
         assert_eq!(view.kind(), "bench");
         assert_eq!(BenchViewState::KIND, "bench");
         assert!(view.runs.is_empty());

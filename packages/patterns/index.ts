@@ -52,7 +52,7 @@ export type { GridContentBody, GridNodeVM } from './gridContent';
 // The Academy's live BENCHMARK BOARD (`purpose === BENCH_PURPOSE`) — one row
 // per run (operator + citizen-claimed), progress-not-liveness (#374/#329).
 export { BENCH_PURPOSE } from './benchContent';
-export type { BenchContentBody, BenchRunVM, BenchRunState, BenchVerdictVM } from './benchContent';
+export type { BenchContentBody, BenchRoundVM, BenchRunVM, BenchRunState, BenchVerdictVM } from './benchContent';
 // Recipe purpose → render family (benchmark/hard-rs → bench, video-chat → live):
 // the ONE resolver between hierarchical recipe purposes and registry families.
 export { contentFamilyOf } from './contentFamily';

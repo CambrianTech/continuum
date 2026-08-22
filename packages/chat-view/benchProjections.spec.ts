@@ -11,7 +11,7 @@ const row = (over: Partial<BenchRunRow>): BenchRunRow => ({
   ...over,
 });
 
-const view = (runs: BenchRunRow[]): BenchViewState => ({ runs, sample_interval_ms: 5000 });
+const view = (runs: BenchRunRow[]): BenchViewState => ({ runs, rounds: [], sample_interval_ms: 5000 });
 
 describe('benchContentBody', () => {
   // what this catches: the wire→VM fold's honesty rules — instance/solver

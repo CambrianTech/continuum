@@ -48,6 +48,7 @@ function flatten(node: unknown, out: string[] = []): string[] {
  *  Benchy's harmless-patch round terminal, the n8 relaunch queued behind the
  *  citizen's self-claimed flask run — under 2-serving/4-demanding pressure. */
 const REAL_HOUR: BenchContentBody = {
+  rounds: [],
   feedLive: true,
   lanePressure: { serving: 2, demanding: 4 },
   runs: [
@@ -166,6 +167,7 @@ describe('renderBench', () => {
     const withStall = flatten(
       renderBench({
         feedLive: true,
+        rounds: [],
         runs: [
           { ...REAL_HOUR.runs[2]!, runId: 'stall-1', state: 'stalled', verdict: undefined },
         ],
@@ -176,7 +178,7 @@ describe('renderBench', () => {
   });
 
   it('renders the awaiting frame on an empty board and the snapshot banner off-feed', () => {
-    const empty = flatten(renderBench({ runs: [], feedLive: false })).join(' ');
+    const empty = flatten(renderBench({ runs: [], rounds: [], feedLive: false })).join(' ');
     expect(empty).toContain('No benchmark runs');
     expect(empty).toContain('frame is the promise');
 
@@ -184,5 +186,38 @@ describe('renderBench', () => {
       renderBench({ ...REAL_HOUR, feedLive: false }),
     ).join(' ');
     expect(snapshot).toContain('snapshot — no live feed attached');
+  });
+});
+
+describe('round rows (#371)', () => {
+  // what this catches: the scoreboard region going back to a client-side guess.
+  // Rounds are the TRACKER's lifecycle truth; they must render from the body's
+  // rounds field — including on an empty-runs board (a freshly staged round has
+  // no run ledger yet, and "nothing here" over a working round is launch-and-
+  // pray blindness).
+  it('renders in-flight rounds even before any run rows exist', () => {
+    const text = flatten(
+      renderBench({
+        runs: [],
+        rounds: [
+          {
+            roundId: '2d6decb3',
+            benchmark: 'ds-1000',
+            stage: 'working',
+            dispatched: 4,
+            settled: 3,
+            remaining: 1,
+            driver: 'citizen',
+          },
+        ],
+        feedLive: true,
+      }),
+    ).join(' ');
+    expect(text).toContain('bench-rounds');
+    expect(text).toContain('ds-1000');
+    expect(text).toMatch(/3\s*\/\s*4/); // flattener spaces template parts
+    expect(text).toContain('citizens');
+    // the awaiting copy still renders for the runs half — both truths shown
+    expect(text).toContain('No benchmark runs');
   });
 });

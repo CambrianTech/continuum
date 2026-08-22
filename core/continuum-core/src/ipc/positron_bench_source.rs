@@ -18,9 +18,10 @@
 
 use std::time::Duration;
 
-use continuum_positron::bench::{BenchRunRow, BenchViewState};
+use continuum_positron::bench::{BenchRoundRow, BenchRunRow, BenchViewState};
 use continuum_positron::{StateBuilder, Substrate};
 
+use crate::cognition::bench_round::RoundSnapshot;
 use crate::commands::benchmark::{scan_run_cards, BenchRunCard};
 
 /// Emit cadence. The board is a minutes-scale instrument (acts land every
@@ -48,6 +49,20 @@ fn row_of(card: BenchRunCard) -> BenchRunRow {
         pass_to_pass: card.pass_to_pass,
         failed_tests: card.failed_tests,
         infra_error: card.infra_error,
+    }
+}
+
+/// Core round snapshot → wire round row. Lossless: a field dropped here is a
+/// scoreboard that lies by omission (same contract as `row_of`).
+fn round_row_of(s: RoundSnapshot) -> BenchRoundRow {
+    BenchRoundRow {
+        round_id: s.round_id,
+        benchmark: s.benchmark,
+        stage: s.stage,
+        dispatched: s.dispatched as u32,
+        settled: s.settled as u32,
+        remaining: s.remaining as u32,
+        driver: s.driver,
     }
 }
 
@@ -95,6 +110,13 @@ pub fn spawn_bench_emitter(
             .unwrap_or_default(); // safe: see the 3 lines above
             let view = BenchViewState {
                 runs: cards.into_iter().map(row_of).collect(),
+                // The round tracker's own truth (#371) — in-memory, reboot-durable,
+                // already sorted. Before this the client COUNTED run rows to fake a
+                // scoreboard; the recipe's scoreboard region renders these instead.
+                rounds: crate::cognition::bench_round::live_rounds()
+                    .into_iter()
+                    .map(round_row_of)
+                    .collect(),
                 sample_interval_ms: SAMPLE_INTERVAL.as_millis() as u64,
             };
             // age_secs ticks every scan, which would defeat store-on-change;
@@ -108,6 +130,7 @@ pub fn spawn_bench_emitter(
                         ..r.clone()
                     })
                     .collect(),
+                rounds: v.rounds.clone(),
                 sample_interval_ms: v.sample_interval_ms,
             };
             if last.as_ref().map(&comparable) == Some(comparable(&view)) {

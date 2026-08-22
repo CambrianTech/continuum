@@ -988,6 +988,50 @@ export class ChatWidget extends LitElement {
       gap: 6px;
       margin-bottom: 2px;
     }
+    /* In-flight ROUND rows (#371) — the tracker's lifecycle truth above the
+     * per-run cards: suite name, stage, settled/dispatched with a settle bar,
+     * and the citizen/detached driver tag (detached = no curriculum, dimmed). */
+    .bench-rounds {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .bench-round {
+      display: grid;
+      grid-template-columns: auto auto auto 1fr auto;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 8px;
+      border: 1px solid var(--border-color, #2a2a3a);
+      border-radius: 4px;
+      font-size: 11px;
+    }
+    .bench-round-name {
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .bench-round-stage {
+      opacity: 0.7;
+      text-transform: uppercase;
+      font-size: 9px;
+      letter-spacing: 0.06em;
+    }
+    .bench-round-count {
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .bench-round .bench-bar {
+      margin: 0;
+    }
+    .bench-round-driver {
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      opacity: 0.75;
+    }
+    .bench-round-detached {
+      opacity: 0.45;
+    }
     .bench-stat {
       display: flex;
       flex-direction: column;
