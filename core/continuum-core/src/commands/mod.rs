@@ -17,6 +17,7 @@ pub mod airc;
 pub mod auth;
 pub mod avatar;
 pub mod benchmark;
+pub mod benchmark_verify;
 pub mod capacity;
 pub mod catalog;
 pub mod chat;
