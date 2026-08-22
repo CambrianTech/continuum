@@ -1512,11 +1512,11 @@ impl ActionCommand for BenchmarkDispatch {
             if let Some(setup) = pc.setup_shell.as_deref() {
                 let ok = match stage_home.as_ref() {
                     Some(home) => {
-                        let ws = home
-                            .join("citizens")
-                            .join("peers")
-                            .join(who_peer.to_string())
-                            .join("workspace");
+                        let ws = crate::identity::citizen_peer_dir(
+                            home,
+                            crate::identity::PeerId::from_uuid(*who_peer),
+                        )
+                        .join("workspace");
                         let _ = std::fs::create_dir_all(&ws);
                         match tokio::process::Command::new("sh")
                             .arg("-c")
@@ -1550,15 +1550,19 @@ impl ActionCommand for BenchmarkDispatch {
 
             let mut staged_ok = false;
             if let (CardWork::Swe { instance }, Some(home)) = (&pc.work, stage_home.as_ref()) {
-                let dir = home
-                    .join("citizens")
-                    .join("peers")
-                    .join(who_peer.to_string())
-                    .join("workspace")
-                    .join("swe")
-                    .join(&instance.instance_id);
+                let dir = crate::identity::citizen_peer_dir(
+                    home,
+                    crate::identity::PeerId::from_uuid(*who_peer),
+                )
+                .join("workspace")
+                .join("swe")
+                .join(&instance.instance_id);
                 if dir.join(".git").exists() {
                     staged_ok = true; // already staged (a prior claim / dispatch)
+                    // Self-heal pre-shield checkouts: clone_at shields NEW trees, but a
+                    // checkout staged before the shield existed stays exposed forever
+                    // without this — the 76-tree hand backfill of 2026-08-22, automated.
+                    crate::cognition::swe_bench::shield_workspace_excludes(&dir);
                 } else if let Err(e) = crate::cognition::swe_bench::clone_at(instance, &dir).await {
                     kickoff_errors.push(format!("stage {}: {e}", instance.instance_id));
                 } else {

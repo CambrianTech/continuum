@@ -935,26 +935,51 @@ pub async fn clone_at(instance: &SweInstance, repo_dir: &Path) -> Result<(), Str
             ));
         }
     }
-    // SUBSTRATE ARTIFACTS NEVER ENTER HER PATCH (2026-08-22, seen live: an airc
-    // scope auto-minted itself INSIDE a staged checkout — `$PWD/.airc` resolution
-    // while her hands had cwd in the repo — and its sqlite/identity-key binaries
-    // landed in her diff, which is her graded artifact). `.git/info/exclude` is the
-    // right container: it suppresses the noise from every diff WITHOUT touching a
-    // tracked file (writing .gitignore would itself pollute the patch). The scope-
-    // minting itself is a separate airc-side follow-up; this makes every staged
-    // tree immune regardless of who writes scratch into it.
+    shield_workspace_excludes(repo_dir);
+    Ok(())
+}
+
+/// SUBSTRATE ARTIFACTS NEVER ENTER HER PATCH (2026-08-22, seen live: an airc
+/// scope auto-minted itself INSIDE a staged checkout — `$PWD/.airc` resolution
+/// while her hands had cwd in the repo — and its sqlite/identity-key binaries
+/// landed in her diff, which is her graded artifact). `.git/info/exclude` is the
+/// right container: it suppresses the noise from every diff WITHOUT touching a
+/// tracked file (writing .gitignore would itself pollute the patch). The scope-
+/// minting itself is a separate airc-side follow-up; this makes every staged
+/// tree immune regardless of who writes scratch into it.
+///
+/// Idempotent MERGE, never an overwrite: called on fresh clones (`clone_at`) AND
+/// on already-staged checkouts every dispatch (the self-healing that replaced a
+/// one-off 76-checkout hand backfill, 2026-08-22) — an overwrite would clobber
+/// an operator's own exclude entries on the second call.
+pub fn shield_workspace_excludes(repo_dir: &Path) {
+    const SHIELDED: [&str; 2] = [".airc/", ".DS_Store"];
     let exclude = repo_dir.join(".git/info/exclude");
     if let Some(dir) = exclude.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    if let Err(e) = std::fs::write(&exclude, ".airc/
-.DS_Store
-") {
+    let current = std::fs::read_to_string(&exclude).unwrap_or_default(); // unreadable/absent both mean "has no entries yet" — the write below is the fix either way
+    let missing: Vec<&str> = SHIELDED
+        .iter()
+        .copied()
+        .filter(|line| !current.lines().any(|l| l.trim() == *line))
+        .collect();
+    if missing.is_empty() {
+        return;
+    }
+    let mut merged = current;
+    if !merged.is_empty() && !merged.ends_with('\n') {
+        merged.push('\n');
+    }
+    for line in missing {
+        merged.push_str(line);
+        merged.push('\n');
+    }
+    if let Err(e) = std::fs::write(&exclude, merged) {
         // Best-effort: a missing exclude degrades to the old (noisy) diff, never a
         // failed stage — but say so.
         tracing::warn!(error = %e, repo = %repo_dir.display(), "could not write .git/info/exclude — substrate artifacts may pollute the graded diff");
     }
-    Ok(())
 }
 
 /// Every path a unified diff targets, read off its `+++ b/<path>` headers.
@@ -2891,6 +2916,36 @@ pub async fn grade(instance: &SweInstance, model_patch: Option<&str>) -> SweVerd
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the exclude shield's MERGE contract. It runs on every
+    // dispatch over already-staged checkouts (self-heal for pre-shield trees), so
+    // an overwrite would clobber an operator's own exclude entries on the second
+    // pass, and a non-idempotent append would grow the file every dispatch.
+    // regression for the 2026-08-22 .airc-in-graded-diff incident + its 76-tree
+    // hand backfill.
+    #[test]
+    fn the_exclude_shield_merges_idempotently_and_preserves_operator_entries() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let repo = tmp.path();
+        std::fs::create_dir_all(repo.join(".git/info")).unwrap(); // test setup on a fresh tempdir cannot collide
+        std::fs::write(repo.join(".git/info/exclude"), "my-scratch/\n").unwrap(); // test setup
+
+        shield_workspace_excludes(repo);
+        let after = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap(); // written above
+        assert!(after.contains("my-scratch/"), "operator entry survives: {after}");
+        assert!(after.contains(".airc/") && after.contains(".DS_Store"), "{after}");
+
+        shield_workspace_excludes(repo);
+        let twice = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap(); // written above
+        assert_eq!(after, twice, "second pass must change nothing");
+
+        // A tree with no exclude file at all gets one (the fresh-clone path).
+        let bare = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(bare.path().join(".git")).unwrap(); // test setup
+        shield_workspace_excludes(bare.path());
+        let made = std::fs::read_to_string(bare.path().join(".git/info/exclude")).unwrap(); // shield created it
+        assert!(made.contains(".airc/"), "{made}");
+    }
 
     // what this catches: the staging-collision half of the 2026-08-18 grade loss. Two
     // concurrent stages of the same instance shared `cloning-{pid}` (one pid in the
