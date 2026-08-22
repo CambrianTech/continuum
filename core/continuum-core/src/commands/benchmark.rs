@@ -162,6 +162,20 @@ pub fn known_benchmarks() -> &'static [BenchmarkSpec] {
             source_url: None,
         },
         BenchmarkSpec {
+            name: "algotune",
+            description: "AlgoTune (NeurIPS'25) — 150+ 'beat the reference library' tasks \
+                          (SciPy/NumPy/sklearn/CVXPY): structurally contamination-proof (no \
+                          hidden answers — the reference is public and the task is to be \
+                          FASTER, correctness-gated by the task's own checker on held-out \
+                          seeds). Harness: warmup + min-of-10, machine-relative calibration; \
+                          pass = parity, score = speedup (in the dod receipt). Fetch first \
+                          (`benchmark/fetch --benchmark algotune`).",
+            grader: Grader::Python,
+            tasks: 154,
+            eval_set: Some("algotune.jsonl"),
+            source_url: Some("https://github.com/oripress/AlgoTune"),
+        },
+        BenchmarkSpec {
             name: "ds-1000",
             description: "DS-1000 (XLang/HKU, ICML'23) — 1,000 data-science problems over \
                           Pandas/NumPy/SciPy/sklearn/Matplotlib/PyTorch/TF, graded by the \
@@ -3853,6 +3867,26 @@ impl ActionCommand for BenchmarkFetch {
         // rows are not runnable (their oracle is a program, not a test string), so a
         // fetch that stopped at rows would report "staged" for a suite nothing could
         // run — the exact #370 gap this command exists to close.
+        if spec.name == "algotune" {
+            let (path, count) = crate::cognition::benchmark_algotune::materialize_gym(None)
+                .await
+                .map_err(CommandError::Invalid)?;
+            return Ok(BenchmarkFetchResult {
+                benchmark: spec.name.to_string(),
+                dataset: "github.com/oripress/AlgoTune".to_string(),
+                config: "main".to_string(),
+                split: "tasks".to_string(),
+                rows: count,
+                declared_tasks: spec.tasks,
+                denominator_matches: count as u32 == spec.tasks,
+                tasks: Some(count),
+                adapter_note: Some(format!(
+                    "cloned + converted onto the gym rails at {} — dispatch with \
+                     `benchmark/dispatch --name algotune`",
+                    path.display()
+                )),
+            });
+        }
         if spec.name == "ds-1000" {
             let (path, count) = crate::cognition::benchmark_ds1000::materialize_gym(None)
                 .await
