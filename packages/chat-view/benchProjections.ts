@@ -11,9 +11,10 @@
  * fabricated zero.
  */
 
-import type { BenchViewState, BenchRunRow } from '@continuum/sdk-typescript';
+import type { BenchViewState, BenchRoundRow, BenchRunRow } from '@continuum/sdk-typescript';
 import type {
   BenchContentBody,
+  BenchRoundVM,
   BenchRunVM,
   BenchRunState,
   BenchVerdictVM,
@@ -95,11 +96,27 @@ function runVM(row: BenchRunRow): BenchRunVM {
   };
 }
 
+/** Wire round → scoreboard VM. Adapt, never recompute: settled/remaining are
+ *  the round tracker's own state (#371), not client-side arithmetic. */
+function roundVM(row: BenchRoundRow): BenchRoundVM {
+  return {
+    roundId: compactId(row.round_id),
+    benchmark: row.benchmark,
+    stage: row.stage,
+    dispatched: row.dispatched,
+    settled: row.settled,
+    remaining: row.remaining,
+    driver: row.driver,
+  };
+}
+
 /** The bench board content body — `feedLive` is true only when the bench
  *  subscription has actually delivered (same contract as serving/arena). */
 export function benchContentBody(view?: BenchViewState): BenchContentBody {
   return {
     runs: (view?.runs ?? []).map(runVM),
+    // Older wires predate `rounds` — fold absent to empty, the honest frame.
+    rounds: (view?.rounds ?? []).map(roundVM),
     feedLive: view !== undefined,
   };
 }

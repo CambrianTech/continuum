@@ -19,7 +19,26 @@
  */
 
 import { html, nothing, type TemplateResult } from 'lit';
-import type { BenchContentBody, BenchRunVM, BenchVerdictVM } from '@continuum/patterns';
+import type { BenchContentBody, BenchRoundVM, BenchRunVM, BenchVerdictVM } from '@continuum/patterns';
+
+/** One in-flight ROUND row — the tracker's own lifecycle truth (#371), not a
+ *  client-side count over run rows. settled/dispatched IS the round's progress. */
+function roundRow(round: BenchRoundVM): TemplateResult {
+  const pct =
+    round.dispatched > 0 ? Math.round((round.settled / round.dispatched) * 100) : 0;
+  return html`<div class="bench-round" data-stage=${round.stage}>
+    <span class="bench-round-name" title=${round.roundId}>${round.benchmark}</span>
+    <span class="bench-round-stage">${round.stage}</span>
+    <span class="bench-round-count" title="cards settled / dispatched">
+      ${round.settled}/${round.dispatched}</span>
+    <div class="bench-bar" role="progressbar" aria-label="round settle progress">
+      <div class="bench-bar-fill" style="width:${pct}%"></div>
+    </div>
+    ${round.driver === 'citizen'
+      ? html`<span class="bench-round-driver" title="worked in the room — turns feed the curriculum">citizens</span>`
+      : html`<span class="bench-round-driver bench-round-detached" title="detached solve — produces no room turns">detached</span>`}
+  </div>`;
+}
 
 /** Compact seconds → "12s" / "3m" / "2h" — board legibility, not precision. */
 function age(seconds: number): string {
@@ -75,10 +94,22 @@ function runCard(run: BenchRunVM, maxGens: number): TemplateResult {
 
 /** The bench board content — pure fragments of the projected body. */
 export function renderBench(body: BenchContentBody): TemplateResult {
+  // Rounds render even with zero run rows: a freshly staged round has no run
+  // ledger yet, and the board saying "nothing here" while the tracker holds a
+  // working round would be the launch-and-pray blindness this region kills.
+  const rounds =
+    body.rounds.length > 0
+      ? html`<div class="bench-rounds" role="group" aria-label="in-flight rounds">
+          ${body.rounds.map(roundRow)}
+        </div>`
+      : nothing;
   if (body.runs.length === 0) {
-    return html`<div class="bench-awaiting">
-      <p>No benchmark runs on this board yet.</p>
-      <p class="bench-awaiting-sub">Rows appear when a run starts — operator-launched or claimed by a citizen. The frame is the promise.</p>
+    return html`<div class="bench-board">
+      ${rounds}
+      <div class="bench-awaiting">
+        <p>No benchmark runs on this board yet.</p>
+        <p class="bench-awaiting-sub">Rows appear when a run starts — operator-launched or claimed by a citizen. The frame is the promise.</p>
+      </div>
     </div>`;
   }
   const resolved = body.runs.filter((r) => r.state === 'resolved').length;
@@ -94,7 +125,8 @@ export function renderBench(body: BenchContentBody): TemplateResult {
   const maxGens = Math.max(...body.runs.map((r) => r.generations));
   return html`<div class="bench-board">
     ${body.feedLive ? nothing : html`<div class="bench-snapshot-banner">snapshot — no live feed attached</div>`}
-    <div class="bench-score" role="group" aria-label="round scoreboard">
+    ${rounds}
+    <div class="bench-score" role="group" aria-label="run scoreboard">
       <div class="bench-stat bench-stat-resolved">
         <span class="bench-stat-n">${resolved}</span><span class="bench-stat-l">resolved</span>
       </div>

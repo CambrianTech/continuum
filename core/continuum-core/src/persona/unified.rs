@@ -905,6 +905,7 @@ mod tests {
                 failed_tests: Vec::new(),
                 infra_error: None,
             }],
+            rounds: vec![],
             sample_interval_ms: 1000,
         }));
         let bench: Arc<dyn RagSource> = Arc::new(

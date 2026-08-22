@@ -12,6 +12,7 @@ function vm(overrides: Partial<ChatViewModel> = {}): ChatViewModel {
     activeCount: 0,
     members: [],
     messages: [],
+    transcript: [],
     isEmpty: true,
     ...overrides,
   };

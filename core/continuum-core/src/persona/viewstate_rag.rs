@@ -369,9 +369,23 @@ impl RagRenderable for continuum_positron::bench::BenchViewState {
     }
 
     fn units(&self) -> Vec<String> {
-        self.runs
-            .iter()
-            .map(|row| {
+        // Rounds first: the lifecycle truth a citizen orients on before the
+        // per-run rows (#371) — the SAME scoreboard the human's screen renders,
+        // which is the positronic-parity acceptance test.
+        let rounds = self.rounds.iter().map(|r| {
+            format!(
+                "round {} {} {}: {}/{} settled, {} remaining ({})",
+                &r.round_id[..8.min(r.round_id.len())],
+                r.benchmark,
+                r.stage,
+                r.settled,
+                r.dispatched,
+                r.remaining,
+                r.driver,
+            )
+        });
+        rounds
+            .chain(self.runs.iter().map(|row| {
                 let mut line = format!("{} {}", row.run_id, row.phase);
                 if let Some(instance) = row.instance.as_deref() {
                     line.push_str(&format!(" · {instance}"));
@@ -394,7 +408,7 @@ impl RagRenderable for continuum_positron::bench::BenchViewState {
                     line.push_str(if resolved { " · RESOLVED" } else { " · unresolved" });
                 }
                 line
-            })
+            }))
             .collect()
     }
 }
@@ -514,6 +528,7 @@ mod tests {
         let builder = StateBuilder::standalone();
         substrate.store(builder.session(BenchViewState {
             sample_interval_ms: 5000,
+            rounds: vec![],
             runs: vec![
                 BenchRunRow {
                     run_id: "r1".into(),
