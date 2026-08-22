@@ -86,7 +86,7 @@ pub fn parse_row(idx: usize, v: &serde_json::Value) -> Result<Ds1000Row, String>
     let library = v
         .pointer("/metadata/library")
         .and_then(|x| x.as_str())
-        .unwrap_or("unknown")
+        .unwrap_or("unknown") // library is prompt garnish only — never grading input; a missing tag must not void a gradeable task
         .to_string();
     let code_context = get("code_context")?;
     if !code_context.contains("[insert]") {

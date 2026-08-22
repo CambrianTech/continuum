@@ -150,7 +150,7 @@ fn embedded_names() -> String {
 /// external collections here — e.g. `ds-1000.jsonl`). Sibling of the SWE cache,
 /// same eviction story owner (`~/.continuum/benchmarks` is a governed cache class).
 pub fn gym_cache_dir() -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string()); // no $HOME (systemd/minimal env): cwd-relative cache beats a panic — same fallback the sibling cache dirs use
     std::path::PathBuf::from(home).join(".continuum/benchmarks/gym")
 }
 

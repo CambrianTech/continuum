@@ -75,7 +75,7 @@ pub fn prior_work_script(pre_execute_cells: &[serde_json::Value]) -> String {
             .as_str()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
             .and_then(|v| v.get("content").and_then(|c| c.as_str()).map(str::to_string))
-            .unwrap_or_else(|| cell.to_string());
+            .unwrap_or_else(|| cell.to_string()); // a cell that is not the {content} shape is kept RAW — she sees the original bytes, never a silently dropped step
         out.push_str(&format!("\n# --- cell {} ---\n{}\n", i + 1, content));
     }
     out
@@ -102,7 +102,7 @@ pub fn to_eval_task(idx: usize, row: &serde_json::Value) -> Result<EvalTask, Str
         .get("pre_execute_cells")
         .and_then(|v| v.as_array())
         .cloned()
-        .unwrap_or_default();
+        .unwrap_or_default(); // absent pre_execute_cells means an EMPTY scaffold (a real Masked state), not an error
     let dir = format!("super/{task_id}");
     Ok(EvalTask {
         id: format!("super-{task_id}"),
