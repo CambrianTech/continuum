@@ -104,7 +104,7 @@ pub struct PriorBaseline {
 /// (consensus position #8 from the design review). Cross-domain
 /// consistency: any two subsystems comparing hashes can do
 /// string-equality without normalization.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../protocol/typescript/forge/CorpusRef.ts")]
 pub struct CorpusRef {
     /// Human-readable corpus name (e.g., "wikitext-103-v1").

@@ -69,6 +69,7 @@ pub mod fine_tuning;
 pub mod fitness;
 pub mod gate_magnitude;
 pub mod local_manager;
+pub mod signature;
 pub mod manager;
 pub mod recall;
 pub mod recall_trait;
