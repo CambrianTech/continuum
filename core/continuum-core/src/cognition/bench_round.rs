@@ -347,6 +347,21 @@ pub fn seal_round(round_id: Uuid) {
 /// A card belonging to no live round answers [`WorkDriver::DetachedSolve`]: that covers
 /// a human-claimed card, an undirected board card, and a leftover claimed after its
 /// round ended. All three are the proven path, so the default is the conservative one.
+/// The round ROOM a card belongs to — which IS the round id (a round is its
+/// room's activity). `None` for a card outside every tracked round (human-created
+/// boards, ended rounds). The FOCUS rule reads this: a citizen's self-tick binds
+/// to the room of her freshest live claim, so she stops alternating rooms —
+/// measured 2026-08-22: two live claims in two rooms swapped her pinned slot's
+/// room-scoped context every tick, `cached: 0` by her own hand.
+pub fn room_for_card(card_id: Uuid) -> Option<Uuid> {
+    ROUNDS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .values()
+        .find(|r| r.cards.contains_key(&card_id))
+        .map(|r| r.round_id)
+}
+
 pub fn driver_for_card(card_id: Uuid) -> WorkDriver {
     ROUNDS
         .lock()

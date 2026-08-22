@@ -2458,13 +2458,60 @@ async fn run_self_cycle(
     last_burst_fp: &mut u64,
 ) {
     let now_ms = (opts.now_ms)();
+    // FOCUS (2026-08-22): a self-cycle with no triggering message binds to the
+    // room of her FRESHEST LIVE CLAIM when she holds one, else her home room.
+    // Home-room-always was the self-clobber engine measured tonight: a citizen
+    // holding a claim in a run room alternated home-room self-ticks with
+    // work-room turns, and every swap re-rendered the room-scoped context
+    // (kanban, steps-ledger, room speech) through her ONE pinned slot —
+    // `cached: 0` by her own hand, plus attention spent re-orienting in a room
+    // her work is not in. The institution's version: you sit at your desk
+    // until the job is done; the break room is for between jobs.
+    //
+    // Claim → room resolves through the bench-round registry (a round IS its
+    // room). A claim on an untracked card (human boards) resolves None and
+    // falls back home — never a guess. Freshest = max claim_expires_at_ms,
+    // i.e. the claim most recently taken or heartbeated.
+    let focus_room = match conversation.stream_citizen() {
+        Some(citizen) => citizen
+            .active_claims()
+            .await
+            .ok()
+            .and_then(|cards| {
+                let mut live: Vec<_> = cards
+                    .iter()
+                    .filter_map(|c| {
+                        let room = crate::cognition::bench_round::room_for_card(
+                            c.card_id.as_uuid(),
+                        )?;
+                        Some((c.claim_expires_at_ms.unwrap_or(0), room))
+                    })
+                    .collect();
+                live.sort_by_key(|(exp, _)| *exp);
+                live.pop().map(|(_, room)| room)
+            }),
+        None => None,
+    };
+    if let Some(room) = focus_room {
+        if room != ctx.identity.default_room {
+            crate::probe!(
+                class = "persona.selftick.focused",
+                persona = %ctx.identity.agent_name,
+                room = %room,
+                "self-tick bound to the held claim's room instead of home — \
+                 focus holds until the card settles",
+            );
+        }
+    }
     let composed = {
         let cognition = ctx.cognition.lock().await;
-        // A self-cycle has no triggering message, so the WHERE axis is her HOME
-        // room — the durable membership her sources are bound to. Passing None
-        // here is what made idle ticks blind to the board (#331 / #127).
+        // Passing None here is what made idle ticks blind to the board (#331 / #127).
         cognition
-            .compose_for_turn(&ctx.profile, now_ms, Some(ctx.identity.default_room))
+            .compose_for_turn(
+                &ctx.profile,
+                now_ms,
+                Some(focus_room.unwrap_or(ctx.identity.default_room)),
+            )
             .await
     };
     // Collapse loop-filler BEFORE anything reasons over the burst (task #16). Two idle
