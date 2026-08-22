@@ -235,6 +235,13 @@ impl PerceptionFact for StepsLedger {
         crate::probe!(
             class = "perception.steps_ledger",
             room = %cx.room_id.map(|r| r.to_string()).unwrap_or_else(|| "unscoped".into()),
+            // WHOSE ledger, and WHICH working-memory instance. Without these two,
+            // 2026-08-21's diagnosis of a split-brain (two cycles serving one
+            // persona's turns — a veteran at taken=3389 and a newborn at taken=0
+            // rendering "nothing has executed" mid-claim) required correlating
+            // anonymous rows by counter arithmetic. A ledger row that cannot say
+            // whose ledger it is cannot witness a duplicate.
+            wm_instance = wm.instance_id(),
             shown = fit.len(),
             elsewhere = elsewhere,
             taken = taken,
