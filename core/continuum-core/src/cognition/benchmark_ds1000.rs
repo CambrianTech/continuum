@@ -1,5 +1,5 @@
 //! DS-1000 — the first Tier-1 adapter from the 2026-08-22 competitive-landscape sweep
-//! (docs/planning/COMPETITIVE-BENCHMARK-LANDSCAPE-RESEARCH-TIER.md).
+//! (docs/planning/COMPETITIVE-BENCHMARK-LANDSCAPE.md).
 //!
 //! 1,000 data-science problems (Pandas/NumPy/SciPy/sklearn/Matplotlib/PyTorch/TF)
 //! with the best oracle economics in the landscape: fully local execution grading,

@@ -17,6 +17,8 @@
 | [FORCE-MULTIPLIER-PRINCIPLE.md](FORCE-MULTIPLIER-PRINCIPLE.md) | Core philosophy -- systems that code for you |
 | [CONTINUUM-BUSINESS-MODEL.md](CONTINUUM-BUSINESS-MODEL.md) | Open source + paid services model |
 | [ARCHITECTURE-INDEX.md](ARCHITECTURE-INDEX.md) | Complete system architecture organized by concern with layer diagrams |
+| [COMPETITIVE-BENCHMARK-LANDSCAPE.md](COMPETITIVE-BENCHMARK-LANDSCAPE.md) | **Every public coding/agentic benchmark (2025-26), tiered ADAPT-NOW / ADAPT-LATER / SKIP** by prestige x oracle quality x adapter feasibility. HuggingFace ids, licenses, leaderboard submission rules, Apple-Silicon blockers, and the open-model score bands we are measured against |
+| [COMPETITIVE-LANDSCAPE.md](COMPETITIVE-LANDSCAPE.md) | The *product* market (harnesses, orchestration frameworks) -- companion to the benchmark landscape above |
 
 ### Phase Plans
 
