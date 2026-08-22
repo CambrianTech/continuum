@@ -58,7 +58,8 @@ const SUBSPACE_MIN_CLUSTER_SIZE: usize = 3;
 const MAX_SUBSPACES: usize = 4;
 
 /// A gene's computed identity in embedding space. See the module docs.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// `PartialEq` (never `Eq`: f32) so layer structs comparing themselves can hold one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GeneSignature {
     /// Embedding-space identity — the provider's `id()` at mint time.
     pub embedder: String,
