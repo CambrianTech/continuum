@@ -2484,7 +2484,7 @@ async fn run_self_cycle(
                         let room = crate::cognition::bench_round::room_for_card(
                             c.card_id.as_uuid(),
                         )?;
-                        Some((c.claim_expires_at_ms.unwrap_or(0), room))
+                        Some((c.claim_expires_at_ms.unwrap_or(0), room)) // unknown expiry sorts LEAST-fresh: it can never win focus over a known-live lease, and a lone expiry-less claim still focuses (better than home)
                     })
                     .collect();
                 live.sort_by_key(|(exp, _)| *exp);
