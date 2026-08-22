@@ -45,19 +45,29 @@ pub struct Ds1000Row {
 
 /// The generic per-task oracle runner. ONE program for all 1,000 tasks — the task
 /// dirs differ only in `context.py`, so the runner is data, not per-task codegen.
-/// Marker-missing fails LOUD (exit 4): a context without `[insert]` means the row
-/// was corrupted in staging, and grading her against it would be a lie.
+/// It appends a CALL to the context's own `test_execution(solution_string)` (+
+/// `test_string` when defined) — the official API. It must NEVER text-splice the
+/// solution into the source: the first cut did, and the first live grade caught it
+/// corrupting quote-bearing solutions and clobbering the context's own literal
+/// `.replace("[insert]", ...)` line. A context without `test_execution` fails
+/// LOUD (exit 4) as staging corruption.
 const RUNNER_PY: &str = r#"import pathlib, subprocess, sys
 ctx = pathlib.Path("context.py").read_text()
-if "[insert]" not in ctx:
-    print("ds1000 harness: context.py has no [insert] marker - staging corrupt", file=sys.stderr)
+if "def test_execution" not in ctx:
+    print("ds1000 harness: context.py defines no test_execution - staging corrupt", file=sys.stderr)
     sys.exit(4)
-try:
-    sol = pathlib.Path("solution.py").read_text()
-except FileNotFoundError:
+if not pathlib.Path("solution.py").exists():
     print("ds1000 harness: solution.py not written yet", file=sys.stderr)
     sys.exit(3)
-pathlib.Path("program.py").write_text(ctx.replace("[insert]", sol))
+# THE OFFICIAL API: the solution is a STRING ARGUMENT to test_execution(); the
+# context's own runtime performs the [insert] substitution safely inside its
+# exec_context template. Textual splicing at this layer (the first cut) corrupted
+# any solution containing quotes AND clobbered the context's literal
+# `.replace("[insert]", ...)` call — caught on the first live grade, 2026-08-22.
+driver = ctx + "\n\nimport pathlib as _pl\n_sol = _pl.Path('solution.py').read_text()\ntest_execution(_sol)\n"
+if "def test_string" in ctx:
+    driver += "test_string(_sol)\n"
+pathlib.Path("program.py").write_text(driver)
 try:
     r = subprocess.run([sys.executable, "program.py"], timeout=120)
 except subprocess.TimeoutExpired:
@@ -113,8 +123,8 @@ pub fn to_eval_task(r: &Ds1000Row) -> EvalTask {
             "[DS-1000 · {lib}] Solve the following data-science problem. Write ONLY the \
              solution code (the part that replaces the problem's placeholder — typically \
              assigning the required variable, e.g. `result = ...`) to `{dir}/solution.py`. \
-             Do NOT restate the surrounding context code; the grader substitutes your file \
-             into the official test program verbatim. If a library import fails when you \
+             Do NOT restate the surrounding context code; the grader passes your file's contents \
+             to the official test_execution() as a string. If a library import fails when you \
              verify, install it for your user (pip install --user <lib>) and re-run.\n\n{p}",
             lib = r.library,
             dir = dir,
@@ -212,6 +222,20 @@ mod tests {
         assert_eq!(String::from_utf8(decoded).unwrap(), nasty);
         // And base64's alphabet can never terminate the single-quoted shell string.
         assert!(!b64_ctx.contains('\''));
+    }
+
+    // what this catches: the oracle calling convention itself — THE first-live-grade
+    // bug. The runner must pass the solution as a STRING to test_execution() and
+    // must never text-splice it into source: a quote-bearing solution corrupted
+    // program.py into a SyntaxError, and the splice also clobbered the context's
+    // own literal `.replace("[insert]", ...)` runtime line (both measured on
+    // ds1000-0002, 2026-08-22).
+    #[test]
+    fn the_runner_calls_the_official_api_and_never_splices() {
+        assert!(RUNNER_PY.contains("test_execution(_sol)"), "official API call");
+        assert!(RUNNER_PY.contains("read_text()"), "solution delivered as a string");
+        assert!(!RUNNER_PY.contains("ctx.replace"), "text-splicing is the outlawed first cut");
+        assert!(RUNNER_PY.contains("def test_string"), "conditional surface-form gate preserved");
     }
 
     // what this catches: the grade path wiring. dod_shell must run the staged runner
