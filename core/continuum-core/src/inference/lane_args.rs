@@ -180,8 +180,16 @@ pub fn base_invocation(
             // same axis that OOMs (kIOGPUCommandBufferCallbackErrorOutOfMemory) so it is
             // sized WITH the 2-lane headroom, not blindly. Measured knob: watch prefill
             // tok/s in the captures and back off if the lane 500s "Compute error".
+            //
+            // 1024 → 2048 (2026-08-21, llama-bench on the production gguf, fa on,
+            // q8 KV, identical conditions back-to-back): 4k-token prefill 67 → 125
+            // tok/s — the near-2× the comment above predicted, measured. 4096 was
+            // ALSO benched and REJECTED: its compute buffer failed to allocate
+            // (`failed to decode prompt batch, res = -3`) beside a resident serving
+            // lane, and production always runs beside one. The live receipt to watch
+            // stays `inference.prefill.complete`'s ingest_tok_per_s.
             arg("--ubatch-size"),
-            arg("1024"),
+            arg("2048"),
             // Overflow must FAIL, never silently amputate. With context shift on
             // (the llama.cpp default), a prompt larger than the slot's window has
             // its MIDDLE evicted and generation proceeds on the mutilated prompt —
