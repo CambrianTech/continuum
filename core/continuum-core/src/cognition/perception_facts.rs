@@ -53,6 +53,12 @@ pub struct FactContext<'a> {
     /// honest count (CAUSAL-MEMORY-GRAPH.md slice B). `None` (roomless
     /// replays/tests) renders the unpartitioned ledger exactly as before.
     pub room_id: Option<Uuid>,
+    /// WHOSE facts these are — so ledger-class probes can name their persona.
+    /// The duplicate-cycle signature is two wm instances under ONE persona;
+    /// without this key the 2026-08-22 read (three wm ids in one room) was
+    /// unconvictable — three personas legitimately shared the round room.
+    /// `None` (replays/tests) renders exactly as before.
+    pub persona_id: Option<Uuid>,
 }
 
 /// One structural fact about the persona's present. `render` returns the
@@ -242,6 +248,11 @@ impl PerceptionFact for StepsLedger {
             // anonymous rows by counter arithmetic. A ledger row that cannot say
             // whose ledger it is cannot witness a duplicate.
             wm_instance = wm.instance_id(),
+            // The instance id alone could not convict a duplicate (2026-08-22:
+            // three wm ids in one ROOM read as a split-brain until it turned out
+            // to be three personas legitimately sharing the round room). The
+            // duplicate-cycle signature is two instance ids under ONE persona.
+            persona = %cx.persona_id.map(|p| p.to_string()).unwrap_or_else(|| "unscoped".into()),
             shown = fit.len(),
             elsewhere = elsewhere,
             taken = taken,
@@ -383,6 +394,7 @@ mod tests {
             room_speech: &[],
             working_memory: None,
             room_id: None,
+            persona_id: None,
         };
         let facts = render_facts(&cx, &FactPolicy::default());
         assert_eq!(facts.len(), 1, "quiet room: only the bounds fact renders");
@@ -402,6 +414,7 @@ mod tests {
             room_speech: &[],
             working_memory: None,
             room_id: None,
+            persona_id: None,
         };
         let mut policy = FactPolicy::default();
         policy.disable("context_bounds");
@@ -427,6 +440,7 @@ mod tests {
             room_speech: &[],
             working_memory: Some(&wm),
             room_id: None,
+            persona_id: None,
         };
         let ledger = |facts: &[String]| {
             facts
@@ -497,6 +511,7 @@ mod tests {
             room_speech: &[],
             working_memory: Some(&pre_archive),
             room_id: None,
+            persona_id: None,
         };
         let l = ledger(&render_facts(&cx2, &FactPolicy::default()));
         assert!(

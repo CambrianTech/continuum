@@ -1654,6 +1654,7 @@ impl LlmDeliberationFaculty {
             room_speech: &room_speech,
             working_memory: self.working_memory.as_ref(),
             room_id: Some(ws.room_id),
+            persona_id: Some(self.persona_id),
         };
         let facts = super::perception_facts::render_facts(
             &fact_cx,
