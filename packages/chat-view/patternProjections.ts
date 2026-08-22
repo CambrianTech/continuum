@@ -36,7 +36,7 @@ import type {
   RosterMemberVM,
   TranscriptRowVM,
 } from './chatViewModel';
-import { ARENA_PURPOSE, GRID_PURPOSE, LIVE_PURPOSE, PERSONA_PURPOSE, SERVING_PURPOSE, type ArenaContentBody as ArenaContentBodyT, type GridContentBody, type GridNodeVM, type ServingContentBody, type ServingNodeVM } from '@continuum/patterns';
+import { ARENA_PURPOSE, BENCH_PURPOSE, GRID_PURPOSE, LIVE_PURPOSE, PERSONA_PURPOSE, SERVING_PURPOSE, contentFamilyOf, type ArenaContentBody as ArenaContentBodyT, type BenchContentBody, type GridContentBody, type GridNodeVM, type ServingContentBody, type ServingNodeVM } from '@continuum/patterns';
 import type { LiveContentBody, PersonaContentBody } from '@continuum/patterns';
 import {
   focusedPersonaTab,
@@ -44,7 +44,7 @@ import {
   personaFactsListing,
 } from './personaProjections';
 import { liveContentBody, liveFaceOpen, type LiveCallOverlay } from './liveProjections';
-import { benchWidget } from './benchProjections';
+import { benchContentBody, benchWidget } from './benchProjections';
 import { arenaContentBody, type ArenaViewState } from './arenaProjections';
 
 /** Leading glyph per member kind — the neutral human/agent/system discriminant, as a
@@ -411,7 +411,8 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
   // is focused, or the reader opened the Go-live face — honest entries only.
   // A focused persona tab still wins (the citizen navigated away from the room).
   const liveBody: LiveContentBody | undefined =
-    !personaBody && liveFaceOpen(vm, live?.nav, live?.call)
+    !personaBody &&
+    (liveFaceOpen(vm, live?.nav, live?.call) || contentFamilyOf(vm.purpose) === LIVE_PURPOSE)
       ? liveContentBody(vm, live?.call)
       : undefined;
   // The ARENA face: a room whose recipe purpose is "arena" renders ranked
@@ -433,13 +434,28 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     !personaBody && !liveBody && !arenaBody && !servingBody && vm.purpose === GRID_PURPOSE
       ? gridContentBody(live?.sys, live?.serving)
       : undefined;
+  // The BENCH face (#431): a room whose recipe purpose is in the benchmark
+  // FAMILY (`benchmark/hard-rs` — the dispatched run rooms) renders the live
+  // board. Before this branch existed those rooms fell through to a chat body
+  // under an unregistered purpose and painted `Interface error` — a dispatched
+  // round's room was unrenderable, the scoreboard region unreachable.
+  const benchBody =
+    !personaBody &&
+    !liveBody &&
+    !arenaBody &&
+    !servingBody &&
+    !gridBody &&
+    contentFamilyOf(vm.purpose) === BENCH_PURPOSE
+      ? benchContentBody(live?.bench)
+      : undefined;
   const content:
     | ContentView<ChatContentBody>
     | ContentView<PersonaContentBody>
     | ContentView<LiveContentBody>
     | ContentView<ArenaContentBodyT>
     | ContentView<ServingContentBody>
-    | ContentView<GridContentBody> = personaBody
+    | ContentView<GridContentBody>
+    | ContentView<BenchContentBody> = personaBody
     ? { purpose: PERSONA_PURPOSE, body: personaBody }
     : liveBody
       ? { purpose: LIVE_PURPOSE, body: liveBody }
@@ -449,10 +465,12 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
           ? { purpose: SERVING_PURPOSE, body: servingBody }
           : gridBody
             ? { purpose: GRID_PURPOSE, body: gridBody }
-            : {
-                purpose: vm.purpose,
-                body: { messages: vm.messages, transcript: vm.transcript, isEmpty: vm.isEmpty },
-              };
+            : benchBody
+              ? { purpose: BENCH_PURPOSE, body: benchBody }
+              : {
+                  purpose: vm.purpose,
+                  body: { messages: vm.messages, transcript: vm.transcript, isEmpty: vm.isEmpty },
+                };
   // The ACTIVE nav cell follows the citizen's current tab: the persona tab
   // when a persona home is focused, else the chat room on screen.
   const rooms = live?.nav
@@ -475,6 +493,9 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     listingWidget(rooms),
     listingWidget(rosterListing(vm)),
   ];
+  // The live benchmark board (#329) — joins the contextual rail whenever this
+  // node has runs, filling the academy's dead right column.
+  const benchRail = benchWidget(live?.bench);
   return {
     nav: rooms,
     left,
@@ -484,9 +505,7 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     // else the room's info card — the ContextPanel primitive, activity-scoped.
     context: {
       listings: [personaBody ? personaFactsListing(personaBody) : roomInfoListing(vm)],
-      // The live benchmark board (#329) — joins the contextual rail whenever
-      // this node has runs, filling the academy's dead right column.
-      ...(benchWidget(live?.bench) ? { widgets: [benchWidget(live?.bench)!] } : {}),
+      ...(benchRail ? { widgets: [benchRail] } : {}),
     },
   };
 }

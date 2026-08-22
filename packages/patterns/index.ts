@@ -53,6 +53,9 @@ export type { GridContentBody, GridNodeVM } from './gridContent';
 // per run (operator + citizen-claimed), progress-not-liveness (#374/#329).
 export { BENCH_PURPOSE } from './benchContent';
 export type { BenchContentBody, BenchRunVM, BenchRunState, BenchVerdictVM } from './benchContent';
+// Recipe purpose → render family (benchmark/hard-rs → bench, video-chat → live):
+// the ONE resolver between hierarchical recipe purposes and registry families.
+export { contentFamilyOf } from './contentFamily';
 export type {
   LiveContentBody,
   LiveParticipantVM,

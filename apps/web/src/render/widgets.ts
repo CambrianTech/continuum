@@ -24,8 +24,10 @@ import {
   type MetricsView,
   type ServingPanelView,
   type SystemPanelView,
+  type BenchContentBody,
 } from '@continuum/patterns';
 import { renderGaugeBody, renderListing, renderMetricsRow } from './parts';
+import { renderBench } from '../bench/renderBench';
 import './RoomsPanel'; // registers <rooms-panel> (the dense rooms rail section)
 import './SysPanel'; // registers <sys-panel> (the two-faced SYS|AI system panel)
 import './ServingPanel'; // registers <serving-panel> (the serving glass box, #141)
@@ -161,4 +163,20 @@ webWidgetRegistry.register('system', (widget) => {
 webWidgetRegistry.register('serving', (widget) => {
   const view = widget.body as ServingPanelView;
   return html`<serving-panel .body=${view} .heading=${widget.title}></serving-panel>`;
+});
+
+/** `'bench'` — the academy's live benchmark board as a rail section (#329):
+ *  the SAME `renderBench` face the bench-purpose room renders center-stage,
+ *  compacted into the contextual rail. Registered here so the context rail
+ *  dispatches it through the ONE widget table — the previous hardcoded
+ *  `w.kind === 'bench'` in the render target silently blanked every other
+ *  kind ([[fallbacks-are-illegal-fail-loud]]). */
+webWidgetRegistry.register('bench', (widget) => {
+  const view = widget.body as BenchContentBody;
+  return html`
+    <section class="rail-widget" data-widget="bench" data-id=${widget.id}>
+      <div class="who-head"><span class="who-title">${widget.title}</span></div>
+      ${renderBench(view)}
+    </section>
+  `;
 });
