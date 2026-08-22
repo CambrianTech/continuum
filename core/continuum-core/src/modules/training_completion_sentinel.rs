@@ -272,10 +272,31 @@ impl TrainingCompletionSentinel {
 
             cycle.page_in(vec![ActiveAdapterRequest {
                 name: job.trait_kind.clone(),
-                path: path_str,
+                path: path_str.clone(),
                 domain: job.trait_kind.clone(),
                 scale: 1.0,
             }]);
+
+            // STAMP the signature into the sidecar at the same moment the gene
+            // becomes live — adoption is the one event where the gene's path,
+            // its minted signature, and its measured worth are all in hand.
+            // Best-effort: a failed stamp warns; the gene serves either way and
+            // routes by fallback until the next adoption re-stamps.
+            if let Some(sig) = job.signature.clone() {
+                match crate::genome::signature::signature_store_path() {
+                    Ok(store) => {
+                        if let Err(e) = crate::genome::signature::SignatureStore::stamp_at(
+                            &store, &path_str, sig,
+                        ) {
+                            tracing::warn!(gene = %path_str, error = %e,
+                                "adopted gene's signature failed to stamp — routes by fallback");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "signature store path unresolvable — signature not stamped");
+                    }
+                }
+            }
 
             tracing::info!(
                 persona = %job.persona_id,

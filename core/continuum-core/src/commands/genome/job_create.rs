@@ -174,6 +174,48 @@ crate::action_command! {
         let watched_base_model = p.request.base_model.clone();
         let watched_trait_kind = p.request.trait_kind.clone();
         let watched_eval_set = p.request.eval_set.clone();
+        // MINT the gene's embedding-space signature NOW — the training corpus is
+        // in hand at exactly this moment and never again (the audited 2026-08-22
+        // break: an adopted gene's corpus was unreferenceable). Best-effort: a
+        // failed mint warns and trains anyway — the gene routes by the fallback
+        // path; it never blocks the training the persona is owed.
+        let watched_signature = {
+            let texts: Vec<String> = p
+                .request
+                .dataset
+                .examples
+                .iter()
+                .map(|ex| format!("{}\n{}", ex.prompt, ex.completion))
+                .collect();
+            let joined = texts.join("\n");
+            let corpus = crate::forge::recipe::CorpusRef {
+                name: p
+                    .dataset_name
+                    .clone()
+                    .unwrap_or_else(|| format!("inline:{}", p.request.trait_kind)), // inline datasets have no on-disk name; the trait names the mint
+                content_hash: crate::persona::inbox_admission::content_hash_sha256(&joined),
+                size_bytes: joined.len() as u64,
+                source_url: None,
+            };
+            let embedder = crate::cognition::embedding::resolve_recall_embedder_local().await;
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0); // pre-epoch clock: mint stamps 0 rather than refusing the gene its training
+            match crate::genome::signature::GeneSignature::mint(&texts, corpus, &embedder, now_ms)
+                .await
+            {
+                Ok(sig) => Some(sig),
+                Err(e) => {
+                    tracing::warn!(
+                        trait_kind = %p.request.trait_kind,
+                        error = %e,
+                        "gene signature mint failed — training proceeds, gene will route by fallback"
+                    );
+                    None
+                }
+            }
+        };
 
         // 2. Adapter creates the job. FineTuningError carries a stable errorKind
         //    slug callers branch on for retry-vs-surface.
@@ -196,6 +238,7 @@ crate::action_command! {
                         base_model: watched_base_model,
                         trait_kind: watched_trait_kind,
                         eval_set: watched_eval_set,
+                        signature: watched_signature,
                     },
                 );
                 Ok(JobCreateOutcome {
