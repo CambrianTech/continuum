@@ -129,6 +129,26 @@ pub fn to_eval_task(idx: usize, row: &serde_json::Value) -> Result<EvalTask, Str
     })
 }
 
+/// Fingerprint of THIS adapter's conversion — hash of one canonical probe row's
+/// converted output (the staged grader + gold + prior-work script all ride
+/// inside `setup_shell`, so the task serialization covers the whole oracle).
+/// The gym cache sidecar carries it; `resolve_gym` refuses a mismatch — the
+/// #2366 DS-1000 stale-cache class, closed for every fetched suite.
+pub fn adapter_fingerprint() -> String {
+    let probe = serde_json::json!({
+        "task_id": "fingerprint_probe",
+        "github_repo": "https://example.invalid/probe",
+        "git_commit": "0000000000000000000000000000000000000000",
+        "query": "fingerprint probe query",
+        "answer": "{\"probe\": 0.0}",
+        "pre_execute_cells": ["{\"content\": \"pass\"}"],
+    });
+    let task = to_eval_task(0, &probe)
+        .and_then(|t| serde_json::to_string(&t).map_err(|e| format!("serialize: {e}")))
+        .unwrap_or_else(|e| format!("unconvertible:{e}")); // still a deterministic fingerprint input; the real conversion would fail loud at materialize
+    crate::cognition::gym::fingerprint_parts(&[&task])
+}
+
 /// Fetch the Masked split and write the converted gym.
 pub async fn materialize_gym(limit: Option<usize>) -> Result<(std::path::PathBuf, usize), String> {
     let mut lines: Vec<String> = Vec::new();
@@ -148,13 +168,7 @@ pub async fn materialize_gym(limit: Option<usize>) -> Result<(std::path::PathBuf
     if lines.is_empty() {
         return Err("super: zero rows streamed — dataset unreachable or renamed".into());
     }
-    let dir = crate::cognition::gym::gym_cache_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    let path = dir.join("super-masked.jsonl");
-    let tmp = path.with_extension("jsonl.tmp");
-    std::fs::write(&tmp, lines.join("\n") + "\n").map_err(|e| format!("write: {e}"))?;
-    std::fs::rename(&tmp, &path).map_err(|e| format!("rename: {e}"))?;
-    Ok((path, lines.len()))
+    crate::cognition::gym::write_fetched_gym("super-masked.jsonl", &lines, &adapter_fingerprint())
 }
 
 #[cfg(test)]
