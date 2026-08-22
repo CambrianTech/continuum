@@ -162,6 +162,20 @@ pub fn known_benchmarks() -> &'static [BenchmarkSpec] {
             source_url: None,
         },
         BenchmarkSpec {
+            name: "ds-1000",
+            description: "DS-1000 (XLang/HKU, ICML'23) — 1,000 data-science problems over \
+                          Pandas/NumPy/SciPy/sklearn/Matplotlib/PyTorch/TF, graded by the \
+                          OFFICIAL execution oracle (her solution.py substituted at the \
+                          [insert] marker of each row's code_context and RUN, 120s cap). \
+                          Tier-1 pick of the 2026-08-22 landscape sweep: execution-graded, \
+                          local, seconds/task. Fetch first (`benchmark/fetch --benchmark \
+                          ds-1000`) — that converts the HF rows onto the gym rails.",
+            grader: Grader::Python,
+            tasks: 1000,
+            eval_set: Some("ds-1000.jsonl"),
+            source_url: Some("https://huggingface.co/datasets/xlangai/DS-1000"),
+        },
+        BenchmarkSpec {
             name: "humaneval",
             description: "OpenAI HumanEval (Python) — the original, 164 tasks.",
             grader: Grader::Python,
@@ -1962,11 +1976,29 @@ mod tests {
             .expect("humaneval-rs catalogued");
         assert!(hr.eval_set.is_some(), "humaneval-rs must be runnable");
         assert!(matches!(hr.grader, Grader::Rust));
-        // Every runnable benchmark's eval_set must resolve through the gym resolver.
+        // Every COMMITTED gym's eval_set must resolve through the gym resolver.
+        // A FETCHED gym — the new class ds-1000 introduced: eval_set AND source_url
+        // both present — legitimately resolves only after `benchmark/fetch` converts
+        // it into the gym cache, so on a fresh checkout its eval_set correctly does
+        // NOT resolve. The invariant for that class is different and equally pinned:
+        // its eval_set must NOT shadow a committed gym (a name collision would make
+        // the fetch silently overwrite a bundled suite's identity).
         for b in ks.iter().filter(|b| b.eval_set.is_some()) {
-            crate::cognition::gym::resolve_gym(b.eval_set.unwrap()).unwrap_or_else(|e| {
-                panic!("benchmark '{}' eval_set does not resolve: {e}", b.name)
-            });
+            let fetched = b.source_url.is_some();
+            match crate::cognition::gym::resolve_gym(b.eval_set.unwrap()) {
+                Ok((origin, _)) if fetched => assert!(
+                    !origin.starts_with("embedded:"),
+                    "fetched benchmark '{}' shadows committed gym '{origin}'",
+                    b.name
+                ),
+                Ok(_) => {}
+                Err(e) if fetched => assert!(
+                    e.contains("could not be resolved"),
+                    "fetched benchmark '{}' failed oddly: {e}",
+                    b.name
+                ),
+                Err(e) => panic!("benchmark '{}' eval_set does not resolve: {e}", b.name),
+            }
         }
     }
 
@@ -3817,6 +3849,30 @@ impl ActionCommand for BenchmarkFetch {
                     p.benchmark
                 ))
             })?;
+        // ds-1000 is fetched AND CONVERTED onto the gym rails in one step: the raw
+        // rows are not runnable (their oracle is a program, not a test string), so a
+        // fetch that stopped at rows would report "staged" for a suite nothing could
+        // run — the exact #370 gap this command exists to close.
+        if spec.name == "ds-1000" {
+            let (path, count) = crate::cognition::benchmark_ds1000::materialize_gym(None)
+                .await
+                .map_err(CommandError::Invalid)?;
+            return Ok(BenchmarkFetchResult {
+                benchmark: spec.name.to_string(),
+                dataset: "xlangai/DS-1000".to_string(),
+                config: "default".to_string(),
+                split: "test".to_string(),
+                rows: count,
+                declared_tasks: spec.tasks,
+                denominator_matches: count as u32 == spec.tasks,
+                tasks: Some(count),
+                adapter_note: Some(format!(
+                    "converted onto the gym rails at {} — every task carries the official \
+                     execution oracle as its dod; dispatch with `benchmark/dispatch --name ds-1000`",
+                    path.display()
+                )),
+            });
+        }
         let (dataset, def_config, def_split) = match spec.reach() {
             SourceReach::Rows {
                 dataset,

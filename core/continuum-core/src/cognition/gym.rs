@@ -146,12 +146,31 @@ fn embedded_names() -> String {
 /// resolution order. Returns a human-readable error string on failure (caller
 /// wraps it in its own `CommandError`), naming the reference and the candidates
 /// tried — never silently degrades.
+/// Where FETCHED gym suites materialize (`benchmark/fetch` writes converted
+/// external collections here — e.g. `ds-1000.jsonl`). Sibling of the SWE cache,
+/// same eviction story owner (`~/.continuum/benchmarks` is a governed cache class).
+pub fn gym_cache_dir() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    std::path::PathBuf::from(home).join(".continuum/benchmarks/gym")
+}
+
 pub fn resolve_gym(reference: &str) -> Result<(String, String), String> {
     // (1) An existing on-disk file wins — a custom gym the operator points at.
     if Path::new(reference).is_file() {
         let text = std::fs::read_to_string(reference)
             .map_err(|e| format!("eval_set '{reference}' exists but could not be read: {e}"))?;
         return Ok((reference.to_string(), text));
+    }
+    // (1.5) A FETCHED gym in the benchmark cache — external collections
+    // (ds-1000, …) that `benchmark/fetch` converted onto the gym rails. After
+    // the on-disk check (an operator's explicit file still wins) and before the
+    // embedded registry (a fetched suite must not be shadowed by a stale
+    // committed copy of the same name).
+    let cached = gym_cache_dir().join(reference);
+    if cached.is_file() {
+        let text = std::fs::read_to_string(&cached)
+            .map_err(|e| format!("fetched gym '{}' could not be read: {e}", cached.display()))?;
+        return Ok((cached.display().to_string(), text));
     }
     // (2) A committed gym baked into the binary — CWD-/deployment-independent.
     if let Some((name, bytes)) = embedded_for(reference) {
