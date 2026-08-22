@@ -130,6 +130,23 @@ pub fn to_eval_task(name: &str, description: &str, repo: &std::path::Path) -> Ev
     }
 }
 
+/// Fingerprint of THIS adapter's conversion. Unlike DS-1000, part of the oracle
+/// lives OUTSIDE the jsonl: `HARNESS_PY` is staged onto disk at materialize and
+/// dod runs it from the repo — so the fingerprint hashes BOTH the canonical
+/// converted task and the harness source. A harness edit without re-fetch would
+/// otherwise grade under the old on-disk harness, the same stale-cache class as
+/// the #2366 DS-1000 shadow. Fixed probe path: the fingerprint tracks the CODE,
+/// not this machine's cache location.
+pub fn adapter_fingerprint() -> String {
+    let task = serde_json::to_string(&to_eval_task(
+        "fingerprint_probe",
+        "canonical probe description",
+        std::path::Path::new("/probe/algotune-repo"),
+    ))
+    .unwrap_or_else(|e| format!("unserializable:{e}")); // still a deterministic fingerprint input; the real conversion would fail loud at materialize
+    crate::cognition::gym::fingerprint_parts(&[&task, HARNESS_PY])
+}
+
 /// Clone/refresh the upstream repo, stage the harness, and write the converted gym.
 pub async fn materialize_gym(limit: Option<usize>) -> Result<(std::path::PathBuf, usize), String> {
     let repo = repo_dir();
@@ -176,13 +193,7 @@ pub async fn materialize_gym(limit: Option<usize>) -> Result<(std::path::PathBuf
             serde_json::to_string(&task).map_err(|e| format!("algotune {name}: serialize: {e}"))?,
         );
     }
-    let dir = crate::cognition::gym::gym_cache_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    let path = dir.join("algotune.jsonl");
-    let tmp = path.with_extension("jsonl.tmp");
-    std::fs::write(&tmp, lines.join("\n") + "\n").map_err(|e| format!("write: {e}"))?;
-    std::fs::rename(&tmp, &path).map_err(|e| format!("rename: {e}"))?;
-    Ok((path, lines.len()))
+    crate::cognition::gym::write_fetched_gym("algotune.jsonl", &lines, &adapter_fingerprint())
 }
 
 #[cfg(test)]

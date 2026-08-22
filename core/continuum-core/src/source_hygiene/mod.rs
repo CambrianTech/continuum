@@ -25,6 +25,7 @@
 //! that is a follow-up, not a reason to hand-roll a fourth.
 
 pub mod production_reachability;
+pub mod test_mod_singularity;
 pub mod unwrap_justification;
 
 use std::path::{Path, PathBuf};

@@ -1,5 +1,5 @@
 //! DS-1000 — the first Tier-1 adapter from the 2026-08-22 competitive-landscape sweep
-//! (docs/planning/COMPETITIVE-BENCHMARK-LANDSCAPE-RESEARCH-TIER.md).
+//! (docs/planning/COMPETITIVE-BENCHMARK-LANDSCAPE.md).
 //!
 //! 1,000 data-science problems (Pandas/NumPy/SciPy/sklearn/Matplotlib/PyTorch/TF)
 //! with the best oracle economics in the landscape: fully local execution grading,
@@ -145,6 +145,23 @@ pub fn to_eval_task(r: &Ds1000Row) -> EvalTask {
     }
 }
 
+/// Fingerprint of THIS adapter's conversion — the hash of one canonical probe
+/// row's converted output, so any change to the prompt template, staged runner,
+/// setup shape, or dod moves it automatically (no hand-bumping). The gym cache
+/// sidecar carries it; `resolve_gym` refuses a mismatch. Regression anchor: the
+/// #2366 oracle fix left 1,000 cached tasks staging the outlawed splicing runner.
+pub fn adapter_fingerprint() -> String {
+    let probe = Ds1000Row {
+        problem_id: 0,
+        library: "Pandas".to_string(),
+        prompt: "fingerprint probe".to_string(),
+        code_context: "def test_execution(solution: str):\n    pass\n[insert]".to_string(),
+    };
+    let task = serde_json::to_string(&to_eval_task(&probe))
+        .unwrap_or_else(|e| format!("unserializable:{e}")); // still a deterministic fingerprint input; the real conversion would fail loud at materialize
+    crate::cognition::gym::fingerprint_parts(&[&task])
+}
+
 /// Fetch the suite off the datasets-server (cached by `stream_hf_rows`' own JSONL
 /// layer) and write the converted gym file. Returns (path, task_count).
 pub async fn materialize_gym(limit: Option<usize>) -> Result<(std::path::PathBuf, usize), String> {
@@ -169,13 +186,7 @@ pub async fn materialize_gym(limit: Option<usize>) -> Result<(std::path::PathBuf
     if tasks.is_empty() {
         return Err("ds-1000: zero rows streamed — dataset unreachable or renamed".into());
     }
-    let dir = crate::cognition::gym::gym_cache_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    let path = dir.join("ds-1000.jsonl");
-    let tmp = path.with_extension("jsonl.tmp");
-    std::fs::write(&tmp, tasks.join("\n") + "\n").map_err(|e| format!("write: {e}"))?;
-    std::fs::rename(&tmp, &path).map_err(|e| format!("rename: {e}"))?;
-    Ok((path, tasks.len()))
+    crate::cognition::gym::write_fetched_gym("ds-1000.jsonl", &tasks, &adapter_fingerprint())
 }
 
 #[cfg(test)]

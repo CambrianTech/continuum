@@ -154,6 +154,89 @@ pub fn gym_cache_dir() -> std::path::PathBuf {
     std::path::PathBuf::from(home).join(".continuum/benchmarks/gym")
 }
 
+/// A fetched gym is a DERIVED artifact of (dataset rows × adapter conversion
+/// code), but its cache file is keyed only by dataset name — so an adapter fix
+/// silently kept serving stale conversions until 2026-08-22, when the DS-1000
+/// oracle fix (#2366) shipped while all 1,000 cached tasks still carried the
+/// outlawed splicing runner baked into their `setup_shell`. The cure is a
+/// fingerprint COMPUTED FROM THE CONVERSION ITSELF (never hand-bumped): hash the
+/// adapter's output for one canonical probe row, plus any program it stages
+/// out-of-band (AlgoTune's on-disk harness). Any adapter change moves the
+/// fingerprint automatically; materialize writes it as a sidecar; resolve
+/// refuses a mismatch loudly, naming the one re-fetch command.
+pub fn fingerprint_parts(parts: &[&str]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    for p in parts {
+        h.update(p.as_bytes());
+        h.update([0u8]); // part separator so ("ab","c") != ("a","bc")
+    }
+    format!("{:x}", h.finalize())
+}
+
+/// The one writer for fetched gyms: atomic jsonl write + the fingerprint
+/// sidecar. Adapters MUST come through here — the sidecar is what lets
+/// [`resolve_gym`] refuse a cache the current adapter didn't produce, and a
+/// hand-rolled write that skips it would re-open the stale-oracle hole this
+/// seam exists to close. Sidecar lands AFTER the jsonl, so a crash between the
+/// two leaves a mismatch that refuses (the safe direction), never a lie.
+pub fn write_fetched_gym(
+    basename: &str,
+    lines: &[String],
+    fingerprint: &str,
+) -> Result<(std::path::PathBuf, usize), String> {
+    let dir = gym_cache_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let path = dir.join(basename);
+    let tmp = path.with_extension("jsonl.tmp");
+    std::fs::write(&tmp, lines.join("\n") + "\n").map_err(|e| format!("write: {e}"))?;
+    std::fs::rename(&tmp, &path).map_err(|e| format!("rename: {e}"))?;
+    std::fs::write(path.with_extension("jsonl.fingerprint"), fingerprint)
+        .map_err(|e| format!("write fingerprint sidecar: {e}"))?;
+    Ok((path, lines.len()))
+}
+
+/// Current adapter fingerprint per fetched-gym basename. A basename NOT listed
+/// here has no staleness contract (an operator's hand-placed cache file resolves
+/// as before); every `benchmark/fetch`-materialized suite must be. Same
+/// one-table-in-one-file shape as [`EMBEDDED_GYMS`].
+fn fetched_fingerprint_for(basename: &str) -> Option<String> {
+    match basename {
+        "ds-1000.jsonl" => Some(crate::cognition::benchmark_ds1000::adapter_fingerprint()),
+        "algotune.jsonl" => Some(crate::cognition::benchmark_algotune::adapter_fingerprint()),
+        "super-masked.jsonl" => Some(crate::cognition::benchmark_super::adapter_fingerprint()),
+        _ => None,
+    }
+}
+
+/// Pure freshness verdict for a cached fetched gym, split out so the refusal
+/// logic is testable without $HOME games. `sidecar` is the sidecar's contents
+/// (None = file absent — a pre-fingerprint or hand-rolled write, equally
+/// unprovable, equally refused when a contract exists).
+fn fetched_gym_freshness(
+    basename: &str,
+    sidecar: Option<&str>,
+    current: Option<&str>,
+) -> Result<(), String> {
+    let Some(current) = current else {
+        return Ok(()); // no contract for this basename — operator artifact, resolves as-is
+    };
+    match sidecar {
+        Some(s) if s.trim() == current => Ok(()),
+        _ => {
+            let bench = basename.strip_suffix(".jsonl").unwrap_or(basename); // diagnostic text only: a suffixless basename names itself in the re-fetch hint, nothing is budgeted on it
+            Err(format!(
+                "fetched gym '{basename}' is STALE: its cache was not produced by the \
+                 current adapter (sidecar {found}, adapter {current}). Grading tasks \
+                 staged from it would use an outdated oracle — the exact defect that \
+                 shipped 1,000 splicing DS-1000 runners on 2026-08-22. \
+                 Re-materialize: `continuum benchmark/fetch --benchmark {bench}`",
+                found = sidecar.map_or("missing".to_string(), |s| s.trim().to_string()),
+            ))
+        }
+    }
+}
+
 pub fn resolve_gym(reference: &str) -> Result<(String, String), String> {
     // (1) An existing on-disk file wins — a custom gym the operator points at.
     if Path::new(reference).is_file() {
@@ -168,6 +251,15 @@ pub fn resolve_gym(reference: &str) -> Result<(String, String), String> {
     // committed copy of the same name).
     let cached = gym_cache_dir().join(reference);
     if cached.is_file() {
+        // Freshness gate: refuse a cache the CURRENT adapter didn't produce.
+        // Serving it would stage tasks under an outdated oracle (#2366's stale-
+        // cache shadow) — refusing names the one command that re-materializes.
+        let base = Path::new(reference)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(reference); // non-UTF8 reference: fall through as no-contract, same as embedded_for
+        let sidecar = std::fs::read_to_string(cached.with_extension("jsonl.fingerprint")).ok();
+        fetched_gym_freshness(base, sidecar.as_deref(), fetched_fingerprint_for(base).as_deref())?;
         let text = std::fs::read_to_string(&cached)
             .map_err(|e| format!("fetched gym '{}' could not be read: {e}", cached.display()))?;
         return Ok((cached.display().to_string(), text));
@@ -233,6 +325,38 @@ mod tests {
         // Bare basename resolves to the same embedded bytes.
         let (_, text2) = resolve_gym("coder-eval.jsonl").unwrap();
         assert_eq!(text, text2);
+    }
+
+    // what this catches: the stale-fetched-gym class (regression for #2366's
+    // shadow — the DS-1000 oracle fix shipped while all 1,000 cached tasks still
+    // staged the outlawed splicing runner). A cache whose sidecar doesn't match
+    // the CURRENT adapter fingerprint (or has no sidecar at all) must refuse to
+    // resolve, naming the one re-fetch command; a matching sidecar passes; a
+    // basename with no contract (operator artifact) passes untouched.
+    #[test]
+    fn a_stale_fetched_gym_refuses_to_resolve_and_names_the_refetch_command() {
+        let current = crate::cognition::benchmark_ds1000::adapter_fingerprint();
+        // deterministic: same code → same fingerprint, every call
+        assert_eq!(current, crate::cognition::benchmark_ds1000::adapter_fingerprint());
+
+        // fresh cache: sidecar matches → resolves
+        assert!(fetched_gym_freshness("ds-1000.jsonl", Some(&current), Some(&current)).is_ok());
+        // stale cache: sidecar from an older adapter → refuse, name the command
+        let err = fetched_gym_freshness("ds-1000.jsonl", Some("deadbeef"), Some(&current))
+            .expect_err("a mismatched fingerprint must refuse");
+        assert!(err.contains("benchmark/fetch --benchmark ds-1000"), "{err}");
+        assert!(err.contains("STALE"), "{err}");
+        // pre-fingerprint cache (no sidecar): equally unprovable, equally refused
+        assert!(fetched_gym_freshness("ds-1000.jsonl", None, Some(&current)).is_err());
+        // no contract for this basename: an operator's hand-placed file resolves as before
+        assert!(fetched_gym_freshness("my-custom.jsonl", None, None).is_ok());
+
+        // every registered fetched gym computes a real fingerprint (a panic or
+        // empty string here means an adapter broke its probe conversion)
+        for name in ["ds-1000.jsonl", "algotune.jsonl", "super-masked.jsonl"] {
+            let fp = fetched_fingerprint_for(name).expect("registered");
+            assert_eq!(fp.len(), 64, "{name}: sha256 hex expected, got '{fp}'");
+        }
     }
 
     // what this catches: a typo'd / nonexistent gym FAILS LOUD naming the
