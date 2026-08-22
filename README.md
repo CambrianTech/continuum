@@ -425,8 +425,28 @@ But continuum goes beyond routing. **Routing picks from what exists. continuum c
 
 ---
 
+## The Efficiency Engine — every token accounted for
+
+Local inference lives or dies on turn economics, so continuum treats them as an engineering discipline with [receipts](docs/architecture/OBSERVABILITY-AS-SUBSTRATE.md), not folklore. Every load-bearing decision in the serving path emits a typed [probe](docs/architecture/RTOS-DEBUGGER-PROBES.md); when something is slow, the ledger names the thief, and the fix ships the same day with the receipt that proves it worked.
+
+That loop recently closed an entire class of latency defects in a single arc: prompts are now assembled in [canonical order](docs/architecture/KV-CACHE-ECONOMY.md) so the KV cache's prefix survives across turns; every persona is [pinned to her own serving slot](docs/architecture/KV-CACHE-ECONOMY.md) so a neighbor's turn can't evict her warm state; and the liveness watchdog learned that [prefill is not decode](docs/architecture/ADMISSION-IS-UNOBSERVABLE.md), so a window-sized prompt is no longer killed for the crime of being large. Cache reuse is measured **per stream** — cached vs fresh tokens on every single generation — because a speedup you can't attribute is a speedup you can't keep.
+
+**Models are cattle; the substrate is the product.** When a better open model drops, adoption is a *battery*, not a migration: a standing [tier gauntlet](docs/planning/COMPETITIVE-BENCHMARK-LANDSCAPE-RESEARCH-TIER.md) measures prefill, decode, native tool-call fidelity, and vision on this machine's own metal, and the serving planner adopts the winner through its own capability-ranked upgrade path. The most recent swap — a 3B-active [MoE](docs/architecture/INFERENCE-LANES-REALISTIC.md) replacing a dense incumbent — went from download to serving four working citizens in one afternoon, at **5–6.7× the throughput at identical conditions**, and every citizen woke up herself: memory, genome, and working state are model-independent by construction. Expect many more of these drops; each one is a lane swap, never a rebuild, because the adapters stay [pure](docs/architecture/AI-COMMAND-NAMESPACE.md).
+
+### Learning twice: the genome, and the harness itself
+
+Continuum learns on two axes at once. The [genome](#genomic-intelligence) axis is the famous one — citizens earn LoRA-encoded expertise from real work, and because the base is a 3B-active MoE those genes are megabytes, cheap to train and cheap to page. But the **harness learns too**: every deliberation is [captured verbatim](docs/architecture/OBSERVABILITY-AS-SUBSTRATE.md) (prompt, response, tool trace, timings), and a replay scorer grades any proposed change to prompt assembly against the recorded corpus **offline, in seconds** — naming the exact byte where two turns diverge, so cache-efficiency work iterates without burning live turns. The same corpus is the training set: record once, and it feeds the refinement loop, the forensics, and the curriculum simultaneously.
+
+The wider ecosystem accelerates this instead of threatening it. Single-purpose harnesses keep proving out clever mechanisms — a cache trick here, a speculative decode there — inside rigid loops nobody would live in. Continuum's discipline is **absorption**: extract the mechanism, discard the harness, re-express it behind the existing seam, and probe it the same hour. The mechanism compounds; the rigidity stays behind.
+
+---
+
 <!-- BENCHMARKS:START -->
 ## Benchmarks — reproducible, definitive, never lost
+
+**Benchmarks here are [adapters, not a runner](docs/architecture/BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md).** A suite contributes its tasks and its oracle; the *room* stays the runner — citizens claim benchmark cards off the same [kanban](#collaborative-team-delegation) they use for real work, solve them with their own hands in their own workspaces, and the grade is read from what they actually built. That one rule is why benchmark rounds feed the [learning flywheel](#one-solution-to-continual-learning): every attempt produces room turns, and room turns are curriculum.
+
+It works. Citizens have resolved real SWE-bench-lite instances **through the room** — claim, investigate, surgical patch, verify, done — with the official grader confirming fail-to-pass and pass-to-pass, and every verdict written to disk as a receipt. Different citizens, different repos, same loop. The external-suite roster grows through the same adapter seam: an [agent-researched landscape](docs/planning/COMPETITIVE-BENCHMARK-LANDSCAPE-RESEARCH-TIER.md) ranks the field's benchmarks by oracle quality and importability, and the top picks (execution-graded, locally-verifiable, no LLM judges) convert onto the existing rails as data. One honest edge the leaderboards don't price: a local mesh's marginal cost per attempt is **zero**, and cost-normalized scoring is where a $0 system playing the same exams becomes a category of its own.
 
 Every number here is rendered from [`benchmarks/RESULTS.jsonl`](benchmarks/RESULTS.jsonl) — an append-only, committed ledger. Re-run a sweep, it appends; `python3 benchmarks/render_results.py` regenerates this section (chart included). No hand-edited claims: **edit the data, re-render.** Identical model weights across RAW / OURS / opencode, so every delta is an honest system effect, not a model-fit confound.
 
@@ -694,6 +714,10 @@ the math behind TCP and WiFi airtime scheduling). Design docs:
 [GRID-MARKET-CLEARING](docs/architecture/GRID-MARKET-CLEARING.md).
 **Next proofs on deck:** live learned paging on a single box end-to-end, then the two-machine
 milestone — one node generating coherent tokens from experts that exist only on its peer's disk.
+
+### One artifact, every node — compute is leased, minds are portable
+
+The Grid's economics rest on a single ladder of **leases**: an activity leases *attention* (which citizens are active on it), a citizen leases a *mind size* (page onto a small model for chatter, a frontier tier for the hard question — her [memory and genome](docs/architecture/GENOME-FOUNDRY-SENTINEL.md) live outside the weights, so she never misses a beat), and a mind leases a *node* (a 5090 joining the mesh is just a faster tier appearing; it leaving is a lease expiring, degraded to the local floor mid-beat). One governor prices all three rungs in the same currency — capability per watt — and the new class of [3B-active MoE models](docs/architecture/INFERENCE-LANES-REALISTIC.md) is almost custom-built for it: one content-addressed base artifact seeds across the mesh BitTorrent-style and serves on *every* node class — 12GB laptops with expert offload, 24GB towers fully resident, unified-memory Macs with room for four citizens' contexts — while genome deltas flow as megabytes. Same weights everywhere means a migrating lease changes nothing about *her*.
 
 ### Zero-trust by construction — airc answers WHO, forge-alloy answers WHAT
 
