@@ -582,6 +582,55 @@ pub fn models() -> Vec<Model> {
             stop_sequences: &["<|im_end|>"],
             ..ModelSpec::default()
         }),
+        // ORNITH-1.5-35B-A3B — the WORK-TIER lane (Joel, 2026-08-22: "Swap it for
+        // sure"), adopted on a same-day tier battery against the incumbent at
+        // identical conditions (fa on, q8 KV, ub 2048, this M5, solo):
+        //
+        //   prefill 4k       896 t/s   vs Qwen3.8-27B 133   (6.7x)
+        //   prefill @16k     532 t/s   vs 106               (5.0x)
+        //   decode            68 t/s   vs 13.6              (5.0x)
+        //   tools        8/8 native calls, valid args, median 1.2s/turn
+        //   vision       mmproj red-square PASS
+        //
+        // MoE 35B with 3B ACTIVE params (256 experts, 41 layers) — the serving
+        // economics, not the param count, are the product. MIT license, ggufs +
+        // mmproj shipped. NO MTP head (llama.cpp: "speculative decoding not
+        // supported") — deliberately fine: MTP is a crutch for slow dense decode,
+        // and A3B's raw 68 t/s exceeds the incumbent's MTP-assisted rate. The
+        // sibling resolvers add no --spec-type when no mtp-* file exists, which is
+        // exactly right here. One-Spark axes: wins Code/Agentic/Tool-use/Long-ctx;
+        // the incumbent keeps Safety/Robustness/Planning — the sliding-mind pairing
+        // when model-tier leasing lands. Receipts: bench-receipts/tier-battery-*.md.
+        model(ModelSpec {
+            id: "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+            name: "Ornith-1.5-35B-A3B (work-tier MoE: agentic coder + vision)",
+            provider: "llama-server",
+            arch: Arch::Qwen35,
+            context_window: 262_144,
+            max_output_tokens: 16_384,
+            // MEASURED on this M5, solo lane, 2026-08-22 (tg128, llama-bench,
+            // build fa7e0d8e9): 67.7 t/s; 54.0 at 16k depth. Single-stream
+            // expectation per the #441 collapse-alarm contract.
+            tokens_per_second: 67.7,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Vision,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF"),
+            gguf_local_path: Some("~/.continuum/models/Ornith-1.5-35B-Q4_K_M.gguf"),
+            // mmproj resolves as the *mmproj*.gguf sibling in the same directory.
+            // Trainable HF safetensors base for the genome forge; GGUF is serving-only.
+            hf_source: Some("ornith-ai/Ornith-1.5-35B-A3B"),
+            // Embedded template + --jinja (battery-verified: full native tool caps,
+            // parallel calls, preserved reasoning).
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>"],
+            ..ModelSpec::default()
+        }),
         // Hermes-3-Llama-3.1-8B — the OPPONENT, made first-class. A general (non-coder) model we
         // benchmark AGAINST; giving it a real catalog row lets it flow through OURS (base_model_id)
         // and opencode like any other model, so the head-to-head is model-through-harness fair, not
