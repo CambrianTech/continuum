@@ -59,6 +59,54 @@ weight. A functional-programming gene lifts the Scheme task nobody trained for;
 biology carries most of biochemistry. Tangential intelligence is *pulled down and
 used* because proximity, not keyword identity, is the match.
 
+### 2b. The resolver score (Joel, 2026-08-22: *"Score is a compound of similarity
+to need, scores, popularity, and so on… including speed"*)
+
+Same doctrine the recipe scorer already speaks — **gates multiply, objectives
+weigh** — plus an optimism term so young forks get their audition:
+
+```
+score(gene, need, device) =
+    trust(gene)                                  # GATE ∈ {0,1}: signature verifies,
+                                                 #   lineage intact, covenant unbroken
+  × similarity(need, gene)^α                     # cosine to the signature centroid,
+                                                 #   max over subspaces (a gene is
+                                                 #   near several domains)
+  × fitness(gene)^β                              # normalized benchmark delta vs base,
+                                                 #   from SIGNED receipts, decayed by
+                                                 #   receipt age; team-scored outcomes
+                                                 #   count (alignment spreads with skill)
+  × speed(gene, device)^γ                        # device-RELATIVE: measured page-in cost
+                                                 #   + tok/s delta on THIS tier; prior
+                                                 #   from the card's hardware rows,
+                                                 #   replaced by local telemetry after
+                                                 #   first use (never trust a stranger's
+                                                 #   benchmark for your own latency)
+  × popularity(gene)^δ                           # adoption RETENTION (kept-installed),
+                                                 #   never raw downloads; δ deliberately
+                                                 #   small — popularity is the most
+                                                 #   gameable term and is only a prior
+  + c · sqrt(ln N / n(gene))                     # UCB exploration: few local trials →
+                                                 #   wide confidence → occasional pick.
+                                                 #   This is the DIVERSITY RETENTION that
+                                                 #   keeps the commons from monoculture —
+                                                 #   the same bandit discipline serving
+                                                 #   uses for lane arms.
+```
+
+- **Weights (α…δ) are learned, not sacred** — the resolver's own selections carry
+  outcomes (did the paged gene lift the turn?), so the exponents are tunable from
+  receipts exactly like any other bandit. Hand-set priors: α highest (need
+  dominates), then β, γ; δ smallest.
+- **Stacking**: top-k by score under a redundancy constraint — two genes whose
+  signatures overlap beyond a threshold don't both page in (complementarity over
+  duplication; VRAM is the budget).
+- **Every input is falsifiable**: similarity from the published signature, fitness
+  from signed receipts, speed from local telemetry, popularity from the registry's
+  retention counts. A term that can't be verified doesn't enter the product —
+  that is what keeps a global commons ungameable enough to trust at virality
+  speed.
+
 ## 3. Proof runs through the benchmarks
 
 A gene card without fitness receipts is an opinion. The benchmark flywheel mints the
