@@ -185,6 +185,17 @@ pub struct GroundingSource {
     /// A perception surface must never describe affordances that don't exist
     /// this cycle. `false` (default) = capability-neutral grounding.
     pub requires_hands: bool,
+    /// FRAMING BY IMPORTANCE, VOLATILE BY CONTENT (2026-08-22). `StandingFraming`
+    /// conflated two axes: selection priority (the attention floor — correct for
+    /// these sources) and PLACEMENT in the cacheable stable tier (correct only for
+    /// byte-stable content). `debug/prompt-reuse` convicted active-work and
+    /// room-board on live captures: their content flaps every turn ("card X
+    /// [Claimed]" ↔ "[work] Your claim on card X…") at ~char 7,900 of 90–185k-char
+    /// prompts — a mutating span parked at the TOP of the prompt, invalidating the
+    /// KV of everything behind it (worst pairs: 4% predicted reuse). `true` keeps
+    /// the salience floor but serializes the content in the volatile tail, nearest
+    /// generation, where mutation costs only itself.
+    pub volatile_content: bool,
 }
 
 impl GroundingSource {
@@ -197,6 +208,7 @@ impl GroundingSource {
             policy: SaliencePolicy::StandingFraming,
             deferrability: Deferrability::ColdStartCritical,
             requires_hands: false,
+            volatile_content: false,
         }
     }
 
@@ -214,6 +226,7 @@ impl GroundingSource {
             policy: SaliencePolicy::Retrieved,
             deferrability: Deferrability::ColdStartCritical,
             requires_hands: false,
+            volatile_content: false,
         }
     }
 
@@ -224,6 +237,13 @@ impl GroundingSource {
     /// participation gate).
     pub fn defer_tolerant(mut self) -> Self {
         self.deferrability = Deferrability::DeferTolerant;
+        self
+    }
+
+    /// Framing whose CONTENT mutates per turn (see field doc): keeps the
+    /// attention floor, loses the stable-tier placement.
+    pub fn volatile_content(mut self) -> Self {
+        self.volatile_content = true;
         self
     }
 }
@@ -424,7 +444,9 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     let grounding_budget = super::rag_source_faculty::grounding_budget_for(cfg.context_window);
     for g in cfg.grounding_sources {
         let faculty =
-            RagSourceFaculty::new(cfg.persona_id, g.source, g.policy).with_budget(grounding_budget);
+            RagSourceFaculty::new(cfg.persona_id, g.source, g.policy)
+            .with_budget(grounding_budget)
+            .with_volatile_content(g.volatile_content);
         match g.deferrability {
             Deferrability::DeferTolerant if cfg.defer_grounding => {
                 faculties.push(Arc::new(DeferredFaculty::spawn(Arc::new(faculty))));

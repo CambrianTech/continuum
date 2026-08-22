@@ -174,7 +174,11 @@ impl RagSourceFaculty {
             source,
             faculty_id,
             salience: policy.salience(),
-            // Standing framing is session-stable; retrieved grounding is volatile.
+            // Standing framing is session-stable by default; retrieved grounding
+            // is volatile. `with_volatile_content` overrides for framing whose
+            // BYTES mutate per turn (active-work, room-board — convicted by
+            // debug/prompt-reuse 2026-08-22): importance keeps the floor,
+            // placement follows content stability.
             stable: matches!(policy, SaliencePolicy::StandingFraming),
             // Floor default (derived from the substrate serving floor, not a magic
             // number). Production overrides via `with_budget(grounding_budget_for(
@@ -194,6 +198,15 @@ impl RagSourceFaculty {
     /// Override the per-tick token budget handed to the source.
     pub fn with_budget(mut self, budget: u32) -> Self {
         self.budget = budget;
+        self
+    }
+
+    /// Framing whose content mutates per turn: demote OUT of the stable tier
+    /// while keeping the StandingFraming salience floor (see `stable` field doc).
+    pub fn with_volatile_content(mut self, volatile: bool) -> Self {
+        if volatile {
+            self.stable = false;
+        }
         self
     }
 

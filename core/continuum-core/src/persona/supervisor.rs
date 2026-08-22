@@ -915,7 +915,10 @@ pub async fn materialize_adapters(
                     crate::cognition::persona_workspace::GroundingSource::framing(
                         active_work_source,
                     )
-                    .defer_tolerant(),
+                    .defer_tolerant()
+                    // Claim states flap per turn — floor stays, stable-tier
+                    // placement goes (debug/prompt-reuse conviction, 2026-08-22).
+                    .volatile_content(),
                     // WHERE code lives — the real workspace layout as framing, so a
                     // reasoner can avoid blind globs like `src/**/*.rs` from the
                     // prompt alone. ColdStartCritical (synchronous, NOT deferred):
@@ -949,7 +952,9 @@ pub async fn materialize_adapters(
                     crate::cognition::persona_workspace::GroundingSource::framing(
                         room_board_source,
                     )
-                    .defer_tolerant(),
+                    .defer_tolerant()
+                    // Card/column states churn with the round — same conviction.
+                    .volatile_content(),
                     // Live-call perception (#187/#192): WHO is visible on the call +
                     // what they show, as enriching framing. Defer-tolerant: a
                     // first-tick miss costs one under-grounded turn, not a wrong one —
