@@ -52,6 +52,58 @@ fn row_of(card: BenchRunCard) -> BenchRunRow {
     }
 }
 
+/// The LIVE exam as a run row — `cognition/eval`'s in-flight pass, folded from
+/// its watch snapshot into the same wire every ledger-scanned run rides. Joel
+/// (2026-08-23): "monitors need to monitor the work itself … not be blind and
+/// polling" — the exam publishes per-graded-task events; this is the rail's
+/// subscription. `None` when no pass is grading. A snapshot from a PRIOR run
+/// (run_id mismatch) contributes only the bare active row — a ghost grade must
+/// never render as this run's progress.
+fn live_exam_row() -> Option<BenchRunRow> {
+    let run_id = crate::cognition::eval::live_eval_run_id()?;
+    let snap = crate::cognition::eval::subscribe_eval_progress()
+        .borrow()
+        .clone()
+        .filter(|s| s.run_id.as_deref() == Some(run_id.as_str()));
+    let now = crate::persona::trace::now_ms();
+    Some(match snap {
+        Some(s) => BenchRunRow {
+            run_id,
+            instance: Some(format!("exam · last: {}", s.current_task)),
+            solver: Some("cognition/eval".to_string()),
+            phase: if s.last_ok { "active · last pass".into() } else { "active · last fail".into() },
+            stalled: false,
+            attempt: Some(s.done),
+            max_attempts: Some(s.total),
+            age_secs: now.saturating_sub(s.updated_at_ms) / 1000,
+            acts: None,
+            patch_bytes: None,
+            resolved: None,
+            fail_to_pass: None,
+            pass_to_pass: None,
+            failed_tests: Vec::new(),
+            infra_error: None,
+        },
+        None => BenchRunRow {
+            run_id,
+            instance: Some("exam · provisioning".to_string()),
+            solver: Some("cognition/eval".to_string()),
+            phase: "active".into(),
+            stalled: false,
+            attempt: None,
+            max_attempts: None,
+            age_secs: 0,
+            acts: None,
+            patch_bytes: None,
+            resolved: None,
+            fail_to_pass: None,
+            pass_to_pass: None,
+            failed_tests: Vec::new(),
+            infra_error: None,
+        },
+    })
+}
+
 /// Core round snapshot → wire round row. Lossless: a field dropped here is a
 /// scoreboard that lies by omission (same contract as `row_of`).
 fn round_row_of(s: RoundSnapshot) -> BenchRoundRow {
@@ -109,7 +161,12 @@ pub fn spawn_bench_emitter(
             // not propagate a panic into the emitter's own tick loop.
             .unwrap_or_default(); // safe: see the 3 lines above
             let view = BenchViewState {
-                runs: cards.into_iter().map(row_of).collect(),
+                // The live exam leads the rail (it is the work happening NOW);
+                // ledger-scanned rows follow.
+                runs: live_exam_row()
+                    .into_iter()
+                    .chain(cards.into_iter().map(row_of))
+                    .collect(),
                 // The round tracker's own truth (#371) — in-memory, reboot-durable,
                 // already sorted. Before this the client COUNTED run rows to fake a
                 // scoreboard; the recipe's scoreboard region renders these instead.

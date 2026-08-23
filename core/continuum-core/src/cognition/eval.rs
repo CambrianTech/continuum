@@ -3656,6 +3656,14 @@ impl Drop for RunIdScope {
     }
 }
 
+/// The run_id of the exam pass grading RIGHT NOW, `None` when idle. Public for
+/// the positron bench emitter (#141's third surface made real): a live exam is
+/// WORK the room's rail must show, through the same pipe every other run row
+/// rides — never a separate poller.
+pub fn live_eval_run_id() -> Option<String> {
+    CURRENT_RUN_ID.lock().ok().and_then(|g| g.clone())
+}
+
 static EVAL_PROGRESS: std::sync::OnceLock<tokio::sync::watch::Sender<Option<EvalPassProgress>>> =
     std::sync::OnceLock::new();
 
