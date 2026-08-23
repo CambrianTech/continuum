@@ -2274,11 +2274,25 @@ impl CognitionEval {
         // Root her hands at the target repo — the canonical mechanism, now shared with
         // `agent/solve` (drives `code/create-workspace` through her executor; fails LOUD rather
         // than let a silent no-root score a false 0-byte diff, [[fallbacks-are-illegal-fail-loud]]).
-        if let Some(root) = &p.workspace_root {
+        // ROOT AT THE RESOLVED ROOT — explicit pin OR the #312 ephemeral clone. This
+        // was gated on `p.workspace_root` alone, so every DEFAULT gym eval since the
+        // ephemeral-clone isolation landed had its grader reading the clone while her
+        // hands wrote to her HOME workspace: uniform false zeros on correct code
+        // (glass-boxed 2026-08-23 on the Ornith showcase battery — Atlas's
+        // roman_to_int was textbook-correct in home, the clone empty, 0/3 graded).
+        // The exact "silent no-root scores a false ZERO that would LIE about the
+        // solver" this comment block always warned about, one variable to the left.
+        if let Some(root) = eval_workspace_root.as_deref() {
             // A gym run IS the measurement — the grader reads the artifact, never her prose,
             // so an inert edit is unrecoverable here for the same reason as `benchmark/swe-solve`.
             crate::cognition::persona_workspace::root_acting_workspace(&cycle, root, &[], true)
                 .await?;
+            crate::probe!(
+                class = "eval.hands_rooted",
+                root = %root,
+                explicit = %p.workspace_root.is_some(),
+                "eval fork's hands rooted where the grader reads"
+            );
         }
 
         let max_acts = p.max_acts.unwrap_or(DEFAULT_MAX_ACTS) as usize;
