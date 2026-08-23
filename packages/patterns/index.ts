@@ -56,6 +56,9 @@ export type { BenchContentBody, BenchRoundVM, BenchRunVM, BenchRunState, BenchVe
 // Recipe purpose → render family (benchmark/hard-rs → bench, video-chat → live):
 // the ONE resolver between hierarchical recipe purposes and registry families.
 export { contentFamilyOf } from './contentFamily';
+// The SETTINGS activity (operator panel: covenant consent, HF identity, gene registry).
+export { SETTINGS_PURPOSE } from './settingsContent';
+export type { SettingsContentBody, SettingsGeneVM } from './settingsContent';
 export type {
   LiveContentBody,
   LiveParticipantVM,

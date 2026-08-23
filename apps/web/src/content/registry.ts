@@ -17,6 +17,7 @@ import {
   GRID_PURPOSE,
   PERSONA_PURPOSE,
   SERVING_PURPOSE,
+  SETTINGS_PURPOSE,
   type ArenaContentBody,
   type BenchContentBody,
   type ContentRegistry,
@@ -24,6 +25,7 @@ import {
   type LiveContentBody,
   type PersonaContentBody,
   type ServingContentBody,
+  type SettingsContentBody,
 } from '@continuum/patterns';
 import type { ChatContentBody } from '@continuum/chat-view';
 import { modelCell, type ForgeContentBody } from '@continuum/foundry-view';
@@ -34,6 +36,7 @@ import { renderBench } from '../bench/renderBench';
 import { renderArena } from '../arena/renderArena';
 import { renderServing } from '../serving/renderServing';
 import { renderGrid } from '../grid/renderGrid';
+import { renderSettings } from '../settings/renderSettings';
 
 /** The chat activity's center: the conversation (or an honest empty state). */
 function chatContent(body: ChatContentBody): TemplateResult {
@@ -87,3 +90,6 @@ webContentRegistry.register<BenchContentBody>(BENCH_PURPOSE, (body) => renderBen
 // The GRID view — every node's panel (resources + serving), the NODES
 // strip's full activity, dispatched when the room's purpose is "grid".
 webContentRegistry.register<GridContentBody>(GRID_PURPOSE, (body) => renderGrid(body));
+// The SETTINGS operator panel — covenant consent, HF identity, gene registry,
+// dispatched when the header's Settings affordance opens the face.
+webContentRegistry.register<SettingsContentBody>(SETTINGS_PURPOSE, (body) => renderSettings(body));

@@ -285,3 +285,19 @@ describe('recipe-purpose family dispatch (#431)', () => {
     expect(unknown.content.purpose).toBe('totally-novel');
   });
 });
+
+describe('the settings face (operator panel)', () => {
+  // what this catches: the settings overlay's dispatch contract — while open it
+  // WINS outright (an explicit operator act), renders the awaiting frame before
+  // the fetch lands, and on close every other face resumes. One consent surface
+  // in the UI, same verbs as the terminal.
+  it('an open settings overlay wins the content dispatch, awaiting-first', () => {
+    const ws = chatWorkspace(vm, { settings: { open: true } });
+    expect(ws.content.purpose).toBe('settings');
+    const body = ws.content.body as { loaded: boolean; genes: unknown[] };
+    expect(body.loaded).toBe(false);
+    expect(body.genes).toEqual([]);
+    const closed = chatWorkspace(vm, { settings: { open: false } });
+    expect(closed.content.purpose).toBe('chat');
+  });
+});

@@ -36,7 +36,7 @@ import type {
   RosterMemberVM,
   TranscriptRowVM,
 } from './chatViewModel';
-import { ARENA_PURPOSE, BENCH_PURPOSE, GRID_PURPOSE, LIVE_PURPOSE, PERSONA_PURPOSE, SERVING_PURPOSE, contentFamilyOf, type ArenaContentBody as ArenaContentBodyT, type BenchContentBody, type GridContentBody, type GridNodeVM, type ServingContentBody, type ServingNodeVM } from '@continuum/patterns';
+import { ARENA_PURPOSE, BENCH_PURPOSE, GRID_PURPOSE, LIVE_PURPOSE, PERSONA_PURPOSE, SERVING_PURPOSE, SETTINGS_PURPOSE, contentFamilyOf, type ArenaContentBody as ArenaContentBodyT, type BenchContentBody, type GridContentBody, type GridNodeVM, type ServingContentBody, type ServingNodeVM, type SettingsContentBody } from '@continuum/patterns';
 import type { LiveContentBody, PersonaContentBody } from '@continuum/patterns';
 import {
   focusedPersonaTab,
@@ -399,6 +399,11 @@ export interface WorkspaceLive {
    *  token rail + captions toggle) — renderer state threaded through so the
    *  live face projects from REAL signals. Absent = no live face requested. */
   readonly call?: LiveCallOverlay;
+  /** The widget-owned SETTINGS overlay: `open` = the header's Settings
+   *  affordance is active; `body` = the fetched covenant/HF/registry state
+   *  (absent while the fetch is in flight — the face renders its awaiting
+   *  frame). The SAME core verbs the terminal uses feed and mutate it. */
+  readonly settings?: { readonly open: boolean; readonly body?: SettingsContentBody };
   /** The `kind="arena"` eval-ledger view — feeds an arena-purpose room's
    *  leaderboards. Honestly absent until the feed delivers. */
   readonly arena?: ArenaViewState;
@@ -433,6 +438,17 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
   // while the chat projection stays pinned to the room underneath — the same
   // registry dispatch as chat/foundry, never a parallel route. No persona tab →
   // the room's own purpose-keyed content, unchanged.
+  // The SETTINGS face wins outright while open — the operator asked for the
+  // panel; every other face resumes on close.
+  const settingsBody: SettingsContentBody | undefined = live?.settings?.open
+    ? live.settings.body ?? {
+        loaded: false,
+        agreed: false,
+        covenantVersion: '',
+        covenant: '',
+        genes: [],
+      }
+    : undefined;
   const persona = focusedPersonaTab(live?.nav);
   const personaBody = persona ? personaContentBody(vm, persona, live?.board) : undefined;
   // The LIVE face ([[LIVE_PURPOSE]]): a room's call grid, dispatched through the
@@ -484,7 +500,10 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     | ContentView<ArenaContentBodyT>
     | ContentView<ServingContentBody>
     | ContentView<GridContentBody>
-    | ContentView<BenchContentBody> = personaBody
+    | ContentView<BenchContentBody>
+    | ContentView<SettingsContentBody> = settingsBody
+    ? { purpose: SETTINGS_PURPOSE, body: settingsBody }
+    : personaBody
     ? { purpose: PERSONA_PURPOSE, body: personaBody }
     : liveBody
       ? { purpose: LIVE_PURPOSE, body: liveBody }

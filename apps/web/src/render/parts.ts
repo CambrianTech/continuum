@@ -932,3 +932,41 @@ export function messageRow(msg: MessageRowVM): TemplateResult {
     </li>
   `;
 }
+
+/** The composed event the header's Settings affordance fires — open/close the
+ *  operator panel. The widget owns the face state (mirrors LIVE_FACE_TOGGLE). */
+export const SETTINGS_FACE_TOGGLE = 'settings-face-toggle';
+
+export interface SettingsFaceToggleDetail {
+  readonly open: boolean;
+}
+
+export function fireSettingsFaceToggle(e: Event, open: boolean): void {
+  (e.currentTarget as HTMLElement).dispatchEvent(
+    new CustomEvent<SettingsFaceToggleDetail>(SETTINGS_FACE_TOGGLE, {
+      detail: { open },
+      bubbles: true,
+      composed: true,
+    }),
+  );
+}
+
+/** The composed event the settings face's covenant buttons fire — accept
+ *  (true) or revoke (false). The widget routes it through the SAME
+ *  `genome/sharing` verb the terminal uses; the face re-renders from the
+ *  refetched substrate truth, never from optimistic local state. */
+export const SETTINGS_AGREE = 'settings-agree';
+
+export interface SettingsAgreeDetail {
+  readonly agree: boolean;
+}
+
+export function fireSettingsAgree(e: Event, agree: boolean): void {
+  (e.currentTarget as HTMLElement).dispatchEvent(
+    new CustomEvent<SettingsAgreeDetail>(SETTINGS_AGREE, {
+      detail: { agree },
+      bubbles: true,
+      composed: true,
+    }),
+  );
+}
