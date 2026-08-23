@@ -37,6 +37,7 @@ pub const RECIPE_WALL_CATEGORY: &str = "recipe";
 
 /// The room → recipe pointer, as published by `activity/spawn` and read back by
 /// [`crate::ipc::recipe_room_purpose::RecipeRoomPurpose`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 // `Eq` was dropped when `params` arrived (#433): `serde_json::Value` carries
 // floats, which are only `PartialEq`. Nothing keyed on the binding's Eq.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -56,6 +57,9 @@ pub struct RoomRecipeBinding {
     pub recipe: String,
     /// Optional parent activity — activities spawn activities, and the graph is
     /// POINTERS, never nested blobs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub parent: Option<String>,
     ///
     /// A pointer to a room is a `RoomId`. It was a `String` while the doc directly
     /// above it said "POINTERS" — a pointer typed as text is not a pointer, it is a
@@ -202,6 +206,7 @@ mod tests {
     fn the_binding_survives_the_round_trip_the_two_sides_share() {
         let written = RoomRecipeBinding {
             recipe: "benchmark/hard-rs".to_string(),
+            parent: Some("f1a1b2c3-0000-4000-8000-000000000000".to_string()),
             // This fixture was ALWAYS a uuid — written as a String only because the
             // field was one. The value never changed; the type caught up to it.
             parent: Some(airc_core::RoomId::from_uuid(

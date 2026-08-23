@@ -342,6 +342,11 @@ async fn grade_card(
         )
     };
 
+    // Post the verdict into the room as a participant (slice 2 posts to the authoring
+    // citizen's room; per-run bench-room targeting is #329/#346 slice 3).
+    airc.say(&msg)
+        .await
+        .map_err(|e| format!("post verdict: {e}"))?;
     // Post the verdict into the CARD'S room as a participant — the run room the
     // citizens are standing in, not the grading citizen's current room.
     crate::probe!(

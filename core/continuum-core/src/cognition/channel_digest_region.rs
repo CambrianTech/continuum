@@ -318,6 +318,10 @@ mod tests {
                 cursor: Mutex::new(cursor),
             }),
         });
+        (
+            ChannelDigestRegion::new(builder, channels).with_grounding(0),
+            bookmarks,
+        )
         ChannelDigestRegion::new(builder, channels).with_grounding(0)
     }
 
@@ -365,6 +369,7 @@ mod tests {
     async fn unknown_persona_is_idle() {
         let persona = Uuid::new_v4();
         let room = RoomId::new();
+        let (region, _) = region_for(persona, room, vec![event_in(room, "a", 1)]);
         let region = region_for(persona, room, vec![event_in(room, "a", 1)]);
         let outcome = region
             .tick(&RegionContext::for_persona(0, Uuid::new_v4()))

@@ -94,6 +94,7 @@ pub mod scripted_adapter_factory;
 pub mod scripted_conversation;
 pub mod seed;
 pub mod self_task_generator;
+pub mod service_loop;
 pub mod act_question;
 pub mod service_loop;
 pub mod staged_workspace;

@@ -446,6 +446,9 @@ mod tests {
     // degradation path (sources stay uncached, logged loud). What must never happen is
     // an Ok(empty stream): that would look like a live subscription that silently never
     // invalidates — the actual fallback.
+    #[tokio::test]
+    async fn stub_subscribe_refuses_rather_than_faking_a_stream() {
+        let stub: Arc<dyn AircCitizen> = Arc::new(StubAircCitizen::new(Uuid::new_v4()));
     // what this catches: the default `membership_epoch` contract (P0 20b44763) —
     // a CLOSED receiver (sender already dropped). The conversation's select loop
     // parks on `pending()` when `changed()` errs; if a future default swapped to

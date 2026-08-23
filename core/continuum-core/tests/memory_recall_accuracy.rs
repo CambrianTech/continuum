@@ -752,6 +752,7 @@ async fn test_recall_without_corpus_returns_error() {
     };
 
     let result = manager
+        .multi_layer_recall("nonexistent-persona", &req)
         .multi_layer_recall(&PersonaRef("nonexistent-persona".to_string()), &req)
         .await;
     assert!(result.is_err(), "Recall without loaded corpus should error");

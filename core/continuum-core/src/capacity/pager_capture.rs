@@ -31,6 +31,7 @@ use ts_rs::TS;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(
     export,
+    export_to = "../../../shared/generated/pager/PagerCaptureEvent.ts"
     export_to = "../../../protocol/typescript/capacity/PagerCaptureEvent.ts"
 )]
 pub struct PagerCaptureEvent {

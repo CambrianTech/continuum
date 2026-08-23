@@ -83,6 +83,28 @@ impl NvidiaProbe {
     /// capability gap for the caller, NOT a cue to substitute a CPU monitor or a
     /// fabricated number.
     ///
+    /// Performs one synchronous probe at construction (so a non-NVIDIA host
+    /// returns `None` immediately rather than spawning a daemon that can
+    /// never sample); the per-tick refresh thereafter is fully async.
+    pub fn new() -> Option<Arc<Self>> {
+        let (name, sample) = probe_blocking()?;
+
+        let monitor = Arc::new(Self {
+            device_name: name,
+            total_bytes: sample.total_bytes,
+            free_bytes: AtomicU64::new(sample.free_bytes),
+            process_bytes: AtomicU64::new(0),
+            utilization_x1000: AtomicU32::new((sample.utilization * 1000.0) as u32),
+            temperature_mc: AtomicI32::new(to_milli(sample.temperature_c)),
+            power_mw: AtomicI32::new(to_milli(sample.power_watts)),
+            channel: DaemonChannel::ungated(derive_pressure(sample.free_bytes, sample.total_bytes)),
+        });
+
+        // The shared runner owns the interval + per-tick catch_unwind: a
+        // panic in parsing loses one tick and resumes against the last-good
+        // snapshot rather than killing GPU monitoring for the whole process.
+        let _ = spawn_daemon(monitor.clone());
+        Some(monitor)
     /// One synchronous probe here so a non-NVIDIA host returns `None` immediately
     /// rather than spawning a daemon that can never sample; every refresh after is
     /// async.
@@ -305,6 +327,43 @@ mod tests {
         // A line missing the memory columns is useless → whole line rejected.
         assert!(parse_gpu_csv_line("[N/A], [N/A], 0, 0, 0").is_none());
         assert!(parse_gpu_csv_line("only,three,cols").is_none());
+    }
+
+    /// What this catches: pressure math regressing (sign flip, no clamp, or
+    /// divide-by-zero when total is 0). Pressure is what the governor acts
+    /// on, so the boundaries matter.
+    #[test]
+    fn pressure_derivation_is_sane_and_clamped() {
+        assert!(
+            (derive_pressure(0, 100) - 1.0).abs() < 1e-6,
+            "no free → full pressure"
+        );
+        assert!(
+            (derive_pressure(100, 100) - 0.0).abs() < 1e-6,
+            "all free → zero pressure"
+        );
+        assert!(
+            (derive_pressure(25, 100) - 0.75).abs() < 1e-6,
+            "25% free → 0.75 pressure"
+        );
+        assert_eq!(
+            derive_pressure(50, 0),
+            0.0,
+            "total 0 must not divide-by-zero"
+        );
+        // free briefly exceeding total (driver reporting race) clamps, not negative.
+        assert_eq!(derive_pressure(200, 100), 0.0);
+    }
+
+    /// What this catches: the None-vs-0 distinction for optional sensors
+    /// round-tripping through the atomic milli-encoding. A real 0°C must
+    /// stay Some(0.0); a missing sensor must stay None — conflating them
+    /// would make the governor think a sensorless GPU is freezing.
+    #[test]
+    fn sensor_milli_encoding_round_trips_none_and_zero() {
+        assert_eq!(from_milli(to_milli(None)), None);
+        assert_eq!(from_milli(to_milli(Some(0.0))), Some(0.0));
+        assert_eq!(from_milli(to_milli(Some(52.5))), Some(52.5));
     }
 
     /// What this catches: process-VRAM summing matching the wrong pid, or

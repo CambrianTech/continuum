@@ -3567,6 +3567,7 @@ mod tests {
             assert!(
                 faculty.describe_tool_tokens()
                     + faculty.framing_floor_tokens() as usize
+                    + (needed / 4).max(256) as usize
                     + faculty.completion_reserve_within(needed) as usize // the LIVE reserve, floor and all — the bound must close against what production actually reserves
                     <= needed as usize,
                 "min_window_for_agentic_surface({needed}) must clear its own arithmetic"

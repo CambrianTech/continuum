@@ -865,6 +865,7 @@ mod tests {
 
     #[async_trait]
     impl RoomBoardReader for StubReader {
+        async fn work_board(&self, _room: Option<uuid::Uuid>) -> Result<BoardSnapshot, AircError> {
         async fn work_board(&self, room: Option<uuid::Uuid>) -> Result<BoardSnapshot, AircError> {
             *self.last_room.lock().unwrap() = Some(room);
             if *self.fail.lock().unwrap() {
@@ -1326,6 +1327,7 @@ mod tests {
                 .await
                 .items
                 .is_empty(),
+            "same-room turn must still receive the board"
             "same-room turn must receive the board"
         );
         assert_eq!(*reader.last_room.lock().unwrap(), Some(Some(home)));
@@ -1336,11 +1338,13 @@ mod tests {
         let bench = uuid::Uuid::new_v4();
         let other = RagContext::for_persona_in_room(p, 1_000, bench);
         assert!(
+            source
             !source
                 .deliver(&other, 500, ResolutionPreference::Raw)
                 .await
                 .items
                 .is_empty(),
+            "another room's turn must NOT receive this room's board"
             "a bench-room turn must receive a board — the bench room's own"
         );
         assert_eq!(
@@ -1359,6 +1363,7 @@ mod tests {
                 .await
                 .items
                 .is_empty(),
+            "a synthetic exam context must NOT receive the room board"
             "a synthetic exam context must NOT receive any board"
         );
         assert_eq!(

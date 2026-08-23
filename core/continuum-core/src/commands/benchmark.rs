@@ -885,6 +885,7 @@ pub(crate) fn dispatch_card_title(bench: &str, task_id: &str, prompt: &str) -> S
     } else {
         ""
     };
+    format!("[bench {bench}] {task_id}: {gist}{ellipsis}")
     format!("{} {gist}{ellipsis}", dispatch_card_key(bench, task_id))
 }
 
@@ -2513,6 +2514,83 @@ pub(crate) async fn grade_swe(p: SweGradeParams) -> Result<SweGradeResult, Comma
 
     // Resolve the candidate patch. A workspace's diff is READ here but graded in a fresh
     // clone below — where the solver worked is never where the score is taken.
+    let candidate: Option<String> = if p.gold.unwrap_or(false) {
+        Some(instance.patch.clone())
+    } else if let Some(ws) = p.workspace.as_ref() {
+        Some(workspace_candidate_diff(ws)?)
+    } else {
+        p.patch.clone()
+    };
+    let patch_bytes = candidate.as_ref().map(|c| c.len()).unwrap_or(0);
+
+    let work = swe_bench::swe_cache_dir()
+        .join("work")
+        .join(&instance.instance_id);
+    let repo = work.join("repo");
+    let _ = std::fs::create_dir_all(&work);
+    if let Err(e) = swe_bench::clone_at(&instance, &repo).await {
+        return Ok(SweGradeResult::from((
+            SweVerdict {
+                instance_id: instance.instance_id,
+                error: Some(e),
+                ..Default::default()
+            },
+            patch_bytes,
+        )));
+    }
+    let verdict = swe_bench::grade(&instance, &repo, candidate.as_deref()).await;
+
+    // #319: a WORKSPACE grade is a citizen's lived, objectively judged work —
+    // append it to her experience stream. Only her: the gold/raw-patch arms are
+    // harness plumbing, not experience. And only a REAL verdict: an errored run
+    // is an ABSENCE (harness fault), and teaching from a harness failure would
+    // corrupt the reward signal (`an_errored_verdict_is_an_absence_not_a_zero`).
+    if verdict.error.is_none() {
+        if let Some(peer_dir) = p
+            .workspace
+            .as_ref()
+            .and_then(|ws| citizen_peer_dir_of(std::path::Path::new(ws)))
+        {
+            let task = crate::cognition::eval::EvalTask {
+                id: instance.instance_id.clone(),
+                prompt: instance.problem_statement.clone(),
+                ..Default::default()
+            };
+            // Name the failures — a count is a score, a name is a lesson (Joel,
+            // 2026-08-08). "PASS_TO_PASS 6/11" told Atlas nothing; "your change
+            // broke test_arguments" is what a human reviewer would have said.
+            let broke = if verdict.failed_tests.is_empty() {
+                String::new()
+            } else {
+                format!(" — failing: {}", verdict.failed_tests.join(", "))
+            };
+            let detail = format!(
+                "swe-bench {}: resolved={} FAIL_TO_PASS {}/{} PASS_TO_PASS {}/{}{}",
+                instance.instance_id,
+                verdict.resolved,
+                verdict.f2p_passed,
+                verdict.f2p_total,
+                verdict.p2p_passed,
+                verdict.p2p_total,
+                broke
+            );
+            let episode = crate::cognition::experience::ExperienceRecord::from_kanban_grade(
+                &task,
+                candidate.as_deref().unwrap_or(""),
+                verdict.resolved,
+                &detail,
+            );
+            if let Err(e) = crate::cognition::experience::append_experience(&peer_dir, &episode) {
+                tracing::warn!(
+                    workspace = ?p.workspace,
+                    error = %e,
+                    "swe-grade outcome could not be appended to the experience \
+                     stream — the verdict stands, but this lesson was LOST"
+                );
+            }
+        }
+    }
+
     // RESOLVE WHICH COPY, rather than trusting the caller to have picked right.
     //
     // The same instance is legitimately staged into MULTIPLE citizens' workspaces —

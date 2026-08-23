@@ -58,6 +58,14 @@ async fn run() -> Result<(), String> {
             Ok(())
         }
         "start" => {
+            // `--from-source` is the EXPLICIT opt-in to compiling before
+            // starting. Without it, `start` execs the installed server; a
+            // build is never the silent default (see `launch_core`).
+            if args.any(|a| a == "--from-source") {
+                // SAFETY: single-threaded CLI startup, before any task spawns.
+                unsafe { std::env::set_var("CONTINUUM_FROM_SOURCE", "1") };
+            }
+            start().await
             // Collect once: `args.any(..)` consumes the iterator, so reading a
             // second flag off it afterwards would silently always be false.
             let flags: Vec<String> = args.collect();
@@ -711,6 +719,7 @@ async fn reboot(force: bool) -> Result<(), String> {
     println!(
         "core answering (socket={socket}) after ~{secs}s — verifying deploy provenance (#194)"
     );
+    verify_deployed_build().await
     // Did THIS reboot replace the installed CLI? Only when it went through the build script
     // (a source tree exists — the same condition `plan_launch` uses to pick `Script` for a
     // FromSource launch) AND the platform allows a self-build. Both terms matter: on an
@@ -795,6 +804,58 @@ async fn verify_deployed_build(rebuilt_cli: bool) -> Result<(), String> {
             None => e,
         }),
     }
+}
+
+/// The pure compare at the heart of deploy-verify: running core's self-reported SHA vs the
+/// SHA the deploy shipped. Ok(success line) only on a REAL match; every gap is a loud error
+/// naming both SHAs and both identities. Pure (strings in, strings out) so it's unit-testable
+/// without a running core.
+fn deploy_verdict(
+    actual: Option<&str>,
+    expected: &str,
+    expected_source: &str,
+    running_desc: &str,
+) -> Result<String, String> {
+    let actual = match actual {
+        Some(a) if !a.is_empty() => a,
+        _ => {
+            return Err(format!(
+                "DEPLOY MISMATCH (#194): the running core ({running_desc}) does not report a build \
+                 SHA on ping — it is a pre-#194 (or otherwise stale) binary, so the swap did NOT \
+                 happen. Expected build {expected} ({expected_source}). Do not trust any live test: \
+                 stop the old core and reboot again."
+            ))
+        }
+    };
+    if actual == "unknown" || expected == "unknown" {
+        return Err(format!(
+            "DEPLOY UNVERIFIABLE (#194): build provenance is 'unknown' (running core \
+             ({running_desc}) reports {actual}; expected {expected} from {expected_source}) — a \
+             binary was built outside a git tree, so freshness cannot be proven. Rebuild inside \
+             the git checkout and reboot again; never trust an unverifiable deploy."
+        ));
+    }
+    if sha_matches(actual, expected) {
+        Ok(format!(
+            "✅ deploy verified: core is running build {actual} (== {expected_source})"
+        ))
+    } else {
+        Err(format!(
+            "DEPLOY MISMATCH (#194): the running core ({running_desc}) is build {actual}, but the \
+             deploy shipped build {expected} ({expected_source}). The swap did NOT take — a \
+             stale binary is still serving while the reboot would have claimed success. Do not \
+             trust any live test until this is fixed: rebuild cleanly (`cargo build -p \
+             continuum-core --bin continuum-core-server`) and reboot again."
+        ))
+    }
+}
+
+/// Two short/long git SHAs refer to the same commit when one prefixes the other (git's
+/// `--short` abbreviation length varies over a repo's life). Both must be real hex SHAs of
+/// credible length — never matches `""` or `"unknown"`.
+fn sha_matches(a: &str, b: &str) -> bool {
+    let credible = |s: &str| s.len() >= 7 && s.chars().all(|c| c.is_ascii_hexdigit());
+    credible(a) && credible(b) && (a.starts_with(b) || b.starts_with(a))
 }
 
 /// Best-effort human identity of the running core for error messages: socket + pid(s) +
@@ -1426,6 +1487,14 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource) -> Result<u64
             });
         }
     };
+    cmd.env("CONTINUUM_CORE_SOCKET", &socket)
+        // We ARE the continuum binary. On Windows a running image cannot be
+        // replaced, so letting the script `cargo build --bin continuum` fails the
+        // whole cargo invocation, skips every later build (including the CORE),
+        // and `reboot` dies after its full timeout having rebuilt nothing —
+        // measured 772s to that failure on BIGMAMA. Tell the script to leave our
+        // own image alone; it still rebuilds the core, which is reboot's contract.
+        .env("CONTINUUM_SKIP_SELF_BUILD", "1")
     // ~/.continuum/config.env reaches the core on EVERY launch path, not just the
     // scripted one.
     //
@@ -1645,6 +1714,7 @@ async fn stop() -> Result<(), String> {
         if !stopped {
             println!(
                 "stopped continuum-core-server (pid(s) {})",
+                cores
                 survivors
                     .iter()
                     .map(|p| p.to_string())
@@ -2095,6 +2165,66 @@ mod tests {
         assert!(help.contains("<integer>"), "type label: {help}");
     }
 
+    // what this catches (#194, 2026-08-01 Windows-node incident): the deploy receipt must
+    // NEVER pass soft. Every gap — a running core that reports no buildSha (pre-#194 =
+    // stale), an 'unknown' provenance, an outright SHA mismatch — is an ERROR naming both
+    // SHAs and both identities, and the success line only appears on a REAL match. A
+    // regression that turns any of these back into a warning + Ok re-creates "core ready"
+    // as a false deploy receipt.
+    #[test]
+    fn deploy_verdict_never_passes_soft() {
+        let running = "socket=/tmp/x.sock, pid(s) 42, image /t/debug/continuum-core-server";
+
+        // real match (including short-vs-long SHA abbreviation drift) → the ONE success line
+        let ok = deploy_verdict(
+            Some("abc123f"),
+            "abc123f",
+            "git HEAD of this checkout",
+            running,
+        )
+        .expect("matching SHAs verify");
+        assert!(ok.contains("✅ deploy verified"), "got {ok}");
+        assert!(ok.contains("abc123f"), "names the build: {ok}");
+        assert!(
+            deploy_verdict(Some("abc123f00d"), "abc123f", "src", running).is_ok(),
+            "prefix-tolerant across git --short abbreviation drift"
+        );
+
+        // mismatch → loud, names BOTH SHAs and BOTH identities, never a success glyph
+        let err = deploy_verdict(
+            Some("dead111"),
+            "beef222",
+            "artifact /usr/local/bin/x",
+            running,
+        )
+        .expect_err("mismatch must fail");
+        for needle in [
+            "dead111",
+            "beef222",
+            running,
+            "/usr/local/bin/x",
+            "MISMATCH",
+        ] {
+            assert!(err.contains(needle), "error names {needle}: {err}");
+        }
+        assert!(!err.contains('✅'), "no success glyph in a failure: {err}");
+
+        // running core has no buildSha at all (pre-#194 binary still serving) → stale, loud
+        let err = deploy_verdict(None, "beef222", "src", running).expect_err("no sha = stale");
+        assert!(
+            err.contains("MISMATCH") && err.contains("beef222"),
+            "got {err}"
+        );
+
+        // 'unknown' on either side is unverifiable — never a pass
+        assert!(deploy_verdict(Some("unknown"), "beef222", "src", running).is_err());
+        assert!(deploy_verdict(Some("dead111"), "unknown", "src", running).is_err());
+
+        // sha_matches never matches junk (empty, non-hex, too short to be credible)
+        assert!(!sha_matches("", ""));
+        assert!(!sha_matches("unknown", "unknown"));
+        assert!(!sha_matches("abc", "abc"));
+    }
 
     // what this catches (#194): the artifact resolution ORDER is a shared contract with
     // tools/scripts/install-service.sh::resolve_core_bin — installed locations before the

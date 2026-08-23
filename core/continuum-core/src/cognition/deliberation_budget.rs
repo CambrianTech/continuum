@@ -135,6 +135,8 @@ const OWN_SPEECH_RING: usize = 8;
 /// the deliberation faculty when rendering the repetition fact. Same
 /// process-global registry pattern as `channel_substrate` — the seam between
 /// the speaking path and the perceiving path.
+fn own_speech_rings() -> &'static std::sync::Mutex<
+    std::collections::HashMap<crate::identity::PeerId, std::collections::VecDeque<String>>,
 ///
 /// The ROOM half of the key is load-bearing, and its absence was a live defect
 /// (glass-boxed 2026-08-14): personas are MULTI-room citizens, so a ring keyed
@@ -682,6 +684,13 @@ fn matches_name_at(line: &str, pos: usize, name: &str) -> bool {
 ///
 /// A bare mention ("I agree with Anwen's plan") matches neither shape and stays
 /// unannotated. Leading beats greeting; among greetings the earliest wins.
+pub(super) fn vocative_addressee<'a>(content: &str, participants: &'a [String]) -> Option<&'a str> {
+    vocative_addressees(content, participants)
+        .into_iter()
+        .next()
+}
+
+/// Every addressee the message's vocative geometry names, in discovery order,
 ///
 /// Returns every addressee the geometry names, in discovery order,
 /// deduped, capped at 3. The LEADING form is scanned on every line (live

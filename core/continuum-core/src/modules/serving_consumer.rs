@@ -847,6 +847,7 @@ mod tests {
         let (suppress_tx, _srx) = watch::channel(Arc::new(HashSet::new()));
         let (pin_tx, pin_rx) = watch::channel(None);
         let footprint_of: FootprintFn = Arc::new(move |_id: &str, _w: u32, _l: u32| current);
+        let consumer = ServingConsumer::new(serving_rx, suppress_tx, pin_tx, footprint_of, policy);
         let consumer = ServingConsumer::new(serving_rx, suppress_tx, pin_tx, footprint_of, policy)
             .with_inherited_lane(Arc::new(|| None));
         (consumer, serving_tx, pin_rx)

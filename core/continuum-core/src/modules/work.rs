@@ -377,6 +377,20 @@ async fn room_holding_card(airc: &Arc<Airc>, card_id: WorkCardId) -> Option<airc
         if board.snapshot().cards.iter().any(|c| c.card_id == card_id) {
             return Some(room);
         }
+        if airc.join(&room.name).await.is_err() {
+            continue;
+        }
+        crate::probe!(
+            class = "work.claim.followed_card_room",
+            card_id = %short8(card_id.as_uuid()),
+            room = %room.name,
+            "claim-by-id targeted a card outside the current room — switched to \
+             the card's room and retried (accept-or-redirect, never refuse-and-instruct)"
+        );
+        return Some(
+            airc.claim_work_card(ClaimWorkCard { card_id, ttl_ms })
+                .await,
+        );
     }
     None
 }

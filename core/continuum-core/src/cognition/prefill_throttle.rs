@@ -167,6 +167,11 @@ impl PrefillThrottle {
             want_concurrency: want as u32,
             spike_bytes: spike,
         };
+        let grant = FitPolicy {
+            safety_margin_bytes: spike,
+        }
+        .grant(&cap, &req);
+        self.apply(grant.concurrency as usize)
         // HOLD threshold — the tight margin. What we may keep running RIGHT NOW. Falling
         // below this is the safety direction and still shrinks instantly, unchanged.
         let hold = FitPolicy {
@@ -205,6 +210,8 @@ impl PrefillThrottle {
     /// GROW only lands after [`GROW_STICKINESS_TICKS`] consecutive reconciles wanted it —
     /// sustained headroom, not one optimistic reading. Never blocks, never revokes running
     /// work, never thrashes on a boundary-riding live number.
+    fn apply(&self, target: usize) -> usize {
+        let target = target.max(1); // a resident model may always run ONE prefill (residency decision)
     fn apply(&self, hold: usize, grow: usize) -> usize {
         // a resident model may always run ONE prefill (residency decision)
         let hold = hold.max(1);

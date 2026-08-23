@@ -625,6 +625,13 @@ impl ActionCommand for AgentSolve {
                                     Ok(diff) => {
                                         use sha2::{Digest, Sha256};
                                         let sha = format!("{:x}", Sha256::digest(diff.as_bytes()));
+                                        if let Some(dir) = inner.capture_dir.as_ref() {
+                                            let _ = std::fs::create_dir_all(dir);
+                                            let _ = std::fs::write(
+                                                std::path::Path::new(dir)
+                                                    .join(format!("attempt-{attempt}.patch")),
+                                                &diff,
+                                            );
                                         // CUSTODY IS NOT OPTIONAL. The workspace is reset for
                                         // the next attempt, so this write is the only moment
                                         // her diff exists anywhere durable. Every failure to
@@ -1314,6 +1321,7 @@ impl AgentSolve {
             //    ergonomic/adapter fix ([[use-adapters-dont-dumb-it-down]]), not a capability demand —
             //    and honest (it states the real I/O contract; it does not hand her the answer). Then
             //    DRIVE her to settlement (read → edit → run → fix, her real act→observe loop).
+            let room = Uuid::nil();
             // The run's ROOM (see `AgentSolveParams::room`). `Uuid::nil()` is the
             // honest roomless fallback for a bare `agent/solve` with no activity
             // behind it; a DISPATCHED run always carries one, and that is what
@@ -1345,6 +1353,9 @@ impl AgentSolve {
             //
             // The old text said "writing files with code/write" and "graded on the files your tools
             // WRITE". That was written for from-scratch build gyms, where new files ARE the
+            // deliverable. Nested beneath it, `swe_task_prompt` says the opposite: "do not add new
+            // top-level files — fix it IN PLACE with code/edit. The fix must land in the existing
+            // files."
             // deliverable. Nested beneath it, the SWE task text says the opposite: "do not add new
             // top-level files … find the existing source of the fault and edit it in place." That
             // text is the dispatch CARD BODY (`benchmark::BenchmarkSweSetup`) — the card IS the
@@ -1396,6 +1407,10 @@ impl AgentSolve {
                     f
                 }
             };
+            let mut settled = crate::cognition::act_observe::drive_to_settle(
+                &cycle, burst, room, max_acts, framing,
+            )
+            .await;
             // THE RUN PULSES WHILE IT RUNS (#371 law 2: liveness is a pulse, never a
             // terminal artifact).
             //

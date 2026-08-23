@@ -1349,6 +1349,7 @@ mod tests {
             plan.rationale
         );
         assert_eq!(
+            plan.base_model_id, "qwen3.5-4b",
             plan.base_model.model_id, "qwen3.5-4b",
             "14B can't fit 5.5GB; 4B is the most capable that does"
         );
@@ -1477,6 +1478,7 @@ mod tests {
         };
         let plan = plan_serving(host, &candidates(), ServingDemand::new(MAX_LANES, None)).unwrap();
         assert_eq!(
+            plan.base_model_id, "coder-sentinel-14b",
             plan.base_model.model_id, "coder-sentinel-14b",
             "most capable, fits easily"
         );
@@ -1603,6 +1605,7 @@ mod tests {
             "must report the GPU budget can't hold any candidate"
         );
         assert_eq!(
+            plan.base_model_id, "qwen2.5-0.5b",
             plan.base_model.model_id, "qwen2.5-0.5b",
             "names the smallest as the only option"
         );
@@ -1648,6 +1651,21 @@ mod tests {
     // rather than flap the served model on a transient budget bump.
     #[test]
     fn stable_keeps_incumbent_when_upgrade_lacks_headroom() {
+        // 10GB: big (9.7GB) fits a lane but exceeds the 0.9*10=9GB headroom bar.
+        let host = HostBudget {
+            usable_bytes: 10 * GB,
+            perf_cores: 6,
+        };
+        assert_eq!(
+            plan_serving(host, &pair(), ServingDemand::new(MAX_LANES, None))
+                .unwrap()
+                .base_model_id,
+            "big",
+            "fresh would pick big"
+        );
+        let stable = plan_serving_stable(
+            host,
+            &pair(),
         // LOCAL fixture, not `pair()`. This test needs `big` to be a LEGITIMATE upgrade
         // target (clears the full-turn window floor, so selection would really pick it)
         // that nonetheless fails the switch-UP headroom bar. With the shared `pair()` at
@@ -1703,6 +1721,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
+            stable.base_model_id, "small",
             stable.base_model.model_id, "small",
             "hysteresis keeps incumbent — no flap"
         );
@@ -1760,6 +1779,7 @@ mod tests {
             ServingDemand::new(MAX_LANES, None),
         )
         .expect("incumbent still servable");
+        assert_eq!(stable.base_model_id, "big");
         assert_eq!(stable.base_model.model_id, "big");
         assert_eq!(
             stable.lanes, boot.lanes,
@@ -1790,6 +1810,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
+            stable.base_model_id, "big",
             stable.base_model.model_id, "big",
             "more capable + ample headroom → upgrade"
         );
@@ -1817,6 +1838,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
+            stable.base_model_id, "small",
             stable.base_model.model_id, "small",
             "incumbent gone from disk → serve what's present"
         );
@@ -1842,6 +1864,7 @@ mod tests {
         assert_eq!(
             plan_serving(dipped, &pair(), ServingDemand::new(MAX_LANES, None))
                 .unwrap()
+                .base_model_id,
                 .base_model
                 .model_id,
             "small",
@@ -1856,6 +1879,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
+            stable.base_model_id, "big",
             stable.base_model.model_id, "big",
             "incumbent survives its OWN load dip — no flap"
         );
