@@ -48,6 +48,17 @@ static GLOBAL_LOG_SENDER: OnceLock<mpsc::SyncSender<WriteLogPayload>> = OnceLock
 /// Channel capacity - if full, new messages dropped (NEVER blocks)
 const CLOG_CHANNEL_CAPACITY: usize = 4096;
 
+/// Is the in-process file-log sink up? The clog_*/log_* macros consult this
+/// BEFORE paying `format!` + category/component derivation — pre-gate, every
+/// call site built its whole payload only for `queue_log` to drop it when the
+/// LoggerModule wasn't initialized (and on the native server the fallback arm
+/// is the ONLY arm, so early-boot call sites paid full formatting for nothing).
+/// Same drop semantics, zero formatting cost.
+#[inline]
+pub fn log_sink_ready() -> bool {
+    GLOBAL_LOG_SENDER.get().is_some()
+}
+
 /// Queue a log entry for async writing (called by clog_* macros).
 /// GUARANTEED NON-BLOCKING: Uses try_send(), drops if channel full.
 /// If LoggerModule not yet initialized, message is dropped.
