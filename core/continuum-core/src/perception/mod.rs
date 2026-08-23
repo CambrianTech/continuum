@@ -153,6 +153,14 @@ pub struct ProbeNode {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub attrs: Option<HashMap<String, String>>,
+    /// The CRAFT FACTS a design grade measures — a DECLARED subset of computed
+    /// style (color, background-color, font-size/-weight/-family, margin,
+    /// padding, display, overflow, z-index). DOM surfaces fill it; surfaces
+    /// with no style system (a scene graph) omit it. Additive + optional, so
+    /// every adapter that predates it stays wire-compatible.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub style: Option<HashMap<String, String>>,
     /// Child nodes, in document/scene order.
     pub children: Vec<ProbeNode>,
 }

@@ -136,6 +136,7 @@ fn element_to_probe(el: scraper::ElementRef<'_>) -> ProbeNode {
         name,
         text: direct_text,
         bounds: None, // no layout without a renderer; structural grading doesn't need it
+        style: None,  // no computed style without a renderer — craft checks stay honestly unmet here
         attrs: if attrs.is_empty() { None } else { Some(attrs) },
         children,
     }
@@ -208,6 +209,7 @@ mod tests {
             role: role.map(str::to_string),
             text_contains: text.map(str::to_string),
             min_count: min,
+            min_contrast: None,
         }
     }
 

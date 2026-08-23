@@ -260,8 +260,21 @@ interface AxNode {
  */
 function domWalk(maxDepth: number): unknown {
   const ATTRS = ['id', 'class', 'href', 'role', 'aria-label', 'data-kind', 'data-status'];
+  // The craft-fact subset a design grade measures (contrast, type scale, rhythm,
+  // reflow). DECLARED, not the whole computed style — the observation stays a
+  // bounded fact sheet, never a style dump.
+  const STYLE_PROPS = [
+    'color', 'background-color', 'font-size', 'font-weight', 'font-family',
+    'margin', 'padding', 'display', 'overflow', 'z-index',
+  ];
   function walk(el: Element, depth: number): unknown {
     const rect = el.getBoundingClientRect();
+    const ownStyle = getComputedStyle(el);
+    const style: Record<string, string> = {};
+    for (const prop of STYLE_PROPS) {
+      const v = ownStyle.getPropertyValue(prop);
+      if (v) style[prop] = v;
+    }
     const attrs: Record<string, string> = {};
     for (const a of ATTRS) {
       const v = el.getAttribute(a);
@@ -294,6 +307,7 @@ function domWalk(maxDepth: number): unknown {
         height: Math.round(rect.height),
       },
       ...(Object.keys(attrs).length ? { attrs } : {}),
+      ...(Object.keys(style).length ? { style } : {}),
       children,
     };
   }

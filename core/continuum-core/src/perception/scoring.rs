@@ -66,6 +66,15 @@ pub struct UiCheck {
     #[serde(default = "default_min_count")]
     #[ts(type = "number")]
     pub min_count: u32,
+    /// Require the node's text/background CONTRAST RATIO (WCAG relative
+    /// luminance, 1.0..=21.0) to be at least this — the first MEASURED-CRAFT
+    /// criterion (design-bench V2 tier; 4.5 = WCAG AA body text). Needs the
+    /// observation's `style` craft facts; a node with no measurable pair does
+    /// not match, so an adapter that omits styles fails the check LOUDLY on
+    /// the scorecard instead of green-lighting unmeasured craft.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub min_contrast: Option<f32>,
 }
 
 /// The outcome of one [`UiCheck`] against an observation.
@@ -210,12 +219,137 @@ fn node_matches(node: &ProbeNode, check: &UiCheck) -> bool {
             return false;
         }
     }
+    if let Some(min) = check.min_contrast {
+        match node_contrast(node) {
+            Some(ratio) if ratio >= min => {}
+            _ => return false, // unmeasurable = unmet — never green-light unmeasured craft
+        }
+    }
     true
+}
+
+/// The node's text/background contrast ratio from its style craft facts, when
+/// both colors are present and parseable. `None` = not measurable on this node.
+fn node_contrast(node: &ProbeNode) -> Option<f32> {
+    let style = node.style.as_ref()?;
+    let fg = parse_css_color(style.get("color")?)?;
+    let bg = parse_css_color(style.get("background-color")?)?;
+    // A fully transparent background paints nothing — the visible ground is an
+    // ancestor's, which THIS node cannot attest. Not measurable here.
+    if bg.3 == 0.0 {
+        return None;
+    }
+    Some(contrast_ratio(fg, bg))
+}
+
+/// Parse the CSS color forms `getComputedStyle` actually emits — `rgb(r, g, b)`
+/// and `rgba(r, g, b, a)` — plus `#rrggbb` for hand-written fixtures. Anything
+/// else (gradients, named colors the browser would have resolved anyway) is
+/// `None`: unparseable means unmeasurable, never a guessed color.
+fn parse_css_color(s: &str) -> Option<(f32, f32, f32, f32)> {
+    let s = s.trim();
+    if let Some(hex) = s.strip_prefix('#') {
+        if hex.len() == 6 {
+            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+            return Some((r as f32, g as f32, b as f32, 1.0));
+        }
+        return None;
+    }
+    let inner = s
+        .strip_prefix("rgba(")
+        .or_else(|| s.strip_prefix("rgb("))?
+        .strip_suffix(')')?;
+    let parts: Vec<&str> = inner.split(',').map(str::trim).collect();
+    if parts.len() < 3 {
+        return None;
+    }
+    let r: f32 = parts[0].parse().ok()?;
+    let g: f32 = parts[1].parse().ok()?;
+    let b: f32 = parts[2].parse().ok()?;
+    let a: f32 = if parts.len() > 3 { parts[3].parse().ok()? } else { 1.0 };
+    Some((r, g, b, a))
+}
+
+/// WCAG 2.x contrast ratio between two colors: `(L_lighter + 0.05) /
+/// (L_darker + 0.05)` over relative luminance — 1.0 (identical) to 21.0
+/// (black on white). The official formula, not an approximation, so a 4.5
+/// threshold in a check MEANS WCAG AA.
+fn contrast_ratio(a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)) -> f32 {
+    let (la, lb) = (relative_luminance(a), relative_luminance(b));
+    let (hi, lo) = if la >= lb { (la, lb) } else { (lb, la) };
+    (hi + 0.05) / (lo + 0.05)
+}
+
+fn relative_luminance(c: (f32, f32, f32, f32)) -> f32 {
+    fn chan(v: f32) -> f32 {
+        let v = v / 255.0;
+        if v <= 0.040_45 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    }
+    0.2126 * chan(c.0) + 0.7152 * chan(c.1) + 0.0722 * chan(c.2)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the first MEASURED-CRAFT criterion end-to-end at the
+    // scoring seam (design-bench V2, build-order outlier test): the WCAG formula
+    // is the official one (black-on-white = 21:1, identical = 1:1), a passing
+    // pair passes, a failing pair fails, and — the honesty rail — a node with
+    // NO style facts (older adapter, scene surface, static-html) can never
+    // green-light a contrast check.
+    #[test]
+    fn contrast_criterion_measures_wcag_and_never_passes_unmeasured() {
+        let styled = |fg: &str, bg: &str| ProbeNode {
+            tag: "p".into(),
+            role: None,
+            name: None,
+            text: Some("body copy".into()),
+            bounds: None,
+            style: Some(
+                [("color".to_string(), fg.to_string()),
+                 ("background-color".to_string(), bg.to_string())]
+                .into_iter()
+                .collect(),
+            ),
+            attrs: None,
+            children: vec![],
+        };
+        let check = UiCheck {
+            description: "AA body contrast".into(),
+            tag: Some("p".into()),
+            role: None,
+            text_contains: None,
+            min_count: 1,
+            min_contrast: Some(4.5),
+        };
+        // The official anchors.
+        let black_on_white = node_contrast(&styled("rgb(0, 0, 0)", "rgb(255, 255, 255)")).expect("measurable");
+        assert!((black_on_white - 21.0).abs() < 0.01, "black-on-white is 21:1, got {black_on_white}");
+        let identical = node_contrast(&styled("#808080", "#808080")).expect("measurable");
+        assert!((identical - 1.0).abs() < 0.001, "identical colors are 1:1");
+        // Pass and fail through the real matcher.
+        assert!(node_matches(&styled("rgb(0, 0, 0)", "rgb(255, 255, 255)"), &check));
+        assert!(!node_matches(&styled("rgb(200, 200, 200)", "rgb(255, 255, 255)"), &check),
+            "light-grey-on-white fails AA");
+        // Honesty rails: no style, transparent background, unparseable color — all UNMET.
+        let mut bare = styled("rgb(0, 0, 0)", "rgb(255, 255, 255)");
+        bare.style = None;
+        assert!(!node_matches(&bare, &check), "no craft facts must never pass a craft check");
+        assert!(!node_matches(&styled("rgb(0, 0, 0)", "rgba(0, 0, 0, 0)"), &check),
+            "transparent background is not measurable on this node");
+        assert!(!node_matches(&styled("linear-gradient(red, blue)", "rgb(255, 255, 255)"), &check),
+            "unparseable color is unmeasurable, never guessed");
+        // A check with no min_contrast is untouched by all of this.
+        let plain = UiCheck { min_contrast: None, ..check };
+        assert!(node_matches(&bare, &plain));
+    }
     use crate::perception::{ObserveResult, ProbeNode};
 
     /// A tiny login-form observation: <h1>Sign in</h1>, two inputs, a Submit
@@ -228,6 +362,7 @@ mod tests {
                 name: text.map(str::to_string),
                 text: text.map(str::to_string),
                 bounds: None,
+                style: None,
                 attrs: None,
                 children: vec![],
             }
@@ -243,6 +378,7 @@ mod tests {
                 name: None,
                 text: None,
                 bounds: None,
+                style: None,
                 attrs: None,
                 children: vec![
                     node("h1", Some("heading"), Some("Sign in")),
@@ -267,6 +403,7 @@ mod tests {
                 role: None,
                 text_contains: Some("sign in".into()),
                 min_count: 1,
+            min_contrast: None,
             },
             UiCheck {
                 description: "has a Submit button".into(),
@@ -274,6 +411,7 @@ mod tests {
                 role: Some("button".into()),
                 text_contains: Some("submit".into()),
                 min_count: 1,
+            min_contrast: None,
             },
             UiCheck {
                 description: "has at least two text inputs".into(),
@@ -281,6 +419,7 @@ mod tests {
                 role: None,
                 text_contains: None,
                 min_count: 2,
+            min_contrast: None,
             },
         ];
         let score = score_observation(&login_form(), &checks);
@@ -301,6 +440,7 @@ mod tests {
                 role: Some("button".into()),
                 text_contains: Some("submit".into()),
                 min_count: 1,
+            min_contrast: None,
             },
             UiCheck {
                 description: "has a 'Forgot password?' link".into(),
@@ -308,6 +448,7 @@ mod tests {
                 role: Some("link".into()),
                 text_contains: Some("forgot password".into()),
                 min_count: 1,
+            min_contrast: None,
             },
         ];
         let score = score_observation(&login_form(), &checks);
@@ -339,6 +480,7 @@ mod tests {
             role: Some("button".into()),
             text_contains: Some("submit".into()),
             min_count: 1,
+            min_contrast: None,
         }];
         let score = score_observation(&failed, &checks);
         assert_eq!(score.score, 0.0);
@@ -366,6 +508,7 @@ mod tests {
             role: None,
             text_contains: Some("sign in".into()),
             min_count: 1,
+            min_contrast: None,
         }];
         let g = grade_ui(&login_form(), &met, 1.0);
         assert!(g.passed);
@@ -378,6 +521,7 @@ mod tests {
                 role: Some("button".into()),
                 text_contains: Some("submit".into()),
                 min_count: 1,
+            min_contrast: None,
             },
             UiCheck {
                 description: "has 'Forgot password?'".into(),
@@ -385,6 +529,7 @@ mod tests {
                 role: Some("link".into()),
                 text_contains: Some("forgot".into()),
                 min_count: 1,
+            min_contrast: None,
             },
         ];
         assert!(
@@ -416,6 +561,7 @@ mod tests {
             role: Some("button".into()),
             text_contains: None,
             min_count: 1,
+            min_contrast: None,
         }];
         assert!(!grade_ui(&failed, &checks, 0.0).passed);
     }
