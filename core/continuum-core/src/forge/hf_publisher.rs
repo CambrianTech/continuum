@@ -150,6 +150,15 @@ impl HfPublisher {
         tokio::fs::write(staging.join("README.md"), render_model_card(req))
             .await
             .map_err(|e| fail(format!("could not write model card: {e}")))?;
+        // The self-describing half of the gene card: a pulling node stamps its
+        // own signature sidecar from this and routes the gene by DISTANCE from
+        // the first minute (GENOME-REPOSITORY-ON-HF.md §2). Absent for
+        // pre-signature genes — the card still publishes.
+        if let Some(sig) = &req.signature_json {
+            tokio::fs::write(staging.join("signature.json"), sig)
+                .await
+                .map_err(|e| fail(format!("could not write signature.json: {e}")))?;
+        }
 
         // Upload via the `hf` CLI (owns auth + large-file transfer). Loud on any
         // non-success — a failed publish is never a silent no-op.
