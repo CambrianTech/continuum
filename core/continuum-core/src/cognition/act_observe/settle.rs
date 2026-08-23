@@ -84,6 +84,8 @@ async fn settle_to_outcome(
 ) -> SettleOutcome {
     let burst: Burst = burst.into();
     let mut acts = 0usize;
+    // Rolling act-duration sum for the inline pace verdict below.
+    let mut pace_sum_secs: f64 = 0.0;
     // This turn's causal thread: each admitted act observation becomes the
     // CausedBy target of the next act in the SAME chain — the driver owns the
     // chain, so an edge can never cross turns or rooms (CAUSAL-MEMORY-GRAPH.md).
@@ -273,6 +275,7 @@ async fn settle_to_outcome(
             );
         }
         let may_act = acts < max_acts && stuck < STUCK_LIMIT && discovery_open;
+        let act_started = std::time::Instant::now();
         let (step, step_metrics) = settle_step(
             cycle,
             burst.clone(),
@@ -285,6 +288,32 @@ async fn settle_to_outcome(
         .await;
         if let Some(m) = step_metrics {
             metrics.accumulate(m);
+        }
+        // INLINE PACE VERDICT (Joel 2026-08-23: "know immediately if a model is
+        // being slow as molasses, looping, thrashing, not even starting" — the
+        // states were entering WITHOUT visibility and a human had to pester).
+        // Every act stamps its wall-clock against this turn's own rolling mean;
+        // the verdict is computed WHERE THE WORK HAPPENS, event-based, so
+        // slow/stalled is a probe row the moment it occurs, never a discovery.
+        // No constants deciding cognition: "slow" is relative to THIS turn's
+        // own pace (2x rolling mean, min 3 samples), and the row always carries
+        // the raw numbers so a dashboard can re-judge.
+        {
+            let act_secs = act_started.elapsed().as_secs_f64();
+            pace_sum_secs += act_secs;
+            let pace_n = acts as f64 + 1.0;
+            let mean = pace_sum_secs / pace_n;
+            let slow = acts >= 3 && act_secs > mean * 2.0;
+            crate::probe!(
+                class = "persona.act.pace",
+                room_id = %room_id,
+                act = acts,
+                act_secs = act_secs as u64,
+                rolling_mean_secs = mean as u64,
+                slow = slow,
+                stuck_streak = stuck,
+                "act pace vs this turn's own rolling mean — slow/looping visible the moment it happens"
+            );
         }
         match step {
             SettleStep::Spoke(text) => {
