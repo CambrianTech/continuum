@@ -584,6 +584,11 @@ struct ChatProjection {
     /// Last-published roster, for emit-on-change (roster shifts on presence, not per
     /// message) — same discipline as `last_experience`.
     last_roster: std::cell::RefCell<Option<Vec<RosterSlotView>>>,
+    /// Emit-on-change for the CHAT kind itself — the largest payload this
+    /// projection publishes (2026-08-23 audit: five ungated call sites,
+    /// vitals ticks re-serializing the full 100-message transcript ~2×/s).
+    /// Same discipline as `last_experience`, twelve lines above it.
+    last_chat: std::cell::RefCell<Option<ChatViewState>>,
 }
 
 impl ChatProjection {
@@ -655,6 +660,7 @@ impl ChatProjection {
             last_experience: std::cell::RefCell::new(None),
             roster_builder: StateBuilder::standalone(),
             last_roster: std::cell::RefCell::new(None),
+            last_chat: std::cell::RefCell::new(None),
             purpose_source,
         }
     }
@@ -924,7 +930,13 @@ impl ChatProjection {
             acts: self.acts.iter().cloned().collect(),
             roster,
         };
-        self.store_room_scoped(room_id, self.builder.session(view));
+        // Emit-on-change: a vitals/presence tick that moved nothing in the
+        // chat view must not re-serialize and re-broadcast 100 messages.
+        if self.last_chat.borrow().as_ref() == Some(&view) {
+            return;
+        }
+        self.store_room_scoped(room_id, self.builder.session(view.clone()));
+        *self.last_chat.borrow_mut() = Some(view);
     }
 
     /// Store one per-room envelope to BOTH sinks: the node substrate (what the
@@ -934,10 +946,14 @@ impl ChatProjection {
     /// ONE place decides the dual-sink rule, so a future kind cannot be added to one
     /// sink and forgotten in the other — the compression law applied to a write path.
     fn store_room_scoped(&self, room_id: Uuid, envelope: continuum_positron::StateEnvelope) {
+        // One allocation, both sinks (2026-08-23 audit): the by-value clone
+        // deep-copied the full ~100-message chat payload tree per store for
+        // the second sink — the largest single producer-side copy in the core.
+        let envelope = std::sync::Arc::new(envelope);
         if let Some(rooms) = &self.rooms {
-            rooms.for_room(room_id).store(envelope.clone());
+            rooms.for_room(room_id).store_shared(std::sync::Arc::clone(&envelope));
         }
-        self.substrate.store(envelope);
+        self.substrate.store_shared(envelope);
     }
 
     /// Assemble this room's [`Experience`] manifest: recipe (by the room's purpose)

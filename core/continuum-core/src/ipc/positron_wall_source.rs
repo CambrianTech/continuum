@@ -663,7 +663,7 @@ mod tests {
         let other = Uuid::from_u128(0xdead);
         let foreign = BusEvent {
             name: WALL_CHANGED.to_string(),
-            payload: json!({ "roomId": other }),
+            payload: std::sync::Arc::new(json!({ "roomId": other })),
         };
         // Even if the board content changed underneath, a foreign event must
         // not fold it in.

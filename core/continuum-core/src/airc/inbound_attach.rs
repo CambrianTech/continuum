@@ -302,7 +302,7 @@ pub async fn publish_transcript_event(
     //    on ONE `chat:posted`, two wire shapes, mirroring the receive-side
     //    `perceptual_from_event`. Anything else is not ours here → skip.
     if let Some(bus_event) = bus_event_from_envelope(&envelope) {
-        bus.publish_async_only(&bus_event.name, bus_event.payload);
+        bus.publish_async_only(&bus_event.name, (*bus_event.payload).clone()); // crossing OUT of the bus type; one owned copy at the boundary
     } else if let Some(offer) = capacity_offer_from_envelope(&envelope) {
         // Grid capacity gossip (#56 step 4): fold the heard offer into the
         // process-global ledger, keyed on the WIRE's peer id (airc's authenticated

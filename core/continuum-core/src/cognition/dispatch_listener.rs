@@ -87,7 +87,7 @@ pub fn spawn(bus: Arc<MessageBus>, working_memory: Arc<WorkingMemory>) {
             if event.name != COMMAND_COMPLETED_TOPIC {
                 continue;
             }
-            let Ok(ev) = serde_json::from_value::<CommandCompletedEvent>(event.payload) else {
+            let Ok(ev) = serde_json::from_value::<CommandCompletedEvent>((*event.payload).clone()) else { // typed decode needs owned; one copy at THIS consumer, not per receiver
                 continue;
             };
             fold_completion(&working_memory, ev);

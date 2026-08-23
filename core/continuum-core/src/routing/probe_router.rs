@@ -197,6 +197,15 @@ where
     S: Subscriber + for<'lookup> LookupSpan<'lookup>,
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+        // ZERO-COST GATE (2026-08-23 serialization audit): callsite field sets
+        // are static metadata — asking whether `probe_class` exists allocates
+        // nothing. Without this, EVERY tracing event in the process and its
+        // dependency crates paid a full visitor walk (a String per field into a
+        // HashMap) in this layer, then discarded it. The span path got exactly
+        // this fix in PR #1541 R2; the event path never did.
+        if event.metadata().fields().field("probe_class").is_none() {
+            return;
+        }
         let mut visitor = ProbeEventVisitor::default();
         event.record(&mut visitor);
 

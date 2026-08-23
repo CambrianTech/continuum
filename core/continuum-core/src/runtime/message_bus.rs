@@ -44,10 +44,16 @@ struct ArtifactSubscription {
 }
 
 /// Event payload sent through the bus.
+///
+/// `payload` is `Arc`-shared (2026-08-23 serialization audit): tokio's
+/// broadcast clones the event into EVERY receiver — ~19 production holders —
+/// plus the recent-events archive, so a by-value `Value` paid ~20 full tree
+/// copies per publish (a 100 KB tool-result event cost ~2 MB of copying).
+/// With the Arc, every clone is a refcount bump; consumers read `&*payload`.
 #[derive(Debug, Clone)]
 pub struct BusEvent {
     pub name: String,
-    pub payload: serde_json::Value,
+    pub payload: std::sync::Arc<serde_json::Value>,
 }
 
 /// Timestamped event for the recent event buffer.
@@ -315,7 +321,7 @@ impl MessageBus {
         // Deferred tier: broadcast for async consumers
         let event = BusEvent {
             name: event_name.to_string(),
-            payload,
+            payload: std::sync::Arc::new(payload),
         };
         self.record_recent(&event);
         // Ignore send error (no receivers is fine)
@@ -353,7 +359,7 @@ impl MessageBus {
 
         let event = BusEvent {
             name: event_name.to_string(),
-            payload,
+            payload: std::sync::Arc::new(payload),
         };
         self.record_recent(&event);
         let _ = self.sender.send(event);

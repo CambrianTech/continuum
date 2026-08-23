@@ -1132,7 +1132,7 @@ mod tests {
         })
         .await
         .expect("expected a command:completed event within 2s");
-        serde_json::from_value(recv.payload).expect("event payload must parse")
+        serde_json::from_value((*recv.payload).clone()).expect("event payload must parse")
     }
 
     #[tokio::test]
@@ -1322,7 +1322,7 @@ mod tests {
             match tokio::time::timeout(remaining, rx.recv()).await {
                 Ok(Ok(event)) if event.name == COMMAND_COMPLETED_TOPIC => {
                     let parsed: CommandCompletedEvent =
-                        serde_json::from_value(event.payload).expect("payload parses");
+                        serde_json::from_value((*event.payload).clone()).expect("payload parses");
                     events.push(parsed);
                 }
                 Ok(Ok(_)) => continue, // unrelated event topic — skip

@@ -84,7 +84,7 @@ pub fn spawn_workspace_invalidator(bus: Arc<MessageBus>, dirty: WeakDirtyHandle)
             if event.name != COMMAND_COMPLETED_TOPIC {
                 continue;
             }
-            let Ok(ev) = serde_json::from_value::<CommandCompletedEvent>(event.payload) else {
+            let Ok(ev) = serde_json::from_value::<CommandCompletedEvent>((*event.payload).clone()) else { // typed decode needs owned; one copy at THIS consumer, not per receiver
                 continue;
             };
             if !mutates_workspace(&ev.command_name) {

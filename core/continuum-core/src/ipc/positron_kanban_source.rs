@@ -983,7 +983,7 @@ mod tests {
         let other = Uuid::from_u128(0xdead);
         let foreign = BusEvent {
             name: KANBAN_CHANGED.to_string(),
-            payload: json!({ "roomId": other }),
+            payload: std::sync::Arc::new(json!({ "roomId": other })),
         };
         reader.board.lock().unwrap().cards.clear();
         let step = fold_recv(&mut p, room.as_uuid(), Ok(foreign)).await;

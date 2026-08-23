@@ -103,7 +103,7 @@ pub fn bus_event_from_envelope(envelope: &AircRealtimeEnvelope) -> Option<BusEve
 
     Some(BusEvent {
         name: event_name.to_string(),
-        payload: inline.clone(),
+        payload: std::sync::Arc::new(inline.clone()),
     })
 }
 
