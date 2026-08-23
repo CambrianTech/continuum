@@ -47,6 +47,8 @@ import {
   servingFromEnvelope,
   BENCH_KIND,
   benchFromEnvelope,
+  CANVAS_KIND,
+  canvasFromEnvelope,
   systemMetricsFromEnvelope,
   type ChatState,
 } from '@continuum/chat-view';
@@ -299,6 +301,12 @@ async function main(): Promise<void> {
   // The benchmark board (#329) — the academy rail's live run rows.
   state.on(BENCH_KIND, (envelope: StateEnvelope) => {
     widget.bench = benchFromEnvelope(envelope);
+  });
+  // The canvas feed (ninth ViewState, 2026-08-23) — the persona's own
+  // observations of her artifact, published at the act seam: the desktop
+  // watches the work itself.
+  state.on(CANVAS_KIND, (envelope: StateEnvelope) => {
+    widget.canvas = canvasFromEnvelope(envelope);
   });
   // The node's work board — the persona home's claims feed (cards by assignee).
   state.on(KANBAN_KIND, (envelope: StateEnvelope) => {

@@ -417,6 +417,14 @@ pub async fn apply_act(
         };
         observation.push_str(&obs.render_recency(intent, &budget));
         recall_observation.push_str(&obs.render_recall(intent));
+        // The canvas feed: her OWN observation, published the moment she made
+        // it — the desktop watches the work itself, never a poller
+        // (positron_canvas_source is a no-op until boot installs it).
+        crate::ipc::positron_canvas_source::maybe_publish_observation(
+            &body.persona_name,
+            &call.name,
+            &obs.output.result.content,
+        );
         acts.push(obs);
     }
     // A pure-background batch (every call was long-running → dispatched, `fg_calls`
