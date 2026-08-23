@@ -648,6 +648,30 @@ async fn reboot(force: bool) -> Result<(), String> {
                 .join(", ")
         ));
     }
+    // Eval-run guard — the third lease, same shape. cognition/eval runs had NO
+    // on-disk in-flight signal until 2026-08-23 (the marker in each eval world),
+    // so this guard named zero runs while a MirrorCode battery was mid-task and
+    // a reboot killed it unasked. pid-checked here: a marker whose core died is
+    // debris for the next provision's sweep, not an in-flight run.
+    let evals: Vec<String> = continuum_core::cognition::eval::in_flight_eval_runs()
+        .into_iter()
+        .filter(|(_, pid)| pid_alive(*pid as i32))
+        .map(|(run, _)| run)
+        .collect();
+    if !evals.is_empty() && !force {
+        return Err(format!(
+            "eval run(s) in flight ({}) — a reboot would kill them mid-exam. Wait for them, \
+             or rerun with `continuum reboot --force` if losing the runs is acceptable.",
+            evals.join(", ")
+        ));
+    }
+    if !evals.is_empty() {
+        println!(
+            "⚠ --force: rebooting over {} live eval run(s) — they die here; their worlds are \
+             swept at the next provision",
+            evals.len()
+        );
+    }
     if !benches.is_empty() {
         println!(
             "⚠ --force: rebooting over {} live benchmark run(s) — they die here and the \

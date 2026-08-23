@@ -368,19 +368,38 @@ impl PersonaSpawnSupervisor {
                     let name = p.instance.agent_name.as_str();
                     let allowed = hold.allows(name);
                     if !allowed {
-                        crate::probe!(
-                            class = "persona.host.held_out",
-                            agent = name,
-                            reason = hold.reason.as_str(),
-                            until_ms = hold.until_ms,
-                            "roster hold active — reconciler skipping this citizen \
-                             until the hold lapses or is cleared",
-                        );
+                        Self::probe_held_out_once(name, &hold);
                     }
                     allowed
                 })
                 .collect(),
             None => plans,
+        }
+    }
+
+    /// Emit the `persona.host.held_out` probe ONCE per (agent, hold window).
+    /// The reconciler re-fires on every serving-plan republish (~1/s), and an
+    /// un-deduped probe here wrote a pair of identical rows per second for the
+    /// entire life of a hold (measured 2026-08-23, minutes of pure probe spam
+    /// within the first hour). The skip itself stays per-pass — only the PROBE
+    /// is edge-triggered, keyed by `until_ms` so a renewed hold announces
+    /// itself afresh.
+    fn probe_held_out_once(agent: &str, hold: &crate::persona::roster_hold::RosterHold) {
+        static PROBED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<(String, u64)>>> =
+            std::sync::OnceLock::new();
+        let set = PROBED.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+        let Ok(mut guard) = set.lock() else {
+            return; // poisoned = a prior panic mid-insert; skip the probe, never the filter
+        };
+        if guard.insert((agent.to_string(), hold.until_ms)) {
+            crate::probe!(
+                class = "persona.host.held_out",
+                agent = agent,
+                reason = hold.reason.as_str(),
+                until_ms = hold.until_ms,
+                "roster hold active — reconciler skipping this citizen \
+                 until the hold lapses or is cleared",
+            );
         }
     }
 
@@ -423,6 +442,24 @@ impl PersonaSpawnSupervisor {
         }
         if unattended.is_empty() {
             return summary;
+        }
+
+        // Hold gate BEFORE plan derivation (not only on the materialized plans):
+        // during a hold, held-out citizens are unattended on EVERY serving-plan
+        // republish (~1/s), and deriving a full spawn plan each pass just to
+        // throw it away was a per-second churn loop for the life of the hold.
+        // Same gate, earlier — the probe inside is deduped per hold window.
+        if let Some(hold) = crate::persona::roster_hold::active() {
+            unattended.retain(|rt| {
+                let allowed = hold.allows(rt.agent_name());
+                if !allowed {
+                    Self::probe_held_out_once(rt.agent_name(), &hold);
+                }
+                allowed
+            });
+            if unattended.is_empty() {
+                return summary;
+            }
         }
 
         let plan_rows = self.spawner.plan();
