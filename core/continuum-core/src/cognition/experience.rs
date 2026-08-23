@@ -145,6 +145,25 @@ impl ExperienceRecord {
         }
     }
 
+    /// [`Self::from_eval`]'s sibling for the seam where the [`SettleOutcome`] is
+    /// already folded away (learn-mode's lesson transfer runs AFTER settlement,
+    /// over the summarized per-task results). Same stream, same being; the
+    /// world_state is honestly absent rather than reconstructed.
+    pub fn from_eval_result(
+        task: &EvalTask,
+        result: &crate::cognition::eval::EvalTaskResult,
+    ) -> Self {
+        Self {
+            task: task.clone(),
+            ok: result.ok,
+            grade: result.grade.clone(),
+            answer: result.answer.clone(),
+            world_state: String::new(),
+            acts: result.acts,
+            source: ExperienceSource::Eval,
+        }
+    }
+
     /// Capture a LIVED turn — a real room turn, not an exam — into the SAME
     /// experience stream as [`from_eval`]. This is the unification: a lived chat
     /// turn and an exam task are the SAME being acting in different contexts, so
