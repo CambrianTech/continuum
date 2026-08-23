@@ -198,7 +198,12 @@ pub fn write_fetched_gym(
 
 /// Every fetched-gym basename under the staleness contract — the iteration order
 /// of [`fetched_gym_statuses`] and the key set of [`fetched_fingerprint_for`].
-const FETCHED_GYM_BASENAMES: &[&str] = &["ds-1000.jsonl", "algotune.jsonl", "super-masked.jsonl"];
+const FETCHED_GYM_BASENAMES: &[&str] = &[
+    "ds-1000.jsonl",
+    "algotune.jsonl",
+    "super-masked.jsonl",
+    "terminal-bench.jsonl",
+];
 
 /// Current adapter fingerprint per fetched-gym basename. A basename NOT listed
 /// here has no staleness contract (an operator's hand-placed cache file resolves
@@ -209,6 +214,9 @@ fn fetched_fingerprint_for(basename: &str) -> Option<String> {
         "ds-1000.jsonl" => Some(crate::cognition::benchmark_ds1000::adapter_fingerprint()),
         "algotune.jsonl" => Some(crate::cognition::benchmark_algotune::adapter_fingerprint()),
         "super-masked.jsonl" => Some(crate::cognition::benchmark_super::adapter_fingerprint()),
+        "terminal-bench.jsonl" => {
+            Some(crate::cognition::benchmark_terminalbench::adapter_fingerprint())
+        }
         _ => None,
     }
 }

@@ -39,6 +39,7 @@ pub mod benchmark;
 pub mod benchmark_algotune;
 pub mod benchmark_ds1000;
 pub mod benchmark_super;
+pub mod benchmark_terminalbench;
 pub mod benchmark_humaneval;
 pub mod channel_digest;
 pub mod channel_digest_region;

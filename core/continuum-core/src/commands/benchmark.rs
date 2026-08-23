@@ -203,6 +203,26 @@ pub fn known_benchmarks() -> &'static [BenchmarkSpec] {
             source_url: Some("https://huggingface.co/datasets/xlangai/DS-1000"),
         },
         BenchmarkSpec {
+            name: "terminal-bench",
+            description: "Terminal-Bench 2.1 (Stanford × Laude Institute) — 89 real terminal \
+                          tasks from the Harbor registry (compile a COBOL modernization, \
+                          recover a WAL-corrupted db, configure nginx), each graded by its \
+                          own pytest oracle over the FINAL workspace state, with the task's \
+                          own verifier timeout. The frontier's agentic mid-rung: TB 2.1 \
+                          harness+model pairs score 74–84% (Fable 5 + Claude Code 83.8%); \
+                          TB 3.0 'Frontier Bench' ceilings at 34.4% (GPT-5.6 Sol). Docker-skip \
+                          policy: tasks whose initial state is BUILT inside their container \
+                          image (compiles, generated data, cloned repos, multi-stage/compose \
+                          topologies) cannot be reproduced as plain file staging and are \
+                          excluded as COUNTED, named skips in the fetch receipt — 53 of 89 \
+                          convert on the 2026-08-23 registry. Fetch first (`benchmark/fetch \
+                          --benchmark terminal-bench`).",
+            grader: Grader::Python,
+            tasks: 89,
+            eval_set: Some("terminal-bench.jsonl"),
+            source_url: Some("https://github.com/harbor-framework/terminal-bench-2-1"),
+        },
+        BenchmarkSpec {
             name: "humaneval",
             description: "OpenAI HumanEval (Python) — the original, 164 tasks.",
             grader: Grader::Python,
@@ -4002,6 +4022,45 @@ impl ActionCommand for BenchmarkFetch {
                     "cloned + converted onto the gym rails at {} — dispatch with \
                      `benchmark/dispatch --name algotune`",
                     path.display()
+                )),
+            });
+        }
+        if spec.name == "terminal-bench" {
+            let outcome = crate::cognition::benchmark_terminalbench::materialize_gym(None)
+                .await
+                .map_err(CommandError::Invalid)?;
+            // The skip tally is the Docker seam's honesty contract: the receipt names
+            // every excluded task and why, so the denominator is never silently shrunk.
+            let mut by_reason: std::collections::BTreeMap<&str, usize> =
+                std::collections::BTreeMap::new();
+            for (_, reason) in &outcome.skipped {
+                // Group on the reason's stable head (before any per-task detail).
+                let head = reason.split(':').next().unwrap_or(reason.as_str()); // split always yields ≥1 piece; this is belt-and-suspenders
+                *by_reason.entry(head).or_default() += 1;
+            }
+            let breakdown = by_reason
+                .iter()
+                .map(|(r, n)| format!("{n}× {r}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Ok(BenchmarkFetchResult {
+                benchmark: spec.name.to_string(),
+                dataset: "github.com/harbor-framework/terminal-bench-2-1".to_string(),
+                config: "main".to_string(),
+                split: "tasks".to_string(),
+                rows: outcome.converted,
+                declared_tasks: spec.tasks,
+                denominator_matches: outcome.converted as u32 == spec.tasks,
+                tasks: Some(outcome.converted),
+                adapter_note: Some(format!(
+                    "cloned + converted onto the gym rails at {} — {} of {} registry tasks \
+                     converted; {} skipped by the declared Docker seam ({}). Dispatch with \
+                     `benchmark/dispatch --name terminal-bench`",
+                    outcome.path.display(),
+                    outcome.converted,
+                    outcome.converted + outcome.skipped.len(),
+                    outcome.skipped.len(),
+                    breakdown,
                 )),
             });
         }
