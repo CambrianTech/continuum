@@ -1024,6 +1024,13 @@ impl PersonaWorkspaceRegistry {
     ) -> Option<WorkspaceCycle> {
         let mut cfg = self.templates.lock().get(persona_id)?.clone();
         cfg.admission = Arc::new(cfg.admission.fork_detached());
+        // The fork IS the measuring mind — it must NEVER inherit the base
+        // persona's quiesce flag, or the eval's own preemption lease suspends
+        // the very solver it exists to protect (live 2026-08-23: eight tasks
+        // graded acts=0 in one minute, persona.settle.lease_preempted at act 0
+        // — the same "never suspend the solver" invariant quiesce_others pins,
+        // one layer up at the cfg-template seam).
+        cfg.quiesced = None;
         cfg.suppress_recall = suppress_recall;
         repoint_workspace_map_if_pinned(&mut cfg, persona_id, workspace_root);
         // The eval fork runs recall + grounding SYNCHRONOUSLY: drive_to_settle's
