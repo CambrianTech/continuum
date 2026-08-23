@@ -307,6 +307,35 @@ impl PersonaSpawnSupervisor {
             }
         };
 
+        // OPERATOR INTENT GATE (2026-08-23, despawn≠quiesce): this supervisor
+        // stays resident as the hosting reconciler and re-fires on every serving
+        // edge — which is exactly right (reap-or-adopt), and exactly why a
+        // despawn alone dissolved within minutes all night. A standing
+        // [`roster_hold`] names who may be hosted for a bounded window; everyone
+        // else is SKIPPED with a probe, never silently. Explicit `persona/spawn`
+        // does not pass through here — a human's direct command stays sovereign.
+        let plans: Vec<_> = match crate::persona::roster_hold::active() {
+            Some(hold) => plans
+                .into_iter()
+                .filter(|p| {
+                    let name = p.instance.agent_name.as_str();
+                    let allowed = hold.allows(name);
+                    if !allowed {
+                        crate::probe!(
+                            class = "persona.host.held_out",
+                            agent = name,
+                            reason = hold.reason.as_str(),
+                            until_ms = hold.until_ms,
+                            "roster hold active — reconciler skipping this citizen \
+                             until the hold lapses or is cleared",
+                        );
+                    }
+                    allowed
+                })
+                .collect(),
+            None => plans,
+        };
+
         let mut summary = BootSummary::default();
         self.host_plans(plans, tool_command_executor, &mut summary)
             .await;

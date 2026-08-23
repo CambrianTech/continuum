@@ -84,6 +84,7 @@ pub mod redaction;
 pub mod resource_forecast;
 pub mod response;
 pub mod resume_or_mint_provider;
+pub mod roster_hold;
 pub mod role_template;
 pub mod room_board_source;
 pub mod room_doctrine_source;
