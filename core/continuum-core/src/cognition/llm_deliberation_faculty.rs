@@ -1704,6 +1704,32 @@ impl LlmDeliberationFaculty {
         // system prefix byte-stable across a settle-act instead of re-prefilling the
         // whole tail. Broadcast insertion order preserved (one trailing contributor
         // today: the working-memory faculty).
+        // PINNED just-executed result (#392, run-18057-f1). The full result of the act
+        // she just ran is appended DIRECTLY from the shared working-memory buffer as the
+        // newest trailing turn — deliberately NOT routed as a faculty bid. As part of the
+        // working-memory contribution at `WORKING_MEMORY_SALIENCE` it competed in
+        // `arbiter.focus()` top-k and was evicted whole under capacity pressure, so the
+        // persona generated blind to her own grep/read output (the 0-byte SWE-bench patch).
+        // Reading it here puts no attention pass between the hands and the mind. Text, not
+        // structured tool_use/tool_result Parts: `content_text()` is blind to non-Text
+        // parts, so Parts would undercount in `fit_messages`/`messages_cost` and risk a
+        // window-edge overflow — and the live GGUF chat template renders text reliably.
+        // Trailing (#205): appended last, KV prefix stays stable. Settlement-gated inside
+        // the accessor so it stops re-prefilling once the turn settles (#139/#165).
+        if let Some(wm) = &self.working_memory {
+            // APPEND-ONLY HISTORY FIRST (2026-08-23, the A/B that failed at 20%):
+            // the recent-results ledger grows act-over-act with a byte-stable
+            // head, so it EXTENDS the reusable KV prefix — but only if nothing
+            // churning renders before it. The first cut of the trailing-grounding
+            // move (#2415) placed workspace-map/kanban ahead of this block, and
+            // every grounding change re-prefilled the whole result history
+            // behind it: measured 20-22% cached on 34-42k prefills, the old
+            // ceiling wearing a new hat. Order in the tail IS the fix: history
+            // (stable head) → churning grounding → pinned newest result.
+            if let Some(block) = wm.recent_results_block() {
+                messages.push(ChatMessage::text("user", block));
+            }
+        }
         for c in ws
             .broadcast
             .iter()
@@ -1724,26 +1750,9 @@ impl LlmDeliberationFaculty {
             }
         }
 
-        // PINNED just-executed result (#392, run-18057-f1). The full result of the act
-        // she just ran is appended DIRECTLY from the shared working-memory buffer as the
-        // newest trailing turn — deliberately NOT routed as a faculty bid. As part of the
-        // working-memory contribution at `WORKING_MEMORY_SALIENCE` it competed in
-        // `arbiter.focus()` top-k and was evicted whole under capacity pressure, so the
-        // persona generated blind to her own grep/read output (the 0-byte SWE-bench patch).
-        // Reading it here puts no attention pass between the hands and the mind. Text, not
-        // structured tool_use/tool_result Parts: `content_text()` is blind to non-Text
-        // parts, so Parts would undercount in `fit_messages`/`messages_cost` and risk a
-        // window-edge overflow — and the live GGUF chat template renders text reliably.
-        // Trailing (#205): appended last, KV prefix stays stable. Settlement-gated inside
-        // the accessor so it stops re-prefilling once the turn settles (#139/#165).
         if let Some(wm) = &self.working_memory {
-            // Recent-results feedback FIRST (older context), pinned full-latest
-            // LAST (trailing) — append-only ordering keeps the KV prefix stable.
-            // The recent block is what survives turn boundaries; the pinned block
-            // is the full body of the act she is inside right now.
-            if let Some(block) = wm.recent_results_block() {
-                messages.push(ChatMessage::text("user", block));
-            }
+            // Pinned full-latest LAST — the act she is inside right now, nearest
+            // generation (#392).
             if let Some(block) = wm.pinned_active_result_block() {
                 messages.push(ChatMessage::text("user", block));
             }
