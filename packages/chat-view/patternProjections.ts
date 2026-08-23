@@ -36,7 +36,7 @@ import type {
   RosterMemberVM,
   TranscriptRowVM,
 } from './chatViewModel';
-import { ARENA_PURPOSE, BENCH_PURPOSE, GRID_PURPOSE, LIVE_PURPOSE, PERSONA_PURPOSE, SERVING_PURPOSE, SETTINGS_PURPOSE, contentFamilyOf, type ArenaContentBody as ArenaContentBodyT, type BenchContentBody, type GridContentBody, type GridNodeVM, type ServingContentBody, type ServingNodeVM, type SettingsContentBody } from '@continuum/patterns';
+import { ARENA_PURPOSE, BENCH_PURPOSE, CANVAS_PURPOSE, GRID_PURPOSE, LIVE_PURPOSE, PERSONA_PURPOSE, SERVING_PURPOSE, SETTINGS_PURPOSE, contentFamilyOf, type ArenaContentBody as ArenaContentBodyT, type BenchContentBody, type CanvasContentBody, type GridContentBody, type GridNodeVM, type ServingContentBody, type ServingNodeVM, type SettingsContentBody } from '@continuum/patterns';
 import type { LiveContentBody, PersonaContentBody } from '@continuum/patterns';
 import {
   focusedPersonaTab,
@@ -46,6 +46,7 @@ import {
 import { liveContentBody, liveFaceOpen, type LiveCallOverlay } from './liveProjections';
 import { benchContentBody, benchWidget } from './benchProjections';
 import { arenaContentBody, type ArenaViewState } from './arenaProjections';
+import { canvasContentBody, type CanvasViewState } from './canvasProjections';
 
 /** Leading glyph per member kind — the neutral human/agent/system discriminant, as a
  *  display token the Listing carries (targets draw it, they don't re-derive it). */
@@ -410,6 +411,10 @@ export interface WorkspaceLive {
   /** The node's `kind="bench"` benchmark board (#329) — adds the academy
    *  right-rail bench widget. Honestly absent until the feed delivers. */
   readonly bench?: BenchViewState;
+  /** The `kind="canvas"` design-bench observation feed — feeds a
+   *  canvas-purpose run room's live artifact render (DESIGN-BENCH-VISUAL-
+   *  CRAFT.md §5). Honestly absent until the feed delivers. */
+  readonly canvas?: CanvasViewState;
 }
 
 /** The chat activity's `Content` body — the conversation. `Content` is keyed by the
@@ -493,6 +498,20 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     contentFamilyOf(vm.purpose) === BENCH_PURPOSE
       ? benchContentBody(live?.bench)
       : undefined;
+  // The CANVAS face (DESIGN-BENCH-VISUAL-CRAFT.md §5): a design-bench run
+  // room's canvas region renders the persona's page LIVE — the frame renders
+  // (the awaiting stage) even before the first observation delivers, exactly
+  // like arena's pre-feed frame.
+  const canvasBody =
+    !personaBody &&
+    !liveBody &&
+    !arenaBody &&
+    !servingBody &&
+    !gridBody &&
+    !benchBody &&
+    contentFamilyOf(vm.purpose) === CANVAS_PURPOSE
+      ? canvasContentBody(live?.canvas)
+      : undefined;
   const content:
     | ContentView<ChatContentBody>
     | ContentView<PersonaContentBody>
@@ -501,6 +520,7 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     | ContentView<ServingContentBody>
     | ContentView<GridContentBody>
     | ContentView<BenchContentBody>
+    | ContentView<CanvasContentBody>
     | ContentView<SettingsContentBody> = settingsBody
     ? { purpose: SETTINGS_PURPOSE, body: settingsBody }
     : personaBody
@@ -515,10 +535,12 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
             ? { purpose: GRID_PURPOSE, body: gridBody }
             : benchBody
               ? { purpose: BENCH_PURPOSE, body: benchBody }
-              : {
-                  purpose: vm.purpose,
-                  body: { messages: vm.messages, transcript: vm.transcript, isEmpty: vm.isEmpty },
-                };
+              : canvasBody
+                ? { purpose: CANVAS_PURPOSE, body: canvasBody }
+                : {
+                    purpose: vm.purpose,
+                    body: { messages: vm.messages, transcript: vm.transcript, isEmpty: vm.isEmpty },
+                  };
   // The ACTIVE nav cell follows the citizen's current tab: the persona tab
   // when a persona home is focused, else the chat room on screen.
   const rooms = live?.nav

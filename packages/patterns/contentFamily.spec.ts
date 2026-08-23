@@ -14,7 +14,7 @@ describe('contentFamilyOf', () => {
   });
 
   it('families pass through unchanged and unknown purposes are NOT rewritten', () => {
-    for (const fam of ['chat', 'foundry', 'bench', 'live', 'persona', 'serving', 'grid', 'arena']) {
+    for (const fam of ['chat', 'foundry', 'bench', 'live', 'persona', 'serving', 'grid', 'arena', 'canvas']) {
       expect(contentFamilyOf(fam)).toBe(fam);
     }
     // fail-loud preserved: the resolver widens what renders, never silences.

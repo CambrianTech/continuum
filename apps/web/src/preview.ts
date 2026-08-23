@@ -16,7 +16,7 @@
 
 import './theme.css';
 import { ChatWidget, type SendHandler } from './chat/ChatWidget';
-import type { ChatState } from '@continuum/chat-view';
+import type { CanvasViewState, ChatState } from '@continuum/chat-view';
 import type {
   BenchViewState,
   KanbanViewState,
@@ -78,6 +78,53 @@ const BENCH_FIXTURE: BenchViewState = {
       stage: 'working', dispatched: 4, settled: 1, remaining: 3, driver: 'citizen',
     },
   ],
+};
+
+// `?fixture=canvas` — the design-bench CANVAS region's deterministic ground
+// state (DESIGN-BENCH-VISUAL-CRAFT.md §5): a small self-contained pricing-card
+// page as the live-rendered artifact (inline HTML → the sandboxed stage), a
+// mid-iteration craft scorecard (one failing V2 contrast gate WITH its
+// measured receipt — the loop's honest middle, not a victory screen), and the
+// observation facts (persona, viewport, obs #). Designable fully offline.
+const CANVAS_FIXTURE: CanvasViewState = {
+  artifact_title: 'index.html — pricing card',
+  artifact_html: [
+    '<!doctype html><html><head><meta charset="utf-8"><style>',
+    '  body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: #f4f6fb; color: #1c2333;',
+    '         display: grid; place-items: center; min-height: 100vh; }',
+    '  .card { background: #fff; border-radius: 14px; padding: 28px 32px; width: 300px;',
+    '          box-shadow: 0 10px 30px rgba(28, 35, 51, 0.12); }',
+    '  h1 { margin: 0 0 4px; font-size: 22px; }',
+    '  .tier { font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: #aab3c5; }',
+    '  .price { font-size: 40px; font-weight: 800; margin: 14px 0 2px; }',
+    '  .per { font-size: 12px; color: #6b7488; }',
+    '  ul { margin: 18px 0 22px; padding: 0 0 0 18px; font-size: 13px; color: #48506b; }',
+    '  li { margin: 6px 0; }',
+    '  button { width: 100%; padding: 12px; border: 0; border-radius: 8px; font-weight: 700;',
+    '           background: #4256e8; color: #fff; font-size: 14px; cursor: pointer; }',
+    '</style></head><body><div class="card">',
+    '  <div class="tier">Studio</div><h1>Continuum Grid</h1>',
+    '  <div class="price">$19<span class="per">/node·mo</span></div>',
+    '  <ul><li>Unlimited citizens</li><li>Genome commons access</li><li>Grid serving leases</li></ul>',
+    '  <button>Join the grid</button>',
+    '</div></body></html>',
+  ].join('\n'),
+  persona: 'Solenne',
+  observed_at_ms: Date.now() - 42_000, // "now" on the stamp — a fresh observe
+  viewport: { width: 1440, height: 900 },
+  revision: 7,
+  checks: [
+    { name: 'structure: one h1, one action button', tier: 'v1', passed: true },
+    { name: 'hierarchy: h1 > tier label computed sizes', tier: 'v2', passed: true },
+    {
+      name: 'contrast: .per price caption ≥ 4.5:1 on white',
+      tier: 'v2',
+      passed: false,
+      detail: '4.1:1 measured',
+    },
+    { name: 'responsive: no horizontal overflow at 360w', tier: 'v2', passed: true },
+  ],
+  judge: 0.78,
 };
 
 const member = (over: Partial<RosterSlotView>): RosterSlotView => ({
@@ -383,6 +430,18 @@ function main(): void {
     widget.bench = BENCH_FIXTURE;
   }
 
+  // `?fixture=canvas` — the design-bench CANVAS region center-stage
+  // (purpose="canvas"): the persona's page rendered live in the sandboxed
+  // stage + the craft scorecard mid-iteration. The face's ground state.
+  if (name === 'canvas') {
+    const base = FIXTURES.roster;
+    if (base) {
+      widget.state = { ...base, room_name: 'design-bench', purpose: 'canvas' };
+    }
+    widget.nav = NAV_FIXTURES.rooms;
+    widget.sys = SYS_FIXTURE;
+    widget.canvas = CANVAS_FIXTURE;
+  }
   // `?fixture=grid` — the GRID view center-stage (purpose="grid"): every
   // node's panel (resources + serving), the NODES strip's full activity.
   if (name === 'grid') {

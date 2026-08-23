@@ -100,6 +100,12 @@ export type { LiveCallOverlay } from './liveProjections';
 export { ARENA_KIND, arenaBoards, arenaContentBody } from './arenaProjections';
 export type { ArenaLedgerRow, ArenaViewState } from './arenaProjections';
 
+// Canvas projections — a design-bench observation → the run room's live
+// artifact render (DESIGN-BENCH-VISUAL-CRAFT.md §5: the walk-in sees the
+// design evolve). `chatWorkspace` dispatches to it off the room's purpose.
+export { CANVAS_KIND, canvasContentBody } from './canvasProjections';
+export type { CanvasCheckRow, CanvasViewState } from './canvasProjections';
+
 // The chat activity as a positron app, defined ONCE — mount it on any RenderTarget
 // (web/mobile/terminal/RAG). The first real `defineApp` consumer.
 export { chatApp } from './chatApp';
