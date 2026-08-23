@@ -28,6 +28,7 @@ import { GRID_PURPOSE } from './gridContent';
 import { LIVE_PURPOSE } from './liveContent';
 import { PERSONA_PURPOSE } from './personaContent';
 import { SERVING_PURPOSE } from './servingContent';
+import { SETTINGS_PURPOSE } from './settingsContent';
 
 /** Purposes that ARE registry families — identity mappings. */
 const FAMILIES: ReadonlySet<string> = new Set([
@@ -39,6 +40,7 @@ const FAMILIES: ReadonlySet<string> = new Set([
   LIVE_PURPOSE,
   PERSONA_PURPOSE,
   SERVING_PURPOSE,
+  SETTINGS_PURPOSE,
 ]);
 
 /** Recipe purpose (or its first path segment) → family. Every entry names the

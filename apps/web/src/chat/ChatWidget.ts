@@ -40,6 +40,10 @@ import {
   LIVE_MIC_TOGGLE,
   LIVE_CAPTIONS_TOGGLE,
   LIVE_FACE_TOGGLE,
+  SETTINGS_FACE_TOGGLE,
+  SETTINGS_AGREE,
+  type SettingsFaceToggleDetail,
+  type SettingsAgreeDetail,
   MESSAGE_EXPAND_TOGGLE,
   NAV_TAB_CLOSE,
   PANEL_RESIZE_START,
@@ -50,12 +54,18 @@ import {
   type NavTabCloseDetail,
   type PanelResizeStartDetail,
 } from '../render/parts';
-import { LIVE_PURPOSE, type WorkspaceLayout } from '@continuum/patterns';
+import { LIVE_PURPOSE, type SettingsContentBody, type WorkspaceLayout } from '@continuum/patterns';
 import '../render/CosmosBackdrop'; // registers <cosmos-backdrop> for the cosmos universe
 
 /** The send action the host injects. Resolves when the message is accepted by
  *  the core; rejects (fails loud) on a transport/command error the widget shows. */
 export type SendHandler = (text: string) => Promise<void>;
+
+/** The settings action the host injects: fetch (agree undefined) or mutate
+ *  (agree set) the node's settings through the SAME core verbs the terminal
+ *  uses (`genome/sharing`, `genome/list`) — the widget stays SDK-free and the
+ *  face renders substrate truth only, never optimistic local state. */
+export type SettingsHandler = (agree?: boolean) => Promise<SettingsContentBody>;
 
 /** The nav-select action the host injects (dispatches `nav/select` through the
  *  command client — the widget stays SDK-free). `kind` is the target's activity
@@ -90,6 +100,7 @@ export class ChatWidget extends LitElement {
     arena: { attribute: false },
     version: { attribute: false },
     sendHandler: { attribute: false },
+    settingsHandler: { attribute: false },
     selectRoomHandler: { attribute: false },
     liveFace: { attribute: false },
     callUrl: { attribute: false },
@@ -143,6 +154,9 @@ export class ChatWidget extends LitElement {
 
   /** Injected by the host — how a composed message reaches the core. */
   sendHandler?: SendHandler;
+
+  /** Host-injected settings fetch/mutate (see [`SettingsHandler`]). */
+  settingsHandler?: SettingsHandler;
 
   /** Injected by the host — how a rooms-rail pick reaches the core (`nav/select`). */
   selectRoomHandler?: SelectRoomHandler;
@@ -238,6 +252,42 @@ export class ChatWidget extends LitElement {
   /** The live face's caption strip toggle (CC) — on by default; the strip only
    *  draws while a real turn streams, so "on" costs nothing in silence. */
   private _captionsOn = true;
+
+  /** The Settings face state + its fetched body (substrate truth; undefined
+   *  while a fetch is in flight — the face shows its awaiting frame). */
+  private settingsFace = false;
+  private _settingsBody?: SettingsContentBody;
+
+  /** Open/close the Settings face; opening fetches fresh substrate truth. */
+  private onSettingsFaceToggle = (e: Event): void => {
+    this.settingsFace = (e as CustomEvent<SettingsFaceToggleDetail>).detail.open;
+    if (this.settingsFace) void this.fetchSettings();
+    else this._settingsBody = undefined;
+    this.requestUpdate();
+  };
+
+  /** Covenant accept/revoke from the face — the SAME verb the terminal uses;
+   *  the face re-renders from the refetched truth. */
+  private onSettingsAgree = (e: Event): void => {
+    void this.fetchSettings((e as CustomEvent<SettingsAgreeDetail>).detail.agree);
+  };
+
+  private async fetchSettings(agree?: boolean): Promise<void> {
+    if (!this.settingsHandler) return; // no host handler = the face stays awaiting (honest)
+    try {
+      this._settingsBody = await this.settingsHandler(agree);
+    } catch (err) {
+      this._settingsBody = {
+        loaded: true,
+        error: err instanceof Error ? err.message : String(err),
+        agreed: false,
+        covenantVersion: '',
+        covenant: '',
+        genes: [],
+      };
+    }
+    this.requestUpdate();
+  }
 
   /** Go-live / hang-up: the composed face-toggle from the header affordance or
    *  the call bar bubbles up here — the widget owns the face state. */
@@ -463,6 +513,8 @@ export class ChatWidget extends LitElement {
     this.addEventListener(NAV_TAB_CLOSE, this.onNavTabClose);
     // The live face: Go-live/hang-up + the CC toggle bubble up the same way.
     this.addEventListener(LIVE_FACE_TOGGLE, this.onLiveFaceToggle);
+    this.addEventListener(SETTINGS_FACE_TOGGLE, this.onSettingsFaceToggle);
+    this.addEventListener(SETTINGS_AGREE, this.onSettingsAgree);
     this.addEventListener(LIVE_MIC_TOGGLE, this.onLiveMicToggle);
     this.addEventListener(LIVE_CAPTIONS_TOGGLE, this.onLiveCaptionsToggle);
   }
@@ -3386,6 +3438,128 @@ export class ChatWidget extends LitElement {
       }
     }
 
+    /* ================= SETTINGS FACE ================= */
+    /* The operator panel: quiet sections, the covenant as a readable document,
+     * one primary action. Same tokens as everything else — settings should
+     * feel like the calm room of the house. */
+    .settings {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: var(--spacing-md) var(--spacing-lg);
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      overflow-y: auto;
+    }
+    .set-title {
+      font-size: 18px;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+    }
+    .set-awaiting, .set-error {
+      padding: var(--spacing-md);
+      color: var(--content-secondary);
+    }
+    .set-error {
+      border: 1px solid color-mix(in srgb, var(--status-warning, #e0a458) 45%, transparent);
+      border-radius: var(--radius-sm);
+      color: var(--status-warning, #e0a458);
+    }
+    .set-fallback { margin-top: 6px; font-size: 11px; opacity: 0.8; }
+    .set-section {
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      background: color-mix(in srgb, var(--surface, #0b1220) 60%, transparent);
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .set-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .set-head h3 {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--content-secondary);
+    }
+    .set-state {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border-subtle);
+      color: var(--content-secondary);
+    }
+    .set-state[data-on] {
+      border-color: color-mix(in srgb, var(--status-success, #4caf7d) 45%, transparent);
+      color: var(--status-success, #4caf7d);
+      background: color-mix(in srgb, var(--status-success, #4caf7d) 10%, transparent);
+    }
+    .set-sub { font-size: 12px; color: var(--content-secondary); line-height: 1.5; }
+    .set-covenant {
+      font-size: 11px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      padding: 10px 12px;
+      border-left: 3px solid var(--accent-primary);
+      background: color-mix(in srgb, var(--accent-primary) 5%, transparent);
+      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+      max-height: 260px;
+      overflow-y: auto;
+    }
+    .set-receipt { font-size: 10.5px; color: var(--content-secondary); }
+    .set-actions { display: flex; gap: 8px; }
+    .set-btn {
+      font: inherit;
+      font-size: 12px;
+      padding: 6px 14px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border-subtle);
+      background: transparent;
+      color: var(--content-primary);
+      cursor: pointer;
+    }
+    .set-btn-primary {
+      border-color: color-mix(in srgb, var(--accent-primary) 55%, transparent);
+      background: color-mix(in srgb, var(--accent-primary) 14%, transparent);
+      color: var(--accent-primary);
+      font-weight: 700;
+    }
+    .set-btn:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
+    .set-count {
+      font-variant-numeric: tabular-nums;
+      font-size: 11px;
+      color: var(--content-secondary);
+    }
+    .set-table-wrap { overflow-x: auto; }
+    .set-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 11.5px;
+    }
+    .set-table th {
+      text-align: left;
+      font-size: 9.5px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--content-secondary);
+      padding: 4px 8px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .set-table td { padding: 5px 8px; border-bottom: 1px solid color-mix(in srgb, var(--border-subtle) 45%, transparent); }
+    .set-gene { font-weight: 600; }
+    .set-base { color: var(--content-secondary); font-size: 10.5px; }
+    .set-num { font-variant-numeric: tabular-nums; }
+    .set-ok { color: var(--status-success, #4caf7d); }
+    .set-dim { color: var(--content-secondary); opacity: 0.7; }
+    .set-table [data-lift='up'] { color: var(--status-success, #4caf7d); }
+    .set-table [data-lift='down'] { color: var(--status-warning, #e0a458); }
+
     /* ================= LIVE CALL FACE =================
      * The room's call grid (purpose "live") — the reference's Teams-style
      * avatar tiles (docs/images/live-session-avatars.png): per-participant
@@ -4322,6 +4496,10 @@ export class ChatWidget extends LitElement {
         // The live-call overlay: the Go-live face state + the REAL StreamDelta
         // token rail (who is speaking NOW, and what they're saying — the same
         // map the typing bubbles/speaking rings draw) + the CC toggle.
+        settings: {
+          open: this.settingsFace,
+          ...(this._settingsBody ? { body: this._settingsBody } : {}),
+        },
         call: {
           open: this.liveFace,
           // Streams = the token rail PLUS call-audio speakers (presence in the

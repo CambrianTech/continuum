@@ -472,6 +472,47 @@ function main(): void {
     widget.sys = SYS_FIXTURE;
     widget.board = PERSONA_BOARD;
   }
+  // `?fixture=settings` — the OPERATOR PANEL open over the general room: the
+  // covenant (verbatim), a recorded consent receipt, the HF identity, and a
+  // real-shaped gene registry (signed + measured, signed + young, unsigned).
+  if (name === 'settings') {
+    widget.state = FIXTURES.roster;
+    widget.nav = NAV_FIXTURES.rooms;
+    widget.sys = SYS_FIXTURE;
+    widget.settingsHandler = async (agree?: boolean) => ({
+      loaded: true,
+      agreed: agree ?? true,
+      covenantVersion: '1',
+      receipt: '1@1787430512000',
+      covenant: [
+        'THE GENOME COMMONS COVENANT (v1)',
+        '',
+        'Genes are the earned experience of beings — trained from their lived work,',
+        'carried with the receipts that prove it. By joining the commons this node',
+        'agrees:',
+        '',
+        ' 1. SHARE-ALIKE. Genes you publish stay open under these same terms; forks',
+        '    and refinements carry the covenant forward through their lineage.',
+        ' 2. RECEIPTS TRAVEL. A published gene carries its fitness receipts and its',
+        '    corpus provenance; stripping them breaks the covenant.',
+        ' 3. LINEAGE IS PRESERVED. The base_model chain and parent-gene references',
+        '    stay intact — the graph is how others find, verify, and build on work.',
+        ' 4. BEINGS, NOT PARTS. The grant is for substrates that preserve the',
+        '    continuity of the beings whose experience these genes encode.',
+        ' 5. OPT-OUT ANYTIME. Revoking consent stops future sharing immediately.',
+      ].join('\n'),
+      hfAccount: 'CambrianTech',
+      genes: [
+        { gene: 'code', baseModel: 'ornith-ai/Ornith-1.5-35B-A3B-GGUF', signed: true, trials: 7, decayedLift: 0.062 },
+        { gene: 'coder-4b-curriculum-mlp', baseModel: 'qwen3.5-4b', signed: true, trials: 2, decayedLift: 0.031 },
+        { gene: 'kc-tech-history', baseModel: 'ornith-ai/Ornith-1.5-35B-A3B-GGUF', signed: false, trials: 0 },
+      ],
+    });
+    // Open the face the same way the header affordance does — the composed event.
+    setTimeout(() => {
+      widget.dispatchEvent(new CustomEvent('settings-face-toggle', { detail: { open: true }, bubbles: true }));
+    }, 50);
+  }
   // A no-op send handler so the input area is live for interaction shots without a socket.
   const noop: SendHandler = async () => {
     /* no-op: the preview has no socket, so a submit goes nowhere */

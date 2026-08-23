@@ -12,6 +12,7 @@
 import { html, nothing, type TemplateResult } from 'lit';
 import {
   LIVE_PURPOSE,
+  SETTINGS_PURPOSE,
   ROSTER_LISTING_ID,
   type ContinuonView,
   type RenderTarget,
@@ -27,6 +28,7 @@ import {
   fireListingSelect,
   fireLiveFaceToggle,
   fireNavTabClose,
+  fireSettingsFaceToggle,
   renderListing,
   resizeHandle,
 } from './parts';
@@ -199,7 +201,16 @@ export const webTarget: RenderTarget<TemplateResult> = {
                 <button class="hdr-btn" @click=${cycleUniverse} title="cycle universe skin (?universe=)">
                   Theme
                 </button>
-                <button class="hdr-btn" disabled title="coming soon">Settings</button>
+                <button
+                  class="hdr-btn"
+                  data-active=${ws.content.purpose === SETTINGS_PURPOSE ? '' : nothing}
+                  @click=${(e: Event): void => {
+                    fireSettingsFaceToggle(e, ws.content.purpose !== SETTINGS_PURPOSE);
+                  }}
+                  title="operator settings — genome commons, HF identity, gene registry"
+                >
+                  Settings
+                </button>
                 <button class="hdr-btn" disabled title="coming soon">Browser</button>
                 <button class="hdr-btn" disabled title="coming soon">Help</button>
               </span>

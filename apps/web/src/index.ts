@@ -33,6 +33,7 @@ import {
   type HistoryHandler,
   type SelectRoomHandler,
   type SendHandler,
+  type SettingsHandler,
 } from './chat/ChatWidget';
 import {
   CHAT_KIND,
@@ -134,6 +135,55 @@ async function main(): Promise<void> {
     );
   };
   widget.selectRoomHandler = selectRoomHandler;
+
+  // Settings: fetch or mutate the node's operator settings through the SAME
+  // core verbs the terminal uses — `genome/sharing` (covenant consent + HF
+  // identity; --agree records/revokes) and `genome/list` (the gene registry).
+  // Same raw-wire seam + drift note as nav/select above. The face renders
+  // whatever these verbs answer — substrate truth, one consent receipt across
+  // every surface.
+  const settingsHandler: SettingsHandler = async (agree?: boolean) => {
+    const sharingRaw = await transport.execute(
+      buildCommandUri('genome/sharing'),
+      JSON.stringify(agree === undefined ? { userId: config.senderId } : { userId: config.senderId, agree }),
+    );
+    const sharing = JSON.parse(sharingRaw) as {
+      agreed: boolean;
+      covenant_version: string;
+      receipt?: string;
+      covenant: string;
+      hf_account?: string;
+    };
+    const listRaw = await transport.execute(
+      buildCommandUri('genome/list'),
+      JSON.stringify({ userId: config.senderId }),
+    );
+    const list = JSON.parse(listRaw) as {
+      genes: {
+        gene: string;
+        base_model: string;
+        signed: boolean;
+        trials: number;
+        decayed_lift?: number;
+      }[];
+    };
+    return {
+      loaded: true,
+      agreed: sharing.agreed,
+      covenantVersion: sharing.covenant_version,
+      ...(sharing.receipt !== undefined ? { receipt: sharing.receipt } : {}),
+      covenant: sharing.covenant,
+      ...(sharing.hf_account !== undefined ? { hfAccount: sharing.hf_account } : {}),
+      genes: list.genes.map((g) => ({
+        gene: g.gene,
+        baseModel: g.base_model,
+        signed: g.signed,
+        trials: g.trials,
+        ...(g.decayed_lift !== undefined ? { decayedLift: g.decayed_lift } : {}),
+      })),
+    };
+  };
+  widget.settingsHandler = settingsHandler;
 
   // Scroll-back: one older page out of the durable transcript per call —
   // `chat/poll { beforeMessageId }` is the storage cursor (the Twitter
