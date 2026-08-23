@@ -5678,7 +5678,7 @@ mod tests {
         let event = bus
             .find_recent_event(SERVING_SNAPSHOT_EVENT)
             .expect("serving.snapshot must be emitted on the bus");
-        let snap: ServingSnapshot = serde_json::from_value(event.payload).unwrap();
+        let snap: ServingSnapshot = serde_json::from_value((*event.payload).clone()).unwrap(); // test-only decode of the shared bus payload
         assert_eq!(snap.active_model.as_deref(), Some("coder-14b"));
         assert!(snap.ready, "emitted snapshot reflects the live model");
     }

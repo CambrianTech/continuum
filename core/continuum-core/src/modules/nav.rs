@@ -625,7 +625,7 @@ mod tests {
         while let Ok(event) = rx.try_recv() {
             if event.name == CHAT_FOCUSED {
                 let payload: AircChatFocused =
-                    serde_json::from_value(event.payload.clone()).expect("real wire struct");
+                    serde_json::from_value((*event.payload).clone()).expect("real wire struct");
                 assert_eq!(payload.room_id, room);
                 saw_focus = true;
             }

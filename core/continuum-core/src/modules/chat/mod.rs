@@ -619,7 +619,7 @@ pub fn spawn_persist_listener(
             if event.name != crate::ipc::positron_source::CHAT_POSTED {
                 continue;
             }
-            if let Err(error) = module.persist_posted(event.payload).await {
+            if let Err(error) = module.persist_posted((*event.payload).clone()).await { // persist consumes an owned Value; one copy at the boundary
                 // Loud but non-fatal: one malformed payload must not kill the
                 // transcript writer for the rest of the process lifetime.
                 tracing::warn!(error, "chat:posted persist failed (#140)");

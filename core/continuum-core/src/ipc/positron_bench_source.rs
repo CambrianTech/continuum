@@ -194,9 +194,11 @@ pub fn spawn_bench_emitter(
                 continue;
             }
             last = Some(view.clone());
-            let envelope = builder.session(view);
-            substrate.store(envelope.clone());
-            mind_substrate.store(envelope);
+            let envelope = std::sync::Arc::new(builder.session(view));
+            // One allocation, two sinks (2026-08-23 audit): the by-value clone
+            // deep-copied the whole board per publish for the second target.
+            substrate.store_shared(std::sync::Arc::clone(&envelope));
+            mind_substrate.store_shared(envelope);
         }
     });
 }

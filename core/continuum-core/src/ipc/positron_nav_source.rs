@@ -294,11 +294,11 @@ pub fn spawn_room_set_fold(
                 Ok(event) => {
                     let observed: Option<(Uuid, Option<String>)> = if event.name == PRESENCE_UPDATED
                     {
-                        serde_json::from_value::<AircPresenceUpdate>(event.payload.clone())
+                        AircPresenceUpdate::deserialize(&*event.payload)
                             .ok()
                             .map(|p| (p.room_id, Some(p.room_name)))
                     } else if event.name == CHAT_POSTED {
-                        serde_json::from_value::<ChatPostedRoom>(event.payload.clone())
+                        ChatPostedRoom::deserialize(&*event.payload)
                             .ok()
                             .map(|p| (p.room_id, None))
                     } else {
@@ -369,7 +369,7 @@ pub fn spawn_member_set_fold(
                         continue;
                     }
                     if let Ok(update) =
-                        serde_json::from_value::<AircPresenceUpdate>(event.payload.clone())
+                        AircPresenceUpdate::deserialize(&*event.payload)
                     {
                         tx.send_if_modified(|set| {
                             let mut changed = false;
