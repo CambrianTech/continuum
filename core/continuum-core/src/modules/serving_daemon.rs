@@ -2431,15 +2431,30 @@ impl ServingDaemonModule {
                 return;
             }
             let n = health_fails.fetch_add(1, Ordering::Relaxed) + 1;
+            // Work-scaled patience (2026-08-23, the MirrorCode baseline's three
+            // kills): before relaunching, price the kill. A lane holding a
+            // window-scale in-flight prompt costs MINUTES of re-prefill to
+            // destroy — and the client's retry of the same giant turn can cycle
+            // into a kill loop. Large in-flight investment (≥ quarter-window,
+            // relative — never an absolute constant) doubles the miss
+            // threshold; a quiet lane keeps base patience and still dies fast.
+            let inflight = server.slots_max_inflight_prompt_tokens().await;
+            let window = serving_tx.borrow().served_context_window;
+            let threshold = crate::inference::llama_server::wedge_miss_threshold(
+                HEALTH_FAILS_TO_RELAUNCH,
+                inflight,
+                window,
+            );
             crate::probe!(
                 class = "serving.health",
                 ok = false,
                 consecutive = n as u64,
-                threshold = HEALTH_FAILS_TO_RELAUNCH as u64,
+                threshold = threshold as u64,
+                inflight_prompt_tokens = inflight.unwrap_or(0), // probe field: 0 is the no-inflight sentinel in telemetry, nothing budgets on it
                 "live lane failed the decode heartbeat (control-plane may still 200 — a \
                  poisoned Metal backend); #175 self-heal",
             );
-            if n >= HEALTH_FAILS_TO_RELAUNCH {
+            if n >= threshold {
                 // Sustained no-decode = wedged, not transiently busy. Reset the streak so we
                 // don't re-trigger before the relaunch lands and republishes ready.
                 health_fails.store(0, Ordering::Relaxed);
