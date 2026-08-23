@@ -1005,4 +1005,4 @@ You put on your AR glasses. The AIs appear as avatars in your space. They point 
 - [UNIVERSAL-PRIMITIVES.md](UNIVERSAL-PRIMITIVES.md) — Commands.execute() and Events.
 - [QUEUE-DRIVEN-COGNITION.md](QUEUE-DRIVEN-COGNITION.md) — queue items declare RAG requirements.
 - [UNIVERSAL-LEARNING-ARCHITECTURE.md](UNIVERSAL-LEARNING-ARCHITECTURE.md) — training, memory, and beyond-LLM learning.
-- [PERSONA-CONVERGENCE-ROADMAP.md](../system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md) — persona architecture.
+- [PERSONA-CONVERGENCE-ROADMAP.md](personas/PERSONA-CONVERGENCE-ROADMAP.md) — persona architecture.

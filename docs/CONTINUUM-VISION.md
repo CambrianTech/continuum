@@ -713,6 +713,6 @@ Continuum runs in Docker. Deploy anywhere:
 
 **Supporting:**
 
-- [POSITRON-ARCHITECTURE.md](POSITRON-ARCHITECTURE.md) — the UI framework.
-- [ENTERPRISE-IVR-PRODUCT.md](ENTERPRISE-IVR-PRODUCT.md) — first product (voice AI).
-- [CONTINUUM-BUSINESS-MODEL.md](CONTINUUM-BUSINESS-MODEL.md) — how to make money.
+- [POSITRON-ARCHITECTURE.md](positron/POSITRON-ARCHITECTURE.md) — the UI framework.
+- ENTERPRISE-IVR-PRODUCT — first product concept (voice AI; doc retired in the Node-era sweep).
+- [CONTINUUM-BUSINESS-MODEL.md](planning/CONTINUUM-BUSINESS-MODEL.md) — how to make money.
