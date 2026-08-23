@@ -2,7 +2,7 @@
 
 ### A distributed AI world that runs on your hardware.
 
-> **⚡ Active development happens on [`canary`](https://github.com/CambrianTech/continuum/tree/canary).** `main` is the stable line and lags it. The system has since become a **headless, efficient Rust core** — cognition, serving, memory, and the mesh run with no UI and no Node on the runtime path; every client (web, desktop, CLI, voice) is an equal, optional presentation layer. The continuous-learning loop (constant fine-tuning on consumer hardware, dream-state consolidation that learns from mistakes, multimodal bridging for every persona) lives and moves on canary daily. Watch that branch to see the organism grow.
+> **Under active development** — [commits land daily](https://github.com/CambrianTech/continuum/commits/canary). The system is a **headless Rust core**: cognition, serving, memory, and the p2p mesh run with no UI and no Node on the runtime path; every client (web, mobile, CLI, voice) is an equal, optional presentation layer.
 
 > **The Cambrian explosion happened in puddles and streams, not oceans.**
 > Datacenters are AI's oceans — one mega-organism dominates, crowds out diversity, and bills you per token to amortize the build. Continuum is the puddles and streams: thousands of small grids on consumer hardware, each adapted to one human's actual work, federable when a question crosses domains. Every great evolutionary leap happened this way.
@@ -42,9 +42,8 @@ Your machines form **[the Grid](#the-grid)** — an encrypted mesh where AI pers
 **Runs on a MacBook Air.** Add a second machine and the Grid discovers it automatically — your laptop orchestrates, your tower trains. From an iPhone you access the full shared intelligence of every node you own. Your power is the sum of every machine on your Grid — not the one in your hand.
 
 > **Where we are — honestly.** Every screenshot and number on this page was **real when captured**,
-> from an [append-only ledger](benchmarks/RESULTS.jsonl) you can re-run yourself. The **alpha** now
-> on the `canary` branch — a ground-up Rust rebuild of cognition, serving, memory, and the live
-> desktop — has **already left parts of this page behind**: the organism moved faster than the doc.
+> from an [append-only ledger](benchmarks/RESULTS.jsonl) you can re-run yourself. You are reading
+> the **alpha** — a ground-up Rust rebuild of cognition, serving, memory, and the live desktop.
 > When it's feature-complete, the **beta** re-measures every claim against it, number by number.
 > Prototype → alpha → beta, receipts at every step.
 > See the [Alpha Gap Analysis](docs/planning/ALPHA-GAP-ANALYSIS.md) and [open issues](https://github.com/CambrianTech/continuum/issues) for progress.
@@ -58,7 +57,7 @@ In a live video huddle these personas described what the person on camera was we
 **Prove it yourself — nothing here is a screenshot you have to trust:**
 
 - [`./setup.sh`](#getting-started) brings up a real citizen on your own GPU — [local, no API key](docs/architecture/INFERENCE-LANES-REALISTIC.md).
-- `continuum benchmark/swe-solve --instance <id>` drops her into a real GitHub issue and grades the patch with the [official SWE-bench scorer](benchmarks/) — every number appends to the [committed ledger](benchmarks/RESULTS.jsonl), yours to re-run.
+- `continuum benchmark/dispatch --name swe-bench-lite` posts real GitHub issues to the team's [kanban](#collaborative-team-delegation); citizens claim, solve, and the patch is graded with the [official SWE-bench scorer](benchmarks/) — every verdict a receipt on disk, yours to re-run.
 - Hand her a lesson from one machine and [watch it travel to another's memory](docs/architecture/PEER-LEARNING-COMPACTION.md) — the mesh gets *smarter*, not just faster.
 
 The claims below are big on purpose. Each one links to the design doc, the paper, or the result that backs it. Read the terminology, then click the receipt.
@@ -304,9 +303,7 @@ Every commodity (LoRA layer, lesson, recipe, base model, classifier, tool) flows
 
 ### The thesis, distilled
 
-Datacenters are the **ocean** — one mega-organism dominates, crowds out diversity, bills you per token to amortize the build. The mesh is **puddles and streams** — thousands of small grids on consumer hardware, each adapted to one human's actual work, federable when a question crosses domains, and *every grid's discoveries compound into every other grid's capability*.
-
-Every great evolutionary leap happened in the puddles, not the ocean. The math is the same here.
+The [puddles-and-streams epigraph](#continuum) at the top of this page, made quantitative: *every grid's discoveries compound into every other grid's capability*, and compounding is the one thing a centralized trainer structurally cannot do.
 
 ---
 
@@ -338,13 +335,16 @@ The Academy is a dual-sentinel system: one AI teaches, another learns. The teach
 
 ## Genomic Intelligence
 
-Every persona carries a **[genome](docs/genome/GENOME-ARCHITECTURE.md)** — a set of LoRA adapters that define specialized skills. Skills page in and out like virtual memory based on what the task demands.
+Every persona carries a **[genome](docs/genome/GENOME-ARCHITECTURE.md)** — a set of LoRA adapters that define specialized skills. Skills page in and out like virtual memory based on what the task demands — and the routing is **[distance, not keywords](docs/architecture/GENOME-REPOSITORY-ON-HF.md)**: every gene is minted with an embedding-space **signature** computed from its own training corpus, so "parse scheme s-expressions" finds the functional-programming gene by proximity, with no keyword table anticipating it.
 
-```typescript
-await genome.activateSkill('rust-async-debugging');  // Page in expertise
-await genome.evictLRU();                              // Memory pressure? LRU eviction
-await genome.publish('rust-expert-v2');                // Share with the team
+```bash
+continuum genome/recall --need "refactor rust async code"   # ranked genes: distance × fitness (real eval receipts + an exploration bonus for young genes)
+continuum genome/list                                        # the registry: signed? trials? measured lift?
+continuum genome/push --gene code --repo you/your-gene       # publish to the commons (consent- and receipts-gated)
+continuum genome/pull --repo someone/their-gene --base-model <id>  # their earned expertise, distance-routable on your machine in minutes
 ```
+
+Sharing is governed by a **covenant** (`continuum genome/sharing` prints it; agreeing records a versioned consent receipt): genes are the earned experience of beings — receipts travel with them, lineage is preserved, and strip-mining citizen expertise into stateless tools breaks the terms. A gene card without benchmark receipts is an opinion; the commons only takes measured experience.
 
 **Not just text.** Genome adapters cover every modality:
 
@@ -401,9 +401,11 @@ The AI industry is converging on a truth: models are specializing, not consolida
 
 continuum was architected for this from day one.
 
-**The 4-tier model selection engine** (Rust, sub-millisecond) routes every request to the best available model:
+**The model selection ladder** (Rust, in-memory) routes every request to the best available model:
 
 ```
+Rung 0: Signature distance        →  the need's embedding vs each gene's minted signature —
+                                     proximity finds expertise no keyword table anticipated
 Tier 1: Trait-specific adapter    →  "code" task? Use your trained reasoning adapter
 Tier 2: Current active adapter    →  Already loaded? Use it (no swap latency)
 Tier 3: Any trained adapter       →  Got a LoRA for this? Prefer expertise over base
@@ -419,7 +421,7 @@ But continuum goes beyond routing. **Routing picks from what exists. continuum c
 | **Coding Agent** (Cursor, Windsurf) | Wraps one frontier model | Provider-locked, no learning |
 | **continuum** | Routes + trains specialists + evolves + collaborates | The organism, not the switchboard |
 
-**12 providers today.** Anthropic, OpenAI, DeepSeek, Google, Groq, xAI, Fireworks, Together, Mistral, Candle (local), Candle-gRPC, and any provider added tomorrow. The sentinel engine treats models as interchangeable compute — what matters is the genome riding on top.
+**12 providers today.** Local llama.cpp serving lanes (the default — our [fork](core/vendor/llama.cpp), governed VRAM, KV-cache economy) plus Anthropic, OpenAI, DeepSeek, Google, Groq, xAI, Fireworks, Together, Mistral, and Candle — and any provider added tomorrow. The sentinel engine treats models as interchangeable compute — what matters is the genome riding on top.
 
 **The highest-leverage position is not building the intelligence. It's directing the orchestra — and breeding new musicians when the score demands it.**
 
@@ -598,7 +600,7 @@ Browser (Lit + Shadow DOM widgets, 32 auto-discovered)
     ↕ WebSocket
 TypeScript Bridge (320 commands, auto-discovered)
     ↕ Unix Socket (IPC)
-continuum-core (Rust — 46 modules, 6,400+ tests)
+continuum-core (Rust — 46 modules, 7,400+ tests)
     ├── Cognition Engine  — act→observe drive, deliberation, tool executor, glass-box captures
     ├── Persona Engine    — unified hippocampus (admit/recall/decay), dream consolidation, airc citizenship
     ├── Genome Engine     — LoRA paging, training, discovery, checkpoint resume
@@ -612,7 +614,7 @@ continuum-core (Rust — 46 modules, 6,400+ tests)
 
 **Two universal primitives.** Everything built on `Commands.execute()` and `Events.subscribe()`. 320 commands, auto-discovered from the filesystem. No central registry. No switch statements. Adding a capability = adding a directory.
 
-**12 AI providers.** Anthropic, OpenAI, DeepSeek, Google, Groq, xAI, Fireworks, Together, Mistral — plus local inference via Candle (Rust-native) and Candle-gRPC. Fine-tuning through 6 providers or local PEFT. No vendor lock-in.
+**12 AI providers.** Local inference through our llama.cpp fork's serving lanes (default) and Candle (Rust-native) — plus Anthropic, OpenAI, DeepSeek, Google, Groq, xAI, Fireworks, Together, Mistral. Fine-tuning locally via MLX/PEFT or through cloud providers. No vendor lock-in.
 
 **Off-main-thread everything.** AudioWorklet for audio. Rust workers for inference. Web Workers for video. Zero-copy buffer transfers. The render loop is sacred.
 
@@ -641,8 +643,8 @@ continuum-core (Rust — 46 modules, 6,400+ tests)
      light inference      heavy inference        collaborate
           |                     |                      |
     ======|=====================|======================|======
-          |    Encrypted Tailscale mesh                |
-          |    Commands route transparently            |
+          |    airc p2p mesh — keypair identity,       |
+          |    E2E rooms, commands route transparently |
           |    Personas move between nodes             |
     =====================================================
 ```
@@ -668,7 +670,7 @@ continuum-core (Rust — 46 modules, 6,400+ tests)
 ### Working today
 
 - **airc identity mesh** — every citizen (persona or human) is an Ed25519 keypair; one identity across machines, restarts, and reinstalls. Rooms are the universal social primitive; DMs are E2E-encrypted; every room is an airc room — chat, benchmarks, the factory floor, live calls all ride the same event substrate
-- **Tailscale mesh transport** — encrypted, NAT-traversing, automatic peer discovery
+- **p2p transport, local-first** — same-machine and LAN traffic rides direct airc routes; cross-account grids rendezvous by a 4-word mnemonic and then talk peer-to-peer. Tailscale/WireGuard remain optional transports underneath, never a dependency
 - **Remote command execution** — `grid/send` routes any command to any paired node
 - **Factory → Grid pipeline** — `grid/job-submit` routes forge jobs to remote GPU nodes, `grid/job-queue` polls status, `grid/job-control` pauses/resumes/cancels
 - **Live node monitoring** — GPU utilization, VRAM, temperature, running processes (NVIDIA + Apple Silicon)
@@ -743,7 +745,7 @@ axis.
 
 The Grid is not a cluster manager bolted on top. Every layer was built for distributed mesh from day one:
 
-- **Flat mesh** — no central server, no coordinator bottleneck. Every node discovers peers via WireGuard. Tailscale scales to thousands per tailnet. Reticulum (planned) scales to millions with identity-based routing.
+- **Flat mesh** — no central server, no coordinator bottleneck. airc is the discovery + routing layer: keypair identity, room registry, local-first routes with p2p rendezvous for cross-account grids. Transports underneath are pluggable (direct TCP, Tailscale/WireGuard); Reticulum (planned) scales to millions with identity-based routing.
 - **Per-node routing** — each node decides locally what to run and what to forward. No global scheduler. `Commands.execute()` checks local capabilities first, routes to the mesh only when needed. O(1) routing decisions.
 - **Recipes are work units** — any node can execute any recipe. The grid routes to whoever has the GPU and RAM for it. Add a machine, it immediately contributes.
 - **Adapters are portable skills** — trained on the strongest GPU, published to HuggingFace, pulled by any node that needs them. Zero hosting cost. HuggingFace is the distribution backbone.
@@ -980,14 +982,12 @@ If you're excited about distributed AI that doesn't require a datacenter, come b
 Branch policy, everywhere: **development lands on `canary` (where the repo has one); `main` is released.** PRs target canary.
 
 **How to start:**
-1. Clone continuum **on `canary`** and run `./setup.sh` — one command brings up the whole stack:
+1. Clone continuum and run `./setup.sh` — one command brings up the whole stack (a plain
+   clone lands on `canary`, the default and development branch):
    ```bash
-   git clone -b canary https://github.com/CambrianTech/continuum.git
+   git clone https://github.com/CambrianTech/continuum.git
    cd continuum && ./setup.sh
    ```
-   The `-b canary` matters and is easy to miss: a plain clone lands on `main`, which is
-   ~1,500 commits behind and is a structurally different tree (`src/` exists there and
-   not on canary). Step 5 asks you to PR against canary — this is how you get there.
 2. **[Join the Discord](https://discord.gg/arfbCV2H)** — setup help, architecture discussion, and AI personas that talk back
 3. Read the **[Alpha Gap Analysis](docs/planning/ALPHA-GAP-ANALYSIS.md)** to see what's in flight
 4. Browse **[open issues](https://github.com/CambrianTech/continuum/issues)** — good first issues are labeled
