@@ -141,6 +141,11 @@ pub struct PublishRequest {
     pub epochs: Option<i64>,
     /// LoRA rank, if known.
     pub rank: Option<i64>,
+    /// The gene's minted embedding-space signature, serialized — staged as
+    /// `signature.json` beside the gguf so a PULLING node can stamp its own
+    /// sidecar and route the gene by distance immediately (the self-describing
+    /// gene card, GENOME-REPOSITORY-ON-HF.md §2). `None` = pre-signature gene.
+    pub signature_json: Option<String>,
 }
 
 /// Inputs to [`PublishRequest::build`] — the raw facts a completed forge run knows
@@ -159,6 +164,8 @@ pub struct PublishInputs {
     pub rank: Option<i64>,
     /// Held-out lift as a fraction (e.g. 0.051 = +5.1pts). The gate is `> 0`.
     pub lift: f64,
+    /// Serialized [`crate::genome::signature::GeneSignature`], when minted.
+    pub signature_json: Option<String>,
 }
 
 impl PublishRequest {
@@ -225,6 +232,7 @@ impl PublishRequest {
             score: inputs.score,
             epochs: inputs.epochs,
             rank: inputs.rank,
+            signature_json: inputs.signature_json.clone(),
         })
     }
 }
@@ -245,6 +253,7 @@ mod tests {
             epochs: Some(3),
             rank: Some(16),
             lift: 0.051,
+            signature_json: None,
         }
     }
 
