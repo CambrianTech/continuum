@@ -1089,13 +1089,15 @@ async fn build_external_eval_lane_inner(
 fn provision_ephemeral_eval_root(tag: &str) -> Result<std::path::PathBuf, String> {
     let base = std::env::current_dir().map_err(|e| format!("cwd: {e}"))?;
     let root = std::env::temp_dir().join("continuum-eval").join(tag);
+    let parent = root
+        .parent()
+        .ok_or_else(|| "eval root has no parent".to_string())?
+        .to_path_buf();
+    sweep_orphan_eval_roots(&parent, &root);
     if root.is_dir() {
         return Ok(root); // resume of the same run reuses its world
     }
-    let parent = root
-        .parent()
-        .ok_or_else(|| "eval root has no parent".to_string())?;
-    std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+    std::fs::create_dir_all(&parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
     let mut clone = std::process::Command::new("cp");
     if cfg!(target_os = "macos") {
         clone.arg("-cR");
@@ -1124,13 +1126,80 @@ fn provision_ephemeral_eval_root(tag: &str) -> Result<std::path::PathBuf, String
     Ok(root)
 }
 
+/// Eval worlds LIVE in this process. `Drop` covers every in-process return path,
+/// but not a killed process: `continuum reboot` SIGTERMs the core, `Drop` never
+/// runs, and the run's world outlives it (measured 2026-08-23 — a reboot mid-run
+/// left a 31 GB clone under `$TMPDIR/continuum-eval`, found by hand during the
+/// Ornith battery). The sweep below deletes those orphans at the next provision;
+/// this set is what stops it deleting a CONCURRENT run's live world.
+static LIVE_EVAL_ROOTS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashSet<std::path::PathBuf>>,
+> = std::sync::OnceLock::new();
+
+fn live_eval_roots() -> &'static std::sync::Mutex<std::collections::HashSet<std::path::PathBuf>> {
+    LIVE_EVAL_ROOTS.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+/// Remove sibling eval worlds that belong to no live run in this process. An
+/// eval run cannot survive its process (the mind fork, the lane lease, and the
+/// progress reporter all die with it), so any world under `continuum-eval/`
+/// that is neither the run being provisioned nor in [`live_eval_roots`] is an
+/// orphan from a killed process — re-creatable debris by construction (#312:
+/// the world is a CoW clone of the checkout; nothing in it is the only copy).
+/// Event-driven at the point of use — no boot hook, no background tick.
+fn sweep_orphan_eval_roots(parent: &std::path::Path, keep: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return; // parent not created yet — nothing to sweep
+    };
+    // Snapshot the live set and release the lock BEFORE deleting: a multi-GB
+    // clone takes seconds to remove, and a concurrent provision must not queue
+    // behind filesystem work.
+    let live = match live_eval_roots().lock() {
+        Ok(guard) => guard.clone(),
+        Err(_) => return, // poisoned registry: skip the sweep, never guess at liveness
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() || path == keep || live.contains(&path) {
+            continue;
+        }
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => crate::probe!(
+                class = "eval.workspace.orphan_swept",
+                root = path.display().to_string().as_str(),
+                "orphaned exam world from a killed process removed — Drop cannot run \
+                 through SIGTERM, so provision-time sweep is the crash-path owner"
+            ),
+            Err(e) => tracing::warn!(
+                root = %path.display(),
+                error = %e,
+                "orphaned eval world could not be removed — temp-dir debris persists"
+            ),
+        }
+    }
+}
+
 /// RAII holder for the run's disposable world — `Drop` removes it on EVERY return
 /// path (score, infra-abort, error), so a crashed exam never leaks fixtures into
-/// the temp dir long-term and NEVER touches the shared checkout at all.
+/// the temp dir long-term and NEVER touches the shared checkout at all. The
+/// crash path Drop cannot cover (SIGKILL/SIGTERM) is owned by
+/// [`sweep_orphan_eval_roots`] at the next provision.
 struct EphemeralEvalRoot(std::path::PathBuf);
+
+impl EphemeralEvalRoot {
+    fn new(root: std::path::PathBuf) -> Self {
+        if let Ok(mut live) = live_eval_roots().lock() {
+            live.insert(root.clone());
+        }
+        Self(root)
+    }
+}
 
 impl Drop for EphemeralEvalRoot {
     fn drop(&mut self) {
+        if let Ok(mut live) = live_eval_roots().lock() {
+            live.remove(&self.0);
+        }
         if let Err(e) = std::fs::remove_dir_all(&self.0) {
             tracing::warn!(
                 root = %self.0.display(),
@@ -1989,7 +2058,7 @@ impl CognitionEval {
                 .clone()
                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             match provision_ephemeral_eval_root(&tag) {
-                Ok(root) => Some(EphemeralEvalRoot(root)),
+                Ok(root) => Some(EphemeralEvalRoot::new(root)),
                 Err(e) => {
                     // Fail LOUD and refuse to contaminate — no silent fallback to cwd.
                     return Err(CommandError::Internal(format!(
@@ -4396,6 +4465,31 @@ crate::register_stateless_command!(CognitionEval);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the orphan sweep deleting a CONCURRENT run's live world —
+    // the one direction that turns crash-path hygiene into data loss mid-exam.
+    // regression for the 2026-08-23 finding (a SIGTERM'd reboot orphaned a 31 GB
+    // eval clone that Drop could never reap; the sweep is the crash-path owner,
+    // and live_eval_roots() is what scopes it to true orphans).
+    #[test]
+    fn orphan_sweep_removes_dead_worlds_and_never_live_ones() {
+        let parent = tempfile::tempdir().expect("tempdir");
+        let live = parent.path().join("live-run");
+        let orphan = parent.path().join("orphan-run");
+        std::fs::create_dir_all(&live).expect("mkdir live");
+        std::fs::create_dir_all(&orphan).expect("mkdir orphan");
+        let keep = parent.path().join("being-provisioned");
+        std::fs::create_dir_all(&keep).expect("mkdir keep");
+
+        let holder = EphemeralEvalRoot::new(live.clone());
+        sweep_orphan_eval_roots(parent.path(), &keep);
+
+        assert!(live.is_dir(), "a registered live world must survive the sweep");
+        assert!(keep.is_dir(), "the world being provisioned must survive the sweep");
+        assert!(!orphan.is_dir(), "an unregistered world is an orphan and must be removed");
+        drop(holder); // Drop removes the live world AND its registry entry
+        assert!(!live.is_dir(), "Drop still owns the in-process cleanup path");
+    }
 
     // what this catches: #310 — the /v1/models context_length contract for gateway-routed
     // eval lanes. The ds4 sidecar serves 8192 while its catalog row states the model's 1M

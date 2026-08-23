@@ -215,6 +215,14 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
         // `super::rotation_log_pool`.
         TrackedDir::new("logs", home.join(".continuum/logs")),
         TrackedDir::new("probes", home.join(".continuum/probes")),
+        // #312 ephemeral exam worlds: one CoW clone of the checkout per eval run
+        // (~31 GB logical each). RAII drop removes them on every in-process return
+        // path, and the provision-time orphan sweep (`cognition/eval.rs::
+        // sweep_orphan_eval_roots`) owns the crash path a SIGTERM'd reboot leaves
+        // behind — registered 2026-08-23 after exactly that: a mid-run reboot
+        // orphaned a full clone that no reporter could see, the silent-class shape
+        // the 2026-07-13 incident was about.
+        TrackedDir::new("eval-roots", std::env::temp_dir().join("continuum-eval")),
     ];
     // Present only when its real location is KNOWN (see the warn above). Kept
     // CONDITIONAL rather than defaulted: fabricating a path here is how a class

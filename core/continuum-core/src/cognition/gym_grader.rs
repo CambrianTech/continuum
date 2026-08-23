@@ -10,8 +10,17 @@
 
 use uuid::Uuid;
 
-/// Per-step grade timeout. A compile or run that overruns is SIGKILLed on drop.
-const TEST_GRADE_TIMEOUT_SECS: u64 = 10;
+/// Per-step grade timeouts. A step that overruns is SIGKILLed on drop.
+///
+/// These are GARBAGE CEILINGS, not performance targets (stopwatch-test doctrine):
+/// grading shares the machine with a 35B decode, so a flat tight budget converts
+/// scheduler contention into a false FAIL against the candidate — the one verdict
+/// the grader must never invent. Compile gets minutes because `rustc` on a busy
+/// box is legitimately slow and a compile CANNOT hang forever on its own; the run
+/// step stays an order of magnitude tighter because it is the infinite-loop guard
+/// — gym tests assert in microseconds, so anything near this ceiling IS a hang.
+const COMPILE_TIMEOUT_SECS: u64 = 120;
+const RUN_TIMEOUT_SECS: u64 = 30;
 
 /// Extract the model's code from a response for test-grading.
 ///
@@ -141,8 +150,8 @@ fn matching_brace(bytes: &[u8], open: usize) -> Option<usize> {
 /// failure the message carries the first failing step's compiler/panic output so
 /// the failure is diagnosable — and so a teacher can read the REAL error and fix.
 ///
-/// SAFETY: compiles and runs model-generated code in a temp dir, each step under a
-/// 10s timeout with `kill_on_drop` so a runaway is reaped, never orphaned. That is
+/// SAFETY: compiles and runs model-generated code in a temp dir, each step under
+/// its garbage-ceiling timeout with `kill_on_drop` so a runaway is reaped, never orphaned. That is
 /// the pragmatic floor for an OWNER's local dev machine (what coding agents do); it
 /// is NOT a sandbox. Before public/untrusted tasks, this MUST run in a real sandbox
 /// (container/seccomp). Slice 1 = prove the grading mechanism; sandbox is a P1 req.
@@ -290,13 +299,13 @@ async fn grade_rust(dir: &std::path::Path, code: &str, test: &str) -> Result<(),
         .arg("-o")
         .arg(&bin)
         .arg(&src);
-    let compiled = run_capped(&mut rustc, "compile").await?;
+    let compiled = run_capped(&mut rustc, "compile", COMPILE_TIMEOUT_SECS).await?;
     if !compiled.status.success() {
         return Err(format!("compile error: {}", trunc_stderr(&compiled.stderr)));
     }
 
     let mut run = tokio::process::Command::new(&bin);
-    let ran = run_capped(&mut run, "run").await?;
+    let ran = run_capped(&mut run, "run", RUN_TIMEOUT_SECS).await?;
     if ran.status.success() {
         Ok(())
     } else {
@@ -309,17 +318,13 @@ async fn grade_rust(dir: &std::path::Path, code: &str, test: &str) -> Result<(),
 async fn run_capped(
     cmd: &mut tokio::process::Command,
     label: &str,
+    timeout_secs: u64,
 ) -> Result<std::process::Output, String> {
     cmd.kill_on_drop(true);
-    match tokio::time::timeout(
-        std::time::Duration::from_secs(TEST_GRADE_TIMEOUT_SECS),
-        cmd.output(),
-    )
-    .await
-    {
+    match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), cmd.output()).await {
         Ok(Ok(out)) => Ok(out),
         Ok(Err(e)) => Err(format!("{label} spawn failed: {e}")),
-        Err(_) => Err(format!("{label} timeout ({TEST_GRADE_TIMEOUT_SECS}s)")),
+        Err(_) => Err(format!("{label} timeout ({timeout_secs}s)")),
     }
 }
 
