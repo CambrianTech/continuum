@@ -296,6 +296,60 @@ impl PathSecurity {
         Ok(())
     }
 
+    /// A persona routinely addresses her OWN file by the absolute path the
+    /// system showed her — probes, tool receipts, and `workspace.rooted` all
+    /// print absolute paths. An absolute input INSIDE `root` is that idiom:
+    /// rewrite it to root-relative and resolve normally. An absolute input
+    /// OUTSIDE the root is REFUSED loudly — the old behavior (`normalize_path`
+    /// dropping the leading slash) silently reinterpreted it as a deep RELATIVE
+    /// path and double-joined it under the root. Glass-boxed 2026-08-23 on the
+    /// fluid-sim exam: a real 34KB index.html landed at
+    /// `<root>/var/folders/…/<root>/index.html` and the grade read "she never
+    /// wrote it". The leading-slash IDIOM ("/index.html" meaning
+    /// workspace-relative) survives: a leading component that names no real
+    /// directory at filesystem root is the idiom, not an address.
+    fn rebase_absolute(root: &Path, path: &str) -> Result<String, PathSecurityError> {
+        let trimmed = path.trim();
+        if !trimmed.starts_with('/') {
+            return Ok(trimmed.to_string());
+        }
+        let p = Path::new(trimmed);
+        // Raw and canonical root forms both match (macOS /var vs /private/var),
+        // and the /private alias is tried on the INPUT too.
+        // macOS aliases /var ⇄ /private/var, and the root may be stored in
+        // EITHER form (PathSecurity::new canonicalizes; her prompt may show the
+        // raw symlink form). Strip the /private prefix from BOTH sides so every
+        // combination compares in one canonical spelling.
+        let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf()); // fallback only narrows which prefix can match; the refusal below stays honest
+        let depriv = |p: &str| p.strip_prefix("/private").unwrap_or(p).to_string(); // no /private prefix = already the canonical-alias spelling; identity is the correct form
+        let input_forms = [trimmed.to_string(), depriv(trimmed)];
+        let base_forms = [
+            root.to_string_lossy().into_owned(),
+            depriv(&root.to_string_lossy()),
+            canonical_root.to_string_lossy().into_owned(),
+            depriv(&canonical_root.to_string_lossy()),
+        ];
+        for base in &base_forms {
+            for input in &input_forms {
+                if let Ok(rest) = Path::new(input).strip_prefix(base) {
+                    return Ok(rest.to_string_lossy().into_owned());
+                }
+            }
+        }
+        // Not under the root. Genuine absolute address (its head names a real
+        // top-level directory) → refuse; otherwise it is the slash idiom.
+        let head = p.components().nth(1).map(|c| c.as_os_str().to_string_lossy().into_owned());
+        if let Some(head) = head {
+            if Path::new("/").join(&head).is_dir() {
+                return Err(PathSecurityError::TraversalBlocked {
+                    path: trimmed.to_string(),
+                    workspace: root.display().to_string(),
+                });
+            }
+        }
+        Ok(trimmed.trim_start_matches('/').to_string())
+    }
+
     /// Resolve a relative path within a root, ensuring it doesn't escape.
     ///
     /// For existing files, uses canonicalize() to resolve symlinks.
@@ -305,6 +359,7 @@ impl PathSecurity {
         root: &Path,
         relative_path: &str,
     ) -> Result<PathBuf, PathSecurityError> {
+        let relative_path = &Self::rebase_absolute(root, relative_path)?;
         let joined = root.join(relative_path);
 
         // For existing paths, canonicalize resolves symlinks
@@ -350,6 +405,7 @@ impl PathSecurity {
     ///
     /// The parent directory must exist and be within the workspace root.
     fn resolve_for_write(&self, relative_path: &str) -> Result<PathBuf, PathSecurityError> {
+        let relative_path = &Self::rebase_absolute(&self.workspace_root, relative_path)?;
         // Check for obvious traversal attempts before any I/O
         let normalized = self.normalize_path(relative_path);
         if normalized.starts_with("..") || normalized.contains("/../") {
@@ -668,6 +724,38 @@ mod tests {
             resolved.starts_with(&canonical_dir),
             "Write should resolve within workspace, not read root"
         );
+    }
+
+    #[test]
+    // what this catches: the absolute-path double-join (2026-08-23, fluid-sim exam):
+    // a persona addressing her own file by the absolute path the system showed her
+    // had it silently slash-stripped into a deep RELATIVE path and written to
+    // <root>/var/…/<root>/index.html — graded "she never wrote it". Inside-root
+    // absolutes rebase to relative; outside-root absolutes refuse LOUD; the
+    // "/index.html" workspace-relative idiom keeps working.
+    #[test]
+    fn absolute_paths_rebase_inside_refuse_outside_keep_the_slash_idiom() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let sec = PathSecurity::new(root).expect("security over tempdir");
+        let inside = format!("{}/index.html", root.display());
+        let resolved = sec.resolve_for_write(&inside).expect("inside-root absolute resolves");
+        assert!(resolved.ends_with("index.html"));
+        let canon_root = root.canonicalize().expect("canon");
+        assert!(resolved.starts_with(&canon_root) || resolved.starts_with(root),
+            "must land under the root, never double-joined: {}", resolved.display());
+        assert_eq!(resolved.to_string_lossy().matches("index.html").count(), 1, "double-join would repeat the filename");
+        // deep subdir form too (the exam's actual shape)
+        let deep = format!("{}/assets/app.js", root.display());
+        let r2 = sec.resolve_for_write(&deep).expect("inside-root deep absolute resolves");
+        assert!(r2.ends_with("assets/app.js"));
+        // outside-root genuine absolute → loud refusal, never a silent deep write
+        let err = sec.resolve_for_write("/var/folders/somewhere/else.html");
+        assert!(matches!(err, Err(PathSecurityError::TraversalBlocked { .. })),
+            "outside-root absolute must refuse, got {err:?}");
+        // the forgiving idiom survives: "/index.html" = workspace-relative
+        let idiom = sec.resolve_for_write("/index.html").expect("slash idiom resolves");
+        assert!(idiom.ends_with("index.html"));
     }
 
     #[test]
