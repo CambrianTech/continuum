@@ -259,6 +259,26 @@ pub enum SmokeMissVerdict {
 
 /// Judge a smoke-probe miss by comparing `/slots` fingerprints across misses. Pure so
 /// the busy-lane / frozen-lane / first-miss / no-endpoint rows are table-testable.
+/// The miss threshold a wedge declaration must reach, scaled by what a kill
+/// would destroy (2026-08-23, the MirrorCode baseline's three kills): a lane
+/// holding a LARGE in-flight prompt (≥ a quarter of its served window —
+/// relative, never an absolute constant) earns DOUBLE the base threshold,
+/// because relaunching it burns minutes of re-prefill and, when the client
+/// retries the same giant turn, can cycle into a kill loop. The patience is
+/// priced in the same currency as the false-kill cost. A lane with no large
+/// in-flight investment keeps the base threshold — a truly quiet wedge still
+/// dies fast.
+pub fn wedge_miss_threshold(
+    base: u8,
+    inflight_prompt_tokens: Option<u64>,
+    served_window: u32,
+) -> u8 {
+    match inflight_prompt_tokens {
+        Some(t) if served_window > 0 && t >= served_window as u64 / 4 => base.saturating_mul(2),
+        _ => base,
+    }
+}
+
 pub fn judge_smoke_miss(prev_fp: Option<u64>, cur_fp: Option<u64>) -> SmokeMissVerdict {
     match (prev_fp, cur_fp) {
         (Some(prev), Some(cur)) if prev != cur => SmokeMissVerdict::AliveViaSlotProgress,
@@ -289,6 +309,20 @@ pub fn judge_smoke_miss(prev_fp: Option<u64>, cur_fp: Option<u64>) -> SmokeMissV
 /// timing/params blobs — they'd churn the fingerprint on every poll and exonerate a
 /// dead lane forever. `None` (no array) means "cannot say", which the caller must
 /// treat as no exoneration, never as evidence of progress.
+/// The largest in-flight prompt investment on the lane, in tokens — how much
+/// re-prefill a lane kill would DESTROY right now. Read from the same `/slots`
+/// control-plane JSON as the activity fingerprint. `None` = no in-flight task
+/// (or unparseable), which the caller must read as "nothing to protect", never
+/// as an error.
+pub fn slots_max_inflight_prompt_tokens_of(slots: &serde_json::Value) -> Option<u64> {
+    slots
+        .as_array()?
+        .iter()
+        .filter(|s| s.get("is_processing").and_then(|v| v.as_bool()) == Some(true))
+        .filter_map(|s| s.get("n_prompt_tokens_processed").and_then(|v| v.as_u64()))
+        .max()
+}
+
 pub fn slots_activity_fingerprint_of(slots: &serde_json::Value) -> Option<u64> {
     use std::hash::{Hash, Hasher};
     let arr = slots.as_array()?;
@@ -1547,6 +1581,13 @@ pub trait LlamaServerControl: Send + Sync {
         None
     }
 
+    /// Largest in-flight prompt investment on the lane (tokens) — see
+    /// [`slots_max_inflight_prompt_tokens_of`]. Default `None` = unknown/none;
+    /// the health tick then applies base patience.
+    async fn slots_max_inflight_prompt_tokens(&self) -> Option<u64> {
+        None
+    }
+
     /// The flag this control's stderr watcher raises when the running lane proves itself
     /// WEDGED — a slot reporting arithmetically impossible progress (see
     /// [`crate::inference::wedge`]). The serving daemon polls it on its tick and owns the
@@ -2500,6 +2541,23 @@ impl LlamaServerControl for LlamaServerProcess {
         slots_activity_fingerprint_of(&body)
     }
 
+    async fn slots_max_inflight_prompt_tokens(&self) -> Option<u64> {
+        // Same control-plane read as the fingerprint; any failure → None
+        // (nothing to protect, base patience applies).
+        let url = format!("{}/slots", self.root);
+        let body: serde_json::Value = self
+            .client
+            .get(&url)
+            .timeout(PROBE_TIMEOUT)
+            .send()
+            .await
+            .ok()?
+            .json()
+            .await
+            .ok()?;
+        slots_max_inflight_prompt_tokens_of(&body)
+    }
+
     fn owns_child(&self) -> bool {
         self.child.lock().unwrap().is_some()
     }
@@ -2966,6 +3024,21 @@ fn split_host_port(root: &str) -> (String, u16) {
 
 #[cfg(test)]
 mod tests {
+
+    // what this catches: the work-scaled patience rule (2026-08-23, three
+    // MirrorCode-baseline kills): a lane holding a window-scale in-flight
+    // prompt earns DOUBLE the miss threshold (a kill destroys minutes of
+    // re-prefill and can loop); a quiet or small-investment lane keeps base
+    // patience and still dies fast. Relative quarter-window bound — no
+    // absolute token constant to drift.
+    #[test]
+    fn wedge_patience_scales_with_inflight_investment() {
+        assert_eq!(wedge_miss_threshold(2, None, 65_024), 2, "no in-flight = base");
+        assert_eq!(wedge_miss_threshold(2, Some(1_000), 65_024), 2, "small investment = base");
+        assert_eq!(wedge_miss_threshold(2, Some(16_256), 65_024), 4, "quarter-window doubles");
+        assert_eq!(wedge_miss_threshold(2, Some(82_668), 163_072), 4, "the live case doubles");
+        assert_eq!(wedge_miss_threshold(2, Some(82_668), 0), 2, "unknown window = base, never a guess");
+    }
 
     // what this catches (2026-08-15, round-killer #2 of the day): a never-started
     // stream timeout stamped `note_real_decode_failure` unconditionally, so an
