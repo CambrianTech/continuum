@@ -935,7 +935,11 @@ pub async fn materialize_adapters(
                     crate::cognition::persona_workspace::GroundingSource::framing(
                         workspace_map_source,
                     )
-                    .requires_hands(),
+                    .requires_hands()
+                    // Her OWN writes mutate the map — every productive act. It sat
+                    // in the stable tier breaking the KV prefix at ~8k chars of a
+                    // 40k prompt (measured 2026-08-23, turn-over-turn capture diff).
+                    .volatile_content(),
                     // The room's pinned shared documents (airc wall) as
                     // enriching framing — the plan/instructions/recipe that
                     // shape HOW the persona works here, read from the exact
