@@ -2570,7 +2570,13 @@ impl CognitionEval {
         // (#59 intact); only the clean lesson crosses back. Single-pass only in this slice.
         // NEVER learn from an infra-unavailable run — a dead-lane "failure" is not a lesson.
         if p.learn.learns() && p.gene.is_none() && infra_unavailable.is_none() {
-            let transferred = transfer_redacted_lessons(&persona_uuid, room, &tasks, &results);
+            let transferred = transfer_redacted_lessons(
+                &persona_uuid,
+                room,
+                p.eval_set.as_deref().unwrap_or(DEFAULT_EVAL_SET), // the run's real set: None means the default set genuinely ran
+                &tasks,
+                &results,
+            );
             tracing::info!(
                 persona = %persona_uuid,
                 transferred,
@@ -2661,6 +2667,7 @@ fn format_exam_lesson(task: &EvalTask, result: &EvalTaskResult) -> String {
 fn transfer_redacted_lessons(
     persona_uuid: &uuid::Uuid,
     room: uuid::Uuid,
+    eval_set: &str,
     tasks: &[EvalTask],
     results: &[EvalTaskResult],
 ) -> usize {
@@ -2678,6 +2685,13 @@ fn transfer_redacted_lessons(
     )]);
 
     // The LIVING persona's admission — never the fork.
+    let peer_dir = crate::identity::citizen_peer_dir(
+        &crate::modules::persona_instance_manager::resolve_continuum_root(),
+        crate::identity::PeerId::from_uuid(*persona_uuid),
+    );
+    if let Err(e) = std::fs::create_dir_all(&peer_dir) {
+        tracing::warn!(error = %e, "citizen dir for the experience stream could not be created — exam episodes stay out of curriculum this run");
+    }
     let Some(admission) = crate::cognition::persona_workspace::global()
         .get(persona_uuid)
         .and_then(|cycle| cycle.acting().map(|a| a.admission.clone()))
@@ -2715,6 +2729,49 @@ fn transfer_redacted_lessons(
         ) {
             admitted += 1;
         }
+        // SEAM 1 of the academy convergence (archaeology 2026-08-23): the same
+        // graded pair also lands in the EXPERIENCE STREAM, so
+        // `genome/teach --from_experience` can remediate the exact failures
+        // learn-mode just committed to memory as lessons. Before this, an eval
+        // run wrote lessons into the MIND but nothing into the stream — the
+        // salience→curriculum drain could never see an exam failure.
+        // [[lived-and-eval-experience-are-one-stream-one-being]]
+        let episode =
+            crate::cognition::experience::ExperienceRecord::from_eval_result(task, result);
+        if let Err(e) = crate::cognition::experience::append_experience(&peer_dir, &episode) {
+            tracing::warn!(
+                persona = %persona_uuid,
+                task = %task.id,
+                error = %e,
+                "exam episode could not join the experience stream — lesson admitted, curriculum blind to it"
+            );
+        }
+    }
+    // SEAM 3a: she REMEMBERS BECOMING BETTER. The progress ledger records
+    // passRate durably, but no engram ever carried it — a persona's beliefs
+    // formed with no awareness of her own measured capability. One Semantic
+    // summary per learned exam, keyed ["progress", <eval_set>], so the dream
+    // can cluster successive exams into a trajectory belief.
+    let solved = results.iter().filter(|r| r.ok).count();
+    let graded = results.len();
+    if graded > 0 {
+        let rate = solved as f32 / graded as f32;
+        let summary = crate::persona::engram::Engram {
+            id: uuid::Uuid::new_v4(),
+            context_id: Some(room),
+            kind: crate::persona::engram::EngramKind::Semantic,
+            content: format!(
+                "Exam '{eval_set}': I solved {solved} of {graded} tasks (rate {rate:.2})."
+            ),
+            origin: crate::persona::engram::EngramOrigin::SelfReflection {
+                parent_engram_id: uuid::Uuid::nil(),
+            },
+            recall_keys: vec!["progress".to_string(), eval_set.to_string()],
+            admitted_at_ms: crate::persona::trace::now_ms(),
+            trust_state_at_admission: crate::persona::engram::TrustState::SelfTrust,
+            admission_trace_id: None,
+        };
+        let _ = admission.admit_reflection(summary); // duplicate-content dedup is the store's job; a repeat exam at the same rate is legitimately the same belief
     }
     admitted
 }
