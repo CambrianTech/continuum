@@ -600,13 +600,62 @@ where
             urlencoding_encode(split),
             offset
         );
-        let resp = reqwest::get(&url)
-            .await
-            .map_err(|e| format!("dataset fetch failed at offset {offset}: {e}"))?;
-        let body: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| format!("dataset decode failed at offset {offset}: {e}"))?;
+        // A 21k-row suite is 200+ pages; the datasets-server rate-limits bursts
+        // and answers 429 with an HTML body. Before this backoff, that surfaced
+        // as "dataset decode failed at offset N: error decoding response body" —
+        // a misdiagnosis that reads as data corruption (glass-boxed 2026-08-23
+        // on SWE-rebench at offsets 0 and 3500). Honest handling: name the
+        // rate-limit, back off exponentially, and resume the SAME page. Pages
+        // are also paced unconditionally so a big pull stops tripping the
+        // limiter in the first place.
+        let mut backoff_s = 5u64;
+        let body: serde_json::Value = loop {
+            let resp = reqwest::get(&url)
+                .await
+                .map_err(|e| format!("dataset fetch failed at offset {offset}: {e}"))?;
+            let status = resp.status();
+            if status.as_u16() == 429 || status.is_server_error() {
+                if backoff_s > 300 {
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err(format!(
+                        "huggingface rate-limited `{dataset}` at offset {offset} and the                          backoff budget is spent — re-run the fetch later; the partial                          cache was discarded so a truncated suite can never be promoted"
+                    ));
+                }
+                tracing::info!(
+                    probe_class = "benchmark.fetch.rate_limited",
+                    offset,
+                    backoff_s,
+                    "datasets-server {status} — backing off and resuming the same page"
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(backoff_s)).await;
+                backoff_s *= 2;
+                continue;
+            }
+            match resp.json().await {
+                Ok(v) => break v,
+                Err(e) => {
+                    // Non-429 HTML/garbage still means "not the JSON API" — most often
+                    // the limiter answering 200 with an interstitial. Same backoff,
+                    // same honest label, never "decode failed" (which reads as corruption).
+                    if backoff_s > 300 {
+                        let _ = std::fs::remove_file(&tmp);
+                        return Err(format!(
+                            "`{dataset}` at offset {offset}: response is not the rows API's                              JSON after retries ({e}) — likely rate-limiting; re-run later"
+                        ));
+                    }
+                    tracing::info!(
+                        probe_class = "benchmark.fetch.rate_limited",
+                        offset,
+                        backoff_s,
+                        "non-JSON rows response — treating as rate-limit, backing off"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(backoff_s)).await;
+                    backoff_s *= 2;
+                }
+            }
+        };
+        // Unconditional inter-page pacing: 200+ page pulls must not burst.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         // The server reports its own errors in-band with a 200. Surface it verbatim rather
         // than returning an empty set that a caller would read as "the suite is empty".
         if let Some(err) = body.get("error").and_then(|e| e.as_str()) {
