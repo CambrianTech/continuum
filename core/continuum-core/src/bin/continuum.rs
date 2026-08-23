@@ -4,7 +4,7 @@
 //! ```text
 //! continuum start            # build + run the headless Rust core (detached), wait until ready
 //!                     # refuses if a core is running but not answering — `--force` reclaims it
-//! continuum reboot           # rebuild + relaunch, replacing any running core (~0 downtime)
+//! continuum reboot           # stop everything, rebuild on a free machine, relaunch
 //!                     # refuses while training (mlx_lm) is live — `--force` overrides
 //! continuum stop             # stop the running core
 //! continuum ping             # dispatch a command to the running core
@@ -605,12 +605,12 @@ async fn start(force: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// `continuum reboot` — rebuild + relaunch the core, replacing any running instance.
-/// Unlike `continuum start` this never no-ops on an up core: start-server.sh builds the
-/// fresh binary first (old core keeps serving), then stops the old core and
-/// execs the new one (~0 downtime). This is the canonical operator
-/// rebuild-after-edit verb — one command, no manual kill dance
-/// ([[validate-via-pure-rust-not-npm-jtag]]).
+/// `continuum reboot` — stop + rebuild + relaunch the core.
+/// Unlike `continuum start` this never no-ops on an up core: it runs the FULL
+/// `stop` teardown first (core, split-brains, orphans, serving lanes), builds
+/// the fresh binary on a machine that is no longer serving a model, then
+/// launches. This is the canonical operator rebuild-after-edit verb — one
+/// command, no manual kill dance ([[validate-via-pure-rust-not-npm-jtag]]).
 async fn reboot(force: bool) -> Result<(), String> {
     let socket = socket_path();
     // Training guard (task #137, Joel's consent-gate doctrine: the denial names
@@ -666,35 +666,36 @@ async fn reboot(force: bool) -> Result<(), String> {
                 .join(",")
         );
     }
-    // Snapshot the running core PIDs up front so launch_core can wait for them to
-    // actually exit before trusting the new core's ping (same socket, both answer).
+    // Snapshot the running core PIDs, then STOP EVERYTHING BEFORE THE BUILD.
+    //
+    // This deliberately retires the "~0 downtime" overlap (old core keeps
+    // serving while the fresh binary builds). That overlap made the build
+    // CONTEND with the dying core for the whole machine — a 35B llama-server
+    // saturating GPU/RAM/CPU while cargo crawls beside it, both slower, to keep
+    // alive a process the very next step kills (Joel, 2026-08-23: "you are
+    // forced to contend for resources with something that's going away and
+    // it's silly"). On a dev box the build-window downtime is free; the
+    // contention is not. Stop-first also collapses the Windows special case
+    // (a running .exe locks its own binary against rebuild) into the normal
+    // path instead of an ordering quirk buried in start-server.sh.
+    //
+    // `stop()` is the ONE owner of teardown — pidfile core + split-brain
+    // sweep + owned-orphan reap + serving-lane sweep — so reboot inherits every
+    // lesson encoded there (two-cores-at-once 2026-08-14, the 24h orphaned
+    // llama-server, the 2026-08-17 two-resident-lanes starvation) instead of
+    // re-implementing a partial copy.
     let old = running_core_pids();
     if old.is_empty() {
         println!("▶ no core running — starting fresh (socket={socket})");
     } else {
         println!(
-            "▶ rebooting core (socket={socket}, replacing pid(s) {}) — building fresh binary, then swapping",
+            "▶ rebooting core (socket={socket}): stopping pid(s) {} FIRST, then building on a free machine",
             old.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",")
         );
     }
-    // Reap owned engine processes that are NOT under a live core before the
-    // swap. `reboot` is the recover-from-unknown-failure verb, and it could not
-    // be while reaping was parent-tree-only: an engine whose parent died is
-    // reparented away from every tree we know how to kill, so it survives every
-    // subsequent reboot holding its port and its VRAM. Measured: a 24-hour-old
-    // llama-server squatting the embedding port through many core restarts,
-    // silently answering every request routed there. Passing `&old` keeps the
-    // CURRENT core's children (they are about to be taken down with it by the
-    // swap, in order) while clearing anything already abandoned.
-    reap_owned_orphans(&old);
-
-    // NOTE: on Windows the old core must be STOPPED before its binary can be
-    // rebuilt (a running .exe is locked). That ordering lives in
-    // start-server.sh, next to the build it guards — not here — because the
-    // same constraint applies to `npm start` and every other caller of that
-    // script, and one decision belongs in exactly one place. `launch_core`'s
-    // `wait_for_death` on `old` is then trivially satisfied on Windows and
-    // still does the real work on Unix, where the overlapping build stands.
+    stop().await?;
+    // `launch_core`'s `wait_for_death` on `old` is now trivially satisfied —
+    // kept as the honesty check that the stop actually took.
     // Publish the claim for the WHOLE build+swap. Held until this function returns, so a
     // concurrent `continuum <verb>` refuses instead of autostarting the pre-swap installed
     // image and stealing the socket (the DEPLOY MISMATCH measured 2026-08-17).
