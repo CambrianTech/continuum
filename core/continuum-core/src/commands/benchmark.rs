@@ -236,13 +236,46 @@ pub fn known_benchmarks() -> &'static [BenchmarkSpec] {
         },
         BenchmarkSpec {
             name: "swe-bench-verified",
-            description: "SWE-bench Verified — the 500 human-validated instances (OpenAI). The current \
-                          agentic headline the frontier labs report; solution = a repo patch that passes \
-                          the real test suite. Official swebench Docker scorer.",
+            description: "SWE-bench Verified — the 500 human-validated instances (OpenAI). SATURATED \
+                          as a frontier signal (Opus 5 at 97.0%, seven models ≥95%, vals.ai 2026-08-19) \
+                          — keep as a floor/sanity check, never a headline. Solution = a repo patch \
+                          that passes the real test suite.",
             grader: Grader::Python,
             tasks: 500,
             eval_set: None,
             source_url: Some("https://huggingface.co/datasets/princeton-nlp/SWE-bench_Verified"),
+        },
+        BenchmarkSpec {
+            name: "swe-rebench",
+            description: "SWE-rebench (Nebius) — continuously-mined real GitHub issue→PR tasks, \
+                          CONTAMINATION-PROOF BY CONSTRUCTION: rolling time-windows mean only \
+                          instances newer than a model's cutoff count. Frontier mid-2026: Fable 5 \
+                          64.5%, Opus 5 63.4% on the May–Jul window. Same instance schema as \
+                          SWE-bench (list-shaped F2P/P2P normalized by the tolerant mapper); full \
+                          test split 21,336 instances — an HONEST run selects a window newer than \
+                          the model's training cutoff via each instance's created_at and says so \
+                          in the receipt. Tier-1 pick of the 2026-08-23 frontier-landscape sweep \
+                          (docs/planning/FRONTIER-BENCHMARK-LANDSCAPE-2026-08.md).",
+            grader: Grader::Python,
+            tasks: 21336,
+            eval_set: None,
+            source_url: Some("https://huggingface.co/datasets/nebius/SWE-rebench"),
+        },
+        BenchmarkSpec {
+            name: "swe-bench-pro",
+            description: "SWE-bench Pro (Scale AI) — the Verified successor: 731 public instances \
+                          (of 1,865) across 41 professional repos, long-horizon multi-file issues, \
+                          copyleft/held-out contamination barrier. Frontier mid-2026: 46–61% \
+                          (Gemini 3.1 Pro 46.1%, Opus 4.6 51.9%, GPT-5.4 59.1%) — frontier-HARD. \
+                          MULTI-LANGUAGE repos (js/go/py — `repo_language` per row): python \
+                          instances grade through the existing era-venv runners today; other \
+                          languages need their runner seam before their rows grade (#383's \
+                          repo→runner map is the extension point, expressed as data). Tier-1 pick \
+                          of the 2026-08-23 landscape sweep.",
+            grader: Grader::Python,
+            tasks: 731,
+            eval_set: None,
+            source_url: Some("https://huggingface.co/datasets/ScaleAI/SWE-bench_Pro"),
         },
         BenchmarkSpec {
             name: "bigcodebench",

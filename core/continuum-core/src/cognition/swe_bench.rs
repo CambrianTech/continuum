@@ -63,10 +63,42 @@ pub struct SweInstance {
     pub problem_statement: String,
     #[serde(default)]
     pub created_at: String,
-    #[serde(rename = "FAIL_TO_PASS", default)]
+    #[serde(
+        rename = "FAIL_TO_PASS",
+        alias = "fail_to_pass",
+        default,
+        deserialize_with = "test_list_string"
+    )]
     pub fail_to_pass: String,
-    #[serde(rename = "PASS_TO_PASS", default)]
+    #[serde(
+        rename = "PASS_TO_PASS",
+        alias = "pass_to_pass",
+        default,
+        deserialize_with = "test_list_string"
+    )]
     pub pass_to_pass: String,
+}
+
+/// The SWE-instance family speaks THREE dialects for the same two fields
+/// (2026-08-23 landscape import): SWE-bench serves `FAIL_TO_PASS` as a
+/// JSON-ENCODED STRING, SWE-rebench serves it as a REAL LIST, and SWE-bench
+/// Pro lowercases the name (string-encoded). One tolerant deserializer
+/// normalizes all three to the JSON-encoded-string form `f2p()`/`p2p()`
+/// already parse — the constraint fix, so no second instance struct ever
+/// exists per dialect ([[fix-the-constraint-not-the-instance-interfaces-first]]).
+fn test_list_string<'de, D>(d: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = serde_json::Value::deserialize(d)?;
+    match v {
+        serde_json::Value::String(s) => Ok(s),
+        serde_json::Value::Array(_) => Ok(v.to_string()),
+        serde_json::Value::Null => Ok(String::new()),
+        other => Err(serde::de::Error::custom(format!(
+            "FAIL_TO_PASS/PASS_TO_PASS must be a JSON-encoded string or a list, got {other}"
+        ))),
+    }
 }
 
 impl SweInstance {
@@ -463,7 +495,11 @@ pub async fn fetch_hf_rows(
 /// list. A suite larger than this needs the bound RAISED deliberately, with its size named —
 /// never silently truncated, which would publish a partial denominator as if it were the whole
 /// suite.
-const MAX_ROWS: usize = 5_000;
+// Raised 5_000 → 25_000 on 2026-08-23 for SWE-rebench, whose full `test`
+// split is 21,336 rows (the real suite size, per the HF size endpoint) — the
+// refusal below demands the bound be raised DELIBERATELY, naming the suite,
+// rather than publishing a rate over a truncated list.
+const MAX_ROWS: usize = 25_000;
 
 /// Where a suite's rows are cached. JSONL — one row per line — specifically so it can be read
 /// back INCREMENTALLY. A single JSON array cannot be: `from_slice` must materialize the whole
@@ -2916,6 +2952,44 @@ pub async fn grade(instance: &SweInstance, model_patch: Option<&str>) -> SweVerd
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the three wire dialects of one instance family
+    // (2026-08-23 import): SWE-bench string-encoded F2P, SWE-rebench REAL-LIST
+    // F2P, SWE-bench Pro lowercase names — all must decode into ONE SweInstance
+    // whose f2p()/p2p() yield the same ids, or a schema-kin suite silently
+    // "fetches 21k rows but NONE decoded" (load_dataset's own failure text).
+    #[test]
+    fn one_swe_instance_decodes_all_three_wire_dialects() {
+        let base = serde_json::json!({
+            "instance_id": "x__x-1", "repo": "x/x", "base_commit": "abc",
+            "patch": "p", "test_patch": "t", "problem_statement": "s",
+        });
+        let mut swebench = base.clone();
+        swebench["FAIL_TO_PASS"] = serde_json::json!("[\"tests/a.py::t1\"]");
+        swebench["PASS_TO_PASS"] = serde_json::json!("[\"tests/a.py::t2\"]");
+        let mut rebench = base.clone();
+        rebench["FAIL_TO_PASS"] = serde_json::json!(["tests/a.py::t1"]);
+        rebench["PASS_TO_PASS"] = serde_json::json!(["tests/a.py::t2"]);
+        rebench["created_at"] = serde_json::json!("2026-05-12 13:21:50");
+        let mut pro = base.clone();
+        pro["fail_to_pass"] = serde_json::json!("[\"tests/a.py::t1\"]");
+        pro["pass_to_pass"] = serde_json::json!("[\"tests/a.py::t2\"]");
+        for (dialect, v) in [("swe-bench", swebench), ("swe-rebench", rebench), ("pro", pro)] {
+            let inst: SweInstance = serde_json::from_value(v)
+                .unwrap_or_else(|e| panic!("{dialect} dialect failed to decode: {e}"));
+            assert_eq!(inst.f2p(), vec!["tests/a.py::t1"], "{dialect} f2p");
+            assert_eq!(inst.p2p(), vec!["tests/a.py::t2"], "{dialect} p2p");
+        }
+        // rebench's space-separated created_at still yields the era year.
+        let inst: SweInstance = serde_json::from_value(serde_json::json!({
+            "instance_id": "y", "repo": "y/y", "base_commit": "c", "patch": "p",
+            "test_patch": "t", "problem_statement": "s",
+            "created_at": "2026-05-12 13:21:50",
+            "FAIL_TO_PASS": [], "PASS_TO_PASS": []
+        }))
+        .expect("decodes");
+        assert_eq!(inst.year(), 2026);
+    }
 
     // what this catches: the exclude shield's MERGE contract. It runs on every
     // dispatch over already-staged checkouts (self-heal for pre-shield trees), so
