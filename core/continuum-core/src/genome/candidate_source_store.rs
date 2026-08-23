@@ -48,6 +48,11 @@ pub struct LocalGenomeLayer {
     /// tangential reach survives), and it kills the per-call re-embed of every
     /// layer that the fallback path pays.
     pub signature: Option<crate::genome::signature::GeneSignature>,
+    /// The gene's folded fitness (0..1, neutral 0.5, UCB-bonused) from the
+    /// eval-receipt ledger ([`crate::genome::fitness_ledger`]). 0.0 is
+    /// reserved for "no index was consulted" — the pre-fitness constructors'
+    /// honest hardcode, which the ranker weights at zero.
+    pub outcome_factor: f32,
 }
 
 /// A [`CandidateSource`] over the local genome store. Holds the persona's layers
@@ -64,7 +69,7 @@ pub struct GenomeStoreCandidateSource {
 /// "sha256-derived-uuid" convention as forge `ArtifactBlob`). Deterministic, so a
 /// local layer keeps the same id across boots and cosine recall can dedup it; a
 /// real forge content-hash supersedes it once the layer is published to the market.
-fn stable_local_id(name: &str) -> ArtifactId {
+pub fn stable_local_id(name: &str) -> ArtifactId {
     let hash = crate::persona::inbox_admission::content_hash_sha256(name);
     let hex = hash.strip_prefix("sha256:").unwrap_or(&hash);
     let mut bytes = [0u8; 16];
@@ -105,6 +110,7 @@ impl GenomeStoreCandidateSource {
                 // signatures arrive via `from_manifest` (the manifest IS keyed by
                 // path). This constructor stays the signature-less fallback.
                 signature: None,
+                outcome_factor: 0.0, // no index consulted — the pre-fitness hardcode, weighted 0 by the ranker
             })
             .collect();
         Self::new(layers, embedder)
@@ -118,6 +124,7 @@ impl GenomeStoreCandidateSource {
     pub fn from_manifest(
         manifest: &[crate::forge::adapter_manifest::TrainedAdapter],
         signatures: &crate::genome::signature::SignatureStore,
+        fitness: &crate::genome::fitness_ledger::GeneFitnessIndex,
         embedder: Arc<dyn EmbeddingProvider>,
     ) -> Self {
         let layers = manifest
@@ -133,6 +140,9 @@ impl GenomeStoreCandidateSource {
                     .by_path
                     .get(&a.path.display().to_string())
                     .cloned(),
+                // Fitness joins by gene NAME — the `geneId` the eval ledger
+                // writes IS the adapter alias the whole page-in chain speaks.
+                outcome_factor: fitness.outcome_factor(&a.alias),
             })
             .collect();
         Self::new(layers, embedder)
@@ -183,10 +193,9 @@ impl CandidateSource for GenomeStoreCandidateSource {
                 kind: PageKind::LoRALayer,
                 artifact_id: layer.artifact_id,
                 semantic_factor,
-                // No sentinel outcome history wired to the local store yet — the
-                // ranker weights this at 0 here; the sentinel-attribution slice
-                // fills it. Honest 0.0, never a fabricated score.
-                outcome_history_factor: 0.0,
+                // Folded from the eval-receipt ledger when the constructor had
+                // the index (from_manifest); 0.0 = no index consulted.
+                outcome_history_factor: layer.outcome_factor,
                 last_used_ms: layer.last_used_ms,
                 // On this machine, on SSD (Cold tier) — a load, not a page fault.
                 residency: ResidencyHint::Local {
@@ -214,6 +223,7 @@ mod tests {
             last_used_ms: 1000,
             trust_factor: 0.9,
             signature: None,
+            outcome_factor: 0.0,
         }
     }
 
