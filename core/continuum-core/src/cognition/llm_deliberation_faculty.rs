@@ -1682,17 +1682,27 @@ impl LlmDeliberationFaculty {
             &fact_cx,
             &super::perception_facts::FactPolicy::default(),
         );
-        if !facts.is_empty() {
-            // Before the LAST user turn (the ask). No user turn (a pure self-tick with only
-            // assistant history) → append at the end; there is no ask to displace.
-            let before_ask = messages
-                .iter()
-                .rposition(|m| m.role == "user")
-                .map_or(messages.len(), |i| i);
-            for (offset, fact) in facts.into_iter().enumerate() {
-                messages.insert(before_ask + offset, ChatMessage::text("user", fact));
-            }
-        }
+        // MESSAGE ORDER IS MONOTONE IN STABILITY (2026-08-23, the byte-diff
+        // verdict). Consecutive-act prompt captures showed the flickering
+        // content — perception facts whose presence/wording changes per act,
+        // trailing grounding — rendering AHEAD of the append-only history
+        // block, so the 20k+ stable mass never extended the KV prefix and
+        // reuse pinned at the system head (~36%). The assembly below is
+        // explicit phases, replacing insert-before-ask arithmetic:
+        //
+        //   old turns → history (append-only) → grounding (flickers)
+        //   → facts (flicker) → ASK → pinned newest result
+        //
+        // Every prior lesson is preserved by construction: facts stay BEFORE
+        // the ask and the ask stays after them (the 2026-07-20 parrot-loop
+        // bisect); the pinned result stays nearest generation (#392); trailing
+        // grounding stays out of the system prefix (#205/#2415). The ask is
+        // the LAST user turn of the conversation, peeled here and re-attached
+        // after the churn so stable content is a strict prefix of the stream.
+        let ask: Option<ChatMessage> = match messages.last() {
+            Some(m) if m.role == "user" => messages.pop(),
+            _ => None, // pure self-tick: assistant history only, no ask to peel
+        };
 
         // TRAILING proprioception (#205): contributions marked [`Contribution::trailing`]
         // — the working-memory reasoning trail, the FULL most-recent action result,
@@ -1750,6 +1760,14 @@ impl LlmDeliberationFaculty {
             }
         }
 
+        // Facts flicker per act — they render after every append-only block,
+        // immediately before the ask (parrot-fix order preserved).
+        for fact in facts {
+            messages.push(ChatMessage::text("user", fact));
+        }
+        if let Some(ask) = ask {
+            messages.push(ask);
+        }
         if let Some(wm) = &self.working_memory {
             // Pinned full-latest LAST — the act she is inside right now, nearest
             // generation (#392).
