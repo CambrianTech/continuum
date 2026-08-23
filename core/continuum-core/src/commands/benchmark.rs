@@ -426,16 +426,6 @@ pub fn known_benchmarks() -> &'static [BenchmarkSpec] {
             eval_set: None,
             source_url: Some("https://github.com/StonyBrookNLP/appworld"),
         },
-        BenchmarkSpec {
-            name: "terminal-bench",
-            description: "Terminal-Bench — end-to-end tasks completed in a real terminal (build, debug, \
-                          configure, script). Graded by outcome checks; plays directly to code/shell + \
-                          the recovery loop.",
-            grader: Grader::Python,
-            tasks: 100,
-            eval_set: None,
-            source_url: Some("https://github.com/laude-institute/terminal-bench"),
-        },
     ]
 }
 
@@ -1958,6 +1948,24 @@ mod tests {
     // silently handed to the HF rows API, which would return an in-band error the caller
     // would read as "the suite is empty".
     #[test]
+    // what this catches: a name collision in the catalog. Found live 2026-08-23:
+    // the Terminal-Bench adapter's full row landed while the old stub row of the
+    // same name survived — benchmark/list showed the name twice and fetch-by-name
+    // silently took whichever matched first. A name IS the lookup key everywhere
+    // (fetch, dispatch, verify), so duplicates are a routing hazard, not cosmetics.
+    #[test]
+    fn catalog_names_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for b in known_benchmarks() {
+            assert!(
+                seen.insert(b.name),
+                "catalog name '{}' appears more than once — the name is the lookup \
+                 key for fetch/dispatch/verify; merge the rows",
+                b.name
+            );
+        }
+    }
+
     fn every_hf_catalogued_suite_yields_coordinates_and_non_hf_is_refused() {
         let by_name = |n: &str| known_benchmarks().iter().find(|b| b.name == n).unwrap();
 
