@@ -3970,29 +3970,26 @@ async fn run_pass(
         // decline in her own words; she just isn't handed the silent hatch. The live
         // path computes directedness from real addressing (TODO #9); pinning it here
         // is the eval's exam-is-directed control. See `Workspace::directed_at_self`.
-        // Per-task wedge watchdog (#123 hang): `drive_to_settle` awaits the persona's
-        // real cognition, which POSTs to the serving gateway. If the gateway wedges
-        // mid-generation (connection open, zero tokens) that await NEVER returns and the
-        // WHOLE eval hangs on this one task — observed live 2026-07-17: humaneval-rs
-        // stalled at task 6/20, no progress for >20 min, holding the fleet-quiesce lease
-        // the entire time. A hung task MUST degrade to a graded infra-fail (identical to
-        // an inference_error) and let the run proceed — never block the measurement.
+        // LAST-RESORT hang backstop — NOT a wedge detector (2026-08-23, second cut).
         //
-        // PROGRESS-AWARE since 2026-08-23: the original flat 600s wall-clock over the
-        // WHOLE multi-act task was calibrated on short gym tasks and misdiagnosed a live
-        // e2e project as a wedge — fluid-sim-e2e, observed same night: a single 1000-line
-        // artifact write is a multi-minute decode, 40 granted acts exceed any flat budget
-        // with everything healthy, and each "wedge" retry restarted from scratch, so the
-        // task could NEVER complete (the 90s-prefill-watchdog defect shape, one level up).
-        // A wedge is an ABSENCE OF TOKEN FLOW, not a duration — so consult the lane's
-        // real-work stamp ([`crate::inference::llama_server::ms_since_real_work`], the
-        // round-killer arc's liveness sensor): while tokens flow, any elapsed time is
-        // legitimate work. Wedge = no real token work for the full patience window.
-        // `None` (external provider / stamp unavailable) degrades to the original
-        // wall-clock behavior — patience elapsed with no way to prove liveness. The
-        // hard cap is the garbage ceiling for a task that streams forever.
-        const PER_TASK_WEDGE_PATIENCE: std::time::Duration = std::time::Duration::from_secs(600);
-        const PER_TASK_HARD_CAP: std::time::Duration = std::time::Duration::from_secs(2 * 60 * 60);
+        // Wedge detection is the SERVING layer's job and it is event-based there: the
+        // stream-liveness classifier (phase-aware budgets, 9e2f95820) kills a
+        // zero-token stream at the source and the failure surfaces here as
+        // `inference_error` — the event path `drive_to_settle` already returns on.
+        // The old flat 600s deadline predated that sensor (#123, 2026-07-17) and was
+        // never demoted once it shipped: it second-guessed the serving layer with a
+        // stopwatch, declared a LIVE multi-minute e2e decode "wedged" (fluid-sim-e2e,
+        // observed live tonight), and retried the task into a doomed loop. Cheap
+        // wall-clock guesses about liveness always lose to the component that can SEE
+        // the tokens ([[the-whole-system-is-event-based-not-polling]]).
+        //
+        // What remains is the hang class no event can cover BY DEFINITION: an await
+        // that never returns because some path between inference calls lost its error
+        // propagation (a code bug, not a serving state). For that, one enormous
+        // garbage-ceiling timer — and its firing is a SUBSTRATE BUG REPORT (the probe
+        // says which class to hunt), never routine control flow.
+        const PER_TASK_HANG_BACKSTOP: std::time::Duration =
+            std::time::Duration::from_secs(2 * 60 * 60);
         // BOUNDED INFRA-FAULT RECOVERY (Proctored Exam Session, Slice B). Drive to
         // settlement; if the model call itself FAILS (`inference_error`: lane not-ready /
         // connect-refused / "not the active served model" / compute-error / deadline-wedge)
@@ -4006,58 +4003,36 @@ async fn run_pass(
         let mut settled;
         let mut infra_attempt = 0u32;
         loop {
-            settled = {
-                let drive = crate::cognition::act_observe::drive_to_settle(
+            settled = match tokio::time::timeout(
+                PER_TASK_HANG_BACKSTOP,
+                crate::cognition::act_observe::drive_to_settle(
                     cycle,
                     make_burst(),
                     room,
                     max_acts,
                     crate::cognition::workspace::TurnFraming::directed(),
-                );
-                tokio::pin!(drive);
-                let started = std::time::Instant::now();
-                loop {
-                    // Short poll ticks against the pinned future: Err(timeout) drops
-                    // nothing (the future is only borrowed), so the task keeps running
-                    // across ticks and is cancelled ONLY when a wedge verdict breaks out.
-                    match tokio::time::timeout(std::time::Duration::from_secs(15), &mut drive)
-                        .await
-                    {
-                        Ok(s) => break s,
-                        Err(_) => {
-                            let elapsed = started.elapsed();
-                            let since_work_ms =
-                                crate::inference::llama_server::ms_since_real_work();
-                            let alive = since_work_ms
-                                .is_some_and(|ms| ms < PER_TASK_WEDGE_PATIENCE.as_millis() as u64);
-                            if elapsed < PER_TASK_WEDGE_PATIENCE || (alive && elapsed < PER_TASK_HARD_CAP)
-                            {
-                                continue; // patient, or provably alive under the hard cap
-                            }
-                            let cause = if elapsed >= PER_TASK_HARD_CAP {
-                                format!(
-                                    "per-task hard cap exceeded ({}s) — tokens still flowing but the task never settles",
-                                    PER_TASK_HARD_CAP.as_secs()
-                                )
-                            } else {
-                                format!(
-                                    "no real token work for {}s (elapsed {}s) — serving wedged mid-generation",
-                                    since_work_ms.map(|ms| ms / 1000).unwrap_or(0), // cause text only: None prints 0s alongside "wedged" — the verdict came from `alive`, never this default
-                                    elapsed.as_secs()
-                                )
-                            };
-                            tracing::warn!(
-                                probe_class = "eval.task.timeout",
-                                patience_s = PER_TASK_WEDGE_PATIENCE.as_secs(),
-                                elapsed_s = elapsed.as_secs(),
-                                since_real_work_ms = since_work_ms.unwrap_or(0), // probe field only: 0 is the "no stamp" sentinel in telemetry, not a quantity anything budgets against
-                                "eval task watchdog fired — treating as an infra fault, NOT a wrong answer"
-                            );
-                            break crate::cognition::act_observe::SettleOutcome::infra_failure(
-                                cause,
-                            );
-                        }
-                    }
+                ),
+            )
+            .await
+            {
+                Ok(s) => s,
+                Err(_) => {
+                    // This firing means a hang survived EVERY event-based guard below
+                    // it (stream liveness, adapter watchdogs, act-loop error paths) —
+                    // an unpropagated-hang bug to find, not an operational condition.
+                    crate::probe!(
+                        class = "eval.task.hang_backstop",
+                        task = %t.id,
+                        backstop_s = PER_TASK_HANG_BACKSTOP.as_secs(),
+                        "last-resort hang backstop fired — a wedge should have surfaced \
+                         as an inference_error from the serving layer long before this; \
+                         find the await that lost its error propagation"
+                    );
+                    crate::cognition::act_observe::SettleOutcome::infra_failure(format!(
+                        "hang backstop ({}s) — no settle and no propagated error; \
+                         substrate bug, not a wrong answer",
+                        PER_TASK_HANG_BACKSTOP.as_secs()
+                    ))
                 }
             };
             let Some(cause) = settled.inference_error.clone() else {
@@ -4165,12 +4140,11 @@ async fn run_pass(
                     None,
                 ),
             );
-            // The nudge re-drive keeps the PATIENCE window as its flat budget: it is a
-            // single follow-up turn, not the multi-act task the progress-aware watchdog
-            // above exists for — a nudge that needs longer than the patience window is
-            // itself evidence the lane is unwell, and the original verdict stands.
+            // The nudge re-drive is one follow-up turn; serving-layer liveness guards
+            // its stream like any other. This bound is the same last-resort shape as
+            // the task backstop, scaled to a single turn.
             if let Ok(re) = tokio::time::timeout(
-                PER_TASK_WEDGE_PATIENCE,
+                std::time::Duration::from_secs(15 * 60),
                 crate::cognition::act_observe::drive_to_settle(
                     cycle,
                     nudge_burst,
