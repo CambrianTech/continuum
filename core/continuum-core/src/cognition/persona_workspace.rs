@@ -138,6 +138,9 @@ pub struct PersonaBrainConfig {
     /// [[eval-reproducibility-is-two-tier-lift-controlled-absolute-drifts]],
     /// [[redaction-makes-exam-learning-honest]].
     pub suppress_recall: bool,
+    /// Registry quiesce flag threaded from hosting (None for forks/tests) —
+    /// see [`super::workspace::ActingBody::quiesced`].
+    pub quiesced: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// Whether a grounding source must run synchronously on the inference loop, or
@@ -572,6 +575,7 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
             // next tick (proprioception), even when the result is a dedup no-op in
             // long-term memory and thinking is suppressed.
             working_memory: Arc::clone(&working_memory),
+            quiesced: cfg.quiesced,
         })),
         None => cycle,
     };
@@ -1339,6 +1343,7 @@ mod tests {
     fn cfg_for(persona_id: Uuid) -> PersonaBrainConfig {
         PersonaBrainConfig {
             persona_id,
+            quiesced: None, // harness mind — never lease-preempted
             persona_name: "Ivar".to_string(),
             system_prompt: "You are Ivar, an engineer on the grid.".to_string(),
             admission: seed_admission(1_000_000_000),

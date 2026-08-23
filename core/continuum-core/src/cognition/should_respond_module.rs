@@ -151,6 +151,7 @@ mod tests {
     fn registry_with_ivar(persona: Uuid) -> Arc<PersonaWorkspaceRegistry> {
         let registry = Arc::new(PersonaWorkspaceRegistry::new());
         registry.get_or_build(PersonaBrainConfig {
+            quiesced: None, // not a hosted mind (fork/module view) — never lease-preempted
             persona_id: persona,
             persona_name: "Ivar".to_string(),
             system_prompt: "You are Ivar, an engineer on the grid.".to_string(),

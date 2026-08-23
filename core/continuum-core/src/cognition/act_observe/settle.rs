@@ -274,7 +274,21 @@ async fn settle_to_outcome(
                  the empty-diff re-drive instead of being read away (#390 state gate)"
             );
         }
-        let may_act = acts < max_acts && stuck < STUCK_LIMIT && discovery_open;
+        // Lease preemption between acts: see ActingBody::quiesced.
+        let quiesced_now = cycle
+            .acting()
+            .and_then(|b| b.quiesced.clone())
+            .map(|f| f.load(std::sync::atomic::Ordering::Relaxed))
+            .unwrap_or(false); // no flag = not hosted (fork/test) = never preempted
+        if quiesced_now && acts < max_acts {
+            crate::probe!(
+                class = "persona.settle.lease_preempted",
+                room_id = %room_id,
+                acts = acts,
+                "eval-preemption lease took effect mid-drive — acts withheld, settling from what she has"
+            );
+        }
+        let may_act = acts < max_acts && stuck < STUCK_LIMIT && discovery_open && !quiesced_now;
         let act_started = std::time::Instant::now();
         let (step, step_metrics) = settle_step(
             cycle,

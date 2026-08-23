@@ -882,6 +882,12 @@ pub async fn materialize_adapters(
                 persona_id: identity.peer_id.as_uuid(),
                 persona_name: identity.agent_name.to_string(),
                 system_prompt: system_prompt.to_string(),
+                // The live roster's quiesce flag, so an eval-preemption lease can
+                // end an in-flight drive at the next act boundary (see
+                // ActingBody::quiesced). None before the roster publishes (tests,
+                // early boot) — then she is simply never preempted mid-drive.
+                quiesced: crate::persona::PersonaAircRuntimeRegistry::try_global()
+                    .and_then(|r| r.quiesced_flag(identity.peer_id.as_uuid())),
                 admission: cognition.admission.clone(),
                 adapter: adapter.clone(),
                 capacity: None,

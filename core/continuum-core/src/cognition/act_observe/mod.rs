@@ -463,6 +463,7 @@ mod tests {
             executor,
             admission,
             working_memory,
+            quiesced: None,
         })
     }
 

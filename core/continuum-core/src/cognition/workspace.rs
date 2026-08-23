@@ -1320,6 +1320,17 @@ pub struct ActingBody {
     /// identical act blind. Shared `Arc` with the perception-tier
     /// [`WorkingMemoryFaculty`] (one buffer, written here, read there).
     pub working_memory: Arc<crate::cognition::working_memory::WorkingMemory>,
+    /// The registry's quiesce flag for this persona, when hosted (None for
+    /// forks/tests). Consulted BETWEEN ACTS by the settle loop: an
+    /// eval-preemption lease taken mid-drive used to wait out the whole
+    /// multi-act turn — a reactive drive started seconds before the lease kept
+    /// acting 10+ minutes through the measurement window, stealing the
+    /// measured slot (2026-08-23, quiesced-Benchy on the 1-lane plan). The
+    /// fire alarm now ends the turn at the next act boundary: acts are
+    /// withheld and she settles from what she has; the workspace persists, the
+    /// inbox buffers, she resumes on lease drop. Same lever as max_acts —
+    /// never a steer.
+    pub quiesced: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// One service-tick of cognition over a CONSOLIDATED burst (never per-event):

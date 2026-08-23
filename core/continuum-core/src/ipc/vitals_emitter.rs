@@ -279,6 +279,7 @@ mod tests {
     fn registry_with(peer_id: Uuid) -> std::sync::Arc<PersonaWorkspaceRegistry> {
         let registry = std::sync::Arc::new(PersonaWorkspaceRegistry::new());
         registry.get_or_build(PersonaBrainConfig {
+            quiesced: None, // not a hosted mind (fork/module view) — never lease-preempted
             persona_id: peer_id,
             persona_name: "Asha".to_string(),
             system_prompt: "You are Asha.".to_string(),
