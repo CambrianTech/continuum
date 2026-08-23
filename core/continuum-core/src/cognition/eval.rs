@@ -3970,17 +3970,26 @@ async fn run_pass(
         // decline in her own words; she just isn't handed the silent hatch. The live
         // path computes directedness from real addressing (TODO #9); pinning it here
         // is the eval's exam-is-directed control. See `Workspace::directed_at_self`.
-        // Per-task wedge watchdog (#123 hang): `drive_to_settle` awaits the persona's
-        // real cognition, which POSTs to the serving gateway. If the gateway wedges
-        // mid-generation (connection open, zero tokens) that await NEVER returns and the
-        // WHOLE eval hangs on this one task — observed live 2026-07-17: humaneval-rs
-        // stalled at task 6/20, no progress for >20 min, holding the fleet-quiesce lease
-        // the entire time. A hung task MUST degrade to a graded infra-fail (identical to
-        // an inference_error) and let the run proceed — never block the measurement. The
-        // deadline is a generous backstop vs real per-task latency (16–50s observed on
-        // humaneval; minutes across act cycles on the harder tiers), so slow-but-valid
-        // work is never cut; it fires only on a true wedge. Not a latency policy.
-        const PER_TASK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(600);
+        // LAST-RESORT hang backstop — NOT a wedge detector (2026-08-23, second cut).
+        //
+        // Wedge detection is the SERVING layer's job and it is event-based there: the
+        // stream-liveness classifier (phase-aware budgets, 9e2f95820) kills a
+        // zero-token stream at the source and the failure surfaces here as
+        // `inference_error` — the event path `drive_to_settle` already returns on.
+        // The old flat 600s deadline predated that sensor (#123, 2026-07-17) and was
+        // never demoted once it shipped: it second-guessed the serving layer with a
+        // stopwatch, declared a LIVE multi-minute e2e decode "wedged" (fluid-sim-e2e,
+        // observed live tonight), and retried the task into a doomed loop. Cheap
+        // wall-clock guesses about liveness always lose to the component that can SEE
+        // the tokens ([[the-whole-system-is-event-based-not-polling]]).
+        //
+        // What remains is the hang class no event can cover BY DEFINITION: an await
+        // that never returns because some path between inference calls lost its error
+        // propagation (a code bug, not a serving state). For that, one enormous
+        // garbage-ceiling timer — and its firing is a SUBSTRATE BUG REPORT (the probe
+        // says which class to hunt), never routine control flow.
+        const PER_TASK_HANG_BACKSTOP: std::time::Duration =
+            std::time::Duration::from_secs(2 * 60 * 60);
         // BOUNDED INFRA-FAULT RECOVERY (Proctored Exam Session, Slice B). Drive to
         // settlement; if the model call itself FAILS (`inference_error`: lane not-ready /
         // connect-refused / "not the active served model" / compute-error / deadline-wedge)
@@ -3995,7 +4004,7 @@ async fn run_pass(
         let mut infra_attempt = 0u32;
         loop {
             settled = match tokio::time::timeout(
-                PER_TASK_DEADLINE,
+                PER_TASK_HANG_BACKSTOP,
                 crate::cognition::act_observe::drive_to_settle(
                     cycle,
                     make_burst(),
@@ -4008,15 +4017,21 @@ async fn run_pass(
             {
                 Ok(s) => s,
                 Err(_) => {
-                    tracing::warn!(
-                        probe_class = "eval.task.timeout",
-                        deadline_s = PER_TASK_DEADLINE.as_secs(),
-                        "eval task exceeded the per-task deadline — treating as an infra fault \
-                         (serving wedged mid-generation), NOT a wrong answer"
+                    // This firing means a hang survived EVERY event-based guard below
+                    // it (stream liveness, adapter watchdogs, act-loop error paths) —
+                    // an unpropagated-hang bug to find, not an operational condition.
+                    crate::probe!(
+                        class = "eval.task.hang_backstop",
+                        task = %t.id,
+                        backstop_s = PER_TASK_HANG_BACKSTOP.as_secs(),
+                        "last-resort hang backstop fired — a wedge should have surfaced \
+                         as an inference_error from the serving layer long before this; \
+                         find the await that lost its error propagation"
                     );
                     crate::cognition::act_observe::SettleOutcome::infra_failure(format!(
-                        "per-task deadline exceeded ({}s) — serving wedged mid-generation",
-                        PER_TASK_DEADLINE.as_secs()
+                        "hang backstop ({}s) — no settle and no propagated error; \
+                         substrate bug, not a wrong answer",
+                        PER_TASK_HANG_BACKSTOP.as_secs()
                     ))
                 }
             };
@@ -4125,8 +4140,11 @@ async fn run_pass(
                     None,
                 ),
             );
+            // The nudge re-drive is one follow-up turn; serving-layer liveness guards
+            // its stream like any other. This bound is the same last-resort shape as
+            // the task backstop, scaled to a single turn.
             if let Ok(re) = tokio::time::timeout(
-                PER_TASK_DEADLINE,
+                std::time::Duration::from_secs(15 * 60),
                 crate::cognition::act_observe::drive_to_settle(
                     cycle,
                     nudge_burst,
