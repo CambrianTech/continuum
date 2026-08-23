@@ -39,9 +39,12 @@ on:
   # is the cheaper half of the trade — the other half is a PR that can never
   # merge and a human having to discover why.
   #
-  # If this ever needs to be cheap, the fix is a relevance gate INSIDE the job
-  # (detect no-op changes, skip the heavy steps, still report success) — never
-  # a trigger filter that suppresses the report itself.
+  # That relevance gate now EXISTS (2026-08-23, after a docs-only PR paid the
+  # full suite): the first step of each job diffs the PR's file list; a
+  # docs-only diff (every file under docs/ or *.md) skips the heavy steps and
+  # reports SUCCESS honestly. Fail-open: gh error, >=100 files, or any push
+  # event runs everything. The trigger stays unfiltered — the gate is inside
+  # the job, exactly as this comment always prescribed.
   pull_request:
   push:
     branches: [canary, main]
@@ -59,7 +62,33 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      # THE RELEVANCE GATE the header prescribes: detect docs-only diffs, skip the
+      # heavy steps, STILL REPORT SUCCESS — never a trigger filter that suppresses
+      # the report (that is the deadlock this file's `on:` comment documents).
+      # Fail-open on any doubt: gh error, >=100 files (API page cap), push events —
+      # all read as relevant=true. A false "relevant" costs one cargo build; a
+      # false "irrelevant" costs trust in every green check.
+      - name: Relevance gate — docs-only PRs pass without paying for cargo
+        id: gate
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          files=$(gh pr view ${{ github.event.pull_request.number }} \
+            --repo ${{ github.repository }} --json files -q '.files[].path' || echo "__GH_FAILED__")
+          echo "$files"
+          count=$(echo "$files" | grep -c . || true)
+          if [ "$files" = "__GH_FAILED__" ] || [ "$count" -ge 100 ] || \
+             echo "$files" | grep -qvE '(^docs/|\.md$)'; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+            echo "Docs-only diff ($count files) — heavy steps skipped; success reported honestly."
+          fi
       - uses: actions/checkout@v4
+        if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
         with:
           # llama.cpp + whisper.cpp vendored submodules. continuum-core's
           # dep tree pulls llama as a workspace crate which build-scripts
@@ -74,12 +103,14 @@ jobs:
       # download happens up-front (with timing visible) rather than buried
       # inside the cargo step.
       - name: Install Rust toolchain from rust-toolchain.toml
+        if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
         run: |
           rustup show active-toolchain || rustup show
           rustc --version
           cargo --version
 
       - name: System deps (mirrors docker/continuum-core.Dockerfile builder stage)
+        if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -97,6 +128,7 @@ jobs:
       # so the cache stays small + bounded. `shared-key` keeps the two Rust
       # workflows warming each other (replaces the old shared cache key).
       - name: Cache cargo state
+        if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: continuum-rust-1.95
@@ -130,6 +162,7 @@ jobs:
       # forward velocity on substrate code that DOES run on Linux.
       # Each skip pattern is a follow-up card.
       - name: cargo test -p continuum-core --lib
+        if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
         run: |
           cargo test -p continuum-core --lib -- \
             --skip 'gpu::memory_manager::' \
@@ -152,6 +185,7 @@ jobs:
       # compile for one `git diff`. The check is the diff, not the build, so it belongs
       # here where the build already happened.
       - name: Verify protocol/typescript/ in sync with Rust source
+        if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
         run: |
           if ! git diff --exit-code protocol/typescript/; then
             echo "::error::ts-rs binding drift detected. Some Rust types"
@@ -219,17 +253,46 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
+      # THE RELEVANCE GATE the header prescribes: detect docs-only diffs, skip the
+      # heavy steps, STILL REPORT SUCCESS — never a trigger filter that suppresses
+      # the report (that is the deadlock this file's `on:` comment documents).
+      # Fail-open on any doubt: gh error, >=100 files (API page cap), push events —
+      # all read as relevant=true. A false "relevant" costs one cargo build; a
+      # false "irrelevant" costs trust in every green check.
+      - name: Relevance gate — docs-only PRs pass without paying for cargo
+        id: gate
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          files=$(gh pr view ${{ github.event.pull_request.number }} \
+            --repo ${{ github.repository }} --json files -q '.files[].path' || echo "__GH_FAILED__")
+          echo "$files"
+          count=$(echo "$files" | grep -c . || true)
+          if [ "$files" = "__GH_FAILED__" ] || [ "$count" -ge 100 ] || \
+             echo "$files" | grep -qvE '(^docs/|\.md$)'; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+            echo "Docs-only diff ($count files) — heavy steps skipped; success reported honestly."
+          fi
       - uses: actions/checkout@v4
+        if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
         with:
           submodules: recursive
       - name: Install Rust toolchain from rust-toolchain.toml
+        if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
         run: |
           rustup show active-toolchain
           rustc --version
       - name: Cache cargo state
+        if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: continuum-rust-windows-1.95
           cache-on-failure: true
       - name: cargo check (lib + test harness)
+        if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
         run: cargo check -p continuum-core --lib --tests
