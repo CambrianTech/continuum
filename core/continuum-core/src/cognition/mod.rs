@@ -38,6 +38,7 @@ pub mod activity;
 pub mod benchmark;
 pub mod benchmark_algotune;
 pub mod benchmark_ds1000;
+pub mod benchmark_mirrorcode;
 pub mod benchmark_super;
 pub mod benchmark_terminalbench;
 pub mod benchmark_humaneval;
