@@ -16,7 +16,9 @@
 use std::sync::Arc;
 
 use crate::modules::cognition::CognitionState;
-use crate::persona::model_selection::{select_model, ModelSelectionRequest, ModelSelectionResult};
+use crate::persona::model_selection::{
+    select_model_with_signatures, ModelSelectionRequest, ModelSelectionResult, NeedEmbedding,
+};
 use crate::sdk_codegen::CommandError;
 
 crate::action_command! {
@@ -29,9 +31,53 @@ crate::action_command! {
     params: ModelSelectionRequest,
     output: ModelSelectionResult,
     run(this, _ctx, p) => {
+        // Rung 0's inputs, computed at THIS async seam so the selector stays
+        // pure + sync (memory/recall's query_embedding pattern): embed the need
+        // text through the one recall lane, and join the persona's adapters to
+        // their minted signatures by NAME via the manifest + sidecar.
+        let need_text = p.need.clone().or_else(|| p.task_domain.clone());
+        let (need, signatures) = match need_text {
+            Some(text) => {
+                let embedder = crate::cognition::embedding::resolve_recall_embedder_local().await;
+                let need = NeedEmbedding {
+                    embedder_id: embedder.id().to_string(),
+                    vector: embedder.embed(&text).await,
+                    unrelated_null: embedder.unrelated_null(),
+                };
+                let mut by_name = std::collections::HashMap::new();
+                if let (Ok(manifest), Ok(store_path)) = (
+                    crate::forge::adapter_manifest::load(),
+                    crate::genome::signature::signature_store_path(),
+                ) {
+                    if let Ok(store) = crate::genome::signature::SignatureStore::load_at(&store_path) {
+                        for a in &manifest {
+                            if let Some(sig) = store.by_path.get(&a.path.display().to_string()) {
+                                by_name.insert(a.alias.clone(), sig.clone());
+                            }
+                        }
+                    }
+                }
+                (Some(need), by_name)
+            }
+            None => (None, std::collections::HashMap::new()),
+        };
         let persona = this.state.get_or_create_persona(p.persona_id);
-        select_model(&p, &persona.adapter_registry)
-            .map_err(|e| CommandError::Internal(e.to_string()))
+        let result = select_model_with_signatures(
+            &p,
+            &persona.adapter_registry,
+            need.as_ref(),
+            &signatures,
+        )
+        .map_err(|e| CommandError::Internal(e.to_string()))?;
+        crate::probe!(
+            class = "cognition.model_selection",
+            persona = %p.persona_id,
+            source = %result.source,
+            adapter = %result.adapter_name.as_deref().unwrap_or("-"), // probe display only: "-" reads as no-adapter
+            similarity = %result.similarity.unwrap_or(0.0), // probe display only: 0.0 beside a non-distance source reads as not-applicable
+            "model selected"
+        );
+        Ok(result)
     }
 }
 

@@ -97,11 +97,21 @@ static COMMAND_MEMORY_DELTAS: once_cell::sync::Lazy<Mutex<HashMap<String, i64>>>
 
 pub(crate) fn log_command_rss_delta(command: &str, before_mb: u64, after_mb: u64) {
     let delta = after_mb as i64 - before_mb as i64;
-    if delta > 0 {
-        // Accumulate per-command
-        if let Ok(mut map) = COMMAND_MEMORY_DELTAS.lock() {
-            *map.entry(command.to_string()).or_insert(0) += delta;
-        }
+    // NET, not positive-only. This used to read `if delta > 0 { … += delta }`, which
+    // accumulated every rise and DISCARDED every matching fall — so a command that
+    // allocates and frees the same buffer climbed forever, and the number it reported
+    // was transient allocation VOLUME wearing the word "leaked". Guaranteed false
+    // positive for anything that does real work: `benchmark/dispatch` was topping the
+    // board at +228MB while the process RSS in the very same log OSCILLATED
+    // (528→524→477→555MB). A quarter-gigabyte leak cannot go DOWN. That is a working
+    // set, and the instrument could not tell the difference.
+    //
+    // Still an ESTIMATE, and the log below says so: RSS is process-wide, so any other
+    // thread allocating during a command is attributed to that command. Netting the
+    // deltas makes the noise unbiased instead of one-directional; it does not make
+    // this attribution. Read it as "who to look at first", never as proof.
+    if let Ok(mut map) = COMMAND_MEMORY_DELTAS.lock() {
+        *map.entry(command.to_string()).or_insert(0) += delta;
     }
     // Log commands with >2MB growth per call
     if delta > 2 {
@@ -122,11 +132,28 @@ pub(crate) fn dump_memory_report() {
         }
         let mut entries: Vec<_> = map.iter().collect();
         entries.sort_by(|a, b| b.1.cmp(a.1));
+        // Only NET-POSITIVE rows are worth a reader's attention; a command that gives
+        // back what it takes is not a suspect. Sorted desc, so stopping at the first
+        // non-positive row drops the whole tail.
         let top: Vec<String> = entries
             .iter()
+            .take_while(|(_, delta)| **delta > 0)
             .take(10)
             .map(|(cmd, delta)| format!("{}:+{}MB", cmd, delta))
             .collect();
-        eprintln!("[MEMLEAK] RSS={}MB | Top leakers: {}", rss, top.join(", "));
+        if top.is_empty() {
+            eprintln!("[MEMLEAK] RSS={rss}MB | no command shows net growth");
+            return;
+        }
+        // "net RSS growth", not "leakers". The old wording asserted a conclusion the
+        // measurement cannot support (process-wide RSS cannot attribute an allocation
+        // to the command that happened to be running), and that wording is what got
+        // read as a finding.
+        eprintln!(
+            "[MEMLEAK] RSS={}MB | net RSS growth by command (ESTIMATE — process-wide \
+             RSS, not per-command attribution): {}",
+            rss,
+            top.join(", ")
+        );
     }
 }
