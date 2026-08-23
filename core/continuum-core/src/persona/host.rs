@@ -312,9 +312,56 @@ impl PersonaSpawnSupervisor {
         // edge — which is exactly right (reap-or-adopt), and exactly why a
         // despawn alone dissolved within minutes all night. A standing
         // [`roster_hold`] names who may be hosted for a bounded window; everyone
-        // else is SKIPPED with a probe, never silently. Explicit `persona/spawn`
-        // does not pass through here — a human's direct command stays sovereign.
-        let plans: Vec<_> = match crate::persona::roster_hold::active() {
+        // else is SKIPPED with a probe, never silently. The same gate guards
+        // EVERY reconciler entrance ([`Self::host_unattended`] too) — placing it
+        // at one call-site was the 2026-08-23 boot bypass: bootstrap registered
+        // the citizens, then the next serving edge hosted them through
+        // host_unattended with zero held_out probes.
+        let plans = Self::filter_by_hold(plans);
+
+        let mut summary = BootSummary::default();
+        self.host_plans(plans, tool_command_executor, &mut summary)
+            .await;
+
+        tracing::info!(
+            hosted = summary.hosted,
+            failed = summary.failed(),
+            "🌐 PersonaSpawnSupervisor: boot composition complete — \
+             {} citizen(s) hosted, {} failed",
+            summary.hosted,
+            summary.failed(),
+        );
+
+        summary
+    }
+
+    /// Apply the standing [`roster_hold`] to a batch of hosting plans —
+    /// the operator-intent gate every RECONCILER entrance passes through
+    /// ([`Self::spawn_all`] at boot, [`Self::host_unattended`] on each
+    /// serving edge). Held-out citizens are skipped with a probe, never
+    /// silently. Explicit `persona/spawn` stays sovereign at BIRTH
+    /// (registration), but hosting always flows through a reconciler
+    /// verb — so under a hold the newborn stays unhosted, loudly, until
+    /// the hold lapses or the operator adds them to it.
+    ///
+    /// regression for the 2026-08-23 boot bypass: the filter lived only
+    /// in spawn_all, so bootstrap registered citizens and the next
+    /// serving edge hosted all of them via host_unattended — a valid
+    /// hold, four adoptions, zero held_out probes.
+    fn filter_by_hold(
+        plans: Vec<crate::persona::spawner_module::MaterializedPersonaPlan>,
+    ) -> Vec<crate::persona::spawner_module::MaterializedPersonaPlan> {
+        Self::filter_by_hold_with(crate::persona::roster_hold::active(), plans)
+    }
+
+    /// The pure half of [`Self::filter_by_hold`] — takes the hold as a
+    /// value so tests can drive it without touching the operator's real
+    /// hold file.
+    fn filter_by_hold_with(
+        hold: Option<crate::persona::roster_hold::RosterHold>,
+        plans: Vec<crate::persona::spawner_module::MaterializedPersonaPlan>,
+    ) -> Vec<crate::persona::spawner_module::MaterializedPersonaPlan> {
+        match hold {
             Some(hold) => plans
                 .into_iter()
                 .filter(|p| {
@@ -334,22 +381,7 @@ impl PersonaSpawnSupervisor {
                 })
                 .collect(),
             None => plans,
-        };
-
-        let mut summary = BootSummary::default();
-        self.host_plans(plans, tool_command_executor, &mut summary)
-            .await;
-
-        tracing::info!(
-            hosted = summary.hosted,
-            failed = summary.failed(),
-            "🌐 PersonaSpawnSupervisor: boot composition complete — \
-             {} citizen(s) hosted, {} failed",
-            summary.hosted,
-            summary.failed(),
-        );
-
-        summary
+        }
     }
 
     /// Host every REGISTERED citizen whose slot has never had a
@@ -437,6 +469,11 @@ impl PersonaSpawnSupervisor {
                 profile,
             })
             .collect();
+
+        // The reconciler's other entrance passes the SAME operator-intent
+        // gate as boot — see [`Self::filter_by_hold`] for the bypass this
+        // closed.
+        let plans = Self::filter_by_hold(plans);
 
         self.host_plans(plans, tool_command_executor, &mut summary)
             .await;
@@ -628,6 +665,48 @@ fn supervisor_error_facts(err: &SupervisorError) -> (Option<usize>, RoleId) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn plan_named(name: &str) -> crate::persona::spawner_module::MaterializedPersonaPlan {
+        crate::persona::spawner_module::MaterializedPersonaPlan {
+            role: crate::persona::role_template::RoleId::Helper,
+            instance: crate::modules::persona_instance_manager::PersonaInstanceInfo {
+                agent_name: name.to_string(),
+                peer_id: crate::identity::PeerId::from_uuid(uuid::Uuid::new_v4()),
+                home: std::path::PathBuf::from("/tmp/unused"),
+                default_room: uuid::Uuid::new_v4(),
+                source: crate::persona::identity_provider::PersonaIdentitySource::FreshlyMinted,
+            },
+            profile: Err(
+                crate::persona::inference_profile::InferenceProfileError::UnknownModel {
+                    model_id: "fixture".into(),
+                    role_id: "helper".into(),
+                },
+            ),
+        }
+    }
+
+    // what this catches: regression for the 2026-08-23 boot bypass — the
+    // roster-hold gate lived only in spawn_all, so host_unattended (fired on
+    // every serving edge) hosted held-out citizens with zero held_out probes.
+    // Both reconciler entrances now share filter_by_hold; this pins the pure
+    // half's contract: allowed names pass, everyone else is dropped, and no
+    // hold means no filtering.
+    #[test]
+    fn hold_filter_drops_unallowed_plans_and_passes_without_a_hold() {
+        let hold = crate::persona::roster_hold::RosterHold {
+            only: vec!["Atlas".into()],
+            until_ms: u64::MAX,
+            reason: "test measurement window".into(),
+        };
+        let plans = vec![plan_named("Atlas"), plan_named("Kira")];
+        let kept = PersonaSpawnSupervisor::filter_by_hold_with(Some(hold), plans);
+        assert_eq!(kept.len(), 1, "held-out citizen must be dropped");
+        assert_eq!(kept[0].instance.agent_name, "Atlas");
+
+        let plans = vec![plan_named("Atlas"), plan_named("Kira")];
+        let kept = PersonaSpawnSupervisor::filter_by_hold_with(None, plans);
+        assert_eq!(kept.len(), 2, "no hold means every plan passes");
+    }
 
     // what this catches: the hosting reconciler (#429) runs host_unattended on
     // EVERY serving-plan edge for the life of the process. With nothing
