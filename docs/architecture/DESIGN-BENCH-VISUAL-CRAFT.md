@@ -77,6 +77,29 @@ judge model id + prompt hash + rubric version ride every receipt (§4.1.3.4);
 a V3 score can WEIGH an outcome, it can never gate one — an LLM's taste is an
 opinion with a receipt, not an oracle.
 
+## 3b. Reference corpora & synthesis (Joel, 2026-08-22: *"graded from comparing
+their work to existing good UX/UI if these exist in public or we synthesize it"*)
+
+**The license-clean corpus of good design exists as CODE, not pictures:**
+open-source design systems — GOV.UK Design System (the a11y gold standard, with
+documented rationale), Primer, Carbon, Polaris, Radix, Material. Because the
+reference is code, comparison is NOT likeness: we **extract the corpus's measured
+craft profile** — distributions of contrast ratios, type scales, spacing rhythms,
+density — and grade candidate work against the *envelope* good design occupies.
+Distance in craft-fact space, not similarity to any one page (the same
+distance-not-keywords doctrine as gene routing): a creative design that keeps
+craft discipline scores inside the envelope; a clone scores no better than an
+original. The same corpus calibrates the V3 judge panel (few-shot exemplars in
+the rubric prompt, exemplar set hash on the receipt).
+
+**Synthesis, inverted — synthesize DEFECTS from good design, never good design
+itself:** take an exemplar page and auto-inject a breakage (kill the contrast,
+break the reflow at 400px, randomize the spacing scale, strip the focus states);
+the restore task grades against the original's own StyleChecks. Mutation testing
+applied to visual craft: infinite SWE-level cards with EXACT oracles, because
+the known-good original IS the ground truth. The defect injector is one small
+tool; the corpus does the design work.
+
 ## 4. External adapter (comparability, second)
 
 **Design2Code** (HF, screenshot→page) is the Tier-1 external candidate — same
