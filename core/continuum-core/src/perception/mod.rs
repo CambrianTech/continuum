@@ -41,6 +41,7 @@ use ts_rs::TS;
 /// web-dev benchmark's "diff on the element tree" (works for every persona;
 /// scores the text structure a non-visual model also reads).
 pub mod scoring;
+pub mod style_check;
 
 /// Static-HTML eye — parse a rendered `index.html` artifact into a [`ProbeNode`]
 /// tree so the HEADLESS eval core can grade structural `ui_checks` with no browser
