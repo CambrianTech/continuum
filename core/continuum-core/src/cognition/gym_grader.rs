@@ -179,7 +179,12 @@ pub async fn test_grade(answer: &str, lang: &str, test: &str) -> (bool, String) 
 /// `code/write` sandboxes to). Fails LOUD (never a silent pass) if she wrote nothing, the path
 /// escapes the workspace, or the file is empty. The file is removed after grading so a stale
 /// artifact from this or a prior task can never false-pass a later one.
-pub async fn test_grade_file(rel_path: &str, lang: &str, test: &str) -> (bool, String) {
+pub async fn test_grade_file(
+    root: Option<&std::path::Path>,
+    rel_path: &str,
+    lang: &str,
+    test: &str,
+) -> (bool, String) {
     match lang {
         "rust" | "rs" => {}
         other => {
@@ -189,14 +194,24 @@ pub async fn test_grade_file(rel_path: &str, lang: &str, test: &str) -> (bool, S
             )
         }
     }
-    let path = std::path::Path::new(rel_path);
-    if path.is_absolute() || rel_path.contains("..") {
+    // Resolve against the RUN'S ROOT, never the process CWD. The grader read
+    // bare `rel_path` from the core's cwd (the repo checkout) while her hands
+    // wrote into the #312 ephemeral clone — so every artifact-graded task
+    // reported "she never wrote it" about a file she demonstrably wrote
+    // (glass-boxed 2026-08-23, take 2 of the Ornith battery: sol_roman_to_int.rs
+    // correct IN the clone, grade said not-found). `None` = cwd-relative, for
+    // callers that genuinely run in the target directory (tests).
+    if std::path::Path::new(rel_path).is_absolute() || rel_path.contains("..") {
         return (
             false,
             format!("solution_file must be a relative in-workspace path, got '{rel_path}'"),
         );
     }
-    let code = match std::fs::read_to_string(path) {
+    let path = match root {
+        Some(r) => r.join(rel_path),
+        None => std::path::PathBuf::from(rel_path),
+    };
+    let code = match std::fs::read_to_string(&path) {
         Ok(c) if !c.trim().is_empty() => c,
         Ok(_) => {
             let _ = std::fs::remove_file(path);
@@ -223,7 +238,7 @@ pub async fn test_grade_file(rel_path: &str, lang: &str, test: &str) -> (bool, S
             );
         }
     };
-    let _ = std::fs::remove_file(path);
+    let _ = std::fs::remove_file(&path);
     let dir = std::env::temp_dir().join(format!("cu-gym-{}", Uuid::new_v4()));
     if std::fs::create_dir_all(&dir).is_err() {
         return (false, "temp dir create failed".to_string());
@@ -521,18 +536,34 @@ mod tests {
     async fn artifact_grade_reads_the_file_passes_correct_cleans_up_and_fails_loud() {
         let rel = format!("cu-gym-artifact-{}.rs", uuid::Uuid::new_v4());
         std::fs::write(&rel, "pub fn dbl(x: i32) -> i32 { x * 2 }\n").unwrap();
-        let (ok, grade) = test_grade_file(&rel, "rust", "assert_eq!(dbl(3), 6);").await;
+        let (ok, grade) = test_grade_file(None, &rel, "rust", "assert_eq!(dbl(3), 6);").await;
         assert!(ok, "a correct solution file should pass: {grade}");
         assert!(
             !std::path::Path::new(&rel).exists(),
             "the file must be removed after grading so it can't false-pass a later task"
         );
-        let (ok2, grade2) = test_grade_file(&rel, "rust", "assert_eq!(dbl(3), 6);").await;
+        let (ok2, grade2) = test_grade_file(None, &rel, "rust", "assert_eq!(dbl(3), 6);").await;
         assert!(
             !ok2 && grade2.contains("never wrote it"),
             "a missing file must fail loud, not silently pass: {grade2}"
         );
-        let (ok3, _) = test_grade_file("../escape.rs", "rust", "").await;
+        let (ok3, _) = test_grade_file(None, "../escape.rs", "rust", "").await;
+
+        // what this catches: THE take-2 defect — the grader must read the file
+        // from the RUN'S root, not the process cwd. A correct solution in the
+        // eval root graded "not found" (a manufactured lie about the solver)
+        // when resolution used bare rel_path. Regression for 2026-08-23.
+        let rooted = tempfile::tempdir().expect("tempdir");
+        std::fs::write(rooted.path().join("sol_rooted.rs"), "pub fn dbl(x: i32) -> i32 { x * 2 }")
+            .expect("write");
+        let (ok4, grade4) = test_grade_file(
+            Some(rooted.path()),
+            "sol_rooted.rs",
+            "rust",
+            "assert_eq!(dbl(4), 8);",
+        )
+        .await;
+        assert!(ok4, "rooted resolution must grade the real file: {grade4}");
         assert!(!ok3, "a path escaping the workspace must be refused");
     }
 
