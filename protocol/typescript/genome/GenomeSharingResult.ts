@@ -19,4 +19,11 @@ receipt?: string,
 /**
  * The covenant text, VERBATIM — every surface renders this same text.
  */
-covenant: string, };
+covenant: string, 
+/**
+ * The HF account the `hf` CLI is authenticated as (the token holder the
+ * commons publishes under), when authenticated. `None` = not logged in —
+ * the settings surface shows "authenticate with `hf auth login`". The
+ * TOKEN itself never rides any wire; status only.
+ */
+hf_account?: string, };

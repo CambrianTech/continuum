@@ -117,6 +117,32 @@ pub struct GenomeSharingResult {
     pub receipt: Option<String>,
     /// The covenant text, VERBATIM — every surface renders this same text.
     pub covenant: String,
+    /// The HF account the `hf` CLI is authenticated as (the token holder the
+    /// commons publishes under), when authenticated. `None` = not logged in —
+    /// the settings surface shows "authenticate with `hf auth login`". The
+    /// TOKEN itself never rides any wire; status only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub hf_account: Option<String>,
+}
+
+/// The `hf` CLI's auth status — account name when logged in. Best-effort: a
+/// missing CLI or timeout answers `None` (the surface says "not authenticated"
+/// and how to fix it), never an error that blocks reading the covenant.
+async fn hf_account() -> Option<String> {
+    let out = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::process::Command::new("hf").args(["auth", "whoami"]).output(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    // First non-empty line carries the username across hf CLI versions.
+    text.lines().map(str::trim).find(|l| !l.is_empty()).map(str::to_string)
 }
 
 #[derive(Default)]
@@ -164,6 +190,7 @@ impl ActionCommand for GenomeSharing {
             covenant_version: COVENANT_VERSION.to_string(),
             receipt: crate::config_env::read(CONSENT_KEY),
             covenant: COVENANT.to_string(),
+            hf_account: hf_account().await,
         })
     }
 }
