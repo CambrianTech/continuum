@@ -50,14 +50,19 @@ export interface DomViewSpec extends ViewSpec {
 
 /** The DOM surface's act-verbs (outlier A): the universal base `Action` (`setViewport`)
  *  plus the web driver — click/type/hot-swap CSS. `injectCss` is the hot-swap seam
- *  (retheme/relayout the LIVE page, no redeploy) that makes design iteration fast. */
+ *  (retheme/relayout the LIVE page, no redeploy) that makes design iteration fast;
+ *  `hotPatchCss` is its idempotent sibling — ONE named hot-patch layer
+ *  (`<style data-continuum-hot-edit>`) REPLACED wholesale each call (empty css clears
+ *  it), so `perception/hot-edit` can re-apply a persona's full accumulated stylesheet
+ *  without stacking style tags. */
 export type DomAction =
   | SetViewportAction
   | { readonly kind: 'click'; readonly selector: string }
   | { readonly kind: 'type'; readonly selector: string; readonly text: string }
   | { readonly kind: 'press'; readonly key: string }
   | { readonly kind: 'hover'; readonly selector: string }
-  | { readonly kind: 'injectCss'; readonly css: string };
+  | { readonly kind: 'injectCss'; readonly css: string }
+  | { readonly kind: 'hotPatchCss'; readonly css: string };
 
 export interface DomSurfaceOptions {
   readonly url: string;
@@ -224,6 +229,21 @@ export class DomSurface implements Surface<DomViewSpec, DomAction> {
       case 'injectCss':
         // Hot-swap: retheme/relayout the LIVE page, no redeploy — the fast-iteration seam.
         await this.page.addStyleTag({ content: action.css });
+        return;
+      case 'hotPatchCss':
+        // The ONE hot-patch layer: find-or-create `<style data-continuum-hot-edit>` and
+        // REPLACE its content (append would stack patches and make re-applying a full
+        // stylesheet non-idempotent). Empty css leaves an empty layer = patch cleared.
+        await this.page.evaluate((css) => {
+          const attr = 'data-continuum-hot-edit';
+          let el = document.querySelector<HTMLStyleElement>(`style[${attr}]`);
+          if (!el) {
+            el = document.createElement('style');
+            el.setAttribute(attr, '');
+            document.head.appendChild(el);
+          }
+          el.textContent = css;
+        }, action.css);
         return;
       case 'setViewport':
         await this.page.setViewportSize({ width: action.width, height: action.height });

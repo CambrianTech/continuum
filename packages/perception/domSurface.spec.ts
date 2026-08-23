@@ -85,6 +85,26 @@ describe('DomSurface — the web Surface (Percept · Probe · Actuator · diff)'
     expect(surface.diff(after, swapped).ratio).toBeGreaterThan(0);
   });
 
+  // what this catches: hotPatchCss is ONE replaceable layer, never an append — the
+  // `perception/hot-edit` contract ("pass your FULL accumulated css each call") only
+  // holds if re-applying replaces the prior patch. A regression to append semantics
+  // (addStyleTag-style stacking) would leave the first patch painted after the layer
+  // is cleared, and the final diff here would go nonzero.
+  it('hotPatchCss replaces the hot-patch layer wholesale (clearing it restores the page)', { timeout: 45_000 }, async () => {
+    surface = await DomSurface.open({ url: FIXTURE, viewport: { width: 320, height: 160 } });
+    const base = await surface.render();
+
+    // Patch applied → pixels move.
+    await surface.act({ kind: 'hotPatchCss', css: 'body{background:#c026d3 !important;}' });
+    const patched = await surface.render();
+    expect(surface.diff(base, patched).ratio).toBeGreaterThan(0);
+
+    // Layer REPLACED with empty css → the page is back to its unpatched pixels.
+    await surface.act({ kind: 'hotPatchCss', css: '' });
+    const cleared = await surface.render();
+    expect(surface.diff(base, cleared).ratio).toBe(0);
+  });
+
   // what this catches: an identical before/after must diff to ~zero — the money signal is
   // trustworthy (no false "it changed" when nothing did).
   it('diffs identical renders to zero', { timeout: 45_000 }, async () => {

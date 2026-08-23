@@ -65,8 +65,10 @@ export async function observe(params: ObserveParams): Promise<ObserveResult> {
 }
 
 /** Encode the rendered frame as a `data:` URL (the wire has no raw-bytes slot).
- *  A filmstrip percept has no single-image wire mapping — reject it loud. */
-function perceptToImage(percept: Percept): ObservedImage {
+ *  A filmstrip percept has no single-image wire mapping — reject it loud.
+ *  Exported for the sibling adapters (`hotEditAdapter`) — ONE percept→wire
+ *  projection, never a per-adapter copy. */
+export function perceptToImage(percept: Percept): ObservedImage {
   if (percept.kind !== 'image') {
     throw new Error(`perception/observe: a '${percept.kind}' percept has no single-image wire form`);
   }
@@ -80,8 +82,9 @@ function perceptToImage(percept: Percept): ObservedImage {
 
 /** Map the internal surface `ProbeNode` onto the wire `ProbeNode`. Structurally
  *  near-identical; this makes the projection explicit (and mutable-array/copy
- *  clean) rather than leaning on structural assignability. */
-function mapNode(node: SurfaceProbeNode): WireProbeNode {
+ *  clean) rather than leaning on structural assignability. Exported for the
+ *  sibling adapters (`hotEditAdapter`) — ONE tree projection, never a copy. */
+export function mapNode(node: SurfaceProbeNode): WireProbeNode {
   return {
     tag: node.tag,
     role: node.role,

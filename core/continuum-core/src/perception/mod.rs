@@ -55,6 +55,12 @@ pub mod static_html;
 /// in-process [`PerceptionBuffer`](crate::media::PerceptionBuffer) à la carte).
 pub mod look;
 
+/// `perception/hot-edit` — hot css, no deployments: apply a stylesheet patch to
+/// a LIVE rendered page and re-observe it (the TWEAK verb of the design loop:
+/// render → observe → hot-edit → re-grade). Same `Provided` shape as observe,
+/// same eye-node adapter family, same [`ObserveResult`] observation coming back.
+pub mod hot_edit;
+
 /// Render size for an observation, in the surface's pixels (CSS px for a UI,
 /// framebuffer px for a scene). Omit to use the adapter's current/default size.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
