@@ -2634,8 +2634,8 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         let probe_persona: String = request
             .persona_id
             .clone()
-            .unwrap_or_else(|| "non-persona".into());
-        let probe_purpose: String = request.purpose.clone().unwrap_or_default();
+            .unwrap_or_else(|| "non-persona".into()); // non-persona callers (CLI, probes) are a real class, labeled honestly
+        let probe_purpose: String = request.purpose.clone().unwrap_or_default(); // absent purpose renders empty — a label, never a quantity
         let mut phase = crate::inference::stream_liveness::StreamPhase::Queued;
         // One `inference.prefill.rescued` row per stream, not per frame.
         let mut prefill_rescued = false;
