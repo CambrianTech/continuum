@@ -168,6 +168,11 @@ pub struct LlmDeliberationFaculty {
     /// schemas instead of the whole ~150-tool registry. Computed in
     /// [`Self::rebuild_tool_surface`].
     native_specs: Vec<NativeToolSpec>,
+    /// Token cost of serializing `native_specs` into the request — memoized at
+    /// [`Self::rebuild_tool_surface`] time because the specs are static between
+    /// rebuilds while [`Self::describe_tool_tokens`] is consulted on EVERY
+    /// prompt assembly (per-turn serde of ~a dozen schemas, pure waste).
+    tool_surface_tokens: usize,
     /// Where this faculty records its chain-of-thought after a verdict, so the
     /// persona can resume its train of thought next turn (the
     /// [`WorkingMemory`](crate::cognition::working_memory::WorkingMemory)
@@ -230,6 +235,7 @@ impl LlmDeliberationFaculty {
             temperature: DEFAULT_TEMPERATURE,
             tools: Vec::new(),
             native_specs: Vec::new(),
+            tool_surface_tokens: 0,
             working_memory: None,
             prompt_capture: None,
             genome: empty_genome(),
@@ -336,6 +342,7 @@ impl LlmDeliberationFaculty {
     fn rebuild_tool_surface(&mut self) {
         if self.tools.is_empty() {
             self.native_specs.clear();
+            self.tool_surface_tokens = 0;
             return;
         }
         // Offer the working set in the WIRE DIALECT, charset-legal per the OpenAI
@@ -372,6 +379,21 @@ impl LlmDeliberationFaculty {
             .into_iter()
             .map(|s| crate::cognition::tool_dialect::to_wire_spec_with(s, style))
             .collect();
+        self.tool_surface_tokens = Self::tool_surface_tokens_of(&self.native_specs);
+    }
+
+    /// Serde-and-count the tool surface ONCE per rebuild — the only place the
+    /// per-spec serialization cost is ever paid.
+    fn tool_surface_tokens_of(specs: &[NativeToolSpec]) -> usize {
+        // context-budget-exempt: fixed per-tool schema overhead in the template — same reason as PER_MESSAGE_TEMPLATE_TOKENS
+        const PER_TOOL_TEMPLATE_MARGIN_TOKENS: usize = 8;
+        specs
+            .iter()
+            .map(|spec| {
+                let serialized = serde_json::to_string(spec).unwrap_or_default();
+                est_tokens(&serialized) + PER_TOOL_TEMPLATE_MARGIN_TOKENS
+            })
+            .sum()
     }
 
     /// Set the effective served context window (tokens) this faculty must keep its
@@ -1845,15 +1867,7 @@ impl LlmDeliberationFaculty {
     /// set — the amputated surface is the #206 cliff and measured 14/14 SWE acts as
     /// `commands/help` with 0 edits.
     fn describe_tool_tokens(&self) -> usize {
-        // context-budget-exempt: fixed per-tool schema overhead in the template — same reason as PER_MESSAGE_TEMPLATE_TOKENS
-        const PER_TOOL_TEMPLATE_MARGIN_TOKENS: usize = 8;
-        self.native_specs
-            .iter()
-            .map(|spec| {
-                let serialized = serde_json::to_string(spec).unwrap_or_default();
-                est_tokens(&serialized) + PER_TOOL_TEMPLATE_MARGIN_TOKENS
-            })
-            .sum()
+        self.tool_surface_tokens
     }
 }
 
