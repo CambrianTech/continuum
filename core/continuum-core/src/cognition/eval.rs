@@ -3242,13 +3242,24 @@ pub(crate) fn emit_eval_phase(phase: &str, detail: &str) {
 /// (tail-bounded) so the recovery loop hands the model the actual error to fix against.
 /// This is how a persona works on REAL things — her file edits are checked by a real build/
 /// test, not by grading text she typed into chat.
-async fn run_dod(cmd: &str) -> (bool, String) {
-    match tokio::process::Command::new("bash")
-        .arg("-lc")
-        .arg(cmd)
-        .output()
-        .await
-    {
+/// Run a task's setup/DoD shell IN THE RUN'S WORLD. `root` is the same
+/// resolved run root the artifact grader uses (task pin or the #312 ephemeral
+/// clone); `None` preserves process-CWD for callers that genuinely run there.
+///
+/// Defect 2's SIBLING, found live 2026-08-23 (MirrorCode maiden round):
+/// setup_shell staged fixtures into the CORE's CWD (the real repo checkout —
+/// a `mirrorcode/` tree appeared in the operator's working copy) while her
+/// hands wrote into the clone, and dod_shell then graded a world containing
+/// the fixtures but not her work — 100% false fails AND repo pollution.
+/// DS-1000's clean sweep predates the ephemeral roots, when CWD *was* the
+/// workspace — a coincidence, not a design.
+async fn run_dod(root: Option<&std::path::Path>, cmd: &str) -> (bool, String) {
+    let mut command = tokio::process::Command::new("bash");
+    command.arg("-lc").arg(cmd);
+    if let Some(r) = root {
+        command.current_dir(r);
+    }
+    match command.output().await {
         Ok(o) => {
             let ok = o.status.success();
             let mut s = String::from_utf8_lossy(&o.stdout).into_owned();
@@ -3879,7 +3890,8 @@ async fn run_pass(
         // repeatable). A failed setup is a NAMED infra grade — the persona is
         // never examined against a workspace in an unknown state.
         if let Some(setup) = &t.setup_shell {
-            let (setup_ok, setup_out) = run_dod(setup).await;
+            let (setup_ok, setup_out) =
+                run_dod(task_root.map(std::path::Path::new), setup).await;
             if !setup_ok {
                 results.push(EvalTaskResult {
                     id: t.id.clone(),
@@ -4189,7 +4201,7 @@ async fn run_pass(
             .await
         } else if let Some(dod) = &t.dod_shell {
             // REAL task: run the definition-of-done against the repo state her edits produced.
-            run_dod(dod).await
+            run_dod(task_root.map(std::path::Path::new), dod).await
         } else if t.test.is_some() {
             // UNREACHABLE by construction: `require_hands_for_code` gives every `test`-carrying
             // task a `solution_file` at load, so a code task always takes the ARTIFACT arm above.
@@ -4408,7 +4420,11 @@ async fn run_pass_team(
         // narrating at each other is the exact failure this arm must not reward (and the exact
         // one a review/handoff loop makes MORE likely, not less).
         let (ok, grade) = if let Some(dod) = &t.dod_shell {
-            run_dod(dod).await
+            run_dod(
+                t.workspace_root.as_deref().or(workspace_root).map(std::path::Path::new),
+                dod,
+            )
+            .await
         } else if let (Some(file), Some(test)) = (&t.solution_file, &t.test) {
             crate::cognition::gym_grader::test_grade_file(
                 t.workspace_root
@@ -4483,6 +4499,26 @@ crate::register_stateless_command!(CognitionEval);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: defect 2's sibling (2026-08-23, MirrorCode maiden round):
+    // run_dod spawned bash in the PROCESS CWD, so setup_shell staged fixtures into
+    // the real repo checkout while her hands and artifacts lived in the run's
+    // clone — false fails plus operator-tree pollution. The DoD must run in the
+    // run's world; None preserves cwd for callers that genuinely run there.
+    #[tokio::test]
+    async fn run_dod_executes_in_the_run_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (ok, _) = run_dod(Some(dir.path()), "touch dod-was-here").await;
+        assert!(ok);
+        assert!(
+            dir.path().join("dod-was-here").exists(),
+            "the DoD's world must be the run root, not the process cwd"
+        );
+        assert!(
+            !std::path::Path::new("dod-was-here").exists(),
+            "nothing may land in the process cwd when a root is given"
+        );
+    }
 
     // what this catches: the orphan sweep deleting a CONCURRENT run's live world —
     // the one direction that turns crash-path hygiene into data loss mid-exam.
