@@ -21,7 +21,7 @@ use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
-use crate::{clog_error, clog_info, clog_warn};
+use crate::{clog_info, clog_warn};
 
 /// Captured transcription from STT.
 #[derive(Debug, Clone, serde::Serialize)]

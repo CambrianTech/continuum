@@ -48,8 +48,17 @@ use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 const DEFAULT_EVAL_SET: &str = "docs/genome/coder-eval.jsonl";
 
 /// How many act→observe cycles a single task may take before it counts as
-/// unfinished, when the caller doesn't set `max_acts`.
-const DEFAULT_MAX_ACTS: u32 = 8;
+/// unfinished, when neither the caller nor the task row sets `max_acts`.
+///
+/// Raised 8 → 32 on 2026-08-23 after the MirrorCode baseline showed what 8
+/// buys on a frontier task: Atlas spent the whole budget on a genuinely
+/// competent case-bucketing analysis and was graded with an EMPTY src/ — the
+/// cap measured our patience, not the model ("repeated engineering process
+/// till finished … who cares if it has to cycle to do it" — the doctrine the
+/// old default contradicted). Tasks that need fewer acts settle on their own;
+/// the cap only exists to bound a runaway, so it must sit ABOVE what honest
+/// engineering needs. Per-task rows override via `EvalTask::max_acts`.
+const DEFAULT_MAX_ACTS: u32 = 32;
 
 /// Fixed "exam epoch" stamped on every task's burst (`[t=<ms>] peer: …`). The
 /// live burst carries each message's real `occurred_at_ms`; the eval pins it to
@@ -1252,6 +1261,12 @@ pub struct EvalTask {
     /// Stable id for the task (echoed in results so a regression is identifiable).
     #[serde(default)]
     pub id: String,
+    /// Per-task act→observe budget override — budget-as-data, so a gym can size
+    /// patience to its task class (a mirror task needs analysis + implementation
+    /// + verification; a one-liner doesn't). `None` inherits the run's budget.
+    #[serde(default)]
+    #[ts(optional)]
+    pub max_acts: Option<u32>,
     /// The prompt posed to the persona, framed as a room message.
     #[serde(default)]
     pub prompt: String,
@@ -4086,7 +4101,7 @@ async fn run_pass(
                     cycle,
                     make_burst(),
                     room,
-                    max_acts,
+                    t.max_acts.map(|v| v as usize).unwrap_or(max_acts), // None = row sets no budget; the run's budget is the documented inherit
                     crate::cognition::workspace::TurnFraming::directed(),
                 ),
             )
@@ -4226,7 +4241,7 @@ async fn run_pass(
                     cycle,
                     nudge_burst,
                     room,
-                    max_acts,
+                    t.max_acts.map(|v| v as usize).unwrap_or(max_acts), // None = row sets no budget; the run's budget is the documented inherit
                     crate::cognition::workspace::TurnFraming::directed(),
                 ),
             )

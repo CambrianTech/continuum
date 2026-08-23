@@ -143,6 +143,10 @@ async fn settle_to_outcome(
     // in a row with no act between them means the nudge is not working, so she settles
     // rather than being trapped. Her own behavior is the budget — no counter, no constant.
     let mut acts_at_last_nudge: Option<usize> = None;
+    // Which `acts` value the last budget fact fired at — a Speak's one-shot
+    // re-perception re-enters the loop with `acts` unchanged, and the same
+    // milestone must not stamp twice.
+    let mut budget_fact_at: Option<usize> = None;
 
     // DISCOVERY SATURATION GATE (#390) — the STATE escalation of the [no-deliverable]
     // fact above, built on its own measured failure: the fact fires on EVERY act with
@@ -197,6 +201,40 @@ async fn settle_to_outcome(
         } else {
             Situation::PostAction
         };
+        // ACT-BUDGET PROPRIOCEPTION (2026-08-23). She could never see her own
+        // stopwatch: the budget gated acts SILENTLY, so an engineer's rational
+        // analysis-first plan burned the whole default budget and was graded
+        // with an empty src/ (MirrorCode baseline — the cap measured our
+        // patience, not her skill; an engineer who can see "2 acts left"
+        // triages, one who can't cannot). Three structural facts — the
+        // contract at turn start, the midpoint, and two-remaining — state the
+        // TRUE shape of the turn and nothing else: no file, no fix, no next
+        // tool. Pacing stays entirely her decision.
+        // [[no-hardcoded-heuristics-to-steer-cognition]]
+        if framing.workspace_deliverable && budget_fact_at != Some(acts) {
+            if let Some(body) = cycle.acting() {
+                if acts == 0 {
+                    budget_fact_at = Some(acts);
+                    body.working_memory.record_fact(&format!(
+                        "[act-budget] This turn grants me {max_acts} act→observe \
+                         cycles before I must settle. The task is graded on the state of \
+                         the workspace when I settle — work not yet written when the \
+                         budget ends does not exist for the grader."
+                    ));
+                } else if acts == max_acts / 2 {
+                    budget_fact_at = Some(acts);
+                    body.working_memory.record_fact(&format!(
+                        "[act-budget] I have spent {acts} of my {max_acts} acts this turn."
+                    ));
+                } else if max_acts.saturating_sub(acts) == 2 {
+                    budget_fact_at = Some(acts);
+                    body.working_memory.record_fact(&format!(
+                        "[act-budget] {acts} of {max_acts} acts spent — 2 remain before I \
+                         must settle."
+                    ));
+                }
+            }
+        }
         // may_act gates ACTING (not speaking): past the act budget, once she is provably
         // stuck re-emitting the identical act, OR once a workspace-deliverable turn has
         // saturated its discovery budget without a single mutation (#390 gate above), a

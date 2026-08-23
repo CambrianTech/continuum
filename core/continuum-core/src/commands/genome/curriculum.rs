@@ -322,6 +322,7 @@ mod tests {
     fn eval_task(id: &str, with_test: bool) -> EvalTask {
         EvalTask {
             id: id.to_string(),
+            max_acts: None,
             prompt: "write a function that reverses a string".to_string(),
             expect: String::new(),
             test: with_test.then(|| "assert_eq!(rev(\"ab\"), \"ba\");".to_string()),

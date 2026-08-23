@@ -13,6 +13,12 @@ export type EvalTask = {
  */
 id: string, 
 /**
+ * Per-task act→observe budget override — budget-as-data, so a gym can size
+ * patience to its task class (a mirror task needs analysis + implementation
+ * + verification; a one-liner doesn't). `None` inherits the run's budget.
+ */
+max_acts?: number, 
+/**
  * The prompt posed to the persona, framed as a room message.
  */
 prompt: string, 
