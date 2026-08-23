@@ -134,7 +134,27 @@ the same seam the 3D universe payloads ride ([[universes-are-positron-asset-payl
 5. **V3 judge panel + peer-review acts** — objectives, falsifiability rails.
 6. **Design2Code adapter** — external comparability, fingerprinted like ds-1000.
 
-## 7. What this is deliberately NOT
+### 6b. First imported-from-the-wild showcase task: `fluid-sim`
+
+Circulating 2026-08-22 (@scaling01): a fully-specified one-shot prompt — a
+self-contained single-file WebGL 2D fluid simulation (advection, pressure,
+vorticity, dye transport, interaction, control panel, visualization modes,
+perf overlay) — with published baselines: Qwen3.8-27B thought 40k tokens for
+an hour and shipped a black screen; Opus 4.5 one-shotted it in a minute. The
+prompt's own closing paragraph enumerates grading criteria (correctness,
+stability, fluid-like behavior, responsiveness, interaction, visual quality,
+performance) that map near 1:1 onto this bench's V1/V2/perception axes.
+
+Import it VERBATIM as a design-bench task, graded on the RUNNING artifact
+through the eye-node (does dye advect? does drag inject momentum? is the FPS
+overlay live?), citizen iterating in the loop. The claim it showcases is the
+bench's whole thesis: one-shot-from-cold rewards whatever a model memorized
+about fluid solvers — a blind 27B loses by construction. A smaller model
+with eyes and hands (render → observe → hot-edit → re-grade) does not have
+to one-shot Navier-Stokes from memory; she has to CONVERGE on it. A local
+A3B converging to a working sim, act trail as the receipt, beats a bigger
+blind model's black screen — and the wild baselines above are the free
+comparison column.
 
 - **Not pixel-matching.** Reference-screenshot similarity punishes creativity and
   breaks on fonts/AA; craft facts are measured, likeness is not required.
