@@ -1104,6 +1104,7 @@ fn provision_ephemeral_eval_root(tag: &str) -> Result<std::path::PathBuf, String
         .to_path_buf();
     sweep_orphan_eval_roots(&parent, &root);
     if root.is_dir() {
+        write_eval_run_marker(&root, tag); // resume re-stamps the owner pid (a new core owns it now)
         return Ok(root); // resume of the same run reuses its world
     }
     std::fs::create_dir_all(&parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
@@ -1132,7 +1133,64 @@ fn provision_ephemeral_eval_root(tag: &str) -> Result<std::path::PathBuf, String
         root = root.display().to_string().as_str(),
         "exam world provisioned — CoW clone of the shared checkout, removed when the run ends"
     );
+    write_eval_run_marker(&root, tag);
     Ok(root)
+}
+
+/// Marker filename inside each eval world naming the run and its owning core
+/// pid — the cross-process evidence `continuum reboot`'s guard reads. Solve
+/// runs got this day one (the grade-ledger `state: running` rows); eval runs
+/// had NO on-disk in-flight signal, so a reboot killed them without ever being
+/// asked (measured 2026-08-23: the guard named zero runs while a MirrorCode
+/// battery was mid-task). The world dir dies with the run (Drop) and orphans
+/// are swept at next provision, so marker lifetime is exactly run lifetime;
+/// the guard pid-checks to ignore debris from a killed core.
+pub const EVAL_RUN_MARKER: &str = "eval-run.json";
+
+fn write_eval_run_marker(root: &std::path::Path, run_id: &str) {
+    let marker = serde_json::json!({
+        "runId": run_id,
+        "corePid": std::process::id(),
+        "startedAtMs": crate::persona::trace::now_ms(),
+    });
+    // Marker write is best-effort: the run must not die because its guard
+    // breadcrumb could not be written; the reboot guard just loses this run.
+    if let Err(e) = std::fs::write(
+        root.join(EVAL_RUN_MARKER),
+        marker.to_string(), // disk marker read by the CLI process — a true process boundary
+    ) {
+        tracing::warn!(error = %e, "eval run marker not written — reboot guard cannot see this run");
+    }
+}
+
+/// Every eval run some world dir claims is IN FLIGHT: `(run_id, core_pid)`.
+/// The CALLER owns pid-liveness (the CLI has its own pid_alive; this crate-side
+/// scan stays pure file reading) — a marker whose core died is debris the next
+/// provision sweeps, not an in-flight run.
+pub fn in_flight_eval_runs() -> Vec<(String, u32)> {
+    let base = std::env::temp_dir().join("continuum-eval");
+    let Ok(entries) = std::fs::read_dir(&base) else {
+        return Vec::new();
+    };
+    let mut live = Vec::new();
+    for entry in entries.flatten() {
+        let marker = entry.path().join(EVAL_RUN_MARKER);
+        let Ok(text) = std::fs::read_to_string(&marker) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        let (Some(run), Some(pid)) = (
+            v.get("runId").and_then(|r| r.as_str()),
+            v.get("corePid").and_then(|p| p.as_u64()),
+        ) else {
+            continue;
+        };
+        live.push((run.to_string(), pid as u32));
+    }
+    live.sort();
+    live
 }
 
 /// Eval worlds LIVE in this process. `Drop` covers every in-process return path,
@@ -1380,6 +1438,21 @@ pub struct EvalTask {
 }
 
 impl EvalTask {
+    /// Is this task GRADED ON THE WORKSPACE (a DoD shell reads files, a
+    /// solution file is collected, UI checks screenshot artifacts) rather than
+    /// on her spoken answer? Decides the turn's [`TurnFraming::on_workspace`]
+    /// contract — which in turn arms the discovery-saturation gate, the
+    /// no-deliverable nudge, and the act-budget proprioception. Before this
+    /// predicate the eval framed EVERY task as directed-speech, so none of
+    /// those protections ever applied to the tasks they were built for
+    /// (glass-boxed 2026-08-23: MirrorCode graded an empty src/ after a
+    /// discovery-only turn the saturation gate should have interrupted).
+    pub fn workspace_deliverable(&self) -> bool {
+        self.dod_shell.is_some() || self.solution_file.is_some() || !self.ui_checks.is_empty()
+    }
+}
+
+impl EvalTask {
     /// Whether answering THIS task requires the persona's hands. An explicit
     /// [`needs_tools`](Self::needs_tools) declaration wins; otherwise it's derived from the
     /// GRADING modality — a grade that reads a written file / DoD / rendered UI needs hands.
@@ -1530,7 +1603,8 @@ pub struct CognitionEvalParams {
     #[ts(optional)]
     #[ts(optional, type = "number")]
     pub reviewers: Option<u32>,
-    /// Max act→observe cycles per task before it counts as unfinished. Default 8.
+    /// Max act→observe cycles per task before it counts as unfinished. Default 32
+    /// (see DEFAULT_MAX_ACTS); a task row's own max_acts overrides per task.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     #[ts(optional, type = "number")]
@@ -4102,7 +4176,11 @@ async fn run_pass(
                     make_burst(),
                     room,
                     t.max_acts.map(|v| v as usize).unwrap_or(max_acts), // None = row sets no budget; the run's budget is the documented inherit
-                    crate::cognition::workspace::TurnFraming::directed(),
+                    if t.workspace_deliverable() {
+                        crate::cognition::workspace::TurnFraming::directed().on_workspace()
+                    } else {
+                        crate::cognition::workspace::TurnFraming::directed()
+                    },
                 ),
             )
             .await
@@ -4242,7 +4320,11 @@ async fn run_pass(
                     nudge_burst,
                     room,
                     t.max_acts.map(|v| v as usize).unwrap_or(max_acts), // None = row sets no budget; the run's budget is the documented inherit
-                    crate::cognition::workspace::TurnFraming::directed(),
+                    if t.workspace_deliverable() {
+                        crate::cognition::workspace::TurnFraming::directed().on_workspace()
+                    } else {
+                        crate::cognition::workspace::TurnFraming::directed()
+                    },
                 ),
             )
             .await
