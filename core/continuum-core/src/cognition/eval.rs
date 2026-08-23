@@ -3942,6 +3942,16 @@ async fn run_pass(
     cycle.reset_working_memory();
     isolation.rewind();
     for t in tasks {
+        // Task-start receipt: the health verdicts downstream (session gates, the
+        // bench view) judge a running task against the round's OWN completed-task
+        // latencies — which needs an exact start signal, not an inference from
+        // the previous grade's absence (Joel 2026-08-23: a stalled task must be
+        // known in minutes, adaptively, "better fix" than a fixed window).
+        crate::probe!(
+            class = "eval.task.started",
+            task = %t.id,
+            "task drive begins — elapsed-vs-round-median verdicts key on this row"
+        );
         // #209 — per-task CLEAN WORKSPACE for from-scratch build gyms. A from-scratch build
         // task (ui_checks present, and NO setup/dod/solution that establishes or depends on
         // prior repo state) is graded by observing the artifact the persona just wrote into
