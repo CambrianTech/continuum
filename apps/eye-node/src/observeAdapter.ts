@@ -91,6 +91,7 @@ function mapNode(node: SurfaceProbeNode): WireProbeNode {
       ? { x: node.box.x, y: node.box.y, width: node.box.width, height: node.box.height }
       : undefined,
     attrs: node.attrs ? { ...node.attrs } : undefined,
+    style: node.style ? { ...node.style } : undefined,
     children: node.children.map(mapNode),
   };
 }
