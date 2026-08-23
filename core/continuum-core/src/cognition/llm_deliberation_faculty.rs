@@ -1710,7 +1710,17 @@ impl LlmDeliberationFaculty {
             .filter(|c| c.decision.is_none() && c.trailing)
         {
             if !c.content.trim().is_empty() {
-                messages.push(ChatMessage::text("user", c.content.clone()));
+                // Same `[faculty]` banner the system block gives its sections —
+                // grounding that moved here for KV reuse (volatile-content
+                // sources, 2026-08-23) must stay as legible as it was in the
+                // system prefix. One sized allocation, no intermediate format!.
+                let mut body =
+                    String::with_capacity(c.faculty.as_str().len() + c.content.len() + 4);
+                body.push('[');
+                body.push_str(c.faculty.as_str());
+                body.push_str("]\n");
+                body.push_str(&c.content);
+                messages.push(ChatMessage::text("user", body));
             }
         }
 
