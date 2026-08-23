@@ -1438,6 +1438,21 @@ pub struct EvalTask {
 }
 
 impl EvalTask {
+    /// Is this task GRADED ON THE WORKSPACE (a DoD shell reads files, a
+    /// solution file is collected, UI checks screenshot artifacts) rather than
+    /// on her spoken answer? Decides the turn's [`TurnFraming::on_workspace`]
+    /// contract — which in turn arms the discovery-saturation gate, the
+    /// no-deliverable nudge, and the act-budget proprioception. Before this
+    /// predicate the eval framed EVERY task as directed-speech, so none of
+    /// those protections ever applied to the tasks they were built for
+    /// (glass-boxed 2026-08-23: MirrorCode graded an empty src/ after a
+    /// discovery-only turn the saturation gate should have interrupted).
+    pub fn workspace_deliverable(&self) -> bool {
+        self.dod_shell.is_some() || self.solution_file.is_some() || !self.ui_checks.is_empty()
+    }
+}
+
+impl EvalTask {
     /// Whether answering THIS task requires the persona's hands. An explicit
     /// [`needs_tools`](Self::needs_tools) declaration wins; otherwise it's derived from the
     /// GRADING modality — a grade that reads a written file / DoD / rendered UI needs hands.
@@ -4161,7 +4176,11 @@ async fn run_pass(
                     make_burst(),
                     room,
                     t.max_acts.map(|v| v as usize).unwrap_or(max_acts), // None = row sets no budget; the run's budget is the documented inherit
-                    crate::cognition::workspace::TurnFraming::directed(),
+                    if t.workspace_deliverable() {
+                        crate::cognition::workspace::TurnFraming::directed().on_workspace()
+                    } else {
+                        crate::cognition::workspace::TurnFraming::directed()
+                    },
                 ),
             )
             .await
@@ -4301,7 +4320,11 @@ async fn run_pass(
                     nudge_burst,
                     room,
                     t.max_acts.map(|v| v as usize).unwrap_or(max_acts), // None = row sets no budget; the run's budget is the documented inherit
-                    crate::cognition::workspace::TurnFraming::directed(),
+                    if t.workspace_deliverable() {
+                        crate::cognition::workspace::TurnFraming::directed().on_workspace()
+                    } else {
+                        crate::cognition::workspace::TurnFraming::directed()
+                    },
                 ),
             )
             .await
