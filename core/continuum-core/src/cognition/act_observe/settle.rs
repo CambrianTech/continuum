@@ -213,8 +213,23 @@ async fn settle_to_outcome(
         // [[no-hardcoded-heuristics-to-steer-cognition]]
         if framing.workspace_deliverable && budget_fact_at != Some(acts) {
             if let Some(body) = cycle.acting() {
+                // The probe is the RECEIPT that the fact reached her working
+                // memory — record_fact leaves no structured trace, and "the
+                // stopwatch is visible to her" was unprovable from the live
+                // stream the day it shipped ([[observability-as-substrate]]).
+                let probe_budget_fact = |milestone: &str| {
+                    crate::probe!(
+                        class = "persona.act_budget.fact",
+                        persona = body.persona_name.as_str(),
+                        milestone = milestone,
+                        acts = acts,
+                        max_acts = max_acts,
+                        "act-budget proprioception fact recorded in working memory"
+                    );
+                };
                 if acts == 0 {
                     budget_fact_at = Some(acts);
+                    probe_budget_fact("turn_start");
                     body.working_memory.record_fact(&format!(
                         "[act-budget] This turn grants me {max_acts} act→observe \
                          cycles before I must settle. The task is graded on the state of \
@@ -223,11 +238,13 @@ async fn settle_to_outcome(
                     ));
                 } else if acts == max_acts / 2 {
                     budget_fact_at = Some(acts);
+                    probe_budget_fact("midpoint");
                     body.working_memory.record_fact(&format!(
                         "[act-budget] I have spent {acts} of my {max_acts} acts this turn."
                     ));
                 } else if max_acts.saturating_sub(acts) == 2 {
                     budget_fact_at = Some(acts);
+                    probe_budget_fact("two_remaining");
                     body.working_memory.record_fact(&format!(
                         "[act-budget] {acts} of {max_acts} acts spent — 2 remain before I \
                          must settle."

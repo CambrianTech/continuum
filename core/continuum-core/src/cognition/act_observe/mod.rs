@@ -797,6 +797,79 @@ mod tests {
         );
     }
 
+    // what this catches: the act-budget stopwatch actually reaching her MIND —
+    // regression for the 2026-08-23 framing gap where the facts were written
+    // (#2411) but eval framed every task as directed-speech, so they never
+    // fired for the DoD tasks they were built for. Pins: on a workspace-
+    // deliverable turn the [act-budget] contract fact lands in working memory;
+    // on an ordinary turn it does not (speech turns owe no stopwatch).
+    #[tokio::test]
+    async fn act_budget_facts_reach_working_memory_on_workspace_turns_only() {
+        let exec = Arc::new(RecordingExecutor {
+            seen_context: Mutex::new(None),
+            result_content: "file contents...".into(),
+        });
+        let adm = admission();
+        let the_body = body(exec.clone(), adm.clone());
+        let wm = the_body.working_memory.clone();
+        let cycle = WorkspaceCycle::new(
+            vec![Arc::new(VaryingAct {
+                ticks: Mutex::new(0),
+            })],
+            Arc::new(SalienceArbiter),
+            8,
+        )
+        .with_acting(the_body);
+        drive_to_settle(
+            &cycle,
+            "fix the bug",
+            Uuid::new_v4(),
+            6,
+            TurnFraming::ambient().on_workspace(),
+        )
+        .await;
+        let entries = wm.recent_entries();
+        let budget_facts: Vec<_> = entries
+            .iter()
+            .filter(|e| e.text.contains("[act-budget]"))
+            .collect();
+        // The turn-start contract fact fires at act 0 and is legitimately
+        // EVICTED by the WM ring as acts accumulate (observed in this very
+        // test: 6 acts on a capacity-8 ring pushed it out) — which is exactly
+        // why the midpoint/two-remaining milestones RE-STATE the budget. The
+        // guarantee worth pinning is therefore: at settle, working memory
+        // holds at least one [act-budget] fact naming the REAL budget number.
+        assert!(
+            budget_facts.iter().any(|e| e.text.contains("my 6 acts")),
+            "a budget fact naming the real budget must survive to settle; got: {:?}",
+            budget_facts.iter().map(|e| &e.text).collect::<Vec<_>>()
+        );
+
+        // Control: an ordinary (speech-deliverable) turn records no stopwatch.
+        let exec2 = Arc::new(RecordingExecutor {
+            seen_context: Mutex::new(None),
+            result_content: "file contents...".into(),
+        });
+        let body2 = body(exec2, admission());
+        let wm2 = body2.working_memory.clone();
+        let cycle2 = WorkspaceCycle::new(
+            vec![Arc::new(VaryingAct {
+                ticks: Mutex::new(0),
+            })],
+            Arc::new(SalienceArbiter),
+            8,
+        )
+        .with_acting(body2);
+        drive_to_settle(&cycle2, "look around", Uuid::new_v4(), 6, TurnFraming::ambient()).await;
+        assert!(
+            !wm2
+                .recent_entries()
+                .iter()
+                .any(|e| e.text.contains("[act-budget]")),
+            "speech turns owe no stopwatch — the fact is scoped to workspace-deliverable turns"
+        );
+    }
+
     // what this catches: the grader's stopwatch. A mind that never settles is
     // bounded by the EXTERNAL `max_acts` budget and the final un-driven Act is
     // returned as unfinished — never a fabricated answer, and the budget is the
