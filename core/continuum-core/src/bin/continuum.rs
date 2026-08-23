@@ -717,7 +717,7 @@ async fn reboot(force: bool) -> Result<(), String> {
             old.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",")
         );
     }
-    stop().await?;
+    stop_with(true).await?;
     // `launch_core`'s `wait_for_death` on `old` is now trivially satisfied —
     // kept as the honesty check that the stop actually took.
     // Publish the claim for the WHOLE build+swap. Held until this function returns, so a
@@ -1600,6 +1600,20 @@ fn start_log_report(logfile: &str) -> String {
 
 /// `continuum stop` — stop the running core (the detached session started by `continuum start`).
 async fn stop() -> Result<(), String> {
+    stop_with(false).await
+}
+
+/// The one teardown, parameterized by lane fate. `keep_lanes: true` is the
+/// REBOOT path: a healthy llama-server about to be wanted again by the next
+/// core stays up, and boot's serve-or-adopt reconcile adopts it at zero
+/// relaunches when the shape matches (regression-pinned:
+/// a_past_form_of_ourself_serving_enough_lanes_is_adopted_not_reaped) or
+/// honestly reaps+rebuilds when it doesn't. Reaping a 20GB-resident lane just
+/// to reload it 60s later made every reboot ~5min; with adoption it is the
+/// core swap alone (Joel 2026-08-23: "if it's taking so long we need to fix
+/// that first"). The standalone `stop` verb keeps FULL teardown — an operator
+/// who says stop means everything.
+async fn stop_with(keep_lanes: bool) -> Result<(), String> {
     let socket = socket_path();
     let pidfile = pidfile_for(&socket);
 
@@ -1693,6 +1707,11 @@ async fn stop() -> Result<(), String> {
     // starved the planner into serving a 2,816-token window that cannot hold the
     // tool surface. `reboot` could not clear it either: reboot is stop + start,
     // and neither half owned lanes.
+    if keep_lanes {
+        println!("  leaving serving lane(s) up for adoption by the next core (reboot path)");
+        let _ = std::fs::remove_file(&socket); // socket cleanup still ours — only the lane fate changed
+        return Ok(());
+    }
     for outcome in continuum_core::inference::lane_registry::sweep_all() {
         use continuum_core::inference::lane_registry::SweepOutcome as S;
         match outcome {
