@@ -3419,10 +3419,7 @@ pub fn start_server(
                 // persona's own observe/hot-edit results publish frames at the
                 // act seam; no tick, no scan. Install-only here; the act loop
                 // does the publishing when work actually happens.
-                positron_canvas_source::install(
-                    ws_substrate.clone(),
-                    global_bench_substrate(),
-                );
+                positron_canvas_source::install(ws_substrate.clone());
 
                 // Live-call glass box (#58): folds the TRANSPORT's calls against
                 // the ORCHESTRATOR's registered sessions. Their disagreement is

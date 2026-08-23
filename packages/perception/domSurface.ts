@@ -68,6 +68,9 @@ export interface DomSurfaceOptions {
   readonly url: string;
   readonly viewport?: { readonly width: number; readonly height: number };
   readonly headless?: boolean;
+  /** Pixel density of the capture. Default 1 — retina (2) is an opt-in for
+   *  tasks grading fine detail; it quadruples every screenshot's bytes. */
+  readonly deviceScaleFactor?: number;
   /** Force a specific Chromium binary (Opera GX / Brave / Chromium / any). Highest priority.
    *  Env fallbacks: `PERCEPTION_CHROME`, then `CHROME`. */
   readonly executablePath?: string;
@@ -150,7 +153,11 @@ export class DomSurface implements Surface<DomViewSpec, DomAction> {
     });
     const page = await browser.newPage({
       viewport: opts.viewport ?? { width: 1440, height: 900 },
-      deviceScaleFactor: 2,
+      // 1 by default (2026-08-23 pixel audit): the hardcoded 2 quadrupled every
+      // screenshot's pixels for consumers that render thumbnails — retina
+      // capture is an OPT-IN for tasks that grade fine detail, never a tax on
+      // every observation.
+      deviceScaleFactor: opts.deviceScaleFactor ?? 1,
     });
     // esbuild's `keepNames` (tsx, vite, ts-node all use it) wraps named functions with a
     // `__name(fn, 'name')` helper. When Playwright serializes our `domWalk` into the page,
