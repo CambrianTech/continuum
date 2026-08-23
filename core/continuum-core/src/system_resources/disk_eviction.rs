@@ -704,6 +704,19 @@ mod tests {
                  this entry read \"everything under it is re-creatable\", which the 25 \
                  patches already sitting there had falsified since before it was written",
             ),
+            // Steady-state owner ALREADY EXISTS in-file: RAII drop on every in-process
+            // return path + the provision-time orphan sweep for worlds a killed process
+            // leaves behind (an eval run cannot survive its process, so any non-live
+            // sibling is debris; everything inside is a CoW clone of the checkout —
+            // re-creatable by construction). Deferred only for the broker seam: under
+            // real disk pressure the broker cannot yet claw these bytes back BETWEEN
+            // provisions — that wants a pool that consults `live_eval_roots()`, never
+            // a blind LRU that could delete a mid-exam world.
+            (
+                "eval-roots",
+                "#155: broker-reachable pool over cognition/eval::live_eval_roots(); \
+                 sweep + RAII already own the steady state and the crash path",
+            ),
         ];
         use super::super::disk_pressure::DiskReporter as _;
         for dir in super::super::disk_reporters::standard_tracked_dirs(Path::new("/h")) {
