@@ -189,6 +189,26 @@ pub fn known_benchmarks() -> &'static [BenchmarkSpec] {
             source_url: Some("https://github.com/oripress/AlgoTune"),
         },
         BenchmarkSpec {
+            name: "mirrorcode",
+            description: "MirrorCode (Epoch AI × METR) — reimplement an ENTIRE program \
+                          (Unix utils, format tools, a C preprocessor, a CAS subset, a \
+                          scripting-language CLI) from observable behavior only: 26 public \
+                          target programs, one task each, graded by exact stdout/stderr/\
+                          exit-code match over the FULL recorded case set (visible cases + \
+                          hidden anti-hardcoding duals; 100% required, upstream's own bar). \
+                          Frontier 2026-08: Claude Fable 5 64%, GPT-5.6 Sol 20% \
+                          (epoch.ai/benchmarks/mirrorcode, Go/Ada targets, 10B-token \
+                          attempts). OUR run is a DECLARED VARIANT, internal signal only: \
+                          Rust target language, expected outputs staged in place of the \
+                          reference binary, our own act budget — and the whole oracle \
+                          (hidden duals included) is public upstream, so contamination is \
+                          assumed. Fetch first (`benchmark/fetch --benchmark mirrorcode`).",
+            grader: Grader::Rust,
+            tasks: 26,
+            eval_set: Some("mirrorcode.jsonl"),
+            source_url: Some("https://github.com/epoch-research/MirrorCode"),
+        },
+        BenchmarkSpec {
             name: "ds-1000",
             description: "DS-1000 (XLang/HKU, ICML'23) — 1,000 data-science problems over \
                           Pandas/NumPy/SciPy/sklearn/Matplotlib/PyTorch/TF, graded by the \
@@ -4025,6 +4045,7 @@ impl ActionCommand for BenchmarkFetch {
                 )),
             });
         }
+
         if spec.name == "terminal-bench" {
             let outcome = crate::cognition::benchmark_terminalbench::materialize_gym(None)
                 .await
@@ -4061,6 +4082,30 @@ impl ActionCommand for BenchmarkFetch {
                     outcome.converted + outcome.skipped.len(),
                     outcome.skipped.len(),
                     breakdown,
+                )),
+            });
+        }
+
+        if spec.name == "mirrorcode" {
+            let (path, count) = crate::cognition::benchmark_mirrorcode::materialize_gym(None)
+                .await
+                .map_err(CommandError::Invalid)?;
+            return Ok(BenchmarkFetchResult {
+                benchmark: spec.name.to_string(),
+                dataset: "github.com/epoch-research/MirrorCode".to_string(),
+                config: "main".to_string(),
+                split: "data/gold_outputs".to_string(),
+                rows: count,
+                declared_tasks: spec.tasks,
+                denominator_matches: count as u32 == spec.tasks,
+                tasks: Some(count),
+                adapter_note: Some(format!(
+                    "cloned + converted onto the gym rails at {} — one task per public \
+                     program, graded on the full recorded case set (visible + hidden \
+                     duals) by exact output match; Rust-language variant, visible cases \
+                     staged WITH expected outputs — internal signal only; dispatch with \
+                     `benchmark/dispatch --name mirrorcode`",
+                    path.display()
                 )),
             });
         }
