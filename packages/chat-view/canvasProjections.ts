@@ -27,6 +27,21 @@ import type {
  *  publishes `kind: "canvas"` — the ONE wiring point named in the seam). */
 export const CANVAS_KIND = 'canvas';
 
+/**
+ * Lift a `canvas` `StateEnvelope` into a `CanvasViewState`. Fails loud on a
+ * kind mismatch (the bench/serving fold contract).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function canvasFromEnvelope(envelope: { readonly kind: string; readonly payload: unknown }): CanvasViewState {
+  if (envelope.kind !== CANVAS_KIND) {
+    throw new Error(
+      `canvasFromEnvelope: expected kind '${CANVAS_KIND}', got '${envelope.kind}'. ` +
+        'A non-canvas envelope reached the canvas merge seam — check the StateConnection routing.',
+    );
+  }
+  return envelope.payload as CanvasViewState;
+}
+
 /** One graded oracle check as it rides the wire (§3 tiers: `v1` structure
  *  UiCheck, `v2` measured-craft StyleCheck). */
 export interface CanvasCheckRow {

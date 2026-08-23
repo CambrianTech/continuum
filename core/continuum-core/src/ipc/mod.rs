@@ -115,6 +115,7 @@ pub mod diagnostics;
 pub mod endpoint_paths;
 pub mod experience_resolver;
 pub mod positron_bench_source;
+pub mod positron_canvas_source;
 pub mod positron_dispatch;
 pub mod positron_foundry_source;
 pub mod positron_kanban_source;
@@ -3410,6 +3411,15 @@ pub fn start_server(
                 // definition, two render targets, same as the roster repair.
                 positron_bench_source::spawn_bench_emitter(
                     &state.rt_handle,
+                    ws_substrate.clone(),
+                    global_bench_substrate(),
+                );
+
+                // Canvas feed (ninth ViewState, 2026-08-23): EVENT-driven — a
+                // persona's own observe/hot-edit results publish frames at the
+                // act seam; no tick, no scan. Install-only here; the act loop
+                // does the publishing when work actually happens.
+                positron_canvas_source::install(
                     ws_substrate.clone(),
                     global_bench_substrate(),
                 );

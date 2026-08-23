@@ -120,6 +120,7 @@
 
 pub mod bench;
 pub mod broadcast;
+pub mod canvas;
 pub mod cache;
 pub mod chat;
 pub mod connection;
