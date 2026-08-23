@@ -7,8 +7,9 @@ A headless core cannot render or capture — no browser, no display on a rack. S
 name, fulfilled by a connected adapter. The eye-node is that adapter for the web.
 
 It connects to the core over the IPC socket, registers as the provider of
-`perception/observe` (via `@continuum/sdk-typescript`'s `NodeSocketTransport`),
-and fulfils each call by driving a real browser (`@continuum/perception`).
+`perception/observe` and `perception/hot-edit` (via `@continuum/sdk-typescript`'s
+`NodeSocketTransport`), and fulfils each call by driving a real browser
+(`@continuum/perception`).
 
 ## What a persona sees
 
@@ -27,6 +28,18 @@ and fulfils each call by driving a real browser (`@continuum/perception`).
 | An interface they built in a project | that project's dev-server URL |
 | A benchmark harness | the benchmark's URL |
 | A room / recipe / activity | its route in the positron UI |
+
+## Hot css, no deployments
+
+`perception/hot-edit { target, css, viewport?, selector? }` is the TWEAK verb of
+the design loop (render → observe → hot-edit → re-grade): open `target`, apply
+`css` as the page's single hot-patch layer (`<style data-continuum-hot-edit>`,
+**replaced wholesale** each call — empty `css` clears it), re-observe, and
+return the same observation shape observe does, plus `appliedCss` and a `delta`
+(fraction of pixels the patch moved). The page is re-opened fresh per call
+today, so a persona passes its FULL accumulated stylesheet each time; a
+persistent live session is the next step and changes only the adapter's session
+lifetime, never the wire.
 
 ## Run
 
@@ -53,8 +66,9 @@ than fabricating an observation.
 
 ```
 index.ts        entry — resolve socket, start, stay alive
-eyeNode.ts      EyeNode — connect, provide('perception/observe'), flush
+eyeNode.ts      EyeNode — connect, provide('perception/observe' + 'perception/hot-edit'), flush
 observeAdapter  ObserveParams → PerceptionSession.openWeb → observe → ObserveResult
+hotEditAdapter  HotEditParams → openWeb → observe → hotPatchCss → re-observe (+Delta) → HotEditResult
 ```
 
 The wire contract (`ObserveResult`, `ProbeNode`, …) is single-sourced from Rust

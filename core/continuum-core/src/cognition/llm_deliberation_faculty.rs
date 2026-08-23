@@ -3674,12 +3674,21 @@ mod tests {
             // completely unchanged. Two concerns in one assertion; the reserve half was never
             // this guard's business. `fixed` is tools + bare framing and nothing else, so this
             // now moves if and only if the surface actually grows.
-            const AGENTIC_SURFACE_CEILING: u32 = 8500;
+            // 8500 → 8650, stated plainly as the ratchet demands, and SHRUNK FIRST:
+            // one NATIVE verb — `perception/hot-edit` (+191 tokens, 8432 → 8623). The
+            // TWEAK half of the design loop (render → observe → hot-edit → re-grade,
+            // DESIGN-BENCH-VISUAL-CRAFT.md): apply a CSS patch to a live page and
+            // re-observe, no deployment — offered beside `perception/observe` because a
+            // citizen who can see a page but not iterate on it styles blind. The first
+            // draft cost 238 tokens; trimming the DESCRIPTION to its contract (full
+            // accumulated CSS, replace-wholesale layer, delta meaning) recovered 47.
+            // What is left is the irreducible cost of one discoverable verb.
+            const AGENTIC_SURFACE_CEILING: u32 = 8650;
             let surface =
                 faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
             assert!(
                 surface <= AGENTIC_SURFACE_CEILING,
-                "the agentic surface is now {surface} tokens (measured 8432, ceiling \
+                "the agentic surface is now {surface} tokens (measured 8623, ceiling \
                  {AGENTIC_SURFACE_CEILING}) — framing/tools grew. Shrink the surface (#333) \
                  or state plainly what was added and re-pin the ceiling"
             );

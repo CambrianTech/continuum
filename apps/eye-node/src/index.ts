@@ -28,7 +28,9 @@ async function main(): Promise<void> {
 
   console.log(`eye-node: connecting to core at ${socketPath} …`);
   await eye.start();
-  console.log('eye-node: registered perception/observe — personas can now SEE. Ctrl-C to stop.');
+  console.log(
+    'eye-node: registered perception/observe + perception/hot-edit — personas can now SEE and hot-edit. Ctrl-C to stop.',
+  );
 
   // Stay alive; the transport's socket keeps the event loop busy, but guard
   // against any runtime that would otherwise exit an idle loop.
