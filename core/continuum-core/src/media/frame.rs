@@ -18,6 +18,15 @@ use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 
 use super::image_ops::{scale_crop, CropRect, DestSize};
+
+/// The tier a describe reads from — ~480w (the perception buffer's ambient
+/// class): a VL vision tower downsamples to a fixed grid, so full-res input
+/// buys no fidelity, only multi-MB base64 in the request JSON (2026-08-23
+/// pixel audit). 16:9 default; scale_crop preserves aspect via its own path.
+const DESCRIBE_TIER: DestSize = DestSize {
+    width: 480,
+    height: 270,
+};
 use crate::runtime::SharedCompute;
 
 /// Produces the text DESCRIPTION of a media frame — the sensory bridge that lets a
@@ -90,7 +99,18 @@ impl MediaFrame {
         describer: &dyn FrameDescriber,
         mime: &str,
     ) -> Arc<Result<String, String>> {
-        let source = Arc::clone(&self.source);
+        // Describe from the ~ambient THUMBNAIL, not the full source (2026-08-23
+        // pixel audit): a VL model's vision tower downsamples to a fixed grid
+        // anyway, and the warm path computes this exact scaled cell right before
+        // the describe — full-res only base64-inflated a multi-MB source into
+        // the request JSON for zero fidelity gain. Fall back to the source ONLY
+        // when scaling itself failed (a corrupt frame should still fail loudly
+        // through the describer's own error, not silently skip description).
+        let scaled = self.scaled(compute, None, DESCRIBE_TIER).await;
+        let source = match &*scaled {
+            Ok(bytes) => Arc::new(bytes.clone()), // one small thumbnail copy replaces a multi-MB inline
+            Err(_) => Arc::clone(&self.source),
+        };
         let mime = mime.to_string();
         compute
             .get_or_compute(&self.content_hash, DESCRIBE_KEY, async move {

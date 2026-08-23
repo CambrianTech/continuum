@@ -20,7 +20,6 @@ use continuum_positron::{StateBuilder, Substrate};
 struct CanvasFeed {
     builder: StateBuilder,
     substrate: Substrate,
-    mind_substrate: Substrate,
     /// Monotonic per-process observation counter — the face's iterate pulse.
     revision: u32,
 }
@@ -29,12 +28,11 @@ static FEED: OnceLock<Mutex<CanvasFeed>> = OnceLock::new();
 
 /// Install the feed's render targets at boot (beside the bench emitter).
 /// Second call is a boot-sequence bug — fail loud, one feed per process.
-pub fn install(substrate: Substrate, mind_substrate: Substrate) {
+pub fn install(substrate: Substrate) {
     if FEED
         .set(Mutex::new(CanvasFeed {
             builder: StateBuilder::standalone(),
             substrate,
-            mind_substrate,
             revision: 0,
         }))
         .is_err()
@@ -52,8 +50,13 @@ pub fn publish(mut view: CanvasViewState) {
     feed.revision = feed.revision.saturating_add(1);
     view.revision = Some(feed.revision);
     let envelope = feed.builder.session(view);
-    feed.substrate.store(envelope.clone());
-    feed.mind_substrate.store(envelope);
+    // ONE store, no clone: the 2026-08-23 pixel audit found the second
+    // (mind-substrate) store had NO reader — no ViewStateRagSource<CanvasViewState>
+    // exists — so the deep clone of a screenshot-bearing envelope duplicated
+    // megabytes into a void. The mind-side binding returns WITH its reader,
+    // by handle, when the observe wire moves to filepath (the architectural
+    // rung); pixels-in-envelopes never get a second copy again.
+    feed.substrate.store(envelope);
 }
 
 /// Fold a persona's observe/hot-edit TOOL RESULT into a frame and publish it.
