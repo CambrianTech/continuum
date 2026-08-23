@@ -141,8 +141,16 @@ async fn hf_account() -> Option<String> {
         return None;
     }
     let text = String::from_utf8_lossy(&out.stdout);
-    // First non-empty line carries the username across hf CLI versions.
-    text.lines().map(str::trim).find(|l| !l.is_empty()).map(str::to_string)
+    // First non-empty line carries the username across hf CLI versions — EXCEPT
+    // that an unauthenticated CLI prints "Not logged in" and still exits 0
+    // (measured 2026-08-23, hf 1.8.0): that is a status sentence, not an
+    // account, and displaying it as one would render "Publishing as Not logged
+    // in" — a lying identity. Sentence-shaped first lines read as None.
+    text.lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .filter(|l| !l.to_ascii_lowercase().contains("not logged in"))
+        .map(str::to_string)
 }
 
 #[derive(Default)]
