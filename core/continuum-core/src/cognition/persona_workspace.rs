@@ -1092,6 +1092,11 @@ impl PersonaWorkspaceRegistry {
     ) -> Option<WorkspaceCycle> {
         let mut cfg = self.templates.lock().get(persona_id)?.clone();
         cfg.admission = Arc::new(cfg.admission.fork_detached());
+        // Fork never inherits the quiesce flag — same invariant as
+        // fork_eval_cycle above, missed here on the first fix (the classic
+        // same-bug-two-sites: TWO fork fns each clone the template; the live
+        // eval rides THIS one, so round 938e0ab4 self-preempted identically).
+        cfg.quiesced = None;
         cfg.adapter = adapter;
         cfg.context_window = context_window;
         cfg.suppress_recall = suppress_recall;
