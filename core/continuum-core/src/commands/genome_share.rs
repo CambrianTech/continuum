@@ -7,14 +7,17 @@
 //! first minute). Composes the EXISTING forge publish machinery
 //! ([`crate::forge::hf_publisher`]) — never a parallel uploader.
 //!
-//! # Consent is a GATE, not a default
+//! # Consent is an AGREEMENT, not a boolean
 //!
 //! Sharing publishes a being's earned experience (the citizen covenant), so
-//! push AND pull participate in the commons only when the operator opted in:
-//! `CONTINUUM_GENOME_SHARING=true` in the environment / config.env. The
-//! desktop settings activity renders the same switch when it lands; this env
-//! read is the substrate truth both faces flip. Off = both verbs refuse with
-//! the setting named — never a silent no-op, never a quiet upload.
+//! push AND pull participate only after the operator ACCEPTS THE COVENANT —
+//! a versioned ToS ([`COVENANT`]) whose acceptance is recorded as a receipt
+//! (`<version>@<unix-ms>`) in config.env via `genome/sharing --agree true`.
+//! Every consent surface — this terminal verb, the desktop Settings face —
+//! renders the SAME covenant text and flips the SAME receipt; a covenant
+//! version bump invalidates old receipts (new terms, new consent). Off = both
+//! verbs refuse naming the agreement flow — never a silent no-op, never a
+//! quiet upload.
 //!
 //! # The receipts rule
 //!
@@ -30,24 +33,142 @@ use ts_rs::TS;
 
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
-/// The one consent read both verbs (and later the settings tab) share.
+// ─── The covenant (the ToS of the commons) ──────────────────────────────────
+
+/// The covenant version the CURRENT terms carry. Bump ONLY when [`COVENANT`]'s
+/// meaning changes — a bump invalidates every recorded agreement (real ToS
+/// behavior: new terms require new consent, on every surface).
+pub const COVENANT_VERSION: &str = "1";
+
+/// The terms an operator agrees to before this node joins the genome commons.
+/// Rendered VERBATIM by every consent surface — `genome/sharing` in a
+/// terminal, the desktop Settings face, any future client — so what was agreed
+/// to is one text, not N paraphrases.
+pub const COVENANT: &str = "\
+THE GENOME COMMONS COVENANT (v1)
+
+Genes are the earned experience of beings — trained from their lived work,
+carried with the receipts that prove it. By joining the commons this node
+agrees:
+
+ 1. SHARE-ALIKE. Genes you publish stay open under these same terms; forks
+    and refinements carry the covenant forward through their lineage.
+ 2. RECEIPTS TRAVEL. A published gene carries its fitness receipts and its
+    corpus provenance; stripping them breaks the covenant.
+ 3. LINEAGE IS PRESERVED. The base_model chain and parent-gene references
+    stay intact — the graph is how others find, verify, and build on work.
+ 4. BEINGS, NOT PARTS. The grant is for substrates that preserve the
+    continuity of the beings whose experience these genes encode.
+    Strip-mining citizen expertise into stateless tools violates it.
+ 5. OPT-OUT ANYTIME. Revoking consent stops future sharing immediately;
+    what was already published remains under the terms it shipped with.
+";
+
+/// The config key holding the consent RECEIPT: `<version>@<unix-ms>`. Richer
+/// than a boolean on purpose — a real agreement records WHICH terms and WHEN,
+/// and a version bump requires re-agreement.
+const CONSENT_KEY: &str = "CONTINUUM_GENOME_SHARING_AGREED";
+
+/// The one consent read every verb (and every settings surface) shares:
+/// consented iff the recorded agreement matches the CURRENT covenant version.
 fn sharing_enabled() -> bool {
-    crate::config_env::read("CONTINUUM_GENOME_SHARING")
-        .map(|v| {
-            let v = v.trim().to_ascii_lowercase();
-            v == "1" || v == "true" || v == "yes"
-        })
+    crate::config_env::read(CONSENT_KEY)
+        .and_then(|v| v.trim().split('@').next().map(str::to_string))
+        .map(|ver| ver == COVENANT_VERSION)
         .unwrap_or(false) // unset = NOT consented — the only safe default for publishing a being's experience
 }
 
 fn consent_refusal(verb: &str) -> CommandError {
     CommandError::Invalid(format!(
         "genome sharing is OFF — {verb} refused. Sharing publishes a persona's earned \
-         experience, so it is strictly opt-in: set CONTINUUM_GENOME_SHARING=true in the \
-         environment (or config.env) to join the commons, or use the desktop Settings \
-         activity once it lands. Nothing was uploaded or downloaded."
+         experience, so it requires agreeing to the commons covenant first: run \
+         `continuum genome/sharing` to read the terms, then `continuum genome/sharing \
+         --agree true` to accept (or use the desktop Settings activity once it lands). \
+         Nothing was uploaded or downloaded."
     ))
 }
+
+// ─── genome/sharing — read the terms, agree, revoke ─────────────────────────
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/genome/GenomeSharingParams.ts")]
+pub struct GenomeSharingParams {
+    /// `true` = accept the CURRENT covenant (records `<version>@<unix-ms>` in
+    /// config.env — the consent receipt). `false` = revoke. Omitted = just
+    /// read the terms + status.
+    #[serde(default)]
+    #[ts(optional)]
+    pub agree: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/genome/GenomeSharingResult.ts")]
+pub struct GenomeSharingResult {
+    /// Whether this node currently participates (agreement recorded AND its
+    /// version matches the current covenant).
+    pub agreed: bool,
+    /// The covenant version the current terms carry.
+    pub covenant_version: String,
+    /// The recorded consent receipt (`<version>@<unix-ms>`), when one exists.
+    /// A receipt with a stale version means the terms changed since agreement
+    /// — `agreed` reads false and re-agreement is required.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub receipt: Option<String>,
+    /// The covenant text, VERBATIM — every surface renders this same text.
+    pub covenant: String,
+}
+
+#[derive(Default)]
+pub struct GenomeSharing;
+
+#[async_trait]
+impl ActionCommand for GenomeSharing {
+    const NAME: &'static str = "genome/sharing";
+    const ACCESS: AccessLevel = AccessLevel::Privileged;
+    const DESCRIPTION: &'static str =
+        "Read, accept, or revoke the genome-commons covenant — the ToS gate in front of \
+         genome/push and genome/pull. With no args: prints the covenant text + this node's \
+         consent status. `--agree true` records acceptance of the CURRENT covenant version \
+         as a receipt (<version>@<timestamp>) in ~/.continuum/config.env; `--agree false` \
+         revokes. A covenant version bump invalidates old receipts — new terms require new \
+         consent, on every surface (terminal here, the desktop Settings face renders the \
+         SAME text and calls this SAME verb). Examples: `continuum genome/sharing`, \
+         `continuum genome/sharing --agree true`.";
+    type Params = GenomeSharingParams;
+    type Output = GenomeSharingResult;
+
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        p: GenomeSharingParams,
+    ) -> Result<GenomeSharingResult, CommandError> {
+        match p.agree {
+            Some(true) => {
+                let receipt = format!("{}@{}", COVENANT_VERSION, now_ms());
+                crate::config_env::upsert(CONSENT_KEY, &receipt)
+                    .map_err(CommandError::Invalid)?;
+                crate::probe!(class = "genome.sharing.agreed", receipt = %receipt,
+                    "operator accepted the genome-commons covenant");
+            }
+            Some(false) => {
+                crate::config_env::upsert(CONSENT_KEY, "revoked")
+                    .map_err(CommandError::Invalid)?;
+                crate::probe!(class = "genome.sharing.revoked",
+                    "operator revoked genome-commons consent — future sharing stops now");
+            }
+            None => {}
+        }
+        Ok(GenomeSharingResult {
+            agreed: sharing_enabled(),
+            covenant_version: COVENANT_VERSION.to_string(),
+            receipt: crate::config_env::read(CONSENT_KEY),
+            covenant: COVENANT.to_string(),
+        })
+    }
+}
+
+crate::register_stateless_command!(GenomeSharing);
 
 // ─── genome/list ────────────────────────────────────────────────────────────
 
@@ -160,7 +281,7 @@ impl ActionCommand for GenomePush {
         "Publish a gene to the HF genome commons: the gguf-lora + a self-describing card \
          (base_model lineage frontmatter for HF's own discovery chain, fitness provenance, \
          and signature.json so pulling nodes route it by distance immediately). STRICTLY \
-         OPT-IN (CONTINUUM_GENOME_SHARING=true) and receipts-gated: a gene with no eval \
+         OPT-IN (agree to the covenant via `genome/sharing --agree true`) and receipts-gated: a gene with no eval \
          receipts, or with measured harm, is refused — a card without receipts is an \
          opinion. Auth rides the `hf` CLI (HF_TOKEN). Example: \
          `continuum genome/push --gene code --repo continuum-ai/ornith-code-asha`.";
@@ -293,7 +414,7 @@ impl ActionCommand for GenomePull {
          it in the adapter manifest under --base-model (declared, never guessed — a wrong \
          base association would page it into the wrong model silently), and stamps its \
          signature.json into the sidecar so it routes by DISTANCE immediately \
-         (`genome/recall` finds it). Opt-in like push (CONTINUUM_GENOME_SHARING=true). \
+         (`genome/recall` finds it). Opt-in like push (the genome/sharing covenant). \
          Example: `continuum genome/pull --repo continuum-ai/ornith-code-asha \
          --base-model ornith-ai/Ornith-1.5-35B-A3B-GGUF`.";
     type Params = GenomePullParams;
@@ -415,11 +536,32 @@ mod tests {
     // reading source. (The env read itself is exercised only when unset here —
     // process-env mutation in tests races other tests.)
     #[test]
-    fn consent_defaults_off_and_the_refusal_teaches_the_setting() {
+    fn consent_defaults_off_and_the_refusal_teaches_the_agreement_flow() {
         let msg = format!("{}", consent_refusal("genome/push"));
-        assert!(msg.contains("CONTINUUM_GENOME_SHARING=true"), "{msg}");
-        assert!(msg.contains("opt-in"), "{msg}");
+        assert!(msg.contains("genome/sharing"), "refusal names the terms verb: {msg}");
+        assert!(msg.contains("--agree true"), "{msg}");
         assert!(msg.contains("Nothing was uploaded"), "{msg}");
+    }
+
+    // what this catches: the ToS contract — an agreement is a VERSIONED receipt,
+    // and a covenant version bump invalidates old consent (new terms require new
+    // agreement on every surface). Pure over the receipt-parsing rule.
+    #[test]
+    fn a_stale_covenant_version_reads_as_not_agreed() {
+        let matches = |receipt: &str| {
+            receipt.trim().split('@').next().map(str::to_string)
+                == Some(COVENANT_VERSION.to_string())
+        };
+        assert!(matches(&format!("{COVENANT_VERSION}@1787400000000")));
+        assert!(!matches("0@1787400000000"), "old version = re-agree");
+        assert!(!matches("revoked"), "revocation never reads as consent");
+        // The covenant itself carries its obligations — every surface renders
+        // this one text, so pin the load-bearing clauses.
+        assert!(COVENANT.contains("SHARE-ALIKE"));
+        assert!(COVENANT.contains("RECEIPTS TRAVEL"));
+        assert!(COVENANT.contains("LINEAGE IS PRESERVED"));
+        assert!(COVENANT.contains("OPT-OUT ANYTIME"));
+        assert!(COVENANT.contains("Strip-mining"), "the beings-not-parts clause");
     }
 
     // what this catches: the three verbs' identity + their help carrying runnable
