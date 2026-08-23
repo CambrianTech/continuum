@@ -24,6 +24,7 @@
 
 import { ARENA_PURPOSE } from './arenaContent';
 import { BENCH_PURPOSE } from './benchContent';
+import { CANVAS_PURPOSE } from './canvasContent';
 import { GRID_PURPOSE } from './gridContent';
 import { LIVE_PURPOSE } from './liveContent';
 import { PERSONA_PURPOSE } from './personaContent';
@@ -36,6 +37,7 @@ const FAMILIES: ReadonlySet<string> = new Set([
   'foundry',
   ARENA_PURPOSE,
   BENCH_PURPOSE,
+  CANVAS_PURPOSE,
   GRID_PURPOSE,
   LIVE_PURPOSE,
   PERSONA_PURPOSE,

@@ -53,6 +53,17 @@ export type { GridContentBody, GridNodeVM } from './gridContent';
 // per run (operator + citizen-claimed), progress-not-liveness (#374/#329).
 export { BENCH_PURPOSE } from './benchContent';
 export type { BenchContentBody, BenchRoundVM, BenchRunVM, BenchRunState, BenchVerdictVM } from './benchContent';
+// The design-bench run room's CANVAS region (`purpose === CANVAS_PURPOSE`) —
+// the persona's RENDERED page live on stage, re-observed on her writes
+// (DESIGN-BENCH-VISUAL-CRAFT.md §5: the walk-in sees the design evolve).
+export { CANVAS_PURPOSE } from './canvasContent';
+export type {
+  CanvasContentBody,
+  CanvasArtifactVM,
+  CanvasScoreVM,
+  CanvasCheckVM,
+  CanvasViewportVM,
+} from './canvasContent';
 // Recipe purpose → render family (benchmark/hard-rs → bench, video-chat → live):
 // the ONE resolver between hierarchical recipe purposes and registry families.
 export { contentFamilyOf } from './contentFamily';

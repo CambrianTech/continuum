@@ -12,6 +12,7 @@ import { html, type TemplateResult } from 'lit';
 import {
   ARENA_PURPOSE,
   BENCH_PURPOSE,
+  CANVAS_PURPOSE,
   createContentRegistry,
   LIVE_PURPOSE,
   GRID_PURPOSE,
@@ -20,6 +21,7 @@ import {
   SETTINGS_PURPOSE,
   type ArenaContentBody,
   type BenchContentBody,
+  type CanvasContentBody,
   type ContentRegistry,
   type GridContentBody,
   type LiveContentBody,
@@ -37,6 +39,7 @@ import { renderArena } from '../arena/renderArena';
 import { renderServing } from '../serving/renderServing';
 import { renderGrid } from '../grid/renderGrid';
 import { renderSettings } from '../settings/renderSettings';
+import { renderCanvas } from '../canvas/renderCanvas';
 
 /** The chat activity's center: the conversation (or an honest empty state). */
 function chatContent(body: ChatContentBody): TemplateResult {
@@ -93,3 +96,7 @@ webContentRegistry.register<GridContentBody>(GRID_PURPOSE, (body) => renderGrid(
 // The SETTINGS operator panel — covenant consent, HF identity, gene registry,
 // dispatched when the header's Settings affordance opens the face.
 webContentRegistry.register<SettingsContentBody>(SETTINGS_PURPOSE, (body) => renderSettings(body));
+// The design-bench CANVAS region — the persona's rendered page live on stage
+// (sandboxed iframe / last screenshot + craft scorecard), dispatched when the
+// run room's purpose is "canvas" (DESIGN-BENCH-VISUAL-CRAFT.md §5).
+webContentRegistry.register<CanvasContentBody>(CANVAS_PURPOSE, (body) => renderCanvas(body));
