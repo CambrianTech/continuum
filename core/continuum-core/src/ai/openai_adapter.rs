@@ -2627,6 +2627,15 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // frame dropped us from 300s to 90s seconds into a prefill that measured ~170s
         // for a window-sized prompt, so every big turn died and retried forever. The
         // phase machine keeps the two regimes apart; see `inference::stream_liveness`.
+        // Stream attribution for the prefill probe: without it every cached%
+        // sample is anonymous, and the 2026-08-23 KV iteration spent a round
+        // unable to tell Atlas's task acts from Benchy's ambient turns. One
+        // clone per stream open — cold path.
+        let probe_persona: String = request
+            .persona_id
+            .clone()
+            .unwrap_or_else(|| "non-persona".into());
+        let probe_purpose: String = request.purpose.clone().unwrap_or_default();
         let mut phase = crate::inference::stream_liveness::StreamPhase::Queued;
         // One `inference.prefill.rescued` row per stream, not per frame.
         let mut prefill_rescued = false;
@@ -2812,6 +2821,8 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                             crate::probe!(
                                 class = "inference.prefill.complete",
                                 provider = self.config.name.as_str(),
+                                persona = probe_persona.as_str(),
+                                purpose = probe_purpose.as_str(),
                                 total = p.total,
                                 cached = p.cache,
                                 fresh = fresh,
