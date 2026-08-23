@@ -421,17 +421,27 @@ impl ToolExecutor for CommandToolExecutor {
             .into_iter()
             .enumerate()
             .map(|(i, (tool_use_id, outcome))| match outcome {
-                Ok(value) => NativeToolResult {
-                    tool_use_id,
-                    // Spill-then-bound: a flood-sized result is persisted whole
-                    // (recoverable via `tool/output`) before the preview is cut.
-                    content: fold_with_recovery(
-                        value.to_string(),
-                        max_result_chars,
-                        ctx.persona_id,
-                    ),
-                    is_error: None,
-                },
+                Ok(value) => {
+                    let full = value.to_string(); // owned render once; both the canvas feed and the fold read it
+                    // Canvas feed publishes from the PRE-FOLD content. It used to
+                    // hook the post-fold observation in act_observe/apply, where a
+                    // flood-sized ObserveResult had already been spilled + cut to a
+                    // preview — the JSON parse failed and the desktop went blind on
+                    // exactly the big screenshots worth watching (2026-08-23 audit's
+                    // latent canvas bug). Here the full result still exists.
+                    crate::ipc::positron_canvas_source::maybe_publish_observation(
+                        &ctx.persona_name,
+                        &calls[i].name,
+                        &full,
+                    );
+                    NativeToolResult {
+                        tool_use_id,
+                        // Spill-then-bound: a flood-sized result is persisted whole
+                        // (recoverable via `tool/output`) before the preview is cut.
+                        content: fold_with_recovery(full, max_result_chars, ctx.persona_id),
+                        is_error: None,
+                    }
+                }
                 // A failed tool call is NOT a batch failure — it's fed back to the
                 // model as an error result so it can recover (retry, fix args,
                 // pick another tool). Batch-level `Err` is reserved for the

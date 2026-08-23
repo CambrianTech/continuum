@@ -24,6 +24,7 @@
 //! The two existing scanners should migrate onto this seam (they predate it); doing
 //! that is a follow-up, not a reason to hand-roll a fourth.
 
+pub mod boundary_serialization;
 pub mod production_reachability;
 pub mod test_mod_singularity;
 pub mod unwrap_justification;
@@ -60,6 +61,17 @@ impl SourceFile {
     /// so a violation can point at a real editor line.
     pub fn production_lines(&self) -> impl Iterator<Item = (usize, &str)> {
         self.production.lines().enumerate().map(|(i, l)| (i + 1, l))
+    }
+
+    /// Build a `SourceFile` from an inline snippet — fixture for a rule's own
+    /// unit tests, so predicate regressions are pinned without touching disk.
+    #[cfg(test)]
+    pub fn for_test(rel: &str, production: &str) -> Self {
+        Self {
+            rel: rel.to_string(),
+            production: production.to_string(),
+            raw: production.to_string(),
+        }
     }
 }
 
