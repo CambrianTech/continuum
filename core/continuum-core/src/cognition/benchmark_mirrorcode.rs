@@ -295,7 +295,18 @@ fn b64(s: &str) -> String {
 /// executes (`target/release/<prog>`; verified `[[bin]] name = "false"` builds).
 pub fn cargo_manifest(program: &str) -> String {
     format!(
+        // The empty [workspace] table SEVERS the staged crate from any enclosing
+        // cargo workspace. Without it, the eval world — a CoW clone of the
+        // continuum repo, whose root Cargo.toml declares a workspace — captured
+        // every staged crate as an orphan member and cargo REFUSED TO BUILD:
+        // the grader failed every Rust mirror task deterministically, AND the
+        // citizen's own self-test builds failed all round with the same cryptic
+        // error, which is why she retreated into endless spec analysis instead
+        // of iterating code (glass-boxed 2026-08-23, round dd30687c: 185-line
+        // main.rs written under deadline, one E0425 from grading, harness said
+        // "no binary"). No MirrorCode Rust build had EVER actually run.
         "[package]\nname = \"mirrorcode_{program}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+         [workspace]\n\n\
          [[bin]]\nname = \"{program}\"\npath = \"src/main.rs\"\n"
     )
 }
