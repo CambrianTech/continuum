@@ -2314,6 +2314,33 @@ impl Faculty for LlmDeliberationFaculty {
             );
             return Some(Contribution::deliberation_fault(why));
         }
+        // TRUNCATED-WITH-TEXT is NOT an utterance (2026-08-24, Joel: "why is
+        // this amazing LLM not finishing things or quitting — something in
+        // plumbing always"). A generation that ended at the OUTPUT LIMIT with
+        // no tool call is a thought cut mid-stream — measured: 16,384-token
+        // emissions (the ceiling, exactly) whose text then flowed through the
+        // Speak path and SETTLED GRADED TURNS on a half-sentence. The empty
+        // case above already faults; the with-text case fell through. Same
+        // treatment: a fault (the #386 bounded in-place retry re-samples —
+        // under lived sampling a fresh draw rarely spirals identically), never
+        // a candidate answer. Her cut text rides the fault head so the glass
+        // box shows what she was mid-way through.
+        if matches!(resp.finish_reason, FinishReason::Length)
+            && resp.tool_calls.as_ref().is_none_or(|c| c.is_empty())
+            && !resp.text.trim().is_empty()
+        {
+            crate::probe!(
+                class = "delib.truncated_not_an_answer",
+                persona = %self.persona_name,
+                text_chars = resp.text.len(),
+                "generation ended AT the output limit with no tool call — a cut                  thought, faulted for re-sample, never a gradeable utterance"
+            );
+            let head: String = resp.text.chars().take(200).collect();
+            return Some(Contribution::deliberation_fault(format!(
+                "the model hit the output limit mid-thought with no committed action                  (finish_reason Length, {} chars) — a cut thought is not an answer.                  It began: {head}",
+                resp.text.len()
+            )));
+        }
 
         // Did she choose to act? Two shapes, both → `Decision::Act`:
         //  (a) the adapter returned a native tool-use turn (FinishReason::ToolUse);

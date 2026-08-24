@@ -760,9 +760,11 @@ mod tests {
         .await;
 
         assert_eq!(
-            outcome.acts, 10,
-            "discovery saturates at half the budget (20/2) with zero mutations — \
-             the other half is preserved for the empty-diff re-drive"
+            outcome.acts, 15,
+            "discovery saturates at 3/4 of the budget (20*3/4) with zero mutations \
+             — PREMISE CHANGED 2026-08-24: the /2 gate measured live as forcing \
+             early settles on honest study phases (she 'quit' at 16/32 because \
+             the gate quit for her); 3/4 still bounds a pure-read runaway"
         );
         assert!(
             matches!(outcome.decision, Decision::Act { .. }) && outcome.spoken.is_none(),
@@ -841,7 +843,7 @@ mod tests {
         // guarantee worth pinning is therefore: at settle, working memory
         // holds at least one [act-budget] fact naming the REAL budget number.
         assert!(
-            budget_facts.iter().any(|e| e.text.contains("my 6 acts")),
+            budget_facts.iter().any(|e| e.text.contains("of 6 acts") || e.text.contains("my 6 acts")),
             "a budget fact naming the real budget must survive to settle; got: {:?}",
             budget_facts.iter().map(|e| &e.text).collect::<Vec<_>>()
         );
