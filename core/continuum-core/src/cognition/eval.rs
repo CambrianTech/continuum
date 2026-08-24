@@ -3125,7 +3125,7 @@ fn find_run_row_for_persona(persona_id: &str, run_id: &str) -> Option<serde_json
 /// `*.jsonl` in the progress dir; returns the first match (a run_id lives in exactly
 /// one persona's ledger). Keeps run_id a sufficient key so a matrix/CI poller never
 /// hangs on a false pending just because it didn't also thread the persona_id.
-fn find_run_row_any_persona(run_id: &str) -> Option<serde_json::Value> {
+pub(crate) fn find_run_row_any_persona(run_id: &str) -> Option<serde_json::Value> {
     let dir = progress_ledger_dir()?;
     for entry in std::fs::read_dir(&dir).ok()?.flatten() {
         let path = entry.path();
