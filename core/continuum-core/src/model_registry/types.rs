@@ -344,6 +344,39 @@ pub struct ModelSampling {
     pub frequency_penalty: f32,
 }
 
+/// Per-model SERVING truths (2026-08-24) — how this model behaves on a llama
+/// lane, stamped where measured. The substrate serves MANY models; anything a
+/// lane decision branches on lives HERE as model truth, never as a blanket
+/// policy that bakes one model's quirk into the architecture (Joel: "we are not
+/// designing around one model but many").
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelServingPrefs {
+    /// Load the vision projector on the MAIN persona lane. Default FALSE:
+    /// llama-server hard-disables `--cache-reuse` on a multimodal lane
+    /// ("cache_reuse is not supported by multimodal"), and chunk reuse is worth
+    /// ~60-90s of re-prefill per act to every persona. Sight then routes through
+    /// the vision sidecar + description bridge — the same path every text-only
+    /// mind uses. A VL-first deployment (live-call heavy, KV economy secondary)
+    /// opts IN per model.
+    pub mmproj_on_main_lane: bool,
+    /// Can this model's KV cache shift (llama context-shift / cache_reuse
+    /// realignment)? `None` = unverified. `Some(false)` = measured incapable
+    /// (hybrid/SWA attention — llama logs "cache_reuse is not supported by this
+    /// context"): prompt shaping must then treat the prefix as EXTEND-ONLY,
+    /// because any interior mutation re-prefills everything after it.
+    pub kv_shiftable: Option<bool>,
+}
+
+impl Default for ModelServingPrefs {
+    fn default() -> Self {
+        Self {
+            mmproj_on_main_lane: false,
+            kv_shiftable: None,
+        }
+    }
+}
+
 impl Default for ModelSampling {
     /// The substrate floor — conservative chat defaults + the #181 anti-loop
     /// pair. The ONE place these numbers live; `SamplingProfile::chat_defaults`
@@ -496,6 +529,11 @@ pub struct Model {
     /// row that doesn't tune sampling is byte-identical to the pre-#76 default.
     #[serde(default)]
     pub sampling: ModelSampling,
+    /// Per-model serving truths (see [`ModelServingPrefs`]) — lane decisions
+    /// branch on the ROW, never on a hardcoded model name. Omitted rows get the
+    /// defaults (text-only main lane, unverified kv-shift) via serde.
+    #[serde(default)]
+    pub serving: ModelServingPrefs,
     /// Whether the autonomic serving planner may pick this row to host the
     /// PERSONAS. Benchmark opponents and campaign-roster rows carry real Ready
     /// GGUFs (so the matrix can serve them on demand) but must NEVER be

@@ -2719,15 +2719,26 @@ impl LlamaServerControl for LlamaServerProcess {
         // description bridge take over — the exact flow every text-only mind
         // already uses. One sight path, not two. The mmproj artifact stays
         // resolved/fetched for the sidecar's use.
-        let mmproj: Option<std::path::PathBuf> = None;
-        if crate::model_registry::artifacts::resolve_mmproj_for_model(&target.model).is_some() {
+        // MODEL TRUTH, not blanket policy (Joel 2026-08-24: "we are not designing
+        // around one model but many"): the row's `serving.mmproj_on_main_lane`
+        // decides. Default FALSE (text-only main lane, cache_reuse alive); a
+        // VL-first deployment opts in per model and pays the reuse cost knowingly.
+        let resolved_mmproj =
+            crate::model_registry::artifacts::resolve_mmproj_for_model(&target.model);
+        let mmproj: Option<std::path::PathBuf> = if target.model.serving.mmproj_on_main_lane {
+            resolved_mmproj.clone()
+        } else {
+            None
+        };
+        if mmproj.is_none() && resolved_mmproj.is_some() {
             crate::probe!(
                 class = "serving.vision.mmproj_withheld",
                 model = %target.model.id,
-                "mmproj resolved but WITHHELD from the main lane (multimodal disables \
-                 cache_reuse); sight routes via the vision sidecar + description bridge"
+                "mmproj resolved but WITHHELD from the main lane (model row: \
+                 mmproj_on_main_lane=false — multimodal disables cache_reuse); sight \
+                 routes via the vision sidecar + description bridge"
             );
-        } else if target
+        } else if resolved_mmproj.is_none() && target
             .model
             .capabilities
             .contains(&crate::model_registry::Capability::Vision)
@@ -3647,6 +3658,7 @@ mod tests {
                 parameter_count: 0,
                 sampling: crate::model_registry::types::ModelSampling::default(),
                 persona_serving_eligible: true,
+                serving: Default::default(), // test/fixture literal: substrate defaults (text-only main lane, unverified kv-shift)
             },
             context_window: 32768,
             lanes: 1,

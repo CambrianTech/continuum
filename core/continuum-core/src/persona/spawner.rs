@@ -174,6 +174,7 @@ mod tests {
             parameter_count: 0,
             sampling: crate::model_registry::types::ModelSampling::default(),
             persona_serving_eligible: true,
+            serving: Default::default(), // test/fixture literal: substrate defaults (text-only main lane, unverified kv-shift)
         };
         Arc::new(
             Registry::from_catalog(vec![qwen25_05b], vec![llamacpp_provider])
