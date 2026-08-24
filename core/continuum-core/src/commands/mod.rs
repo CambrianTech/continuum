@@ -18,6 +18,7 @@ pub mod auth;
 pub mod avatar;
 pub mod benchmark;
 pub mod benchmark_round;
+pub mod benchmark_round_report;
 pub mod benchmark_verify;
 pub mod genome_recall;
 pub mod genome_share;
