@@ -4414,6 +4414,40 @@ async fn run_pass(
         if ok {
             pass += 1;
         }
+        // ARTIFACT PRESERVATION (2026-08-23, Joel: "honest isn't good — are
+        // they making code that's decent?"). The world sweep destroys her
+        // solution at the next provision, so no citizen code ever survived
+        // grading for review — quality was unjudgeable after the fact and the
+        // genome had no diff to learn from. Copy the graded solution file into
+        // the durable receipts dir at grade time (bounded: one file per task
+        // per run, beside the ledger — a governed, TrackedDir-registered
+        // location, not a new cache class).
+        if let (Some(sol), Some(root)) = (t.solution_file.as_deref(), workspace_root) {
+            let src = std::path::Path::new(root).join(sol);
+            if src.is_file() {
+                if let Some(home) = dirs::home_dir() {
+                    let run_tag = live_eval_run_id().unwrap_or_else(|| "unkeyed".into()); // no live run registered = a test/dev drive; still preserved, under one bucket
+                    let dst_dir = home
+                        .join(".continuum/bench-receipts")
+                        .join(run_tag)
+                        .join("solutions");
+                    let dst = dst_dir.join(sol.replace('/', "__"));
+                    let copied = std::fs::create_dir_all(&dst_dir)
+                        .and_then(|_| std::fs::copy(&src, &dst));
+                    if let Err(e) = copied {
+                        tracing::warn!(task = %t.id, error = %e, "graded solution not preserved");
+                    } else {
+                        crate::probe!(
+                            class = "eval.artifact.preserved",
+                            task = %t.id,
+                            path = %dst.display(),
+                            ok = ok,
+                            "graded solution copied to durable receipts — reviewable after the world sweeps"
+                        );
+                    }
+                }
+            }
+        }
         // Speed/latency of THIS task — the accumulated deliberation cost the settle
         // loop folded across every act→observe tick (the model's own measured time
         // + tokens). Reported next to the grade so accuracy and speed sit on one row.
