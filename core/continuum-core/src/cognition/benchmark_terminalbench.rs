@@ -92,8 +92,17 @@ resolved = root / "_resolved_tests"
 if resolved.exists():
     shutil.rmtree(resolved)
 resolved.mkdir()
+# Container-contract projection, THREE literals (2026-08-24, first external grade):
+# the upstream image guarantees bare `python` = python3; this host does not — in the
+# eval world PATH it resolves to the broken xcode stub, so the oracle's
+# subprocess.Popen(["python", ...]) died with exit 127 and EMPTY stdout, failing
+# all five functional tests of a task whose logic was never judged (and the gold
+# gate passed under a DIFFERENT shell PATH that had a real `python` — the exact
+# env-vs-env drift the gate exists to kill). Projecting `python` → this
+# interpreter reproduces the container's contract, same as the /app mount.
 mounts = [(re.compile(r"/app(?![A-Za-z0-9_.-])"), str(app.resolve())),
-          (re.compile(r"/tests(?![A-Za-z0-9_.-])"), str(resolved.resolve()))]
+          (re.compile(r"/tests(?![A-Za-z0-9_.-])"), str(resolved.resolve())),
+          (re.compile(r"(?<![\w./-])[\"']python[\"'](?=\s*[,\]])"), '"' + sys.executable + '"')]
 for src in sorted(tests.rglob("*")):
     dst = resolved / src.relative_to(tests)
     if src.is_dir():
