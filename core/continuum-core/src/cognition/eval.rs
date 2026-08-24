@@ -3990,9 +3990,19 @@ fn report_task_graded(
             bus.publish_async_only("eval:progress", v);
         }
     }
+    // run_id ON the row (2026-08-24, "not good to be so dumb about what's graded"):
+    // an unscoped consumer counting eval.task matches summed every round, sentinel
+    // A/B, and smoke eval ever run — "51 graded" while the live round had zero. The
+    // row itself must carry which round it belongs to.
+    let run_id = CURRENT_RUN_META
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().and_then(|m| m.run_id.clone()))
+        .unwrap_or_default(); // sync/handleless run: empty = "no round", honest for a probe field
     crate::probe!(
         class = "eval.task",
         task = task_id,
+        run_id = %run_id,
         ok = ok,
         acts = acts,
         done = done,
