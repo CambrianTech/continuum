@@ -63,7 +63,9 @@ pub struct RoundTaskLine {
 pub struct BenchmarkRoundReport {
     pub run_id: String,
     pub benchmark: String,
-    pub persona_id: String,
+    /// The round's sitter — the ledger file that held the run is named by her id.
+    #[ts(type = "string")]
+    pub persona_id: uuid::Uuid,
     /// false while the round is still grading — the report is live standings.
     pub complete: bool,
     #[ts(type = "number")]
@@ -141,7 +143,7 @@ impl ActionCommand for BenchmarkRoundReport_ {
         // the benchmark) and remember which ledger held it (its file name IS the
         // persona id — the round's sitter).
         let mut run_id = p.run_id.clone();
-        let mut persona_id = String::new();
+        let mut persona_id = uuid::Uuid::nil();
         let mut ledger_text = String::new();
         let entries = std::fs::read_dir(&dir)
             .map_err(|e| CommandError::Internal(format!("progress ledger unreadable: {e}")))?;
@@ -170,11 +172,16 @@ impl ActionCommand for BenchmarkRoundReport_ {
                 }
             };
             if hit {
-                persona_id = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or_default() // non-UTF8 ledger filename cannot happen for uuid-named files; empty = unknown sitter, report still stands
-                    .to_string();
+                // Ledger files are named by the sitter's uuid; anything else in the
+                // dir (a stray note, a tool file) is not a persona ledger — skip it
+                // rather than report a nil sitter for a real run.
+                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                let Ok(uuid) = uuid::Uuid::parse_str(stem) else {
+                    continue;
+                };
+                persona_id = uuid;
                 ledger_text = text;
                 break;
             }
