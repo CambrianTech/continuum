@@ -168,7 +168,15 @@ async fn settle_to_outcome(
     // steer — it never says what to write, exactly like `max_acts`; it converts an
     // unbounded read loop into a decision point while the budget can still buy the
     // decision. Non-workspace turns (chat, research) are untouched.
-    let discovery_budget = (max_acts / 2).max(1);
+    // 3/4 of the budget, not 1/2 (2026-08-24): at /2 the gate fired at act 16
+    // of 32 on tasks whose honest STUDY phase needs more (126-case reverse
+    // engineering) — she "quit" at half budget because the gate quit for her,
+    // and the red-build re-drive's fresh turn hit its own gate identically.
+    // The gate still bounds a pure-read runaway (a full-budget read turn ends
+    // withheld, and the pre-gate warning now lands 4 acts before THIS bound —
+    // genuinely before, not at, the cliff). Plumbing must never out-stubborn
+    // the engineer it serves.
+    let discovery_budget = (max_acts * 3 / 4).max(1);
     let mut mutated_yet = false;
     let mut saturation_probed = false;
 
