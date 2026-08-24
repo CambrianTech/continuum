@@ -132,7 +132,10 @@ fn run_completed(text: &str, run_id: &str) -> bool {
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .filter(|v| v.get("kind").and_then(|k| k.as_str()) != Some("task"))
         .filter(|v| v.get("runId").and_then(|r| r.as_str()) == Some(run_id))
-        .any(|v| v.get("failed").and_then(|f| f.as_bool()) != Some(true))
+        .any(|v| {
+            v.get("failed").and_then(|f| f.as_bool()) != Some(true)
+                && v.get("cancelled").and_then(|c| c.as_bool()) != Some(true)
+        })
 }
 
 #[derive(Default)]
@@ -384,6 +387,83 @@ impl ActionCommand for BenchmarkRound {
 }
 
 crate::register_stateless_command!(BenchmarkRound);
+
+#[derive(Debug, Clone, Deserialize, TS, JsonSchema)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/BenchmarkRoundStopParams.ts"
+)]
+pub struct BenchmarkRoundStopParams {
+    /// The run to stop. Omit to stop whatever round is in flight (there is at
+    /// most one — evals serialize on the exam lease).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub run_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/BenchmarkRoundStopResult.ts"
+)]
+pub struct BenchmarkRoundStopResult {
+    pub run_id: String,
+    /// Cancellation lands at the next task boundary; grades already streamed
+    /// stay, and the SAME `benchmark/round` command resumes from the first
+    /// ungraded task later.
+    pub note: String,
+}
+
+/// `benchmark/round-stop` — stop a round WITHOUT a reboot (2026-08-24, Joel:
+/// "can't iterate to put the new one in place"). The iteration primitive:
+/// stop → fix → deploy → same round command resumes.
+#[derive(Default)]
+pub struct BenchmarkRoundStop;
+
+#[async_trait]
+impl ActionCommand for BenchmarkRoundStop {
+    const NAME: &'static str = "benchmark/round-stop";
+    const ACCESS: AccessLevel = AccessLevel::Privileged;
+    const DESCRIPTION: &'static str =
+        "Stop the in-flight benchmark round cleanly (no reboot): cancellation lands at the next          task boundary, every streamed grade is kept, and the same benchmark/round command          resumes from the first ungraded task. Pass run_id, or omit to stop the one in flight.";
+    type Params = BenchmarkRoundStopParams;
+    type Output = BenchmarkRoundStopResult;
+
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        p: BenchmarkRoundStopParams,
+    ) -> Result<BenchmarkRoundStopResult, CommandError> {
+        let run_id = match p.run_id {
+            Some(rid) => rid,
+            None => {
+                let in_flight = detached_evals_in_flight();
+                match in_flight.as_slice() {
+                    [(rid, _, _)] => rid.clone(),
+                    [] => {
+                        return Err(CommandError::Invalid(
+                            "no round is in flight — nothing to stop".into(),
+                        ))
+                    }
+                    many => {
+                        return Err(CommandError::Invalid(format!(
+                            "{} runs in flight — pass --run-id to pick one",
+                            many.len()
+                        )))
+                    }
+                }
+            }
+        };
+        crate::cognition::eval::cancel_eval_run(&run_id);
+        Ok(BenchmarkRoundStopResult {
+            run_id,
+            note: "cancellation lands at the next task boundary; grades kept; the same                    benchmark/round command resumes later"
+                .into(),
+        })
+    }
+}
+
+crate::register_stateless_command!(BenchmarkRoundStop);
 
 #[cfg(test)]
 mod tests {
