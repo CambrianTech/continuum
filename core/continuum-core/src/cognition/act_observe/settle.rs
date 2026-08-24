@@ -229,7 +229,26 @@ async fn settle_to_outcome(
                         "act-budget proprioception fact recorded in working memory"
                     );
                 };
-                if acts == 0 {
+                // PRE-GATE WARNING (2026-08-23, measured twice on bib2json):
+                // at a 32-act budget the midpoint fact and the discovery-
+                // saturation gate BOTH land at act 16 — her first pacing
+                // signal arrived in the same instant her acts were withheld,
+                // so a spec-study opening could never convert in time. The
+                // gate's contract becomes perceptible BEFORE it binds: a
+                // structural fact at 4 acts out (workspace turns with no
+                // mutation yet). States the turn's real rule; names no file,
+                // no fix, no tool.
+                let gate_approaching = framing.workspace_deliverable
+                    && !mutated_yet
+                    && discovery_budget >= 4
+                    && acts == discovery_budget - 4;
+                if gate_approaching {
+                    budget_fact_at = Some(acts);
+                    probe_budget_fact("pre_gate");
+                    body.working_memory.record_fact(&format!(
+                        "[act-budget] {acts} acts spent, none has changed a file yet.                          This turn's contract withholds further acts after                          {discovery_budget} total unless the workspace has been                          written to — the task is graded on files, and unwritten                          work will not exist for the grader."
+                    ));
+                } else if acts == 0 {
                     budget_fact_at = Some(acts);
                     probe_budget_fact("turn_start");
                     body.working_memory.record_fact(&format!(
