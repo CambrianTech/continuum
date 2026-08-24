@@ -236,6 +236,12 @@ pub struct LaneOptions<'a> {
     pub mmproj: Option<&'a Path>,
     /// Native MTP speculative-decode draft head (#440).
     pub mtp_draft: Option<&'a Path>,
+    /// Ngram speculative decoding (2026-08-23) — drafts from the prompt's own
+    /// n-grams: zero extra tensors, no draft model, no VRAM. Code/tool output
+    /// is maximally ngram-friendly (identifiers, syntax, paths repeat), and
+    /// acts measured ~80s of decode at ~30 tok/s writing one file. Composes
+    /// with `mtp_draft` into one `--spec-type` list when both are on.
+    pub ngram_spec: bool,
     /// Device-fit resident override (#29) — an ENV var, not a flag.
     pub resident_override: Option<&'a Path>,
     /// CPU-pinned lane: never contend for VRAM a living lane already holds.
@@ -315,9 +321,20 @@ impl LaneInvocation {
         // n-max 4 / p-min 0.7 are the upstream-recommended MTP operating point from that
         // same field benchmark — per-model tuning, if ever needed, belongs on the Model
         // row beside `sampling`, not here.
-        if let Some(d) = opts.mtp_draft {
+        // `--spec-type` is ONE comma-list flag; MTP and ngram compose here so a
+        // second push can never shadow the first.
+        let mut spec_types: Vec<&str> = Vec::new();
+        if opts.mtp_draft.is_some() {
+            spec_types.push("draft-mtp");
+        }
+        if opts.ngram_spec {
+            spec_types.push("ngram-simple");
+        }
+        if !spec_types.is_empty() {
             push("--spec-type".into());
-            push("draft-mtp".into());
+            push(spec_types.join(","));
+        }
+        if let Some(d) = opts.mtp_draft {
             push("--spec-draft-model".into());
             push(d.to_string_lossy().into_owned());
             push("--spec-draft-n-max".into());

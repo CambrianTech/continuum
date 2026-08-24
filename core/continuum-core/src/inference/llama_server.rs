@@ -2728,6 +2728,9 @@ impl LlamaServerControl for LlamaServerProcess {
             flash_attn,
             mmproj: mmproj.as_deref(),
             mtp_draft: mtp_draft.as_deref(),
+            // Ngram spec is free (no tensors, no VRAM) and decode is half of
+            // act latency — on for every GPU serving lane.
+            ngram_spec: true,
             resident_override: target.resident_override.as_deref(),
             cpu_only: target.placement == LanePlacement::Cpu,
             chat_template: chat_template.as_deref(),
