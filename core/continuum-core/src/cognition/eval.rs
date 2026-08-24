@@ -4405,6 +4405,72 @@ async fn run_pass(
                 }
             }
         }
+        // RED-BUILD RE-DRIVE (2026-08-24, Joel: "let's give her what she
+        // needs"). The empty-diff/declined re-drives cover a settle with NO
+        // work; this covers a settle with BROKEN work — glass-boxed on
+        // bib2json the night it shipped: 621 lines, real iteration, settled
+        // on a build with 9 compile errors and graded 0 with budget she never
+        // knew she needed. Her own pre-submit CI: at settle on a DoD task,
+        // run the DoD once; if red, hand her its OUTPUT (the compiler's own
+        // words — ground truth, not steering) and one bounded re-drive to
+        // fix. A green DoD here is also the grade (no double run below).
+        let mut presettle_dod: Option<(bool, String)> = None;
+        if let Some(dod) = &t.dod_shell {
+            let (dod_ok, dod_out) = run_dod(task_root.map(std::path::Path::new), dod).await;
+            if !dod_ok {
+                crate::probe!(
+                    class = "eval.task.red_build_redrive",
+                    task = %t.id,
+                    "settled on a RED DoD — handing her the verdict with a bounded re-drive"
+                );
+                let tail: String = dod_out.chars().rev().take(4000).collect::<Vec<_>>().into_iter().rev().collect();
+                let red_delivery = crate::persona::rag_budget::RagDelivery {
+                    source_id: "airc".to_string(),
+                    items: vec![crate::persona::rag_budget::RagItem {
+                        content: format!(
+                            "You settled, but the task's definition-of-done currently FAILS.                              Its output ends:
+
+{tail}
+
+Fix the workspace and finish —                              the grade reads the files, and a red build scores zero."
+                        ),
+                        tokens: 0,
+                        metadata: serde_json::json!({ "peer_id": "peer", "occurred_at_ms": EVAL_EPOCH_MS }),
+                    }],
+                    tokens_used: 0,
+                    continuation: None,
+                    resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
+                };
+                let red_burst = crate::cognition::workspace::Burst::from_turns(
+                    room,
+                    crate::persona::service_loop::build_workspace_turns(
+                        std::slice::from_ref(&red_delivery),
+                        "",
+                        "",
+                        None,
+                    ),
+                );
+                if let Ok(re) = tokio::time::timeout(
+                    std::time::Duration::from_secs(15 * 60),
+                    crate::cognition::act_observe::drive_to_settle(
+                        cycle,
+                        red_burst,
+                        room,
+                        t.max_acts.map(|v| v as usize).unwrap_or(max_acts), // None = row sets no budget; the run's budget is the documented inherit
+                        crate::cognition::workspace::TurnFraming::directed().on_workspace(),
+                    ),
+                )
+                .await
+                {
+                    if re.inference_error.is_none() {
+                        settled = re;
+                    }
+                }
+                // The re-drive's own DoD verdict is taken fresh below.
+            } else {
+                presettle_dod = Some((dod_ok, dod_out));
+            }
+        }
         let answer = settled.spoken.clone().unwrap_or_default();
         // `settled.inference_error` is None here — the abort above consumed every infra
         // fault, so this grades a REAL verdict (a working lane produced an answer, right or
@@ -4433,7 +4499,11 @@ async fn run_pass(
             .await
         } else if let Some(dod) = &t.dod_shell {
             // REAL task: run the definition-of-done against the repo state her edits produced.
-            run_dod(task_root.map(std::path::Path::new), dod).await
+            match presettle_dod.take() {
+                // Pre-settle DoD already ran GREEN and nothing re-drove — that verdict IS the grade.
+                Some(v) => v,
+                None => run_dod(task_root.map(std::path::Path::new), dod).await,
+            }
         } else if t.test.is_some() {
             // UNREACHABLE by construction: `require_hands_for_code` gives every `test`-carrying
             // task a `solution_file` at load, so a code task always takes the ARTIFACT arm above.
