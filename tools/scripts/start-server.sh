@@ -288,9 +288,28 @@ adopt_or_reap_llama_lanes
 #     one is the class of lie this whole card exists to end.
 ensure_airc_daemon() {
   if ! command -v airc >/dev/null 2>&1; then
-    echo "⚠  airc is NOT INSTALLED — the substrate has no transport." >&2
-    echo "   The core will launch, but citizens have no rooms and cannot hear each other." >&2
-    return 0
+    # BOOT ACQUIRES ITS OWN TRANSPORT (2026-08-24, Joel: "this repo isn't for
+    # ME — a new repo user without an agent"). A warn-and-carry-on here left a
+    # fresh clone with mute citizens and a runbook line only an agent would
+    # ever read. airc is OUR sibling repo; boot installs it the same way the
+    # published instructions do, then proceeds. Offline/failed install falls
+    # back to the old loud warning — degraded is honest, silent is not.
+    echo "▶ airc not installed — installing (CambrianTech/airc, the substrate's transport)" >&2
+    if bounded_run 300 sh -c 'curl -fsSL https://raw.githubusercontent.com/CambrianTech/airc/main/install.sh | bash'        && command -v airc >/dev/null 2>&1; then
+      echo "✓ airc installed ($(command -v airc))" >&2
+    else
+      # PATH may not include the fresh install dir in THIS shell — try the
+      # conventional location before declaring absence.
+      if [ -x "${HOME}/.local/bin/airc" ]; then
+        export PATH="${HOME}/.local/bin:${PATH}"
+        echo "✓ airc installed (${HOME}/.local/bin/airc — added to PATH for this boot)" >&2
+      else
+        echo "⚠  airc install FAILED — the substrate has no transport." >&2
+        echo "   The core will launch, but citizens have no rooms and cannot hear each other." >&2
+        echo "   Manual fix: curl -fsSL https://raw.githubusercontent.com/CambrianTech/airc/main/install.sh | bash" >&2
+        return 0
+      fi
+    fi
   fi
 
   if bounded_run 5 airc ping; then

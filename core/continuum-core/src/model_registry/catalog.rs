@@ -1013,8 +1013,8 @@ pub fn models() -> Vec<Model> {
                 Capability::Streaming,
             ],
             gguf_hint: Some("huggingface.co/bartowski/Qwen2-VL-7B-Instruct-GGUF"),
-            gguf_local_path: Some("~/models/qwen2-vl-7b/Qwen2-VL-7B-Instruct-Q4_K_M.gguf"),
-            mmproj_local_path: Some("~/models/qwen2-vl-7b/mmproj-Qwen2-VL-7B-Instruct-f16.gguf"),
+            gguf_local_path: Some("~/.continuum/models/Qwen2-VL-7B-Instruct-Q4_K_M.gguf"),
+            mmproj_local_path: Some("~/.continuum/models/mmproj-Qwen2-VL-7B-Instruct-f16.gguf"),
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             ..ModelSpec::default()
         }),
@@ -1034,8 +1034,8 @@ pub fn models() -> Vec<Model> {
                 Capability::Streaming,
             ],
             gguf_hint: Some("huggingface.co/ggml-org/Qwen2.5-Omni-7B-GGUF"),
-            gguf_local_path: Some("~/models/qwen2.5-omni-7b/Qwen2.5-Omni-7B-Q4_K_M.gguf"),
-            mmproj_local_path: Some("~/models/qwen2.5-omni-7b/mmproj-Qwen2.5-Omni-7B-f16.gguf"),
+            gguf_local_path: Some("~/.continuum/models/Qwen2.5-Omni-7B-Q4_K_M.gguf"),
+            mmproj_local_path: Some("~/.continuum/models/mmproj-Qwen2.5-Omni-7B-f16.gguf"),
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             ..ModelSpec::default()
         }),
