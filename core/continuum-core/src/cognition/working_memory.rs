@@ -1185,10 +1185,25 @@ impl Faculty for WorkingMemoryFaculty {
         // scaffold-echo of the [resumed] briefing. Same bug class as the
         // second-person header this comment block's sibling above fixed
         // (#264 third finding): provenance framing must match the voice.
+        // Each entry CLIPPED to the same head bound receipts already use —
+        // measured 2026-08-24: ONE unclipped reasoning trace (a 16k-token
+        // think emission) made this block 70,086 chars (~20k tokens), the
+        // single dominant mass of an 85k prompt. The full text stays in the
+        // entry (the pinned path and recall read it); only the TRAIL RENDER
+        // is bounded, with the collapse idiom naming what was elided.
+        let head = self.memory.budget().trail_head_chars();
+        let clip = |t: &str| -> String {
+            if t.chars().count() <= head {
+                t.to_string()
+            } else {
+                let kept: String = t.chars().take(head).collect();
+                format!("{kept} …[{} more chars — my full thought, collapsed]", t.chars().count() - head)
+            }
+        };
         let recent: Vec<String> = entries
             .iter()
             .filter(|e| !matches!(e.kind, WmKind::Fact))
-            .map(|e| e.text.clone())
+            .map(|e| clip(&e.text))
             .collect();
         let notices: Vec<String> = entries
             .iter()
