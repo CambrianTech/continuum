@@ -342,11 +342,39 @@ pub async fn apply_act(
     if !fg_calls.is_empty() {
         cycle.note_acting();
     }
-    let outcome = match body
-        .executor
-        .execute_native_batch(&fg_calls, &ctx, budget.result_fold_chars())
-        .await
-    {
+    // BOUNDED (2026-08-24): this await was the last UNGUARDED hang in the act
+    // chain — inference has the stream-liveness ladder, but a wedged IPC
+    // socket or a runaway command could hold this forever with NO propagated
+    // error. Measured: bitwise ran 03:51→05:51 in silence until the 2h
+    // GLOBAL backstop fired as an infra fault. This per-act ceiling converts
+    // that into a 30-min act-level ERROR OBSERVATION she perceives and can
+    // react to. Generous by design (a real build can take many minutes; the
+    // shell window hands back handles long before this) — firing means a
+    // substrate hang, and the receipt says so.
+    const TOOL_BATCH_CEILING: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+    let batch_result = tokio::time::timeout(
+        TOOL_BATCH_CEILING,
+        body.executor
+            .execute_native_batch(&fg_calls, &ctx, budget.result_fold_chars()),
+    )
+    .await
+    .unwrap_or_else(|_| { // timeout elapsed = the hang this bound exists to convert; the closure builds the honest error
+        crate::probe!(
+            class = "persona.act.tool_batch_hung",
+            ceiling_s = TOOL_BATCH_CEILING.as_secs(),
+            tools = fg_calls.len(),
+            "tool batch exceeded the act ceiling with no result and no error —              substrate hang converted to a perceptible act error (find the              unpropagated await beneath)"
+        );
+        Err(crate::cognition::tool_executor::ToolError::ExecutionFailed {
+            tool: "batch".to_string(),
+            underlying: format!(
+                "tool batch hung past {}s with no result — the substrate lost this \
+                 act; the workspace may hold partial effects",
+                TOOL_BATCH_CEILING.as_secs()
+            ),
+        })
+    });
+    let outcome = match batch_result {
         Ok(o) => o,
         Err(e) => {
             // Fail loud-ish: the hand could not run. Abstain — do NOT synthesize a
