@@ -2006,7 +2006,29 @@ impl Faculty for LlmDeliberationFaculty {
                 .adapter
                 .live_served_window()
                 .unwrap_or(loaded.context_window);
-            if effective == loaded.context_window {
+            // DEADBAND (2026-08-24, KV layer 4 — "it's a control system, also
+            // predictable" / vector-allocator semantics): the live value
+            // FLUTTERS (measured 38,144 ↔ 36,864 act-over-act), and every
+            // window-derived clip budget re-cuts on rebind, mutating the whole
+            // prompt — cached% pinned at the system head. Adopt only a REAL
+            // change (> 1/8 of the current binding — a lane relaunch, a plan
+            // reshape); hold the binding through flutter. The safety envelope
+            // is untouched for OVERFLOW: a served window that SHRANK below the
+            // binding by any amount still adopts DOWN via the same test only
+            // when material — and a sub-deadband shrink is llama's own
+            // 256-granularity padding, which the prompt fitter's completion
+            // reserve already absorbs many times over.
+            let deadband = loaded.context_window / 8;
+            let material = effective.abs_diff(loaded.context_window) > deadband;
+            if !material {
+                if effective != loaded.context_window {
+                    crate::probe!(
+                        class = "delib.window.held",
+                        binding = loaded.context_window,
+                        served = effective,
+                        "live window flutter within deadband — binding HELD so the                          prompt's derived budgets stay byte-stable (KV layer 4)"
+                    );
+                }
                 loaded
             } else {
                 tracing::info!(

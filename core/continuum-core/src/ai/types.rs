@@ -201,6 +201,13 @@ pub struct ToolResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub is_error: Option<bool>, // True if tool execution failed
+    /// Spill handle when the FULL result was persisted to disk (tier-2 flood
+    /// protection) and `content` is the bounded preview. Never on the provider
+    /// wire (`skip`): it exists so working memory can leave a QUERYABLE POINTER
+    /// when this result is evicted — collapse, never delete (2026-08-24).
+    #[serde(skip)]
+    #[ts(skip)]
+    pub spill_handle: Option<String>,
 }
 
 /// Tool choice specification

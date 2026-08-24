@@ -207,13 +207,16 @@ fn truncate_tool_output(s: String, max: usize, spill: Option<&spill::SpillRef>) 
 /// Spilling is best-effort: if it fails (no home dir, disk full) we STILL bound
 /// the output — context safety is non-negotiable — she just loses the recover-it
 /// affordance for that one result. We never fabricate a handle we couldn't write.
-fn fold_with_recovery(full: String, max: usize, persona_id: Uuid) -> String {
+fn fold_with_recovery(full: String, max: usize, persona_id: Uuid) -> (String, Option<String>) {
     if full.len() <= max {
-        return full;
+        return (full, None);
     }
     match spill::spill(persona_id, &full) {
-        Ok(r) => truncate_tool_output(full, max, Some(&r)),
-        Err(_) => truncate_tool_output(full, max, None),
+        Ok(r) => {
+            let handle = r.handle.clone();
+            (truncate_tool_output(full, max, Some(&r)), Some(handle))
+        }
+        Err(_) => (truncate_tool_output(full, max, None), None),
     }
 }
 
@@ -434,12 +437,20 @@ impl ToolExecutor for CommandToolExecutor {
                         &calls[i].name,
                         &full,
                     );
-                    NativeToolResult {
-                        tool_use_id,
+                    {
                         // Spill-then-bound: a flood-sized result is persisted whole
-                        // (recoverable via `tool/output`) before the preview is cut.
-                        content: fold_with_recovery(full, max_result_chars, ctx.persona_id),
-                        is_error: None,
+                        // (recoverable via `tool/output`) before the preview is cut;
+                        // the HANDLE rides the result type-level so working memory
+                        // can leave a queryable pointer when this result is later
+                        // evicted (collapse, never delete — 2026-08-24).
+                        let (content, spill_handle) =
+                            fold_with_recovery(full, max_result_chars, ctx.persona_id);
+                        NativeToolResult {
+                            tool_use_id,
+                            content,
+                            is_error: None,
+                            spill_handle,
+                        }
                     }
                 }
                 // A failed tool call is NOT a batch failure — it's fed back to the
@@ -465,6 +476,7 @@ impl ToolExecutor for CommandToolExecutor {
                             max_result_chars,
                         ),
                         is_error: Some(true),
+                        spill_handle: None,
                     }
                 }
             })
