@@ -1906,6 +1906,25 @@ pub struct CognitionEvalResult {
 /// The gym command. Stateless: it reaches the persona's live cognition through the
 /// global [`WorkspaceCycle`](super::persona_workspace) registry, so it needs no host
 /// module state.
+/// Detached evals in flight, registered at DISPATCH time — not at first grade.
+/// The idempotence gap this closes (measured live, 2026-08-24, runs 4ae8e14c +
+/// 912de04f): a round's first task can grade 30+ minutes after dispatch, and until
+/// then the run has no ledger rows and no RunMeta scope — so `benchmark/round`
+/// re-invoked in that window happily minted a DUPLICATE fresh run. Entries are
+/// (run_id, persona, eval_set reference); removed when the detached body returns
+/// (either arm), so a crashed core clears it by process death — never a stale file.
+static DETACHED_IN_FLIGHT: std::sync::Mutex<Vec<(String, String, String)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Snapshot of the detached evals dispatched and not yet finished. For
+/// `benchmark/round`'s idempotence gate.
+pub(crate) fn detached_evals_in_flight() -> Vec<(String, String, String)> {
+    DETACHED_IN_FLIGHT
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default() // poisoned lock = a panicked writer; empty = gate opens, worst case a duplicate run (the pre-fix behavior), never a wedge
+}
+
 #[derive(Default)]
 pub struct CognitionEval;
 
@@ -1946,8 +1965,22 @@ impl ActionCommand for CognitionEval {
             // for the ack's return value below (they're `String`, not `Copy`).
             let ledger_persona = persona_id.clone();
             let ledger_run = run_id.clone();
+            if let Ok(mut g) = DETACHED_IN_FLIGHT.lock() {
+                g.push((
+                    run_id.clone(),
+                    persona_id.as_str().to_string(),
+                    inner
+                        .eval_set
+                        .clone()
+                        .unwrap_or_else(|| DEFAULT_EVAL_SET.to_string()), // same default the task-source block resolves — one identity
+                ));
+            }
             tokio::spawn(async move {
-                match CognitionEval::run_eval_restoring(inner).await {
+                let outcome = CognitionEval::run_eval_restoring(inner).await;
+                if let Ok(mut g) = DETACHED_IN_FLIGHT.lock() {
+                    g.retain(|(rid, _, _)| rid != &ledger_run);
+                }
+                match outcome {
                     Ok(r) => tracing::info!(
                         note = %note,
                         score = r.score,
