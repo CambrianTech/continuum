@@ -27,9 +27,15 @@ resume-is-recall, [[continuity-is-the-default-reset-is-the-exception]].
 ## Self-establishment (every step the ritual did by hand, in dependency order)
 
 1. **Core**: the verb IS a continuum command — autostart already covers it.
-2. **airc**: health-checked; daemon started/repaired automatically. A user
-   NEVER runs airc commands to make a round possible. Agents can join the
-   round room mid-flight (it is a normal room).
+2. **airc — CORRECTED SCOPE (Joel): this is NOT a round concern.** airc is
+   the citizenship substrate for EVERYTHING — rooms, personas, chat, kanban,
+   walls, activities, agents joining. Its self-establishment is a BOOT
+   invariant: `continuum start` on a fresh clone leaves airc healthy and
+   joinable with ZERO manual steps (the #291 law), for every use case. The
+   round verb merely ASSERTS that boot-level invariant and fails loud naming
+   the boot defect if it ever finds airc unhealthy — it never repairs what
+   boot owns. The same elevation applies to EVERY dependency: if any verb
+   would need to establish it, it belongs in boot instead.
 3. **Gym**: fetched if absent, re-materialized if fingerprint-stale (today's
    manual `benchmark/fetch` folds in), GOLD-GATED before first use
    (GOLD-GATE-EVERY-GYM.md) — env-fail vs honest-fail distinguished before a
