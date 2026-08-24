@@ -289,6 +289,7 @@ mod tests {
                     tool_use_id: "c".into(),
                     content: "ok".into(),
                     is_error: None,
+                spill_handle: None,
                 },
                 verb: ToolVerb::classify(name),
                 paths: extract_paths(&input),

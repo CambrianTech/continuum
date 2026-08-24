@@ -113,6 +113,7 @@ mod tests {
                     tool_use_id: c.id.clone(),
                     content: self.result_content.clone(),
                     is_error: None,
+                spill_handle: None,
                 })
                 .collect();
             Ok(NativeBatchOutcome {
@@ -1020,6 +1021,7 @@ mod tests {
                     tool_use_id: c.id.clone(),
                     content: content.clone(),
                     is_error: None,
+                spill_handle: None,
                 })
                 .collect();
             Ok(NativeBatchOutcome {

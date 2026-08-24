@@ -61,6 +61,7 @@ fn short_circuit_acts(calls: &[ToolCall], nudge: &str, status: ActStatus) -> Vec
                 result: ToolResult {
                     tool_use_id: c.id.clone(),
                     content: nudge.to_string(),
+                    spill_handle: None,
                     is_error: None,
                 },
                 verb: ToolVerb::classify(&c.name),
@@ -405,6 +406,7 @@ pub async fn apply_act(
                 tool_use_id: call.id.clone(),
                 content: "(no result returned)".to_string(),
                 is_error: None,
+                spill_handle: None,
             });
         let obs = Observation {
             call: call.clone(),
@@ -433,6 +435,7 @@ pub async fn apply_act(
                     result: ToolResult {
                         tool_use_id: call.id.clone(),
                         content: "dispatched — running in background".to_string(),
+                        spill_handle: None,
                         is_error: None,
                     },
                     verb: ToolVerb::classify(&call.name),

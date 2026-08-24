@@ -229,7 +229,13 @@ pub struct WorkingMemory {
     /// [`ContextBudget::recent_results_chars`] share; tails are the result's
     /// FINAL chars (errors and conclusions live at the end; the head is already
     /// in the receipt trail).
-    recent_results: Mutex<VecDeque<(u64, Option<Uuid>, String)>>,
+    recent_results: Mutex<VecDeque<(u64, Option<Uuid>, String, String, Option<String>)>>,
+    /// One-line pointers for results EVICTED from the channel above — collapse,
+    /// never delete (2026-08-24): "[result #N (verb, Nk chars) — evicted; …]".
+    /// Bounded ring; when IT overflows, the oldest pointer drops silently (a
+    /// pointer to a pointer buys nothing). Rendered as one byte-append-only-ish
+    /// message ahead of the recent-results banner.
+    evicted_pointers: Mutex<VecDeque<String>>,
     /// The lowest action `seq` whose FULL result is still "active" — i.e. the mind is
     /// still inside the act→observe loop that produced it and hasn't yet spoken. The
     /// full raw result exists to answer "what next" the moment the hands fetch it; once
@@ -328,7 +334,7 @@ pub struct VolatileSnapshot {
     /// channel (2026-08-16). Defaulted so pre-field snapshots deserialize;
     /// restore then starts the buffer fresh.
     #[serde(default)]
-    pub recent_results: Vec<(u64, Option<Uuid>, String)>,
+    pub recent_results: Vec<(u64, Option<Uuid>, String, String, Option<String>)>,
 }
 
 /// One typed working-memory entry: kind + the FINAL rendered line (rendered
@@ -365,6 +371,7 @@ impl WorkingMemory {
             action_fp_counts: Mutex::new(HashMap::new()),
             receipt_heads: Mutex::new(VecDeque::new()),
             recent_results: Mutex::new(VecDeque::new()),
+            evicted_pointers: Mutex::new(VecDeque::new()),
             active_from_seq: AtomicU64::new(0),
         }
     }
@@ -505,12 +512,35 @@ impl WorkingMemory {
                 let start = chars.len().saturating_sub(per_entry);
                 chars[start..].iter().collect()
             };
+            let label = acts
+                .first()
+                .map(|o| o.call.name.clone())
+                .unwrap_or_else(|| "act".to_string());
+            let handle = acts.iter().find_map(|o| o.output.result.spill_handle.clone());
             let mut rr = self.recent_results.lock();
-            rr.push_back((seq, room, tail));
-            let mut total: usize = rr.iter().map(|(_, _, t)| t.chars().count() + 1).sum();
+            rr.push_back((seq, room, tail, label, handle));
+            let mut total: usize = rr.iter().map(|(_, _, t, _, _)| t.chars().count() + 1).sum();
             while total > cap && rr.len() > 1 {
-                if let Some((_, _, evicted)) = rr.pop_front() {
+                if let Some((eseq, _, evicted, elabel, ehandle)) = rr.pop_front() {
                     total -= evicted.chars().count() + 1;
+                    // COLLAPSE, never delete: the evicted result leaves a
+                    // queryable one-line pointer (its spill handle when the
+                    // full body is on disk via tool/output; else its identity
+                    // so she can re-run deliberately instead of forgetting it
+                    // ever happened).
+                    let mut ptrs = self.evicted_pointers.lock();
+                    ptrs.push_back(match &ehandle {
+                        Some(h) => format!(
+                            "[result #{eseq} ({elabel}) — collapsed; full output: tool/output {h}]"
+                        ),
+                        None => format!(
+                            "[result #{eseq} ({elabel}, {} chars) — collapsed from view; re-run if needed]",
+                            evicted.chars().count()
+                        ),
+                    });
+                    while ptrs.len() > 12 {
+                        ptrs.pop_front();
+                    }
                 }
             }
         }
@@ -716,9 +746,9 @@ impl WorkingMemory {
             let mut rr = self.recent_results.lock();
             rr.clear();
             rr.extend(snap.recent_results);
-            let mut total: usize = rr.iter().map(|(_, _, t)| t.chars().count() + 1).sum();
+            let mut total: usize = rr.iter().map(|(_, _, t, _, _)| t.chars().count() + 1).sum();
             while total > cap && rr.len() > 1 {
-                if let Some((_, _, evicted)) = rr.pop_front() {
+                if let Some((_, _, evicted, _, _)) = rr.pop_front() {
                     total -= evicted.chars().count() + 1;
                 }
             }
@@ -910,12 +940,25 @@ impl WorkingMemory {
         // Banner as its OWN byte-stable message (never an rr entry, so eviction
         // can never take it — gluing it to entry #1 would delete the ledger's
         // semantics on the first pop_front).
-        let mut out = Vec::with_capacity(rr.len() + 1);
+        let mut out = Vec::with_capacity(rr.len() + 2);
         out.push(
             "Recent results of your own actions (oldest first; #n matches the action ledger):"
                 .to_string(),
         );
-        out.extend(rr.iter().map(|(seq, _, tail)| format!("[result #{seq}] {tail}")));
+        out.extend(rr.iter().map(|(seq, _, tail, _, _)| format!("[result #{seq}] {tail}")));
+        // Collapsed-results index LAST — it CHANGES on every eviction, and
+        // message order is MONOTONE IN STABILITY (the KV law this same night
+        // established): the banner + surviving entries ahead of it stay a
+        // byte-stable prefix; only this one small message re-prefills.
+        {
+            let ptrs = self.evicted_pointers.lock();
+            if !ptrs.is_empty() {
+                out.push(format!(
+                    "Older results, collapsed to pointers (query to expand):\n{}",
+                    ptrs.iter().cloned().collect::<Vec<_>>().join("\n")
+                ));
+            }
+        }
         out
     }
 
@@ -926,7 +969,7 @@ impl WorkingMemory {
         }
         let lines: Vec<String> = rr
             .iter()
-            .map(|(seq, _, tail)| format!("[result #{seq}] {tail}"))
+            .map(|(seq, _, tail, _, _)| format!("[result #{seq}] {tail}"))
             .collect();
         Some(format!(
             "Recent results of your own actions (oldest first; #n matches the \
@@ -1590,6 +1633,7 @@ mod tests {
                     tool_use_id: "call-42".into(),
                     content: "match at foo.rs:42".into(),
                     is_error: None,
+                spill_handle: None,
                 },
                 verb: ToolVerb::Search,
                 paths: Vec::new(),
