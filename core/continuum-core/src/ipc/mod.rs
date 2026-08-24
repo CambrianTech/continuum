@@ -2518,6 +2518,56 @@ pub fn start_server(
                     return;
                 }
             };
+        // FIRST-BOOT MODEL ACQUISITION (2026-08-24, Joel: "this repo isn't for
+        // ME — a new repo user without an agent and a totally different
+        // machine"). A fresh clone has ZERO local GGUFs: the planner finds no
+        // viable candidate, citizens boot mute, and only a log line an agent
+        // would read names the fix. Boot now owns its engine like it owns its
+        // transport: when NO catalog model resolves a local gguf, pull the
+        // modest first-boot default (our own forged 4B coder, ~small download,
+        // tool-trained) in the background — the serving reconcile adopts it on
+        // its own edge when the pull lands. Escape hatch:
+        // CONTINUUM_NO_AUTO_PULL=1 restores the old fail-loud-only behavior.
+        {
+            let none_local = crate::model_registry::catalog::models()
+                .iter()
+                .all(|m| crate::model_registry::artifacts::resolve_gguf_for_model(m).is_none());
+            let opted_out = crate::config_env::read("CONTINUUM_NO_AUTO_PULL")
+                .is_some_and(|v| v == "1");
+            if none_local && !opted_out {
+                const FIRST_BOOT_MODEL: &str = "continuum-ai/qwen3.5-4b-code-forged-GGUF";
+                crate::probe!(
+                    class = "boot.first_model_pull",
+                    model = FIRST_BOOT_MODEL,
+                    "fresh install: no local GGUF anywhere — boot pulls the first-boot                      default so citizens are never mute on a stranger's machine"
+                );
+                tracing::info!(
+                    model = FIRST_BOOT_MODEL,
+                    "🧲 first boot: no local models — downloading the default engine                      (serving adopts it automatically when the pull completes;                      CONTINUUM_NO_AUTO_PULL=1 to opt out)"
+                );
+                let exec = tool_executor.clone();
+                tokio::spawn(async move {
+                    let outcome = exec
+                        .execute(
+                            "models/pull",
+                            serde_json::json!({ "model_id": FIRST_BOOT_MODEL }),
+                        )
+                        .await;
+                    match outcome {
+                        Ok(_) => tracing::info!(
+                            model = FIRST_BOOT_MODEL,
+                            "🧲 first-boot model pull COMPLETE — serving reconcile will adopt it"
+                        ),
+                        Err(e) => tracing::error!(
+                            model = FIRST_BOOT_MODEL,
+                            error = %e,
+                            "first-boot model pull FAILED — citizens stay mute; manual fix:                              continuum models/pull --model_id {FIRST_BOOT_MODEL}"
+                        ),
+                    }
+                });
+            }
+        }
+
             use crate::persona::resume_or_mint_provider::ResumeOrMintProvider;
             // `persona_floor` (read once above) floors the provider's mint count
             // to the SAME value that sized the spawner's plan via with_population
