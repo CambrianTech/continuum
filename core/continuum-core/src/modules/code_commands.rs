@@ -1160,9 +1160,13 @@ impl ActionCommand for CodeShell {
             };
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                let s = state_arc
+                let mut s = state_arc
                     .lock()
                     .map_err(|e| CommandError::Internal(format!("execution lock poisoned: {e}")))?;
+                // Mark the handback so the exit fold PUSHES completion (the
+                // dispatch listener folds it into her working memory) instead
+                // of waiting silently to be polled.
+                s.handed_back = true;
                 return Ok(shell_response(&s)); // still running → hand back the handle
             }
             // Wake on new output or when the inline window closes, then re-check.

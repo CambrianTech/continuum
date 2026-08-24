@@ -57,6 +57,13 @@ pub struct ExecutionState {
     pub pid: Option<u32>,
     pub started_at: u64,
     pub finished_at: Option<u64>,
+    /// True once code/shell's inline window elapsed and the HANDLE was handed
+    /// back to the caller (2026-08-24): completion must then be PUSHED — the
+    /// exit fold publishes a command:completed event the dispatch listener
+    /// folds into her working memory, so a finished build reaches her
+    /// perception without her remembering to poll. False for in-window
+    /// completions (the caller already holds the result).
+    pub handed_back: bool,
     /// Cursor: index of next stdout line to return on poll/watch.
     stdout_cursor: usize,
     /// Cursor: index of next stderr line to return on poll/watch.
@@ -172,6 +179,19 @@ impl CompiledSentinel {
 ///
 /// Maintains working directory and environment across command executions.
 /// Each command runs in its own isolated process (bash -c "...").
+/// Process-global bus handle for pushed shell completions — set once at boot
+/// (ipc wiring), read by the detached exit-fold task which holds no self. Same
+/// shape as the lane-demand / roster globals; None (tests, early boot) = the
+/// old poll-only behavior, never an error.
+static SHELL_COMPLETION_BUS: std::sync::OnceLock<
+    std::sync::Arc<crate::runtime::message_bus::MessageBus>,
+> = std::sync::OnceLock::new();
+
+/// Wire the completion bus (boot, once). Idempotent; later calls are no-ops.
+pub fn set_shell_completion_bus(bus: std::sync::Arc<crate::runtime::message_bus::MessageBus>) {
+    let _ = SHELL_COMPLETION_BUS.set(bus);
+}
+
 pub struct ShellSession {
     id: String,
     persona_id: String,
@@ -323,6 +343,7 @@ impl ShellSession {
             pid: None,
             started_at: now_ms,
             finished_at: None,
+            handed_back: false,
             stdout_cursor: 0,
             stderr_cursor: 0,
             output_notify: notify,
@@ -952,13 +973,52 @@ async fn run_shell_command(
                 s.finished_at = Some(now());
                 // Wake any blocked watch() calls to deliver final status
                 s.output_notify.notify_one();
+                // PUSHED COMPLETION (2026-08-24): a handed-back execution's
+                // finish previously reached her only if she remembered to
+                // poll. Publish the same command:completed shape tracked
+                // dispatches use; the dispatch listener folds it into her
+                // working memory IF the handle was registered (apply.rs does,
+                // on handback).
+                if s.handed_back {
+                    if let (Some(bus), Ok(handle)) =
+                        (SHELL_COMPLETION_BUS.get(), uuid::Uuid::parse_str(&s.id))
+                    {
+                        let mut lines: Vec<&String> =
+                            s.stdout_lines.iter().chain(s.stderr_lines.iter()).collect();
+                        let cut = lines.len().saturating_sub(20);
+                        let tail: String = lines
+                            .split_off(cut)
+                            .into_iter()
+                            .map(String::as_str)
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        let ev = crate::runtime::command_events::CommandCompletedEvent {
+                            command_name: "code/shell".to_string(),
+                            duration_ms: s.finished_at.unwrap_or(0).saturating_sub(s.started_at), // set 3 lines up; 0 → saturates to 0ms, display only
+                            success: s.exit_code == Some(0),
+                            error: (s.exit_code != Some(0))
+                                .then(|| format!("exit {}", s.exit_code.map_or(-1, |c| c))),
+                            handle: Some(handle),
+                            result: Some(serde_json::json!({
+                                "exitCode": s.exit_code,
+                                "tail": tail,
+                            })),
+                        };
+                        if let Ok(payload) = serde_json::to_value(&ev) { // bus fan-out boundary — the same encode tracked dispatches pay
+                            bus.publish_async_only(
+                                crate::runtime::command_events::COMMAND_COMPLETED_TOPIC,
+                                payload,
+                            );
+                        }
+                    }
+                }
 
                 log_info!(
                     "code",
                     "shell",
                     "Execution {} finished: exit={} cmd={}",
                     &s.id[..8],
-                    s.exit_code.unwrap_or(-1),
+                    s.exit_code.unwrap_or(-1), // killed/no-status path reads as conventional -1 in the error line
                     &s.command
                 );
             }
