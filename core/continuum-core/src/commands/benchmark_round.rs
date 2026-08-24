@@ -254,6 +254,28 @@ impl ActionCommand for BenchmarkRound {
             .resolve_persona(&persona_ref)
             .map_err(CommandError::Invalid)?
             .as_uuid();
+        // SELF-ESTABLISHMENT (spec step 5): post-reboot, a resolvable persona's
+        // workspace TEMPLATE can still be assembling — the eval's own fork wait is
+        // 10s, and dispatching into that window burned two runs today (each died
+        // "no workspace template after 10s" and the round had to be re-invoked by
+        // hand — the exact babysitting this verb exists to delete). Wait bounded
+        // here (2 min covers a cold spawn), fail loud with the fix if it never
+        // assembles.
+        {
+            let mut waited = 0u32;
+            while !crate::cognition::persona_workspace::global()
+                .template_ids()
+                .contains(&persona_uuid)
+            {
+                if waited >= 120 {
+                    return Err(CommandError::Invalid(format!(
+                        "persona {persona_uuid} resolved but her workspace template never                          assembled within {waited}s — the core may still be booting her.                          Check persona/instances/list, then re-run this same command."
+                    )));
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+                waited += 4;
+            }
+        }
 
         // 3. Resume state: the streamed `kind:"task"` rows are the round's durable
         //    memory. Missing ledger = first round ever = fresh.
