@@ -893,6 +893,32 @@ impl WorkingMemory {
     /// running). Deliberately NOT gated on settlement: the tails are small and
     /// append-only, so the KV prefix stays stable and the #139 full-dump prefill
     /// objection does not apply. `None` before any act.
+    /// The recent-results channel as ONE MESSAGE PER RESULT — the KV layer-3
+    /// shape (2026-08-23). As a single block, any eviction (pop_front under the
+    /// char cap — every act once results are large) mutated the block's HEAD
+    /// in place, re-prefilling everything after the burst: measured 75%→22%
+    /// cache decay within one task, ~6.4k tokens of reuse against 29k prompts.
+    /// As separate messages, eviction DROPS THE OLDEST MESSAGE whole and
+    /// llama's --cache-reuse chunk-shifting re-aligns the surviving suffix
+    /// instead of re-ingesting it. First message carries the banner so the
+    /// semantics of the ledger stay stated.
+    pub fn recent_results_messages(&self) -> Vec<String> {
+        let rr = self.recent_results.lock();
+        if rr.is_empty() {
+            return Vec::new();
+        }
+        // Banner as its OWN byte-stable message (never an rr entry, so eviction
+        // can never take it — gluing it to entry #1 would delete the ledger's
+        // semantics on the first pop_front).
+        let mut out = Vec::with_capacity(rr.len() + 1);
+        out.push(
+            "Recent results of your own actions (oldest first; #n matches the action ledger):"
+                .to_string(),
+        );
+        out.extend(rr.iter().map(|(seq, _, tail)| format!("[result #{seq}] {tail}")));
+        out
+    }
+
     pub fn recent_results_block(&self) -> Option<String> {
         let rr = self.recent_results.lock();
         if rr.is_empty() {

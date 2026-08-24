@@ -564,9 +564,24 @@ impl LlmDeliberationFaculty {
         // that overshoots and gets trimmed. That regime is not reachable in production
         // (`window_for` floors at MIN_SERVE_CTX) but the ordering should not depend on it.
         share
+            .min(Self::COMPLETION_CEILING_TOKENS)
             .min(context_window.saturating_sub(mandatory))
             .max(Self::COMPLETION_FLOOR_TOKENS)
     }
+
+    /// Absolute ceiling on the reply reserve. A bare RATIO scales its waste
+    /// with the window: at the 166k lane the /2 share reserved 83,200 tokens
+    /// for replies that measure 0.2-2.5k, squeezing the PROMPT to 73k and
+    /// forcing the packer to amputate accumulated working memory mid-task
+    /// (measured 2026-08-23: demand 112-118k against the squeezed budget,
+    /// context trimmed at act 27 of a 32-act task). Derived, not declared:
+    /// 8× the smallest servable window ≈ 16k — nine minutes of decode at the
+    /// measured ~30 tok/s, far above any observed turn (a thinking model's
+    /// longest measured emission this round was ~2.5k). The honest endgame is
+    /// output-p95 measurement riding the working-set registry pattern; until
+    /// that lands this ceiling stops the ratio's unbounded growth without
+    /// ever clipping a real reply.
+    const COMPLETION_CEILING_TOKENS: u32 = crate::cognition::serving_plan::MIN_SERVE_CTX * 8;
 
     /// The reply's share of the served window, as a DENOMINATOR: reply gets `window/N`.
     ///
@@ -1736,7 +1751,7 @@ impl LlmDeliberationFaculty {
             // behind it: measured 20-22% cached on 34-42k prefills, the old
             // ceiling wearing a new hat. Order in the tail IS the fix: history
             // (stable head) → churning grounding → pinned newest result.
-            if let Some(block) = wm.recent_results_block() {
+            for block in wm.recent_results_messages() {
                 messages.push(ChatMessage::text("user", block));
             }
         }
