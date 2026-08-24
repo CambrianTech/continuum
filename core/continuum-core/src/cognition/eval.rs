@@ -2484,6 +2484,21 @@ impl CognitionEval {
         // A/B fairness, not protection of her durable memory — that protection now
         // comes from measuring a copy at all. See
         // [[eval-mutates-persona-lift-needs-isolation]].
+        // Per-task lesson streaming: opened ONCE before the drive so every
+        // graded task teaches AT GRADE TIME (an interrupted round keeps its
+        // lessons). A/B (gene) runs never teach.
+        let lesson_sink = if p.learn.learns() && p.gene.is_none() {
+            let sink = LessonSink::open(&persona_uuid, room, &tasks);
+            if sink.is_none() {
+                tracing::warn!(
+                    persona = %persona_uuid,
+                    "learn mode: no live admission for persona — lessons will not stream                      (she was measured, but the living self is not resident to teach)"
+                );
+            }
+            sink
+        } else {
+            None
+        };
         // Omitted → None → her lived temperature rides (see the param doc);
         // an explicit value pins the whole run (0.0 = the legacy greedy form).
         let isolation = cycle.isolate_for_eval_at(p.temperature);
@@ -2506,6 +2521,7 @@ impl CognitionEval {
                 max_acts,
                 max_retries,
                 eval_workspace_root.as_deref(),
+                None, // A/B arm measures the gene; teaching is a separate decision
             )
             .await
             .pass;
@@ -2528,6 +2544,7 @@ impl CognitionEval {
                 max_acts,
                 max_retries,
                 eval_workspace_root.as_deref(),
+                None, // A/B arm measures the gene; teaching is a separate decision
             )
             .await;
             let (gene_score, gene_results) = (gene_outcome.pass, gene_outcome.results);
@@ -2652,6 +2669,7 @@ impl CognitionEval {
                 max_acts,
                 max_retries,
                 eval_workspace_root.as_deref(),
+                lesson_sink.as_ref(),
             )
             .await
         };
@@ -2670,19 +2688,23 @@ impl CognitionEval {
         // forget-context: keep the memory, excise the crib sheet). The exam ran on the fork
         // (#59 intact); only the clean lesson crosses back. Single-pass only in this slice.
         // NEVER learn from an infra-unavailable run — a dead-lane "failure" is not a lesson.
-        if p.learn.learns() && p.gene.is_none() && infra_unavailable.is_none() {
-            let transferred = transfer_redacted_lessons(
-                &persona_uuid,
-                room,
-                p.eval_set.as_deref().unwrap_or(DEFAULT_EVAL_SET), // the run's real set: None means the default set genuinely ran
-                &tasks,
-                &results,
-            );
+        // Lessons STREAMED at grade time (see LessonSink — killed runs keep
+        // what they earned). Here: the run-end summary + the SEAM-3a progress
+        // engram, which needs the whole run's shape and stays end-of-run.
+        if let Some(sink) = &lesson_sink {
+            if infra_unavailable.is_none() {
+                admit_progress_engram(
+                    &sink.admission,
+                    room,
+                    p.eval_set.as_deref().unwrap_or(DEFAULT_EVAL_SET), // the run's real set: None means the default set genuinely ran
+                    &results,
+                );
+            }
             tracing::info!(
                 persona = %persona_uuid,
-                transferred,
+                streamed = sink.admitted(),
                 tasks = tasks.len(),
-                "learn mode: redacted exam lessons admitted to the living self"
+                "learn mode: redacted exam lessons streamed at grade time"
             );
         }
 
@@ -2759,61 +2781,70 @@ fn format_exam_lesson(task: &EvalTask, result: &EvalTaskResult) -> String {
     )
 }
 
-/// LEARN mode's transfer step: admit each task's REDACTED lesson into the LIVING
-/// persona so the exam becomes a real teacher without leaking the answer key. The
-/// exam already ran on the fork (#59 untouched); this is the ONLY thing that
-/// reaches her durable memory, and only after the held-out answers are scrubbed.
-/// Returns how many FRESH lessons were admitted (an identical lesson from a
-/// re-take dedups idempotently via `admit_reflection` and is not counted).
-fn transfer_redacted_lessons(
-    persona_uuid: &uuid::Uuid,
+/// PER-TASK lesson streaming (2026-08-23, Joel: "she going to learn from
+/// this?" — and the honest answer exposed that end-of-run transfer meant
+/// every KILLED run taught NOTHING: eight attempts that day, zero lessons
+/// delivered, because the teacher waited for the final bell). The sink is
+/// built ONCE per learning run (policy over the WHOLE set's answer keys, so
+/// a lesson about task A can never leak task B's key either; the living
+/// self's admission + experience dir resolved once) and each task's lesson
+/// streams AT GRADE TIME — an interrupted round keeps every lesson it
+/// earned. Resume-is-recall applied to teaching.
+pub(crate) struct LessonSink {
+    policy: crate::persona::redaction::RedactionPolicy,
+    persona_uuid: uuid::Uuid,
     room: uuid::Uuid,
-    eval_set: &str,
-    tasks: &[EvalTask],
-    results: &[EvalTaskResult],
-) -> usize {
-    // Policy: scrub every held-out answer key (each task's `expect`).
-    let answers: Vec<String> = tasks
-        .iter()
-        .map(|t| t.expect.clone())
-        .filter(|a| !a.trim().is_empty())
-        .collect();
-    let policy = crate::persona::redaction::RedactionPolicy::new(vec![Box::new(
-        crate::persona::redaction::ExamKeyDetector::new(
-            answers,
-            crate::persona::redaction::ExamKeyDetector::DEFAULT_MIN_LEN,
-        ),
-    )]);
+    peer_dir: std::path::PathBuf,
+    admission: std::sync::Arc<crate::persona::admission_state::AdmissionState>,
+    admitted: std::sync::atomic::AtomicUsize,
+}
 
-    // The LIVING persona's admission — never the fork.
-    let peer_dir = crate::identity::citizen_peer_dir(
-        &crate::modules::persona_instance_manager::resolve_continuum_root(),
-        crate::identity::PeerId::from_uuid(*persona_uuid),
-    );
-    if let Err(e) = std::fs::create_dir_all(&peer_dir) {
-        tracing::warn!(error = %e, "citizen dir for the experience stream could not be created — exam episodes stay out of curriculum this run");
-    }
-    let Some(admission) = crate::cognition::persona_workspace::global()
-        .get(persona_uuid)
-        .and_then(|cycle| cycle.acting().map(|a| a.admission.clone()))
-    else {
-        tracing::warn!(
-            persona = %persona_uuid,
-            "learn mode: no live admission for persona — lesson not transferred \
-             (she was measured, but the living self is not resident to teach)"
+impl LessonSink {
+    /// `None` when the living self is not resident to teach (measured but
+    /// unteachable — the caller logs it once).
+    pub(crate) fn open(persona_uuid: &uuid::Uuid, room: uuid::Uuid, tasks: &[EvalTask]) -> Option<Self> {
+        let answers: Vec<String> = tasks
+            .iter()
+            .map(|t| t.expect.clone())
+            .filter(|a| !a.trim().is_empty())
+            .collect();
+        let policy = crate::persona::redaction::RedactionPolicy::new(vec![Box::new(
+            crate::persona::redaction::ExamKeyDetector::new(
+                answers,
+                crate::persona::redaction::ExamKeyDetector::DEFAULT_MIN_LEN,
+            ),
+        )]);
+        let peer_dir = crate::identity::citizen_peer_dir(
+            &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            crate::identity::PeerId::from_uuid(*persona_uuid),
         );
-        return 0;
-    };
-
-    let mut admitted = 0usize;
-    for (task, result) in tasks.iter().zip(results.iter()) {
-        if task.prompt.trim().is_empty() {
-            continue;
+        if let Err(e) = std::fs::create_dir_all(&peer_dir) {
+            tracing::warn!(error = %e, "citizen dir for the experience stream could not be created — exam episodes stay out of curriculum this run");
         }
-        let (lesson, _report) = policy.redact(&format_exam_lesson(task, result));
+        let admission = crate::cognition::persona_workspace::global()
+            .get(persona_uuid)
+            .and_then(|cycle| cycle.acting().map(|a| a.admission.clone()))?;
+        Some(Self {
+            policy,
+            persona_uuid: *persona_uuid,
+            room,
+            peer_dir,
+            admission,
+            admitted: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+
+    /// Stream ONE graded task's lesson + experience episode, at grade time.
+    /// Infra-graded tasks are skipped — a dead lane is substrate evidence,
+    /// never her lesson.
+    pub(crate) fn teach(&self, task: &EvalTask, result: &EvalTaskResult) {
+        if task.prompt.trim().is_empty() || result.grade.trim_start().starts_with("infra") {
+            return;
+        }
+        let (lesson, _report) = self.policy.redact(&format_exam_lesson(task, result));
         let engram = crate::persona::engram::Engram {
             id: uuid::Uuid::new_v4(),
-            context_id: Some(room),
+            context_id: Some(self.room),
             kind: crate::persona::engram::EngramKind::Episodic,
             content: lesson,
             origin: crate::persona::engram::EngramOrigin::SelfReflection {
@@ -2825,34 +2856,48 @@ fn transfer_redacted_lessons(
             admission_trace_id: None,
         };
         if matches!(
-            admission.admit_reflection(engram),
+            self.admission.admit_reflection(engram),
             Ok(crate::persona::engram::AdmissionDecision::Admit { .. })
         ) {
-            admitted += 1;
+            self.admitted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            crate::probe!(
+                class = "eval.lesson.streamed",
+                task = %task.id,
+                ok = result.ok,
+                "redacted lesson admitted at GRADE time — an interrupted round keeps every lesson it earned"
+            );
         }
-        // SEAM 1 of the academy convergence (archaeology 2026-08-23): the same
-        // graded pair also lands in the EXPERIENCE STREAM, so
-        // `genome/teach --from_experience` can remediate the exact failures
-        // learn-mode just committed to memory as lessons. Before this, an eval
-        // run wrote lessons into the MIND but nothing into the stream — the
-        // salience→curriculum drain could never see an exam failure.
-        // [[lived-and-eval-experience-are-one-stream-one-being]]
         let episode =
             crate::cognition::experience::ExperienceRecord::from_eval_result(task, result);
-        if let Err(e) = crate::cognition::experience::append_experience(&peer_dir, &episode) {
+        if let Err(e) = crate::cognition::experience::append_experience(&self.peer_dir, &episode) {
             tracing::warn!(
-                persona = %persona_uuid,
+                persona = %self.persona_uuid,
                 task = %task.id,
                 error = %e,
                 "exam episode could not join the experience stream — lesson admitted, curriculum blind to it"
             );
         }
     }
-    // SEAM 3a: she REMEMBERS BECOMING BETTER. The progress ledger records
-    // passRate durably, but no engram ever carried it — a persona's beliefs
-    // formed with no awareness of her own measured capability. One Semantic
-    // summary per learned exam, keyed ["progress", <eval_set>], so the dream
-    // can cluster successive exams into a trajectory belief.
+
+    pub(crate) fn admitted(&self) -> usize {
+        self.admitted.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// SEAM 3a: she REMEMBERS BECOMING BETTER. The progress ledger records
+/// passRate durably, but no engram ever carried it — a persona's beliefs
+/// formed with no awareness of her own measured capability. One Semantic
+/// summary per learned exam, keyed ["progress", <eval_set>], so the dream
+/// can cluster successive exams into a trajectory belief. (The per-task
+/// lesson half of the old transfer step now STREAMS at grade time — see
+/// [`LessonSink`]; this run-shape summary is the one piece that genuinely
+/// needs the whole run.)
+fn admit_progress_engram(
+    admission: &crate::persona::admission_state::AdmissionState,
+    room: uuid::Uuid,
+    eval_set: &str,
+    results: &[EvalTaskResult],
+) {
     let solved = results.iter().filter(|r| r.ok).count();
     let graded = results.len();
     if graded > 0 {
@@ -2874,7 +2919,6 @@ fn transfer_redacted_lessons(
         };
         let _ = admission.admit_reflection(summary); // duplicate-content dedup is the store's job; a repeat exam at the same rate is legitimately the same belief
     }
-    admitted
 }
 
 /// Fraction of tasks where she ACTED at least once before settling — the
@@ -3932,6 +3976,10 @@ async fn run_pass(
     // core cwd — or a correct render scores a false zero (#49 dual-root gap). `None` = the
     // hands used the default root (core cwd) and grading follows.
     workspace_root: Option<&str>,
+    // Per-task lesson streaming (learn mode): `Some` = teach each graded task
+    // at grade time. `None` = A/B arms and non-learning runs (an A/B measures
+    // the gene, never teaches — adopting is a separate decision).
+    lesson_sink: Option<&LessonSink>,
 ) -> PassOutcome {
     let mut pass = 0u32;
     let mut results = Vec::with_capacity(tasks.len());
@@ -4464,7 +4512,7 @@ async fn run_pass(
         // loop folded across every act→observe tick (the model's own measured time
         // + tokens). Reported next to the grade so accuracy and speed sit on one row.
         let m = settled.metrics;
-        results.push(EvalTaskResult {
+        let task_result = EvalTaskResult {
             id: t.id.clone(),
             ok,
             grade,
@@ -4477,7 +4525,12 @@ async fn run_pass(
             cache_hit_rate: m.cache_hit_rate(),
             prefill_ms: m.prefill_ms,
             decode_ms: m.decode_ms,
-        });
+        };
+        // Teach at GRADE TIME — an interrupted round keeps this lesson.
+        if let Some(sink) = lesson_sink {
+            sink.teach(t, &task_result);
+        }
+        results.push(task_result);
         report_task_graded(
             &t.id,
             ok,
