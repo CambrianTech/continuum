@@ -1741,20 +1741,16 @@ impl LlmDeliberationFaculty {
         // window-edge overflow — and the live GGUF chat template renders text reliably.
         // Trailing (#205): appended last, KV prefix stays stable. Settlement-gated inside
         // the accessor so it stops re-prefilling once the turn settles (#139/#165).
-        if let Some(wm) = &self.working_memory {
-            // APPEND-ONLY HISTORY FIRST (2026-08-23, the A/B that failed at 20%):
-            // the recent-results ledger grows act-over-act with a byte-stable
-            // head, so it EXTENDS the reusable KV prefix — but only if nothing
-            // churning renders before it. The first cut of the trailing-grounding
-            // move (#2415) placed workspace-map/kanban ahead of this block, and
-            // every grounding change re-prefilled the whole result history
-            // behind it: measured 20-22% cached on 34-42k prefills, the old
-            // ceiling wearing a new hat. Order in the tail IS the fix: history
-            // (stable head) → churning grounding → pinned newest result.
-            for block in wm.recent_results_messages() {
-                messages.push(ChatMessage::text("user", block));
-            }
-        }
+        // GROUNDING BEFORE THE RING (2026-08-24, wire-diffed on round 706215f4):
+        // with the ring append-only mid-settle (the 8/24 eviction fix), each new
+        // result APPENDED after grounding DISPLACED the byte-identical
+        // workspace-map behind it — four consecutive wire diffs showed the
+        // divergence at exactly that seam, re-prefilling the whole 75% tail on a
+        // model that cannot KV-shift. Reversed from the 8/23 cut deliberately:
+        // that A/B lost because the ring ALSO churned then (per-act eviction),
+        // so either order re-prefilled; with the ring extend-only, stable
+        // grounding ahead of it extends the prefix, and a grounding CHANGE costs
+        // one re-prefill instead of every act paying displacement.
         for c in ws
             .broadcast
             .iter()
@@ -1772,6 +1768,14 @@ impl LlmDeliberationFaculty {
                 body.push_str("]\n");
                 body.push_str(&c.content);
                 messages.push(ChatMessage::text("user", body));
+            }
+        }
+        if let Some(wm) = &self.working_memory {
+            // The append-only results ring LAST among the standing tail — its
+            // appends now land at the growth frontier instead of displacing
+            // anything ([[continuity-is-the-default-reset-is-the-exception]]).
+            for block in wm.recent_results_messages() {
+                messages.push(ChatMessage::text("user", block));
             }
         }
 
