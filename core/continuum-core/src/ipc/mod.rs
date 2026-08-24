@@ -1847,6 +1847,9 @@ pub fn start_server(
     // Phase 3: CodeModule (wraps file engines and shell sessions per-persona)
     let file_engines: Arc<DashMap<String, FileEngine>> = Arc::new(DashMap::new());
     let shell_sessions: Arc<DashMap<String, ShellSession>> = Arc::new(DashMap::new());
+    // Pushed shell completions (2026-08-24): the exit fold publishes
+    // command:completed for handed-back executions; wire it the bus once.
+    crate::code::shell_session::set_shell_completion_bus(runtime.bus_arc());
     let code_state = Arc::new(CodeState::new(
         file_engines.clone(),
         shell_sessions.clone(),

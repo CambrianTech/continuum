@@ -42,7 +42,11 @@ const PROPRIOCEPTION_RECALL_SALIENCE: f32 = 0.25;
 fn is_long_running(command: &str) -> bool {
     matches!(
         command,
-        "code/cargo/check" | "code/cargo/test" | "cognition/full-evaluate" | "forge/train"
+        "code/cargo/check"
+            | "code/cargo/test"
+            | "code/cargo/build"
+            | "cognition/full-evaluate"
+            | "forge/train"
     )
 }
 
@@ -436,6 +440,36 @@ pub async fn apply_act(
                 is_error: None,
                 spill_handle: None,
             });
+        // PUSHED SHELL COMPLETION, receive side (2026-08-24): a `code/shell` whose
+        // inline window elapsed hands back a RUNNING handle. Register that handle as a
+        // dispatch NOW so the exit fold's command:completed event (shell_session.rs)
+        // has a label to fold against — dispatch_listener drops completions for
+        // unregistered handles. Without this she must remember to poll; with it the
+        // finished build lands in her working memory like any dispatched background job.
+        if call.name.replace('_', "/") == "code/shell" && typed_result.is_error != Some(true) {
+            if let Ok(resp) = serde_json::from_str::<crate::code::shell_types::ShellExecuteResponse>(
+                &typed_result.content,
+            ) {
+                if resp.status == crate::code::shell_types::ShellExecutionStatus::Running {
+                    if let Ok(handle) = uuid::Uuid::parse_str(&resp.execution_id) {
+                        let label: String = call
+                            .input
+                            .get("command")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("code/shell") // label only — the handle is the key
+                            .chars()
+                            .take(80)
+                            .collect();
+                        body.working_memory.record_dispatch_event(
+                            handle,
+                            &format!("code/shell: {label}"),
+                            "handle handed back — still running",
+                            crate::cognition::working_memory::DispatchStatus::Running,
+                        );
+                    }
+                }
+            }
+        }
         let obs = Observation {
             call: call.clone(),
             output: ToolOutput {
