@@ -744,6 +744,25 @@ impl DreamConsolidationRegion {
                 return sleep();
             }
         }
+        // EXAM COURTESY (2026-08-24, measured on round 4ae8e14c): while a measured
+        // round is grading, a ~500-token dream landing on the single serving slot
+        // between two 35k exam deliberations WIPES the slot's KV prefix — the exam
+        // re-prefills ~90s of context it had cached, every few minutes, all round
+        // (probe stream: dream-belief-review interleaved with cognition/deliberation,
+        // cached alternating 7,962 → 0). The lane PERMIT above caps dream
+        // concurrency; it cannot protect the CACHE. Nobody vacuums the exam hall
+        // during the test: sleep is deferrable by definition, so while any eval is
+        // in flight (dispatched or grading), every persona's dream waits.
+        if crate::cognition::eval::live_eval_run_id().is_some()
+            || !crate::cognition::eval::detached_evals_in_flight().is_empty()
+        {
+            crate::probe!(
+                class = "dream.deferred_for_exam",
+                persona = %persona_id,
+                "measured round in flight — dream deferred (slot KV courtesy)"
+            );
+            return sleep();
+        }
         let fresh = fresh_episodics(&self.consolidated, persona_id, &episodics);
         if fresh.len() < self.min_cluster {
             // Nothing new to digest — a QUIET day. The dream still works. Prefer
