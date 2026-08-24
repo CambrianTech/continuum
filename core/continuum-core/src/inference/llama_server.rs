@@ -2701,23 +2701,46 @@ impl LlamaServerControl for LlamaServerProcess {
         let flash_attn = crate::config_env::read("SERVING_FLASH_ATTN")
             .map(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "1" | "on" | "true" | "yes"))
             .unwrap_or(false);
-        let mmproj = crate::model_registry::artifacts::resolve_mmproj_for_model(&target.model);
-        if mmproj.is_none()
-            && target
-                .model
-                .capabilities
-                .contains(&crate::model_registry::Capability::Vision)
+        // THE MAIN PERSONA LANE SERVES TEXT-ONLY — sight lives in the SIDECAR
+        // (2026-08-24, the cache_reuse confession). llama-server hard-disables
+        // `--cache-reuse` the moment an mmproj loads ("cache_reuse is not supported
+        // by multimodal, it will be disabled" — in our own lane log at every boot),
+        // and cache_reuse chunk-shifting is the mechanism the ENTIRE message-shaped
+        // prompt economy leans on: working-memory evicts whole messages and the
+        // conversation fitter drops whole old turns on the assumption the surviving
+        // suffix realigns. With it silently off, every drop re-prefilled everything
+        // after it — measured on round 437529ff: 6,419 of 30,004 tokens cached (the
+        // system head only) with the slot EXCLUSIVELY the exam's. That is ~60-90s of
+        // re-prefill tax per act, for every persona, always.
+        //
+        // Native ingestion on the main lane bought nothing that the designed
+        // text-only path doesn't provide: `vision_lane_ready` reads /props (which
+        // will now truthfully report no vision) and the SIDECAR VL lane +
+        // description bridge take over — the exact flow every text-only mind
+        // already uses. One sight path, not two. The mmproj artifact stays
+        // resolved/fetched for the sidecar's use.
+        let mmproj: Option<std::path::PathBuf> = None;
+        if crate::model_registry::artifacts::resolve_mmproj_for_model(&target.model).is_some() {
+            crate::probe!(
+                class = "serving.vision.mmproj_withheld",
+                model = %target.model.id,
+                "mmproj resolved but WITHHELD from the main lane (multimodal disables \
+                 cache_reuse); sight routes via the vision sidecar + description bridge"
+            );
+        } else if target
+            .model
+            .capabilities
+            .contains(&crate::model_registry::Capability::Vision)
         {
-            // A Vision row serving text-only is a capability LIE — warn loud rather than
-            // fabricate sight ([[fallbacks-are-illegal-fail-loud]]). This is a RECEIPT,
-            // not a flag, which is why it stays with resolution and not in `lane_args`.
+            // A Vision row with no projector anywhere is still a capability LIE —
+            // the sidecar can't load what doesn't exist. Same receipt as before.
             tracing::warn!(
                 probe_class = "serving.vision.no_mmproj",
                 model = %target.model.id,
                 declared = ?target.model.mmproj_local_path,
-                "vision-capable model has no resolvable mmproj projector — serving TEXT-ONLY; \
-                 image parts will be silently ignored. Fetch the mmproj GGUF (see the model row's \
-                 mmproj_local_path) or drop the Vision capability so the row stops claiming sight."
+                "vision-capable model has no resolvable mmproj projector — no sidecar sight \
+                 possible. Fetch the mmproj GGUF (see the model row's mmproj_local_path) or drop \
+                 the Vision capability so the row stops claiming sight."
             );
         }
         let mtp_draft = crate::model_registry::artifacts::resolve_mtp_draft_for_model(&target.model);
