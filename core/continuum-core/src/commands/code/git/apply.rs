@@ -56,8 +56,16 @@ crate::action_command! {
     output: GitApplyResult,
     run(this, ctx, p) => {
         if p.patch.trim().is_empty() {
+            // Glass-boxed 2026-08-24: she hit this refusal THIRTEEN times in one
+            // night — the bare param name taught nothing, so the same mistake
+            // repeated. An error that costs an act must teach the call shape.
             return Err(CommandError::Invalid(
-                "code/git/apply: 'patch' is required (the unified diff text — the output of code/git/diff)".into(),
+                concat!(
+                    "code/git/apply: 'patch' is required — the unified diff TEXT itself ",
+                    "(not a path). Get one from code/git/diff and pass it verbatim as ",
+                    "patch=<that text>. To write or replace whole files, use code/write instead."
+                )
+                .into(),
             ));
         }
         let root = workspace_root_for(&this.state, ctx)?;
