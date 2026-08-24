@@ -670,6 +670,13 @@ mod tests {
         let owned = ["cargo-target", "genome-models", "logs", "probes"];
         let deferred = [
             ("hf-hub", "#155: hub LRU keyed on last-access — downloads are re-fetchable"),
+            (
+                "eval-captures",
+                "#155: age-based sweep — every file is a re-creatable diagnostic (kv-diag \
+                 snapshots, wire-request jsonl from SERVING_WIRE_CAPTURE_DIR); writers are \
+                 opt-in and quiet by default, so the class grows only while an operator is \
+                 actively hunting. Owner when built: a capped appender like the log pool",
+            ),
             ("citizens", "#155/#49: workspace CoW fix removes the bulk; stores are persona MEMORY, never auto-evicted"),
             // Sibling of `citizens` and inherits its rule: a LIVE mind's longterm.db and
             // working-set.json are MEMORY, never auto-evicted. What IS evictable is the

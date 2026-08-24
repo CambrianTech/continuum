@@ -223,6 +223,11 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
         // orphaned a full clone that no reporter could see, the silent-class shape
         // the 2026-07-13 incident was about.
         TrackedDir::new("eval-roots", std::env::temp_dir().join("continuum-eval")),
+        // Diagnostic captures: cognition kv-diag snapshots + the wire-request
+        // capture (SERVING_WIRE_CAPTURE_DIR default location). Opt-in writers,
+        // bounded by operator attention in practice — tracked so "in practice"
+        // never becomes the 2026-07-13 silent-class shape.
+        TrackedDir::new("eval-captures", home.join(".continuum/eval-captures")),
     ];
     // Present only when its real location is KNOWN (see the warn above). Kept
     // CONDITIONAL rather than defaulted: fabricating a path here is how a class

@@ -2141,6 +2141,31 @@ impl Faculty for LlmDeliberationFaculty {
         // musing or a long ambient turn. Directed calls take from the full pool. Scoped to a
         // block so every lane releases the instant generation returns — downstream
         // capture/parse/act hold nothing. [[conversational-latency-is-a-misdirection-budget]]
+        // WIRE CAPTURE (2026-08-24, the churn hunt's missing instrument): when
+        // `SERVING_WIRE_CAPTURE_DIR` is configured (config.env — same channel as
+        // SERVING_KV_CACHE_TYPE), append this request's EXACT message list to
+        // `<dir>/<persona>.wire.jsonl` before it ships. Byte-diffing consecutive
+        // rows names the precise prompt position where the KV prefix dies —
+        // today that diagnosis ran on the BID capture, which is not the wire,
+        // and misled twice. Off (unset) = zero cost, zero IO — the Noop default
+        // every capture sink owes the hot path.
+        if let Some(dir) = crate::config_env::read("SERVING_WIRE_CAPTURE_DIR") {
+            let row = serde_json::json!({
+                "ts_ms": crate::persona::trace::now_ms(),
+                "persona": self.persona_name,
+                "messages": request
+                    .messages
+                    .iter()
+                    .map(|m| serde_json::json!({"role": m.role, "text": m.content_text()}))
+                    .collect::<Vec<_>>(),
+            });
+            let path = std::path::Path::new(&dir).join(format!("{}.wire.jsonl", self.persona_name));
+            let _ = std::fs::create_dir_all(&dir);
+            use std::io::Write as _;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+                let _ = writeln!(f, "{row}");
+            }
+        }
         let gen_result = {
             let _lane =
                 crate::cognition::resource_admission::acquire_serving_lane(ws.directed_at_self)
