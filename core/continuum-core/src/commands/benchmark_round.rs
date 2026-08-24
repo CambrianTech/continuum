@@ -19,8 +19,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::cognition::eval::{
-    graded_task_ids_from, live_eval_run_id, progress_ledger_dir, CognitionEval,
-    CognitionEvalParams, EvalTask,
+    detached_evals_in_flight, graded_task_ids_from, live_eval_run_id, progress_ledger_dir,
+    CognitionEval, CognitionEvalParams, EvalTask,
 };
 use crate::cognition::learning_policy::LearningPolicy;
 use crate::sdk_codegen::command::ActionCommand;
@@ -84,6 +84,27 @@ pub struct BenchmarkRoundResult {
     pub remaining: u32,
     /// Human-readable one-liner of what the verb decided and why.
     pub note: String,
+}
+
+/// The dispatch-time idempotence gate, pure for tests: given the detached evals in
+/// flight, decide whether the verb may dispatch. `Some(Ok(run_id))` = THIS
+/// benchmark's round is already in flight (report it, dispatch nothing);
+/// `Some(Err(msg))` = a DIFFERENT round holds the arena (evals serialize — a second
+/// dispatch would silently queue behind it for hours, so refuse loudly instead);
+/// `None` = free to dispatch. Closes the measured gap where a round's first task
+/// grades ~30min after dispatch and the ledger-based resume scan sees nothing.
+fn gate_on_in_flight(
+    in_flight: &[(String, String, String)],
+    benchmark: &str,
+) -> Option<Result<String, String>> {
+    if let Some((rid, _, _)) = in_flight.iter().find(|(_, _, set)| set == benchmark) {
+        return Some(Ok(rid.clone()));
+    }
+    in_flight.first().map(|(rid, persona, set)| {
+        Err(format!(
+            "another round is already grading (run {rid}, persona {persona}, gym {set}) — evals              serialize on the exam lease, so dispatching now would silently queue for hours.              Wait for it (cognition/eval-status --run-id {rid}) or reboot to clear it."
+        ))
+    })
 }
 
 /// The newest streamed task row's runId for `(persona ledger, benchmark ref)` —
@@ -155,6 +176,50 @@ impl ActionCommand for BenchmarkRound {
                 "gym '{}' resolved ({origin}) but holds zero tasks — nothing to round on",
                 p.benchmark
             )));
+        }
+
+        // 1.5. Idempotence at DISPATCH scope: a detached round in flight for this
+        //      benchmark is THE round — report it, never mint a sibling (live-measured
+        //      hole: two fresh runs from two invocations 90s apart). A different
+        //      benchmark's round holding the arena refuses loudly.
+        match gate_on_in_flight(&detached_evals_in_flight(), &p.benchmark) {
+            Some(Ok(rid)) => {
+                let ledger_probe = progress_ledger_dir()
+                    .map(|d| {
+                        d.read_dir()
+                            .ok()
+                            .map(|entries| {
+                                entries
+                                    .flatten()
+                                    .filter(|e| {
+                                        e.path().extension().and_then(|x| x.to_str())
+                                            == Some("jsonl")
+                                    })
+                                    .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            })
+                            .unwrap_or_default() // unreadable ledger dir = 0 graded shown; the run handle is still correct
+                    })
+                    .unwrap_or_default(); // no HOME = no ledger = 0 graded shown, handle still correct
+                let graded = graded_task_ids_from(&ledger_probe, &rid).len() as u32;
+                return Ok(BenchmarkRoundResult {
+                    run_id: rid,
+                    resumed: false,
+                    complete: false,
+                    already_running: true,
+                    benchmark: p.benchmark,
+                    eval_set: origin,
+                    total: all_tasks.len() as u32,
+                    graded,
+                    remaining: all_tasks.len() as u32 - graded,
+                    note: "this round is already in flight — nothing dispatched; poll \
+                           cognition/eval-status"
+                        .into(),
+                });
+            }
+            Some(Err(msg)) => return Err(CommandError::Invalid(msg)),
+            None => {}
         }
 
         // 2. Persona: named, or the sole online citizen. Zero/several online →
@@ -364,5 +429,37 @@ mod tests {
         );
         // Unknown gym → nothing to resume.
         assert_eq!(latest_round_run_id(&text, "nope.jsonl"), None);
+    }
+
+    // what this catches (live, 2026-08-24, runs 4ae8e14c + 912de04f): a round's first
+    // task grades ~30min after dispatch; until then the ledger has no rows and the
+    // resume scan sees nothing, so a re-invoked verb minted a DUPLICATE fresh run.
+    // The gate must answer from DISPATCH-time state: same benchmark in flight →
+    // report that run; a different one → refuse loudly (evals serialize, a second
+    // dispatch silently queues for hours); nothing in flight → dispatch.
+    #[test]
+    fn gate_reports_same_benchmark_refuses_other_dispatches_when_free() {
+        let in_flight = vec![(
+            "run-live".to_string(),
+            "atlas".to_string(),
+            "mirrorcode.jsonl".to_string(),
+        )];
+        assert_eq!(
+            gate_on_in_flight(&in_flight, "mirrorcode.jsonl"),
+            Some(Ok("run-live".to_string())),
+            "same benchmark in flight = THE round — never a sibling"
+        );
+        match gate_on_in_flight(&in_flight, "ds-1000.jsonl") {
+            Some(Err(msg)) => assert!(
+                msg.contains("run-live"),
+                "refusal must name the holding run: {msg}"
+            ),
+            other => panic!("a different round holding the arena must refuse, got {other:?}"),
+        }
+        assert_eq!(
+            gate_on_in_flight(&[], "mirrorcode.jsonl"),
+            None,
+            "nothing in flight = free to dispatch"
+        );
     }
 }
