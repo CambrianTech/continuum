@@ -519,30 +519,16 @@ impl WorkingMemory {
             let handle = acts.iter().find_map(|o| o.output.result.spill_handle.clone());
             let mut rr = self.recent_results.lock();
             rr.push_back((seq, room, tail, label, handle));
-            let mut total: usize = rr.iter().map(|(_, _, t, _, _)| t.chars().count() + 1).sum();
-            while total > cap && rr.len() > 1 {
-                if let Some((eseq, _, evicted, elabel, ehandle)) = rr.pop_front() {
-                    total -= evicted.chars().count() + 1;
-                    // COLLAPSE, never delete: the evicted result leaves a
-                    // queryable one-line pointer (its spill handle when the
-                    // full body is on disk via tool/output; else its identity
-                    // so she can re-run deliberately instead of forgetting it
-                    // ever happened).
-                    let mut ptrs = self.evicted_pointers.lock();
-                    ptrs.push_back(match &ehandle {
-                        Some(h) => format!(
-                            "[result #{eseq} ({elabel}) — collapsed; full output: tool/output {h}]"
-                        ),
-                        None => format!(
-                            "[result #{eseq} ({elabel}, {} chars) — collapsed from view; re-run if needed]",
-                            evicted.chars().count()
-                        ),
-                    });
-                    while ptrs.len() > 12 {
-                        ptrs.pop_front();
-                    }
-                }
-            }
+            // NO mid-settle eviction (2026-08-24, the third head-rotation): evicting
+            // here pop_fronted the ring on every act past ~3, and on a model whose KV
+            // cannot shift (`ModelServingPrefs::kv_shiftable = Some(false)` — llama:
+            // "cache_reuse is not supported by this context") every byte after the
+            // rotation re-prefilled, pinning reuse at the system head for the whole
+            // act loop. Within one settle the ring only APPENDS — the served window
+            // (via fit_messages) is the real mid-settle bound, and the eval budget
+            // dwarfs any task's ring. The cap is enforced at SETTLEMENT
+            // ([`Self::record_settlement`] → `collapse_results_over_cap`), the
+            // boundary where the prompt re-prefills anyway.
         }
         // Head into the rolling recency trail: proprioception ("I did #n X") + the
         // repeat-break signal. Truncation lives HERE now (one place), so callers pass the
@@ -1056,7 +1042,42 @@ impl WorkingMemory {
     /// (identical call re-issued WITHIN one settling, before any answer) from a
     /// legitimate re-use of the same tool for a genuinely NEW concern after an answer.
     /// Blank is ignored. Oldest ages out past capacity, same rolling scratchpad.
+    /// Enforce the recent-results char cap by COLLAPSING oldest entries to
+    /// queryable pointers (spill handle when the body is on disk; identity
+    /// otherwise). Called at SETTLEMENT — never mid-settle, where a pop_front
+    /// rotates the prompt head and re-prefills everything after it on a
+    /// non-KV-shiftable model (the 2026-08-24 reuse collapse).
+    fn collapse_results_over_cap(&self) {
+        let cap = self.budget().recent_results_chars();
+        let mut rr = self.recent_results.lock();
+        let mut total: usize = rr.iter().map(|(_, _, t, _, _)| t.chars().count() + 1).sum();
+        while total > cap && rr.len() > 1 {
+            if let Some((eseq, _, evicted, elabel, ehandle)) = rr.pop_front() {
+                total -= evicted.chars().count() + 1;
+                // COLLAPSE, never delete: the evicted result leaves a queryable
+                // one-line pointer so she can expand or re-run deliberately
+                // instead of forgetting it ever happened.
+                let mut ptrs = self.evicted_pointers.lock();
+                ptrs.push_back(match &ehandle {
+                    Some(h) => format!(
+                        "[result #{eseq} ({elabel}) — collapsed; full output: tool/output {h}]"
+                    ),
+                    None => format!(
+                        "[result #{eseq} ({elabel}, {} chars) — collapsed from view; re-run if needed]",
+                        evicted.chars().count()
+                    ),
+                });
+                while ptrs.len() > 12 {
+                    ptrs.pop_front();
+                }
+            }
+        }
+    }
+
     pub fn record_settlement(&self, answer_head: &str) {
+        // Deferred ring hygiene: the settle just closed, the next prompt
+        // re-prefills regardless — collapse over-cap results NOW, never mid-settle.
+        self.collapse_results_over_cap();
         let a = answer_head.trim();
         let mut e = self.entries.lock();
         e.push_back(WmEntry {
@@ -1395,19 +1416,29 @@ mod tests {
             block.contains("E0601"),
             "the compile error must survive later trivial acts: {block}"
         );
-        // Bound: flooding with huge results evicts oldest, never grows unbounded.
+        // PREMISE CHANGED (2026-08-24, the third head-rotation): mid-settle the
+        // ring only APPENDS — per-act eviction pop_fronted the prompt's head and
+        // re-prefilled everything after it on a non-KV-shiftable model. The bound
+        // is enforced at SETTLEMENT (the boundary where the prompt re-prefills
+        // anyway). So: flooding mid-settle keeps everything visible…
         let cap = wm.budget().recent_results_chars();
         for _ in 0..8 {
             wm.record_receipt(&"x".repeat(cap));
         }
+        assert!(
+            wm.recent_results_block().unwrap_or_default().contains("E0601"),
+            "mid-settle the ring is append-only — no head rotation before settlement"
+        );
+        // …and SETTLEMENT collapses over-cap tails to pointers, restoring the bound.
+        wm.record_settlement("done");
         let total: usize = wm.recent_results_block().unwrap_or_default().chars().count();
         assert!(
             total <= cap + 256,
-            "buffer must respect its window-derived bound: {total} > {cap}"
+            "settlement must restore the window-derived bound: {total} > {cap}"
         );
         assert!(
             !wm.recent_results_block().unwrap_or_default().contains("E0601"),
-            "oldest tails evict when the bound is hit — bounded, not immortal"
+            "oldest tails collapse to pointers at settlement — bounded, not immortal"
         );
     }
 
