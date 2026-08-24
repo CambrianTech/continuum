@@ -90,6 +90,7 @@ mod tests {
                 parameter_count: params,
                 sampling: crate::model_registry::types::ModelSampling::default(),
                 persona_serving_eligible: true,
+                serving: Default::default(), // test/fixture literal: substrate defaults (text-only main lane, unverified kv-shift)
             },
             status: ModelStatus {
                 availability: Availability::Ready,

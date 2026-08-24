@@ -301,6 +301,7 @@ mod tests {
             parameter_count: 0,
             sampling,
             persona_serving_eligible: true,
+            serving: Default::default(), // test/fixture literal: substrate defaults (text-only main lane, unverified kv-shift)
         };
         Arc::new(
             Registry::from_catalog(vec![model], vec![llamacpp_provider]).expect("build registry"),

@@ -6,7 +6,7 @@
 
 use super::registry::{Registry, RegistryError};
 use super::types::{
-    Arch, AuthKind, Capability, Model, ModelSampling, MultiPartyChatStrategy, Provider,
+    Arch, AuthKind, Capability, Model, ModelSampling, ModelServingPrefs, MultiPartyChatStrategy, Provider,
     ProviderCapabilities, ProviderKind, ToolProtocol,
 };
 use std::collections::BTreeSet;
@@ -629,6 +629,15 @@ pub fn models() -> Vec<Model> {
             chat_template: None,
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             stop_sequences: &["<|im_end|>"],
+            // MEASURED 2026-08-24 (llama-server load log, this M5): cache_reuse is
+            // disabled BOTH ways for this model — "not supported by multimodal"
+            // (mmproj) and "not supported by this context" (hybrid attention can't
+            // KV-shift). Main lane stays text-only (the default) and prompt shaping
+            // must treat this row's prefix as extend-only.
+            serving: ModelServingPrefs {
+                mmproj_on_main_lane: false,
+                kv_shiftable: Some(false),
+            },
             ..ModelSpec::default()
         }),
         // Hermes-3-Llama-3.1-8B — the OPPONENT, made first-class. A general (non-coder) model we
@@ -1371,6 +1380,9 @@ struct ModelSpec {
     /// opponents / campaign-roster rows opt OUT so the autonomic planner can
     /// never conscript them as the citizens' model.
     persona_serving_eligible: bool,
+    /// Per-model serving truths ([`ModelServingPrefs`]) — defaults via
+    /// `..Default::default()`; only a model we've MEASURED overrides.
+    serving: ModelServingPrefs,
 }
 
 impl Default for ModelSpec {
@@ -1395,6 +1407,7 @@ impl Default for ModelSpec {
             stop_sequences: &[],
             sampling: ModelSampling::default(),
             persona_serving_eligible: true,
+            serving: ModelServingPrefs::default(),
         }
     }
 }
@@ -1425,6 +1438,7 @@ fn model(spec: ModelSpec) -> Model {
         multi_party_strategy: spec.multi_party_strategy,
         stop_sequences: spec.stop_sequences.iter().map(|s| s.to_string()).collect(),
         sampling: spec.sampling,
+        serving: spec.serving,
         // Not a hand-authored fact: the size comes from the artifact's own
         // `general.parameter_count` header, hydrated once at registry load
         // ([`super::hydrate`]). The `ModelSpec` deliberately omits it so no
