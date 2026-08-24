@@ -2057,7 +2057,11 @@ impl CognitionEval {
         // Stamp this pass's run_id onto the live progress snapshot for the whole body
         // (RAII-cleared on any exit) so a persona-only poll can tell it's reading THIS
         // run, not a prior one's finished numbers (the stale-progress trap).
-        let _run_scope = RunIdScope::enter(p.run_id.clone());
+        let _run_scope = RunIdScope::enter(
+            p.run_id.clone(),
+            p.persona_id.as_str().to_string(),
+            p.eval_set.clone().unwrap_or_else(|| DEFAULT_EVAL_SET.to_string()), // same default the task-source block resolves below — one identity
+        );
 
         // Resolve the persona reference at ONE formal boundary (#396): a full UUID,
         // an 8-char short-id, or a persona name — normalized to the typed id against
@@ -3102,7 +3106,7 @@ crate::register_stateless_command!(CognitionEvalStatus);
 
 /// The progress-ledger directory (`~/.continuum/progress`), the ONE place
 /// [`append_progress_ledger`] writes and `cognition/eval-status` reads.
-fn progress_ledger_dir() -> Option<std::path::PathBuf> {
+pub(crate) fn progress_ledger_dir() -> Option<std::path::PathBuf> {
     std::env::var("HOME")
         .ok()
         .map(|h| std::path::PathBuf::from(h).join(".continuum/progress"))
@@ -3142,12 +3146,33 @@ fn find_run_row_any_persona(run_id: &str) -> Option<serde_json::Value> {
 fn row_with_run_id(text: &str, run_id: &str) -> Option<serde_json::Value> {
     for line in text.lines().rev() {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+            // Per-task streaming rows (`kind:"task"`) share the run_id but are NOT the
+            // terminal run row — skipping them keeps eval-status meaning "the run
+            // finished", while `graded_task_ids_for_run` reads them for resume.
+            if v.get("kind").and_then(|k| k.as_str()) == Some("task") {
+                continue;
+            }
             if v.get("runId").and_then(|r| r.as_str()) == Some(run_id) {
                 return Some(v);
             }
         }
     }
     None
+}
+
+/// Every task id already GRADED under `run_id`, from the streamed `kind:"task"` rows —
+/// the read half of the resume seam. Pure over the ledger text; ordering preserved.
+pub fn graded_task_ids_from(text: &str, run_id: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| v.get("kind").and_then(|k| k.as_str()) == Some("task"))
+        .filter(|v| v.get("runId").and_then(|r| r.as_str()) == Some(run_id))
+        .filter_map(|v| {
+            v.get("taskId")
+                .and_then(|t| t.as_str())
+                .map(|t| t.to_string())
+        })
+        .collect()
 }
 
 /// Write a FAILED run row to the progress ledger so `cognition/eval-status` surfaces
@@ -3287,6 +3312,44 @@ async fn acquire_exam_serving_context() -> crate::cognition::exam_serving::ExamS
         isolate: true,
     };
     ExamServingContext::acquire(capacity, std::slice::from_ref(&resident), &demand).await
+}
+
+/// One graded task, durably, at grade time — the resume seam. Same file as the run
+/// summary rows (`~/.continuum/progress/<persona>.jsonl`), discriminated by
+/// `kind:"task"` so every existing run-row reader skips it. Best-effort like the
+/// summary writer: a ledger IO failure degrades resume, never the round.
+fn append_task_ledger_row(
+    persona_id: &str,
+    run_id: &str,
+    eval_set: &str,
+    task_id: &str,
+    ok: bool,
+    acts: u32,
+) {
+    let Some(dir) = progress_ledger_dir() else {
+        return;
+    };
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let row = serde_json::json!({
+        "kind": "task",
+        "capturedAtMs": crate::persona::trace::now_ms(),
+        "runId": run_id,
+        "personaId": persona_id,
+        "evalSet": eval_set,
+        "taskId": task_id,
+        "ok": ok,
+        "acts": acts,
+    });
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join(format!("{persona_id}.jsonl")))
+    {
+        let _ = writeln!(f, "{row}");
+    }
 }
 
 fn append_progress_ledger(
@@ -3775,27 +3838,40 @@ pub struct EvalPassProgress {
     pub run_id: Option<String>,
 }
 
-/// The run_id of the pass currently grading — set at [`run_eval`] entry (RAII), read
-/// by [`report_task_graded`] into the live snapshot. Correct-by-construction because
-/// the eval-preemption lease serializes evals: at most one pass grades at any instant
-/// (the same invariant that makes ONE progress row correct).
-static CURRENT_RUN_ID: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+/// Identity of the pass currently grading — set at [`run_eval`] entry (RAII), read
+/// by [`report_task_graded`] into the live snapshot AND the durable per-task ledger
+/// row. Correct-by-construction because the eval-preemption lease serializes evals:
+/// at most one pass grades at any instant (the same invariant that makes ONE
+/// progress row correct). Grew from a bare run_id (2026-08-24): the per-task row
+/// needs the persona (which ledger file) and the eval set (which gym) at grade time,
+/// and threading them through both pass loops would be the param-hell the scope
+/// exists to avoid.
+struct RunMeta {
+    run_id: Option<String>,
+    persona_id: String,
+    eval_set: String,
+}
+static CURRENT_RUN_META: std::sync::Mutex<Option<RunMeta>> = std::sync::Mutex::new(None);
 
-/// RAII: stamp the current pass's run_id for the live snapshot; clear on drop so it
+/// RAII: stamp the current pass's identity for the live snapshot; clear on drop so it
 /// rides early-return AND panic (Drop runs on unwind) — never a stale run_id bleeding
 /// into the next pass or an idle board.
 struct RunIdScope;
 impl RunIdScope {
-    fn enter(run_id: Option<String>) -> Self {
-        if let Ok(mut g) = CURRENT_RUN_ID.lock() {
-            *g = run_id;
+    fn enter(run_id: Option<String>, persona_id: String, eval_set: String) -> Self {
+        if let Ok(mut g) = CURRENT_RUN_META.lock() {
+            *g = Some(RunMeta {
+                run_id,
+                persona_id,
+                eval_set,
+            });
         }
         RunIdScope
     }
 }
 impl Drop for RunIdScope {
     fn drop(&mut self) {
-        if let Ok(mut g) = CURRENT_RUN_ID.lock() {
+        if let Ok(mut g) = CURRENT_RUN_META.lock() {
             *g = None;
         }
     }
@@ -3806,7 +3882,10 @@ impl Drop for RunIdScope {
 /// WORK the room's rail must show, through the same pipe every other run row
 /// rides — never a separate poller.
 pub fn live_eval_run_id() -> Option<String> {
-    CURRENT_RUN_ID.lock().ok().and_then(|g| g.clone())
+    CURRENT_RUN_META
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().and_then(|m| m.run_id.clone()))
 }
 
 static EVAL_PROGRESS: std::sync::OnceLock<tokio::sync::watch::Sender<Option<EvalPassProgress>>> =
@@ -3854,8 +3933,24 @@ fn report_task_graded(
         output_tokens,
         updated_at_ms: crate::persona::trace::now_ms(),
         vram_free_gb,
-        run_id: CURRENT_RUN_ID.lock().ok().and_then(|g| g.clone()),
+        run_id: CURRENT_RUN_META
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().and_then(|m| m.run_id.clone())),
     };
+    // DURABLE per-task grade row (the one-command-round resume seam): the run summary
+    // row only lands when the whole pass completes, so a killed/rebooted round left NO
+    // record of which tasks already graded — resume meant re-running everything. Stream
+    // one `kind:"task"` row into the SAME per-persona ledger at grade time (the file
+    // eval-status already owns; `row_with_run_id` skips task rows) so
+    // `benchmark/round` can continue from the first ungraded task.
+    if let Ok(guard) = CURRENT_RUN_META.lock() {
+        if let Some(meta) = guard.as_ref() {
+            if let Some(rid) = &meta.run_id {
+                append_task_ledger_row(&meta.persona_id, rid, &meta.eval_set, task_id, ok, acts);
+            }
+        }
+    }
     let _ = eval_progress_tx().send_replace(Some(snap.clone()));
     if let Some(bus) = crate::runtime::MessageBus::global() {
         if let Ok(v) = serde_json::to_value(&snap) {
