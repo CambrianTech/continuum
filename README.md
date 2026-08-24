@@ -446,26 +446,29 @@ The wider ecosystem accelerates this instead of threatening it. Single-purpose h
 <!-- BENCHMARKS:START -->
 ## Benchmarks — reproducible, definitive, never lost
 
-**Benchmarks here are [adapters, not a runner](docs/architecture/BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md).** A suite contributes its tasks and its oracle; the *room* stays the runner — citizens claim benchmark cards off the same [kanban](#collaborative-team-delegation) they use for real work, solve them with their own hands in their own workspaces, and the grade is read from what they actually built. That one rule is why benchmark rounds feed the [learning flywheel](#one-solution-to-continual-learning): every attempt produces room turns, and room turns are curriculum.
-
-It works. Citizens have resolved real SWE-bench-lite instances **through the room** — claim, investigate, surgical patch, verify, done — with the official grader confirming fail-to-pass and pass-to-pass, and every verdict written to disk as a receipt. Different citizens, different repos, same loop. The external-suite roster grows through the same adapter seam: an [agent-researched landscape](docs/planning/COMPETITIVE-BENCHMARK-LANDSCAPE-RESEARCH-TIER.md) ranks the field's benchmarks by oracle quality and importability, and the top picks (execution-graded, locally-verifiable, no LLM judges) convert onto the existing rails as data. One honest edge the leaderboards don't price: a local mesh's marginal cost per attempt is **zero**, and cost-normalized scoring is where a $0 system playing the same exams becomes a category of its own.
-
 Every number here is rendered from [`benchmarks/RESULTS.jsonl`](benchmarks/RESULTS.jsonl) — an append-only, committed ledger. Re-run a sweep, it appends; `python3 benchmarks/render_results.py` regenerates this section (chart included). No hand-edited claims: **edit the data, re-render.** Identical model weights across RAW / OURS / opencode, so every delta is an honest system effect, not a model-fit confound.
 
 ![Continuum vs opencode vs raw — coding pass-rate](benchmarks/charts/coder-headline.svg)
 
 - **RAW** — the model one-shot against its own `/v1`.  
 - **OURS** — the same weights through the full continuum cognition loop (memory, tools, act→observe, recovery).  
-- **opencode / Hermes / aider CLI** — the same weights driven by the coding CLIs people actually use, on the same tasks + grader.  
+- **opencode / Hermes / aider / mini-SWE** — the same weights driven by the harnesses people actually use, on the same tasks + grader. **mini-SWE (stock)** is their WHOLE world — the top open harness on unmodified upstream llama-server with default flags; no Continuum serving advancements anywhere in that column.  
 - **Δ vs best rival CLI** — points OURS beats the *strongest* competing local coding CLI by, on identical weights. **This is the claim.**
 
 ### Lab-grade (the headline)
 
+**Terminal-Bench 2.1** — real terminal tasks, official oracles, GOLD-GATED subset (official solution must pass on this host before a task counts — env-fail is named, never scored as a model 0)
+
+| model | RAW | OURS | opencode | Hermes | aider | mini-SWE | mini-SWE (stock) | Δ vs best rival |
+|---|---|---|---|---|---|---|---|---|
+| **Ornith-1.5-35B-A3B** | — | ***pending*** | — | — | — | — | *pending* | — |
+
 **SWE-bench Lite** — real GitHub issues in real repos, official swebench scorer
 
-| model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
-|---|---|---|---|---|---|---|
-| **Devstral-Small-24B** | — | ***pending*** | — | — | — | — |
+| model | RAW | OURS | opencode | Hermes | aider | mini-SWE | mini-SWE (stock) | Δ vs best rival |
+|---|---|---|---|---|---|---|---|---|
+| **Devstral-Small-24B** | — | ***pending*** | — | — | — | — | — | — |
+| **unsloth/Devstral-Small-2507-GGUF** | — | **—** | — | — | — | — | — | — |
 
 ### Whole-being battery (the learning-capacity curve)
 
@@ -473,51 +476,43 @@ The persona's COMPLETE self — memory ON, genome loaded, tools ON, **never stri
 
 **Agent-Solve Tier 1** — whole-being seeded-repo bug fixes — single-file
 
-| model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
-|---|---|---|---|---|---|---|
-| **Qwen2.5-Coder-7B** | — | **87% (13/15)** | — | — | — | — |
+| model | RAW | OURS | opencode | Hermes | aider | mini-SWE | mini-SWE (stock) | Δ vs best rival |
+|---|---|---|---|---|---|---|---|---|
+| **Qwen2.5-Coder-7B** | — | **87% (13/15)** | — | — | — | — | — | — |
 
 **Agent-Solve Tier 2** — whole-being — multi-file root-cause, invariants, implement-from-spec
 
-| model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
-|---|---|---|---|---|---|---|
-| **Qwen2.5-Coder-7B** | — | **0% (0/15)** | — | — | — | — |
+| model | RAW | OURS | opencode | Hermes | aider | mini-SWE | mini-SWE (stock) | Δ vs best rival |
+|---|---|---|---|---|---|---|---|---|
+| **Qwen2.5-Coder-7B** | — | **0% (0/15)** | — | — | — | — | — | — |
 
 ### Fast verifiable gyms (regression + training signal)
 
-**HumanEval-Rust** — function-level, rustc compile+run graded
-
-| model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
-|---|---|---|---|---|---|---|
-| **Qwen2.5-Coder-14B** | *excluded¹* | **92% (37/40)** | *excluded¹* | — | — | — |
-| **Devstral-Small-24B** | 0% (0/1) | **88% (35/40)** | — | — | — | — |
-| **Qwen2.5-Coder-3B** | 32% (13/40) | **68% (27/40)** | *excluded¹* | — | 80% (32/40) | -12 vs aider |
-| **qwen3.5-4b-code-forged (OURS-forged)** *(we forged it)* | 70% (28/40) | **62% (25/40)** | *excluded¹* | 62% (25/40) | 72% (29/40) | -10 vs aider |
-| **Qwen2.5-Coder-1.5B** | 45% (18/40) | **48% (19/40)** | *excluded¹* | — | 50% (20/40) | -3 vs aider |
-| **Hermes-3-Llama-3.1-8B** | 52% (21/40) | **35% (14/40)** | *excluded¹* | 22% (9/40) | 48% (19/40) | -12 vs aider |
-
 **Hard-Rust** — expression evaluators + algorithmics
 
-| model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
-|---|---|---|---|---|---|---|
-| **Qwen2.5-Coder-14B** | *excluded¹* | **50% (4/8)** | 0% (0/8) | — | — | **+50** vs opencode |
-| **Devstral-Small-24B** | *excluded¹* | **38% (3/8)** | 50% (4/8) | 50% (4/8) | 38% (3/8) | -12 vs opencode |
-| **Qwen2.5-Coder-3B** | — | **25% (2/8)** | — | — | — | — |
-| **qwen3.5-4b-code-forged (OURS-forged)** *(we forged it)* | — | **25% (2/8)** | — | — | — | — |
-| **Hermes-3-Llama-3.1-8B** | 12% (1/8) | **12% (1/8)** | 0% (0/8) | 12% (1/8) | 0% (0/8) | ±0 vs Hermes |
-| **Qwen2.5-Coder-1.5B** | — | **0% (0/8)** | — | — | — | — |
+| model | RAW | OURS | opencode | Hermes | aider | mini-SWE | mini-SWE (stock) | Δ vs best rival |
+|---|---|---|---|---|---|---|---|---|
+| **ornith-ai/Ornith-1.5-35B-A3B-GGUF** | — | **—** | — | — | — | — | — | — |
+| **Qwen2.5-Coder-14B** | *excluded¹* | **50% (4/8)** | 0% (0/8) | — | — | — | — | **+50** vs opencode |
+| **Devstral-Small-24B** | *excluded¹* | **38% (3/8)** | 50% (4/8) | 50% (4/8) | 38% (3/8) | — | — | -12 vs opencode |
+| **Qwen2.5-Coder-3B** | — | **25% (2/8)** | — | — | — | — | — | — |
+| **qwen3.5-4b-code-forged (OURS-forged)** *(we forged it)* | — | **25% (2/8)** | — | — | — | — | — | — |
+| **Hermes-3-Llama-3.1-8B** | 12% (1/8) | **12% (1/8)** | 0% (0/8) | 12% (1/8) | 0% (0/8) | — | — | ±0 vs Hermes |
+| **Qwen2.5-Coder-1.5B** | — | **0% (0/8)** | — | — | — | — | — | — |
 
 **Frontier-Rust** — Dijkstra · Levenshtein · LIS · topo-sort · bignum · calc · regex
 
-| model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
-|---|---|---|---|---|---|---|
-| **Devstral-Small-24B** | — | ***pending*** | — | — | — | — |
+| model | RAW | OURS | opencode | Hermes | aider | mini-SWE | mini-SWE (stock) | Δ vs best rival |
+|---|---|---|---|---|---|---|---|---|
+| **Devstral-Small-24B** | — | ***pending*** | — | — | — | — | — | — |
 
 ¹ *excluded* = a serving/harness failure (degenerate output under GPU contention, a down endpoint) — never scored as a model 0%. The harness self-flags these ([`headtohead.py`](benchmarks/coder/headtohead.py)) so no false zero reaches this table.
 
 ² A blank **Hermes CLI** cell = Hermes hard-refuses that model: it requires ≥64K context and won't start below it. Every model here is served at its **real trained context** (read from GGUF metadata, memory-capped — never clamped down), so a 32K-native model like Qwen2.5-Coder genuinely cannot be run through Hermes without a quality-degrading rope-overflow. We mark it absent, not 0 — and note it's a point *for* the local models: Continuum runs the 32K-native coders Hermes turns away.
 
-**Reproduce:** `continuum benchmark/swe-solve --instance <id> --persona-id <id> --base-model-id <model>` (SWE-bench: clone, solve, grade, one command) · `continuum benchmark/swe-grade --instance <id>` (grade an existing tree) · `continuum benchmark/matrix --benchmark <name>` (inner gyms). Results land in the run ledger.
+**Every row ever recorded** — including retired gyms, excluded runs, and full history — renders to [`benchmarks/ALL-RESULTS.md`](benchmarks/ALL-RESULTS.md) from the same ledger. The tables above show each (benchmark, model, arm)'s LATEST row; the full page shows them all.
+
+**Reproduce:** `continuum cognition/eval --persona_id <id> --eval_set <gym .jsonl>` runs a gym through a citizen's LIVE cognition — same model, faculties, and tools she serves with; the gyms ship in-repo, so `git clone` + a running core is the whole setup. Harness-only paths: `python3 benchmarks/coder/matrix.py --models benchmarks/coder/models.json --benchmark <name>` (inner gyms) · `python3 benchmarks/swe/run_ours.py --instance <id> --solver ours` (SWE-bench). All append to `RESULTS.jsonl`; re-render with `python3 benchmarks/render_results.py`.
 
 <!-- BENCHMARKS:END -->
 

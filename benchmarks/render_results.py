@@ -35,7 +35,11 @@ START, END = "<!-- BENCHMARKS:START -->", "<!-- BENCHMARKS:END -->"
 
 # Benchmark display order + one-line framing. INNER = fast verifiable gyms; OUTER = lab-grade.
 BENCH_META = {
-    "humaneval-rs": ("HumanEval-Rust", "function-level, rustc compile+run graded", "inner"),
+    # RETIRED (2026-08-23 doctrine): HumanEval derivatives are contaminated — public
+    # sets measure memorization, not capability. History stays in the ledger and the
+    # ALL-RESULTS page; the README face no longer carries the tier.
+    "humaneval-rs": ("HumanEval-Rust", "function-level, rustc compile+run graded — RETIRED: contaminated public set", "retired"),
+    "terminal-bench-2.1": ("Terminal-Bench 2.1", "real terminal tasks, official oracles, GOLD-GATED subset (official solution must pass on this host before a task counts — env-fail is named, never scored as a model 0)", "outer"),
     "hard-rs":      ("Hard-Rust", "expression evaluators + algorithmics", "inner"),
     "frontier-rs":  ("Frontier-Rust", "Dijkstra · Levenshtein · LIS · topo-sort · bignum · calc · regex", "inner"),
     "games-rs":     ("Games-Rust", "buildable game logic — Conway · win-checkers · 2048 merge · knight moves", "inner"),
@@ -49,7 +53,7 @@ BENCH_META = {
 }
 # The competing local coding CLIs people actually use. The Δ "sell" column is OURS minus the
 # BEST of these (same weights) — the strongest honest single claim: we beat the best rival CLI.
-OPPONENTS = ["opencode", "hermes", "aider"]
+OPPONENTS = ["opencode", "hermes", "aider", "mini-swe", "mini-swe-stock"]
 # Arm → (display, bar color that reads on both light + dark GitHub canvases).
 ARM = {
     "OURS":     ("OURS (Continuum)", "#2ea043"),
@@ -57,8 +61,15 @@ ARM = {
     "opencode": ("opencode CLI",     "#d29922"),
     "hermes":   ("Hermes CLI",       "#a371f7"),
     "aider":    ("aider CLI",        "#58a6ff"),
+    # Harness-vs-harness cells (2026-08-24): mini-SWE-agent is the top open harness
+    # on SWE-bench-Verified. "stock" = ggml-org upstream llama-server, default flags
+    # — THEIR WHOLE WORLD, no Continuum serving advancements — the honest full-stack
+    # rival. "mini-swe" (no suffix) = same harness on OUR fork: isolates the
+    # cognition layer with serving held equal.
+    "mini-swe":       ("mini-SWE (our server)",   "#db61a2"),
+    "mini-swe-stock": ("mini-SWE (stock llama)",  "#f85149"),
 }
-ARM_TABLE_ORDER = ["RAW", "OURS", "opencode", "hermes", "aider"]
+ARM_TABLE_ORDER = ["RAW", "OURS", "opencode", "hermes", "aider", "mini-swe", "mini-swe-stock"]
 
 
 def _pr(row):
@@ -92,7 +103,8 @@ def best_rival_delta(arms):
         return "—"
     best_pr, best = max(rivals)
     d = round((ours - best_pr) * 100)
-    tag = {"opencode": "opencode", "hermes": "Hermes", "aider": "aider"}[best]
+    tag = {"opencode": "opencode", "hermes": "Hermes", "aider": "aider",
+           "mini-swe": "mini-SWE", "mini-swe-stock": "mini-SWE(stock)"}[best]
     return (f"**+{d}** vs {tag}" if d > 0 else (f"±0 vs {tag}" if d == 0 else f"{d} vs {tag}"))
 
 
@@ -170,7 +182,7 @@ def render(by_bench, has_chart):
         out.append(f"![Continuum vs opencode vs raw — coding pass-rate]({CHART_REL})\n")
     out.append("- **RAW** — the model one-shot against its own `/v1`.  ")
     out.append("- **OURS** — the same weights through the full continuum cognition loop (memory, tools, act→observe, recovery).  ")
-    out.append("- **opencode / Hermes / aider CLI** — the same weights driven by the coding CLIs people actually use, on the same tasks + grader.  ")
+    out.append("- **opencode / Hermes / aider / mini-SWE** — the same weights driven by the harnesses people actually use, on the same tasks + grader. **mini-SWE (stock)** is their WHOLE world — the top open harness on unmodified upstream llama-server with default flags; no Continuum serving advancements anywhere in that column.  ")
     out.append("- **Δ vs best rival CLI** — points OURS beats the *strongest* competing local coding CLI by, on identical weights. **This is the claim.**\n")
 
     for tier, title in [("outer", "### Lab-grade (the headline)"),
@@ -188,8 +200,8 @@ def render(by_bench, has_chart):
         for b in benches:
             disp, frame, _ = BENCH_META[b]
             out.append(f"**{disp}** — {frame}\n")
-            out.append("| model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |")
-            out.append("|---|---|---|---|---|---|---|")
+            out.append("| model | RAW | OURS | opencode | Hermes | aider | mini-SWE | mini-SWE (stock) | Δ vs best rival |")
+            out.append("|---|---|---|---|---|---|---|---|---|")
             models = by_bench[b]
             def key(m):
                 pr = _pr(models[m].get("OURS"))
@@ -199,6 +211,7 @@ def render(by_bench, has_chart):
                 mark = " *(we forged it)*" if "forged" in m else ""
                 out.append(f"| **{m}**{mark} | {cell(a.get('RAW'))} | **{cell(a.get('OURS'))}** | "
                            f"{cell(a.get('opencode'))} | {cell(a.get('hermes'))} | {cell(a.get('aider'))} | "
+                           f"{cell(a.get('mini-swe'))} | {cell(a.get('mini-swe-stock'))} | "
                            f"{best_rival_delta(a)} |")
             out.append("")
     out.append("¹ *excluded* = a serving/harness failure (degenerate output under GPU contention, a down endpoint) — "
@@ -209,6 +222,9 @@ def render(by_bench, has_chart):
                "metadata, memory-capped — never clamped down), so a 32K-native model like Qwen2.5-Coder genuinely "
                "cannot be run through Hermes without a quality-degrading rope-overflow. We mark it absent, not 0 — "
                "and note it's a point *for* the local models: Continuum runs the 32K-native coders Hermes turns away.\n")
+    out.append("**Every row ever recorded** — including retired gyms, excluded runs, and full history — renders to "
+               "[`benchmarks/ALL-RESULTS.md`](benchmarks/ALL-RESULTS.md) from the same ledger. The tables above show "
+               "each (benchmark, model, arm)'s LATEST row; the full page shows them all.\n")
     out.append("**Reproduce:** `continuum cognition/eval --persona_id <id> --eval_set <gym .jsonl>` runs a gym through a "
                "citizen's LIVE cognition — same model, faculties, and tools she serves with; the gyms ship in-repo, "
                "so `git clone` + a running core is the whole setup. Harness-only paths: "
@@ -218,8 +234,40 @@ def render(by_bench, has_chart):
     return "\n".join(out)
 
 
+def render_all_results(rows):
+    """The VIEW-ALL page: every ledger row, categorized, newest first — nothing
+    hidden, retired tiers included with their retirement reason."""
+    tiers = {"outer": "## Lab-grade (external)", "being": "## Whole-being battery",
+             "inner": "## Fast verifiable gyms", "retired": "## Retired gyms (history preserved; no longer on the README face)"}
+    out = ["# All benchmark results — the complete ledger\n",
+           "Rendered from [`RESULTS.jsonl`](RESULTS.jsonl) by `render_results.py`. "
+           "Append-only: every run ever recorded is here, newest first. The README "
+           "shows the latest row per cell; this page shows them all.\n"]
+    by_tier = defaultdict(list)
+    for r in rows:
+        tier = BENCH_META.get(r["benchmark"], (r["benchmark"], "", "inner"))[2]
+        by_tier[tier].append(r)
+    for tier in ["outer", "being", "inner", "retired"]:
+        if tier not in by_tier: continue
+        out.append(tiers[tier] + "\n")
+        out.append("| captured | benchmark | model | arm | result | machine | git sha | note |")
+        out.append("|---|---|---|---|---|---|---|---|")
+        for r in sorted(by_tier[tier], key=lambda r: r.get("captured", "") or "", reverse=True):
+            res = "*excluded*" if r.get("excluded") else (
+                "*pending*" if r.get("pass_rate") is None
+                else f"{r['pass_rate']*100:.0f}% ({r.get('score')}/{r.get('total')})")
+            disp = BENCH_META.get(r["benchmark"], (r["benchmark"],))[0]
+            out.append(f"| {r.get('captured','—')} | {disp} | {r.get('model','—')} | {r.get('arm','—')} | "
+                       f"{res} | {r.get('machine','—')} | `{str(r.get('git_sha','—'))[:9]}` | {r.get('note','')} |")
+        out.append("")
+    path = os.path.join(ROOT, "benchmarks", "ALL-RESULTS.md")
+    open(path, "w").write("\n".join(out))
+    print(f"[render_results] wrote benchmarks/ALL-RESULTS.md ({len(rows)} rows)")
+
+
 def main():
     rows = [json.loads(l) for l in open(LEDGER) if l.strip()]
+    render_all_results(rows)
     by_bench = defaultdict(lambda: defaultdict(dict))  # bench -> model -> arm -> row (latest wins)
     for r in rows:
         by_bench[r["benchmark"]][r["model"]][r["arm"]] = r
