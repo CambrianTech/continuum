@@ -3971,6 +3971,30 @@ pub fn subscribe_eval_progress() -> tokio::sync::watch::Receiver<Option<EvalPass
     eval_progress_tx().subscribe()
 }
 
+/// The idle-backstop verdict: an infra outcome whose probe is a SUBSTRATE BUG
+/// REPORT (a hang that survived every event-based guard — a lost await between
+/// inference calls), never routine control flow. Fires only after the idle
+/// window passed with ZERO real lane work stamped; a slow-but-decoding task can
+/// never reach it (2026-08-24: the flat wall-clock predecessor killed a task
+/// mid-decode twice in one day).
+fn hang_backstop_outcome(
+    task_id: &str,
+    window: std::time::Duration,
+) -> crate::cognition::act_observe::SettleOutcome {
+    crate::probe!(
+        class = "eval.task.hang_backstop",
+        task = %task_id,
+        backstop_s = window.as_secs(),
+        "idle backstop fired — no settle, no propagated error, and NO lane work for the \
+         whole window; find the await that lost its error propagation"
+    );
+    crate::cognition::act_observe::SettleOutcome::infra_failure(format!(
+        "idle backstop ({}s with zero lane work) — no settle and no propagated error; \
+         substrate bug, not a wrong answer",
+        window.as_secs()
+    ))
+}
+
 /// Report one graded task on all three surfaces. Called by BOTH pass loops (solo +
 /// team) — one reporter, no drift.
 fn report_task_graded(
@@ -4413,8 +4437,18 @@ async fn run_pass(
         // propagation (a code bug, not a serving state). For that, one enormous
         // garbage-ceiling timer — and its firing is a SUBSTRATE BUG REPORT (the probe
         // says which class to hunt), never routine control flow.
-        const PER_TASK_HANG_BACKSTOP: std::time::Duration =
-            std::time::Duration::from_secs(2 * 60 * 60);
+        // PROGRESS-AWARE (2026-08-24, third cut — fired the same day on a task
+        // PROVABLY working: 82k prompt, 13.7k tokens decoded that very turn, acts
+        // landing all afternoon; the flat 2h wall-clock killed it and the retry
+        // re-ran the whole task into the same cliff — the mirrorcode-bitwise
+        // double-death, reproduced on TB. Wall clock is not evidence; the lane's
+        // own work stamps are). The backstop now measures IDLE: it fires only
+        // when NO real prefill/decode progress has been stamped for its whole
+        // window — the one hang class no event covers (a lost await between
+        // inference calls). A slow task that keeps decoding can never trip it;
+        // the act budget (max_acts) remains the legitimate bound on endless work.
+        const PER_TASK_IDLE_BACKSTOP: std::time::Duration =
+            std::time::Duration::from_secs(20 * 60);
         // BOUNDED INFRA-FAULT RECOVERY (Proctored Exam Session, Slice B). Drive to
         // settlement; if the model call itself FAILS (`inference_error`: lane not-ready /
         // connect-refused / "not the active served model" / compute-error / deadline-wedge)
@@ -4428,40 +4462,37 @@ async fn run_pass(
         let mut settled;
         let mut infra_attempt = 0u32;
         loop {
-            settled = match tokio::time::timeout(
-                PER_TASK_HANG_BACKSTOP,
-                crate::cognition::act_observe::drive_to_settle(
-                    cycle,
-                    make_burst(),
-                    room,
-                    t.max_acts.map(|v| v as usize).unwrap_or(max_acts), // None = row sets no budget; the run's budget is the documented inherit
-                    if t.workspace_deliverable() {
-                        crate::cognition::workspace::TurnFraming::directed().on_workspace()
-                    } else {
-                        crate::cognition::workspace::TurnFraming::directed()
-                    },
-                ),
-            )
-            .await
-            {
-                Ok(s) => s,
-                Err(_) => {
-                    // This firing means a hang survived EVERY event-based guard below
-                    // it (stream liveness, adapter watchdogs, act-loop error paths) —
-                    // an unpropagated-hang bug to find, not an operational condition.
-                    crate::probe!(
-                        class = "eval.task.hang_backstop",
-                        task = %t.id,
-                        backstop_s = PER_TASK_HANG_BACKSTOP.as_secs(),
-                        "last-resort hang backstop fired — a wedge should have surfaced \
-                         as an inference_error from the serving layer long before this; \
-                         find the await that lost its error propagation"
-                    );
-                    crate::cognition::act_observe::SettleOutcome::infra_failure(format!(
-                        "hang backstop ({}s) — no settle and no propagated error; \
-                         substrate bug, not a wrong answer",
-                        PER_TASK_HANG_BACKSTOP.as_secs()
-                    ))
+            let drive = crate::cognition::act_observe::drive_to_settle(
+                cycle,
+                make_burst(),
+                room,
+                t.max_acts.map(|v| v as usize).unwrap_or(max_acts), // None = row sets no budget; the run's budget is the documented inherit
+                if t.workspace_deliverable() {
+                    crate::cognition::workspace::TurnFraming::directed().on_workspace()
+                } else {
+                    crate::cognition::workspace::TurnFraming::directed()
+                },
+            );
+            tokio::pin!(drive);
+            // Idle supervision: wake every minute; a stamp of real lane work
+            // (prefill advance OR decode) inside the window resets patience.
+            let mut idle = std::time::Duration::ZERO;
+            settled = loop {
+                match tokio::time::timeout(std::time::Duration::from_secs(60), &mut drive).await {
+                    Ok(s) => break s,
+                    Err(_) => {
+                        let worked_recently = crate::inference::llama_server::ms_since_real_work()
+                            .is_some_and(|ms| ms < 60_000);
+                        if worked_recently {
+                            idle = std::time::Duration::ZERO;
+                        } else {
+                            idle += std::time::Duration::from_secs(60);
+                        }
+                        if idle < PER_TASK_IDLE_BACKSTOP {
+                            continue;
+                        }
+                        break hang_backstop_outcome(&t.id, PER_TASK_IDLE_BACKSTOP);
+                    }
                 }
             };
             let Some(cause) = settled.inference_error.clone() else {
@@ -4469,14 +4500,7 @@ async fn run_pass(
             };
             infra_attempt += 1;
             if infra_attempt > INFRA_FAULT_RETRIES {
-                crate::probe!(
-                    class = "eval.task.infra_fault.exhausted",
-                    task = %t.id,
-                    attempts = infra_attempt,
-                    cause = %cause,
-                    "infra fault survived re-verify+retry — lane unrecoverable; run will abort InfraUnavailable"
-                );
-                break; // `settled` carries the error → unrecoverable-infra abort below
+                break;
             }
             tracing::warn!(
                 probe_class = "eval.task.infra_fault",
