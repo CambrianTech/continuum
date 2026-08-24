@@ -169,6 +169,7 @@ impl TrainingCompletionSentinel {
             };
 
             let params = CognitionEvalParams {
+            temperature: None, // sentinel measures her as she LIVES — lived sampling
                 run_id: None,
                 persona_id: crate::identity::PersonaRef::new(job.persona_id.to_string()),
                 gene: Some(EvalGene {

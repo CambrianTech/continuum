@@ -1802,10 +1802,22 @@ impl WorkspaceCycle {
     /// admitted) yields a no-op guard. See
     /// [[eval-mutates-persona-lift-needs-isolation]].
     pub fn isolate_for_eval(&self) -> EvalIsolation {
+        self.isolate_for_eval_at(Some(0.0))
+    }
+
+    /// [`Self::isolate_for_eval`] with an explicit decoding pin — the
+    /// temperature A/B seam (2026-08-23). Greedy (0.0) buys byte-reproducible
+    /// rewards but measured pathological on long-context agentic work: think
+    /// emissions spiraled 6.9k → 16,384 tokens (the reply ceiling, hit
+    /// exactly) at 4+ min decode per act, while every SOTA agentic harness
+    /// samples ~0.6-0.8 for exactly this reason. `None` = her lived
+    /// temperature. Behavior-before-perplexity applied to our own harness:
+    /// the pin is a MEASURED choice per run, not an axiom.
+    pub fn isolate_for_eval_at(&self, decoding: Option<f32>) -> EvalIsolation {
         // Force greedy decoding for the WHOLE eval window — before the no-hands
         // early return, because a reproducible metric needs deterministic
         // generation even for a pure-speak (no-tools) eval. Restored on drop.
-        self.decoding.store(Arc::new(Some(0.0)));
+        self.decoding.store(Arc::new(decoding));
         let decoding = Some(Arc::clone(&self.decoding));
 
         let Some(acting) = &self.acting else {
