@@ -335,10 +335,28 @@ pub fn slots_activity_fingerprint_of(slots: &serde_json::Value) -> Option<u64> {
         slot.get("n_prompt_tokens_processed")
             .and_then(|v| v.as_u64())
             .hash(&mut h);
-        slot.get("next_token")
-            .and_then(|nt| nt.get("n_decoded"))
+        // DECODE ADVANCE — the field that was silently never read (2026-08-24 kill):
+        // current llama-server builds wrap the per-slot decode state in an ARRAY
+        // (`next_token: [{n_decoded: ...}]`); a string-key get on an array is always
+        // None, so during a long DECODE every hashed field above is static (prefill
+        // done → processed frozen; one task → id_task frozen) and a lane grinding at
+        // 31 tok/s fingerprinted as WEDGED. Two smoke misses later the healer killed a
+        // 35k-token in-flight turn — the 1-lane kill-loop. Read n_decoded through both
+        // shapes: object (older builds) or first element of the array (current).
+        let next_token = slot.get("next_token");
+        next_token
+            .and_then(|nt| {
+                nt.get("n_decoded")
+                    .or_else(|| nt.get(0).and_then(|first| first.get("n_decoded")))
+            })
             .and_then(|v| v.as_u64())
             .hash(&mut h);
+        // Belt for the build where next_token vanishes entirely: this llama build also
+        // grows `n_prompt_tokens` monotonically as decode extends the context (measured
+        // live: 47,211 → 47,704 over 16s of pure decode). Work-driven, monotone — NOT a
+        // timing blob (the doc's churn hazard), so hashing it can only exonerate a lane
+        // that is provably extending a sequence.
+        slot.get("n_prompt_tokens").and_then(|v| v.as_u64()).hash(&mut h);
     }
     Some(h.finish())
 }
@@ -3136,6 +3154,57 @@ mod tests {
         assert_eq!(
             slots_activity_fingerprint_of(&serde_json::json!({"error": "nope"})),
             None
+        );
+    }
+
+    // what this catches (2026-08-24, the 1-lane kill-loop): current llama-server
+    // wraps decode state in an ARRAY (`next_token: [{n_decoded: N}]`); the old
+    // string-key read returned None on it, so during a long DECODE (prefill done →
+    // `n_prompt_tokens_processed` frozen, one task → `id_task` frozen) the
+    // fingerprint was static and L11 judged a lane decoding at 31 tok/s as WEDGED —
+    // two smoke misses killed a 35k-token in-flight turn. Shape pinned from the live
+    // /slots response (:58057). Decode advance must move the fingerprint through
+    // BOTH the array shape and the older object shape.
+    #[test]
+    fn slots_fingerprint_sees_decode_through_the_array_shaped_next_token() {
+        use super::slots_activity_fingerprint_of;
+        let decoding = |n_decoded: u64, n_prompt: u64| {
+            serde_json::json!([{
+                "id": 0, "n_ctx": 166_400, "is_processing": true, "id_task": 350,
+                "n_prompt_tokens": n_prompt, "n_prompt_tokens_processed": 35_144,
+                "next_token": [{ "has_next_token": true, "n_remain": 697, "n_decoded": n_decoded }]
+            }])
+        };
+        // Pure decode: processed/id_task static, only n_decoded (+ context growth) move.
+        assert_ne!(
+            slots_activity_fingerprint_of(&decoding(148, 47_211)).unwrap(),
+            slots_activity_fingerprint_of(&decoding(400, 47_211)).unwrap(),
+            "array-shaped n_decoded advance must change the fingerprint"
+        );
+        // Same story via the context-growth belt alone (build hides n_decoded).
+        assert_ne!(
+            slots_activity_fingerprint_of(&decoding(148, 47_211)).unwrap(),
+            slots_activity_fingerprint_of(&decoding(148, 47_704)).unwrap(),
+            "n_prompt_tokens growth during decode must change the fingerprint"
+        );
+        // Truly frozen (the 2026-08-05 4-hour wedge shape): identical looks stay equal.
+        assert_eq!(
+            slots_activity_fingerprint_of(&decoding(148, 47_211)).unwrap(),
+            slots_activity_fingerprint_of(&decoding(148, 47_211)).unwrap(),
+            "a frozen slot must keep a frozen fingerprint"
+        );
+        // Older builds: object-shaped next_token still read.
+        let object_shape = |n: u64| {
+            serde_json::json!([{
+                "id": 0, "is_processing": true, "id_task": 1,
+                "n_prompt_tokens": 100, "n_prompt_tokens_processed": 100,
+                "next_token": { "n_decoded": n }
+            }])
+        };
+        assert_ne!(
+            slots_activity_fingerprint_of(&object_shape(5)).unwrap(),
+            slots_activity_fingerprint_of(&object_shape(6)).unwrap(),
+            "object-shaped n_decoded advance must change the fingerprint"
         );
     }
 
