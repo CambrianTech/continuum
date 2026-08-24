@@ -1618,6 +1618,16 @@ pub struct CognitionEvalParams {
     #[ts(optional)]
     #[ts(optional, type = "number")]
     pub max_retries: Option<u32>,
+    /// Decoding temperature pin for the WHOLE run. **Omitted → her LIVED
+    /// sampling** (the engineerable form — Joel 2026-08-23: "the old form is
+    /// useless"): greedy 0.0 measured pathological on long-context agentic
+    /// work (16k-token think spirals hitting the reply ceiling exactly, 4+min
+    /// decodes) while every serious agentic harness samples. Pass
+    /// `Some(0.0)` to opt INTO the old byte-reproducible greedy pin. A run's
+    /// number is only comparable to runs at the same pin either way.
+    #[serde(default)]
+    #[ts(optional)]
+    pub temperature: Option<f32>,
     /// Free-text label for THIS run, written to the progress ledger so a trend
     /// line is readable: "baseline", "taught show-output", "genome v2", etc.
     /// The ledger is how you "mark improvement as you go" — every eval leaves a
@@ -2474,7 +2484,9 @@ impl CognitionEval {
         // A/B fairness, not protection of her durable memory — that protection now
         // comes from measuring a copy at all. See
         // [[eval-mutates-persona-lift-needs-isolation]].
-        let isolation = cycle.isolate_for_eval();
+        // Omitted → None → her lived temperature rides (see the param doc);
+        // an explicit value pins the whole run (0.0 = the legacy greedy form).
+        let isolation = cycle.isolate_for_eval_at(p.temperature);
 
         // A/B mode: a gene was given → measure base vs gene over the SAME tasks
         // through the SAME live mind, reporting the lift. Page the gene OUT first
