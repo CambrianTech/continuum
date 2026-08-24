@@ -3357,14 +3357,25 @@ pub fn footprint_for(model: &Model) -> Option<ModelFootprint> {
         model.context_window,
         model.has(Capability::ToolUse),
     )?;
-    // KV CACHE QUANTIZATION (#232): a lane running quantized KV holds proportionally
-    // fewer bytes/token, so the plan can size a BIGGER window into the same budget —
-    // this is what turns the launcher's opt-in q8_0 flag into an actual window GROWTH.
-    // Divide the f16 rate by the quant factor; default (f16 / unset) → 1 → byte-identical.
-    // Keep the config key in sync with the launcher arg in inference/llama_server.rs —
-    // one SERVING_KV_CACHE_TYPE key, two consumers (launcher flag + this fit-math rate).
+    Some(apply_kv_quantization(fp))
+}
+
+/// KV CACHE QUANTIZATION (#232): a lane running quantized KV holds proportionally
+/// fewer bytes/token, so the plan can size a BIGGER window into the same budget —
+/// this is what turns the launcher's opt-in q8_0 flag into an actual window GROWTH.
+/// Divide the f16 rate by the quant factor; default (f16 / unset) → 1 → byte-identical.
+/// Keep the config key in sync with the launcher arg in inference/llama_server.rs —
+/// one SERVING_KV_CACHE_TYPE key, two consumers (launcher flag + this fit-math rate).
+///
+/// ONE named transform (not inlined in `footprint_for`) so every derivation of the
+/// live footprint — production AND the tests that assert against it — rides the SAME
+/// quant config instead of silently assuming f16. The env-dependent-test incident
+/// this prevents: an operator serving `SERVING_KV_CACHE_TYPE=q8_0` ran the footprint
+/// test locally and it failed on a number CI called green, because the expectation
+/// was built from raw parts while the resolver divided by 2 (2026-08-24).
+fn apply_kv_quantization(mut fp: ModelFootprint) -> ModelFootprint {
     fp.kv_per_token = (fp.kv_per_token / kv_cache_quant_divisor()).max(1);
-    Some(fp)
+    fp
 }
 
 /// The resident-KV divisor implied by `SERVING_KV_CACHE_TYPE`, so the plan sizes the
@@ -5733,8 +5744,15 @@ mod tests {
         // external (#79); charging the compute reserve stops the board over-reporting
         // free by the prefill buffer (G5). The compute-reserve term comes from the
         // footprint's own method so this expectation can't drift from the plan's sizing.
-        let fp = footprint_from_parts(id, 4096, 8192, false).expect("footprint");
-        let kv_per_token = 20_000u64; // (4096 / 80_000).max(20_000)
+        // Build the expectation through the SAME quant transform the resolver applies
+        // (`apply_kv_quantization` reads the operator's live SERVING_KV_CACHE_TYPE):
+        // with f16/unset this is byte-identical to raw parts; with q8_0 configured the
+        // rate halves on BOTH sides. Before this the expectation assumed f16 and the
+        // test failed on any box actually serving quantized KV while CI stayed green.
+        let fp = apply_kv_quantization(
+            footprint_from_parts(id, 4096, 8192, false).expect("footprint"),
+        );
+        let kv_per_token = fp.kv_per_token; // 20_000 raw, ÷ live quant divisor
         let expect = 4096 + 2 * kv_per_token * 8192 + fp.prefill_compute_reserve(8192, 2);
         assert_eq!(
             resolve(id, 8192, 2),
