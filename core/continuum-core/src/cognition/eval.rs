@@ -4604,12 +4604,27 @@ async fn run_pass(
         // words — ground truth, not steering) and one bounded re-drive to
         // fix. A green DoD here is also the grade (no double run below).
         let mut presettle_dod: Option<(bool, String)> = None;
+        // VERIFY LOOP, not a single retry (2026-08-24, the score-lever pass): while
+        // budget remains, a DoD task may not settle red. Each iteration re-runs the
+        // task's OWN definition-of-done and hands her its output — ground truth she
+        // could produce herself (the DoD is part of the task, so no answer-key
+        // leak; artifact-test tasks stay excluded for exactly that reason). Bounded
+        // at 2 re-drives: the third red verdict grades as the miss it is.
+        const DOD_REDRIVES: u32 = 2;
+        let mut redrive_round = 0u32;
         if let Some(dod) = &t.dod_shell {
+            loop {
             let (dod_ok, dod_out) = run_dod(task_root.map(std::path::Path::new), dod).await;
-            if !dod_ok {
+            if dod_ok || redrive_round >= DOD_REDRIVES {
+                presettle_dod = Some((dod_ok, dod_out));
+                break;
+            }
+            redrive_round += 1;
+            {
                 crate::probe!(
                     class = "eval.task.red_build_redrive",
                     task = %t.id,
+                    round = redrive_round as u64,
                     "settled on a RED DoD — handing her the verdict with a bounded re-drive"
                 );
                 let tail: String = dod_out.chars().rev().take(4000).collect::<Vec<_>>().into_iter().rev().collect();
@@ -4655,9 +4670,8 @@ Fix the workspace and finish —                              the grade reads th
                         settled = re;
                     }
                 }
-                // The re-drive's own DoD verdict is taken fresh below.
-            } else {
-                presettle_dod = Some((dod_ok, dod_out));
+                // Loop re-runs the DoD fresh; green (or exhausted rounds) exits above.
+            }
             }
         }
         let answer = settled.spoken.clone().unwrap_or_default();
@@ -4689,9 +4703,10 @@ Fix the workspace and finish —                              the grade reads th
         } else if let Some(dod) = &t.dod_shell {
             // REAL task: run the definition-of-done against the repo state her edits produced.
             match presettle_dod.take() {
-                // Pre-settle DoD already ran GREEN and nothing re-drove — that verdict IS the grade.
+                // The verify loop's LAST DoD run IS the grade — green or exhausted-red,
+                // never a double run.
                 Some(v) => v,
-                None => run_dod(task_root.map(std::path::Path::new), dod).await,
+                None => run_dod(task_root.map(std::path::Path::new), dod).await, // unreachable for dod tasks (loop always sets it); kept as the honest fallback
             }
         } else if t.test.is_some() {
             // UNREACHABLE by construction: `require_hands_for_code` gives every `test`-carrying
