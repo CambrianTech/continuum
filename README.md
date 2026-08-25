@@ -228,6 +228,8 @@ Today's impressive AI systems (Claude, GPT, Gemini, et al.) are pseudo-AI in a p
 
 Every row above has a canonical design doc and an implementation path. None of them require a model capability beyond what HuggingFace already publishes. The architecture is end-to-end consistent; what remains is execution. **First we build.**
 
+**Start here: [THE-MIND-AND-THE-BEING.md](docs/architecture/THE-MIND-AND-THE-BEING.md)** — the canonical account of a persona as a mind: the act→observe consciousness cycle, the anatomy of working memory, dreams as character formation, the closed self-improvement control loop (experience → lessons → dreams → genes → measured adoption → the next round), and personality as the measurable divergence of a continuous being. Every claim names its module.
+
 Deep dive: [COGNITION-CACHE-HIERARCHY.md](docs/architecture/COGNITION-CACHE-HIERARCHY.md) | [COGNITION-ALGORITHMS.md](docs/architecture/COGNITION-ALGORITHMS.md) | [BRAIN-REGIONS-SUBSTRATE.md](docs/architecture/BRAIN-REGIONS-SUBSTRATE.md) | [GENOME-FOUNDRY-SENTINEL.md](docs/architecture/GENOME-FOUNDRY-SENTINEL.md) | [ADAPTER-MARKETPLACE.md](docs/architecture/ADAPTER-MARKETPLACE.md)
 
 **Philosophy:** [CONTINUUM-VISION.md](docs/CONTINUUM-VISION.md) | **Competitive analysis:** [COMPETITIVE-LANDSCAPE.md](docs/planning/COMPETITIVE-LANDSCAPE.md) | **Roadmap:** [ALPHA-GAP-ANALYSIS.md](docs/planning/ALPHA-GAP-ANALYSIS.md)
