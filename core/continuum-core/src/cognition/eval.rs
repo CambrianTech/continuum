@@ -3653,7 +3653,67 @@ pub(crate) fn emit_eval_phase(phase: &str, detail: &str) {
 /// the fixtures but not her work — 100% false fails AND repo pollution.
 /// DS-1000's clean sweep predates the ephemeral roots, when CWD *was* the
 /// workspace — a coincidence, not a design.
-async fn run_dod(root: Option<&std::path::Path>, cmd: &str) -> (bool, String) {
+/// The outcome of running a definition-of-done — a THREE-way verdict, not a bool.
+/// The distinction is load-bearing and systemic (2026-08-25, Joel: "these are issues
+/// they'd have in projects... make sure it's not coded into the wrong concern"): a
+/// DoD that RAN and came back red is a real miss she can learn from; a DoD that could
+/// not RUN (the grader spawn failed, the workspace path didn't resolve, a command was
+/// refused / not found) is a HARNESS/infra fault — scoring it as a model miss and
+/// teaching her "I failed" is the exact false-failure the gold-gate discipline exists
+/// to prevent, and it hits EVERY dod-graded activity, benchmarks and real projects
+/// alike. Distinguishing here, at the one place a DoD runs, is the right concern.
+#[derive(Debug, Clone)]
+pub enum DodVerdict {
+    /// Ran, exited 0 — done.
+    Pass(String),
+    /// Ran to a real red result (tests failed, assertion, wrong output) — a genuine
+    /// miss she can be handed and re-drive against.
+    Fail(String),
+    /// The grader itself could not run (spawn failure, missing workspace/path, a
+    /// refused/not-found command, a harness infra exit). NOT a model miss.
+    InfraError(String),
+}
+
+impl DodVerdict {
+    /// True only when the DoD genuinely passed. (`Fail` and `InfraError` are both
+    /// not-pass, but callers that must NOT conflate them use the variant directly.)
+    pub fn passed(&self) -> bool {
+        matches!(self, DodVerdict::Pass(_))
+    }
+    /// The human-facing verdict text (for the grade string / re-drive delivery).
+    pub fn message(&self) -> &str {
+        match self {
+            DodVerdict::Pass(m) | DodVerdict::Fail(m) | DodVerdict::InfraError(m) => m,
+        }
+    }
+}
+
+/// Does this failing DoD output signal the GRADER itself broke (infra) rather than a
+/// genuine red result? Unambiguous "could not run" markers only — a test failure
+/// ("3 failed", an assertion traceback) is a REAL miss and must NOT match here.
+fn dod_output_is_infra(exit_code: Option<i32>, out: &str) -> bool {
+    // 127 = command not found; the terminal-bench harness reserves 4/5 for
+    // staging-corrupt / verifier-deps-missing (its own infra exits).
+    if matches!(exit_code, Some(127) | Some(4) | Some(5)) {
+        return true;
+    }
+    let o = out.to_ascii_lowercase();
+    // Substrate/tooling failure phrases — the grader could not execute, distinct from
+    // a graded red. Kept narrow on purpose: each is a "the command broke" signal, not
+    // a "the code is wrong" signal.
+    const INFRA_MARKERS: &[&str] = &[
+        "substrate refused",
+        "no such file or directory",
+        "command not found",
+        "could not read",
+        "could not run",
+        "permission denied",
+        ": not found",
+    ];
+    INFRA_MARKERS.iter().any(|m| o.contains(m))
+}
+
+async fn run_dod(root: Option<&std::path::Path>, cmd: &str) -> DodVerdict {
     let mut command = tokio::process::Command::new("bash");
     command.arg("-lc").arg(cmd);
     if let Some(r) = root {
@@ -3674,12 +3734,16 @@ async fn run_dod(root: Option<&std::path::Path>, cmd: &str) -> (bool, String) {
                 }
             };
             if ok {
-                (true, format!("DoD passed: `{cmd}`"))
+                DodVerdict::Pass(format!("DoD passed: `{cmd}`"))
+            } else if dod_output_is_infra(o.status.code(), &tail) {
+                DodVerdict::InfraError(format!(
+                    "DoD `{cmd}` could not RUN (grader/infra fault, not a wrong answer):\n{tail}"
+                ))
             } else {
-                (false, format!("DoD `{cmd}` FAILED:\n{tail}"))
+                DodVerdict::Fail(format!("DoD `{cmd}` FAILED:\n{tail}"))
             }
         }
-        Err(e) => (false, format!("DoD `{cmd}` could not run: {e}")),
+        Err(e) => DodVerdict::InfraError(format!("DoD `{cmd}` could not spawn: {e}")),
     }
 }
 
@@ -4403,8 +4467,9 @@ async fn run_pass(
         // repeatable). A failed setup is a NAMED infra grade — the persona is
         // never examined against a workspace in an unknown state.
         if let Some(setup) = &t.setup_shell {
-            let (setup_ok, setup_out) =
-                run_dod(task_root.map(std::path::Path::new), setup).await;
+            let setup_v = run_dod(task_root.map(std::path::Path::new), setup).await;
+            let setup_ok = setup_v.passed();
+            let setup_out = setup_v.message().to_string();
             if !setup_ok {
                 results.push(EvalTaskResult {
                     id: t.id.clone(),
@@ -4704,6 +4769,10 @@ async fn run_pass(
         // words — ground truth, not steering) and one bounded re-drive to
         // fix. A green DoD here is also the grade (no double run below).
         let mut presettle_dod: Option<(bool, String)> = None;
+        // An infra-classed DoD (the grader could not RUN) short-circuits the whole
+        // verify loop to a NON-scored infra fault — never a re-drive (there is
+        // nothing for her to fix) and never a taught miss.
+        let mut dod_infra: Option<String> = None;
         // VERIFY LOOP, not a single retry (2026-08-24, the score-lever pass): while
         // budget remains, a DoD task may not settle red. Each iteration re-runs the
         // task's OWN definition-of-done and hands her its output — ground truth she
@@ -4714,7 +4783,23 @@ async fn run_pass(
         let mut redrive_round = 0u32;
         if let Some(dod) = &t.dod_shell {
             loop {
-            let (dod_ok, dod_out) = run_dod(task_root.map(std::path::Path::new), dod).await;
+            let verdict = run_dod(task_root.map(std::path::Path::new), dod).await;
+            let (dod_ok, dod_out) = match verdict {
+                DodVerdict::Pass(m) => (true, m),
+                DodVerdict::Fail(m) => (false, m),
+                DodVerdict::InfraError(m) => {
+                    // The grader itself broke — do NOT re-drive (nothing to fix) and
+                    // do NOT score as a miss; mark it infra and leave the loop.
+                    crate::probe!(
+                        class = "eval.task.dod_infra",
+                        task = %t.id,
+                        "definition-of-done could not RUN — harness/infra fault, not scored as a model miss"
+                    );
+                    dod_infra = Some(m.clone());
+                    presettle_dod = Some((false, m));
+                    break;
+                }
+            };
             if dod_ok || redrive_round >= DOD_REDRIVES {
                 presettle_dod = Some((dod_ok, dod_out));
                 break;
@@ -4775,6 +4860,39 @@ Fix the workspace and finish —                              the grade reads th
             }
         }
         let answer = settled.spoken.clone().unwrap_or_default();
+        // DoD-INFRA GATE (2026-08-25): the grader itself could not run (missing
+        // workspace, refused/not-found command). This is NOT a model miss — record it
+        // as an infra fault (which flips the whole run to InfraUnavailable, so no
+        // phantom score is published) and SKIP grading + teaching. Same protection the
+        // gold gate gives, applied to the DoD's own execution — for every dod-graded
+        // activity, benchmarks and real projects alike.
+        if let Some(reason) = dod_infra {
+            infra_faults += 1;
+            if infra_reason.is_none() {
+                infra_reason = Some(reason.clone());
+            }
+            crate::probe!(
+                class = "eval.task.infra_fault",
+                task = %t.id,
+                cause = %reason,
+                "definition-of-done could not run — task marked infra, not a scored miss, not taught"
+            );
+            results.push(EvalTaskResult {
+                id: t.id.clone(),
+                ok: false,
+                grade: format!("infra (DoD could not run, NOT a wrong answer): {reason}"),
+                acts: settled.acts as u32,
+                answer: answer.chars().take(ANSWER_CAPTURE_CHARS).collect(),
+                latency_ms: settled.metrics.latency_ms,
+                output_tokens: settled.metrics.output_tokens,
+                tokens_per_second: settled.metrics.tokens_per_second(),
+                decode_tokens_per_second: settled.metrics.decode_tokens_per_second(),
+                cache_hit_rate: settled.metrics.cache_hit_rate(),
+                prefill_ms: settled.metrics.prefill_ms,
+                decode_ms: settled.metrics.decode_ms,
+            });
+            continue; // no grade, NO lesson — a harness fault teaches nothing
+        }
         // `settled.inference_error` is None here — the abort above consumed every infra
         // fault, so this grades a REAL verdict (a working lane produced an answer, right or
         // wrong). No `inference_error` arm remains: an infra fault can no longer masquerade
@@ -4806,7 +4924,12 @@ Fix the workspace and finish —                              the grade reads th
                 // The verify loop's LAST DoD run IS the grade — green or exhausted-red,
                 // never a double run.
                 Some(v) => v,
-                None => run_dod(task_root.map(std::path::Path::new), dod).await, // unreachable for dod tasks (loop always sets it); kept as the honest fallback
+                // Unreachable for dod tasks (the loop always sets it); the honest
+                // fallback re-runs and folds any infra classification into the pair.
+                None => {
+                    let v = run_dod(task_root.map(std::path::Path::new), dod).await;
+                    (v.passed(), v.message().to_string())
+                }
             }
         } else if t.test.is_some() {
             // UNREACHABLE by construction: `require_hands_for_code` gives every `test`-carrying
@@ -5065,11 +5188,12 @@ async fn run_pass_team(
         // narrating at each other is the exact failure this arm must not reward (and the exact
         // one a review/handoff loop makes MORE likely, not less).
         let (ok, grade) = if let Some(dod) = &t.dod_shell {
-            run_dod(
+            let v = run_dod(
                 t.workspace_root.as_deref().or(workspace_root).map(std::path::Path::new),
                 dod,
             )
-            .await
+            .await;
+            (v.passed(), v.message().to_string())
         } else if let (Some(file), Some(test)) = (&t.solution_file, &t.test) {
             crate::cognition::gym_grader::test_grade_file(
                 t.workspace_root
@@ -5150,11 +5274,33 @@ mod tests {
     // the real repo checkout while her hands and artifacts lived in the run's
     // clone — false fails plus operator-tree pollution. The DoD must run in the
     // run's world; None preserves cwd for callers that genuinely run there.
+    // what this catches (2026-08-25, the systemic hardening): the DoD classifier must
+    // separate "the grader could not RUN" (infra — missing workspace, refused command,
+    // command-not-found, infra exit) from "the grader ran and it's red" (a real miss).
+    // If they conflate, a harness bug scores as a model failure AND teaches her she
+    // failed — the astropy-13236 false-failure, and a bug ANY dod-graded project hits.
+    #[test]
+    fn dod_infra_is_distinguished_from_a_real_red() {
+        // Infra: could-not-run phrases + reserved infra exit codes.
+        assert!(dod_output_is_infra(None, "substrate refused command benchmark/swe-grade"));
+        assert!(dod_output_is_infra(None, "could not read swe/x's diff: No such file or directory"));
+        assert!(dod_output_is_infra(Some(127), "continuum: not found"));
+        assert!(dod_output_is_infra(Some(4), "terminal-bench harness: staging corrupt"));
+        assert!(dod_output_is_infra(Some(5), "pytest is not installed"));
+        // REAL red: tests ran and failed — must NOT be classed infra.
+        assert!(!dod_output_is_infra(Some(1), "5 failed, 1 passed in 1.61s"));
+        assert!(!dod_output_is_infra(Some(1), "AssertionError: assert 0 == 2"));
+        assert!(!dod_output_is_infra(Some(1), "FAILED test_outputs.py::test_thing"));
+    }
+
+    // what this catches: defect 2's sibling (2026-08-23, MirrorCode maiden round):
+    // run_dod spawned bash in the PROCESS CWD, so setup staged into the real repo
+    // while her artifacts lived in the run clone. The DoD must run in the run root.
     #[tokio::test]
     async fn run_dod_executes_in_the_run_root() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let (ok, _) = run_dod(Some(dir.path()), "touch dod-was-here").await;
-        assert!(ok);
+        let v = run_dod(Some(dir.path()), "touch dod-was-here").await;
+        assert!(v.passed());
         assert!(
             dir.path().join("dod-was-here").exists(),
             "the DoD's world must be the run root, not the process cwd"
