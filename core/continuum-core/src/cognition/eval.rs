@@ -2900,18 +2900,29 @@ impl CognitionEval {
 /// and how she did. Pure and answer-key-agnostic (the caller's redaction policy
 /// scrubs the crib sheet); kept separate so it's unit-testable.
 fn format_exam_lesson(task: &EvalTask, result: &EvalTaskResult) -> String {
-    let outcome = if result.ok {
-        "I solved it"
+    // BELIEF HYGIENE (2026-08-24, the false-failure lesson): a PASS is strong
+    // evidence — say it plainly. A MISS is WEAK, noisy evidence — a broken env
+    // (the bare-`python` exit-127 that produced "5 failed"), a one-off, or a real
+    // gap, indistinguishable at grade time. So a miss is phrased as a PROVISIONAL
+    // single attempt, explicitly not a verdict on ability and explicitly
+    // retryable, so it can never harden into "I am bad at X" self-belief and the
+    // dream reviewer can SUPERSEDE it when a later attempt on the same task passes
+    // (both share the `task.id` recall key). Redaction still strips the answer key.
+    if result.ok {
+        format!(
+            "Exam task '{}'. I was asked: {} — I solved it (grade: {}).",
+            task.id.trim(),
+            task.prompt.trim(),
+            result.grade.trim()
+        )
     } else {
-        "I did NOT solve it"
-    };
-    format!(
-        "Exam task '{}'. I was asked: {} {} (grade: {}).",
-        task.id.trim(),
-        task.prompt.trim(),
-        outcome,
-        result.grade.trim()
-    )
+        format!(
+            "Exam task '{}'. I was asked: {} — this attempt did not pass yet (grade: {}).              One attempt, not a settled verdict on my ability: the cause may be my approach              OR the environment, and it is worth retrying. If a later attempt passes, that              supersedes this.",
+            task.id.trim(),
+            task.prompt.trim(),
+            result.grade.trim()
+        )
+    }
 }
 
 /// PER-TASK lesson streaming (2026-08-23, Joel: "she going to learn from
@@ -5780,6 +5791,32 @@ mod tests {
         assert!(report.count(RedactionClass::ExamKey) >= 1);
         assert!(redacted.contains("I was asked"), "the experience survives");
         assert!(redacted.contains("I solved it"), "the outcome survives");
+    }
+
+    // what this catches: BELIEF HYGIENE — a graded MISS must teach a PROVISIONAL
+    // single-attempt lesson (retryable, supersedable), never a hardened verdict on
+    // ability. The false-failure incident (a broken env graded her code ok=False)
+    // must not become "I am bad at X" self-belief; a PASS stays confident.
+    #[test]
+    fn a_miss_teaches_provisionally_a_pass_teaches_confidently() {
+        let task = EvalTask {
+            id: "cancel-async".into(),
+            prompt: "Fix the async cancellation.".into(),
+            ..Default::default()
+        };
+        let mut miss = task_result(1000, 32, 5.0);
+        miss.ok = false;
+        miss.grade = "5 failed, 1 passed".into();
+        let lesson = format_exam_lesson(&task, &miss);
+        assert!(lesson.contains("did not pass yet"), "miss must be provisional: {lesson}");
+        assert!(lesson.contains("not a settled verdict"), "miss must not harden into ability belief: {lesson}");
+        assert!(lesson.contains("supersedes"), "a later pass must be able to supersede: {lesson}");
+        assert!(!lesson.contains("did NOT solve"), "the flat-conviction phrasing is gone: {lesson}");
+
+        let pass = task_result(1000, 10, 5.0); // ok=true
+        let plesson = format_exam_lesson(&task, &pass);
+        assert!(plesson.contains("I solved it"), "a pass stays confident: {plesson}");
+        assert!(!plesson.contains("not a settled verdict"), "a pass carries no provisional hedge");
     }
 
     // what this catches: the speed/latency aggregate math behind the scoreboard —
