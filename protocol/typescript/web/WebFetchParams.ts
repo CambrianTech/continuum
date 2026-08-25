@@ -12,4 +12,19 @@ url: string,
  * Max characters of readable text to return. Defaults to half of what the live served
  * window can hold, and is clamped to that ceiling (never a fixed 6000/12000 pair).
  */
-max_chars?: number, };
+max_chars?: number, 
+/**
+ * FILTER MODE (2026-08-25): a regex; return ONLY the readable lines that match it,
+ * most like `grep` on the page. The context-saver — don't spend working memory on a
+ * 50KB page dump when you want the three lines mentioning an error or an API name.
+ * Applied to the readable text AFTER tag-strip, BEFORE the char cap, so the cap
+ * bounds the FILTERED result. Omitted → full readable text as before. An invalid
+ * regex fails loud.
+ */
+filter?: string, 
+/**
+ * With `filter`, how many lines of CONTEXT to keep around each match (like
+ * `grep -C`). Default 0 (matching lines only). Bounded so a huge context can't
+ * defeat the point of filtering.
+ */
+context_lines?: number, };

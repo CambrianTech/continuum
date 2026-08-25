@@ -146,6 +146,14 @@ pub struct PublishRequest {
     /// sidecar and route the gene by distance immediately (the self-describing
     /// gene card, GENOME-REPOSITORY-ON-HF.md §2). `None` = pre-signature gene.
     pub signature_json: Option<String>,
+    /// The citizen-signed provenance block (commons trust spine rung 1), serialized —
+    /// staged as `provenance.json` beside the gguf. Binds signer + content hash +
+    /// parent alloy hashes so a pulling node verifies WHO made this and what it
+    /// descends from. `None` = an unsigned gene (untrusted by the commons policy).
+    pub provenance_json: Option<String>,
+    /// Alloy hashes of the direct parents — rendered as the card's lineage so the
+    /// tree is walkable from the artifact itself. Empty = a root gene.
+    pub parent_alloy_hashes: Vec<String>,
 }
 
 /// Inputs to [`PublishRequest::build`] — the raw facts a completed forge run knows
@@ -166,6 +174,12 @@ pub struct PublishInputs {
     pub lift: f64,
     /// Serialized [`crate::genome::signature::GeneSignature`], when minted.
     pub signature_json: Option<String>,
+    /// Serialized [`crate::forge::provenance::GenomeProvenance`], when the forging
+    /// citizen signed the artifact (the commons publish path always does).
+    pub provenance_json: Option<String>,
+    /// Direct parent alloy hashes for the lineage DAG (empty for a root gene).
+    #[allow(clippy::struct_field_names)]
+    pub parent_alloy_hashes: Vec<String>,
 }
 
 impl PublishRequest {
@@ -233,6 +247,8 @@ impl PublishRequest {
             epochs: inputs.epochs,
             rank: inputs.rank,
             signature_json: inputs.signature_json.clone(),
+            provenance_json: inputs.provenance_json.clone(),
+            parent_alloy_hashes: inputs.parent_alloy_hashes.clone(),
         })
     }
 }
@@ -254,6 +270,8 @@ mod tests {
             rank: Some(16),
             lift: 0.051,
             signature_json: None,
+            provenance_json: None,
+            parent_alloy_hashes: Vec::new(),
         }
     }
 

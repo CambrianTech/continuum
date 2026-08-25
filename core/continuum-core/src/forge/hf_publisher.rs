@@ -50,6 +50,27 @@ pub fn render_model_card(req: &PublishRequest) -> String {
         req.trait_kind
     ));
 
+    // Lineage + provenance (commons trust spine): a stranger can verify WHO made
+    // this and walk its ancestry from the card alone.
+    if req.provenance_json.is_some() || !req.parent_alloy_hashes.is_empty() {
+        s.push_str("## Provenance & Lineage\n\n");
+        if req.provenance_json.is_some() {
+            s.push_str(
+                "- **Signed** by the forging citizen's key — `provenance.json` (beside the \
+                 gene) binds signer + content hash + parents. Verify before trust.\n",
+            );
+        }
+        if req.parent_alloy_hashes.is_empty() {
+            s.push_str("- **Root gene** — no parents; this is a lineage origin.\n");
+        } else {
+            s.push_str("- **Parents** (walk up the tree):\n");
+            for h in &req.parent_alloy_hashes {
+                s.push_str(&format!("  - `{h}`\n"));
+            }
+        }
+        s.push('\n');
+    }
+
     s.push_str("## Training Results\n\n");
     s.push_str(&format!(
         "- **Held-out lift:** +{:.2} points over the base model \
