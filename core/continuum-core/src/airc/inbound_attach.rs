@@ -276,6 +276,7 @@ pub async fn publish_transcript_event(
                 // never depends on any persona's workspace budget.
                 crate::cognition::deliberation_budget::record_room_speech(
                     event.room_id.as_uuid(),
+                    Some(event.peer_id.as_uuid()),
                     payload["content"].as_str().unwrap_or_default(),
                 );
                 bus.publish_async_only(name, payload);
@@ -334,6 +335,7 @@ pub async fn publish_transcript_event(
         // #264: room-speech ring — same single-seam record as the plain arm.
         crate::cognition::deliberation_budget::record_room_speech(
             event.room_id.as_uuid(),
+            Some(event.peer_id.as_uuid()),
             payload["content"].as_str().unwrap_or_default(),
         );
         bus.publish_async_only(name, payload);

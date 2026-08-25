@@ -20,4 +20,10 @@ fresh?: boolean,
  * Cap the task count of a FRESH run (smoke rounds). Ignored on resume — a
  * resumed round finishes the set it started.
  */
-limit?: number, };
+limit?: number, 
+/**
+ * HELP ARM: declare peer help legal for this round (see
+ * `CognitionEvalParams::help`). Scores report as OURS+help; solo stays the
+ * default arm.
+ */
+help?: boolean, };

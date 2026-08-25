@@ -52,6 +52,12 @@ pub struct BenchmarkRoundParams {
     #[ts(optional)]
     #[ts(optional, type = "number")]
     pub limit: Option<u32>,
+    /// HELP ARM: declare peer help legal for this round (see
+    /// `CognitionEvalParams::help`). Scores report as OURS+help; solo stays the
+    /// default arm.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub help: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -375,6 +381,7 @@ impl ActionCommand for BenchmarkRound {
             capture_dir: None,
             learn: LearningPolicy::LearnFromThisWork,
             suppress_recall: None,
+            help: p.help, // arm rides the round declaration through to the eval
         };
         let ctx = Ctx {
             handle: None,

@@ -232,12 +232,47 @@ fn room_speech_rings() -> &'static std::sync::Mutex<
     RINGS.get_or_init(Default::default)
 }
 
+/// One live room utterance, as the fan-out channel carries it (help-arm /
+/// team-exam perception — the rung-one wire of room collaboration).
+#[derive(Debug, Clone)]
+pub struct RoomSpeech {
+    pub room: uuid::Uuid,
+    /// Who spoke — `None` for legacy call sites that predate sender plumbing.
+    pub sender: Option<uuid::Uuid>,
+    pub content: String,
+}
+
+/// Live fan-out beside the ring (2026-08-24, the help arm): every room message
+/// already crosses THIS one seam, so a subscriber here perceives room speech
+/// without a module registration — the exam fork's help-channel listener is the
+/// first consumer; team exams and cross-activity coordination ride the same
+/// wire. Bounded lossy broadcast: a slow subscriber drops oldest (Lagged), the
+/// seam never blocks.
+static ROOM_SPEECH_TX: std::sync::OnceLock<tokio::sync::broadcast::Sender<RoomSpeech>> =
+    std::sync::OnceLock::new();
+
+fn room_speech_tx() -> &'static tokio::sync::broadcast::Sender<RoomSpeech> {
+    ROOM_SPEECH_TX.get_or_init(|| tokio::sync::broadcast::channel(256).0)
+}
+
+/// Subscribe to live room speech (all rooms; filter by `room` at the receiver).
+pub fn subscribe_room_speech() -> tokio::sync::broadcast::Receiver<RoomSpeech> {
+    room_speech_tx().subscribe()
+}
+
 /// Record one room message (call at the inbound-attach projection seam —
-/// once per message, never per receiving persona).
-pub fn record_room_speech(room: uuid::Uuid, content: &str) {
+/// once per message, never per receiving persona). `sender` rides into the
+/// live fan-out so a listener knows WHO spoke (a voice without a speaker
+/// cannot become a relationship); the restatement ring stays content-only.
+pub fn record_room_speech(room: uuid::Uuid, sender: Option<uuid::Uuid>, content: &str) {
     if content.trim().is_empty() {
         return;
     }
+    let _ = room_speech_tx().send(RoomSpeech {
+        room,
+        sender,
+        content: content.to_string(),
+    }); // no receivers = no listeners right now; the ring below is the durable half
     let mut rings = room_speech_rings().lock().unwrap();
     let ring = rings.entry(room).or_default();
     ring.push_back(content.to_string());
