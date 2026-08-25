@@ -463,7 +463,7 @@ Every number here is rendered from [`benchmarks/RESULTS.jsonl`](benchmarks/RESUL
 
 | model | RAW | OURS | opencode | Hermes | aider | mini-SWE | mini-SWE (stock) | Δ vs best rival |
 |---|---|---|---|---|---|---|---|---|
-| **Ornith-1.5-35B-A3B** | — | **71% (5/7)** | — | — | — | — | 86% (6/7) | -14 vs mini-SWE(stock) |
+| **Ornith-1.5-35B-A3B** | — | **100% (7/7)** | — | — | — | — | 86% (6/7) | **+14** vs mini-SWE(stock) |
 
 **SWE-bench Lite** — real GitHub issues in real repos, official swebench scorer
 
