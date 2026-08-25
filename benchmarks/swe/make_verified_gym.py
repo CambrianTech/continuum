@@ -40,8 +40,13 @@ with open(out_path, "w") as out:
                 f"git -C {wdir} checkout --quiet {base}"
             ),
             "dod_shell": (
-                f"continuum benchmark/swe-grade --dataset princeton-nlp/SWE-bench_Verified "
-                f"--instance {iid} --workspace {wdir} | grep -q '\"resolved\": true'"
+                # ABSOLUTE workspace (2026-08-25): swe-grade runs IN THE CORE, so a
+                # relative --workspace resolves against the core cwd, not her eval
+                # workspace (#49 dual-root — astropy-13236 false-failed 'no such file'
+                # with real work in her tree). $PWD in the DoD shell is her workspace
+                # root, so $PWD/<wdir> is the absolute path the core-side git diff reads.
+                f'continuum benchmark/swe-grade --dataset princeton-nlp/SWE-bench_Verified '
+                f'--instance {iid} --workspace "$PWD/{wdir}" | grep -q \'"resolved": true\''
             ),
             "prompt": (
                 f"[SWE-bench Verified · {iid}] A real GitHub issue in {repo}. The repo is "

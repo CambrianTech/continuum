@@ -28,6 +28,7 @@
 //!                                  `ResponderDecision`)
 
 pub mod act_observe;
+pub mod act_replay;
 pub mod adaptive_throughput;
 pub mod audit;
 pub mod bench_round;

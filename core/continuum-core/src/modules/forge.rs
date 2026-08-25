@@ -852,6 +852,8 @@ async fn run_publish(p: ForgePublishParams) -> Result<CommandResult, String> {
         // forge/publish (this legacy verb) predates gene signatures; genome/push
         // is the signature-carrying path.
         signature_json: None,
+        provenance_json: None, // operator/CLI publish path: no citizen key in scope — unsigned (commons ranks untrusted)
+        parent_alloy_hashes: Vec::new(),
     };
     let req = PublishRequest::build(&inputs, |path| path.exists())
         .map_err(|e| format!("forge/publish: {e}"))?;

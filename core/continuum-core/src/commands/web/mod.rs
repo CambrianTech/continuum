@@ -107,9 +107,18 @@ const MAX_COUNT: u32 = 20;
 /// floor last). The single source of truth for "which backends exist" — add a
 /// provider here and it is selectable by id and eligible for auto-selection.
 fn all_providers() -> Vec<Box<dyn WebSearchProvider>> {
+    // ORDER IS THE AUTO-PRIORITY (2026-08-25, Joel: 'utilize our own browser as a
+    // possibility, priority'). The browser-driven keyless provider is FIRST, so
+    // auto-selection prefers it: it drives our REAL Chromium (JS-rendered, a
+    // believable UA, Cloudflare/bot-block-resistant) and returns exactly the
+    // natural content a human sees — no meter, no pay-to-play, no key. The paid
+    // Brave API is a deliberate OPT-IN (`adapter: "brave"`) for callers who want
+    // its structured results and hold a key; it no longer silently wins auto just
+    // because a key happens to exist. Same lesson as the operator running out of a
+    // metered search budget: owned-browser natural content beats rented API access.
     vec![
-        Box::new(brave::BraveSearchProvider),
         Box::new(duckduckgo::DuckDuckGoProvider),
+        Box::new(brave::BraveSearchProvider),
     ]
 }
 
@@ -217,6 +226,22 @@ pub struct WebFetchParams {
     #[serde(default)]
     #[ts(optional)]
     pub max_chars: Option<u32>,
+    /// FILTER MODE (2026-08-25): a regex; return ONLY the readable lines that match it,
+    /// most like `grep` on the page. The context-saver — don't spend working memory on a
+    /// 50KB page dump when you want the three lines mentioning an error or an API name.
+    /// Applied to the readable text AFTER tag-strip, BEFORE the char cap, so the cap
+    /// bounds the FILTERED result. Omitted → full readable text as before. An invalid
+    /// regex fails loud.
+    #[serde(default)]
+    #[ts(optional)]
+    pub filter: Option<String>,
+    /// With `filter`, how many lines of CONTEXT to keep around each match (like
+    /// `grep -C`). Default 0 (matching lines only). Bounded so a huge context can't
+    /// defeat the point of filtering.
+    #[serde(default)]
+    #[ts(optional)]
+    #[ts(optional, type = "number")]
+    pub context_lines: Option<u32>,
 }
 
 /// Result of a `web/fetch`.
@@ -236,6 +261,29 @@ pub struct WebFetchResult {
     /// Total readable characters before truncation.
     #[ts(type = "number")]
     pub chars: u32,
+}
+
+/// Grep the readable text: keep lines matching `re` plus `ctx` lines of context around
+/// each (like `grep -C`), de-duplicating overlapping windows so context never doubles a
+/// line. Empty result when nothing matches (an honest "the page does not mention this").
+fn grep_lines(text: &str, re: &regex::Regex, ctx: usize) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut keep = vec![false; lines.len()];
+    for (i, l) in lines.iter().enumerate() {
+        if re.is_match(l) {
+            let lo = i.saturating_sub(ctx);
+            let hi = (i + ctx + 1).min(lines.len());
+            for k in keep.iter_mut().take(hi).skip(lo) {
+                *k = true;
+            }
+        }
+    }
+    lines
+        .iter()
+        .zip(keep)
+        .filter_map(|(l, k)| k.then_some(*l))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Fetch a URL and return its readable text — the persona's "read the doc/page I
@@ -261,7 +309,16 @@ pub async fn web_fetch(p: WebFetchParams) -> Result<WebFetchResult, CommandError
     let body = browser::render_dom(&url, 4000).await?;
 
     let title = extract_title(&body);
-    let readable = extract_readable(&body);
+    let mut readable = extract_readable(&body);
+    // FILTER MODE: grep the readable text to exactly what she asked for, before the cap —
+    // so filtering actually saves context instead of the cap chopping a full dump.
+    if let Some(pat) = p.filter.as_deref().filter(|s| !s.trim().is_empty()) {
+        let re = regex::Regex::new(pat).map_err(|e| {
+            CommandError::Invalid(format!("web/fetch filter is not a valid regex: {e}"))
+        })?;
+        let ctx = p.context_lines.unwrap_or(0).min(10) as usize;
+        readable = grep_lines(&readable, &re, ctx);
+    }
     let total = readable.chars().count() as u32;
     let truncated = total as usize > cap;
     let content = if truncated {
@@ -348,6 +405,27 @@ pub(crate) fn strip_tags(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    // what this catches: FILTER mode — web/fetch grep returns only matching lines
+    // (+context), so a persona spends working memory on the 3 relevant lines, not a
+    // 50KB dump. The context-efficiency win Joel named ("regex or other filters").
+    #[test]
+    fn fetch_filter_greps_readable_lines_with_context() {
+        use super::grep_lines;
+        let text = "intro line\nTimeDelta is the class\nunrelated middle\nsee TimeDelta.sec\ntail";
+        let re = regex::Regex::new("TimeDelta").unwrap();
+        // ctx=0: only matching lines.
+        let out = grep_lines(text, &re, 0);
+        assert!(out.contains("TimeDelta is the class") && out.contains("see TimeDelta.sec"));
+        assert!(!out.contains("unrelated middle"), "non-matching line dropped: {out}");
+        assert!(!out.contains("intro line"));
+        // ctx=1: one line of context around each match, de-duped (no doubled lines).
+        let ctx = grep_lines(text, &re, 1);
+        assert!(ctx.contains("intro line") && ctx.contains("unrelated middle"));
+        assert_eq!(ctx.matches("TimeDelta is the class").count(), 1, "overlap must not double a line");
+        // no match → honest empty.
+        assert_eq!(grep_lines(text, &regex::Regex::new("nonexistent").unwrap(), 0), "");
+    }
+
     use super::*;
 
     // what this catches: auto-selection (adapter=None) always resolves to an
