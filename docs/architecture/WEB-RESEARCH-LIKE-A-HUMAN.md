@@ -51,6 +51,35 @@ recall key is the query and whose content cites the URL — so "where did I lear
 is answerable, the same discipline as gene lineage. Attribution is the anti-hallucination
 gate: a fact from the web renders as *"per <url>…"*, never a bare assertion.
 
+## The delegate tier: a research SENTINEL (the real unlock)
+
+Joel (2026-08-25): "think sentinel training, like your agents but a lot more creative,
+might unlock more for them. It'd find your api for example." The three request tiers are
+**content → filter → delegate**, and delegate is where the leverage is:
+
+- **content** — `web/fetch` returns the readable page.
+- **filter** — `web/fetch { filter }` greps it to the relevant lines (saves context; #2470).
+- **delegate** — a **research sentinel** takes a GOAL ("find how to call the Claude API")
+  and runs the whole search→fetch→filter→follow-the-trail→synthesize loop AUTONOMOUSLY,
+  in its OWN context, returning a distilled answer + citations. The persona keeps the
+  CONCLUSION, not the file dumps — the exact reason the operator delegates research to
+  sub-agents rather than reading twenty pages into one context.
+
+"A lot more creative" is the point: the sentinel is not a fixed pipeline. It reformulates
+thin queries, chases a promising citation, cross-checks conflicting sources, and decides
+when it has enough — a genuine research assistant. It composes the Sentinel-AI substrate
+(background pipelines, the capture spine) with the five faculties above as its hands.
+
+**Sentinel TRAINING — the deep connection.** What the sentinel forages and distills is
+CORPUS: "the Claude API works like X" is a lesson, and a lesson consolidates (dreams) and
+trains into a GENE. So the sentinel that researches an API today becomes the persona who
+KNOWS it tomorrow — in weights, paged in, no re-foraging. The web is a training corpus the
+sentinel mines on demand, every fact cited back to source by the provenance spine. A
+persona's expertise in an external tool is grown, not hardcoded — by a creative agent that
+went and learned it, then made the knowledge durable. Highest form of capability-parity:
+not just the operator's tools but the operator's *sub-agents*, made hers — and hers feed
+her genome where mine only fed my context.
+
 ## The later faculty: interact (agentic browsing)
 Forms, login, pagination, JS apps, "click to reveal", infinite scroll. The real browser
 can be *driven* (click/scroll/type via CDP), turning read-only research into agentic
@@ -58,11 +87,14 @@ browsing. This is the deepest and riskiest (it acts on external sites), so it co
 and behind explicit per-action gating — the same discipline as `code/shell`.
 
 ## Build order
-1. **`web/view`** (see) — highest value, biggest comprehension leap; lands on a boundary.
-2. **`web/fetch` link extraction** (follow) — one field on an existing verb.
-3. **`web/download`** (grab) — one native, side-effect-gated verb.
-4. **web engrams with source provenance** (remember) — recall key = query, content cites URL.
-5. **Agentic browsing** (interact) — last, gated, its own arc.
+1. **`web/fetch` filter mode** (grep the page) — DONE (#2470).
+2. **`web/view`** (see) — biggest comprehension leap; lands on a boundary.
+3. **Research SENTINEL** (delegate) — the unlock: findings feed BOTH the answer and the
+   genome (sentinel training).
+4. **`web/fetch` link extraction** (follow) — one field on an existing verb.
+5. **`web/download`** (grab) — one native, side-effect-gated verb.
+6. **web engrams with source provenance** (remember) — recall key = query, content cites URL.
+7. **Agentic browsing** (interact) — last, gated, its own arc.
 
 Everything composes existing substrate: WebShot, the vision pipeline, `render_dom`, the
 engram graph, the provenance work. "Research like a human" is not new machinery — it is
