@@ -276,6 +276,55 @@ fn load_rounds_in(dir: &Path) -> HashMap<Uuid, BenchRound> {
     out
 }
 
+/// Boot reconciler — reap-or-adopt at boot
+/// ([[boot-owns-the-process-tree-reap-or-adopt-never-fight-yourself]]). Every `Working`
+/// round persisted on disk was opened by a core that is now GONE: a round only enters
+/// `Working` from a live `benchmark/dispatch` ([`open_round`]), and this boot did not run
+/// one — so nothing is driving its cards and it can never reach `Done` on its own. That is
+/// the same shape as a `running` solve-run ledger whose core died
+/// ([`crate::cognition::swe_bench::reap_orphaned_solve_runs`]); reap it the same way, so
+/// `benchmark/rounds` stops reporting dead rounds as `in_flight` forever (the #371
+/// no-END-state zombie: measured `in_flight: 4` with a stopped exam lease). Returns the
+/// reaped `(benchmark, remaining_cards)` for the boot probe. Idempotent: a second boot
+/// finds none. Does NOT re-dispatch — recovery is a fresh `benchmark/dispatch`, the ONE
+/// adapter into kanban (BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER).
+pub fn reap_orphaned_rounds() -> Vec<(String, usize)> {
+    let dir = rounds_state_dir();
+    // Reap disk first so a not-yet-initialized ROUNDS reloads clean…
+    let reaped = reap_orphaned_rounds_in(&dir);
+    // …and clear any already-loaded Working entries so live_rounds() agrees this boot.
+    // (A fresh round opened AFTER this boot reap is Working and legitimately live; the
+    // reap runs once at daemon start, before any dispatch, so it only sees dead cores'.)
+    ROUNDS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .retain(|_, r| r.stage != RoundStage::Working);
+    reaped
+}
+
+/// The disk half of [`reap_orphaned_rounds`], parameterized on the state dir so it is pure
+/// and unit-testable. Evicts every persisted `Working` round file (terminal-by-death,
+/// self-evicting exactly as a `Done` round's file is removed at settle).
+fn reap_orphaned_rounds_in(dir: &Path) -> Vec<(String, usize)> {
+    let mut reaped = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return reaped;
+    };
+    for entry in entries.flatten() {
+        let Ok(text) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        let Ok(round) = serde_json::from_str::<BenchRound>(&text) else {
+            continue; // unreadable → left in place by load_rounds_in for inspection
+        };
+        if round.stage == RoundStage::Working {
+            reaped.push((round.benchmark.clone(), round.remaining()));
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+    reaped
+}
+
 /// Open a round BEFORE its first card is posted, so the driver is readable from the
 /// instant a card can be claimed.
 ///
@@ -751,5 +800,42 @@ mod tests {
             ROUNDS.lock().unwrap().get(&round_id).is_none(),
             "the round completed and must be removed — done can never fire twice"
         );
+    }
+
+    // what this catches: regression for the #371 no-END zombie — a `Working` round left on
+    // disk by a dead core is reaped at boot (evicted + reported with benchmark+remaining),
+    // so benchmark/rounds stops counting it in_flight forever (measured live: in_flight: 4
+    // with a stopped exam lease). A `Done` file is NOT the reaper's job (load_rounds_in
+    // drops those). Idempotent: a second boot reap finds nothing.
+    #[test]
+    fn reap_evicts_orphaned_working_rounds_from_disk() {
+        let dir = std::env::temp_dir().join(format!("bench-reap-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        // a Working round a dead core left behind
+        let working =
+            BenchRound::new(Uuid::new_v4(), "swe-bench-lite", &cards(3), WorkDriver::Citizen);
+        persist_round_in(&dir, &working);
+        // a Done round (self-evicting at settle; not the reaper's concern)
+        let mut done =
+            BenchRound::new(Uuid::new_v4(), "swe-bench-lite", &cards(1), WorkDriver::Citizen);
+        let cid = *done.cards.keys().next().expect("one card");
+        done.settle_card(cid, "closed");
+        assert_eq!(done.stage(), RoundStage::Done, "single-card settle → Done");
+        persist_round_in(&dir, &done);
+
+        let reaped = reap_orphaned_rounds_in(&dir);
+        assert_eq!(reaped.len(), 1, "exactly the Working round is reaped: {reaped:?}");
+        assert_eq!(
+            reaped[0],
+            ("swe-bench-lite".to_string(), 3),
+            "names the benchmark + remaining cards"
+        );
+        let remaining: Vec<_> = std::fs::read_dir(&dir).expect("readdir").flatten().collect();
+        assert_eq!(remaining.len(), 1, "only the Done file remains — reaper touches Working only");
+        assert!(
+            reap_orphaned_rounds_in(&dir).is_empty(),
+            "second reap is a no-op (idempotent)"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
