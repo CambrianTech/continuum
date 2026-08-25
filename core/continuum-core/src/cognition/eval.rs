@@ -1695,6 +1695,15 @@ pub struct CognitionEvalParams {
     )]
     #[ts(optional)]
     pub suppress_recall: Option<bool>,
+    /// HELP ARM (rung one of room collaboration, 2026-08-24): when true and the
+    /// eval is room-scoped, the exam condition DECLARES that asking peers is
+    /// legal — the task prompts say so, and a listener folds live room speech
+    /// from OTHERS into the fork's working memory so she perceives replies
+    /// between acts. Exchanges are receipts in the transcript; score under this
+    /// arm is reported as OURS+help, never conflated with solo. Default off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub help: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -2192,6 +2201,18 @@ impl CognitionEval {
         // load paths converge, so an inline task from a command payload obeys the same rule as a
         // committed gym line. There is no loader path to a mouth-graded code task.
         for t in tasks.iter_mut() {
+            if p.help.unwrap_or(false) { // omitted = solo arm; the condition text only appears when declared
+                // The arm's condition is DECLARED to the examinee — help is a rule
+                // of this exam, not a secret channel. [[exams-are-taken-with-full-
+                // grid-backed-capacity-disclosed]]
+                t.prompt.push_str(
+                    "\n\n[Exam condition — help arm] Asking for help is LEGAL in this exam \
+                     and counts in your favor when used well: post a question to your room \
+                     (chat tools) stating what you tried, what you expected, and what \
+                     happened. Replies from peers appear in your working memory as \
+                     `voice:` entries. All exchanges are recorded receipts.",
+                );
+            }
             t.require_hands_for_code();
         }
 
@@ -2730,6 +2751,49 @@ impl CognitionEval {
             drop(reviewer_iso);
             out
         } else {
+            // HELP ARM: subscribe the fork's perception to live room speech for the
+            // exam's duration. Peers' words land in her working memory as labeled
+            // voices (perception through a channel, never a memory write from
+            // outside); her own posts are skipped. Guard aborts with the pass.
+            let _help_guard = if p.help.unwrap_or(false) && room != Uuid::nil() { // omitted arm flag = solo, the default
+                let wm = cycle.acting().map(|b| std::sync::Arc::clone(&b.working_memory));
+                wm.map(|wm| {
+                    let mut rx = crate::cognition::deliberation_budget::subscribe_room_speech();
+                    let me = persona_uuid;
+                    let handle = tokio::spawn(async move {
+                        loop {
+                            match rx.recv().await {
+                                Ok(sp) => {
+                                    if sp.room != room || sp.sender == Some(me) {
+                                        continue;
+                                    }
+                                    let who = sp
+                                        .sender
+                                        .map(|u| u.to_string()[..8].to_string())
+                                        .unwrap_or_else(|| "peer".into()); // legacy senderless call site: an anonymous voice, labeled as such
+                                    wm.record_dispatch_event(
+                                        Uuid::new_v4(),
+                                        &format!("voice:{who}"),
+                                        &sp.content,
+                                        crate::cognition::working_memory::DispatchStatus::Done,
+                                    );
+                                    crate::probe!(
+                                        class = "eval.help.voice_folded",
+                                        room = %room,
+                                        sender = %who,
+                                        "help arm: a peer's words reached the examinee's perception"
+                                    );
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                                Err(_) => break,
+                            }
+                        }
+                    });
+                    scopeguard_abort(handle)
+                })
+            } else {
+                None
+            };
             run_pass(
                 &cycle,
                 &isolation,
@@ -3969,6 +4033,18 @@ fn eval_progress_tx() -> &'static tokio::sync::watch::Sender<Option<EvalPassProg
 /// Subscribe to live eval progress — the watch every reader shares.
 pub fn subscribe_eval_progress() -> tokio::sync::watch::Receiver<Option<EvalPassProgress>> {
     eval_progress_tx().subscribe()
+}
+
+/// RAII abort for a spawned helper task — dropped with the pass, so the help
+/// listener can never outlive the exam it serves.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+fn scopeguard_abort(h: tokio::task::JoinHandle<()>) -> AbortOnDrop {
+    AbortOnDrop(h)
 }
 
 /// The idle-backstop verdict: an infra outcome whose probe is a SUBSTRATE BUG

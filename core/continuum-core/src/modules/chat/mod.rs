@@ -548,7 +548,11 @@ impl ChatModule {
             let (Some(room), Some(text)) = (room, text) else {
                 continue;
             };
-            crate::cognition::deliberation_budget::record_room_speech(room, text);
+            let speech_sender = msg
+                .get("senderId")
+                .and_then(Value::as_str)
+                .and_then(|s| uuid::Uuid::parse_str(s).ok());
+            crate::cognition::deliberation_budget::record_room_speech(room, speech_sender, text);
             if let Some(sender) = msg
                 .get("senderId")
                 .and_then(Value::as_str)
