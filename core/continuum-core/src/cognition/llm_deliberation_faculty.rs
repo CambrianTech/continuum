@@ -3858,12 +3858,26 @@ mod tests {
             // draft cost 238 tokens; trimming the DESCRIPTION to its contract (full
             // accumulated CSS, replace-wholesale layer, delta meaning) recovered 47.
             // What is left is the irreducible cost of one discoverable verb.
-            const AGENTIC_SURFACE_CEILING: u32 = 8650;
+            //
+            // 8650 → 9400, stated plainly (2026-08-25): two NATIVE web verbs —
+            // `web/search` + `web/fetch` (+727 tokens even after trimming both
+            // DESCRIPTIONs to one line each; the rest is their irreducible param
+            // schemas). Web FORAGING is a deliberate capability-parity add (Joel: "make
+            // sure we have it" — the operator uses web lookup constantly on SWE/task
+            // work, and a native-call model like Ornith can ONLY emit calls for tools in
+            // its offered specs, so catalog-only web was unreachable to her hands). The
+            // surface already exceeded the 8192 tight-test window before this (8623 >
+            // 8192) — the budget trims VOLATILE context (recall/RAG) to fit and reserves
+            // specs up front, so this raises the reserved floor, it does not introduce a
+            // new overflow. Ornith serves at 166k where this ceiling is irrelevant; the
+            // tight-window LCD persona (which does not do web research) pays with less
+            // recall room, a conscious trade. If a third addition wants in, SHRINK first.
+            const AGENTIC_SURFACE_CEILING: u32 = 9400;
             let surface =
                 faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
             assert!(
                 surface <= AGENTIC_SURFACE_CEILING,
-                "the agentic surface is now {surface} tokens (measured 8623, ceiling \
+                "the agentic surface is now {surface} tokens (measured 9350, ceiling \
                  {AGENTIC_SURFACE_CEILING}) — framing/tools grew. Shrink the surface (#333) \
                  or state plainly what was added and re-pin the ceiling"
             );

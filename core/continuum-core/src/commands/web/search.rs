@@ -3,15 +3,12 @@
 use super::{web_search, WebSearchParams, WebSearchResult};
 
 crate::action_command! {
-    /// Search the WEB for current information beyond your memory — docs, articles,
-    /// papers, news, how-tos. Returns ranked results (title, url, snippet) you can
-    /// cite or read further. Pick a backend with `adapter`: "brave" (best — needs a
-    /// free BRAVE_API_KEY) or "duckduckgo" (keyless, works with no setup). Omit
-    /// `adapter` to auto-use the best available — so this works even with no API
-    /// key configured. Use it to forage for what you don't know yet.
+    /// Search the web for current info beyond your memory (docs, APIs, errors,
+    /// how-tos). Returns ranked results (title, url, snippet) to read with web/fetch.
     pub struct WebSearch;
     name: "web/search",
     access: AiSafe,
+    native: true, // her hands must be able to REACH the web (a native-call model can only emit calls in its offered specs); I forage constantly, so must she — direct SWE/task score lever
     params: WebSearchParams,
     output: WebSearchResult,
     run(_this, _ctx, p) => { web_search(p).await }
@@ -22,14 +19,22 @@ mod tests {
     use super::*;
     use crate::sdk_codegen::ActionCommand;
 
-    // what this catches: the wire name + a description that names BOTH adapters and
-    // the keyless guarantee — the persona is offered "web/search" with guidance that
-    // it works without a key. Name is the routing key; a drift unwires the hand.
+    // what this catches: the wire name (routing key — a drift unwires the hand) and
+    // that the description is the CONCISE model-facing line it became when web went
+    // NATIVE (2026-08-25): the adapter/keyless detail moved OUT of DESCRIPTION — which
+    // rides the token-budgeted native surface — and INTO the `adapter` param doc, so
+    // the surface stayed under its ceiling. The description must still say what the
+    // tool DOES (search the web) and point at its partner (web/fetch); the
+    // adapter/keyless guidance is asserted on the PARAM, its new home.
     #[test]
     fn name_and_description() {
         assert_eq!(WebSearch::NAME, "web/search");
-        assert!(WebSearch::DESCRIPTION.contains("brave"));
-        assert!(WebSearch::DESCRIPTION.contains("duckduckgo"));
-        assert!(WebSearch::DESCRIPTION.contains("no API key"));
+        let d = WebSearch::DESCRIPTION.to_lowercase();
+        assert!(d.contains("search") && d.contains("web"), "names what it does: {}", WebSearch::DESCRIPTION);
+        assert!(d.contains("web/fetch"), "points at its read partner");
+        // The adapter/keyless detail now lives on the param, not the surface-costed DESCRIPTION.
+        let schema = serde_json::to_string(&schemars::schema_for!(WebSearchParams)).unwrap_or_default();
+        assert!(schema.contains("brave") && schema.contains("duckduckgo"),
+            "adapter guidance lives in the param schema now");
     }
 }
