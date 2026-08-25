@@ -107,9 +107,18 @@ const MAX_COUNT: u32 = 20;
 /// floor last). The single source of truth for "which backends exist" — add a
 /// provider here and it is selectable by id and eligible for auto-selection.
 fn all_providers() -> Vec<Box<dyn WebSearchProvider>> {
+    // ORDER IS THE AUTO-PRIORITY (2026-08-25, Joel: 'utilize our own browser as a
+    // possibility, priority'). The browser-driven keyless provider is FIRST, so
+    // auto-selection prefers it: it drives our REAL Chromium (JS-rendered, a
+    // believable UA, Cloudflare/bot-block-resistant) and returns exactly the
+    // natural content a human sees — no meter, no pay-to-play, no key. The paid
+    // Brave API is a deliberate OPT-IN (`adapter: "brave"`) for callers who want
+    // its structured results and hold a key; it no longer silently wins auto just
+    // because a key happens to exist. Same lesson as the operator running out of a
+    // metered search budget: owned-browser natural content beats rented API access.
     vec![
-        Box::new(brave::BraveSearchProvider),
         Box::new(duckduckgo::DuckDuckGoProvider),
+        Box::new(brave::BraveSearchProvider),
     ]
 }
 
