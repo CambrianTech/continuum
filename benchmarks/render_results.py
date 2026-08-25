@@ -265,8 +265,18 @@ def render_all_results(rows):
     print(f"[render_results] wrote benchmarks/ALL-RESULTS.md ({len(rows)} rows)")
 
 
+SECRET_SHAPES = __import__("re").compile(r"hf_[A-Za-z0-9]{30}|sk-[A-Za-z0-9]{30}|xoxb-|ghp_[A-Za-z0-9]{30}|AKIA[A-Z0-9]{16}")
+
+def refuse_secrets(text, where):
+    """Published data may NEVER carry a credential (Joel 2026-08-25: 'idgaf unless
+    it makes it into published data'). Refuse the whole render rather than ship one."""
+    if SECRET_SHAPES.search(text):
+        raise SystemExit(f"REFUSED: token-shaped string in {where} — scrub it, then re-render.")
+
 def main():
-    rows = [json.loads(l) for l in open(LEDGER) if l.strip()]
+    ledger_text = open(LEDGER).read()
+    refuse_secrets(ledger_text, "benchmarks/RESULTS.jsonl")
+    rows = [json.loads(l) for l in ledger_text.splitlines() if l.strip()]
     render_all_results(rows)
     by_bench = defaultdict(lambda: defaultdict(dict))  # bench -> model -> arm -> row (latest wins)
     for r in rows:
