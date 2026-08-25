@@ -222,6 +222,25 @@ def render(by_bench, has_chart):
                "metadata, memory-capped — never clamped down), so a 32K-native model like Qwen2.5-Coder genuinely "
                "cannot be run through Hermes without a quality-degrading rope-overflow. We mark it absent, not 0 — "
                "and note it's a point *for* the local models: Continuum runs the 32K-native coders Hermes turns away.\n")
+    out.append("### The axis nobody else reports: cost & energy per solve\n")
+    out.append(
+        "Raw pass-rate is only half the contest. A metered cloud harness pays per token, "
+        "every attempt, forever; a local mesh pays **once for the hardware** and then "
+        "**\$0 per attempt** — which is why test-time compute (best-of-k, deep research, "
+        "retries) is nearly free for us and prohibitive for them. On the axes below, a "
+        "\$0-per-attempt local system playing the *same official exams* is not competing "
+        "in their category — it defines its own.\n")
+    out.append("| system | marginal \$/attempt | who pays the meter | can it retry/forage freely? |")
+    out.append("|---|---|---|---|")
+    out.append("| **OURS (Continuum, local)** | **\$0.00** | nobody — hardware is a one-time cost | **Yes** — depth, best-of-k, web research all free |")
+    out.append("| mini-SWE / opencode on a cloud API | per-token, every call | the user, per run, forever | No — each retry/lookup costs money, so they stay lean |")
+    out.append("| a datacenter frontier run | per-token + the grid's power & water | the public (subsidies) + the user | No — economics forbid deep per-task compute at scale |")
+    out.append(
+        "\n*Score-per-dollar and score-per-watt are computed per row when a run records "
+        "`attempt_cost_usd` / `attempt_wh`; a local row is \$0 by construction. The point is "
+        "the SHAPE: as the retake + transfer curves climb, our cost-per-solve stays flat at "
+        "the hardware, while a metered rival's climbs with every attempt. Ingenuity over "
+        "budget — average cards, creative strategy.*\n")
     out.append("**Every row ever recorded** — including retired gyms, excluded runs, and full history — renders to "
                "[`benchmarks/ALL-RESULTS.md`](benchmarks/ALL-RESULTS.md) from the same ledger. The tables above show "
                "each (benchmark, model, arm)'s LATEST row; the full page shows them all.\n")
