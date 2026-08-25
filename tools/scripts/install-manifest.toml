@@ -159,12 +159,55 @@ formula = "cmake"
 [module.sources.linux]
 type = "apt"              # run-verify pending on a linux node
 package = "cmake"
+# WHERE the build shell finds it. This is the windows-vs-unix split, stated as data:
+# brew/apt drop cmake straight onto PATH, so unix needs nothing here. The windows
+# archive lands in a per-user dir that is on NOBODY's PATH, so without this the
+# generic runtime-PATH loop skips it and llama's build.rs dies with "is `cmake` not
+# installed?" while cmake sits installed a directory away. It lived as a hardcoded
+# fallback inside windows-build-env.sh's CUDA block instead — which meant a
+# CPU-only Windows box (no nvcc → block skipped) never got it at all.
 [module.runtime_path]
-# The Windows archive installs to ~/.continuum/tools/cmake; its bin/ MUST be on
-# PATH at BUILD time — the llama crate's build.rs shells out to `cmake` to compile
-# vendored llama.cpp, and nvcc-free directml builds still need it. brew/apt already
-# put cmake on PATH, so this is windows-only. [[windows-build-env-drift]]
 windows = ["~/.continuum/tools/cmake/bin"]
+
+[[module]]
+id = "ninja"
+order = 45
+tier = 3
+flags = ["dev"]
+# WINDOWS ONLY, deliberately. The defect ninja fixes is a Windows one (see below):
+# on unix, cmake's default generator (Unix Makefiles) is never broken, so listing
+# macos/linux here would make every contributor on those platforms install a package
+# to buy nothing. Adapting to the platform means stating the asymmetry, not smearing
+# one platform's workaround across all three.
+platforms = ["windows"]
+accept = "ninja --version"
+# WHY ninja is a first-class module and not an implementation detail:
+#
+# cmake auto-picks the NEWEST installed Visual Studio generator. On a VS18-2026 box
+# that is "Visual Studio 18 2026" — a generator string cmake 3.30.5 does not define
+# ("Could not create named generator"), so the build dies on a machine where every
+# tool is present and correct. Ninja is generator-version-agnostic, uses the MSVC env
+# imported separately, drives nvcc directly (no VS integration, no admin), and matches
+# how llama-server is built. So on Windows it is not optional — it is what makes the
+# configure step deterministic across VS versions. [[windows-build-env-drift]]
+#
+# It was previously fetched by a HARDCODED url inside install-llama-server's PowerShell
+# module — no pinned version in the manifest, no sha256, and invisible to the
+# manifest-gen drift gate. One tool provisioned by a different set of rules than every
+# other tool is exactly the drift the manifest exists to prevent, and an unverified
+# download is a supply-chain hole regardless of how convenient the url is.
+[module.sources.windows]
+type = "archive"          # official ninja release, no admin
+url = "https://github.com/ninja-build/ninja/releases/download/v1.12.1/ninja-win.zip"
+version = "1.12.1"
+# sha256 computed 2026-08-09 from the official GitHub release asset (275425 bytes).
+sha256 = "f550fec705b6d6ff58f2db3c374c2277a37691678d6aba463adcbb129108467a"
+extract = "flat"          # -> ~/.continuum/tools/ninja/ninja.exe (zip has no top dir)
+# cmake resolves ninja through PATH only (it ignores CMAKE_MAKE_PROGRAM from the env),
+# so an unlisted ninja means "CMAKE_GENERATOR is not set / unable to find Ninja" even
+# with the binary sitting on disk.
+[module.runtime_path]
+windows = ["~/.continuum/tools/ninja"]
 
 [[module]]
 id = "llvm-libclang"
@@ -189,11 +232,6 @@ accept_macos = "test -f /Library/Developer/CommandLineTools/usr/lib/libclang.dyl
 type = "apt"              # run-verify pending on a linux node
 package = "libclang-dev"
 accept_linux = "test -f /usr/lib/llvm-18/lib/libclang.so.1 || ldconfig -p | grep -q libclang"
-[module.runtime_path]
-# The Windows archive installs libclang.dll to ~/.continuum/tools/llvm/bin; on PATH
-# so bindgen (llama crate) can load it at build time. mac/linux resolve libclang via
-# system paths. [[windows-build-env-drift]]
-windows = ["~/.continuum/tools/llvm/bin"]
 
 [[module]]
 id = "cuda"

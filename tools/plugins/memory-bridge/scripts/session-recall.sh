@@ -44,8 +44,14 @@ SCOPE_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 PROJECT="$(basename "$SCOPE_DIR")"
 
 PERSONA="$(resolve_agent_persona)" || {
-  bridge_receipt session-recall failed "persona id unresolved (airc status down AND no cached id)"
-  emit_notice "⚠️ MEMORY BRIDGE DOWN — recall did not run: could not resolve this agent's persona id (\`airc status\` gave nothing and no cached id exists at ~/.continuum/memory-bridge/persona-id). Your engram memory is NOT loaded this session. Fix: start airc, or set CONTINUUM_AGENT_PERSONA."
+  # State the MEASURED cause, not a presumed one. This notice used to assert
+  # "`airc status` gave nothing" unconditionally — so on 2026-08-09 it told the
+  # agent the daemon was down while airc had 21h uptime and 1305/1305 acked. The
+  # real cause was that the hook's PATH lacks ~/.local/bin, and a notice that
+  # names the wrong cause sends the reader's whole diagnosis sideways.
+  WHY="$(persona_failure_reason)"
+  bridge_receipt session-recall failed "persona id unresolved and no cached id — $WHY"
+  emit_notice "⚠️ MEMORY BRIDGE DOWN — recall did not run: could not resolve this agent's persona id, and no cached id exists at ~/.continuum/memory-bridge/persona-id. Measured cause: ${WHY}. Your engram memory is NOT loaded this session; treat yourself as amnesiac and say so rather than assuming recall works. Fix: make airc resolvable (AIRC_BIN=/path/to/airc), or set CONTINUUM_AGENT_PERSONA."
   exit 0
 }
 [ -n "${PERSONA:-}" ] || {
@@ -81,6 +87,15 @@ fi
 
 bridge_receipt session-recall ok "source=${SOURCE:-startup} max=$MAX bytes=${#OUT}"
 printf '%s\n' "$OUT"
+
+# Staleness is orthogonal to whether recall WORKED: a frozen copy can recall
+# perfectly and still be missing every fix committed since it was installed. So
+# this runs on the success path too, and says so where the agent will read it.
+STALE="$(stale_install_notice "$SCRIPT_DIR")"
+if [ -n "$STALE" ]; then
+  bridge_receipt session-recall stale "$STALE"
+  emit_notice "$STALE"
+fi
 
 # The Stop hook (capture) has no channel to the agent — its failures would be
 # invisible forever. Surface the last capture receipt here, where the agent reads.

@@ -56,6 +56,21 @@ pub struct InferenceStatusView {
     pub served_context_window: u32,
     /// The LoRA genome layers loaded into the serving catalog (sorted paths).
     pub adapters: Vec<String>,
+    /// WHICH ENGINE is answering — llama.cpp's `/props.build_info`, i.e.
+    /// `b<build-number>-<commit-sha>` of the llama.cpp fork the binary was compiled
+    /// from. `None` = nothing served, or an engine too old to publish it.
+    ///
+    /// Surfaced here because this is the query an operator reaches for when serving
+    /// behaves unexpectedly, and until 2026-08-09 it could not be answered from our
+    /// own tools at all — settling "is my fork fix in the running binary?" meant
+    /// comparing binary mtimes across two machines, which produced a wrong
+    /// attribution (a Rust CORE build number read as the engine's).
+    ///
+    /// The sha is the half that decides: build numbers are ancestor counts, so our
+    /// fork and upstream can both report `b6789` and mean different code.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub engine_build: Option<String>,
 }
 
 /// Read the canonical serving snapshot and project it. If the daemon has not yet
@@ -69,6 +84,7 @@ fn current_status() -> InferenceStatusView {
         base_url: s.base_url,
         served_context_window: s.served_context_window,
         adapters: s.adapters,
+        engine_build: s.engine_build,
     }
 }
 
@@ -92,8 +108,9 @@ impl ActionCommand for AiInferenceStatus {
     const DESCRIPTION: &'static str =
         "Report which model the inference engine is serving right now (activeModel), \
          whether it is ready, the live serving base URL, the served context window, \
-         and the LoRA genome layers loaded. Projected from the serving daemon's \
-         canonical snapshot — this is how you confirm which brain is live.";
+         the LoRA genome layers loaded, and which engine build is answering \
+         (engineBuild). Projected from the serving daemon's canonical snapshot — \
+         this is how you confirm which brain is live.";
     type Params = StatusParams;
     type Output = InferenceStatusView;
 

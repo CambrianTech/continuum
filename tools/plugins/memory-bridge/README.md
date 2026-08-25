@@ -67,8 +67,38 @@ is a live probe of a daemon that legitimately restarts; without the cache, every
 airc outage silently disabled memory for a whole session.
 
 ## Status
-Live. Both hooks installed and verified end-to-end 2026-08-05 (recall returns
-real engrams; capture stores; failure paths produce receipts + context notices).
+Both hooks verified end-to-end 2026-08-05 against **this source tree** (recall
+returns real engrams; capture stores; failure paths produce receipts + context
+notices).
 
-## Install (local dev)
-`claude --plugin-dir tools/plugins/memory-bridge`
+That sentence used to read "Status: Live", which was a claim this file is not in
+a position to make. A README describes the repo; whether the plugin is live
+depends on *your install*, and on 2026-08-09 those had been different on BigMama
+for two weeks — see below.
+
+## Install — and why "which install" matters
+Two paths, with very different freshness semantics:
+
+- **Live from the repo (dev):** `claude --plugin-dir tools/plugins/memory-bridge`
+  Runs the scripts in this tree. `git pull` *is* the update.
+- **Marketplace install:** copies the plugin to
+  `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/` and pins it to a git
+  sha. **Nothing re-syncs it. `git pull` changes nothing.**
+
+Measured 2026-08-09: the installed copy on BigMama was pinned to `60fa0dbf`
+(2026-07-25). Its `lib.sh` had no persona-id cache, and it contained no
+`session-capture.sh` at all — so automatic per-turn capture, the entire
+"volitional memory isn't memory" point, had never run once on that machine while
+this README said the bridge was live.
+
+So `session-recall.sh` now checks: if the running copy is under a plugins cache
+AND its scripts differ from `tools/plugins/memory-bridge/scripts` in the current
+checkout, it injects **⚠️ MEMORY BRIDGE STALE** and writes a `stale` receipt. Same
+discipline as the rest of this plugin — "installed" must not be indistinguishable
+from "working", and "current" must not be indistinguishable from "stale". A fix
+that never reaches the executing copy is identical to a fix never written.
+
+Check which one you are on:
+```bash
+tail -3 ~/.continuum/memory-bridge/receipts.jsonl   # a "stale" line names the frozen path
+```

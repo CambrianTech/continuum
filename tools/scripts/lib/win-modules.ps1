@@ -274,6 +274,46 @@ function Mod-CMake {
     else { Module-Fail 'CMake' "cmake.exe not found after extract to $dir" }
 }
 
+function Set-NinjaEnv {
+    # Ninja must be reachable BY PATH: the cmake crate ignores CMAKE_MAKE_PROGRAM from
+    # the environment, so with -G Ninja it searches PATH and otherwise fails with
+    # "unable to find Ninja / CMAKE_MAKE_PROGRAM is not set". Mirrors Set-CMakeEnv.
+    param([Parameter(Mandatory)][string]$Dir)
+    if ($env:PATH -notlike "*$Dir*") { $env:PATH = "$Dir;$env:PATH" }
+}
+
+function Mod-Ninja {
+    # The no-admin CUDA build driver. The "Visual Studio 17 2022" generator needs the
+    # CUDA VS MSBuild integration (CUDA*.props under VC/BuildCustomizations) to
+    # enable_language(CUDA) -- and our no-admin CUDA redist does not ship it (it is a
+    # full-installer component that writes into Program Files). Ninja drives nvcc
+    # directly, so it needs zero VS integration, and it is generator-version-agnostic
+    # (the "Visual Studio 18 2026" trap cmake 3.30.x cannot name).
+    #
+    # Was a hardcoded Invoke-WebRequest inline in Mod-LlamaServer: no manifest entry,
+    # no pinned sha256, invisible to the manifest-gen drift gate. One tool provisioned
+    # by different rules than every other tool is the drift the manifest exists to
+    # prevent, and an unverified download is a supply-chain hole however convenient
+    # the url. Now: same source-of-truth, same verification, same guard shape as
+    # Mod-CMake.
+    if (Get-Command ninja -ErrorAction SilentlyContinue) { Module-Skip 'Ninja' 'on PATH'; return }
+    $dir = Join-Path $env:USERPROFILE '.continuum\tools\ninja'
+    $exe = Join-Path $dir 'ninja.exe'
+    if (Test-Path $exe) { Set-NinjaEnv $dir; Module-Skip 'Ninja' "present at $dir"; return }
+    Module-Start 'Ninja' 'downloading ninja (no admin)'
+    $src = (Get-ManifestModule 'ninja').source   # archive: url + version + sha256 + extract
+    $zip = Join-Path $env:TEMP "ninja-$($src.version).zip"
+    Invoke-WebRequest -Uri $src.url -OutFile $zip -UseBasicParsing
+    Assert-Sha256 -Path $zip -Expected $src.sha256 -Name 'Ninja'
+    New-Item -ItemType Directory -Force $dir | Out-Null
+    # extract = "flat": the ninja zip has no top-level directory, so it expands
+    # straight into place (contrast Mod-CMake's "strip-top-dir").
+    Expand-Archive -Path $zip -DestinationPath $dir -Force
+    Remove-Item $zip -ErrorAction SilentlyContinue
+    if (Test-Path $exe) { Set-NinjaEnv $dir; Module-Done 'Ninja' }
+    else { Module-Fail 'Ninja' "ninja.exe not found after extract to $dir" }
+}
+
 function Mod-LLVM {
     # libclang.dll for bindgen. From LLVM's OFFICIAL release (clang+llvm
     # windows-msvc tarball), extracted per-user -- no admin, no Python.
@@ -558,14 +598,7 @@ function Mod-LlamaServer {
     # (Enter-MsvcEnv puts cl.exe on PATH for nvcc's host side).
     $ninjaDir = Join-Path $env:USERPROFILE '.continuum\tools\ninja'
     $ninja = Join-Path $ninjaDir 'ninja.exe'
-    if ($backend -eq 'cuda' -and -not (Test-Path $ninja)) {
-        Write-Step '  llama-server: fetching ninja (no-admin CUDA build driver)'
-        New-Item -ItemType Directory -Force $ninjaDir | Out-Null
-        $nz = Join-Path $env:TEMP 'ninja-win.zip'
-        Invoke-WebRequest -Uri 'https://github.com/ninja-build/ninja/releases/download/v1.12.1/ninja-win.zip' -OutFile $nz -UseBasicParsing
-        Expand-Archive -Path $nz -DestinationPath $ninjaDir -Force
-        Remove-Item $nz -ErrorAction SilentlyContinue
-    }
+    if ($backend -eq 'cuda') { Mod-Ninja }
 
     $cmakeArgs = @('-S', $submodule, '-B', $buildDir,
         '-DCMAKE_BUILD_TYPE=Release',

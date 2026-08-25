@@ -519,6 +519,8 @@ mod tests {
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
+            // test fixture: no engine identity claimed.
+            engine_build: None,
         });
         let (suppress_tx, _srx) = watch::channel(Arc::new(HashSet::new()));
         let (pin_tx, _prx) = watch::channel(None);
@@ -741,6 +743,8 @@ mod tests {
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
+            // test fixture: no engine identity claimed.
+            engine_build: None,
         });
         let footprint_of: FootprintFn = Arc::new(move |id: &str, window: u32, lanes: u32| {
             *seen_w.lock() = Some((id.to_string(), window, lanes));
@@ -843,6 +847,8 @@ mod tests {
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
+            // test fixture: no engine identity claimed.
+            engine_build: None,
         });
         let (suppress_tx, _srx) = watch::channel(Arc::new(HashSet::new()));
         let (pin_tx, pin_rx) = watch::channel(None);

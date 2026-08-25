@@ -86,6 +86,13 @@ try {
     Mod-Rust
     Mod-VSBuildTools
     Mod-CMake
+    # Beside CMake, not buried in the llama-server build: ninja is what makes the
+    # cmake CONFIGURE step deterministic across Visual Studio versions (cmake
+    # auto-picks the newest VS, and "Visual Studio 18 2026" is a generator cmake
+    # 3.30.x cannot name). Provisioning it here means a plain `cargo build` works
+    # from a fresh terminal; provisioning it lazily meant it only existed on boxes
+    # that had already built llama-server with CUDA.
+    Mod-Ninja
     Mod-LLVM
     Mod-CUDA
     Mod-GhAuth -WantsGrid:$WantsGrid
