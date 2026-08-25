@@ -23,6 +23,7 @@ pub mod protocol;
 pub mod publish_request;
 pub mod publish_tags;
 pub mod publisher;
+pub mod provenance;
 pub mod recipe;
 
 pub use artifact::{ForgeArtifact, HardwareProfile};

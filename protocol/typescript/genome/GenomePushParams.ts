@@ -8,4 +8,9 @@ gene: string,
 /**
  * Target HF repo (`namespace/name`), e.g. `continuum-ai/ornith-code-asha`.
  */
-repo: string, };
+repo: string, 
+/**
+ * Direct parent alloy hashes for the lineage DAG — the genes this one forked
+ * from/built on. Empty = a root gene (a lineage origin). Signed into provenance.
+ */
+parent_alloy_hashes: Array<string>, };
