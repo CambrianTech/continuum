@@ -280,6 +280,30 @@ pub async fn web_fetch(p: WebFetchParams) -> Result<WebFetchResult, CommandError
         )));
     }
 
+    // STATUS PRE-CHECK: the browser's `--dump-dom` renders a page regardless of HTTP
+    // status, so a 404 comes back as a 14-char "404: Not Found" DOM that reads as content
+    // (this is exactly what beat astropy-13236 — her v5.1.0 URL 404'd and she saw a silent
+    // near-empty result, never learning the tag was wrong). A cheap headers-only GET
+    // surfaces the status so a definitively-wrong URL FAILS LOUD with the code, instead of
+    // blinding her with a rendered error page.
+    if let Ok(client) = reqwest::Client::builder()
+        .user_agent(browser::RENDER_UA)
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    {
+        if let Ok(resp) = client.get(&url).send().await {
+            if let Some(e) = url_error_for_status(
+                resp.status().as_u16(),
+                resp.status().canonical_reason().unwrap_or(""),
+                &url,
+            ) {
+                return Err(e);
+            }
+        }
+        // A probe network error / bot-block / 5xx is NOT fatal here: fall through to the
+        // real browser, which renders JS and gets past anti-bot walls a bare client can't.
+    }
+
     // Drive the host's REAL browser (renders JS, isn't bot-blocked) rather than an HTTP
     // scrape. 4s virtual-time budget is ample for a doc/article's first paint.
     let body = browser::render_dom(&url, 4000).await?;
@@ -296,6 +320,24 @@ pub async fn web_fetch(p: WebFetchParams) -> Result<WebFetchResult, CommandError
         title,
         content,
         chars,
+    })
+}
+
+/// Decide whether an HTTP status means "fail loud — this URL is wrong" or "proceed and
+/// let the browser try". A DEFINITIVE client error (404/400/410/…) means the resource is
+/// not there, so we fail loud with the code and a nudge to fix the URL — instead of
+/// letting a rendered error page masquerade as content. `403`/`429`/`408` are bot-block /
+/// rate-limit / timeout signals a real browser can often get past, and `5xx` is transient,
+/// so those fall through to `render_dom`. Pure → unit-testable.
+fn url_error_for_status(code: u16, reason: &str, url: &str) -> Option<CommandError> {
+    let definitive_client_error =
+        (400..500).contains(&code) && !matches!(code, 403 | 408 | 429);
+    definitive_client_error.then(|| {
+        CommandError::Invalid(format!(
+            "web/fetch: {url} returned HTTP {code} {reason} — the URL is wrong. Check the \
+             path, the ref/tag/branch (e.g. `v5.1` not `v5.1.0`), and spelling; or use \
+             web/search to find the right link."
+        ))
     })
 }
 
@@ -598,6 +640,25 @@ mod tests {
         assert!(!out.trim().is_empty(), "must never be silently empty");
         assert!(out.contains("matched 0 of 3 lines"), "announces the miss + scale: {out}");
         assert!(out.contains("line one") && out.contains("line three"), "returns the page: {out}");
+    }
+
+    // what this catches: regression for astropy-13236 — a 404 (her v5.1.0 URL) FAILS LOUD
+    // with the code and a fix-the-URL nudge, instead of the browser rendering "404: Not
+    // Found" as content. Bot-block/rate-limit/transient statuses (403/408/429/5xx) do NOT
+    // fail here — a real browser can get past them — and 2xx never fails.
+    #[test]
+    fn url_error_for_status_fails_loud_only_on_definitive_client_errors() {
+        use super::url_error_for_status;
+        // definitive client errors → fail loud, name the code
+        for code in [400u16, 404, 410, 451] {
+            let e = url_error_for_status(code, "Not Found", "https://x/y")
+                .unwrap_or_else(|| panic!("HTTP {code} must fail loud"));
+            assert!(format!("{e:?}").contains(&code.to_string()), "names the code {code}: {e:?}");
+        }
+        // bot-block / rate-limit / timeout / transient → proceed (browser may get past)
+        for code in [200u16, 301, 403, 408, 429, 500, 503] {
+            assert!(url_error_for_status(code, "x", "https://x/y").is_none(), "HTTP {code} must proceed");
+        }
     }
 
     // what this catches: a matching filter returns ONLY the matching lines (the context
