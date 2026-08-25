@@ -176,7 +176,14 @@ async fn settle_to_outcome(
     // withheld, and the pre-gate warning now lands 4 acts before THIS bound —
     // genuinely before, not at, the cliff). Plumbing must never out-stubborn
     // the engineer it serves.
-    let discovery_budget = (max_acts * 3 / 4).max(1);
+    // Divide BEFORE multiply so this can never overflow: a self-tick (non-benchmark)
+    // turn passes `max_acts = usize::MAX` (the "unlimited acts" sentinel), and the old
+    // `max_acts * 3` overflowed usize → a debug-build panic that aborted EVERY persona
+    // service loop the instant it self-ticked, so residency could never hold
+    // (resident_count flapped to 0, #412 root). `(max_acts / 4)` is always ≤ max_acts, so
+    // `* 3` stays in range; `saturating_mul` is belt-and-suspenders. 3/4 of the budget,
+    // overflow-safe.
+    let discovery_budget = (max_acts / 4).saturating_mul(3).max(1);
     let mut mutated_yet = false;
     let mut saturation_probed = false;
 
