@@ -3,12 +3,8 @@
 use super::{web_search, WebSearchParams, WebSearchResult};
 
 crate::action_command! {
-    /// Search the WEB for current information beyond your memory — docs, articles,
-    /// papers, news, how-tos. Returns ranked results (title, url, snippet) you can
-    /// cite or read further. Pick a backend with `adapter`: "brave" (best — needs a
-    /// free BRAVE_API_KEY) or "duckduckgo" (keyless, works with no setup). Omit
-    /// `adapter` to auto-use the best available — so this works even with no API
-    /// key configured. Use it to forage for what you don't know yet.
+    /// Search the web for current info beyond your memory (docs, APIs, errors,
+    /// how-tos). Returns ranked results (title, url, snippet) to read with web/fetch.
     pub struct WebSearch;
     name: "web/search",
     access: AiSafe,
