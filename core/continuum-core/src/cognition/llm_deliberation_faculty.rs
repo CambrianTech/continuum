@@ -1751,33 +1751,44 @@ impl LlmDeliberationFaculty {
         // so either order re-prefilled; with the ring extend-only, stable
         // grounding ahead of it extends the prefix, and a grounding CHANGE costs
         // one re-prefill instead of every act paying displacement.
-        for c in ws
-            .broadcast
-            .iter()
-            .filter(|c| c.decision.is_none() && c.trailing)
-        {
-            if !c.content.trim().is_empty() {
-                // Same `[faculty]` banner the system block gives its sections —
-                // grounding that moved here for KV reuse (volatile-content
-                // sources, 2026-08-23) must stay as legible as it was in the
-                // system prefix. One sized allocation, no intermediate format!.
-                let mut body =
-                    String::with_capacity(c.faculty.as_str().len() + c.content.len() + 4);
-                body.push('[');
-                body.push_str(c.faculty.as_str());
-                body.push_str("]\n");
-                body.push_str(&c.content);
-                messages.push(ChatMessage::text("user", body));
+        // STABILITY-ORDERED TAIL, second wire-diff (2026-08-24 evening): the first
+        // reorder moved ALL trailing contributions ahead of the ring — including the
+        // working-memory TRAIL, which REWRITES itself every act (measured: an 11.5k
+        // interior-state block at msg[1] mutating per tick, prefix dead at 2-4%).
+        // Split by churn class: non-WM grounding (semi-stable) → append-only ring →
+        // the trail (churniest standing block) → facts/ask/pin. One rule, monotone
+        // in stability, same law as the system-side phases.
+        let render_trailing = |messages: &mut Vec<ChatMessage>, wm_trail: bool| {
+            for c in ws
+                .broadcast
+                .iter()
+                .filter(|c| c.decision.is_none() && c.trailing)
+                .filter(|c| (c.faculty.as_str() == crate::cognition::working_memory::WM_FACULTY_ID) == wm_trail)
+            {
+                if !c.content.trim().is_empty() {
+                    // Same `[faculty]` banner the system block gives its sections —
+                    // grounding that moved here for KV reuse (volatile-content
+                    // sources, 2026-08-23) must stay as legible as it was in the
+                    // system prefix. One sized allocation, no intermediate format!.
+                    let mut body =
+                        String::with_capacity(c.faculty.as_str().len() + c.content.len() + 4);
+                    body.push('[');
+                    body.push_str(c.faculty.as_str());
+                    body.push_str("]\n");
+                    body.push_str(&c.content);
+                    messages.push(ChatMessage::text("user", body));
+                }
             }
-        }
+        };
+        render_trailing(&mut messages, false);
         if let Some(wm) = &self.working_memory {
-            // The append-only results ring LAST among the standing tail — its
-            // appends now land at the growth frontier instead of displacing
-            // anything ([[continuity-is-the-default-reset-is-the-exception]]).
+            // The append-only results ring — its appends land at the growth
+            // frontier of the stable region, displacing nothing.
             for block in wm.recent_results_messages() {
                 messages.push(ChatMessage::text("user", block));
             }
         }
+        render_trailing(&mut messages, true);
 
         // Facts flicker per act — they render after every append-only block,
         // immediately before the ask (parrot-fix order preserved).
@@ -2043,6 +2054,26 @@ impl Faculty for LlmDeliberationFaculty {
                     "sized this turn to the lane's LIVE served window (adapter-reported, \
                      one source, no clamp)"
                 );
+                // PERSIST the reconciliation (2026-08-24, the 17% mind): this
+                // adoption was turn-LOCAL, so `model_loadout()` — the source every
+                // OTHER window consumer reads (working-memory ring/trail/archive
+                // budgets in apply.rs) — kept serving the stale spawn pin forever.
+                // Measured on round 706215f4: binding 28,672 vs served 166,400 —
+                // her result tails clipped to 896 chars on a 166k lane, and the
+                // re-read loops that shredded her memory were visible in her own
+                // trail ("I've been going in circles").
+                //
+                // Via `rcu` over the CURRENT value, never a store of our snapshot:
+                // a concurrent rebind (model swap, genome page-in — the other two
+                // writers on this handle) between our load and a whole-struct store
+                // would be silently clobbered. Only the window is ours to write;
+                // adapter/model ride whatever is current at commit time. The
+                // deadband above already hysteresis-gates what reaches here.
+                self.binding.rcu(|cur| ModelBinding {
+                    adapter: std::sync::Arc::clone(&cur.adapter),
+                    model: cur.model.clone(),
+                    context_window: effective,
+                });
                 std::sync::Arc::new(ModelBinding {
                     adapter: std::sync::Arc::clone(&loaded.adapter),
                     model: loaded.model.clone(),
