@@ -292,6 +292,10 @@ pub struct GenomePushParams {
     pub gene: String,
     /// Target HF repo (`namespace/name`), e.g. `continuum-ai/ornith-code-asha`.
     pub repo: String,
+    /// Direct parent alloy hashes for the lineage DAG — the genes this one forked
+    /// from/built on. Empty = a root gene (a lineage origin). Signed into provenance.
+    #[serde(default)]
+    pub parent_alloy_hashes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
@@ -359,6 +363,30 @@ impl ActionCommand for GenomePush {
             .and_then(|s| serde_json::to_string_pretty(s).ok());
         let signed = signature_json.is_some();
 
+        // COMMONS PROVENANCE (trust spine rung 1): sign the gene with THIS node's
+        // citizen key (`identity.key`, 32 raw ed25519 bytes) over its content hash +
+        // parent alloy hashes, so the commons can verify who forged it and walk its
+        // lineage. Best-effort: a missing/short key omits provenance (an unsigned
+        // gene the commons policy simply ranks untrusted) rather than blocking a
+        // share — never a fabricated signature.
+        let (provenance_json, parent_alloy_hashes) = {
+            let parents: Vec<String> = p.parent_alloy_hashes.clone();
+            let key_path = dirs::home_dir()
+                .unwrap_or_default() // no HOME → path is relative; read fails → unsigned, handled below
+                .join(".continuum/identity.key");
+            let prov = std::fs::read(&key_path)
+                .ok()
+                .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok())
+                .and_then(|seed| {
+                    let key = crate::contracts::signing::ContractSigningKey::from_bytes(&seed);
+                    let canonical = std::fs::read(&adapter.path).ok()?; // sign the gene bytes themselves
+                    crate::forge::provenance::GenomeProvenance::sign(&key, &canonical, parents.clone())
+                        .ok()
+                })
+                .and_then(|pv| serde_json::to_string_pretty(&pv).ok()); // disk boundary: staged as provenance.json beside the gene for HF upload
+            (prov, parents)
+        };
+
         let inputs = crate::forge::publish_request::PublishInputs {
             repo_id: p.repo.clone(),
             gene_path: adapter.path.clone(),
@@ -371,6 +399,8 @@ impl ActionCommand for GenomePush {
             rank: None,
             lift: rec.decayed_mean_lift,
             signature_json,
+            provenance_json,
+            parent_alloy_hashes,
         };
         // build() enforces the lift gate (> 0): measured harm never publishes.
         let req = crate::forge::publish_request::PublishRequest::build(&inputs, |path| {
