@@ -67,6 +67,7 @@ pub mod expert_ingest;
 pub mod expert_layout;
 pub mod fine_tuning;
 pub mod fitness;
+pub mod commons_ranking;
 pub mod fitness_ledger;
 pub mod gate_magnitude;
 pub mod local_manager;
