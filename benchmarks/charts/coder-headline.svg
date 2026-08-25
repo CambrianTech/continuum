@@ -69,7 +69,7 @@
 <text x="20" y="743" font-size="12" font-weight="700" fill="#768390">Terminal-Bench 2.1 · Ornith-1.5-35B-A3B</text>
 <rect x="200" y="749" width="512.0" height="20" rx="3" fill="#2ea043"/>
 <text x="192" y="763" font-size="10.5" fill="#768390" text-anchor="end">OURS (Continuum)</text>
-<text x="718.0" y="763" font-size="10.5" font-weight="600" fill="#2ea043">100% (7/7)</text>
+<text x="718.0" y="763" font-size="10.5" font-weight="600" fill="#2ea043">100% (9/9)</text>
 <rect x="200" y="774" width="438.8" height="20" rx="3" fill="#f85149"/>
 <text x="192" y="788" font-size="10.5" fill="#768390" text-anchor="end">mini-SWE (stock llama)</text>
 <text x="644.8" y="788" font-size="10.5" font-weight="600" fill="#f85149">86% (6/7)</text>
