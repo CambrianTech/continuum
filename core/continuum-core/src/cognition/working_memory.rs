@@ -139,6 +139,11 @@ struct DispatchedAction {
 /// `Arc`; shared between the writer (deliberation faculty) and the reader
 /// (`WorkingMemoryFaculty`). `parking_lot::Mutex` — no poisoning, and every access
 /// is a quick sync snapshot/push with no `.await` held across the lock.
+/// The working-memory faculty's canonical id — the ONE string the contribution
+/// carries and every consumer (stability ordering in the deliberation tail,
+/// capture tooling) matches on.
+pub(crate) const WM_FACULTY_ID: &str = "working-memory";
+
 #[derive(Debug)]
 pub struct WorkingMemory {
     /// Process-unique construction ordinal. Purely diagnostic: lets any probe
@@ -1177,7 +1182,7 @@ impl WorkingMemoryFaculty {
     }
 
     fn faculty_id() -> FacultyId {
-        FacultyId::Custom("working-memory".to_string())
+        FacultyId::Custom(WM_FACULTY_ID.to_string())
     }
 }
 
