@@ -1309,7 +1309,7 @@ async fn ensure_test_extra(
         as_of,
         &["--no-build-isolation", "-e", &spec],
         Some(repo_dir),
-        &[("CFLAGS", ERA_CFLAGS)],
+        ERA_BUILD_ENV,
     )
     .await;
     let ok = matches!(&outcome, Ok(o) if o.status.success());
@@ -1388,6 +1388,18 @@ fn build_requires(repo_dir: &Path) -> Vec<String> {
 /// an ERA fact (old vendored zlib vs a modern Apple SDK), identical in shape to the three
 /// above: the compiler is HARNESS, the C is SUBJECT, and the subject built fine on the
 /// compilers of its own day.
+/// The env-var set EVERY era build runs under. `SETUPTOOLS_USE_DISTUTILS=stdlib`
+/// is load-bearing for every numpy.distutils-era repo (scikit-learn 2019,
+/// glass-boxed 2026-08-26): modern setuptools' vendored distutils shim DELETED
+/// `distutils.msvccompiler`, which numpy.distutils imports unconditionally — so
+/// the build backend dies at metadata. Era interpreters are 3.6–3.9 and all
+/// carry stdlib distutils; pointing the shim back at stdlib is exactly what
+/// upstream recommends for legacy numpy.distutils builds.
+const ERA_BUILD_ENV: &[(&str, &str)] = &[
+    ("CFLAGS", ERA_CFLAGS),
+    ("SETUPTOOLS_USE_DISTUTILS", "stdlib"),
+];
+
 const ERA_CFLAGS: &str = "-Wno-error=incompatible-function-pointer-types \
      -Wno-error=implicit-function-declaration -Wno-error=int-conversion \
      -Dfdopen=fdopen";
@@ -1511,7 +1523,7 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
                     ".",
                 ],
                 Some(repo_dir),
-                &[("CFLAGS", ERA_CFLAGS)],
+                ERA_BUILD_ENV,
             )
             .await?;
             if !out.status.success() {
@@ -1660,7 +1672,7 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
             as_of.as_deref(),
             sdist_deps,
             None,
-            &[("CFLAGS", ERA_CFLAGS)],
+            ERA_BUILD_ENV,
         )
         .await?;
         // BUILD TOOLS ARE NOT SUBJECT CODE — reproduced in isolation 2026-08-17: the era
@@ -1685,7 +1697,7 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
                 "era-pinned sdist build-dep install unsatisfiable at every heal rung — \
                  retrying UNPINNED (build tools only; the subject graph stays date-pinned)"
             );
-            out = era_pinned_uv_install(&uv, &py_s, None, sdist_deps, None, &[("CFLAGS", ERA_CFLAGS)])
+            out = era_pinned_uv_install(&uv, &py_s, None, sdist_deps, None, ERA_BUILD_ENV)
                 .await?;
         }
         if !out.status.success() {
@@ -1719,13 +1731,45 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
     // The env teardown below deletes `env_dir` — but a failed build ALSO leaves debris in the
     // CHECKOUT, which nothing was cleaning, and that debris is permanently fatal.
     clear_setuptools_build_debris(Path::new(&repo_s));
+    // MATPLOTLIB BUILDS AGAINST SYSTEM FREETYPE (glass-boxed 2026-08-26): its
+    // default build downloads freetype 2.6.1 and `make`s it — and that
+    // tarball's config.guess predates Apple Silicon, so the vendored build
+    // dies on every arm64 Mac. `MPLSETUPCFG` → `system_freetype = true` links
+    // the host's freetype instead (verified: mpl 3.4.2 builds + imports on the
+    // era interpreter). Fail-loud when the host lacks it: the message names
+    // the exact install command, because "build backend error" is not a fix.
+    let mut build_env: Vec<(&str, &str)> = ERA_BUILD_ENV.to_vec();
+    let mpl_cfg_path;
+    if instance.repo == "matplotlib/matplotlib" {
+        let freetype_ok = match which("pkg-config") {
+            Some(pc) => run(&pc, &["--exists", "freetype2"], None)
+                .await
+                .map(|o| o.status.success())
+                .unwrap_or(false), // a failing probe means "not available" — the message below names the remedy
+            None => false,
+        };
+        if !freetype_ok {
+            let _ = std::fs::remove_dir_all(&env_dir);
+            return Err(format!(
+                "matplotlib needs the HOST freetype (its vendored freetype 2.6.1 cannot \
+                 build on this machine): install it with `brew install freetype pkg-config` \
+                 and re-run — an ENV prerequisite, not a model result ({})",
+                instance.instance_id
+            ));
+        }
+        let cfg = env_dir.join("mplsetup.cfg");
+        std::fs::write(&cfg, "[libs]\nsystem_freetype = true\n")
+            .map_err(|e| format!("could not write {}: {e}", cfg.display()))?;
+        mpl_cfg_path = cfg.to_string_lossy().into_owned();
+        build_env.push(("MPLSETUPCFG", mpl_cfg_path.as_str()));
+    }
     let out = era_pinned_uv_install(
         &uv,
         &py_s,
         as_of.as_deref(),
         &["--no-build-isolation", "-e", "."],
         Some(Path::new(&repo_s)),
-        &[("CFLAGS", ERA_CFLAGS)],
+        &build_env,
     )
     .await?;
     if !out.status.success() {
@@ -1737,11 +1781,21 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
         // and that debris outlives `env_dir` (see `clear_setuptools_build_debris`).
         clear_setuptools_build_debris(Path::new(&repo_s));
         let _ = std::fs::remove_dir_all(&env_dir);
+        // uv's stderr often carries ONLY "the build backend returned an error";
+        // the backend's actual traceback lands on stdout. Carry BOTH tails so
+        // the prewarm probe / user receipt is actionable, never a mystery.
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let tail = |t: &str| -> String {
+            let t = t.trim();
+            t.chars().skip(t.chars().count().saturating_sub(1500)).collect()
+        };
         return Err(format!(
             "could not install {}'s repo into a venv — a cached broken env would poison every \
-             later run, so it was removed: {}",
+             later run, so it was removed: {} ||| backend output tail: {}",
             instance.instance_id,
-            String::from_utf8_lossy(&out.stderr).trim()
+            tail(&stderr),
+            tail(&stdout)
         ));
     }
 
