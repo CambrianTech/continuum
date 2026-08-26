@@ -940,6 +940,25 @@ pub(crate) async fn dispatch_staged_swe_solve(
             .await
             {
                 Ok(spawned) => {
+                    // RESTORE THE SPAWNER'S FOCUS (glass-boxed 2026-08-26, the
+                    // one-resident boot): spawn_activity_room's documented side
+                    // effect moves the caller's current-room pointer to the new
+                    // solve room — and when the dispatch's curator IS the
+                    // assignee (any_live_citizen with one resident), that same
+                    // handle creates the NEXT card, which then lands on the
+                    // SOLVE room's board instead of the run room's. Measured:
+                    // card 1 of 3 visible, cards 2-3 "not on the RUN room's
+                    // board" forever — two solves dead at dispatch and a live
+                    // card ghost-settled. Until airc grows subscribe-without-
+                    // focus (#290), the mint restores the pointer itself.
+                    if let Err(e) = spawner.join(&run_room.name).await {
+                        crate::probe!(
+                            class = "work.solve.room_mint_failed",
+                            card_id = %short8(card_id.as_uuid()),
+                            error = %e.to_string(),
+                            "could not restore the spawner's focus to the run room                              after the mint — subsequent card writes may land on the                              wrong board"
+                        );
+                    }
                     let act = crate::cognition::bench_round::CardActivity {
                         solve_room: spawned.room_id.as_uuid(),
                         assignee: claimer.as_uuid(),
