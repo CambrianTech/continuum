@@ -240,7 +240,12 @@ fn resolve_burst(
     persona_id: &Uuid,
 ) -> Result<ResolvedBurst, CommandError> {
     if let Some(ws) = &p.world_state {
-        let room = p.room_id.clone().unwrap_or_else(|| Uuid::nil().to_string());
+        // A replay is an activity too: rejoin the named room or mint a fresh
+        // synthetic one — never nil (#425).
+        let room = p
+            .room_id
+            .clone()
+            .unwrap_or_else(|| crate::identity::ActivityRoom::mint().as_uuid().to_string()); // replay of a pre-room capture: mint a fresh room so the replay is never nil-roomed
         return Ok(ResolvedBurst {
             world_state: ws.clone(),
             room,
@@ -385,7 +390,11 @@ impl ActionCommand for CognitionReplay {
         // ledger of every layer she saw, in the RAG sources' own token unit.
         let budget = build_budget(&burst.world_state, &burst.broadcast);
 
-        let mut ws = Workspace::in_room(burst.world_state.clone(), room);
+        let mut ws = Workspace::from_burst(crate::cognition::workspace::Burst::raw_in(
+            crate::identity::ActivityRoom::from_uuid(room)
+                .expect("replay room is parsed-or-minted above, never nil"), // parsed-or-minted two lines up; nil is unreachable here
+            burst.world_state.clone(),
+        ));
         ws.broadcast = burst.broadcast;
         let bids = cycle.replay(&ws, only.as_ref()).await;
 
@@ -483,7 +492,9 @@ mod tests {
         let b = resolve_burst(&p, &persona).unwrap();
         assert_eq!(b.world_state, "what was the auth migration codename?");
         assert_eq!(b.source, "supplied");
-        assert_eq!(b.room, Uuid::nil().to_string());
+        // #425: a replay with no named room MINTS a real activity — never nil.
+        let minted = Uuid::parse_str(&b.room).expect("room is a real uuid");
+        assert!(!minted.is_nil(), "an unnamed replay room is minted, not nil");
         // A bare supplied burst carries NO broadcast — this is the invariant the
         // run() guard relies on to refuse a blind deliberation replay.
         assert!(

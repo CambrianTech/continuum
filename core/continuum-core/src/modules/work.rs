@@ -367,7 +367,7 @@ fn parse_state(s: &str) -> Result<CardState, CommandError> {
 /// so the first hit is the only hit. A caller can only read boards of rooms it is
 /// SUBSCRIBED to, so this widens no visibility — it only stops discarding what
 /// the caller can already see.
-async fn room_holding_card(airc: &Arc<Airc>, card_id: WorkCardId) -> Option<airc_lib::Room> {
+pub(crate) async fn room_holding_card(airc: &Arc<Airc>, card_id: WorkCardId) -> Option<airc_lib::Room> {
     let set = airc.subscription_set().await.ok()?;
     for sub in set.all() {
         let room = sub.as_room();
@@ -720,14 +720,62 @@ pub(crate) async fn dispatch_staged_swe_solve(
         card: card_id,
         room,
     } = dispatch;
-    let Ok(board) = airc
-        .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
-        .await
-    else {
+    // Read the RUN ROOM's board — the dispatch HAS the room (StagedSolveDispatch
+    // requires it), and boards are per-room. The previous read went through the
+    // caller's GLOBAL paginated projection (work_board_complete), where a card
+    // beyond the page silently vanished: measured live 2026-08-26 — of two cards
+    // on one run-room board, one dispatched and one "was not in the caller's
+    // board projection" purely by page position. Room-scoped is both correct
+    // and unpaginated for the one board that matters.
+    let run_room = {
+        let subs = match airc.subscription_set().await {
+            Ok(s) => s,
+            Err(e) => {
+                crate::probe!(
+                    class = "benchmark.dispatch",
+                    card_id = %card_id.as_uuid(),
+                    claimer = %claimer,
+                    error = %e.to_string(),
+                    "dispatch aborted: caller's subscriptions unreadable — retried on                      the next edge"
+                );
+                return;
+            }
+        };
+        let found = subs
+            .all()
+            .into_iter()
+            .map(|sub| sub.as_room())
+            .find(|r| r.channel == room);
+        found
+    };
+    let Some(run_room) = run_room else {
+        crate::probe!(
+            class = "benchmark.dispatch",
+            card_id = %card_id.as_uuid(),
+            claimer = %claimer,
+            room = %room.as_uuid(),
+            "dispatch aborted: the claimer is not subscribed to the run room (her              subscription may still be resuming post-boot) — retried on the next edge"
+        );
+        return;
+    };
+    let Ok(board) = airc.work_board_in(&run_room).await else {
+        crate::probe!(
+            class = "benchmark.dispatch",
+            card_id = %card_id.as_uuid(),
+            claimer = %claimer,
+            "dispatch aborted: the run room's board could not be read — retried on              the next edge"
+        );
         return;
     };
     let board = board.snapshot();
     let Some(card) = board.cards.iter().find(|c| c.card_id == card_id) else {
+        crate::probe!(
+            class = "benchmark.dispatch",
+            card_id = %card_id.as_uuid(),
+            claimer = %claimer,
+            board_cards = board.cards.len() as u64,
+            "dispatch aborted: card not on the RUN room's board (stale card id, or              the board is still replicating) — retried on the next edge"
+        );
         return;
     };
     // Her staged SWE checkouts. ONE expression of that layout lives in
@@ -744,7 +792,15 @@ pub(crate) async fn dispatch_staged_swe_solve(
             (instance, path.to_string_lossy().to_string())
         }
         // No staged checkout for her matching this card — an ordinary (non-SWE) claim.
-        crate::persona::staged_workspace::CardWorkspace::None => return,
+        crate::persona::staged_workspace::CardWorkspace::None => {
+            crate::probe!(
+                class = "benchmark.dispatch",
+                card_id = %card_id.as_uuid(),
+                claimer = %claimer,
+                "dispatch: no staged checkout matches this card for this claimer —                  ordinary claim, no solve to fire"
+            );
+            return;
+        }
         crate::persona::staged_workspace::CardWorkspace::Ambiguous { candidates } => {
             crate::probe!(
                 class = "benchmark.dispatch",
@@ -828,7 +884,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
         crate::inference::llama_server::await_ready_serving(std::time::Duration::from_secs(30))
             .await
             .and_then(|s| s.active_model)
-            .unwrap_or_default();
+            .unwrap_or_default(); // no recorded activity yet = first dispatch of this card; mint path follows
     if model.is_empty() {
         crate::probe!(
             class = "benchmark.dispatch",
@@ -839,6 +895,102 @@ pub(crate) async fn dispatch_staged_swe_solve(
         );
         return;
     }
+    // THE SOLVE'S OWN ACTIVITY — mint-or-rejoin (Joel 2026-08-26: "benchmarks
+    // without new activities (unless rejoining)" is not allowed; rooms are 1:1
+    // with activities). The run room stays the BOARD's home (cards, kickoffs,
+    // the round's denominator); the solve itself is its own activity: a child
+    // room per (card, instance) where her acts radiate. This is also the KV
+    // fix becoming real — each concurrent solve's (persona, room) key leases
+    // its OWN warm slot instead of N solves thrashing one.
+    //
+    // REJOIN: the round recorded this card's activity at first mint (resume
+    // after a reboot, a retry attempt — same room, continuity). MINT: spawn a
+    // real activity room, child of the run room, and record it.
+    let solve_room = match crate::cognition::bench_round::card_activity(card_id.as_uuid()) {
+        Some(act) => {
+            crate::probe!(
+                class = "work.solve.room_rejoined",
+                card_id = %short8(card_id.as_uuid()),
+                claimer = %short8(claimer.as_uuid()),
+                room = %act.solve_room,
+                "solve REJOINS its recorded activity room — resume and dispatch are one motion"
+            );
+            act.solve_room
+        }
+        None => {
+            // Spawn AS the claimer when her runtime is live (she is joined to her
+            // own workroom); the caller's handle is the fallback so a dispatch
+            // fired before she is resident still names a real activity.
+            let spawner = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+                .and_then(|reg| reg.get(claimer.as_uuid()))
+                .map(|rt| rt.airc().clone())
+                .unwrap_or_else(|| airc.clone()); // assignee runtime gone → curator's own handle spawns; probed below
+            let name = format!("swe--{}--{}", instance, short8(card_id.as_uuid()));
+            let recipe = crate::experience::source::RecipeExperienceSource::shipped_purpose(
+                crate::experience::source::shipped::BENCHMARK_HARD_RS,
+            )
+            .unwrap_or_default(); // empty name renders as unnamed room in the probe; display only
+            match crate::modules::activity::spawn_activity_room(
+                &spawner,
+                &name,
+                &recipe,
+                Some(room),
+                &std::collections::BTreeMap::new(),
+            )
+            .await
+            {
+                Ok(spawned) => {
+                    // RESTORE THE SPAWNER'S FOCUS (glass-boxed 2026-08-26, the
+                    // one-resident boot): spawn_activity_room's documented side
+                    // effect moves the caller's current-room pointer to the new
+                    // solve room — and when the dispatch's curator IS the
+                    // assignee (any_live_citizen with one resident), that same
+                    // handle creates the NEXT card, which then lands on the
+                    // SOLVE room's board instead of the run room's. Measured:
+                    // card 1 of 3 visible, cards 2-3 "not on the RUN room's
+                    // board" forever — two solves dead at dispatch and a live
+                    // card ghost-settled. Until airc grows subscribe-without-
+                    // focus (#290), the mint restores the pointer itself.
+                    if let Err(e) = spawner.join(&run_room.name).await {
+                        crate::probe!(
+                            class = "work.solve.room_mint_failed",
+                            card_id = %short8(card_id.as_uuid()),
+                            error = %e.to_string(),
+                            "could not restore the spawner's focus to the run room                              after the mint — subsequent card writes may land on the                              wrong board"
+                        );
+                    }
+                    let act = crate::cognition::bench_round::CardActivity {
+                        solve_room: spawned.room_id.as_uuid(),
+                        assignee: claimer.as_uuid(),
+                    };
+                    crate::cognition::bench_round::record_card_activity(card_id.as_uuid(), act);
+                    crate::probe!(
+                        class = "work.solve.room_minted",
+                        card_id = %short8(card_id.as_uuid()),
+                        claimer = %short8(claimer.as_uuid()),
+                        room = %act.solve_room,
+                        name = %name,
+                        "solve MINTED its own activity room (child of the run room)"
+                    );
+                    act.solve_room
+                }
+                Err(e) => {
+                    // A mint failure must not strand the work invisible: fall back
+                    // to the run room (a real activity, just coarser-grained) and
+                    // say so. The next re-fire retries the mint.
+                    crate::probe!(
+                        class = "work.solve.room_mint_failed",
+                        card_id = %short8(card_id.as_uuid()),
+                        claimer = %short8(claimer.as_uuid()),
+                        error = %e.to_string(),
+                        "activity mint failed — solve runs in the RUN room this time (coarser \
+                         KV granularity, still visible); mint retries on the next fire"
+                    );
+                    room.as_uuid()
+                }
+            }
+        }
+    };
     // Her HANDS must resolve `python`/`pytest`/`pip` to THIS instance's venv, not the system
     // interpreter. Without this, `code/shell pytest` hits homebrew python3.14 (no pytest, no
     // repo), she loops `pip install pytest` into the wrong interpreter, and burns every action
@@ -863,14 +1015,25 @@ pub(crate) async fn dispatch_staged_swe_solve(
         // "this card's run id", so the guard can never check a different id than the
         // dispatch actually uses.
         run_id: Some(run_id.clone()),
-        capture_dir: None,
+        // CAPTURE the detached solve's turns (was None → the whole scored run was
+        // INVISIBLE: a reviewer — Opus or a self-grading citizen — could not read a single
+        // tool-call output to verify it, forcing inference from a STALE main-loop capture
+        // and a near-misdiagnosis 2026-08-25). eval.rs already scopes this per-run
+        // (run_artifact_dir), so it does not collide with the main-loop sink; a measured run
+        // is meant to be inspectable (eval.rs `capture_dir` doc). Same base dir the tooling
+        // (`dataset/from-captures`) and the main-loop sink use.
+        capture_dir: std::env::var("HOME").ok().map(|h| {
+            std::path::Path::new(&h)
+                .join(".continuum/fixtures/prompt-captures")
+                .to_string_lossy()
+                .to_string()
+        }),
         learn: crate::cognition::learning_policy::LearningPolicy::LearnFromThisWork,
         max_acts: None,
-        // `AgentSolveParams::room` is still `Option` because `agent/solve` is also an
-        // operator-invocable command; THIS caller always has one, which is the point of
-        // [`StagedSolveDispatch::room`]. Narrowing the command's own param is the next
-        // slice, not a silent widening here.
-        room: Some(room.as_uuid()),
+        // The solve's OWN activity (minted-or-rejoined above) — NOT the run room.
+        // `AgentSolveParams::room` stays `Option` because `agent/solve` is also an
+        // operator-invocable command (an omitted room mints there).
+        room: Some(solve_room),
         path_prepend: Some(vec![venv_bin]),
         suppress_recall: None,
         prev_failed_patch_sha: None,
@@ -1076,7 +1239,7 @@ impl ActionCommand for WorkState {
         let room_id = room_holding_card(&airc, card_id)
             .await
             .map(|r| r.channel.as_uuid().to_string())
-            .unwrap_or_default();
+            .unwrap_or_default(); // board read failure already probed as its own abort above
         emit_card_state_changed(
             serde_json::json!({
                 "card_id": card_id.as_uuid().to_string(),
@@ -1409,7 +1572,7 @@ impl ActionCommand for WorkList {
             .caller
             .as_ref()
             .map(|c| c.peer_id.as_uuid())
-            .unwrap_or_default();
+            .unwrap_or_default(); // no subscriptions = empty board; the abort branch below speaks
         let mut owner_peers: Vec<airc_core::PeerId> = Vec::new();
         for c in &board.cards {
             if let Some(o) = c.owner {

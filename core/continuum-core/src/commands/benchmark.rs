@@ -34,6 +34,10 @@ pub enum Grader {
     /// tree against a `UiCheck` spec. Live today via cognition/eval's `perception_grade` — the
     /// functional web-dev tier (`webdev-rs`).
     Perception,
+    /// Held-out expected-answer substring (case-insensitive) — cognition/eval's `expect`
+    /// grade. Live today for the input-side vision tier (`vision-qa`: SEE an image with
+    /// vision/look, answer objectively).
+    Answer,
 }
 
 /// One known benchmark collection — mirrors a `model_registry::ModelSpec` row.
@@ -128,6 +132,16 @@ pub fn known_benchmarks() -> &'static [BenchmarkSpec] {
             grader: Grader::Perception,
             tasks: 6,
             eval_set: Some("webdev-rs.jsonl"),
+            source_url: None,
+        },
+        BenchmarkSpec {
+            name: "vision-qa",
+            description: "Vision-QA — OUR input-side vision benchmark: SEE a generated image \
+                          (vision/look through her real sensory bridge) and answer an objective \
+                          question — 16 contamination-free tasks, held-out substring oracle.",
+            grader: Grader::Answer,
+            tasks: 16,
+            eval_set: Some("vision-qa"),
             source_url: None,
         },
         BenchmarkSpec {
@@ -1221,11 +1235,6 @@ impl ActionCommand for BenchmarkDispatch {
                 .collect::<Result<_, CommandError>>()?
         };
 
-        // Curator seed: a persona dispatching through her toolbelt authors as herself;
-        // the operator with no self-peer (#27) authors through a live citizen (benchmarks
-        // ARE their work). See `curator_airc`.
-        let airc = curator_airc(&self.registry, ctx, "benchmark/dispatch")?;
-
         let requested = p.assignees.clone().unwrap_or_default();
         if requested.iter().any(|a| a.trim().is_empty()) {
             return Err(CommandError::Invalid(
@@ -1263,6 +1272,14 @@ impl ActionCommand for BenchmarkDispatch {
             tokio::time::sleep(ROSTER_RESUME_POLL).await;
             resident = self.registry.resident_snapshot().await;
         }
+
+        // Curator seed — resolved AFTER the residency park on purpose. It authors
+        // through a live citizen when the operator has no self-peer (#27), and it
+        // used to run BEFORE the park, so a dispatch fired inside the post-boot
+        // window refused instantly with "none are online" while the 180s wait that
+        // exists precisely for that window sat unreachable 30 lines below
+        // (measured live 2026-08-26). Order: wait for a citizen, then author.
+        let airc = curator_airc(&self.registry, ctx, "benchmark/dispatch")?;
 
         // Resolve the dispatch roster against THIS machine's live citizens (never our
         // names): empty request → the whole live roster; explicit names → validated or
@@ -1666,6 +1683,9 @@ impl ActionCommand for BenchmarkDispatch {
             // the kickoff below, either of which can put it into someone's hands. From
             // here `work/claim` can read who drives it (see `open_round`).
             crate::cognition::bench_round::add_card(room.room_id.as_uuid(), card_id.as_uuid());
+            // WHO works this card, recorded at staging (before any solve fires) —
+            // the follow-on driver and the boot resume read it (plan A4/A5).
+            crate::cognition::bench_round::record_card_assignee(card_id.as_uuid(), *who_peer);
 
             // Directed gym card: CLAIM IT FOR HER at dispatch, under her own airc
             // identity. The detached-solve SWE arm below fires her scored solve directly
@@ -1691,10 +1711,14 @@ impl ActionCommand for BenchmarkDispatch {
             // solve above ("why run broken code knowing she's gonna struggle and fall"):
             // an unbuildable env can only void, and pre-claiming would put her hands in it
             // for a full turn. The card still posts, claimable by hand once the env heals.
+            // BOTH drivers pre-claim a staged SWE card now. DetachedSolve was
+            // excluded, which left its cards Open forever: the solve never touches
+            // card state and the lapse sweeper refuses unclaimed cards, so a
+            // detached round could never reach Done and every boot reaped it
+            // (mapped 2026-08-26). Claimed-by-the-assignee is what lets the
+            // grade path close the card and the round complete.
             let pre_claim_this = matches!(pc.work, CardWork::Gym { .. })
-                || (matches!(pc.work, CardWork::Swe { .. })
-                    && staged_ok
-                    && driver == crate::cognition::bench_round::WorkDriver::Citizen);
+                || (matches!(pc.work, CardWork::Swe { .. }) && staged_ok);
             if pre_claim_this {
                 match self.registry.get(*who_peer) {
                     Some(rt) => {
@@ -2507,17 +2531,41 @@ pub(crate) fn workspace_candidate_diff(ws: &str) -> Result<String, CommandError>
 /// (fresh clone at base_commit, held-out tests, experience-stream write) as
 /// the operator verb. One grader, never two.
 pub(crate) async fn grade_swe(p: SweGradeParams) -> Result<SweGradeResult, CommandError> {
-    let dataset = p
-        .dataset
-        .clone()
-        .unwrap_or_else(|| "princeton-nlp/SWE-bench_Lite".to_string());
-    let rows = swe_bench::load_dataset(&dataset)
-        .await
-        .map_err(CommandError::Internal)?;
-    let instance = rows
-        .into_iter()
-        .find(|r| r.instance_id == p.instance)
-        .ok_or_else(|| CommandError::NotFound(format!("{} not found in {dataset}", p.instance)))?;
+    // Dataset resolution: an explicit dataset wins; otherwise SEARCH every known
+    // SWE dataset for the instance. The old default hardcoded Lite, so any
+    // Verified-only instance was ungradeable — glass-boxed live 2026-08-26:
+    // astropy-13236 (a swe-bench-verified dispatch) auto-graded as
+    // "[not_found] … not found in princeton-nlp/SWE-bench_Lite" and the whole
+    // attempt's verdict vanished. The instance names its dataset; the grader's
+    // job is to find it, not to guess one.
+    let candidate_datasets: Vec<String> = match p.dataset.clone() {
+        Some(d) => vec![d],
+        None => known_benchmarks()
+            .iter()
+            .filter_map(|b| b.swe_dataset())
+            .map(|d| d.to_string())
+            .collect(),
+    };
+    let mut instance_row = None;
+    let mut searched = Vec::new();
+    for dataset in &candidate_datasets {
+        let rows = swe_bench::load_dataset(dataset)
+            .await
+            .map_err(CommandError::Internal)?;
+        if let Some(r) = rows.into_iter().find(|r| r.instance_id == p.instance) {
+            instance_row = Some((r, dataset.clone()));
+            break;
+        }
+        searched.push(dataset.clone());
+    }
+    let Some((instance, dataset)) = instance_row else {
+        return Err(CommandError::NotFound(format!(
+            "{} not found in any known SWE dataset (searched: {})",
+            p.instance,
+            searched.join(", ")
+        )));
+    };
+    let _ = &dataset; // named for the receipt below; instance carries everything else
 
     // Resolve the candidate patch. A workspace's diff is READ here but graded in a fresh
     // clone below — where the solver worked is never where the score is taken.

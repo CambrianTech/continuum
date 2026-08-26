@@ -188,57 +188,6 @@ pub struct OpenAICompatibleAdapter {
     concurrency: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
-/// Persona→slot lease state for llama.cpp-family backends. `Unknown` until the
-/// first persona-attributed request probes `GET /props`; `Unsupported` when the
-/// endpoint has no props surface or a single slot (leasing is meaningless);
-/// `Table` LEASES each active persona a warm slot (see the `Table` doc for the
-/// activity-driven LRU policy). More personas than slots means the least-active
-/// yield their warm slot to whoever is speaking now — co-active minds never share.
-///
-/// State is PROCESS-GLOBAL, keyed by the server root ([`slot_tables`]) — one
-/// table per SERVER, never per adapter instance. The first cut stored this on
-/// the adapter and each persona's request path owns its own adapter instance,
-/// so four independent tables each round-robined from 0 and pinned EVERY
-/// persona to slot 0 — one shared slot, clobbered every turn (measured within
-/// minutes of deploy: cachedTokens collapsed to ~4 and each turn re-prefilled
-/// ~6k tokens for ~40s; the "faster" 18.7 tok/s decode was just accidental
-/// serialization). Slots are a per-server resource; their bookkeeping must
-/// have the same scope as the resource — [[resource-authority-is-a-system-concern]].
-#[derive(Debug)]
-enum SlotAffinity {
-    Unsupported,
-    /// Hot-slot LEASE (2026-07-16, Joel-approved "alive" lever). The scarce
-    /// resource is warm KV: a slot holds a persona's prefilled prefix+LoRA, and a
-    /// warm reuse prefills only the new tail (~0.48s vs ~40s cold, measured). With
-    /// more personas than slots the OLD scheme pinned each persona to a slot by
-    /// first-touch order and never moved it, so two permanently-assigned slot-mates
-    /// clobbered each other EVERY time both were active — even while a third slot
-    /// sat idle (glass-boxed 2026-07-16: 4 personas / 2 slots → `cachedTokens≈4`,
-    /// 40–75s prefill every turn). The lease makes assignment ACTIVITY-driven: a
-    /// persona reuses the slot it already holds (warm), else takes a free slot, else
-    /// EVICTS the least-recently-active holder. So the N most-active personas keep
-    /// warm slots and co-active minds never share one; an idle persona yields its
-    /// slot and pays one cold prefill when it next speaks. This is the slot half of
-    /// [[resource-authority-is-a-system-concern]] — the lease a future
-    /// `ResourceGovernor` (#56) will own; the table is already the per-server slot
-    /// authority, so the policy lives here until then.
-    Table {
-        n_slots: u32,
-        /// One entry per slot (index == slot id): the persona currently holding it
-        /// and the activity `tick` at which it last leased. `None` == free slot.
-        holders: Vec<Option<(String, u64)>>,
-        /// Monotonic activity clock — bumped on every lease so "least-recently-active"
-        /// is a total order, independent of wall-clock (which the substrate forbids).
-        tick: u64,
-    },
-}
-
-/// The one slot-affinity table per serving endpoint (keyed by server root).
-fn slot_tables() -> &'static dashmap::DashMap<String, SlotAffinity> {
-    static TABLES: std::sync::OnceLock<dashmap::DashMap<String, SlotAffinity>> =
-        std::sync::OnceLock::new();
-    TABLES.get_or_init(dashmap::DashMap::new)
-}
 
 /// Served PER-SLOT context window by server root, captured from the same
 /// `/props` probe that discovers slots (`default_generation_settings.n_ctx` —
@@ -246,7 +195,7 @@ fn slot_tables() -> &'static dashmap::DashMap<String, SlotAffinity> {
 /// `--parallel`). This is the ground truth the registry row can only claim:
 /// a consumer budgeting against the model's trained window while the server
 /// slices `-c` across N slots silently overshoots (#139). Keyed per SERVER
-/// like `slot_tables`, shared across adapter instances.
+/// like the slot directory (`inference::slots`), shared across adapter instances.
 fn served_ctx_by_root() -> &'static dashmap::DashMap<String, u32> {
     static CTX: std::sync::OnceLock<dashmap::DashMap<String, u32>> = std::sync::OnceLock::new();
     CTX.get_or_init(dashmap::DashMap::new)
@@ -407,7 +356,7 @@ fn apply_llamacpp_sampling_knobs(
 }
 
 /// Does this `/props` status PROVE the endpoint does not exist — the only verdict
-/// allowed to latch [`SlotAffinity::Unsupported`] for the process's life? 404/501
+/// allowed to latch the slot directory Unsupported for the process's life? 404/501
 /// are the server saying "no such surface"; everything else (above all the 503 of a
 /// model still loading) is a statement about NOW, and a permanent conclusion drawn
 /// from a transient state is the [[unknown-is-not-a-quantity]] error with a cache
@@ -416,72 +365,6 @@ fn props_status_proves_endpoint_absent(status: reqwest::StatusCode) -> bool {
     status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::NOT_IMPLEMENTED
 }
 
-impl SlotAffinity {
-    /// Lease a warm slot for `persona` (see [`SlotAffinity`] doc). Reuse the slot it
-    /// already holds → take a free slot → evict the least-recently-active holder.
-    /// Every lease refreshes the holder's activity `tick`, so a persona that keeps
-    /// speaking keeps its slot; one that goes quiet is the first evicted.
-    fn lease(&mut self, persona: &str) -> Option<u32> {
-        let SlotAffinity::Table {
-            n_slots,
-            holders,
-            tick,
-        } = self
-        else {
-            return None;
-        };
-        // Grow lazily to n_slots (constructed empty so the count is single-sourced here).
-        if holders.len() != *n_slots as usize {
-            holders.resize(*n_slots as usize, None);
-        }
-        *tick += 1;
-        let now = *tick;
-        // 1. Already holds a slot → WARM reuse (the whole point). Refresh its recency.
-        if let Some(slot) = holders
-            .iter()
-            .position(|h| h.as_ref().is_some_and(|(p, _)| p == persona))
-        {
-            holders[slot] = Some((persona.to_string(), now));
-            return Some(slot as u32);
-        }
-        // 2. A free slot → take it.
-        if let Some(slot) = holders.iter().position(|h| h.is_none()) {
-            holders[slot] = Some((persona.to_string(), now));
-            // Fires once per persona per process (plus re-pins after eviction), so
-            // the ledger can PROVE pinning is live — its silent predecessor ran
-            // latched-off for weeks with nothing to say so (2026-08-21).
-            crate::probe!(
-                class = "inference.slot_affinity.pinned",
-                persona = persona,
-                slot = slot as u64,
-                "persona pinned to a free llama-server slot — her prefix warms HERE",
-            );
-            return Some(slot as u32);
-        }
-        // 3. All held → evict the least-recently-active holder (min tick).
-        let slot = holders
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, h)| h.as_ref().map(|(_, t)| *t).unwrap_or(0))
-            .map(|(i, _)| i)?;
-        // Cross-persona eviction IS the KV-clobber event — the evicted citizen's
-        // warm tail is gone and her next turn re-prefills from zero. More personas
-        // than slots makes this legitimate; the probe is what makes it PRICED
-        // (KV-CACHE-ECONOMY: eviction must be a decision, not an accident).
-        if let Some((evicted, _)) = &holders[slot] {
-            crate::probe!(
-                class = "inference.slot_affinity.evicted",
-                persona = persona,
-                evicted = evicted.as_str(),
-                slot = slot as u64,
-                "all slots held — least-recently-active persona evicted; her warm \
-                 prefix is forfeit and her next turn re-prefills from zero",
-            );
-        }
-        holders[slot] = Some((persona.to_string(), now));
-        Some(slot as u32)
-    }
-}
 
 impl OpenAICompatibleAdapter {
     /// Build the reqwest client for a STREAMING inference transport. There is
@@ -767,20 +650,47 @@ impl OpenAICompatibleAdapter {
     /// and NOT cached — a momentarily-dead server is not a server without LoRA
     /// support. llama.cpp `llama-server` returns the array of adapters it
     /// loaded at launch, each `{ "id": N, "path": "...", "scale": S }`.
-    /// Stable slot for a persona's requests, discovering the backend's slot
-    /// count on first use (`GET /props` → `total_slots`). Returns `None` when
-    /// the backend has no props surface / one slot (cached as Unsupported) or
-    /// on a transport error (NOT cached — a momentarily-dead server is not a
-    /// server without slots; same discipline as the LoRA probe).
-    async fn slot_for_persona(&self, persona: &str) -> Option<u32> {
+    /// Stable slot for an ACTIVITY (a persona's conversation in a room — the
+    /// typed [`ActivityKey`](crate::inference::slots::ActivityKey)), discovering
+    /// the backend's slot count on first use (`GET /props` → `total_slots`).
+    /// The adapter owns only the TRANSPORT half (it has the HTTP client); the
+    /// lease itself lives in [`crate::inference::slots`] — the KV concern's
+    /// adapter over the ONE shared paging engine, per
+    /// [[one-paging-engine-many-trait-implementers]]. Returns `None` when the
+    /// backend has no props surface / one slot (latched unsupported) or on a
+    /// transport error (NOT latched — a momentarily-dead server is not a server
+    /// without slots; same discipline as the LoRA probe).
+    /// The reserved scratch slot for this server, if its pool is installed and
+    /// reserved one. Deliberately does NOT probe /props: scratch placement is a
+    /// best-effort courtesy for non-Turn traffic, and the first Turn request
+    /// installs the pool anyway — before that, non-Turn traffic simply runs
+    /// unpinned exactly as it always did.
+    fn scratch_slot_for_root(&self) -> Option<u32> {
         let root = self.endpoints().root().to_string();
-        // Fast path: this server's state already known (global table — every
-        // adapter instance talking to the same server shares ONE assignment).
-        if let Some(mut state) = slot_tables().get_mut(&root) {
-            return match &mut *state {
-                SlotAffinity::Unsupported => None,
-                s @ SlotAffinity::Table { .. } => s.lease(persona),
-            };
+        // Typed seam: the process-global SlotDirectory hands this adapter its
+        // server's KvSlotPool — the ONE paging-engine implementer for KV slots.
+        let dir: &crate::inference::slots::SlotDirectory = crate::inference::slots::directory();
+        match dir.get(&root) {
+            Some(Some(pool)) => {
+                let pool: std::sync::Arc<crate::inference::slots::KvSlotPool> = pool;
+                pool.scratch_slot()
+            }
+            _ => None,
+        }
+    }
+
+    async fn slot_for_activity(
+        &self,
+        key: crate::inference::slots::ActivityKey,
+    ) -> Option<u32> {
+        let root = self.endpoints().root().to_string();
+        let dir = crate::inference::slots::directory();
+        // Fast path: this server's state already known (process-global directory —
+        // every adapter instance talking to the same server shares ONE assignment).
+        match dir.get(&root) {
+            Some(Some(pool)) => return pool.lease(key).await,
+            Some(None) => return None, // latched unsupported
+            None => {}                 // never probed — probe below
         }
         // Probe /props once. Lock is NOT held across the await.
         let url = self.endpoints().props();
@@ -809,7 +719,7 @@ impl OpenAICompatibleAdapter {
                     status = status.as_u16() as u64,
                     "props endpoint absent — slot affinity latched OFF for this server",
                 );
-                slot_tables().insert(root, SlotAffinity::Unsupported);
+                dir.latch_unsupported(&root);
             } else {
                 crate::probe!(
                     class = "inference.slot_affinity.deferred",
@@ -848,23 +758,17 @@ impl OpenAICompatibleAdapter {
             .and_then(|v| v.as_u64())
             .unwrap_or(0) as u32;
         if n_slots <= 1 {
-            slot_tables().insert(root, SlotAffinity::Unsupported);
+            dir.latch_unsupported(&root);
             return None;
         }
-        // entry() arbitrates the probe race: only the first writer installs the
-        // table, and the log line fires once per SERVER, not once per adapter.
-        let mut state = slot_tables().entry(root).or_insert_with(|| {
-            tracing::info!(
-                n_slots,
-                "slot affinity enabled — personas pin to llama-server slots (props-discovered)"
-            );
-            SlotAffinity::Table {
-                n_slots,
-                holders: Vec::new(),
-                tick: 0,
-            }
-        });
-        state.lease(persona)
+        // The directory arbitrates the probe race: only the first writer installs
+        // the pool, once per SERVER, not once per adapter.
+        let pool = dir.ensure_pool(&root, n_slots);
+        tracing::info!(
+            n_slots,
+            "slot affinity enabled — activities lease llama-server slots (props-discovered)"
+        );
+        pool.lease(key).await
     }
 
     pub(crate) async fn probe_lora_catalog(&self) -> Result<(), String> {
@@ -2053,19 +1957,107 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 // OpenAI-compat providers reject non-standard fields.
                 obj.insert("return_progress".to_string(), json!(true));
             }
-            // Persona→slot pinning (`id_slot`, llama.cpp extension): keep each
-            // persona's long static prefix warm in ITS OWN slot instead of
-            // letting prefix-similarity selection cross-assign N personas'
-            // near-identical doctrine prefixes and clobber the caches (30%
-            // hit / 2.5 tok/s median, measured 2026-07-11). Slot count is
-            // props-discovered; non-persona traffic (evals, probes) stays
-            // unpinned so it can't evict a citizen's warm slot.
-            if let Some(persona) = request.persona_id.as_deref() {
-                if let Some(slot) = self.slot_for_persona(persona).await {
-                    if let Some(obj) = body.as_object_mut() {
-                        obj.insert("id_slot".to_string(), json!(slot));
+            // Slot pinning (`id_slot`, llama.cpp extension): the warm KV in a slot
+            // belongs to an ACTIVITY, not a persona. Rooms are 1:1 with activities in
+            // continuum/airc, so the warm-context identity is (persona, room) — a
+            // persona running N concurrent activities (e.g. N detached benchmark
+            // solves, each in its own room) has N independently-growing prefixes and
+            // needs N slots. Keying the lease on the bare persona collapsed all N onto
+            // ONE slot, and each activity's turn clobbered the others' warm tail —
+            // measured 2026-08-26 as cached:0 across EVERY turn of a 4-instance
+            // dispatch even though the pin (persona→slot 0) was landing correctly.
+            // The server reuses partial prefixes fine (proven same day: an 800-token
+            // shared prefix reused, only the divergent tail re-prefilled), so the
+            // defect was never the prompt or the server — it was N activities sharing
+            // one slot. Non-persona traffic (evals, probes) stays unpinned so it can't
+            // evict a citizen's warm slot.
+            // TRAFFIC CLASS decides placement (slots::class_for over `purpose` —
+            // one data map, no per-callsite hacks): only a TURN may hold or evict
+            // a citizen's activity slot; every other class lands on the reserved
+            // SCRATCH slot so it structurally cannot truncate a warm tail. The
+            // measured defect: sidecar gate calls pinned the turn's own slot and
+            // cut its ~30k tail to their common head — reuse broke even solo.
+            let class = crate::inference::slots::class_for(request.purpose.as_deref());
+            let placement: Option<u32> = match class {
+                crate::inference::slots::SlotClass::Turn => {
+                    // The typed activity key: (persona, room) as UUID structs — never
+                    // a formatted string (guarded by
+                    // `no_string_composite_id_keys_in_serving`). A Turn that cannot
+                    // name BOTH halves goes unpinned (and the probe says so).
+                    let key = request
+                        .persona_id
+                        .as_deref()
+                        .and_then(|p| uuid::Uuid::parse_str(p).ok())
+                        .zip(
+                            request
+                                .room_id
+                                .as_deref()
+                                .and_then(|r| uuid::Uuid::parse_str(r).ok()),
+                        )
+                        .and_then(|(p, r)| crate::inference::slots::ActivityKey::new(p, r));
+                    match key {
+                        Some(k) => {
+                            let leased = self.slot_for_activity(k).await;
+                            if leased.is_some() {
+                                // Price basis for the eviction policy (B5): this
+                                // activity's current prompt size, the same chars/4
+                                // estimate the overshoot alarm uses — comparable
+                                // across slots, which is all eviction needs.
+                                let approx_tokens = body
+                                    .get("messages")
+                                    .and_then(|m| m.as_array())
+                                    .map(|msgs| {
+                                        msgs.iter()
+                                            .filter_map(|m| {
+                                                m.get("content").and_then(|c| c.as_str())
+                                            })
+                                            .map(|c| c.len() / 4)
+                                            .sum::<usize>()
+                                    })
+                                    .unwrap_or(0) as u64; // 0 = no usage block in the reply; the estimate only prices eviction, never budgets
+                                let root = self.endpoints().root().to_string();
+                                if let Some(Some(pool)) =
+                                    crate::inference::slots::directory().get(&root)
+                                {
+                                    pool.note_tail(&k, approx_tokens);
+                                }
+                            }
+                            leased
+                        }
+                        None => None,
                     }
                 }
+                _ => {
+                    // Non-Turn: the scratch slot when this server reserved one. When
+                    // it did not (≤2 slots), stay unpinned AND drop cache_prompt so
+                    // the call cannot PERSIST a stolen cache into a citizen slot.
+                    let scratch = self.scratch_slot_for_root();
+                    if scratch.is_none() {
+                        if let Some(obj) = body.as_object_mut() {
+                            obj.insert("cache_prompt".to_string(), json!(false));
+                        }
+                    }
+                    scratch
+                }
+            };
+            // GLASS BOX (KV-reuse 0% hunt 2026-08-26): the whole cache-reuse win
+            // rides on placement. Report class + room so a cached:0 streak names
+            // WHICH activity thrashed — or which class strayed off scratch.
+            crate::probe!(
+                class = "inference.slot_pin.decision",
+                persona = request.persona_id.as_deref(),
+                room = request.room_id.as_deref(),
+                traffic = class.as_str(),
+                pinned = placement.is_some(),
+                slot = placement.map(|s| s as u64),
+                "id_slot decision — Turn pins its activity slot; every other class lands on scratch"
+            );
+            if let Some(slot) = placement {
+                if let Some(obj) = body.as_object_mut() {
+                    obj.insert("id_slot".to_string(), json!(slot));
+                }
+            }
+            if let Some(persona) = request.persona_id.as_deref() {
                 // #139 overshoot alarm: name the RAG-budget bug BEFORE the
                 // server rejects. With context shift disabled at spawn the
                 // server 400s on overflow instead of silently amputating the
@@ -3799,41 +3791,6 @@ mod tests {
                  every cloud provider would be re-probed per persona request forever"
             );
         }
-    }
-
-    // regression guard on the old first-touch pin that let two permanent slot-mates
-    // clobber each other every turn (cachedTokens≈4). Non-Table states never pin.
-    #[test]
-    fn hot_slot_lease_reuses_warm_and_evicts_least_recently_active() {
-        let mut table = SlotAffinity::Table {
-            n_slots: 2,
-            holders: Vec::new(),
-            tick: 0,
-        };
-        // Two personas fill the two slots, distinctly.
-        let a = table.lease("persona-a").unwrap();
-        let b = table.lease("persona-b").unwrap();
-        assert_ne!(a, b, "two personas take two distinct slots");
-        // WARM reuse: a persona that already holds a slot gets the SAME slot back
-        // (the whole point — its prefilled KV stays put).
-        assert_eq!(
-            table.lease("persona-a").unwrap(),
-            a,
-            "warm reuse, same slot"
-        );
-        // Now a='a' is the most-recently-active, b='b' the least. A THIRD persona
-        // must evict the LRU holder (b), not a.
-        let c = table.lease("persona-c").unwrap();
-        assert_eq!(
-            c, b,
-            "new persona evicts the least-recently-active holder (b)"
-        );
-        assert_eq!(table.lease("persona-a").unwrap(), a, "a kept its warm slot");
-        // b was evicted → coming back, b takes the now-LRU slot (a is fresher).
-        let b2 = table.lease("persona-b").unwrap();
-        assert_eq!(b2, c, "returning b lands on the least-recently-active slot");
-        // Non-table states never pin.
-        assert_eq!(SlotAffinity::Unsupported.lease("persona-a"), None);
     }
 
     #[test]

@@ -2048,6 +2048,8 @@ impl ServingDaemonModule {
             placement: crate::inference::llama_server::LanePlacement::Gpu,
             expert_placement,
             resident_override,
+            // The MAIN persona lane — the withhold rule's actual subject.
+            vision_sidecar: false,
         };
 
         // One reconcile at a time. If the swap finds `true`, another is already
@@ -2211,8 +2213,9 @@ impl ServingDaemonModule {
                                                     class = "serving.vision.sidecar_failed",
                                                     model = cand.model.id.as_str(),
                                                     why = why.as_str(),
-                                                    "vision sidecar could not come up",
+                                                    "vision sidecar could not come up — this                                                      candidate is benched for the rest of the                                                      boot; the next reconcile tries the next row",
                                                 );
+                                                sidecar::mark_candidate_failed(&cand.model.id);
                                                 None
                                             }
                                         }
@@ -3328,7 +3331,14 @@ fn moe_host_cache_lease_inputs(
         physical_bytes,
         weights_host_bytes,
         live_kv_bytes: fp.kv_at(served_window).saturating_mul(lanes as u64),
-        compute_buffer_bytes: fp.prefill_compute_reserve(served_window, lanes),
+        // The llama-server host prompt cache (`--cache-ram`, KV-ECONOMY §4) is a
+        // real resident term of the serve's working set — accounted here so the
+        // expert-cache lease can never be derived as if that RAM were free.
+        compute_buffer_bytes: fp
+            .prefill_compute_reserve(served_window, lanes)
+            .saturating_add(
+                (crate::inference::lane_args::CACHE_RAM_MIB as u64) * 1024 * 1024,
+            ),
         os_floor_bytes: host_os_floor_bytes(physical_bytes),
         commit_charge_bytes,
     })
@@ -3724,8 +3734,21 @@ impl ServiceModule for ServingDaemonModule {
                 run_id = run_id.as_str(),
                 instance = instance.as_str(),
                 needs_redispatch = true,
-                "benchmark run orphaned by a core restart — {instance} was NOT measured and \
-                 nothing re-dispatches it; re-post via benchmark/dispatch to recover it",
+                "benchmark run orphaned by a core restart — {instance} was NOT measured; \
+                 the benchmark-side boot resume rejoins its round and re-fires it",
+            );
+        }
+        // The ROUND half is now CONTINUITY (plan A5): a Working round SURVIVES the
+        // restart — the benchmark-side boot resume (modules::benchmark_resume, which
+        // owns re-firing per BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER; never this daemon)
+        // rejoins it. Only TTL-expired abandoned rounds are swept here.
+        for (benchmark, remaining) in crate::cognition::bench_round::reap_orphaned_rounds() {
+            crate::probe!(
+                class = "bench.round.expired",
+                benchmark = benchmark.as_str(),
+                remaining = remaining,
+                "benchmark round exceeded its TTL with {remaining} card(s) unworked — \
+                 expired, not resumed; a fresh benchmark/dispatch re-measures it",
             );
         }
         // Plan once at boot so the decision is published before the first tick,

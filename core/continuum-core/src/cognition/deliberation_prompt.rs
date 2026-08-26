@@ -140,19 +140,6 @@ fn stable_blocks<'a>(p: &'a SystemPromptParts<'a>) -> impl Iterator<Item = Cow<'
         // "standing framing reaches the system message" contract
         // (`trailing_proprioception_renders_in_the_tail_not_the_system_prefix`).
         working_context_block(p.context).map(Cow::Owned),
-        // Her NOW — a one-line clock (minute granularity), LAST in the stable prefix and
-        // nearest the framing that follows: freshest temporal grounding at the write point.
-        // Per-minute churn costs at most one re-prefill per minute (turns are seconds
-        // apart), versus the per-TURN flip the framing below would cause if it stayed here.
-        // Eval passes its pinned epoch; tests pass None.
-        p.now_ms
-            .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms as i64))
-            .map(|dt| {
-                Cow::Owned(format!(
-                    "\n\n[now {}]",
-                    dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M %A")
-                ))
-            }),
     ]
     .into_iter()
     .flatten()
@@ -167,6 +154,24 @@ fn stable_blocks<'a>(p: &'a SystemPromptParts<'a>) -> impl Iterator<Item = Cow<'
 /// where its volatility no longer invalidates the cached identity + tools + context prefix.
 fn volatile_blocks<'a>(p: &'a SystemPromptParts<'a>) -> impl Iterator<Item = Cow<'a, str>> {
     [
+        // Her NOW — a one-line clock (minute granularity). MOVED out of the stable
+        // prefix (plan B4): it sat LAST in the stable blocks, priced as "at most one
+        // re-prefill per minute" back when turns were seconds apart — but acts now run
+        // MINUTES, so the minute tick invalidated the ENTIRE conversation tail behind
+        // the system prefix nearly every act. Measured 2026-08-26 alongside this: the
+        // server restores a byte-identical 20k conversation from its prompt cache in
+        // ~0.1s vs ~33s re-prefill — byte-stability of the prefix is worth ~330×, and
+        // a clock is the cheapest thing to keep OUT of it. Here it rides the volatile
+        // framing that renders as the newest trailing turn: same temporal grounding,
+        // nearest generation, zero prefix invalidation. Eval passes its pinned epoch.
+        p.now_ms
+            .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms as i64))
+            .map(|dt| {
+                Cow::Owned(format!(
+                    "[now {}]",
+                    dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M %A")
+                ))
+            }),
         // Self-directed free time — only on a self-initiated heartbeat turn.
         p.self_initiated.then_some(Cow::Borrowed(OWN_TIME_BLOCK)),
         // Conversational presence — the AMBIENT block on undirected turns; the DIRECTED

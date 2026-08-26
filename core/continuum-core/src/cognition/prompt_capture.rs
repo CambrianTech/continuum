@@ -26,7 +26,7 @@ use crate::ai::types::{ChatMessage, TextGenerationResponse};
 /// v2: added `offered_tools` (the native tool specs' WIRE names sent with the
 /// request) — the first mined exam was unauditable on "were edit_file/write_file
 /// even offered?" because the tools param was the one request axis not captured.
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 3;
 
 /// Records the verbatim request/response of one deliberation LLM call. A `None`
 /// sink (the default) means no capture — zero hot-path cost.
@@ -40,6 +40,7 @@ pub trait PromptCaptureSink: Send + Sync {
         &self,
         persona_id: Uuid,
         room_id: Uuid,
+        cause: &'static str,
         iteration: usize,
         system: &str,
         messages: &[ChatMessage],
@@ -54,6 +55,12 @@ struct PromptCaptureRecord {
     captured_at_ms: u64,
     persona_id: String,
     room_id: String,
+    /// Why the turn ran — [`Cause::as_str`](crate::cognition::workspace::Cause):
+    /// "stimulus" / "ambient" are LIVED turns; "synthetic" is an eval fork /
+    /// fixture and is what the dataset fork-guard (#427) excludes from training.
+    /// Replaces the old nil-room inference now that every turn carries a real
+    /// room (#425 — schema v3).
+    cause: String,
     /// Agent-loop round: 0 = first generation, >0 = re-prompt after tools.
     iteration: usize,
     /// The literal system prompt (identity + assembled RAG + how-to-participate).
@@ -119,6 +126,7 @@ impl PromptCaptureSink for JsonlPromptCaptureSink {
         &self,
         persona_id: Uuid,
         room_id: Uuid,
+        cause: &'static str,
         iteration: usize,
         system: &str,
         messages: &[ChatMessage],
@@ -130,6 +138,7 @@ impl PromptCaptureSink for JsonlPromptCaptureSink {
             captured_at_ms: Self::now_ms(),
             persona_id: persona_id.to_string(),
             room_id: room_id.to_string(),
+            cause: cause.to_string(),
             iteration,
             system: system.to_string(),
             messages: serde_json::to_value(messages).unwrap_or(serde_json::Value::Null),

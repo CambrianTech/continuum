@@ -3,4 +3,4 @@
 /**
  * How a benchmark's solutions are scored.
  */
-export type Grader = "Rust" | "Python" | "Perception";
+export type Grader = "Rust" | "Python" | "Perception" | "Answer";

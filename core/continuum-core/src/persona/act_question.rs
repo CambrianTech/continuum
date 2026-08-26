@@ -138,12 +138,19 @@ pub(crate) async fn ask_the_act_question(
             );
             {
                 if !held.is_empty() {
-                    let burst = held_work_burst(&held);
+                    let burst_text = held_work_burst(&held);
                     // The producer's CONTEXT half, kept before the burst is
                     // moved into the driver — one construction, so the
                     // training example records the prompt she was actually
                     // handed rather than a re-derived approximation of it.
-                    let work_context = burst.clone();
+                    let work_context = burst_text.clone();
+                    // Her held-work turn happens IN the room she was asked in —
+                    // non-nil by the service loop's A.6 fallback (#425).
+                    let burst = crate::cognition::workspace::Burst::raw_in(
+                        crate::identity::ActivityRoom::from_uuid(turn_room)
+                            .expect("turn_room is the service loop's non-nil turn room"), // service loop guarantees a non-nil turn room; witness re-checks
+                        burst_text,
+                    );
                     let work_framing =
                         crate::cognition::workspace::TurnFraming::self_thread(
                             false,
@@ -224,7 +231,6 @@ pub(crate) async fn ask_the_act_question(
                     let work = crate::cognition::act_observe::drive_to_settle(
                         &cycle,
                         burst,
-                        turn_room,
                         LIVE_MAX_ACTS,
                         work_framing,
                     )

@@ -122,6 +122,11 @@ pub struct ExperienceRecord {
     /// How many times she acted before settling — the effort proxy (near the
     /// budget = struggle). Surfaced today via `SettleOutcome.acts`.
     pub acts: u32,
+    /// The ACTIVITY the turn happened in — its room (#425; A6 attribution).
+    /// `None` = honestly not carried (pre-A6 rows, folded eval outcomes,
+    /// stateless grades, out-of-turn lessons) — absence is typed, never nil.
+    #[serde(default)]
+    pub room: Option<uuid::Uuid>,
     /// WHICH axis of the one experience this came from — lived, eval, or received.
     /// The unification made self-describing: detectors key on this (e.g. `ReceivedSalience`
     /// selects `Received`), and it makes lived-vs-eval explicit instead of implicit in the
@@ -142,6 +147,7 @@ impl ExperienceRecord {
             world_state: settled.world_state.clone(),
             acts: settled.acts as u32,
             source: ExperienceSource::Eval,
+            room: Some(settled.room),
         }
     }
 
@@ -161,6 +167,10 @@ impl ExperienceRecord {
             world_state: String::new(),
             acts: result.acts,
             source: ExperienceSource::Eval,
+            // The outcome is already folded away at this seam — the room went with
+            // it. Default (nil) here means "not carried", the same absent-marker
+            // pre-A6 rows load with; never a live roomless turn.
+            room: None,
         }
     }
 
@@ -222,6 +232,7 @@ impl ExperienceRecord {
             world_state: settled.world_state.clone(),
             acts: settled.acts as u32,
             source: ExperienceSource::Lived,
+            room: Some(settled.room),
         }
     }
 
@@ -247,6 +258,8 @@ impl ExperienceRecord {
             world_state: String::new(),
             acts: 0,
             source: ExperienceSource::Eval,
+            // Grading is stateless over the artifact — no turn, no room carried.
+            room: None,
         }
     }
 
@@ -293,6 +306,8 @@ impl ExperienceRecord {
             world_state: format!("received via memory/share from {shared_by}"),
             acts: 0,
             source: ExperienceSource::Received,
+            // A received lesson arrives out-of-turn — no room carried.
+            room: None,
         }
     }
 }
@@ -632,6 +647,7 @@ mod tests {
             metrics: TurnMetrics::default(),
             inference_error: None,
             touched_paths: Vec::new(),
+            room: uuid::Uuid::from_u128(7),
         }
     }
 
@@ -671,6 +687,7 @@ mod tests {
             world_state: String::new(),
             acts: 3,
             source: ExperienceSource::Eval,
+            room: Some(uuid::Uuid::from_u128(7)),
         };
         let signal = detector
             .assess(&failed)
@@ -735,6 +752,7 @@ mod tests {
             world_state: String::new(),
             acts: 8,
             source: ExperienceSource::Eval,
+            room: Some(uuid::Uuid::from_u128(7)),
         };
         let passed_testable = ExperienceRecord {
             task: eval_task("passed", true),
@@ -744,6 +762,7 @@ mod tests {
             world_state: String::new(),
             acts: 1,
             source: ExperienceSource::Eval,
+            room: Some(uuid::Uuid::from_u128(7)),
         };
         let failed_untestable = ExperienceRecord {
             task: eval_task("no-test", false),
@@ -753,6 +772,7 @@ mod tests {
             world_state: String::new(),
             acts: 2,
             source: ExperienceSource::Eval,
+            room: Some(uuid::Uuid::from_u128(7)),
         };
 
         let set = salient_teach_set(
@@ -850,7 +870,7 @@ mod tests {
         );
 
         // A lived turn that died on a serving fault: ok=false, honest grade — but STILL untestable.
-        let faulted = SettleOutcome::infra_failure("lane 58057 refused qwen3");
+        let faulted = SettleOutcome::infra_failure(uuid::Uuid::from_u128(7), "lane 58057 refused qwen3");
         let lived_fault = ExperienceRecord::from_lived_turn("ping", &faulted);
         assert!(
             !lived_fault.ok,
@@ -876,6 +896,7 @@ mod tests {
             metrics: TurnMetrics::default(),
             inference_error: None,
             touched_paths: Vec::new(),
+            room: uuid::Uuid::from_u128(7),
         };
         let lived_stuck = ExperienceRecord::from_lived_turn("fix the build", &unconverged);
         assert!(
@@ -981,6 +1002,7 @@ mod tests {
             world_state: String::new(),
             acts: 2,
             source: ExperienceSource::Eval,
+            room: Some(uuid::Uuid::from_u128(7)),
         };
         assert!(
             ReceivedSalience.assess(&failed_eval).is_none(),
@@ -1013,6 +1035,7 @@ mod tests {
             world_state: String::new(),
             acts: 3,
             source: ExperienceSource::Eval,
+            room: Some(uuid::Uuid::from_u128(7)),
         };
         let received = ExperienceRecord::from_shared_lesson(&shared_lesson(
             "BigMama",
@@ -1062,6 +1085,7 @@ mod tests {
             world_state: String::new(),
             acts: 4,
             source: ExperienceSource::Eval,
+            room: Some(uuid::Uuid::from_u128(7)),
         };
         let stuck = SettleOutcome {
             decision: Decision::Act {
@@ -1074,6 +1098,7 @@ mod tests {
             metrics: TurnMetrics::default(),
             inference_error: None,
             touched_paths: Vec::new(),
+            room: uuid::Uuid::from_u128(7),
         };
         let lived = ExperienceRecord::from_lived_turn("a hard live question", &stuck);
         let received = ExperienceRecord::from_shared_lesson(&shared_lesson(

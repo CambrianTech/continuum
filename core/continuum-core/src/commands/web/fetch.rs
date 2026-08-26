@@ -3,8 +3,9 @@
 use super::{web_fetch, WebFetchParams, WebFetchResult};
 
 crate::action_command! {
-    /// Read a web page's text (a doc, API reference, or a web/search result). Strips
-    /// markup, returns clean capped text; `filter` greps it to just what you need.
+    /// Read a web page's full text (a doc, API reference, raw source file, or a web/search
+    /// result) with real lines. `filter` greps it to just what you need; a large page is
+    /// pageable via tool/output. Never returns a silent empty result.
     pub struct WebFetch;
     name: "web/fetch",
     access: AiSafe,

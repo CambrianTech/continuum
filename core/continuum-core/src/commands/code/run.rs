@@ -41,10 +41,13 @@ const MAX_TIMEOUT_SECS: u64 = 60;
     export_to = "../../../protocol/typescript/code/CodeRunParams.ts"
 )]
 pub struct CodeRunParams {
-    /// Language to run. `rust` (alias `rs`) only — any other value fails loud rather
-    /// than guessing a toolchain. This is a Rust organism; its exec hand is `rustc`.
+    /// Language to run: `rust` (alias `rs`) → `rustc` a complete program, or
+    /// `python` (alias `py`/`python3`) → run a Python script. SWE-bench and most repos
+    /// are Python — use `python`, never `rust` for Python code. Any other value fails
+    /// loud naming both supported paths (use code/shell for anything else).
     pub lang: String,
-    /// A COMPLETE Rust program (with its own `fn main`) to compile and run. Passed
+    /// A COMPLETE program in the chosen `lang` (Rust needs its own `fn main`; Python is a
+    /// plain script). Passed
     /// through verbatim — no markdown-fence stripping, no wrapping: the command runs
     /// exactly what it is given. (Cleaning up model formatting is the deliberation
     /// layer's job, never the hand's — a hand that second-guesses its input is a
@@ -90,11 +93,12 @@ impl ActionCommand for CodeRun {
     const ALIASES: &'static [&'static str] = &["run_code"];
     const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
-        "Compile and run a complete Rust program (lang \"rust\", code must have its own \
-         `fn main`) and return its stdout, stderr, exit code, and duration. A compile \
-         error comes back as the result (ok=false) with rustc's errors in stderr. Use \
-         this to actually RUN and test your own code instead of guessing whether it \
-         works. For workspace-scoped grading use code/cargo/check and code/cargo/test.";
+        "Run code and return its stdout, stderr, exit code, and duration. lang=\"rust\" \
+         compiles a complete program (needs its own `fn main`); lang=\"python\" runs a \
+         Python script (use this for Python tasks/repos — do NOT pass Python as lang=rust). \
+         A compile error or traceback comes back as the result (ok=false) in stderr. Use it \
+         to actually RUN and test your own code instead of guessing. For workspace-scoped \
+         Rust grading use code/cargo/check and code/cargo/test.";
     type Params = CodeRunParams;
     type Output = CodeRunResult;
 

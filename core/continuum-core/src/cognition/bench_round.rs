@@ -130,6 +130,27 @@ pub struct BenchRound {
     stage: RoundStage,
     /// Who works this round's cards — read at CLAIM time, decided at dispatch.
     driver: WorkDriver,
+    /// Card uuid → the ACTIVITY its solve runs in, recorded at first mint so a
+    /// re-fire (a resume after a reboot, a retry attempt) REJOINS the same room
+    /// instead of minting a stranger — the "unless rejoining" half of the law
+    /// (Joel 2026-08-26: "benchmarks without new activities (unless rejoining)").
+    /// `#[serde(default)]` so pre-existing round files load with no activities
+    /// recorded and mint on their next dispatch.
+    #[serde(default)]
+    card_activities: HashMap<Uuid, CardActivity>,
+    /// Card uuid → the citizen it was staged FOR, recorded at dispatch staging
+    /// (before any solve fires) so the follow-on driver ([`next_unworked_after`])
+    /// and the boot resume know WHO works a card that has never run.
+    #[serde(default)]
+    card_assignees: HashMap<Uuid, Uuid>,
+}
+
+/// Where one card's solve LIVES: its per-instance activity room and the citizen
+/// working it. Typed UUIDs, passed as a struct (Joel: "pass structs").
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub struct CardActivity {
+    pub solve_room: Uuid,
+    pub assignee: Uuid,
 }
 
 impl BenchRound {
@@ -140,6 +161,8 @@ impl BenchRound {
             cards: card_ids.iter().map(|c| (*c, None)).collect(),
             stage: RoundStage::Working,
             driver,
+            card_activities: HashMap::new(),
+            card_assignees: HashMap::new(),
         }
     }
 
@@ -276,6 +299,77 @@ fn load_rounds_in(dir: &Path) -> HashMap<Uuid, BenchRound> {
     out
 }
 
+/// Boot reconciler — reap-or-ADOPT, and since plan A5 the answer is ADOPT
+/// ([[boot-owns-the-process-tree-reap-or-adopt-never-fight-yourself]],
+/// continuity-is-the-default). A `Working` round on disk is STILL WORKING: the
+/// boot resume (`modules::benchmark_resume`) rejoins it and re-fires its next
+/// unworked card through the ONE driver decision. The old behavior — deleting
+/// every Working round at boot — destroyed exactly the state a resume needs
+/// (room, cards, assignees, per-card activity rooms) and made "benchmarks never
+/// start themselves" structural. What remains here is the eviction story this
+/// state dir owes (2026-07-13 rule): a round file older than [`ROUND_TTL`] is
+/// abandoned and expires. Returns the expired `(benchmark, remaining)` rows for
+/// the boot probe. Still never re-dispatches from the serving daemon.
+pub fn reap_orphaned_rounds() -> Vec<(String, usize)> {
+    let dir = rounds_state_dir();
+    // TTL expiry only (see [`reap_orphaned_rounds_in`]): a Working round at boot
+    // SURVIVES — it is the durable state the boot resume (modules::benchmark_resume)
+    // rejoins. Expired files are also dropped from the loaded map so live_rounds()
+    // agrees this boot.
+    let expired = reap_orphaned_rounds_in(&dir);
+    if !expired.is_empty() {
+        let dead: std::collections::HashSet<&String> =
+            expired.iter().map(|(b, _)| b).collect();
+        ROUNDS
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|_, r| r.stage != RoundStage::Working || !dead.contains(&r.benchmark));
+    }
+    expired
+}
+
+/// The disk half of [`reap_orphaned_rounds`], parameterized on the state dir so it is pure
+/// and unit-testable. Removes only TTL-expired Working files; live Working rounds
+/// persist across boots — continuity is the default, reset is the exception.
+/// CONTINUITY IS THE DEFAULT (Joel's law; plan A5): a Working round at boot is
+/// STILL WORKING — the reaper no longer deletes it (deleting destroyed exactly
+/// the state a resume needs: room, cards, driver, assignees). Only a round file
+/// older than [`ROUND_TTL`] is expired — the backstop against an abandoned
+/// round haunting the resume forever, and the eviction story this state dir
+/// owes (2026-07-13 rule).
+const ROUND_TTL: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
+
+fn reap_orphaned_rounds_in(dir: &Path) -> Vec<(String, usize)> {
+    reap_with_ttl(dir, ROUND_TTL)
+}
+
+/// TTL injectable so the expiry contract is testable without clock games.
+fn reap_with_ttl(dir: &Path, ttl: std::time::Duration) -> Vec<(String, usize)> {
+    let mut expired = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return expired;
+    };
+    for entry in entries.flatten() {
+        let Ok(text) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        let Ok(round) = serde_json::from_str::<BenchRound>(&text) else {
+            continue; // unreadable → left in place by load_rounds_in for inspection
+        };
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age >= ttl);
+        if round.stage == RoundStage::Working && stale {
+            expired.push((round.benchmark.clone(), round.remaining()));
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+    expired
+}
+
 /// Open a round BEFORE its first card is posted, so the driver is readable from the
 /// instant a card can be claimed.
 ///
@@ -362,6 +456,108 @@ pub fn room_for_card(card_id: Uuid) -> Option<Uuid> {
         .map(|r| r.round_id)
 }
 
+/// The recorded activity for `card_id`'s solve, if one was ever minted — the
+/// REJOIN half of mint-or-rejoin. Scans in-flight rounds (same shape as
+/// [`room_for_card`]).
+pub fn card_activity(card_id: Uuid) -> Option<CardActivity> {
+    let rounds = ROUNDS.lock().expect("bench rounds mutex");
+    rounds
+        .values()
+        .find(|r| r.cards.contains_key(&card_id))
+        .and_then(|r| r.card_activities.get(&card_id).copied())
+}
+
+/// Record (idempotently) the activity `card_id`'s solve runs in — called at the
+/// MINT, persisted with the round so a post-reboot re-fire rejoins it.
+pub fn record_card_activity(card_id: Uuid, activity: CardActivity) {
+    let mut rounds = ROUNDS.lock().expect("bench rounds mutex");
+    if let Some(round) = rounds.values_mut().find(|r| r.cards.contains_key(&card_id)) {
+        round.card_activities.insert(card_id, activity);
+        persist_round_in(&rounds_state_dir(), round);
+    }
+}
+
+/// Record which citizen `card_id` was staged for — at DISPATCH time, so every
+/// card has an owner before any solve fires.
+pub fn record_card_assignee(card_id: Uuid, assignee: Uuid) {
+    let mut rounds = ROUNDS.lock().expect("bench rounds mutex");
+    if let Some(round) = rounds.values_mut().find(|r| r.cards.contains_key(&card_id)) {
+        round.card_assignees.insert(card_id, assignee);
+        persist_round_in(&rounds_state_dir(), round);
+    }
+}
+
+/// The next card the round owes a solve — passed as a struct (typed UUIDs).
+#[derive(Debug, Clone, Copy)]
+pub struct NextCard {
+    pub card: Uuid,
+    pub assignee: Uuid,
+    pub run_room: Uuid,
+}
+
+/// ONE driver decision, three edges (dispatch, card-settled, boot resume): given
+/// a card of some round, the FIRST still-unsettled card with no live run and a
+/// known assignee — or None when the round is fully in flight / done / not a
+/// detached round (Citizen rounds drive themselves through claims). Pure over
+/// the round state plus the in-flight ledger, so every edge fires the same
+/// decision — never a second scheduler.
+pub fn next_unworked_after(card_of_round: Uuid) -> Option<NextCard> {
+    let live = live_run_ids();
+    let rounds = ROUNDS.lock().expect("bench rounds mutex");
+    let round = rounds
+        .values()
+        .find(|r| r.cards.contains_key(&card_of_round))?;
+    first_unworked(round, &live)
+}
+
+/// The boot-resume edge of the SAME decision: the first unworked card of EVERY
+/// Working detached round. Called once at benchmark-module boot (after the
+/// serving + residency parks); the card-settled edge then chains the rest.
+pub fn next_unworked_per_round() -> Vec<NextCard> {
+    let live = live_run_ids();
+    let rounds = ROUNDS.lock().expect("bench rounds mutex");
+    rounds
+        .values()
+        .filter(|r| r.stage == RoundStage::Working)
+        .filter_map(|r| first_unworked(r, &live))
+        .collect()
+}
+
+/// Are any Working rounds tracked at all — the boot resume's cheap early-exit.
+pub fn any_working_round() -> bool {
+    ROUNDS
+        .lock()
+        .expect("bench rounds mutex")
+        .values()
+        .any(|r| r.stage == RoundStage::Working)
+}
+
+fn live_run_ids() -> std::collections::HashSet<String> {
+    crate::cognition::swe_bench::in_flight_solve_runs()
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect()
+}
+
+/// The one shared decision body behind both edges.
+fn first_unworked(round: &BenchRound, live: &std::collections::HashSet<String>) -> Option<NextCard> {
+    if round.driver != WorkDriver::DetachedSolve {
+        return None;
+    }
+    round
+        .cards
+        .iter()
+        .filter(|(_, state)| state.is_none())
+        .filter(|(c, _)| !live.contains(&format!("claim-{}", c)))
+        .find_map(|(c, _)| {
+            round.card_assignees.get(c).map(|a| NextCard {
+                card: *c,
+                assignee: *a,
+                run_room: round.round_id,
+            })
+        })
+}
+
 pub fn driver_for_card(card_id: Uuid) -> WorkDriver {
     ROUNDS
         .lock()
@@ -378,6 +574,20 @@ pub fn driver_for_card(card_id: Uuid) -> WorkDriver {
 /// `bench.round.done` exactly once when the last card lands (the round is removed on
 /// that transition). Grade info is NOT in this payload — the grade runs minutes after
 /// close — so the END probe reports totals, not verdicts.
+/// Settle a card by DIRECT observation (not a wire event) — the reconcile path
+/// for settles that happened while this core was down: a card closed during
+/// downtime fired its state-change into the void, and the round would wait on
+/// it forever (measured 2026-08-26: the boot resume retried a card the board no
+/// longer offered, every attempt honestly aborting "not on the board"). Routes
+/// through the SAME payload-shaped observer so probes and the Done transition
+/// stay single-sourced.
+pub fn settle_card_direct(card: Uuid, state: &str) {
+    observe_card_event(&serde_json::json!({
+        "card_id": card.to_string(),
+        "state": state,
+    }));
+}
+
 pub fn observe_card_event(payload: &Value) {
     let state = payload
         .get("state")
@@ -553,6 +763,81 @@ mod tests {
         assert_eq!(r.dispatched(), 3);
         assert_eq!(r.remaining(), 2, "the settled card must stay settled across the restart");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // what this catches: mint-or-rejoin losing its memory across a reboot. The
+    // card's solve ACTIVITY (its per-instance room + assignee) is recorded at
+    // first mint and must survive persistence — a re-fire that can't find it
+    // would mint a SECOND room for the same work, stranding the first room's
+    // transcript and cold-starting the KV slot the activity had warmed
+    // (Joel 2026-08-26: "benchmarks without new activities (unless rejoining)").
+    #[test]
+    fn card_activity_survives_a_restart_for_rejoin() {
+        let dir = std::env::temp_dir().join(format!("bench-rounds-test-{}", Uuid::new_v4()));
+        let (id, cs) = (Uuid::new_v4(), cards(2));
+        let mut round = BenchRound::new(id, "swe-bench-verified", &cs, WorkDriver::DetachedSolve);
+        let act = CardActivity {
+            solve_room: Uuid::from_u128(0xA11CE),
+            assignee: Uuid::from_u128(0xBEE),
+        };
+        round.card_activities.insert(cs[0], act);
+        persist_round_in(&dir, &round);
+
+        let reloaded = load_rounds_in(&dir);
+        let r = reloaded.get(&id).expect("round reloads");
+        let got = r.card_activities.get(&cs[0]).copied().expect("activity survives");
+        assert_eq!(got.solve_room, act.solve_room, "rejoin returns the SAME room");
+        assert_eq!(got.assignee, act.assignee);
+        assert!(r.card_activities.get(&cs[1]).is_none(), "unminted card has no activity yet");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // what this catches: the ONE driver decision. A settled card must yield the
+    // round's next unworked card (with its staged assignee and the run room),
+    // a fully-fired round must yield None, and a Citizen-driver round must
+    // never be driven by the follow-on (citizens drive themselves via claims).
+    // regression for the solve_cap starvation: dispatched − solves_fired used
+    // to be PERMANENT — cards 2..N were posted, kicked off, and never worked.
+    #[test]
+    fn next_unworked_after_walks_the_round_to_empty() {
+        let (id, cs) = (Uuid::new_v4(), cards(3));
+        register_round(id, "swe-bench-verified", &cs);
+        {
+            let mut rounds = ROUNDS.lock().unwrap();
+            let r = rounds.get_mut(&id).unwrap();
+            r.driver = WorkDriver::DetachedSolve;
+            for (i, c) in cs.iter().enumerate() {
+                r.card_assignees.insert(*c, Uuid::from_u128(100 + i as u128));
+            }
+        }
+        // Settle card 0 → the driver owes one of the remaining two.
+        {
+            let mut rounds = ROUNDS.lock().unwrap();
+            rounds.get_mut(&id).unwrap().settle_card(cs[0], "closed");
+        }
+        let next = next_unworked_after(cs[0]).expect("two cards remain");
+        assert!(cs[1..].contains(&next.card), "next is an UNSETTLED card");
+        assert_eq!(next.run_room, id, "the dispatch rejoins the run room's board");
+        let expected_assignee = {
+            let rounds = ROUNDS.lock().unwrap();
+            *rounds.get(&id).unwrap().card_assignees.get(&next.card).unwrap()
+        };
+        assert_eq!(next.assignee, expected_assignee, "the card's STAGED assignee carries");
+        // Settle everything → the driver goes quiet.
+        {
+            let mut rounds = ROUNDS.lock().unwrap();
+            let r = rounds.get_mut(&id).unwrap();
+            r.settle_card(cs[1], "closed");
+            r.settle_card(cs[2], "closed");
+        }
+        // The round is Done and REMOVED by observe_card_event in production; here the
+        // map still holds it, which is exactly what lets us assert the quiet case.
+        assert!(next_unworked_after(cs[0]).is_none(), "a finished round owes nothing");
+
+        // A Citizen round is never follow-on driven.
+        let (cid, ccs) = (Uuid::new_v4(), cards(2));
+        register_round(cid, "swe-bench-verified", &ccs);
+        assert!(next_unworked_after(ccs[0]).is_none(), "citizen rounds drive themselves");
     }
 
     // what this catches: the state dir growing without an eviction story (the
@@ -751,5 +1036,45 @@ mod tests {
             ROUNDS.lock().unwrap().get(&round_id).is_none(),
             "the round completed and must be removed — done can never fire twice"
         );
+    }
+
+    // what this catches: regression for the #371 no-END zombie — a `Working` round left on
+    // disk by a dead core is reaped at boot (evicted + reported with benchmark+remaining),
+    // so benchmark/rounds stops counting it in_flight forever (measured live: in_flight: 4
+    // with a stopped exam lease). A `Done` file is NOT the reaper's job (load_rounds_in
+    // drops those). Idempotent: a second boot reap finds nothing.
+    #[test]
+    fn working_rounds_survive_the_boot_reap_and_only_ttl_expiry_removes_them() {
+        // what this catches: the A5 continuity contract. The old reaper DELETED
+        // every Working round at boot — destroying exactly the state (room, cards,
+        // assignees, activity rooms) the resume needs to rejoin. A Working round
+        // must SURVIVE the reap; only a TTL-stale abandoned file is expired (the
+        // state dir's eviction story, 2026-07-13 rule).
+        let dir = std::env::temp_dir().join(format!("bench-reap-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let working =
+            BenchRound::new(Uuid::new_v4(), "swe-bench-lite", &cards(3), WorkDriver::Citizen);
+        persist_round_in(&dir, &working);
+
+        // Default TTL: a fresh Working round is untouchable.
+        assert!(
+            reap_orphaned_rounds_in(&dir).is_empty(),
+            "a live Working round SURVIVES the boot reap — continuity is the default"
+        );
+        assert_eq!(
+            std::fs::read_dir(&dir).expect("readdir").flatten().count(),
+            1,
+            "the round file is still on disk for the resume to rejoin"
+        );
+
+        // TTL zero: the same file is expired (abandoned-round backstop).
+        let expired = reap_with_ttl(&dir, std::time::Duration::ZERO);
+        assert_eq!(expired, vec![("swe-bench-lite".to_string(), 3)]);
+        assert_eq!(
+            std::fs::read_dir(&dir).expect("readdir").flatten().count(),
+            0,
+            "an expired round's file is removed"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

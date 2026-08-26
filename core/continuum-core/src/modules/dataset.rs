@@ -517,14 +517,18 @@ impl DatasetService {
                         continue;
                     }
                 }
-                // FORK GUARD (#427): benchmark/eval fork ticks carry the NIL
-                // room and land in the SAME per-persona capture file as live
-                // turns. Only an EXPLICIT nil room marks a fork — an absent
-                // room_id is an older live capture and stays. An explicit
-                // `room_id` filter above already expresses the caller's intent
-                // (including asking FOR the nil room), so the guard applies
-                // only to unfiltered runs.
+                // FORK GUARD (#427): benchmark/eval fork ticks land in the SAME
+                // per-persona capture file as live turns and must not teach.
+                // Schema v3 captures carry the turn's CAUSE — "synthetic" IS the
+                // fork/fixture marker (every turn now has a real room, #425, so
+                // nil-room inference is dead going forward). The nil-room check
+                // stays only for pre-v3 capture lines. An explicit `room_id`
+                // filter above already expresses the caller's intent, so the
+                // guard applies only to unfiltered runs.
                 if !p.include_forks && p.room_id.is_none() {
+                    if cap.get("cause").and_then(|v| v.as_str()) == Some("synthetic") {
+                        continue;
+                    }
                     let nil = uuid::Uuid::nil().to_string();
                     if cap.get("room_id").and_then(|v| v.as_str()) == Some(nil.as_str()) {
                         continue;

@@ -65,19 +65,15 @@ pub struct AgentSolveParams {
     /// and anyone standing there — human screen or citizen mind — perceives it
     /// through the ONE ViewState pipe.
     ///
-    /// Omitted → `Uuid::nil()`, which is the ROOMLESS shape: `apply_act` skips
-    /// receipt radiation entirely for a nil room (radiating them stole the
-    /// single-room chat projection onto a phantom, live-proven 2026-08-12), so a
-    /// roomless solve does its work invisibly. That was every dispatched benchmark
-    /// run until this param existed — the exact disconnection
-    /// BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md names as the failure mode, and the
-    /// reason the flywheel saw no turns from a full graded attempt.
+    /// Provided → the run REJOINS that activity (resume and dispatch are the same
+    /// motion). Omitted → the run MINTS its own fresh activity room at birth
+    /// (probe `agent.solve.room_minted`). THE LAW (Joel, 2026-08-26): an activity
+    /// without a room is unrepresentable — the old `Uuid::nil()` invisible-run
+    /// mode (13,209 unmeasured roomless turns, #425) no longer exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     #[ts(optional, type = "string")]
     pub room: Option<Uuid>,
-    // See `RunVisibility` below: the roomless case is now DECLARED rather than defaulted,
-    // because a silent invisible run is how 13,209 of them accumulated unnoticed (#425).
     /// Fire-and-poll (#86): when true, the solve is spawned DETACHED — `run` returns a job
     /// handle NOW (arms empty, `detached: true`) and the REAL result (patch + acts) lands in
     /// `~/.continuum/progress/agent-solve-<run_id>.json`. A real agentic drive (N full-generation
@@ -184,67 +180,6 @@ pub struct AgentSolveParams {
     pub attempts: Option<u32>,
 }
 
-/// Whether this run's acts will be PERCEIVABLE, decided once and named.
-///
-/// # Why this is a type and not `p.room.unwrap_or_else(Uuid::nil)`
-///
-/// It was that `unwrap_or_else` (#425). A nil room makes `apply_act` skip receipt radiation
-/// entirely, so the run executes normally and lands in NO transcript — and nothing anywhere
-/// said so. 13,209 turns accumulated in that state (8.7% of all turns; 35% for one citizen)
-/// before anyone measured it, because an invisible run and a visible one produce identical
-/// logs. That is the same defect shape as a fetch cap that silently truncates: the system
-/// took a consequential branch and declined to mention it.
-///
-/// A roomless run is still LEGITIMATE — a bare `agent/solve` with no activity behind it has
-/// no room to radiate into, and inventing one would put receipts on a phantom (live-proven
-/// 2026-08-12, it stole the single-room chat projection). So this does not refuse. It
-/// DECLARES, so the invisibility is a stated property of the run rather than a silence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RunVisibility {
-    /// Acts radiate `persona:act` receipts into this room — perceivable by a human screen
-    /// and a citizen mind through the one ViewState pipe.
-    InRoom(Uuid),
-    /// No room: the work executes and is perceived by nobody, and no curriculum-visible
-    /// room turn is produced.
-    Invisible,
-}
-
-impl RunVisibility {
-    /// The single place the room param becomes a decision.
-    pub fn resolve(room: Option<Uuid>) -> Self {
-        match room {
-            // A caller passing the nil uuid EXPLICITLY means the same thing as omitting it;
-            // treating them differently would let a nil slip through as "in room", which is
-            // exactly the silent branch this type exists to close.
-            Some(r) if !r.is_nil() => RunVisibility::InRoom(r),
-            _ => RunVisibility::Invisible,
-        }
-    }
-
-    /// The uuid the act pipeline expects — nil for the invisible case, which is the shape
-    /// `apply_act` already keys its skip on.
-    pub fn room_id(&self) -> Uuid {
-        match self {
-            RunVisibility::InRoom(r) => *r,
-            RunVisibility::Invisible => Uuid::nil(),
-        }
-    }
-
-    /// What to say when the run will be invisible. `None` when it is perceivable — a
-    /// visible run needs no announcement, and warning on the happy path trains people to
-    /// ignore the warning.
-    pub fn warning(&self) -> Option<&'static str> {
-        match self {
-            RunVisibility::InRoom(_) => None,
-            RunVisibility::Invisible => Some(
-                "this run has NO room: its acts execute but radiate no receipts, so nobody \
-                 — human or citizen — can perceive the work, and it produces no room turn. \
-                 Pass `room` (benchmark/dispatch supplies its per-run activity room) to make \
-                 the run perceivable.",
-            ),
-        }
-    }
-}
 
 /// What the caller grades when the solve returns. Two genuinely different contracts,
 /// so it is an enum on the wire, never a magic string ([[strings-to-enums]]).
@@ -611,7 +546,7 @@ impl ActionCommand for AgentSolve {
                             let instance = std::path::Path::new(&ws)
                                 .file_name()
                                 .map(|s| s.to_string_lossy().to_string())
-                                .unwrap_or_default();
+                                .unwrap_or_default(); // missing progress file = empty history; the redrive covers absence
                             // #379: the attempt's PATCH is a receipt, not a transient.
                             // Read the exact candidate the grader is about to read (same
                             // helper — one definition of "her diff"), persist it beside
@@ -955,6 +890,14 @@ impl ActionCommand for AgentSolve {
                     // the counter — the infra-void arm `continue`s above this line.
                     attempt += 1;
                 }
+                // A3 — HARNESS-ONLY TERMINAL CLOSE (BENCHMARK-AS-KANBAN: the citizen
+                // may move working states; the terminal transition belongs to the
+                // harness). The run carries a final verdict on disk (grade.json);
+                // closing the card here is what lets observe_card_event settle the
+                // round and — on the last card — reach Done. An UNGRADEABLE verdict
+                // (env fault) leaves the card OPEN on purpose: a resume re-fires it,
+                // which for an env fault is the owed retake, never a burial.
+                close_claim_card_if_graded(&run_id).await;
             });
             return Ok(AgentSolveResult {
                 persona_id: persona_ack,
@@ -970,6 +913,95 @@ impl ActionCommand for AgentSolve {
             });
         }
         Self::solve_body(p).await
+    }
+}
+
+/// The A3 terminal close: a claim-dispatched run (`run_id == claim-<card uuid>`)
+/// whose final attempt produced a REAL verdict closes its card, authored through
+/// the run's own persona (subscribed to the run room by dispatch). Non-claim runs
+/// and verdict-less runs (infra/ungradeable) leave the card as-is.
+async fn close_claim_card_if_graded(run_id: &str) {
+    let Some(card_uuid) = run_id
+        .strip_prefix("claim-")
+        .and_then(|s| Uuid::parse_str(s).ok())
+    else {
+        return; // not a claim-dispatched run — no card to close
+    };
+    let Some(ledger) = agent_solve_ledger_path(run_id) else {
+        return;
+    };
+    let grade_path = ledger.with_extension("grade.json");
+    let verdict_is_real = std::fs::read_to_string(&grade_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok()) // disk boundary: reading the grade.json verdict file the grader wrote
+        .is_some_and(|g| g.get("error").map_or(true, |e| e.is_null()));
+    if !verdict_is_real {
+        crate::probe!(
+            class = "benchmark.card.close_skipped",
+            run_id = %run_id,
+            "no real verdict on disk (infra/ungradeable) — card stays open so a              resume re-fires it (the owed retake)"
+        );
+        return;
+    }
+    // Author through the run's persona (her runtime is subscribed to the run
+    // room); fall back to any live citizen — same authoring rule as the lapse
+    // sweeper. No runtime at all → probe and leave it; the sweeper picks the
+    // card up on its next tick because it is Claimed with an artifact.
+    let persona = std::fs::read_to_string(&ledger)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok()) // disk boundary: reading the grade.json verdict file the grader wrote
+        .and_then(|v| {
+            v.get("persona_id")
+                .and_then(|p| p.as_str())
+                .and_then(|p| Uuid::parse_str(p).ok())
+        });
+    let Some(reg) = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+    else {
+        return;
+    };
+    let airc = persona
+        .and_then(|p| reg.get(p))
+        .or_else(|| reg.any_live_citizen())
+        .map(|rt| rt.airc().clone());
+    let Some(airc) = airc else {
+        crate::probe!(
+            class = "benchmark.card.close_skipped",
+            run_id = %run_id,
+            "no live citizen to author the close — the lapse sweeper will close it"
+        );
+        return;
+    };
+    let card_id = airc_work::WorkCardId::from_uuid(card_uuid);
+    let Some(room) = crate::modules::work::room_holding_card(&airc, card_id).await else {
+        crate::probe!(
+            class = "benchmark.card.close_skipped",
+            run_id = %run_id,
+            "no subscribed room's board holds the card — cannot place the close"
+        );
+        return;
+    };
+    match airc
+        .change_work_card_state_in(
+            &room,
+            airc_lib::ChangeWorkCardState {
+                card_id,
+                state: airc_work::CardState::Closed,
+            },
+        )
+        .await
+    {
+        Ok(_) => crate::probe!(
+            class = "benchmark.card.closed_by_harness",
+            run_id = %run_id,
+            card_id = %card_uuid,
+            "final verdict on disk — harness closed the card; the round settles on              this event (last card → Done)"
+        ),
+        Err(e) => crate::probe!(
+            class = "benchmark.card.close_skipped",
+            run_id = %run_id,
+            error = %e.to_string(),
+            "close refused — card stays as-is; the lapse sweeper retries"
+        ),
     }
 }
 
@@ -1314,24 +1346,73 @@ impl AgentSolve {
             //    ergonomic/adapter fix ([[use-adapters-dont-dumb-it-down]]), not a capability demand —
             //    and honest (it states the real I/O contract; it does not hand her the answer). Then
             //    DRIVE her to settlement (read → edit → run → fix, her real act→observe loop).
-            // The run's ROOM (see `AgentSolveParams::room`). `Uuid::nil()` is the
-            // honest roomless fallback for a bare `agent/solve` with no activity
-            // behind it; a DISPATCHED run always carries one, and that is what
-            // turns her acts into room receipts instead of invisible work.
-            let visibility = RunVisibility::resolve(p.room);
-            if let Some(why) = visibility.warning() {
-                // Announce ONCE, at the one place the branch is taken. This is the whole
-                // fix for #425's remaining half: the roomless state was never wrong, it was
-                // never SAID, and 13,209 turns went by in it.
-                crate::probe!(
-                    class = "agent.solve.roomless",
-                    run_id = %p.run_id.clone().unwrap_or_default(),
-                    persona_id = %p.persona_id,
-                    "solve run is INVISIBLE — no room, so no receipts and no room turn (#425)",
-                );
-                tracing::warn!(run_id = ?p.run_id, "agent/solve: {why}");
-            }
-            let room = visibility.room_id();
+            // The run's ROOM (see `AgentSolveParams::room`): REJOIN the activity the
+            // dispatcher named, or MINT a fresh one. THE LAW (Joel, 2026-08-26):
+            // an activity without a room is unrepresentable, and a benchmark/solve
+            // is a NEW activity unless rejoining — so the old `Uuid::nil()`
+            // "invisible run" mode is gone (#425). A bare `agent/solve` now names
+            // its own activity at birth; acts radiate receipts into it instead of
+            // vanishing.
+            let room = match p.room {
+                Some(r) if !r.is_nil() => crate::identity::ActivityRoom::from_uuid(r)
+                    .expect("non-nil checked in this arm"), // non-nil checked in this arm's guard; witness refuses nil
+                _ => {
+                    // A bare solve is a NEW activity, and an activity IS an airc
+                    // room born from a recipe (Joel: every tab/benchmark/content
+                    // is a room created from a recipe — wrapping airc, never
+                    // bypassing it). Spawn the REAL joinable room through the
+                    // persona's own runtime, so a human or peer can stand in the
+                    // solve and assist like any activity. The id-only mint
+                    // survives strictly as the probed last resort when no
+                    // runtime exists (unit rigs, a solve fired before hosting) —
+                    // attributable, but not yet joinable, and the probe says so.
+                    let persona_uuid = uuid::Uuid::parse_str(p.persona_id.as_str()).ok();
+                    let spawned = match persona_uuid
+                        .and_then(|pu| {
+                            crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+                                .and_then(|reg| reg.get(pu))
+                        })
+                        .map(|rt| rt.airc().clone())
+                    {
+                        Some(airc) => {
+                            let name = format!(
+                                "solve--{}",
+                                p.run_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string()) // bare solve without run_id gets a fresh one; identity, not a quantity
+                            );
+                            let recipe =
+                                crate::experience::source::RecipeExperienceSource::shipped_purpose(
+                                    crate::experience::source::shipped::BENCHMARK_HARD_RS,
+                                )
+                                .unwrap_or_default(); // grade.json absent = ungradeable; the caller branches on that, not a default
+                            crate::modules::activity::spawn_activity_room(
+                                &airc,
+                                &name,
+                                &recipe,
+                                None,
+                                &std::collections::BTreeMap::new(),
+                            )
+                            .await
+                            .ok()
+                            .and_then(|r| {
+                                crate::identity::ActivityRoom::new(r.room_id).ok()
+                            })
+                        }
+                        None => None,
+                    };
+                    let room = spawned.unwrap_or_else(crate::identity::ActivityRoom::mint); // spawn failed → LAST-RESORT id-only mint, probed above
+                    crate::probe!(
+                        class = "agent.solve.room_minted",
+                        run_id = %p.run_id.clone().unwrap_or_default(), // display-only field in a probe line, never routed
+                        persona_id = %p.persona_id,
+                        room = %room,
+                        joinable = spawned.is_some(),
+                        "bare solve named its own activity — a real airc room when her \
+                         runtime could spawn one (joinable=true), an id-only mint as the \
+                         last resort (#425)",
+                    );
+                    room
+                }
+            };
             // The workspace-grounding sentence counters the observed "new project ritual"
             // (glass-boxed 2026-07-22 via turn capture: her first act on a seeded task was
             // code/create-workspace("my_stack_project") + a Rust hello-world + git/commit —
@@ -1440,7 +1521,7 @@ impl AgentSolve {
                 .flatten();
             let mut settled = {
                 let drive = crate::cognition::act_observe::drive_to_settle(
-                    &cycle, burst, room, max_acts, framing,
+                    &cycle, burst, max_acts, framing,
                 );
                 tokio::pin!(drive);
                 let mut ticker = tokio::time::interval(RUN_PULSE);
@@ -1557,6 +1638,7 @@ impl AgentSolve {
                     framing,
                     remaining,
                     fact,
+                    &p.task,
                     &mut settled,
                     &workspace,
                 )
@@ -1610,6 +1692,7 @@ impl AgentSolve {
                         framing,
                         remaining,
                         fact,
+                        &p.task,
                         &mut settled,
                         &workspace,
                     )
@@ -1727,6 +1810,7 @@ impl AgentSolve {
                             framing,
                             remaining,
                             fact,
+                            &p.task,
                             &mut settled,
                             &workspace,
                         )
@@ -1850,7 +1934,7 @@ fn format_solve_lesson(task: &str, acts: usize, files_changed: &[String]) -> Str
 /// idempotently via `admit_reflection`'s content hash), else 0.
 fn transfer_solve_experience(
     persona_uuid: &Uuid,
-    room: Uuid,
+    room: crate::identity::ActivityRoom,
     task: &str,
     acts: usize,
     files_changed: &[String],
@@ -1870,7 +1954,7 @@ fn transfer_solve_experience(
     recall_keys.extend(files_changed.iter().cloned());
     let engram = crate::persona::engram::Engram {
         id: Uuid::new_v4(),
-        context_id: Some(room),
+        context_id: Some(room.as_uuid()),
         kind: crate::persona::engram::EngramKind::Episodic,
         content: format_solve_lesson(task, acts, files_changed),
         origin: crate::persona::engram::EngramOrigin::SelfReflection {
@@ -1939,17 +2023,25 @@ fn mapped_test_files(workspace: &str, files_changed: &[String]) -> Vec<String> {
 /// post-re-drive (patch, files_changed).
 async fn redrive_with_fact(
     cycle: &crate::cognition::workspace::WorkspaceCycle,
-    room: Uuid,
+    room: crate::identity::ActivityRoom,
     framing: crate::cognition::workspace::TurnFraming,
     remaining: usize,
     fact: String,
+    task: &str,
     settled: &mut crate::cognition::act_observe::SettleOutcome,
     workspace: &str,
 ) -> (String, Vec<String>) {
+    // THE FACT ALONE IS BLIND (glass-boxed 2026-08-26): a resumed attempt's
+    // re-drive runs on a fresh fork whose working memory never held the task,
+    // and the fact says "the example in the task description" — she answered
+    // 'which file?' and settled empty. The re-drive burst restates the WHOLE
+    // task beneath the structural fact, so fresh-start and post-interrupt read
+    // identically (continuity: one code path).
+    let content = format!("{fact}\n\nThe task you are working, restated in full:\n\n{task}");
     let redelivery = crate::persona::rag_budget::RagDelivery {
         source_id: "airc".to_string(),
         items: vec![crate::persona::rag_budget::RagItem {
-            content: fact,
+            content,
             tokens: 0,
             metadata: serde_json::json!({
                 "peer_id": "peer",
@@ -1970,8 +2062,7 @@ async fn redrive_with_fact(
         ),
     );
     let redriven =
-        crate::cognition::act_observe::drive_to_settle(cycle, reburst, room, remaining, framing)
-            .await;
+        crate::cognition::act_observe::drive_to_settle(cycle, reburst, remaining, framing).await;
     settled.acts += redriven.acts;
     settled.decision = redriven.decision;
     settled.spoken = redriven.spoken.or(settled.spoken.take());
@@ -2087,51 +2178,23 @@ fn frame_task(task: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    mod run_visibility {
-        use super::super::RunVisibility;
+    mod room_mint_or_rejoin {
+        use crate::identity::ActivityRoom;
         use uuid::Uuid;
 
-        // what this catches: the roomless branch going quiet again. It was
-        // `p.room.unwrap_or_else(Uuid::nil)` — a consequential branch taken in silence — and
-        // 13,209 turns (8.7% of all turns; 35% for one citizen) executed invisibly before
-        // anyone measured it, because an invisible run and a visible one log identically.
-        // The type exists so the branch has a NAME and the invisible case carries a sentence.
+        // what this catches: the #425 regression door. A solve with no room used to run
+        // INVISIBLY under Uuid::nil() (13,209 turns, 8.7% of all turns, before it was
+        // measured). The law (Joel 2026-08-26) is mint-or-rejoin: a dispatched run REJOINS
+        // the activity it was given; a bare run MINTS its own. Nil can never re-enter as
+        // a room because ActivityRoom refuses it at construction.
         #[test]
-        fn a_roomless_run_is_declared_invisible_and_says_why() {
-            let v = RunVisibility::resolve(None);
-            assert_eq!(v, RunVisibility::Invisible);
-            assert!(v.room_id().is_nil(), "the act pipeline keys its skip on nil");
-            let why = v.warning().expect("an invisible run MUST announce itself");
-            assert!(
-                why.contains("NO room") && why.contains("perceive"),
-                "the warning must say what is lost, not just that a field was absent: {why}"
-            );
-            assert!(
-                why.contains("room"),
-                "and name the param that fixes it: {why}"
-            );
-        }
-
-        // what this catches: an EXPLICIT nil uuid slipping through as "in room". A caller
-        // passing Uuid::nil() means exactly what omitting it means; treating the two
-        // differently would reopen the silent branch through the other door.
-        #[test]
-        fn an_explicit_nil_room_is_the_same_as_no_room() {
-            assert_eq!(
-                RunVisibility::resolve(Some(Uuid::nil())),
-                RunVisibility::Invisible
-            );
-        }
-
-        // what this catches: warning on the happy path. A visible run needs no announcement,
-        // and a warning that fires every time trains everyone to ignore it.
-        #[test]
-        fn a_run_with_a_real_room_is_visible_and_stays_quiet() {
-            let room = Uuid::from_u128(7);
-            let v = RunVisibility::resolve(Some(room));
-            assert_eq!(v, RunVisibility::InRoom(room));
-            assert_eq!(v.room_id(), room, "the room must survive unchanged");
-            assert!(v.warning().is_none(), "a perceivable run must not warn");
+        fn a_room_param_is_rejoined_and_nil_is_unrepresentable() {
+            let real = Uuid::from_u128(7);
+            let rejoined = ActivityRoom::from_uuid(real).expect("real room rejoins");
+            assert_eq!(rejoined.as_uuid(), real, "the room must survive unchanged");
+            assert!(ActivityRoom::from_uuid(Uuid::nil()).is_err(), "nil is refused");
+            let minted = ActivityRoom::mint();
+            assert!(!minted.as_uuid().is_nil(), "a bare solve mints a REAL activity");
         }
     }
 

@@ -603,6 +603,13 @@ impl BurstTurn {
 /// stimulus → a single opaque turn rendered verbatim).
 #[derive(Debug, Clone)]
 pub struct Burst {
+    /// The activity this turn belongs to — REQUIRED at construction, witnessed
+    /// non-nil by [`ActivityRoom`]. The burst carries the room because the burst
+    /// IS the perception the turn responds to: when the room rode as a separate
+    /// parameter beside the burst, a caller could render room A into the header
+    /// and drive the turn in room B (or nil), and nothing detected it — the #425
+    /// roomless-turn shape. Same argument as [`Cause`] living here.
+    pub room: crate::identity::ActivityRoom,
     /// The persona's NOW at assembly (wall-clock ms; eval passes its pinned epoch;
     /// None for raw-string/test bursts). Threaded to the prompt as a [now …] line
     /// (task #125 — the rendered header never reaches the structured-turns prompt).
@@ -692,7 +699,7 @@ impl Burst {
     /// behalf, which is true for an exam, a replay fixture or a faculty test and a lie
     /// for anything a citizen actually lived. A live burst site must call
     /// [`from_turns_at`](Self::from_turns_at) and say what caused it.
-    pub fn from_turns(room: Uuid, turns: Vec<BurstTurn>) -> Self {
+    pub fn from_turns(room: crate::identity::ActivityRoom, turns: Vec<BurstTurn>) -> Self {
         Self::from_turns_at(room, turns, None, Cause::Synthetic)
     }
 
@@ -708,7 +715,7 @@ impl Burst {
     /// `cause` is REQUIRED, not a builder step, because it is the one field a live
     /// assembly site can silently forget. See [`Cause`].
     pub fn from_turns_at(
-        room: Uuid,
+        room: crate::identity::ActivityRoom,
         turns: Vec<BurstTurn>,
         now_ms: Option<u64>,
         cause: Cause,
@@ -716,30 +723,48 @@ impl Burst {
         use std::fmt::Write as _;
         let mut rendered = String::new();
         let _ = writeln!(rendered, "[room {room}]");
-        if let Some(ms) = now_ms {
-            if let Some(dt) = chrono::DateTime::from_timestamp_millis(ms as i64) {
-                let local = dt.with_timezone(&chrono::Local);
-                let _ = writeln!(rendered, "[now {}]", local.format("%Y-%m-%d %H:%M %A"));
-            }
-        }
+        // NO [now …] line here anymore (2026-08-26 glass box): this header is the
+        // FIRST bytes of the conversation, so the minute tick invalidated every
+        // message behind it — measured live as `cached=7945` (the stable system
+        // head) with the ENTIRE 10k-27k tail re-prefilled every act, ~647k fresh
+        // tokens in one boot. Temporal grounding lives in the deliberation
+        // prompt's VOLATILE tier (delivered as the newest turn, zero prefix
+        // cost) fed from `now_ms`, which stays on the Burst for exactly that.
         for turn in &turns {
             turn.write_line(&mut rendered);
         }
         Self {
+            room,
             turns,
             rendered,
             now_ms,
             cause,
         }
     }
+
+    /// A raw-string burst IN a named activity — the production path for a
+    /// stimulus that arrives as text (a gate check, a replay line) but still
+    /// belongs to a real room. One opaque turn, rendered verbatim.
+    pub fn raw_in(room: crate::identity::ActivityRoom, s: String) -> Self {
+        Self {
+            room,
+            turns: vec![BurstTurn::opaque(s.clone())],
+            rendered: s,
+            now_ms: None,
+            cause: Cause::Synthetic,
+        }
+    }
 }
 
+/// Raw-string → Burst conversions are TEST-ONLY: a production burst must name
+/// its activity ([`Burst::raw_in`] / [`Burst::from_turns_at`]) — a string
+/// cannot, so letting it convert was the door #425 walked through. Fixtures
+/// get a deterministic [`ActivityRoom::test_room`](crate::identity::ActivityRoom::test_room).
+#[cfg(test)]
 impl From<String> for Burst {
-    /// A raw-string burst → ONE opaque turn, rendered verbatim. Keeps every
-    /// string-passing call site (faculty tests, eval shorthand, replay) compiling
-    /// and byte-identical.
     fn from(s: String) -> Self {
         Self {
+            room: crate::identity::ActivityRoom::test_room(),
             turns: vec![BurstTurn::opaque(s.clone())],
             rendered: s,
             now_ms: None,
@@ -750,12 +775,14 @@ impl From<String> for Burst {
     }
 }
 
+#[cfg(test)]
 impl From<&str> for Burst {
     fn from(s: &str) -> Self {
         Burst::from(s.to_string())
     }
 }
 
+#[cfg(test)]
 impl From<&String> for Burst {
     fn from(s: &String) -> Self {
         Burst::from(s.clone())
@@ -863,7 +890,15 @@ pub struct Workspace {
     /// a phantom `nil` room. `Uuid::nil()` only in faculty-isolation tests that
     /// don't run in a room. NEVER a session id — context is durable, session is
     /// ephemeral and never load-bearing for where an action lands.
+    /// Guaranteed non-nil in production: the only live constructor is
+    /// [`from_burst`](Self::from_burst) and a [`Burst`] carries a witnessed
+    /// [`ActivityRoom`](crate::identity::ActivityRoom) (#425).
     pub room_id: Uuid,
+    /// Why this turn is happening — carried from [`Burst::cause`] so downstream
+    /// receipts (prompt capture, dataset fork-guard #427) can tell a LIVED turn
+    /// ("stimulus"/"ambient") from an eval-fork/fixture tick ("synthetic")
+    /// without inferring it from a nil room (which no longer exists).
+    pub cause: Cause,
     /// Which service tick this workspace IS — the frame index every finding
     /// computed against it gets stamped with. [`CycleId::UNSTAMPED`] for
     /// hand-built / replay-reconstructed workspaces; the cycle loop sets the
@@ -908,22 +943,34 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    /// TEST-ONLY faculty-isolation shorthand. Production has no roomless
+    /// workspaces (#425): the burst carries its [`ActivityRoom`](crate::identity::ActivityRoom)
+    /// and [`from_burst`](Self::from_burst) is the one live constructor.
+    #[cfg(test)]
     pub fn new(burst: impl Into<Burst>) -> Self {
-        Self::in_room(burst, Uuid::nil())
+        Self::from_burst(burst.into())
     }
 
-    /// Construct scoped to a specific room/context (the contextId the turn acts
-    /// within). The live persona path always uses this; `new` is the nil-room
-    /// shorthand for faculty-isolation tests. Takes `impl Into<Burst>`: an
-    /// attributed `Burst` (live/eval, carries authorship) or a raw `String`/`&str`
-    /// (collapses to one opaque turn — faculty tests, replay).
+    /// TEST-ONLY compat: construct with an explicit room override. Lets faculty
+    /// tests exercise arbitrary rooms without hand-building attributed bursts.
+    #[cfg(test)]
     pub fn in_room(burst: impl Into<Burst>, room_id: Uuid) -> Self {
-        let burst = burst.into();
+        let mut ws = Self::from_burst(burst.into());
+        ws.room_id = room_id;
+        ws
+    }
+
+    /// Construct from an attributed burst — the ONE production constructor.
+    /// The room comes from the burst itself (witnessed non-nil at burst
+    /// construction), so a workspace whose header renders room A can no longer
+    /// be driven in room B or in nil: there is only one room, stated once.
+    pub fn from_burst(burst: Burst) -> Self {
         let burst_now = burst.now_ms;
         Self {
             world_state: burst.rendered,
             turns: burst.turns,
-            room_id,
+            room_id: burst.room.as_uuid(),
+            cause: burst.cause,
             cycle: CycleId::UNSTAMPED,
             broadcast: Vec::new(),
             directed_at_self: false,
@@ -931,6 +978,16 @@ impl Workspace {
             now_ms: burst_now,
             token_sink: None,
         }
+    }
+
+    /// The activity witness for this turn. Infallible by construction: the only
+    /// production constructor is [`from_burst`](Self::from_burst) and a `Burst`
+    /// cannot exist without a non-nil [`ActivityRoom`](crate::identity::ActivityRoom)
+    /// — so the expect below can only fire if a `#[cfg(test)]` constructor leaked
+    /// a nil room into production, which is exactly the bug it should crash on.
+    pub fn room(&self) -> crate::identity::ActivityRoom {
+        crate::identity::ActivityRoom::from_uuid(self.room_id)
+            .expect("Workspace.room_id is witnessed non-nil at construction (#425)")
     }
 
     /// Attach a per-turn token sink for STREAMING the answer (#169). Builder form,
@@ -1886,26 +1943,38 @@ impl WorkspaceCycle {
     /// This is what makes "pull relevant memory, *then* decide" real: the decider
     /// is never blind to recall. Still one tick over the consolidated burst, still
     /// `O(capacity)` for the bounded context — no per-event slowdown.
+    /// TEST-ONLY ambient shorthand: the burst names its room (a raw string
+    /// converts with [`ActivityRoom::test_room`](crate::identity::ActivityRoom::test_room)
+    /// under `#[cfg(test)]`), so even faculty-isolation ticks run in a
+    /// real-shaped room. Production has no roomless ticks (#425) — live callers
+    /// use [`run_framed`](Self::run_framed) / [`run_situated`](Self::run_situated).
+    #[cfg(test)]
     pub async fn run(&self, burst: impl Into<Burst>) -> Workspace {
-        self.run_in_room(burst, Uuid::nil()).await
+        self.run_inner(burst.into(), TurnFraming::ambient(), Situation::FreshContext)
+            .await
     }
 
-    /// Same as [`run_in_room`](Self::run_in_room) but with explicit
-    /// [`TurnFraming`] — the live persona path passes `directed`/`self_initiated`
-    /// here so the deliberation faculty's system prompt reflects whether a question
-    /// was put TO her (suppress the silence escape) and whether this is her own
-    /// heartbeat. `run_in_room` is the ambient shorthand.
-    pub async fn run_framed(
-        &self,
-        burst: impl Into<Burst>,
-        room_id: Uuid,
-        framing: TurnFraming,
-    ) -> Workspace {
+    /// TEST-ONLY compat: ambient tick with an explicit room override.
+    #[cfg(test)]
+    pub async fn run_in_room(&self, burst: impl Into<Burst>, room_id: Uuid) -> Workspace {
+        let mut b: Burst = burst.into();
+        if let Ok(r) = crate::identity::ActivityRoom::from_uuid(room_id) {
+            b.room = r;
+        }
+        self.run_inner(b, TurnFraming::ambient(), Situation::FreshContext)
+            .await
+    }
+
+    /// The live persona path passes `directed`/`self_initiated` here so the
+    /// deliberation faculty's system prompt reflects whether a question was put
+    /// TO her (suppress the silence escape) and whether this is her own
+    /// heartbeat. The room rides ON the burst — one statement of the activity,
+    /// no separate parameter to drift from the rendered header (#425).
+    pub async fn run_framed(&self, burst: Burst, framing: TurnFraming) -> Workspace {
         // Fresh-context default: a bare framed tick is a fresh ask (fuller
         // grounding). The act→observe driver calls [`run_situated`] with
         // `PostAction` on re-perception ticks.
-        self.run_in_room_inner(burst, room_id, framing, Situation::FreshContext)
-            .await
+        self.run_inner(burst, framing, Situation::FreshContext).await
     }
 
     /// Same as [`run_framed`](Self::run_framed) but with the tick's [`Situation`]
@@ -1916,30 +1985,11 @@ impl WorkspaceCycle {
     /// cognition]]).
     pub async fn run_situated(
         &self,
-        burst: impl Into<Burst>,
-        room_id: Uuid,
+        burst: Burst,
         framing: TurnFraming,
         situation: Situation,
     ) -> Workspace {
-        self.run_in_room_inner(burst, room_id, framing, situation)
-            .await
-    }
-
-    /// Same as [`run`](Self::run) but scoped to a room/context (the contextId the
-    /// turn acts within). The live persona path uses THIS so the deliberation
-    /// faculty stamps tool calls with the real room — `run` is the nil-room
-    /// shorthand for tests that aren't room-scoped.
-    pub async fn run_in_room(&self, burst: impl Into<Burst>, room_id: Uuid) -> Workspace {
-        // Ambient default: silence stays first-class, message-driven. A turn put TO
-        // the persona, or her own heartbeat, uses [`run_framed`](Self::run_framed)
-        // with the appropriate [`TurnFraming`].
-        self.run_in_room_inner(
-            burst,
-            room_id,
-            TurnFraming::ambient(),
-            Situation::FreshContext,
-        )
-        .await
+        self.run_inner(burst, framing, situation).await
     }
 
     /// The full cognitive tick. [`TurnFraming`] is set on the [`Workspace`] so the
@@ -1947,10 +1997,9 @@ impl WorkspaceCycle {
     /// [`Workspace::directed_at_self`]) and whether to frame the turn as the
     /// persona's own time (see [`Workspace::self_initiated`]); everything else is
     /// identical across framings — framing only reshapes the system prompt.
-    async fn run_in_room_inner(
+    async fn run_inner(
         &self,
-        burst: impl Into<Burst>,
-        room_id: Uuid,
+        burst: Burst,
         framing: TurnFraming,
         situation: Situation,
     ) -> Workspace {
@@ -1963,11 +2012,12 @@ impl WorkspaceCycle {
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 .wrapping_add(1),
         );
-        // Carry the structured burst straight through: `in_room` splits it into the
-        // canonical `turns` (the deliberation faculty's role-attribution source) and
-        // the `world_state` text projection (every other reader). Framing reshapes
-        // only the system prompt — it never touches the conversation turns.
-        let mut ws = Workspace::in_room(burst, room_id)
+        // Carry the structured burst straight through: `from_burst` splits it into
+        // the canonical `turns` (the deliberation faculty's role-attribution source)
+        // and the `world_state` text projection (every other reader) and takes the
+        // ROOM from the burst itself. Framing reshapes only the system prompt — it
+        // never touches the conversation turns.
+        let mut ws = Workspace::from_burst(burst)
             .with_cycle(cycle)
             .directed(framing.directed)
             .self_initiated(framing.self_initiated)
@@ -2219,7 +2269,7 @@ mod tests {
         // which would pollute the live ambient-rate measurement with test noise.
         #[test]
         fn a_burst_cannot_be_built_without_saying_what_caused_it() {
-            let room = Uuid::new_v4();
+            let room = crate::identity::ActivityRoom::mint();
             let id = Uuid::new_v4();
 
             let live = Burst::from_turns_at(room, Vec::new(), Some(1), Cause::Stimulus(id));

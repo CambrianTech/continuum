@@ -192,26 +192,6 @@ pub async fn web_search(p: WebSearchParams) -> Result<WebSearchResult, CommandEr
     })
 }
 
-/// How much readable page text a `web/fetch` returns — DERIVED from the persona's live served
-/// window, never a constant. A fetched page goes straight into her context, so this is the same
-/// class of bound as a tool-result fold and it must scale the same way: a 6k/12k pair means a
-/// 1M-context model reads exactly as little of a page as a 4k one, which is the whole defect.
-/// The caller may still ask for less; it may not ask for more than the window can hold.
-/// [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
-fn fetch_char_bounds() -> (u32, u32) {
-    let budget = crate::cognition::context_budget::ContextBudget::live_or_floor();
-    let max = budget.result_fold_chars().min(u32::MAX as usize) as u32;
-    // Default to half the ceiling: enough of an article to answer from, cheap enough that a
-    // reflexive fetch doesn't dominate the turn. Explicit `max_chars` overrides up to `max`.
-    (max / 2, max)
-}
-
-/// Floor on a caller-requested `max_chars` — below this a fetch returns a stub too small to
-/// answer from, which reads as a broken tool rather than a small one.
-// context-budget-exempt: a MINIMUM on a caller-supplied request (it only ever raises a too-small
-// ask); the ceiling above it is window-derived
-const MIN_FETCH_CHARS: u32 = 200;
-
 /// Params for `web/fetch`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
@@ -221,17 +201,11 @@ const MIN_FETCH_CHARS: u32 = 200;
 pub struct WebFetchParams {
     /// The URL to fetch and read (http/https).
     pub url: String,
-    /// Max characters of readable text to return. Defaults to half of what the live served
-    /// window can hold, and is clamped to that ceiling (never a fixed 6000/12000 pair).
-    #[serde(default)]
-    #[ts(optional)]
-    pub max_chars: Option<u32>,
-    /// FILTER MODE (2026-08-25): a regex; return ONLY the readable lines that match it,
-    /// most like `grep` on the page. The context-saver — don't spend working memory on a
-    /// 50KB page dump when you want the three lines mentioning an error or an API name.
-    /// Applied to the readable text AFTER tag-strip, BEFORE the char cap, so the cap
-    /// bounds the FILTERED result. Omitted → full readable text as before. An invalid
-    /// regex fails loud.
+    /// FILTER MODE: a regex; return ONLY the readable lines that match it (+ `context_lines`
+    /// around each), like `grep` on the page. The context-saver — don't spend working memory
+    /// on a 50KB dump when you want the three lines mentioning an error or an API name.
+    /// Omitted → full readable page. If the filter matches nothing you are TOLD so and get
+    /// the unfiltered page back (never a silent empty result). An invalid regex fails loud.
     #[serde(default)]
     #[ts(optional)]
     pub filter: Option<String>,
@@ -254,11 +228,12 @@ pub struct WebFetchResult {
     pub url: String,
     /// The page `<title>`, if any.
     pub title: String,
-    /// Readable text (scripts/styles/tags stripped, whitespace collapsed), capped to `max_chars`.
+    /// Readable page text with real lines (`<pre>`/code kept verbatim). The FULL page (or,
+    /// with `filter`, the matching lines) — web/fetch does not truncate; if this is large the
+    /// executor bounds what you see inline and spills the rest, pageable via `tool/output`.
     pub content: String,
-    /// True if the readable text was longer than the cap and got truncated.
-    pub truncated: bool,
-    /// Total readable characters before truncation.
+    /// Total readable characters of the WHOLE page (with `filter`, `content` may be a smaller
+    /// matching slice — this still reports the full page size, honest scale).
     #[ts(type = "number")]
     pub chars: u32,
 }
@@ -287,10 +262,16 @@ fn grep_lines(text: &str, re: &regex::Regex, ctx: usize) -> String {
 }
 
 /// Fetch a URL and return its readable text — the persona's "read the doc/page I
-/// found" hand, the natural partner to `web/search`. GETs with a browser UA, drops
-/// script/style blocks, strips the remaining tags, collapses whitespace, and caps the
-/// length. http/https only; a non-2xx status FAILS LOUD (never returns an error page as
-/// if it were content).
+/// found" hand, the natural partner to `web/search`. GETs via the host's real browser,
+/// drops script/style blocks, keeps `<pre>`/code verbatim, and returns line-oriented
+/// readable text. http/https only; a non-2xx status FAILS LOUD (never returns an error
+/// page as if it were content).
+///
+/// **web/fetch does NOT truncate.** It returns the full readable page; the executor
+/// result-fold is the ONE truncation+spill authority (the same one `code/run`/`code/read`
+/// use), so a large page is bounded inline and the remainder is pageable via `tool/output`
+/// — instead of being silently discarded here. And a `filter` that matches nothing is
+/// never silent: it says so and returns the unfiltered page so she can adjust.
 pub async fn web_fetch(p: WebFetchParams) -> Result<WebFetchResult, CommandError> {
     let url = p.url.trim().to_string();
     if !(url.starts_with("http://") || url.starts_with("https://")) {
@@ -298,41 +279,100 @@ pub async fn web_fetch(p: WebFetchParams) -> Result<WebFetchResult, CommandError
             "web/fetch url must start with http:// or https://, got '{url}'"
         )));
     }
-    let (default_fetch, max_fetch) = fetch_char_bounds();
-    let cap = p
-        .max_chars
-        .unwrap_or(default_fetch)
-        .clamp(MIN_FETCH_CHARS, max_fetch.max(MIN_FETCH_CHARS)) as usize;
+
+    // STATUS PRE-CHECK: the browser's `--dump-dom` renders a page regardless of HTTP
+    // status, so a 404 comes back as a 14-char "404: Not Found" DOM that reads as content
+    // (this is exactly what beat astropy-13236 — her v5.1.0 URL 404'd and she saw a silent
+    // near-empty result, never learning the tag was wrong). A cheap headers-only GET
+    // surfaces the status so a definitively-wrong URL FAILS LOUD with the code, instead of
+    // blinding her with a rendered error page.
+    if let Ok(client) = reqwest::Client::builder()
+        .user_agent(browser::RENDER_UA)
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    {
+        if let Ok(resp) = client.get(&url).send().await {
+            if let Some(e) = url_error_for_status(
+                resp.status().as_u16(),
+                resp.status().canonical_reason().unwrap_or(""), // some statuses have no canonical reason; empty is the honest display
+                &url,
+            ) {
+                return Err(e);
+            }
+        }
+        // A probe network error / bot-block / 5xx is NOT fatal here: fall through to the
+        // real browser, which renders JS and gets past anti-bot walls a bare client can't.
+    }
 
     // Drive the host's REAL browser (renders JS, isn't bot-blocked) rather than an HTTP
     // scrape. 4s virtual-time budget is ample for a doc/article's first paint.
     let body = browser::render_dom(&url, 4000).await?;
 
     let title = extract_title(&body);
-    let mut readable = extract_readable(&body);
-    // FILTER MODE: grep the readable text to exactly what she asked for, before the cap —
-    // so filtering actually saves context instead of the cap chopping a full dump.
-    if let Some(pat) = p.filter.as_deref().filter(|s| !s.trim().is_empty()) {
-        let re = regex::Regex::new(pat).map_err(|e| {
-            CommandError::Invalid(format!("web/fetch filter is not a valid regex: {e}"))
-        })?;
-        let ctx = p.context_lines.unwrap_or(0).min(10) as usize;
-        readable = grep_lines(&readable, &re, ctx);
-    }
-    let total = readable.chars().count() as u32;
-    let truncated = total as usize > cap;
-    let content = if truncated {
-        readable.chars().take(cap).collect()
-    } else {
-        readable
-    };
+    let readable = extract_readable(&body);
+    // Honest scale of the WHOLE page, independent of any filter — so `chars` always
+    // reports how much is really there even when `content` is a filtered slice.
+    let chars = readable.chars().count() as u32;
+    let content = filtered_or_fallback(readable, p.filter.as_deref(), p.context_lines.unwrap_or(0))?; // 0 context lines = exact-match only; documented default of the param
+
     Ok(WebFetchResult {
         url,
         title,
         content,
-        truncated,
-        chars: total,
+        chars,
     })
+}
+
+/// Decide whether an HTTP status means "fail loud — this URL is wrong" or "proceed and
+/// let the browser try". A DEFINITIVE client error (404/400/410/…) means the resource is
+/// not there, so we fail loud with the code and a nudge to fix the URL — instead of
+/// letting a rendered error page masquerade as content. `403`/`429`/`408` are bot-block /
+/// rate-limit / timeout signals a real browser can often get past, and `5xx` is transient,
+/// so those fall through to `render_dom`. Pure → unit-testable.
+fn url_error_for_status(code: u16, reason: &str, url: &str) -> Option<CommandError> {
+    let definitive_client_error =
+        (400..500).contains(&code) && !matches!(code, 403 | 408 | 429);
+    definitive_client_error.then(|| {
+        CommandError::Invalid(format!(
+            "web/fetch: {url} returned HTTP {code} {reason} — the URL is wrong. Check the \
+             path, the ref/tag/branch (e.g. `v5.1` not `v5.1.0`), and spelling; or use \
+             web/search to find the right link."
+        ))
+    })
+}
+
+/// Apply a persona's `filter` regex to the readable page, or pass it through whole.
+///
+/// **Never silently empty.** A zero-match filter used to return `chars: 0` with no
+/// reason — which blinds her: she cannot tell "no match" from "404" from "broken tool"
+/// (this is exactly what cost the astropy-13236 solve — five gold-patch fetches all
+/// came back `chars: 0`). On a miss we SAY so and hand back the UNFILTERED page: the
+/// executor result-fold then bounds the inline view and spills the rest with a
+/// `tool/output` handle, so it stays cheap and pageable — collapse, never clip to nothing.
+/// Pure over its inputs → unit-testable without the network.
+fn filtered_or_fallback(
+    readable: String,
+    filter: Option<&str>,
+    context_lines: u32,
+) -> Result<String, CommandError> {
+    let Some(pat) = filter.filter(|s| !s.trim().is_empty()) else {
+        return Ok(readable);
+    };
+    let re = regex::Regex::new(pat).map_err(|e| {
+        CommandError::Invalid(format!("web/fetch filter is not a valid regex: {e}"))
+    })?;
+    let ctx = context_lines.min(10) as usize;
+    let filtered = grep_lines(&readable, &re, ctx);
+    if filtered.trim().is_empty() {
+        let total_lines = readable.lines().count();
+        Ok(format!(
+            "[web/fetch: filter /{pat}/ matched 0 of {total_lines} lines — showing the \
+             unfiltered page so you can adjust the pattern or read it directly; page it \
+             with tool/output if it is large]\n\n{readable}"
+        ))
+    } else {
+        Ok(filtered)
+    }
 }
 
 /// Pull the `<title>` text out of an HTML document (empty if none).
@@ -351,15 +391,89 @@ fn extract_title(html: &str) -> String {
     strip_tags(&html[start..close])
 }
 
-/// Turn an HTML page into readable text: drop `<script>/<style>/…` blocks (whose
-/// TEXT would otherwise leak), strip remaining tags, decode entities, collapse runs
-/// of whitespace to single spaces.
+use std::sync::LazyLock;
+
+/// Every HTML tag span (`<…>`). Module-level so both `strip_tags` and the readable
+/// extractor share ONE definition.
+static TAG_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"<[^>]+>").expect("static tag regex is valid")); // static regex literal, validated at first use forever
+
+/// A `<pre>…</pre>` block — captured so its content is preserved VERBATIM (its
+/// whitespace and newlines are significant: a raw source file renders as one big
+/// `<pre>`, and a doc's code samples are `<pre>`/`<code>`). `(?is)` = case-insensitive
+/// + `.` spans newlines; non-greedy so adjacent pre blocks don't merge.
+static PRE_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"(?is)<pre\b[^>]*>(.*?)</pre>").expect("static pre regex is valid") // static regex literal, validated at first use forever
+});
+
+/// Block-level close tags + `<br>` — a rendered line break. Turned into `\n` BEFORE
+/// tag-stripping so the readable text has REAL lines for `grep`/paging. (The old
+/// `split_whitespace().join(" ")` erased EVERY newline — including a raw source file's
+/// own — which made a `.py` one giant line and `filter` all-or-nothing.)
+static BLOCK_BREAK_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(
+        r"(?i)</(p|div|li|tr|h[1-6]|blockquote|section|article|ul|ol|table|thead|tbody|header|footer|nav|main|aside|dd|dt|figure)>|<br\s*/?>",
+    )
+    .expect("static block-break regex is valid") // static regex literal, validated at first use forever
+});
+
+/// Decode the handful of HTML entities the pipeline emits. Shared so tag-strip and
+/// readable-extraction never drift on which entities they know.
+fn decode_entities(s: &str) -> String {
+    s.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#x27;", "'")
+        .replace("&#39;", "'")
+}
+
+/// Non-`<pre>` HTML → readable prose with REAL lines: block tags become newlines,
+/// inline tags are stripped, horizontal whitespace within a line collapses, blank
+/// lines drop. Preserving line breaks (not erasing them) is what makes `filter`/`grep`
+/// work line-by-line instead of all-or-nothing on one giant line.
+fn readable_prose(html: &str) -> String {
+    let with_breaks = BLOCK_BREAK_RE.replace_all(html, "\n");
+    let no_tags = TAG_RE.replace_all(&with_breaks, "");
+    decode_entities(&no_tags)
+        .lines()
+        .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Turn an HTML page into readable text with real lines. `<script>/<style>/…` block
+/// TEXT is dropped (it would leak as garbage); `<pre>`/`<code>` blocks are kept
+/// VERBATIM (their indentation and newlines carry meaning — this is how a fetched raw
+/// `table.py` stays valid Python instead of one collapsed line); everything else
+/// becomes line-oriented prose. Line structure is preserved throughout so a persona
+/// can `filter`/`grep` a page the way she greps a file.
 fn extract_readable(html: &str) -> String {
     let cleaned = strip_blocks(html, &["script", "style", "noscript", "svg", "head"]);
-    strip_tags(&cleaned)
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    let mut out: Vec<String> = Vec::new();
+    let mut last = 0usize;
+    for cap in PRE_RE.captures_iter(&cleaned) {
+        let whole = cap.get(0).expect("regex match always has group 0"); // group 0 is the whole match, always present by regex contract
+        let prose = readable_prose(&cleaned[last..whole.start()]);
+        if !prose.is_empty() {
+            out.push(prose);
+        }
+        // <pre> content verbatim: strip only inner inline tags + decode entities;
+        // NEVER collapse its whitespace/newlines.
+        let inner = cap.get(1).map_or("", |g| g.as_str());
+        let code = decode_entities(&TAG_RE.replace_all(inner, ""));
+        let code = code.trim_matches('\n');
+        if !code.is_empty() {
+            out.push(code.to_string());
+        }
+        last = whole.end();
+    }
+    let tail = readable_prose(&cleaned[last..]);
+    if !tail.is_empty() {
+        out.push(tail);
+    }
+    out.join("\n")
 }
 
 /// Remove `<tag …>…</tag>` spans (case-insensitive) for each named tag, replacing
@@ -387,20 +501,8 @@ fn strip_blocks(html: &str, tags: &[&str]) -> String {
 /// Strip HTML tags from a snippet/title fragment (engines return `<strong>`
 /// highlight markup). Shared by both providers. Pure → unit-testable.
 pub(crate) fn strip_tags(s: &str) -> String {
-    use std::sync::LazyLock;
-    static TAG_RE: LazyLock<regex::Regex> =
-        LazyLock::new(|| regex::Regex::new(r"<[^>]+>").expect("static tag regex is valid"));
     let no_tags = TAG_RE.replace_all(s, "");
-    // Collapse the handful of entities the engines emit; leave the rest verbatim.
-    no_tags
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#x27;", "'")
-        .replace("&#39;", "'")
-        .trim()
-        .to_string()
+    decode_entities(&no_tags).trim().to_string()
 }
 
 #[cfg(test)]
@@ -498,5 +600,76 @@ mod tests {
         );
         assert!(!body.contains("noise"), "drops script text: {body}");
         assert!(!body.contains("color:red"), "drops style text: {body}");
+    }
+
+    // what this catches: regression for the astropy-13236 miss — a `<pre>` block (how a
+    // raw source file renders) is preserved VERBATIM, indentation and newlines intact, so
+    // fetched code is readable/greppable line-by-line instead of collapsed into one line.
+    // The old `split_whitespace().join(" ")` erased every newline, which made `filter`
+    // all-or-nothing and returned the gold table.py as garbage.
+    #[test]
+    fn fetch_preserves_pre_blocks_verbatim_with_real_lines() {
+        let html = "<html><body><p>Intro   prose here.</p>\
+                    <pre>def f():\n    if len(data.dtype) &gt; 1:\n        data = data.view(NdarrayMixin)\n</pre>\
+                    </body></html>";
+        let body = extract_readable(html);
+        // prose collapses horizontal ws but keeps its own line
+        assert!(body.contains("Intro prose here."), "prose collapsed on one line: {body:?}");
+        // <pre> keeps indentation AND newlines verbatim (entities decoded)
+        assert!(
+            body.contains("    if len(data.dtype) > 1:"),
+            "pre indentation preserved: {body:?}"
+        );
+        assert!(
+            body.contains("        data = data.view(NdarrayMixin)"),
+            "pre deep indentation preserved: {body:?}"
+        );
+        // real lines exist — grep can target one line, not the whole page
+        let hit = grep_lines(&body, &regex::Regex::new("NdarrayMixin").unwrap(), 0);
+        assert_eq!(hit, "        data = data.view(NdarrayMixin)", "grep isolates ONE line: {hit:?}");
+    }
+
+    // what this catches: a zero-match filter is NEVER silently empty (the exact blindness
+    // that cost astropy-13236 — five gold fetches all returned chars:0). It must announce
+    // the miss AND return the unfiltered page so she can adjust the pattern / read directly.
+    #[test]
+    fn filter_miss_is_never_silent_and_returns_the_page() {
+        use super::filtered_or_fallback;
+        let page = "line one\nline two\nline three".to_string();
+        let out = filtered_or_fallback(page.clone(), Some("NOPE_NO_MATCH"), 0).unwrap();
+        assert!(!out.trim().is_empty(), "must never be silently empty");
+        assert!(out.contains("matched 0 of 3 lines"), "announces the miss + scale: {out}");
+        assert!(out.contains("line one") && out.contains("line three"), "returns the page: {out}");
+    }
+
+    // what this catches: regression for astropy-13236 — a 404 (her v5.1.0 URL) FAILS LOUD
+    // with the code and a fix-the-URL nudge, instead of the browser rendering "404: Not
+    // Found" as content. Bot-block/rate-limit/transient statuses (403/408/429/5xx) do NOT
+    // fail here — a real browser can get past them — and 2xx never fails.
+    #[test]
+    fn url_error_for_status_fails_loud_only_on_definitive_client_errors() {
+        use super::url_error_for_status;
+        // definitive client errors → fail loud, name the code
+        for code in [400u16, 404, 410, 451] {
+            let e = url_error_for_status(code, "Not Found", "https://x/y")
+                .unwrap_or_else(|| panic!("HTTP {code} must fail loud"));
+            assert!(format!("{e:?}").contains(&code.to_string()), "names the code {code}: {e:?}");
+        }
+        // bot-block / rate-limit / timeout / transient → proceed (browser may get past)
+        for code in [200u16, 301, 403, 408, 429, 500, 503] {
+            assert!(url_error_for_status(code, "x", "https://x/y").is_none(), "HTTP {code} must proceed");
+        }
+    }
+
+    // what this catches: a matching filter returns ONLY the matching lines (the context
+    // saver), and no filter returns the whole page — the two non-miss branches.
+    #[test]
+    fn filter_hit_returns_only_matches_and_none_returns_whole() {
+        use super::filtered_or_fallback;
+        let page = "alpha\nbeta target\ngamma".to_string();
+        let hit = filtered_or_fallback(page.clone(), Some("target"), 0).unwrap();
+        assert_eq!(hit, "beta target", "only the matching line: {hit}");
+        let whole = filtered_or_fallback(page.clone(), None, 0).unwrap();
+        assert_eq!(whole, page, "no filter → whole page unchanged");
     }
 }

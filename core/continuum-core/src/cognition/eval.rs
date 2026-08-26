@@ -744,6 +744,7 @@ async fn spawn_gene_eval_lane(gene: &EvalGene) -> Result<EvalLane, CommandError>
         placement: placement_evidence.placement,
         expert_placement: None, // eval lanes run the whole model; no K3 expert paging
         resident_override: None, // eval lanes serve resident as-shipped; no device-fit override
+            vision_sidecar: false,
     };
     emit_eval_phase(
         "loading_lane",
@@ -873,6 +874,7 @@ async fn build_base_eval_lane_inner(base_id: &str) -> Result<EvalLaneInner, Comm
         placement: placement_evidence.placement,
         expert_placement: None, // eval lanes run the whole model; no K3 expert paging
         resident_override: None, // eval lanes serve resident as-shipped; no device-fit override
+            vision_sidecar: false,
     };
     // The ephemeral lane cold-loads the base model (can be minutes for a 14B+); emit
     // the phase so positronic layers show "loading <model>…", not a frozen bar.
@@ -2151,10 +2153,19 @@ impl CognitionEval {
             // The workspace fork machinery below is keyed by bare `Uuid`; unwrap the
             // resolved identity ONCE, here, rather than threading two types through it.
             .as_uuid();
+        // The exam's ACTIVITY: rejoin the named room, or MINT a fresh one — an
+        // exam is an activity like any other (#425; Joel: "benchmarks without new
+        // activities (unless rejoining)" is not allowed). Exam turns are excluded
+        // from training by their Cause::Synthetic capture marker, never by room.
         let room = match p.room_id.as_deref() {
-            Some(s) => Uuid::parse_str(s)
-                .map_err(|_| CommandError::Invalid(format!("room_id '{s}' is not a valid UUID")))?,
-            None => Uuid::nil(),
+            Some(s) => {
+                let parsed = Uuid::parse_str(s)
+                    .map_err(|_| CommandError::Invalid(format!("room_id '{s}' is not a valid UUID")))?;
+                crate::identity::ActivityRoom::from_uuid(parsed).map_err(|_| {
+                    CommandError::Invalid("room_id must be a real (non-nil) room".into())
+                })?
+            }
+            None => crate::identity::ActivityRoom::mint(),
         };
 
         // Which set was graded — recorded in the ledger so trend rows are
@@ -2471,7 +2482,7 @@ impl CognitionEval {
         // never warms, fail LOUD rather than emit a bogus 0. (Cost is one cheap probe on a
         // warm lane — the common case returns on the first try.)
         {
-            let warm_room = Uuid::new_v4();
+            let warm_room = crate::identity::ActivityRoom::mint();
             let probe_delivery = crate::persona::rag_budget::RagDelivery {
                 source_id: "airc".to_string(),
                 items: vec![crate::persona::rag_budget::RagItem {
@@ -2497,7 +2508,6 @@ impl CognitionEval {
                 let probe = crate::cognition::act_observe::drive_to_settle(
                     &cycle,
                     burst,
-                    warm_room,
                     0, // no acts — a bare deliberation is enough to prove the lane answers
                     crate::cognition::workspace::TurnFraming::directed(),
                 )
@@ -2578,7 +2588,7 @@ impl CognitionEval {
         // graded task teaches AT GRADE TIME (an interrupted round keeps its
         // lessons). A/B (gene) runs never teach.
         let lesson_sink = if p.learn.learns() && p.gene.is_none() {
-            let sink = LessonSink::open(&persona_uuid, room, &tasks);
+            let sink = LessonSink::open(&persona_uuid, room.as_uuid(), &tasks);
             if sink.is_none() {
                 tracing::warn!(
                     persona = %persona_uuid,
@@ -2755,7 +2765,9 @@ impl CognitionEval {
             // exam's duration. Peers' words land in her working memory as labeled
             // voices (perception through a channel, never a memory write from
             // outside); her own posts are skipped. Guard aborts with the pass.
-            let _help_guard = if p.help.unwrap_or(false) && room != Uuid::nil() { // omitted arm flag = solo, the default
+            // Every exam has a REAL activity room now (#425), so the old nil guard is
+            // gone — the help arm is purely the flag.
+            let _help_guard = if p.help.unwrap_or(false) { // omitted arm flag = solo, the default
                 let wm = cycle.acting().map(|b| std::sync::Arc::clone(&b.working_memory));
                 wm.map(|wm| {
                     let mut rx = crate::cognition::deliberation_budget::subscribe_room_speech();
@@ -2764,7 +2776,7 @@ impl CognitionEval {
                         loop {
                             match rx.recv().await {
                                 Ok(sp) => {
-                                    if sp.room != room || sp.sender == Some(me) {
+                                    if sp.room != room.as_uuid() || sp.sender == Some(me) {
                                         continue;
                                     }
                                     let who = sp
@@ -2828,7 +2840,7 @@ impl CognitionEval {
             if infra_unavailable.is_none() {
                 admit_progress_engram(
                     &sink.admission,
-                    room,
+                    room.as_uuid(),
                     p.eval_set.as_deref().unwrap_or(DEFAULT_EVAL_SET), // the run's real set: None means the default set genuinely ran
                     &results,
                 );
@@ -4130,6 +4142,7 @@ fn scopeguard_abort(h: tokio::task::JoinHandle<()>) -> AbortOnDrop {
 /// mid-decode twice in one day).
 fn hang_backstop_outcome(
     task_id: &str,
+    room: crate::identity::ActivityRoom,
     window: std::time::Duration,
 ) -> crate::cognition::act_observe::SettleOutcome {
     crate::probe!(
@@ -4139,11 +4152,14 @@ fn hang_backstop_outcome(
         "idle backstop fired — no settle, no propagated error, and NO lane work for the \
          whole window; find the await that lost its error propagation"
     );
-    crate::cognition::act_observe::SettleOutcome::infra_failure(format!(
-        "idle backstop ({}s with zero lane work) — no settle and no propagated error; \
-         substrate bug, not a wrong answer",
-        window.as_secs()
-    ))
+    crate::cognition::act_observe::SettleOutcome::infra_failure(
+        room.as_uuid(),
+        format!(
+            "idle backstop ({}s with zero lane work) — no settle and no propagated error; \
+             substrate bug, not a wrong answer",
+            window.as_secs()
+        ),
+    )
 }
 
 /// Report one graded task on all three surfaces. Called by BOTH pass loops (solo +
@@ -4319,7 +4335,7 @@ async fn run_pass(
     cycle: &crate::cognition::workspace::WorkspaceCycle,
     isolation: &crate::cognition::workspace::EvalIsolation,
     tasks: &[EvalTask],
-    room: Uuid,
+    room: crate::identity::ActivityRoom,
     max_acts: usize,
     max_retries: u32,
     // The pinned workspace root the persona's hands were rooted at (from-scratch build /
@@ -4617,7 +4633,6 @@ async fn run_pass(
             let drive = crate::cognition::act_observe::drive_to_settle(
                 cycle,
                 make_burst(),
-                room,
                 t.max_acts.map(|v| v as usize).unwrap_or(max_acts), // None = row sets no budget; the run's budget is the documented inherit
                 if t.workspace_deliverable() {
                     crate::cognition::workspace::TurnFraming::directed().on_workspace()
@@ -4643,7 +4658,7 @@ async fn run_pass(
                         if idle < PER_TASK_IDLE_BACKSTOP {
                             continue;
                         }
-                        break hang_backstop_outcome(&t.id, PER_TASK_IDLE_BACKSTOP);
+                        break hang_backstop_outcome(&t.id, room, PER_TASK_IDLE_BACKSTOP);
                     }
                 }
             };
@@ -4753,7 +4768,6 @@ async fn run_pass(
                 crate::cognition::act_observe::drive_to_settle(
                     cycle,
                     nudge_burst,
-                    room,
                     t.max_acts.map(|v| v as usize).unwrap_or(max_acts), // None = row sets no budget; the run's budget is the documented inherit
                     if t.workspace_deliverable() {
                         crate::cognition::workspace::TurnFraming::directed().on_workspace()
@@ -4855,7 +4869,6 @@ Fix the workspace and finish —                              the grade reads th
                     crate::cognition::act_observe::drive_to_settle(
                         cycle,
                         red_burst,
-                        room,
                         t.max_acts.map(|v| v as usize).unwrap_or(max_acts), // None = row sets no budget; the run's budget is the documented inherit
                         crate::cognition::workspace::TurnFraming::directed().on_workspace(),
                     ),
@@ -5065,7 +5078,7 @@ Fix the workspace and finish —                              the grade reads th
 /// Caller does the exam-hygiene reset/rewind (isolation is per-cycle).
 async fn eval_settle(
     cycle: &crate::cognition::workspace::WorkspaceCycle,
-    room: Uuid,
+    room: crate::identity::ActivityRoom,
     prompt: &str,
     max_acts: usize,
 ) -> crate::cognition::act_observe::SettleOutcome {
@@ -5092,7 +5105,6 @@ async fn eval_settle(
     crate::cognition::act_observe::drive_to_settle(
         cycle,
         burst,
-        room,
         max_acts,
         crate::cognition::workspace::TurnFraming::directed(),
     )
@@ -5112,7 +5124,7 @@ async fn run_pass_team(
     reviewer: &crate::cognition::workspace::WorkspaceCycle,
     reviewer_iso: &crate::cognition::workspace::EvalIsolation,
     tasks: &[EvalTask],
-    room: Uuid,
+    room: crate::identity::ActivityRoom,
     max_acts: usize,
     // The run's resolved eval root (explicit pin or #312 ephemeral clone) —
     // artifact grading resolves solution files against it, same as solo.

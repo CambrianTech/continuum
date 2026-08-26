@@ -2634,7 +2634,18 @@ pub fn start_server(
             // citizens with no service loop get the same materialize +
             // attach pipeline boot slots got.
             let mut booted = false;
+            // GLASS BOX (#412 residency stall): tracing lines from this task did not survive
+            // the concurrency for diagnosis; a probe does. This pins whether the reconciler is
+            // even alive after a reboot-with-adopted-lane, how many passes it makes, and what
+            // it saw each pass — the exact seam three indirect hypotheses could not resolve.
+            crate::probe!(
+                class = "persona.host.reconciler_started",
+                population = provider.identities_available(),
+                "hosting reconciler task alive — entering the plan-edge loop"
+            );
+            let mut pass = 0u32;
             loop {
+                pass += 1;
                 let plan_ready = serving_plan_rx
                     .borrow()
                     .as_ref()
@@ -2647,6 +2658,15 @@ pub fn start_server(
                 // direct decode-probe of the pinned endpoint (K3, a grid peer).
                 let external_lane =
                     crate::inference::llama_server::external_serving_pin().is_some();
+                crate::probe!(
+                    class = "persona.host.reconciler_pass",
+                    pass = pass,
+                    plan_ready = plan_ready,
+                    external_lane = external_lane,
+                    booted = booted,
+                    snapshot_live = crate::inference::llama_server::current_serving().is_live(),
+                    "hosting reconciler pass — will enter host body iff (plan_ready || external_lane)"
+                );
                 if plan_ready || external_lane {
                     // `fits_on_gpu` is a RESOURCE decision (the model fits VRAM) — it does
                     // NOT prove the lane can DECODE. A lane can fit yet fail EVERY
@@ -2661,12 +2681,19 @@ pub fn start_server(
                     // the deadline lapses. On timeout we do NOT spawn (a can't-decode lane
                     // is a loud, novel failure — never a silent per-turn 500); we park and
                     // retry on the next serving edge, self-healing once the lane recovers.
-                    if crate::inference::llama_server::await_ready_serving(
+                    let decode_ready = crate::inference::llama_server::await_ready_serving(
                         std::time::Duration::from_secs(120),
                     )
                     .await
-                    .is_none()
-                    {
+                    .is_some();
+                    crate::probe!(
+                        class = "persona.host.await_ready",
+                        pass = pass,
+                        decode_ready = decode_ready,
+                        booted = booted,
+                        "await_ready_serving returned — decode_ready gates hosting"
+                    );
+                    if !decode_ready {
                         tracing::warn!(
                             "serving plan fits on GPU but the lane is NOT decode-ready \
                              within 120s — /health may be 200 while every generation 500s \

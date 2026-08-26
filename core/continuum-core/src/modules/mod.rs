@@ -27,6 +27,7 @@ pub mod activity;
 pub mod auth;
 pub mod avatar;
 pub mod benchmark_grade;
+pub mod benchmark_resume;
 pub mod bevy_consumer;
 pub mod channel;
 pub mod chat;

@@ -686,7 +686,7 @@ impl LlamaCppBackend {
             if sampling.top_p > 0.0 && sampling.top_p < 1.0 {
                 chain = chain.top_p(sampling.top_p as f32, 1);
             }
-            chain = chain.penalties(64, sampling.repeat_penalty, 0.0, 0.0);
+            chain = chain.penalties(self.model.n_vocab(), 64, sampling.repeat_penalty, 0.0, 0.0);
             let temp = if sampling.temperature > 0.0 {
                 sampling.temperature as f32
             } else {

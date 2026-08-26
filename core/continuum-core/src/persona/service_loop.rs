@@ -977,7 +977,10 @@ async fn serve_persona_loop_inner(
         // the message was deduped/quarantined — an honest gap, never a made-up link.
         let workspace_burst =
             crate::cognition::workspace::Burst::from_turns_at(
-                turn_room,
+                // turn_room falls back to identity.default_room (A.6), which is minted
+                // v4 at identity creation — non-nil by construction.
+                crate::identity::ActivityRoom::from_uuid(turn_room)
+                    .expect("turn_room falls back to the identity's default_room, never nil"), // default_room is minted v4 at identity creation; never nil
                 ws_turns,
                 Some(now_ms),
                 // The arrival that woke this turn IS its cause. A dedup Drop or a
@@ -1183,7 +1186,6 @@ async fn serve_persona_loop_inner(
                     let outcome = crate::cognition::act_observe::drive_to_settle(
                         &cycle,
                         workspace_burst,
-                        turn_room,
                         LIVE_MAX_ACTS,
                         framing,
                     )
@@ -2547,14 +2549,21 @@ async fn run_self_cycle(
     // #301: the self-tick is where the live photocopy chains actually run
     // (idle re-announcements), so it gets the same ring-counted anchor
     // escalation as the message path — window-derived counters starve here too.
+    // A6 CONSISTENCY: the tick's room is her FOCUS room when she holds live work
+    // (the room of her freshest claim — the same room the composition above framed
+    // grounding against), else her default. Before this, the composition used the
+    // focus room while the anchor/burst/drive/say all used default — she reasoned
+    // about her claim's room and then acted in a different one.
+    let tick_room = focus_room.unwrap_or(ctx.identity.default_room); // no focus claim → the tick drives in her default room by design
     append_ring_anchor_if_starved(
         &mut selftick_turns,
         &deliveries,
         ctx.identity.peer_id,
-        ctx.identity.default_room,
+        tick_room,
     );
     let burst = crate::cognition::workspace::Burst::from_turns_at(
-        ctx.identity.default_room,
+        crate::identity::ActivityRoom::from_uuid(tick_room)
+            .expect("focus room comes from a live claim's real room; default_room is minted v4 — never nil"), // claim rooms are spawned real; default_room minted v4 — nil unreachable
         selftick_turns,
         Some(now_ms),
         // Ambient, and honestly so. The self-tick wakes on a CHANGE to a re-read
@@ -2735,7 +2744,6 @@ async fn run_self_cycle(
         let outcome = crate::cognition::act_observe::drive_to_settle(
             &cycle,
             burst,
-            ctx.identity.default_room,
             LIVE_MAX_ACTS,
             crate::cognition::workspace::TurnFraming::self_thread(false),
         )
@@ -2752,10 +2760,10 @@ async fn run_self_cycle(
             if crate::ai::json_in_prompt_tools::parse_tool_call(&text).is_some() {
                 return;
             }
-            // A self-cycle answers no one — there is no arrival room, so her
-            // default IS the correct audience. Same room the cycle framed its
-            // context against two lines up.
-            if let Err(e) = conversation.say_in(ctx.identity.default_room, &text).await {
+            // A self-cycle answers no one — the audience is the room the tick
+            // ran IN (her claim's focus room when working, else her default) —
+            // the same room the cycle framed its context against.
+            if let Err(e) = conversation.say_in(tick_room, &text).await {
                 tracing::warn!(persona = %ctx.identity.agent_name, error = %e, "self-cycle say failed");
                 return;
             }
@@ -3328,7 +3336,7 @@ mod tests {
 
         #[test]
         fn remote_peer_renders_with_roster_name_self_with_agent_name() {
-            let room = Uuid::nil();
+            let room = crate::identity::ActivityRoom::test_room();
             let me = "me-peer";
             let joel = "7711fe60-a19f-4f41-9ab6-24c884757338";
             let stranger = "deadbeef-0000-0000-0000-000000000000";

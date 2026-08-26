@@ -623,6 +623,12 @@ impl LlmDeliberationFaculty {
         tools: Option<Vec<NativeToolSpec>>,
         system_prompt: String,
         stop_sequences: Option<Vec<String>>,
+        // The room this turn speaks in — the ACTIVITY identity. It is authoritative
+        // for the serving slot lease: warm KV is per (persona, room), so a persona
+        // running N concurrent activities (N detached solves) each keeps its own warm
+        // slot instead of all N collapsing onto one and thrashing (the 2026-08-26
+        // KV-reuse-0% bug). None only for the roomless test rig.
+        room_id: Option<uuid::Uuid>,
     ) -> TextGenerationRequest {
         TextGenerationRequest {
             messages,
@@ -678,7 +684,7 @@ impl LlmDeliberationFaculty {
             },
             request_id: None,
             user_id: None,
-            room_id: None,
+            room_id: room_id.map(|r| r.to_string()),
             purpose: Some("cognition/deliberation".to_string()),
             persona_id: Some(self.persona_id.to_string()),
         }
@@ -2152,7 +2158,7 @@ impl Faculty for LlmDeliberationFaculty {
                 let mut stops = super::deliberation_budget::peer_stop_sequences(&ws.turns);
                 stops.extend(super::deliberation_budget::reserved_marker_stop_sequences());
                 (!stops.is_empty()).then_some(stops)
-            });
+            }, Some(ws.room_id));
         // #169 STREAMING: when THIS turn carries a token sink (a live Speak the caller
         // wants progressive), generate through `generate_stream` so each decoded chunk
         // is forwarded to the caller (→ persona.turn.delta → room/TTS/avatar). The
@@ -2256,6 +2262,7 @@ impl Faculty for LlmDeliberationFaculty {
             cap.record(
                 self.persona_id,
                 ws.room_id,
+                ws.cause.as_str(),
                 0,
                 &view.system,
                 &messages,
@@ -2671,7 +2678,7 @@ mod tests {
             .with_context_window(32_768);
             let same = "I apologize for any repetition. Is there something specific?";
             let ws = Workspace::new(crate::cognition::workspace::Burst::from_turns(
-                Uuid::new_v4(),
+                crate::identity::ActivityRoom::mint(),
                 vec![
                     BurstTurn::attributed(false, "Asha", "hello!", None),
                     BurstTurn::attributed(true, "Anwen", same, None),
@@ -2898,6 +2905,7 @@ mod tests {
                 None,
                 view.system.clone(),
                 None,
+                Some(ws.room_id),
             );
             // Generation is bounded — never the unbounded `None` that overran n_ctx.
             let cap = request
@@ -3872,12 +3880,35 @@ mod tests {
             // new overflow. Ornith serves at 166k where this ceiling is irrelevant; the
             // tight-window LCD persona (which does not do web research) pays with less
             // recall room, a conscious trade. If a third addition wants in, SHRINK first.
-            const AGENTIC_SURFACE_CEILING: u32 = 9400;
+            //
+            // 9400 → 10150, stated plainly (2026-08-25): three NATIVE GitHub-collaboration
+            // verbs — `code/github/pr-create` + `pr-comment` + `issue-create` (+748 tokens,
+            // their irreducible param schemas). This is the executor→TEAMMATE layer (Joel:
+            // "friendly in how code and GitHub work are managed"): she had LOCAL git but
+            // could not open/comment a PR or file an issue, and a native-call model can only
+            // emit calls for OFFERED tools, so catalog-only collaboration verbs were
+            // unusable by her hands. Same trade as the web add: Ornith serves at 166k where
+            // this is irrelevant; the tight-window LCD persona pays with less recall room.
+            // The shrink-first debt is now REAL at 10k — the next capability MUST shrink the
+            // surface (a category-index/discovery split for the rarely-used verbs, #333), or
+            // the LCD persona gets a reduced surface; do not keep bumping this.
+            //
+            // 10150 → 10400, stated plainly (2026-08-26): ONE native vision verb —
+            // `vision/look` (+191 tokens, its param schema). This is a citizen's EYES
+            // as an act: workspace images (screenshots, charts, benchmark PNGs) were
+            // structurally invisible — cognition/vision-describe is Internal, and a
+            // native-call model can only emit calls for OFFERED tools. Sight is a
+            // sensory-parity capability (every persona sees, per the sensory
+            // architecture), and the vision-qa benchmark grades exactly this loop.
+            // Same conscious trade as the web/github adds: the tight-window LCD
+            // persona pays with less recall room; Ornith at 166k doesn't notice.
+            // If another addition wants in, SHRINK first (#333).
+            const AGENTIC_SURFACE_CEILING: u32 = 10400;
             let surface =
                 faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
             assert!(
                 surface <= AGENTIC_SURFACE_CEILING,
-                "the agentic surface is now {surface} tokens (measured 9350, ceiling \
+                "the agentic surface is now {surface} tokens (measured 10098, ceiling \
                  {AGENTIC_SURFACE_CEILING}) — framing/tools grew. Shrink the surface (#333) \
                  or state plainly what was added and re-pin the ceiling"
             );
@@ -3945,7 +3976,7 @@ mod tests {
             )
             .with_context_window(8192);
 
-            let room = Uuid::new_v4();
+            let room = crate::identity::ActivityRoom::mint();
             let turns = vec![
                 BurstTurn::attributed(false, "Operator", "can you summarize the thread?", Some(1)),
                 BurstTurn::attributed(true, "Asha", "I propose using bart-large-cnn.", Some(2)),
@@ -4042,7 +4073,7 @@ mod tests {
                 BurstTurn::attributed(false, "Atlas", "shall we outline the steps first?", Some(4)),
                 BurstTurn::attributed(true, "Casper", v3, Some(5)),
             ];
-            let ws = Workspace::new(Burst::from_turns(Uuid::new_v4(), turns));
+            let ws = Workspace::new(Burst::from_turns(crate::identity::ActivityRoom::mint(), turns));
             let view = faculty.prompt_view(&ws);
 
             // Exactly ONE assistant rendering of the template survives.

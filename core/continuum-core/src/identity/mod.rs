@@ -85,6 +85,9 @@ use uuid::Uuid;
 /// generated TS shape is unchanged.
 pub use airc_core::PeerId;
 
+pub mod activity;
+pub use activity::{ActivityRoom, RoomlessTurn};
+
 /// The durable on-disk home of one citizen: `<root>/citizens/peers/<peer_id>`.
 ///
 /// THE ONE SPELLING of that layout. It was being rebuilt by hand at each use, in

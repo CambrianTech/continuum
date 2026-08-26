@@ -114,6 +114,19 @@ impl LaneInvocation {
 
 /// The flags EVERY generation lane carries, regardless of model or placement.
 ///
+/// The GOVERNED size of llama-server's host-RAM prompt cache (`--cache-ram`),
+/// in MiB. llama.cpp defaults this to 8192 — 8 GiB of host RAM the substrate
+/// never passed, never budgeted, and never told the governor about
+/// (KV-CACHE-ECONOMY §4: "own it or turn it off"; the 2026-07-13 rule — no
+/// cache class without an owner). Measured 2026-08-26: a saved 20k-token
+/// conversation restores from this cache in ~0.1s vs ~32.9s re-prefill (~330×),
+/// so the cache is load-bearing for slot eviction — kept at HALF the default:
+/// 4 GiB comfortably holds every slot's conversation once on the current
+/// geometry, and the governor accounts this exact number as a term of the
+/// host-cache lease (`serving_daemon::moe_host_cache_lease_inputs`), so the
+/// expert cache can never be sized as if this RAM were free.
+pub const CACHE_RAM_MIB: u32 = 4096;
+
 /// Conditional flags (KV quant, flash-attn, mmproj, MTP draft, resident override,
 /// CPU placement, jinja template, LoRA set, MoE `-ot` overrides) are still assembled
 /// by the caller and are slice 2 of this extraction. They are conditional on model
@@ -170,6 +183,10 @@ pub fn base_invocation(
             // `llm_deliberation_faculty`, not by touching this value.
             arg("--cache-reuse"),
             arg("256"),
+            // The governed host-RAM prompt cache — see [`CACHE_RAM_MIB`]. Explicit
+            // so llama.cpp's 8 GiB default can never run un-owned again (§4).
+            arg("--cache-ram"),
+            CACHE_RAM_MIB.to_string(),
             // PREFILL THROUGHPUT (#139). Live personas are prefill-bound: a real turn
             // re-prefills ~4k tokens of fresh RAG context at ~109 tok/s → 30-110s turns
             // (decode is tiny and fast; the mind is NOT slow, the re-read is). The

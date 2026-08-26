@@ -109,6 +109,7 @@ pub mod turn_batch;
 pub mod types;
 pub mod validate_response;
 pub mod vision_describe;
+pub mod vision_gym;
 pub mod will;
 pub mod working_memory;
 pub mod working_set;
