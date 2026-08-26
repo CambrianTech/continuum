@@ -724,10 +724,26 @@ pub(crate) async fn dispatch_staged_swe_solve(
         .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
         .await
     else {
+        // Unprobed until 2026-08-26: the boot-resume's re-fire died in this silent
+        // return and the round sat Working with nothing saying why — the exact
+        // "absence that looks like normal" class. Silence is not an outcome.
+        crate::probe!(
+            class = "benchmark.dispatch",
+            card_id = %card_id.as_uuid(),
+            claimer = %claimer,
+            "dispatch aborted: the caller's work board could not be read — retried on              the next edge"
+        );
         return;
     };
     let board = board.snapshot();
     let Some(card) = board.cards.iter().find(|c| c.card_id == card_id) else {
+        crate::probe!(
+            class = "benchmark.dispatch",
+            card_id = %card_id.as_uuid(),
+            claimer = %claimer,
+            board_cards = board.cards.len() as u64,
+            "dispatch aborted: card not in the caller's board projection (page size,              room subscription still resuming, or a stale card id) — retried on the              next edge"
+        );
         return;
     };
     // Her staged SWE checkouts. ONE expression of that layout lives in
@@ -744,7 +760,15 @@ pub(crate) async fn dispatch_staged_swe_solve(
             (instance, path.to_string_lossy().to_string())
         }
         // No staged checkout for her matching this card — an ordinary (non-SWE) claim.
-        crate::persona::staged_workspace::CardWorkspace::None => return,
+        crate::persona::staged_workspace::CardWorkspace::None => {
+            crate::probe!(
+                class = "benchmark.dispatch",
+                card_id = %card_id.as_uuid(),
+                claimer = %claimer,
+                "dispatch: no staged checkout matches this card for this claimer —                  ordinary claim, no solve to fire"
+            );
+            return;
+        }
         crate::persona::staged_workspace::CardWorkspace::Ambiguous { candidates } => {
             crate::probe!(
                 class = "benchmark.dispatch",

@@ -68,40 +68,59 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
             }
             tokio::time::sleep(RESIDENCY_POLL).await;
         }
-        // Fire the ONE driver decision, once per surviving round; the
-        // card-settled edge chains the rest. The claim-<card> in-flight guard
-        // inside the dispatch makes racing edges harmless.
-        for next in crate::cognition::bench_round::next_unworked_per_round() {
-            let airc = registry
-                .get(next.assignee)
-                .or_else(|| registry.any_live_citizen())
-                .map(|rt| rt.airc().clone());
-            let Some(airc) = airc else {
+        // Fire the ONE driver decision per surviving round, RETRYING boundedly:
+        // a re-fire can abort legitimately right after boot (her board projection
+        // still resuming, a serving hiccup) and there is no settle event to chain
+        // from if nothing started — measured live 2026-08-26: the first one-shot
+        // resume's dispatch died in a then-silent early return and the round sat
+        // Working. The claim-<card> in-flight guard makes every retry harmless;
+        // a retry that finds the run live simply refuses.
+        const RESUME_RETRIES: u32 = 12;
+        const RETRY_SPACING: std::time::Duration = std::time::Duration::from_secs(90);
+        for attempt in 1..=RESUME_RETRIES {
+            let due = crate::cognition::bench_round::next_unworked_per_round();
+            if due.is_empty() {
+                return; // everything settled or in flight — the settle edge owns it now
+            }
+            for next in due {
+                let airc = registry
+                    .get(next.assignee)
+                    .or_else(|| registry.any_live_citizen())
+                    .map(|rt| rt.airc().clone());
+                let Some(airc) = airc else {
+                    crate::probe!(
+                        class = "bench.round.resume_blocked",
+                        reason = "no_citizen_runtime",
+                        card_id = %next.card,
+                        "resident roster answered but no runtime can author — retrying"
+                    );
+                    continue;
+                };
                 crate::probe!(
-                    class = "bench.round.resume_blocked",
-                    reason = "no_citizen_runtime",
+                    class = "bench.round.resumed",
                     card_id = %next.card,
-                    "resident roster answered but no runtime can author — next edge retries"
+                    assignee = %next.assignee,
+                    run_room = %next.run_room,
+                    attempt = attempt as u64,
+                    "boot resume REJOINS the surviving round — re-firing its next unworked card"
                 );
-                continue;
-            };
-            crate::probe!(
-                class = "bench.round.resumed",
-                card_id = %next.card,
-                assignee = %next.assignee,
-                run_room = %next.run_room,
-                "boot resume REJOINS the surviving round — re-firing its next unworked card"
-            );
-            crate::modules::work::dispatch_staged_swe_solve(
-                &Default::default(),
-                &airc,
-                crate::modules::work::StagedSolveDispatch {
-                    claimer: crate::identity::PeerId::from_uuid(next.assignee),
-                    card: airc_work::WorkCardId::from_uuid(next.card),
-                    room: airc_core::RoomId::from_u128(next.run_room.as_u128()),
-                },
-            )
-            .await;
+                crate::modules::work::dispatch_staged_swe_solve(
+                    &Default::default(),
+                    &airc,
+                    crate::modules::work::StagedSolveDispatch {
+                        claimer: crate::identity::PeerId::from_uuid(next.assignee),
+                        card: airc_work::WorkCardId::from_uuid(next.card),
+                        room: airc_core::RoomId::from_u128(next.run_room.as_u128()),
+                    },
+                )
+                .await;
+            }
+            tokio::time::sleep(RETRY_SPACING).await;
         }
+        crate::probe!(
+            class = "bench.round.resume_blocked",
+            reason = "retries_exhausted",
+            "resume retried its window out with unworked cards remaining — the round              stays Working for the next boot or settle edge"
+        );
     });
 }
