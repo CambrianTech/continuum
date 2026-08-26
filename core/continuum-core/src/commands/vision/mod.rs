@@ -19,6 +19,7 @@ use crate::modules::vision::VisionCache;
 use crate::sdk_codegen::DynCommand;
 
 pub mod cache_evict;
+pub mod look;
 pub mod cache_stats;
 pub mod cache_warm;
 pub mod description_get;
@@ -26,9 +27,14 @@ pub mod description_put;
 pub mod description_status;
 
 /// Build the dep-holding `vision/*` command objects over the shared
-/// [`VisionCache`]. Called from `VisionModule::commands`.
-pub fn command_objects(cache: Arc<VisionCache>) -> Vec<Arc<dyn DynCommand>> {
+/// [`VisionCache`] + the module's executor slot (vision/look re-enters the bus
+/// for the describe generate). Called from `VisionModule::commands`.
+pub fn command_objects(
+    cache: Arc<VisionCache>,
+    executor_slot: Arc<crate::runtime::LateBound<crate::runtime::CommandExecutor>>,
+) -> Vec<Arc<dyn DynCommand>> {
     vec![
+        Arc::new(look::VisionLook { executor_slot }),
         Arc::new(description_get::VisionDescriptionGet {
             cache: cache.clone(),
         }),
@@ -73,12 +79,13 @@ mod tests {
         assert_eq!(VisionCacheEvict::NAME, "vision/cache-evict");
     }
 
-    // what this catches: command_objects assembles all six verbs — a dropped entry
+    // what this catches: command_objects assembles all seven verbs — a dropped entry
     // would silently remove a vision command from the registry.
     #[test]
-    fn command_objects_assembles_all_six() {
+    fn command_objects_assembles_all_seven() {
         let cache = Arc::new(VisionCache::new());
-        let objs = command_objects(cache);
-        assert_eq!(objs.len(), 6);
+        let slot = Arc::new(crate::runtime::LateBound::new("vision executor"));
+        let objs = command_objects(cache, slot);
+        assert_eq!(objs.len(), 7);
     }
 }

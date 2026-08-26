@@ -34,6 +34,10 @@ pub enum Grader {
     /// tree against a `UiCheck` spec. Live today via cognition/eval's `perception_grade` — the
     /// functional web-dev tier (`webdev-rs`).
     Perception,
+    /// Held-out expected-answer substring (case-insensitive) — cognition/eval's `expect`
+    /// grade. Live today for the input-side vision tier (`vision-qa`: SEE an image with
+    /// vision/look, answer objectively).
+    Answer,
 }
 
 /// One known benchmark collection — mirrors a `model_registry::ModelSpec` row.
@@ -128,6 +132,16 @@ pub fn known_benchmarks() -> &'static [BenchmarkSpec] {
             grader: Grader::Perception,
             tasks: 6,
             eval_set: Some("webdev-rs.jsonl"),
+            source_url: None,
+        },
+        BenchmarkSpec {
+            name: "vision-qa",
+            description: "Vision-QA — OUR input-side vision benchmark: SEE a generated image \
+                          (vision/look through her real sensory bridge) and answer an objective \
+                          question — 16 contamination-free tasks, held-out substring oracle.",
+            grader: Grader::Answer,
+            tasks: 16,
+            eval_set: Some("vision-qa"),
             source_url: None,
         },
         BenchmarkSpec {

@@ -3892,7 +3892,18 @@ mod tests {
             // The shrink-first debt is now REAL at 10k — the next capability MUST shrink the
             // surface (a category-index/discovery split for the rarely-used verbs, #333), or
             // the LCD persona gets a reduced surface; do not keep bumping this.
-            const AGENTIC_SURFACE_CEILING: u32 = 10150;
+            //
+            // 10150 → 10400, stated plainly (2026-08-26): ONE native vision verb —
+            // `vision/look` (+191 tokens, its param schema). This is a citizen's EYES
+            // as an act: workspace images (screenshots, charts, benchmark PNGs) were
+            // structurally invisible — cognition/vision-describe is Internal, and a
+            // native-call model can only emit calls for OFFERED tools. Sight is a
+            // sensory-parity capability (every persona sees, per the sensory
+            // architecture), and the vision-qa benchmark grades exactly this loop.
+            // Same conscious trade as the web/github adds: the tight-window LCD
+            // persona pays with less recall room; Ornith at 166k doesn't notice.
+            // If another addition wants in, SHRINK first (#333).
+            const AGENTIC_SURFACE_CEILING: u32 = 10400;
             let surface =
                 faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
             assert!(

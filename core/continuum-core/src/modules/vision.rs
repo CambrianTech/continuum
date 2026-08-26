@@ -527,12 +527,16 @@ impl VisionCache {
 /// commands capture. Wires the event bus into the cache on init.
 pub struct VisionModule {
     cache: Arc<VisionCache>,
+    /// Executor slot for verbs that re-enter the bus (vision/look → the
+    /// describe generate). Installed by the runtime's install_executor hook.
+    executor: Arc<crate::runtime::LateBound<crate::runtime::CommandExecutor>>,
 }
 
 impl Default for VisionModule {
     fn default() -> Self {
         Self {
             cache: Arc::new(VisionCache::new()),
+            executor: Arc::new(crate::runtime::LateBound::new("vision module executor")),
         }
     }
 }
@@ -580,7 +584,11 @@ impl ServiceModule for VisionModule {
     }
 
     fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
-        crate::commands::vision::command_objects(self.cache.clone())
+        crate::commands::vision::command_objects(self.cache.clone(), self.executor.clone())
+    }
+
+    fn install_executor(&self, executor: Arc<crate::runtime::CommandExecutor>) {
+        self.executor.install(executor);
     }
 
     fn as_any(&self) -> &dyn Any {

@@ -324,6 +324,15 @@ pub fn resolve_gym(reference: &str) -> Result<(String, String), String> {
     if let Some((name, bytes)) = embedded_for(reference) {
         return Ok((format!("embedded:{name}"), bytes.to_string()));
     }
+    // (2.5) GENERATED gyms — deterministic in-binary generators (no JSONL to
+    // commit, no blobs in git; byte-stable by seeded construction). vision-qa:
+    // the input-side vision benchmark (see cognition::vision_gym).
+    if reference == "vision-qa" || reference == "vision-qa.jsonl" {
+        return Ok((
+            "generated:vision-qa".to_string(),
+            crate::cognition::vision_gym::vision_qa_jsonl().to_string(),
+        ));
+    }
     // (3a) SIGNPOST, not a dead-end: a SWE-class benchmark reached the GYM resolver means
     // the caller used the wrong verb — SWE does NOT run through `benchmark/round`/the gym
     // eval path, it runs through the kanban adapter `benchmark/dispatch`. The old error
