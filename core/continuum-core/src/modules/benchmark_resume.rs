@@ -1,0 +1,107 @@
+//! Boot resume for benchmark rounds — REJOIN, never re-dispatch (plan A5).
+//!
+//! **The law**: continuity is the default, reset is the exception. A `Working`
+//! round survives a reboot on disk (its room, cards, driver, per-card activity
+//! rooms and assignees — `bench_round`'s file); the solves a restart killed were
+//! journaled `failed` by the boot reaper, which releases the `claim-<card>`
+//! in-flight guard. So resuming is not a subsystem: it is the SAME ONE driver
+//! decision every other edge uses — [`bench_round::next_unworked_per_round`] →
+//! [`work::dispatch_staged_swe_solve`] — fired once after boot, whereupon the
+//! card-settled edge (benchmark_grade) chains the rest. Each re-fired solve
+//! REJOINS its recorded per-instance activity room and re-enters its preserved
+//! workspace mid-stride: resume is recall, not restore.
+//!
+//! **Placement**: this lives on the BENCHMARK side and is invoked from the
+//! benchmark module's init — never the serving daemon, whose boot reap
+//! explicitly refuses to re-dispatch (a serving daemon that posts work is the
+//! parallel-runner shape, BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md).
+//!
+//! **The acceptance test this exists for**: dispatch a round, `continuum reboot
+//! --force` mid-solve, hands off — the round rejoins its rooms, solves re-fire
+//! (`bench.round.resumed`), cards reach terminal, the round reaches Done, with
+//! zero operator commands after the reboot.
+
+use crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry;
+
+/// How long to park on serving decode-readiness before declaring the resume
+/// blocked for this boot. Generous: model load on the M5 takes minutes.
+const SERVING_PARK: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// How long to park on citizen residency. The persona reconciler's post-boot
+/// window is documented at ~10–15 minutes on this box; the park outwaits it.
+const RESIDENCY_PARK: std::time::Duration = std::time::Duration::from_secs(20 * 60);
+const RESIDENCY_POLL: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Spawn the one-shot boot resume. Cheap when there is nothing to resume.
+pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
+    if !crate::cognition::bench_round::any_working_round() {
+        return; // nothing survived — no task, no waiting, no noise
+    }
+    tokio::spawn(async move {
+        // Park 1: serving decode-verified (same primitive dispatch parks on).
+        if crate::inference::llama_server::await_ready_serving(SERVING_PARK)
+            .await
+            .is_none()
+        {
+            crate::probe!(
+                class = "bench.round.resume_blocked",
+                reason = "serving",
+                "working round(s) survive on disk but serving never became decode-ready \
+                 within the park — rounds stay Working for the next boot/edge"
+            );
+            return;
+        }
+        // Park 2: residency (a service loop, not mere registration — #455).
+        let started = std::time::Instant::now();
+        loop {
+            if !registry.resident_snapshot().await.is_empty() {
+                break;
+            }
+            if started.elapsed() > RESIDENCY_PARK {
+                crate::probe!(
+                    class = "bench.round.resume_blocked",
+                    reason = "residency",
+                    "working round(s) survive on disk but no citizen became resident \
+                     within the park — rounds stay Working for the next boot/edge"
+                );
+                return;
+            }
+            tokio::time::sleep(RESIDENCY_POLL).await;
+        }
+        // Fire the ONE driver decision, once per surviving round; the
+        // card-settled edge chains the rest. The claim-<card> in-flight guard
+        // inside the dispatch makes racing edges harmless.
+        for next in crate::cognition::bench_round::next_unworked_per_round() {
+            let airc = registry
+                .get(next.assignee)
+                .or_else(|| registry.any_live_citizen())
+                .map(|rt| rt.airc().clone());
+            let Some(airc) = airc else {
+                crate::probe!(
+                    class = "bench.round.resume_blocked",
+                    reason = "no_citizen_runtime",
+                    card_id = %next.card,
+                    "resident roster answered but no runtime can author — next edge retries"
+                );
+                continue;
+            };
+            crate::probe!(
+                class = "bench.round.resumed",
+                card_id = %next.card,
+                assignee = %next.assignee,
+                run_room = %next.run_room,
+                "boot resume REJOINS the surviving round — re-firing its next unworked card"
+            );
+            crate::modules::work::dispatch_staged_swe_solve(
+                &Default::default(),
+                &airc,
+                crate::modules::work::StagedSolveDispatch {
+                    claimer: crate::identity::PeerId::from_uuid(next.assignee),
+                    card: airc_work::WorkCardId::from_uuid(next.card),
+                    room: airc_core::RoomId::from_u128(next.run_room.as_u128()),
+                },
+            )
+            .await;
+        }
+    });
+}

@@ -3724,22 +3724,21 @@ impl ServiceModule for ServingDaemonModule {
                 run_id = run_id.as_str(),
                 instance = instance.as_str(),
                 needs_redispatch = true,
-                "benchmark run orphaned by a core restart — {instance} was NOT measured and \
-                 nothing re-dispatches it; re-post via benchmark/dispatch to recover it",
+                "benchmark run orphaned by a core restart — {instance} was NOT measured; \
+                 the benchmark-side boot resume rejoins its round and re-fires it",
             );
         }
-        // Same reap, the ROUND half (#371 "a round has no END state"): a BenchRound left
-        // `Working` by a dead core reloads forever and shows as `in_flight` with no live
-        // exam lease — the zombie `benchmark/rounds` counts but `benchmark/round-stop`
-        // cannot see. Reap it here so the two verbs agree; recover via benchmark/dispatch.
+        // The ROUND half is now CONTINUITY (plan A5): a Working round SURVIVES the
+        // restart — the benchmark-side boot resume (modules::benchmark_resume, which
+        // owns re-firing per BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER; never this daemon)
+        // rejoins it. Only TTL-expired abandoned rounds are swept here.
         for (benchmark, remaining) in crate::cognition::bench_round::reap_orphaned_rounds() {
             crate::probe!(
-                class = "bench.round.orphan_reaped",
+                class = "bench.round.expired",
                 benchmark = benchmark.as_str(),
                 remaining = remaining,
-                needs_redispatch = true,
-                "benchmark round orphaned by a core restart — {remaining} card(s) left Working \
-                 and nothing re-dispatches them; re-post via benchmark/dispatch to recover",
+                "benchmark round exceeded its TTL with {remaining} card(s) unworked — \
+                 expired, not resumed; a fresh benchmark/dispatch re-measures it",
             );
         }
         // Plan once at boot so the decision is published before the first tick,

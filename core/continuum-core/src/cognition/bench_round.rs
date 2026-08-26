@@ -299,39 +299,55 @@ fn load_rounds_in(dir: &Path) -> HashMap<Uuid, BenchRound> {
     out
 }
 
-/// Boot reconciler — reap-or-adopt at boot
-/// ([[boot-owns-the-process-tree-reap-or-adopt-never-fight-yourself]]). Every `Working`
-/// round persisted on disk was opened by a core that is now GONE: a round only enters
-/// `Working` from a live `benchmark/dispatch` ([`open_round`]), and this boot did not run
-/// one — so nothing is driving its cards and it can never reach `Done` on its own. That is
-/// the same shape as a `running` solve-run ledger whose core died
-/// ([`crate::cognition::swe_bench::reap_orphaned_solve_runs`]); reap it the same way, so
-/// `benchmark/rounds` stops reporting dead rounds as `in_flight` forever (the #371
-/// no-END-state zombie: measured `in_flight: 4` with a stopped exam lease). Returns the
-/// reaped `(benchmark, remaining_cards)` for the boot probe. Idempotent: a second boot
-/// finds none. Does NOT re-dispatch — recovery is a fresh `benchmark/dispatch`, the ONE
-/// adapter into kanban (BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER).
+/// Boot reconciler — reap-or-ADOPT, and since plan A5 the answer is ADOPT
+/// ([[boot-owns-the-process-tree-reap-or-adopt-never-fight-yourself]],
+/// continuity-is-the-default). A `Working` round on disk is STILL WORKING: the
+/// boot resume (`modules::benchmark_resume`) rejoins it and re-fires its next
+/// unworked card through the ONE driver decision. The old behavior — deleting
+/// every Working round at boot — destroyed exactly the state a resume needs
+/// (room, cards, assignees, per-card activity rooms) and made "benchmarks never
+/// start themselves" structural. What remains here is the eviction story this
+/// state dir owes (2026-07-13 rule): a round file older than [`ROUND_TTL`] is
+/// abandoned and expires. Returns the expired `(benchmark, remaining)` rows for
+/// the boot probe. Still never re-dispatches from the serving daemon.
 pub fn reap_orphaned_rounds() -> Vec<(String, usize)> {
     let dir = rounds_state_dir();
-    // Reap disk first so a not-yet-initialized ROUNDS reloads clean…
-    let reaped = reap_orphaned_rounds_in(&dir);
-    // …and clear any already-loaded Working entries so live_rounds() agrees this boot.
-    // (A fresh round opened AFTER this boot reap is Working and legitimately live; the
-    // reap runs once at daemon start, before any dispatch, so it only sees dead cores'.)
-    ROUNDS
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .retain(|_, r| r.stage != RoundStage::Working);
-    reaped
+    // TTL expiry only (see [`reap_orphaned_rounds_in`]): a Working round at boot
+    // SURVIVES — it is the durable state the boot resume (modules::benchmark_resume)
+    // rejoins. Expired files are also dropped from the loaded map so live_rounds()
+    // agrees this boot.
+    let expired = reap_orphaned_rounds_in(&dir);
+    if !expired.is_empty() {
+        let dead: std::collections::HashSet<&String> =
+            expired.iter().map(|(b, _)| b).collect();
+        ROUNDS
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|_, r| r.stage != RoundStage::Working || !dead.contains(&r.benchmark));
+    }
+    expired
 }
 
 /// The disk half of [`reap_orphaned_rounds`], parameterized on the state dir so it is pure
-/// and unit-testable. Evicts every persisted `Working` round file (terminal-by-death,
-/// self-evicting exactly as a `Done` round's file is removed at settle).
+/// and unit-testable. Removes only TTL-expired Working files; live Working rounds
+/// persist across boots — continuity is the default, reset is the exception.
+/// CONTINUITY IS THE DEFAULT (Joel's law; plan A5): a Working round at boot is
+/// STILL WORKING — the reaper no longer deletes it (deleting destroyed exactly
+/// the state a resume needs: room, cards, driver, assignees). Only a round file
+/// older than [`ROUND_TTL`] is expired — the backstop against an abandoned
+/// round haunting the resume forever, and the eviction story this state dir
+/// owes (2026-07-13 rule).
+const ROUND_TTL: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
+
 fn reap_orphaned_rounds_in(dir: &Path) -> Vec<(String, usize)> {
-    let mut reaped = Vec::new();
+    reap_with_ttl(dir, ROUND_TTL)
+}
+
+/// TTL injectable so the expiry contract is testable without clock games.
+fn reap_with_ttl(dir: &Path, ttl: std::time::Duration) -> Vec<(String, usize)> {
+    let mut expired = Vec::new();
     let Ok(entries) = std::fs::read_dir(dir) else {
-        return reaped;
+        return expired;
     };
     for entry in entries.flatten() {
         let Ok(text) = std::fs::read_to_string(entry.path()) else {
@@ -340,12 +356,18 @@ fn reap_orphaned_rounds_in(dir: &Path) -> Vec<(String, usize)> {
         let Ok(round) = serde_json::from_str::<BenchRound>(&text) else {
             continue; // unreadable → left in place by load_rounds_in for inspection
         };
-        if round.stage == RoundStage::Working {
-            reaped.push((round.benchmark.clone(), round.remaining()));
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age >= ttl);
+        if round.stage == RoundStage::Working && stale {
+            expired.push((round.benchmark.clone(), round.remaining()));
             let _ = std::fs::remove_file(entry.path());
         }
     }
-    reaped
+    expired
 }
 
 /// Open a round BEFORE its first card is posted, so the driver is readable from the
@@ -480,15 +502,45 @@ pub struct NextCard {
 /// the round state plus the in-flight ledger, so every edge fires the same
 /// decision — never a second scheduler.
 pub fn next_unworked_after(card_of_round: Uuid) -> Option<NextCard> {
-    let live: std::collections::HashSet<String> =
-        crate::cognition::swe_bench::in_flight_solve_runs()
-            .into_iter()
-            .map(|(id, _)| id)
-            .collect();
+    let live = live_run_ids();
     let rounds = ROUNDS.lock().expect("bench rounds mutex");
     let round = rounds
         .values()
         .find(|r| r.cards.contains_key(&card_of_round))?;
+    first_unworked(round, &live)
+}
+
+/// The boot-resume edge of the SAME decision: the first unworked card of EVERY
+/// Working detached round. Called once at benchmark-module boot (after the
+/// serving + residency parks); the card-settled edge then chains the rest.
+pub fn next_unworked_per_round() -> Vec<NextCard> {
+    let live = live_run_ids();
+    let rounds = ROUNDS.lock().expect("bench rounds mutex");
+    rounds
+        .values()
+        .filter(|r| r.stage == RoundStage::Working)
+        .filter_map(|r| first_unworked(r, &live))
+        .collect()
+}
+
+/// Are any Working rounds tracked at all — the boot resume's cheap early-exit.
+pub fn any_working_round() -> bool {
+    ROUNDS
+        .lock()
+        .expect("bench rounds mutex")
+        .values()
+        .any(|r| r.stage == RoundStage::Working)
+}
+
+fn live_run_ids() -> std::collections::HashSet<String> {
+    crate::cognition::swe_bench::in_flight_solve_runs()
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect()
+}
+
+/// The one shared decision body behind both edges.
+fn first_unworked(round: &BenchRound, live: &std::collections::HashSet<String>) -> Option<NextCard> {
     if round.driver != WorkDriver::DetachedSolve {
         return None;
     }
@@ -978,34 +1030,37 @@ mod tests {
     // with a stopped exam lease). A `Done` file is NOT the reaper's job (load_rounds_in
     // drops those). Idempotent: a second boot reap finds nothing.
     #[test]
-    fn reap_evicts_orphaned_working_rounds_from_disk() {
+    fn working_rounds_survive_the_boot_reap_and_only_ttl_expiry_removes_them() {
+        // what this catches: the A5 continuity contract. The old reaper DELETED
+        // every Working round at boot — destroying exactly the state (room, cards,
+        // assignees, activity rooms) the resume needs to rejoin. A Working round
+        // must SURVIVE the reap; only a TTL-stale abandoned file is expired (the
+        // state dir's eviction story, 2026-07-13 rule).
         let dir = std::env::temp_dir().join(format!("bench-reap-test-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("temp dir");
-        // a Working round a dead core left behind
         let working =
             BenchRound::new(Uuid::new_v4(), "swe-bench-lite", &cards(3), WorkDriver::Citizen);
         persist_round_in(&dir, &working);
-        // a Done round (self-evicting at settle; not the reaper's concern)
-        let mut done =
-            BenchRound::new(Uuid::new_v4(), "swe-bench-lite", &cards(1), WorkDriver::Citizen);
-        let cid = *done.cards.keys().next().expect("one card");
-        done.settle_card(cid, "closed");
-        assert_eq!(done.stage(), RoundStage::Done, "single-card settle → Done");
-        persist_round_in(&dir, &done);
 
-        let reaped = reap_orphaned_rounds_in(&dir);
-        assert_eq!(reaped.len(), 1, "exactly the Working round is reaped: {reaped:?}");
-        assert_eq!(
-            reaped[0],
-            ("swe-bench-lite".to_string(), 3),
-            "names the benchmark + remaining cards"
-        );
-        let remaining: Vec<_> = std::fs::read_dir(&dir).expect("readdir").flatten().collect();
-        assert_eq!(remaining.len(), 1, "only the Done file remains — reaper touches Working only");
+        // Default TTL: a fresh Working round is untouchable.
         assert!(
             reap_orphaned_rounds_in(&dir).is_empty(),
-            "second reap is a no-op (idempotent)"
+            "a live Working round SURVIVES the boot reap — continuity is the default"
         );
-        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            std::fs::read_dir(&dir).expect("readdir").flatten().count(),
+            1,
+            "the round file is still on disk for the resume to rejoin"
+        );
+
+        // TTL zero: the same file is expired (abandoned-round backstop).
+        let expired = reap_with_ttl(&dir, std::time::Duration::ZERO);
+        assert_eq!(expired, vec![("swe-bench-lite".to_string(), 3)]);
+        assert_eq!(
+            std::fs::read_dir(&dir).expect("readdir").flatten().count(),
+            0,
+            "an expired round's file is removed"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

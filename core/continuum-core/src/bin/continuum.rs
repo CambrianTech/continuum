@@ -638,9 +638,10 @@ async fn reboot(force: bool) -> Result<(), String> {
     let benches = continuum_core::cognition::swe_bench::in_flight_solve_runs();
     if !benches.is_empty() && !force {
         return Err(format!(
-            "benchmark run(s) in flight ({}) — a reboot would kill them mid-drive and they \
-             would be journaled killed-by-restart at next boot. Wait for them, or rerun with \
-             `continuum reboot --force` if losing the runs is acceptable.",
+            "benchmark run(s) in flight ({}) — a reboot kills them mid-drive; the round \
+             survives and the boot resume re-fires each killed solve (rejoining its room \
+             and workspace) once serving + citizens are back. Wait for them to finish, or \
+             rerun with `continuum reboot --force` to take the restart-and-resume path.",
             benches
                 .iter()
                 .map(|(run, inst)| format!("{run} on {inst}"))

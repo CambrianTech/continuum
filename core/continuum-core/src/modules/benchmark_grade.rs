@@ -133,6 +133,11 @@ impl ServiceModule for BenchmarkGradeModule {
         // handle_event probes). This is the prescribed receiver task, same shape as
         // chat::spawn_persist_listener.
         let mut rx = ctx.bus.receiver();
+        // A5 BOOT RESUME: rejoin surviving Working rounds once serving + residency
+        // are back — the benchmark side owns re-firing (the serving daemon's reap
+        // refuses to, correctly). One-shot; the card-settled edge chains onward.
+        crate::modules::benchmark_resume::spawn_boot_resume(self.registry.clone());
+
         let registry = self.registry.clone();
         ctx.runtime.spawn(async move {
             loop {
