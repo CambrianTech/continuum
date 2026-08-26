@@ -1433,6 +1433,15 @@ fn era_sdist_build_deps(repo: &str) -> &'static [&'static str] {
         // and >=1.13 respectively — both far below any era cap we set), so this widens what
         // BUILDS without smuggling a modern numpy into a date-pinned subject graph.
         "astropy/astropy" => &["jinja2", "numpy"],
+        // Same class, measured at prewarm 2026-08-26 (the seeded-25 round): both
+        // setup.py's import numpy at metadata time under --no-build-isolation.
+        // scikit-learn additionally builds .pyx sources, so cython is a build
+        // dep of the repo itself; matplotlib declares numpy via
+        // `oldest-supported-numpy`, which routinely fails to resolve on a
+        // modern interpreter (the build_requires step warns and proceeds) — a
+        // plain era-pinned numpy here is what actually lands.
+        "scikit-learn/scikit-learn" => &["numpy", "cython"],
+        "matplotlib/matplotlib" => &["numpy", "setuptools_scm", "certifi"],
         _ => &[],
     }
 }
@@ -1527,11 +1536,16 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
             )
             .await?;
             if !out.status.success() {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                let tail: String = {
+                    let t = stderr.trim();
+                    t.chars().skip(t.chars().count().saturating_sub(1500)).collect()
+                };
                 return Err(format!(
                     "could not re-point {}'s cached env at {}: {}",
                     instance.instance_id,
                     repo_dir.display(),
-                    String::from_utf8_lossy(&out.stderr).trim()
+                    tail
                 ));
             }
             // An env cached BEFORE the test extra existed is silently ungradeable (its
