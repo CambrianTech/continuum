@@ -932,12 +932,16 @@ impl DreamConsolidationRegion {
                     crate::identity::PeerId::from_uuid(persona_id),
                 )),
             ));
+            // snake_case: memory/consolidate's params are persona_id / base_model /
+            // since_timestamp (commands/memory/consolidate.rs). camelCase silently failed
+            // every autonomic consolidation — "missing field persona_id; you sent personaId"
+            // — so her received-lesson learning never landed (measured 2026-08-25).
             let mut params = serde_json::json!({
-                "personaId": persona_id.to_string(),
-                "baseModel": base_model,
+                "persona_id": persona_id.to_string(),
+                "base_model": base_model,
             });
             if let Some(ts) = since {
-                params["sinceTimestamp"] = serde_json::Value::String(ts);
+                params["since_timestamp"] = serde_json::Value::String(ts);
             }
             match conn
                 .commands()

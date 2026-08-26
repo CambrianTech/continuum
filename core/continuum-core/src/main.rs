@@ -215,6 +215,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // directory so the operator sees it landed. A DIRECTORY, not a
     // file — the sink owns the file name because it rotates by size
     // (#341).
+    // PANIC LOCATION → the tracing LOG, not just stderr. A panic's `panicked at FILE:LINE`
+    // is written by the default hook to STDERR, which is not captured into the tracing log
+    // (Joel's "stderr is never an interface" law) — so a service_loop panic showed only its
+    // MESSAGE ("attempt to multiply with overflow") with no WHERE, and the residency-killer
+    // hid for a full session (2026-08-25) until the stderr capture was grepped by hand. This
+    // hook logs the panic's location + payload + a backtrace THROUGH tracing, so the next
+    // panic names its own seam in the same log every debugger reads. catch_unwind still
+    // runs after it; this only adds the location the payload lacks.
+    {
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let loc = info
+                .location()
+                .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+                .unwrap_or_else(|| "<unknown location>".to_string());
+            let msg = info
+                .payload()
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| info.payload().downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "<non-string panic payload>".to_string());
+            let bt = std::backtrace::Backtrace::force_capture();
+            tracing::error!(
+                probe_class = "panic.caught",
+                location = %loc,
+                payload = %msg,
+                backtrace = %bt,
+                "PANIC at {loc}: {msg}"
+            );
+            // Keep the default behaviour too (stderr line), so nothing regresses.
+            default_hook(info);
+        }));
+    }
+
     let probe_install = install_probe_tracing(ProbeTracingConfig::from_env("info"))?;
     if let Some(ref path) = probe_install.probe_log_path {
         // Use println so it appears even when RUST_LOG filters out

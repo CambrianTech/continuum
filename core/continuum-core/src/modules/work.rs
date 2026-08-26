@@ -863,7 +863,19 @@ pub(crate) async fn dispatch_staged_swe_solve(
         // "this card's run id", so the guard can never check a different id than the
         // dispatch actually uses.
         run_id: Some(run_id.clone()),
-        capture_dir: None,
+        // CAPTURE the detached solve's turns (was None → the whole scored run was
+        // INVISIBLE: a reviewer — Opus or a self-grading citizen — could not read a single
+        // tool-call output to verify it, forcing inference from a STALE main-loop capture
+        // and a near-misdiagnosis 2026-08-25). eval.rs already scopes this per-run
+        // (run_artifact_dir), so it does not collide with the main-loop sink; a measured run
+        // is meant to be inspectable (eval.rs `capture_dir` doc). Same base dir the tooling
+        // (`dataset/from-captures`) and the main-loop sink use.
+        capture_dir: std::env::var("HOME").ok().map(|h| {
+            std::path::Path::new(&h)
+                .join(".continuum/fixtures/prompt-captures")
+                .to_string_lossy()
+                .to_string()
+        }),
         learn: crate::cognition::learning_policy::LearningPolicy::LearnFromThisWork,
         max_acts: None,
         // `AgentSolveParams::room` is still `Option` because `agent/solve` is also an
