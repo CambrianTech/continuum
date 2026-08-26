@@ -1691,10 +1691,14 @@ impl ActionCommand for BenchmarkDispatch {
             // solve above ("why run broken code knowing she's gonna struggle and fall"):
             // an unbuildable env can only void, and pre-claiming would put her hands in it
             // for a full turn. The card still posts, claimable by hand once the env heals.
+            // BOTH drivers pre-claim a staged SWE card now. DetachedSolve was
+            // excluded, which left its cards Open forever: the solve never touches
+            // card state and the lapse sweeper refuses unclaimed cards, so a
+            // detached round could never reach Done and every boot reaped it
+            // (mapped 2026-08-26). Claimed-by-the-assignee is what lets the
+            // grade path close the card and the round complete.
             let pre_claim_this = matches!(pc.work, CardWork::Gym { .. })
-                || (matches!(pc.work, CardWork::Swe { .. })
-                    && staged_ok
-                    && driver == crate::cognition::bench_round::WorkDriver::Citizen);
+                || (matches!(pc.work, CardWork::Swe { .. }) && staged_ok);
             if pre_claim_this {
                 match self.registry.get(*who_peer) {
                     Some(rt) => {

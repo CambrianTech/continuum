@@ -839,6 +839,83 @@ pub(crate) async fn dispatch_staged_swe_solve(
         );
         return;
     }
+    // THE SOLVE'S OWN ACTIVITY — mint-or-rejoin (Joel 2026-08-26: "benchmarks
+    // without new activities (unless rejoining)" is not allowed; rooms are 1:1
+    // with activities). The run room stays the BOARD's home (cards, kickoffs,
+    // the round's denominator); the solve itself is its own activity: a child
+    // room per (card, instance) where her acts radiate. This is also the KV
+    // fix becoming real — each concurrent solve's (persona, room) key leases
+    // its OWN warm slot instead of N solves thrashing one.
+    //
+    // REJOIN: the round recorded this card's activity at first mint (resume
+    // after a reboot, a retry attempt — same room, continuity). MINT: spawn a
+    // real activity room, child of the run room, and record it.
+    let solve_room = match crate::cognition::bench_round::card_activity(card_id.as_uuid()) {
+        Some(act) => {
+            crate::probe!(
+                class = "work.solve.room_rejoined",
+                card_id = %short8(card_id.as_uuid()),
+                claimer = %short8(claimer.as_uuid()),
+                room = %act.solve_room,
+                "solve REJOINS its recorded activity room — resume and dispatch are one motion"
+            );
+            act.solve_room
+        }
+        None => {
+            // Spawn AS the claimer when her runtime is live (she is joined to her
+            // own workroom); the caller's handle is the fallback so a dispatch
+            // fired before she is resident still names a real activity.
+            let spawner = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+                .and_then(|reg| reg.get(claimer.as_uuid()))
+                .map(|rt| rt.airc().clone())
+                .unwrap_or_else(|| airc.clone());
+            let name = format!("swe--{}--{}", instance, short8(card_id.as_uuid()));
+            let recipe = crate::experience::source::RecipeExperienceSource::shipped_purpose(
+                crate::experience::source::shipped::BENCHMARK_HARD_RS,
+            )
+            .unwrap_or_default();
+            match crate::modules::activity::spawn_activity_room(
+                &spawner,
+                &name,
+                &recipe,
+                Some(room),
+                &std::collections::BTreeMap::new(),
+            )
+            .await
+            {
+                Ok(spawned) => {
+                    let act = crate::cognition::bench_round::CardActivity {
+                        solve_room: spawned.room_id.as_uuid(),
+                        assignee: claimer.as_uuid(),
+                    };
+                    crate::cognition::bench_round::record_card_activity(card_id.as_uuid(), act);
+                    crate::probe!(
+                        class = "work.solve.room_minted",
+                        card_id = %short8(card_id.as_uuid()),
+                        claimer = %short8(claimer.as_uuid()),
+                        room = %act.solve_room,
+                        name = %name,
+                        "solve MINTED its own activity room (child of the run room)"
+                    );
+                    act.solve_room
+                }
+                Err(e) => {
+                    // A mint failure must not strand the work invisible: fall back
+                    // to the run room (a real activity, just coarser-grained) and
+                    // say so. The next re-fire retries the mint.
+                    crate::probe!(
+                        class = "work.solve.room_mint_failed",
+                        card_id = %short8(card_id.as_uuid()),
+                        claimer = %short8(claimer.as_uuid()),
+                        error = %e.to_string(),
+                        "activity mint failed — solve runs in the RUN room this time (coarser \
+                         KV granularity, still visible); mint retries on the next fire"
+                    );
+                    room.as_uuid()
+                }
+            }
+        }
+    };
     // Her HANDS must resolve `python`/`pytest`/`pip` to THIS instance's venv, not the system
     // interpreter. Without this, `code/shell pytest` hits homebrew python3.14 (no pytest, no
     // repo), she loops `pip install pytest` into the wrong interpreter, and burns every action
@@ -878,11 +955,10 @@ pub(crate) async fn dispatch_staged_swe_solve(
         }),
         learn: crate::cognition::learning_policy::LearningPolicy::LearnFromThisWork,
         max_acts: None,
-        // `AgentSolveParams::room` is still `Option` because `agent/solve` is also an
-        // operator-invocable command; THIS caller always has one, which is the point of
-        // [`StagedSolveDispatch::room`]. Narrowing the command's own param is the next
-        // slice, not a silent widening here.
-        room: Some(room.as_uuid()),
+        // The solve's OWN activity (minted-or-rejoined above) — NOT the run room.
+        // `AgentSolveParams::room` stays `Option` because `agent/solve` is also an
+        // operator-invocable command (an omitted room mints there).
+        room: Some(solve_room),
         path_prepend: Some(vec![venv_bin]),
         suppress_recall: None,
         prev_failed_patch_sha: None,

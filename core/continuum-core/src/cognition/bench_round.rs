@@ -130,6 +130,22 @@ pub struct BenchRound {
     stage: RoundStage,
     /// Who works this round's cards — read at CLAIM time, decided at dispatch.
     driver: WorkDriver,
+    /// Card uuid → the ACTIVITY its solve runs in, recorded at first mint so a
+    /// re-fire (a resume after a reboot, a retry attempt) REJOINS the same room
+    /// instead of minting a stranger — the "unless rejoining" half of the law
+    /// (Joel 2026-08-26: "benchmarks without new activities (unless rejoining)").
+    /// `#[serde(default)]` so pre-existing round files load with no activities
+    /// recorded and mint on their next dispatch.
+    #[serde(default)]
+    card_activities: HashMap<Uuid, CardActivity>,
+}
+
+/// Where one card's solve LIVES: its per-instance activity room and the citizen
+/// working it. Typed UUIDs, passed as a struct (Joel: "pass structs").
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub struct CardActivity {
+    pub solve_room: Uuid,
+    pub assignee: Uuid,
 }
 
 impl BenchRound {
@@ -140,6 +156,7 @@ impl BenchRound {
             cards: card_ids.iter().map(|c| (*c, None)).collect(),
             stage: RoundStage::Working,
             driver,
+            card_activities: HashMap::new(),
         }
     }
 
@@ -411,6 +428,27 @@ pub fn room_for_card(card_id: Uuid) -> Option<Uuid> {
         .map(|r| r.round_id)
 }
 
+/// The recorded activity for `card_id`'s solve, if one was ever minted — the
+/// REJOIN half of mint-or-rejoin. Scans in-flight rounds (same shape as
+/// [`room_for_card`]).
+pub fn card_activity(card_id: Uuid) -> Option<CardActivity> {
+    let rounds = ROUNDS.lock().expect("bench rounds mutex");
+    rounds
+        .values()
+        .find(|r| r.cards.contains_key(&card_id))
+        .and_then(|r| r.card_activities.get(&card_id).copied())
+}
+
+/// Record (idempotently) the activity `card_id`'s solve runs in — called at the
+/// MINT, persisted with the round so a post-reboot re-fire rejoins it.
+pub fn record_card_activity(card_id: Uuid, activity: CardActivity) {
+    let mut rounds = ROUNDS.lock().expect("bench rounds mutex");
+    if let Some(round) = rounds.values_mut().find(|r| r.cards.contains_key(&card_id)) {
+        round.card_activities.insert(card_id, activity);
+        persist_round_in(&rounds_state_dir(), round);
+    }
+}
+
 pub fn driver_for_card(card_id: Uuid) -> WorkDriver {
     ROUNDS
         .lock()
@@ -601,6 +639,33 @@ mod tests {
         assert_eq!(r.driver, WorkDriver::Citizen, "driver reverting is the silent bug");
         assert_eq!(r.dispatched(), 3);
         assert_eq!(r.remaining(), 2, "the settled card must stay settled across the restart");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // what this catches: mint-or-rejoin losing its memory across a reboot. The
+    // card's solve ACTIVITY (its per-instance room + assignee) is recorded at
+    // first mint and must survive persistence — a re-fire that can't find it
+    // would mint a SECOND room for the same work, stranding the first room's
+    // transcript and cold-starting the KV slot the activity had warmed
+    // (Joel 2026-08-26: "benchmarks without new activities (unless rejoining)").
+    #[test]
+    fn card_activity_survives_a_restart_for_rejoin() {
+        let dir = std::env::temp_dir().join(format!("bench-rounds-test-{}", Uuid::new_v4()));
+        let (id, cs) = (Uuid::new_v4(), cards(2));
+        let mut round = BenchRound::new(id, "swe-bench-verified", &cs, WorkDriver::DetachedSolve);
+        let act = CardActivity {
+            solve_room: Uuid::from_u128(0xA11CE),
+            assignee: Uuid::from_u128(0xBEE),
+        };
+        round.card_activities.insert(cs[0], act);
+        persist_round_in(&dir, &round);
+
+        let reloaded = load_rounds_in(&dir);
+        let r = reloaded.get(&id).expect("round reloads");
+        let got = r.card_activities.get(&cs[0]).copied().expect("activity survives");
+        assert_eq!(got.solve_room, act.solve_room, "rejoin returns the SAME room");
+        assert_eq!(got.assignee, act.assignee);
+        assert!(r.card_activities.get(&cs[1]).is_none(), "unminted card has no activity yet");
         std::fs::remove_dir_all(&dir).ok();
     }
 
