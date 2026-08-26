@@ -84,7 +84,15 @@ impl SourceRule for NoStringCompositeIdKeys {
             return Vec::new();
         }
         file.production_lines()
-            .filter(|(_, l)| l.contains("format!") && l.contains("}@{"))
+            .filter(|(_, l)| {
+                let t = l.trim_start();
+                // Code only — a doc line QUOTING the banned shape (e.g. the slots
+                // module's own history note) is documentation, not a violation.
+                if t.starts_with("//") {
+                    return false;
+                }
+                l.contains("format!") && l.contains("}@{")
+            })
             .map(|(line, l)| Violation {
                 rule: self.name(),
                 file: file.rel.clone(),
