@@ -35,6 +35,70 @@ use uuid::Uuid;
 
 use crate::paging::pool::{lru_priority, PagedResourcePool, PoolConfig};
 
+/// How a request may touch serving slots — the traffic-class policy, AS DATA
+/// (one tested map over the existing `purpose` strings, answering the
+/// INFERENCE-SCHEDULING doc's open question; never per-callsite hacks).
+///
+/// Placement rule: **only `Turn` may hold or evict a citizen's activity slot.**
+/// Everything else lands on the reserved SCRATCH slot (or, on a ≤2-slot server
+/// with no scratch to spare, goes unpinned with `cache_prompt: false`). The
+/// measured defect this closes: the small sidecar calls (`should_respond`,
+/// `check_redundancy`, `generate_response`) pinned the SAME slot as the turn
+/// and truncated the citizen's ~30k warm tail to their tiny common head —
+/// breaking KV reuse even for a SOLO citizen — while the smoke probe and the
+/// unpinned producers were free to LCP-steal any warm slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotClass {
+    /// The citizen's real turn (deliberation / persona-respond): pins her
+    /// activity slot via [`ActivityKey`].
+    Turn,
+    /// Short same-context helper calls riding a live turn (gates, validators,
+    /// recipe/proposal raters): scratch — never the activity slot they'd clobber.
+    Sidecar,
+    /// Background cognition with no live turn (dream lenses, module inference,
+    /// anything unrecognized): scratch.
+    Background,
+    /// Infrastructure traffic (smoke probe, warmup, operator try-outs): scratch.
+    Probe,
+}
+
+impl SlotClass {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SlotClass::Turn => "turn",
+            SlotClass::Sidecar => "sidecar",
+            SlotClass::Background => "background",
+            SlotClass::Probe => "probe",
+        }
+    }
+}
+
+/// The ONE purpose→class map. Unknown purposes default to `Background` —
+/// scratch placement — so a new producer can never clobber a citizen slot by
+/// omission; promoting it to `Turn` is an explicit edit here.
+pub fn class_for(purpose: Option<&str>) -> SlotClass {
+    match purpose {
+        Some("cognition/deliberation") | Some("persona-respond") | Some("persona_decide_and_respond") => {
+            SlotClass::Turn
+        }
+        Some("cognition/should-respond")
+        | Some("cognition/check-redundancy")
+        | Some("cognition/generate-response")
+        | Some("cognition/validate-response-decision")
+        | Some("resolution-draft")
+        | Some("cognition-rate-proposals")
+        | Some("cognition-generate-recipe")
+        | Some("shared-cognition-analysis") => SlotClass::Sidecar,
+        Some("warmup")
+        | Some("models/try:text")
+        | Some("models/try:vision")
+        | Some("genome/teach")
+        | Some("local-coding-agent")
+        | Some("serving-smoke-probe") => SlotClass::Probe,
+        _ => SlotClass::Background,
+    }
+}
+
 /// The warm-KV identity: one persona's conversation in one room — an ACTIVITY.
 /// Typed UUIDs, non-nil by construction; the map keys on this struct itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -78,14 +142,22 @@ pub struct KvSlotPool {
     pool: PagedResourcePool<ActivityKey, Arc<KvSlotLease>>,
     free: Arc<Mutex<Vec<u32>>>,
     n_slots: u32,
+    /// The reserved non-citizen slot (highest index) when the server has ≥3
+    /// slots — where ALL non-Turn traffic lands, so it structurally cannot
+    /// evict a citizen's warm tail. `None` on small servers (≤2 slots): there,
+    /// non-Turn traffic goes unpinned with `cache_prompt: false` instead.
+    scratch: Option<u32>,
 }
 
 impl KvSlotPool {
     pub fn new(server_root: &str, n_slots: u32) -> Self {
-        // Low indices lease first (pop from the back), so occupancy is
-        // deterministic and the highest index stays last-touched — which is the
-        // index slice B2 reserves as the scratch slot.
-        let free: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new((0..n_slots).rev().collect()));
+        // ≥3 slots: the highest index is RESERVED as scratch and never enters
+        // the citizen free list. Costs one window; buys structural immunity
+        // from every non-Turn clobber class at once.
+        let scratch = (n_slots >= 3).then(|| n_slots - 1);
+        let citizen_slots = scratch.map(|s| s).unwrap_or(n_slots);
+        // Low indices lease first (pop from the back), deterministic occupancy.
+        let free: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new((0..citizen_slots).rev().collect()));
         let pool = PagedResourcePool::new(PoolConfig {
             name: format!("kv-slots {server_root}"),
             // Count-based pool (sizer 1). Capacity is set ABOVE the real slot
@@ -93,7 +165,7 @@ impl KvSlotPool {
             // engine's own over-capacity auto-evict (which drains to 75% —
             // right for byte tiers, thrash for a 4-count pool) can never fire;
             // eviction happens only through the explicit make-room path below.
-            max_bytes: (n_slots as u64) + 1,
+            max_bytes: (citizen_slots as u64) + 1,
             sizer: Arc::new(|_| 1),
             // LRU now; the PRICED policy (tail_tokens / prefill_rate — a 7.6k
             // head must never evict a 36k tail, KV-CACHE-ECONOMY §2) replaces
@@ -104,11 +176,18 @@ impl KvSlotPool {
             pool,
             free,
             n_slots,
+            scratch,
         }
     }
 
     pub fn n_slots(&self) -> u32 {
         self.n_slots
+    }
+
+    /// The reserved scratch slot for non-Turn traffic, when this server can
+    /// spare one.
+    pub fn scratch_slot(&self) -> Option<u32> {
+        self.scratch
     }
 
     /// Lease the slot for `key`: warm reuse if the activity is resident, a free
@@ -235,14 +314,21 @@ mod tests {
     #[tokio::test]
     async fn one_persona_many_rooms_leases_distinct_slots() {
         let pool = KvSlotPool::new("test", 4);
+        // 4 slots = 3 citizen + 1 scratch (B2). Three concurrent activities of
+        // ONE persona hold three DISTINCT citizen slots — under the old
+        // persona-keyed lease all of them returned slot 0 and thrashed it.
         let mut slots = Vec::new();
-        for r in 1..=4u128 {
+        for r in 1..=3u128 {
             slots.push(pool.lease(key(7, r)).await.expect("free slot"));
         }
         slots.sort_unstable();
-        assert_eq!(slots, vec![0, 1, 2, 3], "four activities hold four distinct slots");
+        assert_eq!(slots, vec![0, 1, 2], "three activities hold three distinct citizen slots");
         // Warm re-entry: the same activity gets ITS slot back.
         assert_eq!(pool.lease(key(7, 1)).await, Some(0), "room 1 kept its warm slot");
+        // A 4th activity EVICTS a citizen slot (LRU for now, priced in B5) —
+        // it must never spill onto scratch.
+        let fourth = pool.lease(key(7, 4)).await.expect("evicts, not refuses");
+        assert!(fourth < 3, "the 4th activity takes a citizen slot, never scratch");
         // Nil is unrepresentable.
         assert!(ActivityKey::new(Uuid::from_u128(7), Uuid::nil()).is_none());
         assert!(ActivityKey::new(Uuid::nil(), Uuid::from_u128(1)).is_none());
@@ -256,13 +342,44 @@ mod tests {
     async fn eviction_recycles_the_slot_index() {
         let pool = KvSlotPool::new("test", 2);
         let a = pool.lease(key(1, 1)).await.expect("a");
+        // last_access_at is ms-granular; real turns are seconds apart, the test
+        // must space its touches or LRU order is a coin flip within one ms.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         let _b = pool.lease(key(1, 2)).await.expect("b");
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         // Refresh a so b is the LRU.
         let _ = pool.lease(key(1, 1)).await;
         let c = pool.lease(key(1, 3)).await.expect("c evicts LRU and reuses its index");
         assert_ne!(c, a, "c must not steal the warm slot that was just refreshed");
         // And the evicted activity can come back (cold) on whatever frees next.
         let _ = pool.lease(key(1, 2)).await.expect("evicted activity re-leases");
+    }
+
+    // what this catches: the scratch reservation and the placement law. On a
+    // 4-slot server the highest index is reserved — citizens lease 0..2 and the
+    // 4th activity EVICTS rather than spilling onto scratch; on a 2-slot server
+    // there is no scratch to spare. And the class map: only the turn purposes
+    // may reach a citizen slot; everything unknown defaults to Background so a
+    // new producer can never clobber a citizen by omission.
+    #[tokio::test]
+    async fn scratch_is_reserved_and_only_turns_are_turns() {
+        let pool = KvSlotPool::new("test", 4);
+        assert_eq!(pool.scratch_slot(), Some(3), "highest index is scratch");
+        let mut seen = Vec::new();
+        for r in 1..=4u128 {
+            seen.push(pool.lease(key(9, r)).await.expect("lease"));
+        }
+        assert!(!seen.contains(&3), "citizen leases never land on scratch: {seen:?}");
+        assert_eq!(KvSlotPool::new("test", 2).scratch_slot(), None, "no scratch on tiny servers");
+
+        assert_eq!(class_for(Some("cognition/deliberation")), SlotClass::Turn);
+        assert_eq!(class_for(Some("persona-respond")), SlotClass::Turn);
+        assert_eq!(class_for(Some("cognition/should-respond")), SlotClass::Sidecar);
+        assert_eq!(class_for(Some("serving-smoke-probe")), SlotClass::Probe);
+        assert_eq!(class_for(Some("dream-consolidation")), SlotClass::Background);
+        assert_eq!(class_for(Some("some-future-producer")), SlotClass::Background,
+            "unknown purposes default AWAY from citizen slots");
+        assert_eq!(class_for(None), SlotClass::Background);
     }
 
     // what this catches: the directory latch — an unsupported server must never

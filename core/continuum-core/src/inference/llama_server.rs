@@ -1685,7 +1685,7 @@ async fn smoke_attempt(
     max_tokens: u64,
 ) -> Option<(u64, String, usize)> {
     let url = format!("{v1_url}/chat/completions");
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         // Digits-only instruction so a compliant model spends its budget on the ANSWER,
         // not a preamble — the content assertion needs the answer to actually fit.
         "messages": [{ "role": "user", "content":
@@ -1694,6 +1694,21 @@ async fn smoke_attempt(
         "stream": false,
         "temperature": 0.0,
     });
+    // Pin the probe to the SCRATCH slot (Probe class — B2). Unpinned, llama's
+    // LCP selection could seat this tiny prompt on a citizen's warm slot and
+    // evict her 30k tail to prove the lane decodes — the exact "contend for a
+    // slot with the work" the heartbeat's own doc warns about. Best-effort: an
+    // uninstalled pool (server not yet probed by any turn) leaves it unpinned.
+    if let Some(root) = v1_url.strip_suffix("/v1") {
+        if let Some(Some(pool)) = crate::inference::slots::directory().get(root) {
+            if let Some(scratch) = pool.scratch_slot() {
+                if let Some(obj) = body.as_object_mut() {
+                    obj.insert("id_slot".to_string(), serde_json::json!(scratch));
+                    obj.insert("cache_prompt".to_string(), serde_json::json!(true));
+                }
+            }
+        }
+    }
     let resp = match client
         .post(&url)
         .timeout(DECODE_SMOKE_TIMEOUT)

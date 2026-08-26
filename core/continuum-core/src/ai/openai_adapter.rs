@@ -660,6 +660,19 @@ impl OpenAICompatibleAdapter {
     /// backend has no props surface / one slot (latched unsupported) or on a
     /// transport error (NOT latched — a momentarily-dead server is not a server
     /// without slots; same discipline as the LoRA probe).
+    /// The reserved scratch slot for this server, if its pool is installed and
+    /// reserved one. Deliberately does NOT probe /props: scratch placement is a
+    /// best-effort courtesy for non-Turn traffic, and the first Turn request
+    /// installs the pool anyway — before that, non-Turn traffic simply runs
+    /// unpinned exactly as it always did.
+    fn scratch_slot_for_root(&self) -> Option<u32> {
+        let root = self.endpoints().root().to_string();
+        match crate::inference::slots::directory().get(&root) {
+            Some(Some(pool)) => pool.scratch_slot(),
+            _ => None,
+        }
+    }
+
     async fn slot_for_activity(
         &self,
         key: crate::inference::slots::ActivityKey,
@@ -1952,43 +1965,66 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             // defect was never the prompt or the server — it was N activities sharing
             // one slot. Non-persona traffic (evals, probes) stays unpinned so it can't
             // evict a citizen's warm slot.
-            if let Some(persona) = request.persona_id.as_deref() {
-                // The typed activity key: (persona, room) as UUID structs — never a
-                // formatted string (guarded by `no_string_composite_id_keys_in_serving`).
-                // A request that cannot name BOTH halves is not an activity turn and
-                // goes UNPINNED: llama-server's own LCP selection routes it, and slice
-                // B2 classes such traffic onto the scratch slot. (Pinning roomless
-                // traffic to the persona's slot was the sidecar clobber — a short
-                // gating prompt truncated the citizen's 30k warm tail to their tiny
-                // common head, breaking reuse even for a solo citizen.)
-                let key = uuid::Uuid::parse_str(persona).ok().zip(
-                    request
-                        .room_id
+            // TRAFFIC CLASS decides placement (slots::class_for over `purpose` —
+            // one data map, no per-callsite hacks): only a TURN may hold or evict
+            // a citizen's activity slot; every other class lands on the reserved
+            // SCRATCH slot so it structurally cannot truncate a warm tail. The
+            // measured defect: sidecar gate calls pinned the turn's own slot and
+            // cut its ~30k tail to their common head — reuse broke even solo.
+            let class = crate::inference::slots::class_for(request.purpose.as_deref());
+            let placement: Option<u32> = match class {
+                crate::inference::slots::SlotClass::Turn => {
+                    // The typed activity key: (persona, room) as UUID structs — never
+                    // a formatted string (guarded by
+                    // `no_string_composite_id_keys_in_serving`). A Turn that cannot
+                    // name BOTH halves goes unpinned (and the probe says so).
+                    let key = request
+                        .persona_id
                         .as_deref()
-                        .and_then(|r| uuid::Uuid::parse_str(r).ok()),
-                );
-                let key = key
-                    .and_then(|(p, r)| crate::inference::slots::ActivityKey::new(p, r));
-                let leased = match key {
-                    Some(k) => self.slot_for_activity(k).await,
-                    None => None,
-                };
-                // GLASS BOX (KV-reuse 0% hunt 2026-08-26): the whole cache-reuse win
-                // rides on this pin landing on a per-ACTIVITY slot. Report the room so
-                // a cached:0 streak names WHICH activity thrashed.
-                crate::probe!(
-                    class = "inference.slot_pin.decision",
-                    persona = persona,
-                    room = request.room_id.as_deref(),
-                    pinned = leased.is_some(),
-                    slot = leased.map(|s| s as u64),
-                    "id_slot decision — warm KV is per-ACTIVITY (persona, room); N activities need N slots"
-                );
-                if let Some(slot) = leased {
-                    if let Some(obj) = body.as_object_mut() {
-                        obj.insert("id_slot".to_string(), json!(slot));
+                        .and_then(|p| uuid::Uuid::parse_str(p).ok())
+                        .zip(
+                            request
+                                .room_id
+                                .as_deref()
+                                .and_then(|r| uuid::Uuid::parse_str(r).ok()),
+                        )
+                        .and_then(|(p, r)| crate::inference::slots::ActivityKey::new(p, r));
+                    match key {
+                        Some(k) => self.slot_for_activity(k).await,
+                        None => None,
                     }
                 }
+                _ => {
+                    // Non-Turn: the scratch slot when this server reserved one. When
+                    // it did not (≤2 slots), stay unpinned AND drop cache_prompt so
+                    // the call cannot PERSIST a stolen cache into a citizen slot.
+                    let scratch = self.scratch_slot_for_root();
+                    if scratch.is_none() {
+                        if let Some(obj) = body.as_object_mut() {
+                            obj.insert("cache_prompt".to_string(), json!(false));
+                        }
+                    }
+                    scratch
+                }
+            };
+            // GLASS BOX (KV-reuse 0% hunt 2026-08-26): the whole cache-reuse win
+            // rides on placement. Report class + room so a cached:0 streak names
+            // WHICH activity thrashed — or which class strayed off scratch.
+            crate::probe!(
+                class = "inference.slot_pin.decision",
+                persona = request.persona_id.as_deref(),
+                room = request.room_id.as_deref(),
+                traffic = class.as_str(),
+                pinned = placement.is_some(),
+                slot = placement.map(|s| s as u64),
+                "id_slot decision — Turn pins its activity slot; every other class lands on scratch"
+            );
+            if let Some(slot) = placement {
+                if let Some(obj) = body.as_object_mut() {
+                    obj.insert("id_slot".to_string(), json!(slot));
+                }
+            }
+            if let Some(persona) = request.persona_id.as_deref() {
                 // #139 overshoot alarm: name the RAG-budget bug BEFORE the
                 // server rejects. With context shift disabled at spawn the
                 // server 400s on overflow instead of silently amputating the
