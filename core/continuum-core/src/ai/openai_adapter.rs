@@ -224,8 +224,9 @@ enum SlotAffinity {
     /// authority, so the policy lives here until then.
     Table {
         n_slots: u32,
-        /// One entry per slot (index == slot id): the persona currently holding it
-        /// and the activity `tick` at which it last leased. `None` == free slot.
+        /// One entry per slot (index == slot id): the warm-context key (persona@room)
+        /// currently holding it and the activity `tick` at which it last leased.
+        /// `None` == free slot.
         holders: Vec<Option<(String, u64)>>,
         /// Monotonic activity clock — bumped on every lease so "least-recently-active"
         /// is a total order, independent of wall-clock (which the substrate forbids).
@@ -417,11 +418,14 @@ fn props_status_proves_endpoint_absent(status: reqwest::StatusCode) -> bool {
 }
 
 impl SlotAffinity {
-    /// Lease a warm slot for `persona` (see [`SlotAffinity`] doc). Reuse the slot it
+    /// Lease a warm slot for a warm-context `key` — a persona's conversation in a
+    /// room (see [`SlotAffinity`] doc + the pin-decision site). Reuse the slot it
     /// already holds → take a free slot → evict the least-recently-active holder.
-    /// Every lease refreshes the holder's activity `tick`, so a persona that keeps
-    /// speaking keeps its slot; one that goes quiet is the first evicted.
-    fn lease(&mut self, persona: &str) -> Option<u32> {
+    /// Every lease refreshes the holder's activity `tick`, so a context that keeps
+    /// speaking keeps its slot; one that goes quiet is the first evicted. Because
+    /// the key is (persona, room), a persona's N concurrent activities lease N
+    /// distinct slots instead of thrashing one.
+    fn lease(&mut self, key: &str) -> Option<u32> {
         let SlotAffinity::Table {
             n_slots,
             holders,
@@ -439,22 +443,22 @@ impl SlotAffinity {
         // 1. Already holds a slot → WARM reuse (the whole point). Refresh its recency.
         if let Some(slot) = holders
             .iter()
-            .position(|h| h.as_ref().is_some_and(|(p, _)| p == persona))
+            .position(|h| h.as_ref().is_some_and(|(k, _)| k == key))
         {
-            holders[slot] = Some((persona.to_string(), now));
+            holders[slot] = Some((key.to_string(), now));
             return Some(slot as u32);
         }
         // 2. A free slot → take it.
         if let Some(slot) = holders.iter().position(|h| h.is_none()) {
-            holders[slot] = Some((persona.to_string(), now));
-            // Fires once per persona per process (plus re-pins after eviction), so
+            holders[slot] = Some((key.to_string(), now));
+            // Fires once per context per process (plus re-pins after eviction), so
             // the ledger can PROVE pinning is live — its silent predecessor ran
             // latched-off for weeks with nothing to say so (2026-08-21).
             crate::probe!(
                 class = "inference.slot_affinity.pinned",
-                persona = persona,
+                context = key,
                 slot = slot as u64,
-                "persona pinned to a free llama-server slot — her prefix warms HERE",
+                "activity pinned to a free llama-server slot — its prefix warms HERE",
             );
             return Some(slot as u32);
         }
@@ -464,21 +468,21 @@ impl SlotAffinity {
             .enumerate()
             .min_by_key(|(_, h)| h.as_ref().map(|(_, t)| *t).unwrap_or(0))
             .map(|(i, _)| i)?;
-        // Cross-persona eviction IS the KV-clobber event — the evicted citizen's
-        // warm tail is gone and her next turn re-prefills from zero. More personas
-        // than slots makes this legitimate; the probe is what makes it PRICED
-        // (KV-CACHE-ECONOMY: eviction must be a decision, not an accident).
+        // Cross-context eviction IS the KV-clobber event — the evicted activity's
+        // warm tail is gone and its next turn re-prefills from zero. More active
+        // contexts than slots makes this legitimate; the probe is what makes it
+        // PRICED (KV-CACHE-ECONOMY: eviction must be a decision, not an accident).
         if let Some((evicted, _)) = &holders[slot] {
             crate::probe!(
                 class = "inference.slot_affinity.evicted",
-                persona = persona,
+                context = key,
                 evicted = evicted.as_str(),
                 slot = slot as u64,
-                "all slots held — least-recently-active persona evicted; her warm \
-                 prefix is forfeit and her next turn re-prefills from zero",
+                "all slots held — least-recently-active activity evicted; its warm \
+                 prefix is forfeit and its next turn re-prefills from zero",
             );
         }
-        holders[slot] = Some((persona.to_string(), now));
+        holders[slot] = Some((key.to_string(), now));
         Some(slot as u32)
     }
 }
@@ -767,19 +771,20 @@ impl OpenAICompatibleAdapter {
     /// and NOT cached — a momentarily-dead server is not a server without LoRA
     /// support. llama.cpp `llama-server` returns the array of adapters it
     /// loaded at launch, each `{ "id": N, "path": "...", "scale": S }`.
-    /// Stable slot for a persona's requests, discovering the backend's slot
-    /// count on first use (`GET /props` → `total_slots`). Returns `None` when
-    /// the backend has no props surface / one slot (cached as Unsupported) or
-    /// on a transport error (NOT cached — a momentarily-dead server is not a
-    /// server without slots; same discipline as the LoRA probe).
-    async fn slot_for_persona(&self, persona: &str) -> Option<u32> {
+    /// Stable slot for a warm-context key (a persona's conversation in a room —
+    /// see the pin-decision site), discovering the backend's slot count on first
+    /// use (`GET /props` → `total_slots`). Returns `None` when the backend has no
+    /// props surface / one slot (cached as Unsupported) or on a transport error
+    /// (NOT cached — a momentarily-dead server is not a server without slots; same
+    /// discipline as the LoRA probe).
+    async fn slot_for_context(&self, context_key: &str) -> Option<u32> {
         let root = self.endpoints().root().to_string();
         // Fast path: this server's state already known (global table — every
         // adapter instance talking to the same server shares ONE assignment).
         if let Some(mut state) = slot_tables().get_mut(&root) {
             return match &mut *state {
                 SlotAffinity::Unsupported => None,
-                s @ SlotAffinity::Table { .. } => s.lease(persona),
+                s @ SlotAffinity::Table { .. } => s.lease(context_key),
             };
         }
         // Probe /props once. Lock is NOT held across the await.
@@ -864,7 +869,7 @@ impl OpenAICompatibleAdapter {
                 tick: 0,
             }
         });
-        state.lease(persona)
+        state.lease(context_key)
     }
 
     pub(crate) async fn probe_lora_catalog(&self) -> Result<(), String> {
@@ -2053,26 +2058,41 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 // OpenAI-compat providers reject non-standard fields.
                 obj.insert("return_progress".to_string(), json!(true));
             }
-            // Persona→slot pinning (`id_slot`, llama.cpp extension): keep each
-            // persona's long static prefix warm in ITS OWN slot instead of
-            // letting prefix-similarity selection cross-assign N personas'
-            // near-identical doctrine prefixes and clobber the caches (30%
-            // hit / 2.5 tok/s median, measured 2026-07-11). Slot count is
-            // props-discovered; non-persona traffic (evals, probes) stays
-            // unpinned so it can't evict a citizen's warm slot.
+            // Slot pinning (`id_slot`, llama.cpp extension): the warm KV in a slot
+            // belongs to an ACTIVITY, not a persona. Rooms are 1:1 with activities in
+            // continuum/airc, so the warm-context identity is (persona, room) — a
+            // persona running N concurrent activities (e.g. N detached benchmark
+            // solves, each in its own room) has N independently-growing prefixes and
+            // needs N slots. Keying the lease on the bare persona collapsed all N onto
+            // ONE slot, and each activity's turn clobbered the others' warm tail —
+            // measured 2026-08-26 as cached:0 across EVERY turn of a 4-instance
+            // dispatch even though the pin (persona→slot 0) was landing correctly.
+            // The server reuses partial prefixes fine (proven same day: an 800-token
+            // shared prefix reused, only the divergent tail re-prefilled), so the
+            // defect was never the prompt or the server — it was N activities sharing
+            // one slot. Non-persona traffic (evals, probes) stays unpinned so it can't
+            // evict a citizen's warm slot.
             if let Some(persona) = request.persona_id.as_deref() {
-                let leased = self.slot_for_persona(persona).await;
-                // GLASS BOX (KV-reuse 0% hunt 2026-08-26): the whole cache-reuse win rides
-                // on this pin landing. cached:0 all session with 0 pinned events means either
-                // this returns None (the lease is broken) or the pin is set yet reuse still
-                // misses. Say which, per request, so the Rube-Goldberg slot machinery stops
-                // failing silently.
+                // The warm-context key: a persona's conversation IN a room. room_id is
+                // authoritative (1:1 with the activity); persona-only is the fallback
+                // for a roomless inference — itself a bug to fix at the source (#425),
+                // not here, but it must degrade to today's behavior, not panic.
+                let context_key = match request.room_id.as_deref() {
+                    Some(room) => format!("{persona}@{room}"),
+                    None => persona.to_string(),
+                };
+                let leased = self.slot_for_context(&context_key).await;
+                // GLASS BOX (KV-reuse 0% hunt 2026-08-26): the whole cache-reuse win
+                // rides on this pin landing on a per-ACTIVITY slot. Report the room and
+                // the composite so a cached:0 streak names WHICH activity thrashed.
                 crate::probe!(
                     class = "inference.slot_pin.decision",
                     persona = persona,
+                    room = request.room_id.as_deref(),
+                    context = context_key.as_str(),
                     pinned = leased.is_some(),
                     slot = leased.map(|s| s as u64),
-                    "id_slot decision — cache reuse needs pinned=true on a STABLE slot"
+                    "id_slot decision — warm KV is per-ACTIVITY (persona@room); N activities need N slots"
                 );
                 if let Some(slot) = leased {
                     if let Some(obj) = body.as_object_mut() {
@@ -3847,6 +3867,39 @@ mod tests {
         assert_eq!(b2, c, "returning b lands on the least-recently-active slot");
         // Non-table states never pin.
         assert_eq!(SlotAffinity::Unsupported.lease("persona-a"), None);
+    }
+
+    // what this catches: the 2026-08-26 KV-reuse-0% bug. One persona running N
+    // concurrent activities — each its own room (a 4-instance benchmark dispatch) —
+    // must lease N DISTINCT slots, not collapse onto one and clobber every turn.
+    // The warm-context key is (persona, room); under the old persona-only key all
+    // four solves returned slot 0 and thrashed it, so cached:0 across every turn
+    // even though the pin "landed". regression for the room-keyed lease.
+    #[test]
+    fn one_persona_many_rooms_leases_distinct_slots() {
+        let mut table = SlotAffinity::Table {
+            n_slots: 4,
+            holders: Vec::new(),
+            tick: 0,
+        };
+        // Same persona, four concurrent solve-rooms (the 4-instance dispatch shape).
+        let s0 = table.lease("atlas@room-13236").unwrap();
+        let s1 = table.lease("atlas@room-12907").unwrap();
+        let s2 = table.lease("atlas@room-14365").unwrap();
+        let s3 = table.lease("atlas@room-14995").unwrap();
+        let mut slots = [s0, s1, s2, s3];
+        slots.sort_unstable();
+        assert_eq!(
+            slots,
+            [0, 1, 2, 3],
+            "one persona's four rooms must hold four DISTINCT slots, not thrash one"
+        );
+        // Each room stays warm on re-entry — its prefix is reusable on the next turn.
+        assert_eq!(
+            table.lease("atlas@room-13236").unwrap(),
+            s0,
+            "room-13236 kept its own warm slot across turns"
+        );
     }
 
     #[test]
