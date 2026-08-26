@@ -1221,11 +1221,6 @@ impl ActionCommand for BenchmarkDispatch {
                 .collect::<Result<_, CommandError>>()?
         };
 
-        // Curator seed: a persona dispatching through her toolbelt authors as herself;
-        // the operator with no self-peer (#27) authors through a live citizen (benchmarks
-        // ARE their work). See `curator_airc`.
-        let airc = curator_airc(&self.registry, ctx, "benchmark/dispatch")?;
-
         let requested = p.assignees.clone().unwrap_or_default();
         if requested.iter().any(|a| a.trim().is_empty()) {
             return Err(CommandError::Invalid(
@@ -1263,6 +1258,14 @@ impl ActionCommand for BenchmarkDispatch {
             tokio::time::sleep(ROSTER_RESUME_POLL).await;
             resident = self.registry.resident_snapshot().await;
         }
+
+        // Curator seed — resolved AFTER the residency park on purpose. It authors
+        // through a live citizen when the operator has no self-peer (#27), and it
+        // used to run BEFORE the park, so a dispatch fired inside the post-boot
+        // window refused instantly with "none are online" while the 180s wait that
+        // exists precisely for that window sat unreachable 30 lines below
+        // (measured live 2026-08-26). Order: wait for a citizen, then author.
+        let airc = curator_airc(&self.registry, ctx, "benchmark/dispatch")?;
 
         // Resolve the dispatch roster against THIS machine's live citizens (never our
         // names): empty request → the whole live roster; explicit names → validated or
@@ -1666,6 +1669,9 @@ impl ActionCommand for BenchmarkDispatch {
             // the kickoff below, either of which can put it into someone's hands. From
             // here `work/claim` can read who drives it (see `open_round`).
             crate::cognition::bench_round::add_card(room.room_id.as_uuid(), card_id.as_uuid());
+            // WHO works this card, recorded at staging (before any solve fires) —
+            // the follow-on driver and the boot resume read it (plan A4/A5).
+            crate::cognition::bench_round::record_card_assignee(card_id.as_uuid(), *who_peer);
 
             // Directed gym card: CLAIM IT FOR HER at dispatch, under her own airc
             // identity. The detached-solve SWE arm below fires her scored solve directly

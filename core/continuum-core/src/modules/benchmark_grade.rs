@@ -196,6 +196,49 @@ fn on_card_state_changed(registry: &PersonaAircRuntimeRegistry, payload: &Value)
     if card_id.is_empty() {
         return;
     }
+    // A4 FOLLOW-ON — the card-settled edge of the ONE driver decision
+    // (bench_round::next_unworked_after; dispatch and boot-resume are the other
+    // two edges). A settled card frees serving capacity; the round's next
+    // unworked card fires NOW instead of starving behind the initial
+    // solve_cap = lanes (dispatched − solves_fired stops being permanent).
+    // The in-flight guard inside dispatch_staged_swe_solve makes double-fire
+    // impossible even if two settle events race.
+    if let Ok(settled_uuid) = card_id.parse::<uuid::Uuid>() {
+        if let Some(next) = crate::cognition::bench_round::next_unworked_after(settled_uuid) {
+            let reg = registry.clone();
+            tokio::spawn(async move {
+                let airc = reg
+                    .get(next.assignee)
+                    .or_else(|| reg.any_live_citizen())
+                    .map(|rt| rt.airc().clone());
+                let Some(airc) = airc else {
+                    crate::probe!(
+                        class = "bench.round.follow_on_blocked",
+                        card_id = %next.card,
+                        "next card is due but no live citizen can carry the dispatch —                          the boot-resume edge retries"
+                    );
+                    return;
+                };
+                crate::probe!(
+                    class = "bench.round.follow_on",
+                    settled = %settled_uuid,
+                    next_card = %next.card,
+                    assignee = %next.assignee,
+                    "card settled — firing the round's next unworked card"
+                );
+                crate::modules::work::dispatch_staged_swe_solve(
+                    &Default::default(),
+                    &airc,
+                    crate::modules::work::StagedSolveDispatch {
+                        claimer: crate::identity::PeerId::from_uuid(next.assignee),
+                        card: airc_work::WorkCardId::from_uuid(next.card),
+                        room: airc_core::RoomId::from_u128(next.run_room.as_u128()),
+                    },
+                )
+                .await;
+            });
+        }
+    }
     // The card's room, from the wire event (bridge payload contract). Boards are
     // per-room: without this the grade read whatever room the grading citizen
     // happened to be in — the #345 wrong-room trap, hit live 2026-08-15.

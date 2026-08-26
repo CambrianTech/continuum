@@ -138,6 +138,11 @@ pub struct BenchRound {
     /// recorded and mint on their next dispatch.
     #[serde(default)]
     card_activities: HashMap<Uuid, CardActivity>,
+    /// Card uuid → the citizen it was staged FOR, recorded at dispatch staging
+    /// (before any solve fires) so the follow-on driver ([`next_unworked_after`])
+    /// and the boot resume know WHO works a card that has never run.
+    #[serde(default)]
+    card_assignees: HashMap<Uuid, Uuid>,
 }
 
 /// Where one card's solve LIVES: its per-instance activity room and the citizen
@@ -157,6 +162,7 @@ impl BenchRound {
             stage: RoundStage::Working,
             driver,
             card_activities: HashMap::new(),
+            card_assignees: HashMap::new(),
         }
     }
 
@@ -449,6 +455,57 @@ pub fn record_card_activity(card_id: Uuid, activity: CardActivity) {
     }
 }
 
+/// Record which citizen `card_id` was staged for — at DISPATCH time, so every
+/// card has an owner before any solve fires.
+pub fn record_card_assignee(card_id: Uuid, assignee: Uuid) {
+    let mut rounds = ROUNDS.lock().expect("bench rounds mutex");
+    if let Some(round) = rounds.values_mut().find(|r| r.cards.contains_key(&card_id)) {
+        round.card_assignees.insert(card_id, assignee);
+        persist_round_in(&rounds_state_dir(), round);
+    }
+}
+
+/// The next card the round owes a solve — passed as a struct (typed UUIDs).
+#[derive(Debug, Clone, Copy)]
+pub struct NextCard {
+    pub card: Uuid,
+    pub assignee: Uuid,
+    pub run_room: Uuid,
+}
+
+/// ONE driver decision, three edges (dispatch, card-settled, boot resume): given
+/// a card of some round, the FIRST still-unsettled card with no live run and a
+/// known assignee — or None when the round is fully in flight / done / not a
+/// detached round (Citizen rounds drive themselves through claims). Pure over
+/// the round state plus the in-flight ledger, so every edge fires the same
+/// decision — never a second scheduler.
+pub fn next_unworked_after(card_of_round: Uuid) -> Option<NextCard> {
+    let live: std::collections::HashSet<String> =
+        crate::cognition::swe_bench::in_flight_solve_runs()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+    let rounds = ROUNDS.lock().expect("bench rounds mutex");
+    let round = rounds
+        .values()
+        .find(|r| r.cards.contains_key(&card_of_round))?;
+    if round.driver != WorkDriver::DetachedSolve {
+        return None;
+    }
+    round
+        .cards
+        .iter()
+        .filter(|(_, state)| state.is_none())
+        .filter(|(c, _)| !live.contains(&format!("claim-{}", c)))
+        .find_map(|(c, _)| {
+            round.card_assignees.get(c).map(|a| NextCard {
+                card: *c,
+                assignee: *a,
+                run_room: round.round_id,
+            })
+        })
+}
+
 pub fn driver_for_card(card_id: Uuid) -> WorkDriver {
     ROUNDS
         .lock()
@@ -667,6 +724,54 @@ mod tests {
         assert_eq!(got.assignee, act.assignee);
         assert!(r.card_activities.get(&cs[1]).is_none(), "unminted card has no activity yet");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // what this catches: the ONE driver decision. A settled card must yield the
+    // round's next unworked card (with its staged assignee and the run room),
+    // a fully-fired round must yield None, and a Citizen-driver round must
+    // never be driven by the follow-on (citizens drive themselves via claims).
+    // regression for the solve_cap starvation: dispatched − solves_fired used
+    // to be PERMANENT — cards 2..N were posted, kicked off, and never worked.
+    #[test]
+    fn next_unworked_after_walks_the_round_to_empty() {
+        let (id, cs) = (Uuid::new_v4(), cards(3));
+        register_round(id, "swe-bench-verified", &cs);
+        {
+            let mut rounds = ROUNDS.lock().unwrap();
+            let r = rounds.get_mut(&id).unwrap();
+            r.driver = WorkDriver::DetachedSolve;
+            for (i, c) in cs.iter().enumerate() {
+                r.card_assignees.insert(*c, Uuid::from_u128(100 + i as u128));
+            }
+        }
+        // Settle card 0 → the driver owes one of the remaining two.
+        {
+            let mut rounds = ROUNDS.lock().unwrap();
+            rounds.get_mut(&id).unwrap().settle_card(cs[0], "closed");
+        }
+        let next = next_unworked_after(cs[0]).expect("two cards remain");
+        assert!(cs[1..].contains(&next.card), "next is an UNSETTLED card");
+        assert_eq!(next.run_room, id, "the dispatch rejoins the run room's board");
+        let expected_assignee = {
+            let rounds = ROUNDS.lock().unwrap();
+            *rounds.get(&id).unwrap().card_assignees.get(&next.card).unwrap()
+        };
+        assert_eq!(next.assignee, expected_assignee, "the card's STAGED assignee carries");
+        // Settle everything → the driver goes quiet.
+        {
+            let mut rounds = ROUNDS.lock().unwrap();
+            let r = rounds.get_mut(&id).unwrap();
+            r.settle_card(cs[1], "closed");
+            r.settle_card(cs[2], "closed");
+        }
+        // The round is Done and REMOVED by observe_card_event in production; here the
+        // map still holds it, which is exactly what lets us assert the quiet case.
+        assert!(next_unworked_after(cs[0]).is_none(), "a finished round owes nothing");
+
+        // A Citizen round is never follow-on driven.
+        let (cid, ccs) = (Uuid::new_v4(), cards(2));
+        register_round(cid, "swe-bench-verified", &ccs);
+        assert!(next_unworked_after(ccs[0]).is_none(), "citizen rounds drive themselves");
     }
 
     // what this catches: the state dir growing without an eviction story (the
