@@ -2061,7 +2061,20 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             // props-discovered; non-persona traffic (evals, probes) stays
             // unpinned so it can't evict a citizen's warm slot.
             if let Some(persona) = request.persona_id.as_deref() {
-                if let Some(slot) = self.slot_for_persona(persona).await {
+                let leased = self.slot_for_persona(persona).await;
+                // GLASS BOX (KV-reuse 0% hunt 2026-08-26): the whole cache-reuse win rides
+                // on this pin landing. cached:0 all session with 0 pinned events means either
+                // this returns None (the lease is broken) or the pin is set yet reuse still
+                // misses. Say which, per request, so the Rube-Goldberg slot machinery stops
+                // failing silently.
+                crate::probe!(
+                    class = "inference.slot_pin.decision",
+                    persona = persona,
+                    pinned = leased.is_some(),
+                    slot = leased.map(|s| s as u64),
+                    "id_slot decision — cache reuse needs pinned=true on a STABLE slot"
+                );
+                if let Some(slot) = leased {
                     if let Some(obj) = body.as_object_mut() {
                         obj.insert("id_slot".to_string(), json!(slot));
                     }
