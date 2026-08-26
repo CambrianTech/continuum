@@ -1219,6 +1219,53 @@ impl ActionCommand for BenchmarkDispatch {
                 }
                 instances = picked;
             }
+            // ENV PRE-WARM (background): a cold native build (scikit's cython,
+            // matplotlib's freetype) mid-round burns a solve attempt on an ENV
+            // failure and reads as a model miss. Build every instance's env
+            // AHEAD of the driver, in REVERSE card order so the warmer and the
+            // solver approach from opposite ends (ensure_env itself holds the
+            // per-instance lock, so even a meeting in the middle is safe).
+            // Fire-and-forget: a prewarm failure is probed — the SAME failure
+            // the solve would hit, surfaced hours earlier and attributable.
+            {
+                let mut warm = instances.clone();
+                warm.reverse();
+                tokio::spawn(async move {
+                    for inst in warm {
+                        let checkout =
+                            match crate::cognition::swe_bench::ensure_grade_checkout(&inst).await {
+                                Ok(dir) => dir,
+                                Err(e) => {
+                                    crate::probe!(
+                                        class = "benchmark.env.prewarm_failed",
+                                        instance = %inst.instance_id,
+                                        stage = "checkout",
+                                        error = %e,
+                                        "env pre-warm could not stage a checkout — the solve \
+                                         will hit this same wall; this is an ENV failure, not \
+                                         a model result"
+                                    );
+                                    continue;
+                                }
+                            };
+                        match crate::cognition::swe_bench::ensure_env(&inst, &checkout).await {
+                            Ok(_) => crate::probe!(
+                                class = "benchmark.env.prewarmed",
+                                instance = %inst.instance_id,
+                                "env ready ahead of the driver"
+                            ),
+                            Err(e) => crate::probe!(
+                                class = "benchmark.env.prewarm_failed",
+                                instance = %inst.instance_id,
+                                stage = "env",
+                                error = %e,
+                                "env pre-warm FAILED — the solve will hit this same wall; \
+                                 an ENV failure, never a model result"
+                            ),
+                        }
+                    }
+                });
+            }
             instances
                 .into_iter()
                 .map(|i| PreparedCard {
@@ -3568,6 +3615,13 @@ pub struct BenchmarkScoreRow {
     pub dataset_size: u32,
     /// Resolved instance ids — the receipt pointers.
     pub resolved_instances: Vec<String>,
+    /// ENV failures (verdict carries `error`): the harness could not measure
+    /// the model at all — clone/env/patch infrastructure, NEVER a model miss.
+    /// These are absences owing retakes, and they must read that way.
+    #[ts(type = "number")]
+    pub env_absences: u32,
+    /// The env-absent instance ids, so the failure is chaseable per instance.
+    pub env_absent_instances: Vec<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
@@ -3615,12 +3669,17 @@ impl ActionCommand for BenchmarkScoreboard {
                 instances.iter().map(|i| i.instance_id.as_str()).collect();
             let mut attempted = 0u32;
             let mut resolved_instances = Vec::new();
+            let mut env_absent_instances = Vec::new();
             for (id, v) in &verdicts {
                 if !ids.contains(id.as_str()) {
                     continue;
                 }
                 if v.error.is_some() {
-                    continue; // absence, never a tallied attempt
+                    // Absence, never a tallied attempt — but never invisible
+                    // either: an env failure the user can't see reads as a
+                    // model miss in every retelling.
+                    env_absent_instances.push(id.clone());
+                    continue;
                 }
                 attempted += 1;
                 if v.resolved {
@@ -3633,6 +3692,8 @@ impl ActionCommand for BenchmarkScoreboard {
                 resolved: resolved_instances.len() as u32,
                 dataset_size: instances.len() as u32,
                 resolved_instances,
+                env_absences: env_absent_instances.len() as u32,
+                env_absent_instances,
             });
         }
         let serving = crate::inference::llama_server::current_serving();
@@ -3647,10 +3708,19 @@ impl ActionCommand for BenchmarkScoreboard {
         );
         let summary = rows
             .iter()
-            .filter(|r| r.attempted > 0)
+            .filter(|r| r.attempted > 0 || r.env_absences > 0)
             .map(|r| {
+                let env = if r.env_absences > 0 {
+                    format!(
+                        " · {} ENV failure(s) — not model misses, they owe retakes: {}",
+                        r.env_absences,
+                        r.env_absent_instances.join(", ")
+                    )
+                } else {
+                    String::new()
+                };
                 format!(
-                    "{}: {}/{} resolved (of {} in the set)",
+                    "{}: {}/{} resolved (of {} in the set){env}",
                     r.benchmark, r.resolved, r.attempted, r.dataset_size
                 )
             })

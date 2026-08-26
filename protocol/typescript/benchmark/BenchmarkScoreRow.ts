@@ -20,4 +20,14 @@ dataset_size: number,
 /**
  * Resolved instance ids — the receipt pointers.
  */
-resolved_instances: Array<string>, };
+resolved_instances: Array<string>, 
+/**
+ * ENV failures (verdict carries `error`): the harness could not measure
+ * the model at all — clone/env/patch infrastructure, NEVER a model miss.
+ * These are absences owing retakes, and they must read that way.
+ */
+env_absences: number, 
+/**
+ * The env-absent instance ids, so the failure is chaseable per instance.
+ */
+env_absent_instances: Array<string>, };
