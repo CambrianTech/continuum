@@ -1440,8 +1440,15 @@ fn era_sdist_build_deps(repo: &str) -> &'static [&'static str] {
         // `oldest-supported-numpy`, which routinely fails to resolve on a
         // modern interpreter (the build_requires step warns and proceeds) — a
         // plain era-pinned numpy here is what actually lands.
-        "scikit-learn/scikit-learn" => &["numpy", "cython"],
-        "matplotlib/matplotlib" => &["numpy", "setuptools_scm", "certifi"],
+        // cython<3 is load-bearing: Cython 3 REJECTS 2019-era .pyx (CompileError
+        // on sklearn's own ball_tree.pyx, walk 4 of the seeded-25 prewarm) — and
+        // the era-pin's loud unpinned retry is exactly the path that smuggles
+        // modern cython in when the dated resolve hiccups. The ceiling holds
+        // through BOTH paths; 0.29.x compiles every sklearn era we can meet.
+        "scikit-learn/scikit-learn" => &["numpy", "cython>=0.28,<3"],
+        // cppy: kiwisolver 1.3's sdist imports it at build (walk 4 — the
+        // dependency-sdist class this table exists for, same as astropy→pyerfa→jinja2).
+        "matplotlib/matplotlib" => &["numpy", "setuptools_scm", "certifi", "cppy"],
         _ => &[],
     }
 }
