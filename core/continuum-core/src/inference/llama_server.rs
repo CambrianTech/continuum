@@ -539,6 +539,13 @@ pub struct ServingTarget {
     /// resident fits as-shipped (Native), served with no override — the default and
     /// the only shape for a dense or small-MoE model. [[device-fit-repeatable-primitive]] / #29.
     pub resident_override: Option<std::path::PathBuf>,
+    /// This lane IS the vision sidecar (its whole purpose is the projector).
+    /// The `mmproj_on_main_lane` withhold — written so multimodal never disables
+    /// `--cache-reuse` on the MAIN persona lane — must not strip the sidecar's own
+    /// eyes: measured 2026-08-26, every sidecar spawn flowed through the same
+    /// withhold, launched sightless, honestly failed its /props sight check, and
+    /// churned. The guard was scoped too broadly; the lane's ROLE decides.
+    pub vision_sidecar: bool,
 }
 
 /// Where a serving lane's model weights are resident — see [`ServingTarget::placement`].
@@ -2740,11 +2747,12 @@ impl LlamaServerControl for LlamaServerProcess {
         // VL-first deployment opts in per model and pays the reuse cost knowingly.
         let resolved_mmproj =
             crate::model_registry::artifacts::resolve_mmproj_for_model(&target.model);
-        let mmproj: Option<std::path::PathBuf> = if target.model.serving.mmproj_on_main_lane {
-            resolved_mmproj.clone()
-        } else {
-            None
-        };
+        let mmproj: Option<std::path::PathBuf> =
+            if target.model.serving.mmproj_on_main_lane || target.vision_sidecar {
+                resolved_mmproj.clone()
+            } else {
+                None
+            };
         if mmproj.is_none() && resolved_mmproj.is_some() {
             crate::probe!(
                 class = "serving.vision.mmproj_withheld",
@@ -3681,6 +3689,7 @@ mod tests {
             placement: LanePlacement::Gpu,
             expert_placement: None,
             resident_override: None,
+            vision_sidecar: false,
         }
     }
 

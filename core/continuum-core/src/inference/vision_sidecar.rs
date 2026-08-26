@@ -246,6 +246,8 @@ pub async fn ensure_sidecar(
         placement: LanePlacement::Cpu,
         expert_placement: None,
         resident_override: None, // vision sidecar serves as-shipped; no device-fit override
+        // THE role this field exists for: the sidecar keeps its own eyes.
+        vision_sidecar: true,
     };
     let lane = EphemeralServingLane::spawn(&target, VISION_SIDECAR_BASE_PORT)
         .await

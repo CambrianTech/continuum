@@ -2048,6 +2048,8 @@ impl ServingDaemonModule {
             placement: crate::inference::llama_server::LanePlacement::Gpu,
             expert_placement,
             resident_override,
+            // The MAIN persona lane — the withhold rule's actual subject.
+            vision_sidecar: false,
         };
 
         // One reconcile at a time. If the swap finds `true`, another is already
