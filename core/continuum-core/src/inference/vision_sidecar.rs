@@ -119,6 +119,24 @@ pub fn plan_sidecar(
 /// MAIN lane serves (that case is `MainLaneSees` or "pin it" territory, never a
 /// duplicate second copy of the same weights). Returns the first row whose GGUF
 /// AND mmproj both resolve locally, or the named skip reasons for the probe.
+/// Sidecar candidates that FAILED their verifiable-sight check this process —
+/// a row can claim Vision and carry artifacts yet still come up sightless (the
+/// projector/arch mismatch shape: "--mmproj was passed but /props reports
+/// modalities.vision=false"). Without this memory the daemon respawned the same
+/// failing candidate every reconcile tick — measured 2026-08-26: a 15GB non-VL
+/// pick churned in a spawn/kill loop that starved the MAIN lane below plan, so
+/// serving never became ready and the whole boot was lost. Fail once, remember,
+/// fall through to the next candidate. Per-process: a reboot retries honestly.
+fn failed_this_process() -> &'static dashmap::DashSet<String> {
+    static FAILED: std::sync::OnceLock<dashmap::DashSet<String>> = std::sync::OnceLock::new();
+    FAILED.get_or_init(dashmap::DashSet::new)
+}
+
+/// Record a candidate's sight-check failure so [`find_candidate`] skips it.
+pub fn mark_candidate_failed(model_id: &str) {
+    failed_this_process().insert(model_id.to_string());
+}
+
 pub fn find_candidate(
     rows: &[Model],
     active_model: Option<&str>,
@@ -126,6 +144,10 @@ pub fn find_candidate(
     let mut skipped = Vec::new();
     for m in rows {
         if !m.has(Capability::Vision) {
+            continue;
+        }
+        if failed_this_process().contains(&m.id) {
+            skipped.push(format!("{}: failed its sight check this boot — not retried", m.id));
             continue;
         }
         if active_model == Some(m.id.as_str()) {

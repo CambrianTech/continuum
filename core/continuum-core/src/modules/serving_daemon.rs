@@ -2211,8 +2211,9 @@ impl ServingDaemonModule {
                                                     class = "serving.vision.sidecar_failed",
                                                     model = cand.model.id.as_str(),
                                                     why = why.as_str(),
-                                                    "vision sidecar could not come up",
+                                                    "vision sidecar could not come up — this                                                      candidate is benched for the rest of the                                                      boot; the next reconcile tries the next row",
                                                 );
+                                                sidecar::mark_candidate_failed(&cand.model.id);
                                                 None
                                             }
                                         }

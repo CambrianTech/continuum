@@ -720,18 +720,50 @@ pub(crate) async fn dispatch_staged_swe_solve(
         card: card_id,
         room,
     } = dispatch;
-    let Ok(board) = airc
-        .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
-        .await
-    else {
-        // Unprobed until 2026-08-26: the boot-resume's re-fire died in this silent
-        // return and the round sat Working with nothing saying why — the exact
-        // "absence that looks like normal" class. Silence is not an outcome.
+    // Read the RUN ROOM's board — the dispatch HAS the room (StagedSolveDispatch
+    // requires it), and boards are per-room. The previous read went through the
+    // caller's GLOBAL paginated projection (work_board_complete), where a card
+    // beyond the page silently vanished: measured live 2026-08-26 — of two cards
+    // on one run-room board, one dispatched and one "was not in the caller's
+    // board projection" purely by page position. Room-scoped is both correct
+    // and unpaginated for the one board that matters.
+    let run_room = {
+        let subs = match airc.subscription_set().await {
+            Ok(s) => s,
+            Err(e) => {
+                crate::probe!(
+                    class = "benchmark.dispatch",
+                    card_id = %card_id.as_uuid(),
+                    claimer = %claimer,
+                    error = %e.to_string(),
+                    "dispatch aborted: caller's subscriptions unreadable — retried on                      the next edge"
+                );
+                return;
+            }
+        };
+        let found = subs
+            .all()
+            .into_iter()
+            .map(|sub| sub.as_room())
+            .find(|r| r.channel == room);
+        found
+    };
+    let Some(run_room) = run_room else {
         crate::probe!(
             class = "benchmark.dispatch",
             card_id = %card_id.as_uuid(),
             claimer = %claimer,
-            "dispatch aborted: the caller's work board could not be read — retried on              the next edge"
+            room = %room.as_uuid(),
+            "dispatch aborted: the claimer is not subscribed to the run room (her              subscription may still be resuming post-boot) — retried on the next edge"
+        );
+        return;
+    };
+    let Ok(board) = airc.work_board_in(&run_room).await else {
+        crate::probe!(
+            class = "benchmark.dispatch",
+            card_id = %card_id.as_uuid(),
+            claimer = %claimer,
+            "dispatch aborted: the run room's board could not be read — retried on              the next edge"
         );
         return;
     };
@@ -742,7 +774,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
             card_id = %card_id.as_uuid(),
             claimer = %claimer,
             board_cards = board.cards.len() as u64,
-            "dispatch aborted: card not in the caller's board projection (page size,              room subscription still resuming, or a stale card id) — retried on the              next edge"
+            "dispatch aborted: card not on the RUN room's board (stale card id, or              the board is still replicating) — retried on the next edge"
         );
         return;
     };
