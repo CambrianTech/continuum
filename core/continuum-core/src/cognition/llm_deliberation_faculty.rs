@@ -3872,12 +3872,24 @@ mod tests {
             // new overflow. Ornith serves at 166k where this ceiling is irrelevant; the
             // tight-window LCD persona (which does not do web research) pays with less
             // recall room, a conscious trade. If a third addition wants in, SHRINK first.
-            const AGENTIC_SURFACE_CEILING: u32 = 9400;
+            //
+            // 9400 → 10150, stated plainly (2026-08-25): three NATIVE GitHub-collaboration
+            // verbs — `code/github/pr-create` + `pr-comment` + `issue-create` (+748 tokens,
+            // their irreducible param schemas). This is the executor→TEAMMATE layer (Joel:
+            // "friendly in how code and GitHub work are managed"): she had LOCAL git but
+            // could not open/comment a PR or file an issue, and a native-call model can only
+            // emit calls for OFFERED tools, so catalog-only collaboration verbs were
+            // unusable by her hands. Same trade as the web add: Ornith serves at 166k where
+            // this is irrelevant; the tight-window LCD persona pays with less recall room.
+            // The shrink-first debt is now REAL at 10k — the next capability MUST shrink the
+            // surface (a category-index/discovery split for the rarely-used verbs, #333), or
+            // the LCD persona gets a reduced surface; do not keep bumping this.
+            const AGENTIC_SURFACE_CEILING: u32 = 10150;
             let surface =
                 faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
             assert!(
                 surface <= AGENTIC_SURFACE_CEILING,
-                "the agentic surface is now {surface} tokens (measured 9350, ceiling \
+                "the agentic surface is now {surface} tokens (measured 10098, ceiling \
                  {AGENTIC_SURFACE_CEILING}) — framing/tools grew. Shrink the surface (#333) \
                  or state plainly what was added and re-pin the ceiling"
             );
