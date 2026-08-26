@@ -1468,6 +1468,20 @@ fn clear_setuptools_build_debris(repo_dir: &Path) {
 }
 
 pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathBuf, String> {
+    // PER-INSTANCE SERIALIZATION — this function used to rely on "solve/grade
+    // run serially per instance"; the dispatch-time env PRE-WARM broke that
+    // assumption, and two concurrent builders writing one venv is a corrupt
+    // env with no error. The lock is the constraint fixed at the seam every
+    // caller shares (never a caller-side convention).
+    static ENV_LOCKS: std::sync::OnceLock<
+        dashmap::DashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>,
+    > = std::sync::OnceLock::new();
+    let lock = ENV_LOCKS
+        .get_or_init(dashmap::DashMap::new)
+        .entry(instance.instance_id.clone())
+        .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+        .clone();
+    let _held = lock.lock().await;
     let env_dir = swe_cache_dir().join("envs").join(&instance.instance_id);
     let py = env_dir.join("bin").join("python");
     if py.exists() {
@@ -2824,7 +2838,7 @@ pub async fn gold_gate(instance: &SweInstance) -> SweVerdict {
 /// every time. The solver's path stays the solver's for the whole recipe. `clone_at` already
 /// clears and re-stages, so the checkout is pristine by construction rather than by a reset we
 /// have to remember to call.
-async fn ensure_grade_checkout(instance: &SweInstance) -> Result<PathBuf, String> {
+pub async fn ensure_grade_checkout(instance: &SweInstance) -> Result<PathBuf, String> {
     let dir = swe_cache_dir().join("grades").join(&instance.instance_id);
     clone_at(instance, &dir).await?;
     Ok(dir)
