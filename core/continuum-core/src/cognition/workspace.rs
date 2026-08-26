@@ -723,12 +723,13 @@ impl Burst {
         use std::fmt::Write as _;
         let mut rendered = String::new();
         let _ = writeln!(rendered, "[room {room}]");
-        if let Some(ms) = now_ms {
-            if let Some(dt) = chrono::DateTime::from_timestamp_millis(ms as i64) {
-                let local = dt.with_timezone(&chrono::Local);
-                let _ = writeln!(rendered, "[now {}]", local.format("%Y-%m-%d %H:%M %A"));
-            }
-        }
+        // NO [now …] line here anymore (2026-08-26 glass box): this header is the
+        // FIRST bytes of the conversation, so the minute tick invalidated every
+        // message behind it — measured live as `cached=7945` (the stable system
+        // head) with the ENTIRE 10k-27k tail re-prefilled every act, ~647k fresh
+        // tokens in one boot. Temporal grounding lives in the deliberation
+        // prompt's VOLATILE tier (delivered as the newest turn, zero prefix
+        // cost) fed from `now_ms`, which stays on the Burst for exactly that.
         for turn in &turns {
             turn.write_line(&mut rendered);
         }
