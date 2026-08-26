@@ -38,46 +38,47 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
         return; // nothing survived — no task, no waiting, no noise
     }
     tokio::spawn(async move {
-        // Park 1: serving decode-verified (same primitive dispatch parks on).
-        if crate::inference::llama_server::await_ready_serving(SERVING_PARK)
-            .await
-            .is_none()
-        {
-            crate::probe!(
-                class = "bench.round.resume_blocked",
-                reason = "serving",
-                "working round(s) survive on disk but serving never became decode-ready \
-                 within the park — rounds stay Working for the next boot/edge"
-            );
-            return;
-        }
-        // Park 2: residency (a service loop, not mere registration — #455).
-        let started = std::time::Instant::now();
-        loop {
-            if !registry.resident_snapshot().await.is_empty() {
-                break;
-            }
-            if started.elapsed() > RESIDENCY_PARK {
-                crate::probe!(
-                    class = "bench.round.resume_blocked",
-                    reason = "residency",
-                    "working round(s) survive on disk but no citizen became resident \
-                     within the park — rounds stay Working for the next boot/edge"
-                );
-                return;
-            }
-            tokio::time::sleep(RESIDENCY_POLL).await;
-        }
-        // Fire the ONE driver decision per surviving round, RETRYING boundedly:
-        // a re-fire can abort legitimately right after boot (her board projection
-        // still resuming, a serving hiccup) and there is no settle event to chain
-        // from if nothing started — measured live 2026-08-26: the first one-shot
-        // resume's dispatch died in a then-silent early return and the round sat
-        // Working. The claim-<card> in-flight guard makes every retry harmless;
-        // a retry that finds the run live simply refuses.
+        // EVERY attempt re-parks (the one-shot park was measured failing live
+        // 2026-08-26: serving became decode-ready ~3 min AFTER a single 600s park
+        // expired, and the whole boot's resume was forfeited — a dead-reckoned
+        // timeout, the exact shape ROUND-LIFECYCLE §7 bans). The loop keeps
+        // waiting while the daemon is still trying; each blocked attempt says so.
         const RESUME_RETRIES: u32 = 12;
         const RETRY_SPACING: std::time::Duration = std::time::Duration::from_secs(90);
         for attempt in 1..=RESUME_RETRIES {
+            // Park 1: serving decode-verified (same primitive dispatch parks on).
+            if crate::inference::llama_server::await_ready_serving(SERVING_PARK)
+                .await
+                .is_none()
+            {
+                crate::probe!(
+                    class = "bench.round.resume_blocked",
+                    reason = "serving",
+                    attempt = attempt as u64,
+                    "serving not decode-ready within this attempt's park — re-parking"
+                );
+                continue;
+            }
+            // Park 2: residency (a service loop, not mere registration — #455).
+            let started = std::time::Instant::now();
+            let resident = loop {
+                if !registry.resident_snapshot().await.is_empty() {
+                    break true;
+                }
+                if started.elapsed() > RESIDENCY_PARK {
+                    break false;
+                }
+                tokio::time::sleep(RESIDENCY_POLL).await;
+            };
+            if !resident {
+                crate::probe!(
+                    class = "bench.round.resume_blocked",
+                    reason = "residency",
+                    attempt = attempt as u64,
+                    "no citizen resident within this attempt's park — re-parking"
+                );
+                continue;
+            }
             let due = crate::cognition::bench_round::next_unworked_per_round();
             if due.is_empty() {
                 return; // everything settled or in flight — the settle edge owns it now
@@ -120,7 +121,8 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
         crate::probe!(
             class = "bench.round.resume_blocked",
             reason = "retries_exhausted",
-            "resume retried its window out with unworked cards remaining — the round              stays Working for the next boot or settle edge"
+            "resume retried its window out with unworked cards remaining — the round \
+             stays Working for the next boot or settle edge"
         );
     });
 }
