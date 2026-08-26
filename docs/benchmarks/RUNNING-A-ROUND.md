@@ -22,11 +22,41 @@ rejoins) its own child room, grading closes cards, each settled card fires the
 next unworked one, and a Working round survives reboots — boot-resume re-parks
 and re-fires automatically. **Do not hand-drive a round. Reboots are safe.**
 
-## 1. Prerequisites (one-time per machine)
+## 1. Installation — bare machine to answering core (one-time)
+
+The README's benchmark section links HERE as the replication path, so this
+starts from nothing. Rounds run on the **headless Rust core from source** (the
+Docker quick-start serves a different model tier; scores published from this
+page are native-core runs). Per-OS gotchas and every known install woe live in
+**[docs/SETUP.md](../SETUP.md)** — if you hit one that isn't there, that's a
+bug to file, not a rite of passage.
 
 ```bash
-continuum start            # build + boot the headless core (or: continuum reboot)
-continuum ping             # verify the version trio (build #, sha, built-at)
+git clone https://github.com/CambrianTech/continuum.git && cd continuum
+npm install               # web-client deps + the setup scripts (Node is NOT in the serving path)
+npm run setup:rust        # pinned Rust toolchain + cmake + vendored submodules (llama.cpp fork)
+
+continuum start           # build + boot the headless core, wait until ready
+continuum ping            # the version trio (build #, sha, built-at) — deploys are PROVEN, never assumed
+```
+
+Identity/airc: every citizen's identity (keypair, peer_id, rooms) lives IN the
+core — no separate airc install is needed to run a round.
+
+The model: rounds below were scored on **Ornith-1.5-35B-A3B (Q4_K_M)**. The
+serving daemon serves the best on-disk model automatically; to fetch one:
+
+```bash
+continuum ai/inference/models    # what's on disk + what's serving now
+continuum models/pull --model=<catalog id>   # download a GGUF from HF and make it servable
+```
+
+> Honesty note: this page's reference runs happened on a long-lived dev machine.
+> The bare-machine path above is the real command sequence but has NOT yet been
+> replicated end-to-end on a cold host — the first cold replication should
+> update this note with anything it hit.
+
+```bash
 continuum benchmark/list   # the catalog — every runnable benchmark is one row here
 ```
 
@@ -45,16 +75,26 @@ deterministically at build time (e.g. vision-qa).
 # N instances from the dataset head:
 continuum benchmark/dispatch --name=swe-bench-verified --limit=3
 
-# Exact instances (replication: pin the list, publish the list):
+# Seeded random sample — the flag pair IS the replication recipe:
+continuum benchmark/dispatch --name=swe-bench-verified --sample=25 --seed=20260826
+
+# Exact instances (pin the list, publish the list):
 continuum benchmark/dispatch --name=swe-bench-verified \
   --instances='["django__django-16938","astropy__astropy-8707"]'
 ```
 
 - Omit `--assignees` to round-robin the live roster.
 - Omit `--room` for a fresh run room (`bench-<benchmark>-<epoch>`).
-- For a REPLICABLE sample, generate the instance list with a pinned RNG seed and
-  publish the seed + list alongside the score (2026-08-26 25-round seed: 20260826,
-  proportional sample over the 500-row Verified set, minus already-run instances).
+- `(dataset, seed, sample)` fully determines the list on every machine (shared
+  LCG, no platform rand) — publish seed + n with the score and anyone can
+  re-derive the exact instances.
+
+Read the score anytime with ONE command (regime included — model, window,
+build sha, host; publish nothing without it):
+
+```bash
+continuum benchmark/scoreboard
+```
 
 Everything after the dispatch command is automatic. Walk away.
 

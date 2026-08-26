@@ -37,6 +37,19 @@ assignees?: Array<string>,
  */
 instances: Array<string> | null, 
 /**
+ * Deterministic RANDOM SAMPLE: take this many instances chosen by `seed`
+ * instead of the dataset head. `(dataset, seed, sample)` fully determines
+ * the list on every machine — the flag pair IS the replication recipe, so
+ * publish both alongside the score. Combines with `limit` (sample wins),
+ * refused alongside explicit `instances`. SWE-class benchmarks only.
+ */
+sample?: number, 
+/**
+ * RNG seed for `sample` (default 0). Same LCG as the generated gyms — no
+ * platform rand, byte-stable selection forever.
+ */
+seed?: number, 
+/**
  * The room this run lives in. Omit to get a FRESH one per run, named
  * `bench-<benchmark>-<epoch>`.
  *
