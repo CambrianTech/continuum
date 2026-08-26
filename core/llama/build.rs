@@ -209,6 +209,9 @@ fn main() {
         add_search("build/ggml/src");
         add_search("build/src");
         add_search("build/tools/mtmd");
+        // Upstream b10636 split hashing (sha256/xxhash) into vendor/hash — libmtmd
+        // now needs vendor-hash's hash_sha256_hex at link time.
+        add_search("build/vendor/hash");
         add_search("build/common");
     }
 
@@ -261,6 +264,8 @@ fn main() {
     // tokens that get evaluated alongside text via mtmd_helper_eval_chunks.
     // Depends on llama-common (string utils, base64 decoder).
     link_static("mtmd", false);
+    // vendor::hash (b10636): sha256/xxhash helpers mtmd-helper depends on.
+    link_static("vendor-hash", false);
     // Upstream (2026 sync) renamed the common utils lib `common` →
     // `llama-common` and split off `llama-common-base` (build-info.cpp) to
     // stop `libcommon.a` colliding with other packages' common libs.
