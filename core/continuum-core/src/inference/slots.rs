@@ -145,6 +145,14 @@ impl Drop for KvSlotLease {
 
 /// The per-server slot pool: N leasable slot indices, activities resident in
 /// the shared paging engine.
+/// Recency tie-break window: within it, a fresher equal-cost tail outranks a
+/// staler one; beyond it equal-cost tails are genuinely equivalent. Strictly
+/// smaller than [`COST_STEP`] so pricing always dominates recency.
+const RECENCY_TIEBREAK_MS: u64 = 600_000;
+/// One token-cost step in the eviction score — must exceed the largest possible
+/// recency bonus so a single token of tail always outweighs any freshness.
+const COST_STEP: i64 = 1 << 20;
+
 pub struct KvSlotPool {
     pool: PagedResourcePool<ActivityKey, Arc<KvSlotLease>>,
     free: Arc<Mutex<Vec<u32>>>,
@@ -191,7 +199,16 @@ impl KvSlotPool {
                     .unwrap_or(view.last_access_at); // engine has no view of a just-inserted key: fall back to its own stamp
                 let stale_hours =
                     now_ms.saturating_sub(view.last_access_at) / (3600 * 1000);
-                (tokens >> stale_hours.min(20)) as i64
+                let cost = (tokens >> stale_hours.min(20)) as i64;
+                // EQUAL costs tie-break by RECENCY, never by map-iteration order —
+                // without this the tie fell to hash ordering, a platform coin flip
+                // (Linux CI evicted a just-refreshed slot; macOS happened not to).
+                // Priced first, LRU among equals: a fresher tail scores a bonus
+                // strictly smaller than one token-cost step, so pricing always
+                // dominates and recency only ever splits exact ties.
+                let age_ms = now_ms.saturating_sub(view.last_access_at);
+                let recency = RECENCY_TIEBREAK_MS.saturating_sub(age_ms) as i64;
+                cost.saturating_mul(COST_STEP) + recency
             }),
         });
         Self {
