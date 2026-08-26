@@ -623,6 +623,12 @@ impl LlmDeliberationFaculty {
         tools: Option<Vec<NativeToolSpec>>,
         system_prompt: String,
         stop_sequences: Option<Vec<String>>,
+        // The room this turn speaks in — the ACTIVITY identity. It is authoritative
+        // for the serving slot lease: warm KV is per (persona, room), so a persona
+        // running N concurrent activities (N detached solves) each keeps its own warm
+        // slot instead of all N collapsing onto one and thrashing (the 2026-08-26
+        // KV-reuse-0% bug). None only for the roomless test rig.
+        room_id: Option<uuid::Uuid>,
     ) -> TextGenerationRequest {
         TextGenerationRequest {
             messages,
@@ -678,7 +684,7 @@ impl LlmDeliberationFaculty {
             },
             request_id: None,
             user_id: None,
-            room_id: None,
+            room_id: room_id.map(|r| r.to_string()),
             purpose: Some("cognition/deliberation".to_string()),
             persona_id: Some(self.persona_id.to_string()),
         }
@@ -2152,7 +2158,7 @@ impl Faculty for LlmDeliberationFaculty {
                 let mut stops = super::deliberation_budget::peer_stop_sequences(&ws.turns);
                 stops.extend(super::deliberation_budget::reserved_marker_stop_sequences());
                 (!stops.is_empty()).then_some(stops)
-            });
+            }, Some(ws.room_id));
         // #169 STREAMING: when THIS turn carries a token sink (a live Speak the caller
         // wants progressive), generate through `generate_stream` so each decoded chunk
         // is forwarded to the caller (→ persona.turn.delta → room/TTS/avatar). The
@@ -2898,6 +2904,7 @@ mod tests {
                 None,
                 view.system.clone(),
                 None,
+                Some(ws.room_id),
             );
             // Generation is bounded — never the unbounded `None` that overran n_ctx.
             let cap = request
