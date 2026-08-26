@@ -2531,17 +2531,41 @@ pub(crate) fn workspace_candidate_diff(ws: &str) -> Result<String, CommandError>
 /// (fresh clone at base_commit, held-out tests, experience-stream write) as
 /// the operator verb. One grader, never two.
 pub(crate) async fn grade_swe(p: SweGradeParams) -> Result<SweGradeResult, CommandError> {
-    let dataset = p
-        .dataset
-        .clone()
-        .unwrap_or_else(|| "princeton-nlp/SWE-bench_Lite".to_string());
-    let rows = swe_bench::load_dataset(&dataset)
-        .await
-        .map_err(CommandError::Internal)?;
-    let instance = rows
-        .into_iter()
-        .find(|r| r.instance_id == p.instance)
-        .ok_or_else(|| CommandError::NotFound(format!("{} not found in {dataset}", p.instance)))?;
+    // Dataset resolution: an explicit dataset wins; otherwise SEARCH every known
+    // SWE dataset for the instance. The old default hardcoded Lite, so any
+    // Verified-only instance was ungradeable — glass-boxed live 2026-08-26:
+    // astropy-13236 (a swe-bench-verified dispatch) auto-graded as
+    // "[not_found] … not found in princeton-nlp/SWE-bench_Lite" and the whole
+    // attempt's verdict vanished. The instance names its dataset; the grader's
+    // job is to find it, not to guess one.
+    let candidate_datasets: Vec<String> = match p.dataset.clone() {
+        Some(d) => vec![d],
+        None => known_benchmarks()
+            .iter()
+            .filter_map(|b| b.swe_dataset())
+            .map(|d| d.to_string())
+            .collect(),
+    };
+    let mut instance_row = None;
+    let mut searched = Vec::new();
+    for dataset in &candidate_datasets {
+        let rows = swe_bench::load_dataset(dataset)
+            .await
+            .map_err(CommandError::Internal)?;
+        if let Some(r) = rows.into_iter().find(|r| r.instance_id == p.instance) {
+            instance_row = Some((r, dataset.clone()));
+            break;
+        }
+        searched.push(dataset.clone());
+    }
+    let Some((instance, dataset)) = instance_row else {
+        return Err(CommandError::NotFound(format!(
+            "{} not found in any known SWE dataset (searched: {})",
+            p.instance,
+            searched.join(", ")
+        )));
+    };
+    let _ = &dataset; // named for the receipt below; instance carries everything else
 
     // Resolve the candidate patch. A workspace's diff is READ here but graded in a fresh
     // clone below — where the solver worked is never where the score is taken.

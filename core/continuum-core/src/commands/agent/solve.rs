@@ -1638,6 +1638,7 @@ impl AgentSolve {
                     framing,
                     remaining,
                     fact,
+                    &p.task,
                     &mut settled,
                     &workspace,
                 )
@@ -1691,6 +1692,7 @@ impl AgentSolve {
                         framing,
                         remaining,
                         fact,
+                        &p.task,
                         &mut settled,
                         &workspace,
                     )
@@ -1808,6 +1810,7 @@ impl AgentSolve {
                             framing,
                             remaining,
                             fact,
+                            &p.task,
                             &mut settled,
                             &workspace,
                         )
@@ -2024,13 +2027,21 @@ async fn redrive_with_fact(
     framing: crate::cognition::workspace::TurnFraming,
     remaining: usize,
     fact: String,
+    task: &str,
     settled: &mut crate::cognition::act_observe::SettleOutcome,
     workspace: &str,
 ) -> (String, Vec<String>) {
+    // THE FACT ALONE IS BLIND (glass-boxed 2026-08-26): a resumed attempt's
+    // re-drive runs on a fresh fork whose working memory never held the task,
+    // and the fact says "the example in the task description" — she answered
+    // 'which file?' and settled empty. The re-drive burst restates the WHOLE
+    // task beneath the structural fact, so fresh-start and post-interrupt read
+    // identically (continuity: one code path).
+    let content = format!("{fact}\n\nThe task you are working, restated in full:\n\n{task}");
     let redelivery = crate::persona::rag_budget::RagDelivery {
         source_id: "airc".to_string(),
         items: vec![crate::persona::rag_budget::RagItem {
-            content: fact,
+            content,
             tokens: 0,
             metadata: serde_json::json!({
                 "peer_id": "peer",

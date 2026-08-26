@@ -32,13 +32,11 @@ max_acts?: number,
  * and anyone standing there — human screen or citizen mind — perceives it
  * through the ONE ViewState pipe.
  *
- * Omitted → `Uuid::nil()`, which is the ROOMLESS shape: `apply_act` skips
- * receipt radiation entirely for a nil room (radiating them stole the
- * single-room chat projection onto a phantom, live-proven 2026-08-12), so a
- * roomless solve does its work invisibly. That was every dispatched benchmark
- * run until this param existed — the exact disconnection
- * BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md names as the failure mode, and the
- * reason the flywheel saw no turns from a full graded attempt.
+ * Provided → the run REJOINS that activity (resume and dispatch are the same
+ * motion). Omitted → the run MINTS its own fresh activity room at birth
+ * (probe `agent.solve.room_minted`). THE LAW (Joel, 2026-08-26): an activity
+ * without a room is unrepresentable — the old `Uuid::nil()` invisible-run
+ * mode (13,209 unmeasured roomless turns, #425) no longer exists.
  */
 room?: string, 
 /**
