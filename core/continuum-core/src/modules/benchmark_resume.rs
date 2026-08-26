@@ -45,7 +45,27 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
         // waiting while the daemon is still trying; each blocked attempt says so.
         const RESUME_RETRIES: u32 = 12;
         const RETRY_SPACING: std::time::Duration = std::time::Duration::from_secs(90);
-        for attempt in 1..=RESUME_RETRIES {
+        // After the fast post-boot window, the task DOES NOT EXIT — it degrades
+        // to a slow standing watch. Measured live 2026-08-26: serving came
+        // decode-ready ~2 minutes AFTER the 12th attempt, and the round sat
+        // becalmed — Working, serving ready, citizens resident, zero drivers —
+        // with nothing scheduled to ever revive it ("next boot or settle edge",
+        // and no settle can come when nothing runs). The resident assignee even
+        // RENEWS the dead solves' claims, so the lapse sweeper can't free them
+        // either. A watchdog tick is the missing edge; `bench.round.becalmed`
+        // is the sensor that makes a stuck round LOUD instead of silent.
+        const SLOW_WATCH: std::time::Duration = std::time::Duration::from_secs(300);
+        let mut attempt: u32 = 0;
+        loop {
+            attempt += 1;
+            let fast = attempt <= RESUME_RETRIES;
+            if attempt == RESUME_RETRIES + 1 {
+                crate::probe!(
+                    class = "bench.round.slow_watch",
+                    "fast resume window spent — degrading to a standing 5-minute watch \
+                     (the round can no longer be silently becalmed)"
+                );
+            }
             // Park 1: serving decode-verified (same primitive dispatch parks on).
             if crate::inference::llama_server::await_ready_serving(SERVING_PARK)
                 .await
@@ -57,6 +77,9 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
                     attempt = attempt as u64,
                     "serving not decode-ready within this attempt's park — re-parking"
                 );
+                if !fast {
+                    tokio::time::sleep(SLOW_WATCH).await; // slow watch: no hot spin while serving is down
+                }
                 continue;
             }
             // Park 2: residency (a service loop, not mere registration — #455).
@@ -77,11 +100,28 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
                     attempt = attempt as u64,
                     "no citizen resident within this attempt's park — re-parking"
                 );
+                if !fast {
+                    tokio::time::sleep(SLOW_WATCH).await; // slow watch: residency park already waited 20min
+                }
                 continue;
             }
             let due = crate::cognition::bench_round::next_unworked_per_round();
             if due.is_empty() {
-                return; // everything settled or in flight — the settle edge owns it now
+                if !crate::cognition::bench_round::any_working_round() {
+                    return; // every round terminal — the watch has nothing left to guard
+                }
+                // In flight (the settle edge owns the chain) — keep the slow
+                // watch alive as the backstop for the NEXT becalming.
+                tokio::time::sleep(SLOW_WATCH).await;
+                continue;
+            }
+            if !fast {
+                crate::probe!(
+                    class = "bench.round.becalmed",
+                    unworked = due.len() as u64,
+                    "Working round with unworked cards, serving ready, citizens \
+                     resident, and NO driver — the watchdog is reviving it now"
+                );
             }
             for next in due {
                 let airc = registry
@@ -168,14 +208,8 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
                 )
                 .await;
             }
-            tokio::time::sleep(RETRY_SPACING).await;
+            tokio::time::sleep(if fast { RETRY_SPACING } else { SLOW_WATCH }).await;
         }
-        crate::probe!(
-            class = "bench.round.resume_blocked",
-            reason = "retries_exhausted",
-            "resume retried its window out with unworked cards remaining — the round \
-             stays Working for the next boot or settle edge"
-        );
     });
 }
 
