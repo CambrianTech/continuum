@@ -1990,7 +1990,34 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                         )
                         .and_then(|(p, r)| crate::inference::slots::ActivityKey::new(p, r));
                     match key {
-                        Some(k) => self.slot_for_activity(k).await,
+                        Some(k) => {
+                            let leased = self.slot_for_activity(k).await;
+                            if leased.is_some() {
+                                // Price basis for the eviction policy (B5): this
+                                // activity's current prompt size, the same chars/4
+                                // estimate the overshoot alarm uses — comparable
+                                // across slots, which is all eviction needs.
+                                let approx_tokens = body
+                                    .get("messages")
+                                    .and_then(|m| m.as_array())
+                                    .map(|msgs| {
+                                        msgs.iter()
+                                            .filter_map(|m| {
+                                                m.get("content").and_then(|c| c.as_str())
+                                            })
+                                            .map(|c| c.len() / 4)
+                                            .sum::<usize>()
+                                    })
+                                    .unwrap_or(0) as u64;
+                                let root = self.endpoints().root().to_string();
+                                if let Some(Some(pool)) =
+                                    crate::inference::slots::directory().get(&root)
+                                {
+                                    pool.note_tail(&k, approx_tokens);
+                                }
+                            }
+                            leased
+                        }
                         None => None,
                     }
                 }

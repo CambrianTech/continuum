@@ -33,7 +33,9 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use uuid::Uuid;
 
-use crate::paging::pool::{lru_priority, PagedResourcePool, PoolConfig};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use crate::paging::pool::{PagedResourcePool, PoolConfig};
 
 /// How a request may touch serving slots — the traffic-class policy, AS DATA
 /// (one tested map over the existing `purpose` strings, answering the
@@ -128,6 +130,11 @@ impl ActivityKey {
 pub struct KvSlotLease {
     slot: u32,
     free: Arc<Mutex<Vec<u32>>>,
+    /// The activity's last-known prompt size in tokens — the COST basis for the
+    /// priced eviction policy (cost_of_loss ∝ tail re-prefill). Updated at each
+    /// pin from the request's own token estimate; an estimate is fine because
+    /// eviction only needs slots COMPARABLE, not absolutely priced.
+    tail_tokens: AtomicU64,
 }
 
 impl Drop for KvSlotLease {
@@ -167,10 +174,25 @@ impl KvSlotPool {
             // eviction happens only through the explicit make-room path below.
             max_bytes: (citizen_slots as u64) + 1,
             sizer: Arc::new(|_| 1),
-            // LRU now; the PRICED policy (tail_tokens / prefill_rate — a 7.6k
-            // head must never evict a 36k tail, KV-CACHE-ECONOMY §2) replaces
-            // this closure in slice B5 through the same seam.
-            eviction_priority: lru_priority(),
+            // PRICED eviction (plan B5, KV-CACHE-ECONOMY §3.2/§6 — the classic
+            // heuristic floor, dropped into the engine's own priority seam):
+            // cost_of_loss ∝ the activity's tail tokens (what a cold re-entry
+            // re-prefills), discounted by staleness — halved per hour idle — so
+            // an abandoned giant eventually yields to live small activities.
+            // Ascending sort evicts lowest first, so the CHEAPEST tail goes
+            // first and a 7.6k head can never displace a warm 36k tail (§2's
+            // arithmetic, pinned by test below). The learned/bandit policy is a
+            // later drop-in behind this same closure seam.
+            eviction_priority: Arc::new(|view, lease: &Arc<KvSlotLease>| {
+                let tokens = lease.tail_tokens.load(Ordering::Relaxed).max(1);
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(view.last_access_at);
+                let stale_hours =
+                    now_ms.saturating_sub(view.last_access_at) / (3600 * 1000);
+                (tokens >> stale_hours.min(20)) as i64
+            }),
         });
         Self {
             pool,
@@ -188,6 +210,14 @@ impl KvSlotPool {
     /// spare one.
     pub fn scratch_slot(&self) -> Option<u32> {
         self.scratch
+    }
+
+    /// Record the activity's current prompt size — the cost basis the priced
+    /// eviction reads. Called at pin time with the request's token estimate.
+    pub fn note_tail(&self, key: &ActivityKey, tokens: u64) {
+        if let Some(lease) = self.pool.get(key) {
+            lease.tail_tokens.store(tokens.max(1), Ordering::Relaxed);
+        }
     }
 
     /// Lease the slot for `key`: warm reuse if the activity is resident, a free
@@ -228,7 +258,11 @@ impl KvSlotPool {
                         .lock()
                         .pop()
                         .ok_or_else(|| "no free slot index".to_string())?;
-                    Ok(Arc::new(KvSlotLease { slot, free }))
+                    Ok(Arc::new(KvSlotLease {
+                        slot,
+                        free,
+                        tail_tokens: AtomicU64::new(0),
+                    }))
                 })
                 .await;
             match res {
@@ -380,6 +414,34 @@ mod tests {
         assert_eq!(class_for(Some("some-future-producer")), SlotClass::Background,
             "unknown purposes default AWAY from citizen slots");
         assert_eq!(class_for(None), SlotClass::Background);
+    }
+
+    // what this catches: KV-CACHE-ECONOMY §2's arithmetic, as a pinned test. A
+    // small fresh head must never displace a large warm tail: the shared head is
+    // "big enough to win slot selection and small enough that winning throws
+    // away 4.7× more than it saves". The priced policy evicts the CHEAPEST
+    // tail, recency notwithstanding.
+    #[tokio::test]
+    async fn a_small_head_never_evicts_a_large_warm_tail() {
+        let pool = KvSlotPool::new("test", 2); // no scratch on 2 slots
+        let big = key(1, 1);
+        let small = key(1, 2);
+        pool.lease(big).await.expect("big");
+        pool.note_tail(&big, 36_000);
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        pool.lease(small).await.expect("small");
+        pool.note_tail(&small, 7_600);
+        // small is the FRESHER activity — under LRU the big tail would be the
+        // victim. Under the priced policy the CHEAP tail goes.
+        let incoming = pool.lease(key(1, 3)).await.expect("third leases");
+        assert!(
+            pool.lease(big).await == Some(0) || incoming != 0,
+            "sanity: some slot was assigned"
+        );
+        // The big activity must still be warm (its slot survives): re-leasing it
+        // is a warm hit on the SAME slot, not a re-assignment.
+        let big_again = pool.lease(big).await.expect("big still resident");
+        assert_eq!(big_again, 0, "the 36k tail survived; the 7.6k head was the victim");
     }
 
     // what this catches: the directory latch — an unsupported server must never
