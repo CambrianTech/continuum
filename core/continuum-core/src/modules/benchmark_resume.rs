@@ -97,6 +97,38 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
                     );
                     continue;
                 };
+                // RECONCILE BEFORE RE-FIRING: a settle that happened while a core
+                // was down fired its event into the void, so the round may owe a
+                // card the board already finished (or dropped). Read the run room's
+                // board; a terminal or absent card is settled directly instead of
+                // being re-fired forever.
+                if let Some(state) = board_state_of(&airc, next.run_room, next.card).await {
+                    match state {
+                        BoardCardState::Terminal(s) => {
+                            crate::probe!(
+                                class = "bench.round.reconciled",
+                                card_id = %next.card,
+                                state = %s,
+                                "card settled while a core was down — reconciled from                                  the board, not re-fired"
+                            );
+                            crate::cognition::bench_round::settle_card_direct(next.card, &s);
+                            continue;
+                        }
+                        BoardCardState::Absent => {
+                            crate::probe!(
+                                class = "bench.round.reconciled",
+                                card_id = %next.card,
+                                state = "absent",
+                                "card no longer on the run room's board — settled as                                  closed so the round can complete instead of waiting                                  forever on a ghost"
+                            );
+                            crate::cognition::bench_round::settle_card_direct(
+                                next.card, "closed",
+                            );
+                            continue;
+                        }
+                        BoardCardState::Workable => {}
+                    }
+                }
                 crate::probe!(
                     class = "bench.round.resumed",
                     card_id = %next.card,
@@ -125,4 +157,43 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
              stays Working for the next boot or settle edge"
         );
     });
+}
+
+/// What the run room's board says about a card, read through the claimer's airc.
+enum BoardCardState {
+    /// On the board in a workable (non-terminal) state — re-fire it.
+    Workable,
+    /// On the board in a terminal state (the string is that state).
+    Terminal(String),
+    /// Not on the board at all.
+    Absent,
+}
+
+/// `None` = the board could not be read (subscriptions resuming) — decide nothing.
+async fn board_state_of(
+    airc: &std::sync::Arc<airc_lib::Airc>,
+    run_room: uuid::Uuid,
+    card: uuid::Uuid,
+) -> Option<BoardCardState> {
+    let subs = airc.subscription_set().await.ok()?;
+    let room = subs
+        .all()
+        .into_iter()
+        .map(|s| s.as_room())
+        .find(|r| r.channel.as_uuid() == run_room)?;
+    let board = airc.work_board_in(&room).await.ok()?;
+    let snapshot = board.snapshot();
+    let Some(c) = snapshot
+        .cards
+        .iter()
+        .find(|c| c.card_id.as_uuid() == card)
+    else {
+        return Some(BoardCardState::Absent);
+    };
+    let state = format!("{:?}", c.state).to_ascii_lowercase();
+    if crate::cognition::bench_round::is_terminal_card_state(&state) {
+        Some(BoardCardState::Terminal(state))
+    } else {
+        Some(BoardCardState::Workable)
+    }
 }

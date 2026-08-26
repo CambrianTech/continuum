@@ -748,7 +748,7 @@ fn start_request(model: &Model, _seq_id: i32, req: GenerationRequest) -> Result<
             chain = chain.top_p(req.sampling.top_p as f32, 1);
         }
         // 64 = llama.cpp default last-n window for the penalty calculation.
-        chain = chain.penalties(64, req.sampling.repeat_penalty, 0.0, 0.0);
+        chain = chain.penalties(model.n_vocab(), 64, req.sampling.repeat_penalty, 0.0, 0.0);
         let temp = if req.sampling.temperature > 0.0 {
             req.sampling.temperature as f32
         } else {

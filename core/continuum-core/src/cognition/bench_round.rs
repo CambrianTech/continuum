@@ -574,6 +574,20 @@ pub fn driver_for_card(card_id: Uuid) -> WorkDriver {
 /// `bench.round.done` exactly once when the last card lands (the round is removed on
 /// that transition). Grade info is NOT in this payload — the grade runs minutes after
 /// close — so the END probe reports totals, not verdicts.
+/// Settle a card by DIRECT observation (not a wire event) — the reconcile path
+/// for settles that happened while this core was down: a card closed during
+/// downtime fired its state-change into the void, and the round would wait on
+/// it forever (measured 2026-08-26: the boot resume retried a card the board no
+/// longer offered, every attempt honestly aborting "not on the board"). Routes
+/// through the SAME payload-shaped observer so probes and the Done transition
+/// stay single-sourced.
+pub fn settle_card_direct(card: Uuid, state: &str) {
+    observe_card_event(&serde_json::json!({
+        "card_id": card.to_string(),
+        "state": state,
+    }));
+}
+
 pub fn observe_card_event(payload: &Value) {
     let state = payload
         .get("state")
