@@ -2262,6 +2262,7 @@ impl Faculty for LlmDeliberationFaculty {
             cap.record(
                 self.persona_id,
                 ws.room_id,
+                ws.cause.as_str(),
                 0,
                 &view.system,
                 &messages,
@@ -2677,7 +2678,7 @@ mod tests {
             .with_context_window(32_768);
             let same = "I apologize for any repetition. Is there something specific?";
             let ws = Workspace::new(crate::cognition::workspace::Burst::from_turns(
-                Uuid::new_v4(),
+                crate::identity::ActivityRoom::mint(),
                 vec![
                     BurstTurn::attributed(false, "Asha", "hello!", None),
                     BurstTurn::attributed(true, "Anwen", same, None),
@@ -3964,7 +3965,7 @@ mod tests {
             )
             .with_context_window(8192);
 
-            let room = Uuid::new_v4();
+            let room = crate::identity::ActivityRoom::mint();
             let turns = vec![
                 BurstTurn::attributed(false, "Operator", "can you summarize the thread?", Some(1)),
                 BurstTurn::attributed(true, "Asha", "I propose using bart-large-cnn.", Some(2)),
@@ -4061,7 +4062,7 @@ mod tests {
                 BurstTurn::attributed(false, "Atlas", "shall we outline the steps first?", Some(4)),
                 BurstTurn::attributed(true, "Casper", v3, Some(5)),
             ];
-            let ws = Workspace::new(Burst::from_turns(Uuid::new_v4(), turns));
+            let ws = Workspace::new(Burst::from_turns(crate::identity::ActivityRoom::mint(), turns));
             let view = faculty.prompt_view(&ws);
 
             // Exactly ONE assistant rendering of the template survives.

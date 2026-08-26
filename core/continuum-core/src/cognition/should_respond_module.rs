@@ -35,6 +35,10 @@ pub const SHOULD_RESPOND_COMMAND: &str = "ai/should-respond";
 struct ShouldRespondParams {
     /// Which persona's mind to run.
     persona_id: Uuid,
+    /// The room the thread lives in — REQUIRED (an activity without a room is
+    /// unrepresentable, #425). A request without it is refused at parse, which
+    /// is the typed refusal replacing the old silent nil-room tick.
+    room_id: Uuid,
     /// The consolidated burst — the "catch up on the thread" world-state the
     /// persona reasons over this tick (recent room transcript, consolidated).
     burst: String,
@@ -90,7 +94,16 @@ impl ServiceModule for ShouldRespondModule {
                 // Run the persona's continuous mind over the burst. The decision
                 // is the OUTPUT of cognition; `None` (nothing won attention
                 // strongly enough to externalize) is effective silence = Pass.
-                let workspace = cycle.run(p.burst).await;
+                let room = crate::identity::ActivityRoom::from_uuid(p.room_id)
+                    .map_err(|_| {
+                        format!("{SHOULD_RESPOND_COMMAND}: room_id must be a real (non-nil) room (#425)")
+                    })?;
+                let workspace = cycle
+                    .run_framed(
+                        crate::cognition::workspace::Burst::raw_in(room, p.burst),
+                        crate::cognition::workspace::TurnFraming::ambient(),
+                    )
+                    .await;
                 let decision = workspace.decision().cloned().unwrap_or(Decision::Pass);
                 CommandResult::json(&decision)
             }

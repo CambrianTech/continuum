@@ -977,7 +977,10 @@ async fn serve_persona_loop_inner(
         // the message was deduped/quarantined — an honest gap, never a made-up link.
         let workspace_burst =
             crate::cognition::workspace::Burst::from_turns_at(
-                turn_room,
+                // turn_room falls back to identity.default_room (A.6), which is minted
+                // v4 at identity creation — non-nil by construction.
+                crate::identity::ActivityRoom::from_uuid(turn_room)
+                    .expect("turn_room falls back to the identity's default_room, never nil"),
                 ws_turns,
                 Some(now_ms),
                 // The arrival that woke this turn IS its cause. A dedup Drop or a
@@ -1183,7 +1186,6 @@ async fn serve_persona_loop_inner(
                     let outcome = crate::cognition::act_observe::drive_to_settle(
                         &cycle,
                         workspace_burst,
-                        turn_room,
                         LIVE_MAX_ACTS,
                         framing,
                     )
@@ -2554,7 +2556,8 @@ async fn run_self_cycle(
         ctx.identity.default_room,
     );
     let burst = crate::cognition::workspace::Burst::from_turns_at(
-        ctx.identity.default_room,
+        crate::identity::ActivityRoom::from_uuid(ctx.identity.default_room)
+            .expect("identity.default_room is minted v4 at creation, never nil"),
         selftick_turns,
         Some(now_ms),
         // Ambient, and honestly so. The self-tick wakes on a CHANGE to a re-read
@@ -2735,7 +2738,6 @@ async fn run_self_cycle(
         let outcome = crate::cognition::act_observe::drive_to_settle(
             &cycle,
             burst,
-            ctx.identity.default_room,
             LIVE_MAX_ACTS,
             crate::cognition::workspace::TurnFraming::self_thread(false),
         )
@@ -3328,7 +3330,7 @@ mod tests {
 
         #[test]
         fn remote_peer_renders_with_roster_name_self_with_agent_name() {
-            let room = Uuid::nil();
+            let room = crate::identity::ActivityRoom::test_room();
             let me = "me-peer";
             let joel = "7711fe60-a19f-4f41-9ab6-24c884757338";
             let stranger = "deadbeef-0000-0000-0000-000000000000";

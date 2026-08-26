@@ -58,11 +58,10 @@ use super::types::{SettleOutcome, SettleStep};
 pub async fn drive_to_settle(
     cycle: &WorkspaceCycle,
     burst: impl Into<Burst>,
-    room_id: Uuid,
     max_acts: usize,
     framing: TurnFraming,
 ) -> SettleOutcome {
-    let settled = settle_to_outcome(cycle, burst, room_id, max_acts, framing).await;
+    let settled = settle_to_outcome(cycle, burst.into(), max_acts, framing).await;
     if let Some(body) = cycle.acting() {
         crate::cognition::experience::record_lived_turn(
             &crate::modules::persona_instance_manager::resolve_continuum_root(),
@@ -77,12 +76,13 @@ pub async fn drive_to_settle(
 /// reach it — every produced outcome therefore passes the lived-experience seam.
 async fn settle_to_outcome(
     cycle: &WorkspaceCycle,
-    burst: impl Into<Burst>,
-    room_id: Uuid,
+    burst: Burst,
     max_acts: usize,
     framing: TurnFraming,
 ) -> SettleOutcome {
-    let burst: Burst = burst.into();
+    // The turn's room comes FROM the burst — witnessed non-nil at construction,
+    // so the drive can no longer disagree with the rendered header (#425).
+    let room_id: Uuid = burst.room.as_uuid();
     let mut acts = 0usize;
     // Rolling act-duration sum for the inline pace verdict below.
     let mut pace_sum_secs: f64 = 0.0;
@@ -313,7 +313,6 @@ async fn settle_to_outcome(
         let (step, step_metrics) = settle_step(
             cycle,
             burst.clone(),
-            room_id,
             may_act,
             framing,
             situation,
@@ -565,18 +564,21 @@ async fn settle_to_outcome(
 /// whether it is her own self-initiated heartbeat. It only reshapes the system
 /// prompt (the silence affordance — see [`Workspace::directed_at_self`] — and the
 /// "your own time" framing); the per-step motion is otherwise identical. The
-/// burst itself is `impl Into<Burst>`: an attributed `Burst` (live/eval, carries
-/// authorship) or a raw `String`/`&str` (collapses to one opaque turn).
+/// burst is an attributed [`Burst`] carrying its activity room — the step's room
+/// is read from it, never passed beside it (#425).
 pub async fn settle_step(
     cycle: &WorkspaceCycle,
     burst: impl Into<Burst>,
-    room_id: Uuid,
     may_act: bool,
     framing: TurnFraming,
     situation: Situation,
     chain: &super::apply::ActChain,
 ) -> (SettleStep, Option<TurnMetrics>) {
     let burst: Burst = burst.into();
+    // The step's room comes FROM the burst (witnessed non-nil, #425). Raw-string
+    // conversion is #[cfg(test)]-only, so production can only arrive here with a
+    // real attributed Burst.
+    let room_id: Uuid = burst.room.as_uuid();
     // Snapshot the burst's PEER turns before the workspace consumes it — the
     // draft-side echo check (#303) below compares her settled utterance
     // against exactly what she reasoned over, so the evidence can never
@@ -587,7 +589,7 @@ pub async fn settle_step(
         .filter(|t| !t.is_self && !t.author.trim().is_empty())
         .cloned()
         .collect();
-    let ws = cycle.run_situated(burst, room_id, framing, situation).await;
+    let ws = cycle.run_situated(burst, framing, situation).await;
     // The cost of THIS tick's deliberation generation — latency + tokens of the
     // model call behind the verdict. Carried out alongside the step so the caller
     // (the eval driver, or the live heartbeat) can accumulate per-turn speed and

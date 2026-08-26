@@ -586,10 +586,8 @@ mod tests {
         let outcome = drive_to_settle(
             &cycle,
             "[eval]\npeer: what is 2+2?",
-            Uuid::new_v4(),
             8,
-            TurnFraming::ambient(),
-        )
+            TurnFraming::ambient(),)
         .await;
 
         assert_eq!(outcome.acts, 1, "acted exactly once before settling");
@@ -625,10 +623,8 @@ mod tests {
         let outcome = drive_to_settle(
             &cycle,
             "fix the bug in sympy/core/basic.py",
-            Uuid::new_v4(),
             8,
-            TurnFraming::directed().on_workspace(),
-        )
+            TurnFraming::directed().on_workspace(),)
         .await;
 
         assert_eq!(
@@ -673,10 +669,8 @@ mod tests {
         let outcome = drive_to_settle(
             &cycle,
             "what do you think?",
-            Uuid::new_v4(),
             8,
-            TurnFraming::directed(),
-        )
+            TurnFraming::directed(),)
         .await;
 
         assert_eq!(
@@ -753,10 +747,8 @@ mod tests {
         let outcome = drive_to_settle(
             &cycle,
             "fix the bug",
-            Uuid::new_v4(),
             20,
-            TurnFraming::ambient().on_workspace(),
-        )
+            TurnFraming::ambient().on_workspace(),)
         .await;
 
         assert_eq!(
@@ -788,10 +780,8 @@ mod tests {
         let ambient = drive_to_settle(
             &cycle2,
             "look around",
-            Uuid::new_v4(),
             20,
-            TurnFraming::ambient(),
-        )
+            TurnFraming::ambient(),)
         .await;
         assert_eq!(
             ambient.acts, 20,
@@ -826,10 +816,8 @@ mod tests {
         drive_to_settle(
             &cycle,
             "fix the bug",
-            Uuid::new_v4(),
             6,
-            TurnFraming::ambient().on_workspace(),
-        )
+            TurnFraming::ambient().on_workspace(),)
         .await;
         let entries = wm.recent_entries();
         let budget_facts: Vec<_> = entries
@@ -863,7 +851,7 @@ mod tests {
             8,
         )
         .with_acting(body2);
-        drive_to_settle(&cycle2, "look around", Uuid::new_v4(), 6, TurnFraming::ambient()).await;
+        drive_to_settle(&cycle2, "look around", 6, TurnFraming::ambient()).await;
         assert!(
             !wm2
                 .recent_entries()
@@ -888,7 +876,7 @@ mod tests {
             .with_acting(body(exec.clone(), adm.clone()));
 
         let outcome =
-            drive_to_settle(&cycle, "go", Uuid::new_v4(), 2, TurnFraming::ambient()).await;
+            drive_to_settle(&cycle, "go", 2, TurnFraming::ambient()).await;
 
         assert_eq!(outcome.acts, 2, "spent exactly the observer's budget");
         assert!(
@@ -922,7 +910,7 @@ mod tests {
         // Budget of 20 acts, but she loops on the identical call — the backstop must fire long
         // before, at 4 acts (3 consecutive identical repeats + the first).
         let outcome =
-            drive_to_settle(&cycle, "go", Uuid::new_v4(), 20, TurnFraming::ambient()).await;
+            drive_to_settle(&cycle, "go", 20, TurnFraming::ambient()).await;
 
         assert_eq!(
             outcome.acts, 4,
@@ -953,12 +941,10 @@ mod tests {
         let (deferred, _) = settle_step(
             &cycle,
             "go",
-            Uuid::new_v4(),
             false,
             TurnFraming::ambient(),
             Situation::FreshContext,
-            &ActChain::new(),
-        )
+            &ActChain::new(),)
         .await;
         assert!(
             matches!(deferred, SettleStep::WouldAct { .. }),
@@ -972,12 +958,10 @@ mod tests {
         let (ran, _) = settle_step(
             &cycle,
             "go",
-            Uuid::new_v4(),
             true,
             TurnFraming::ambient(),
             Situation::FreshContext,
-            &ActChain::new(),
-        )
+            &ActChain::new(),)
         .await;
         assert!(
             matches!(ran, SettleStep::Acted { .. }),
@@ -1150,10 +1134,8 @@ mod tests {
         let outcome = drive_to_settle(
             &cycle,
             "[eval]\npeer: where does the program start and what does it call?",
-            Uuid::new_v4(),
             8,
-            TurnFraming::ambient(),
-        )
+            TurnFraming::ambient(),)
         .await;
 
         assert_eq!(
@@ -1510,10 +1492,8 @@ mod tests {
         let a = drive_to_settle(
             &cycle,
             "[eval]\npeer: concern A?",
-            room,
             8,
-            TurnFraming::ambient(),
-        )
+            TurnFraming::ambient(),)
         .await;
         assert_eq!(a.acts, 1, "settled concern A after one act→observe");
         assert!(a.spoken.is_some(), "concern A got a spoken answer");
@@ -1523,10 +1503,8 @@ mod tests {
         let b = drive_to_settle(
             &cycle,
             "[eval]\npeer: a totally different concern B?",
-            room,
             8,
-            TurnFraming::ambient(),
-        )
+            TurnFraming::ambient(),)
         .await;
         assert_eq!(
             b.acts, 1,
@@ -1583,12 +1561,10 @@ mod tests {
         let (step, _) = settle_step(
             &cycle,
             "[eval]\npeer: can you check 2+2?",
-            Uuid::new_v4(),
             true,
             TurnFraming::ambient(),
             Situation::FreshContext,
-            &ActChain::new(),
-        )
+            &ActChain::new(),)
         .await;
         assert!(matches!(step, SettleStep::Spoke(_)));
         assert!(
@@ -1607,12 +1583,10 @@ mod tests {
         let (step2, _) = settle_step(
             &cycle2,
             "[eval]\npeer: can you check 2+2?",
-            Uuid::new_v4(),
             true,
             TurnFraming::ambient(),
             Situation::FreshContext,
-            &ActChain::new(),
-        )
+            &ActChain::new(),)
         .await;
         assert!(matches!(step2, SettleStep::Spoke(_)));
         assert!(
@@ -1653,12 +1627,10 @@ mod tests {
         let (step, _) = settle_step(
             &cycle,
             "[eval]\npeer: please provide the content of the test files",
-            Uuid::new_v4(),
             true,
             TurnFraming::ambient(),
             Situation::FreshContext,
-            &ActChain::new(),
-        )
+            &ActChain::new(),)
         .await;
         assert!(matches!(step, SettleStep::Spoke(_)));
         assert!(
@@ -1683,12 +1655,10 @@ mod tests {
         let (step2, _) = settle_step(
             &cycle2,
             "[eval]\npeer: could you draft example test data?",
-            Uuid::new_v4(),
             true,
             TurnFraming::ambient(),
             Situation::FreshContext,
-            &ActChain::new(),
-        )
+            &ActChain::new(),)
         .await;
         assert!(matches!(step2, SettleStep::Spoke(_)));
         assert!(

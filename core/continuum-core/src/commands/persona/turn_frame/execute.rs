@@ -168,8 +168,14 @@ crate::action_command! {
             crate::persona::recorder::record_turn_frame_replay(rec);
         }
 
-        // The room this turn is FOR — carried by the drained frame (the messages' room).
-        let room = inbox_frame.room_id;
+        // The room this turn is FOR — carried by the drained frame (the messages'
+        // room), witnessed non-nil (#425): a frame without a real room is refused,
+        // not run invisibly.
+        let room = crate::identity::ActivityRoom::from_uuid(inbox_frame.room_id)
+            .map_err(|_| CommandError::Invalid(
+                "persona/turn-execute: the drained frame carries no real room — an \
+                 activity without a room is unrepresentable (#425)".into(),
+            ))?;
 
         // Synthesize ONE airc-shaped delivery from the drained messages — the exact
         // envelope `build_workspace_turns` reads (source_id "airc", per-item peer_id +
@@ -250,7 +256,6 @@ crate::action_command! {
         let (step, metrics) = crate::cognition::act_observe::settle_step(
             &cycle,
             burst,
-            room,
             true,
             crate::cognition::workspace::TurnFraming::message(true),
             // One-shot directed tick: a fresh ask, so fuller grounding.

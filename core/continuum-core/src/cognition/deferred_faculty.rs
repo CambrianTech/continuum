@@ -155,8 +155,21 @@ impl DeferredFaculty {
                 if input.cycle == CycleId::UNSTAMPED {
                     continue; // sentinel / not a real burst
                 }
-                let room_id = input.room_id;
-                let ws = Workspace::in_room(input.world_state, room_id).with_cycle(input.cycle);
+                // A real burst always carries a real room (#425 — the sentinel was
+                // already skipped above). If a nil somehow arrives, skip the tick and
+                // say so: this lane degrades, it never panics (concurrency guide).
+                let Ok(room) = crate::identity::ActivityRoom::from_uuid(input.room_id) else {
+                    crate::probe!(
+                        class = "cognition.deferred.roomless_input_skipped",
+                        "deferred faculty received a nil-room input — tick skipped (#425)",
+                    );
+                    continue;
+                };
+                let ws = Workspace::from_burst(crate::cognition::workspace::Burst::raw_in(
+                    room,
+                    input.world_state,
+                ))
+                .with_cycle(input.cycle);
 
                 // The inner faculty's contribute is async (real inference/IPC).
                 // Catch a panic so a flawed backend degrades the lane to stale,
@@ -175,7 +188,7 @@ impl DeferredFaculty {
                         let stamped = finding.map(|mut c| {
                             c.cycle = input.cycle;
                             StampedFinding {
-                                room_id,
+                                room_id: room.as_uuid(),
                                 contribution: c,
                             }
                         });
