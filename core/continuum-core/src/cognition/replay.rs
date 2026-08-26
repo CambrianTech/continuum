@@ -245,7 +245,7 @@ fn resolve_burst(
         let room = p
             .room_id
             .clone()
-            .unwrap_or_else(|| crate::identity::ActivityRoom::mint().as_uuid().to_string());
+            .unwrap_or_else(|| crate::identity::ActivityRoom::mint().as_uuid().to_string()); // replay of a pre-room capture: mint a fresh room so the replay is never nil-roomed
         return Ok(ResolvedBurst {
             world_state: ws.clone(),
             room,
@@ -392,7 +392,7 @@ impl ActionCommand for CognitionReplay {
 
         let mut ws = Workspace::from_burst(crate::cognition::workspace::Burst::raw_in(
             crate::identity::ActivityRoom::from_uuid(room)
-                .expect("replay room is parsed-or-minted above, never nil"),
+                .expect("replay room is parsed-or-minted above, never nil"), // parsed-or-minted two lines up; nil is unreachable here
             burst.world_state.clone(),
         ));
         ws.broadcast = burst.broadcast;

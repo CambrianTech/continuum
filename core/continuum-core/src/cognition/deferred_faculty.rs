@@ -482,13 +482,16 @@ mod tests {
     #[tokio::test]
     async fn deferred_faculty_never_blocks_and_lands_late_with_its_own_cycle() {
         let deferred = DeferredFaculty::spawn(Arc::new(SlowRecall));
+        // A real room: the worker (correctly, #425) skips nil-room inputs, so a
+        // nil-room test never exercises the deferred lane at all.
+        let room = Uuid::new_v4();
 
         // Tick 1 (cycle 1): COLD START — the lane self-warms by running the
         // inner synchronously (the 2026-07-10 fix for post-boot blind turns:
         // three observed greeting rounds because first prompts carried no
         // grounding). The first tick pays the inner cost and returns the FRESH
         // finding; it also publishes it as last-good.
-        let ws1 = Workspace::in_room("burst one", Uuid::nil()).with_cycle(CycleId(1));
+        let ws1 = Workspace::in_room("burst one", room).with_cycle(CycleId(1));
         let r1 = deferred.contribute(&ws1).await;
         assert!(
             r1.is_some(),
@@ -499,7 +502,7 @@ mod tests {
         // warm finding serves as last-good, NON-BLOCKING — the cold cost is
         // paid exactly once, and the steady-state hot path never waits on the
         // slow inner (it sleeps 40ms; we demand <15ms).
-        let ws2 = Workspace::in_room("burst two", Uuid::nil()).with_cycle(CycleId(2));
+        let ws2 = Workspace::in_room("burst two", room).with_cycle(CycleId(2));
         let t = tokio::time::Instant::now();
         let r2 = deferred.contribute(&ws2).await;
         assert!(
@@ -514,7 +517,7 @@ mod tests {
 
         // A later tick (cycle 5): now the last-good is available, and it's stamped
         // with cycle 1 (when it was computed), NOT 5 (now).
-        let ws5 = Workspace::in_room("burst five", Uuid::nil()).with_cycle(CycleId(5));
+        let ws5 = Workspace::in_room("burst five", room).with_cycle(CycleId(5));
         let r5 = deferred.contribute(&ws5).await;
         let late = r5.expect("the slow finding has landed by now");
         assert!(

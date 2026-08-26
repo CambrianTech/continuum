@@ -104,7 +104,7 @@ crate::action_command! {
             CommandError::Invalid(format!("vision/look: cannot read '{}': {e}", p.file_path))
         })?;
         use base64::Engine as _;
-        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes); // boundary: vision model API takes base64 image payloads on the wire
 
         let executor = this
             .executor_slot

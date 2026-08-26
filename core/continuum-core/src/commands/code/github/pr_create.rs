@@ -67,7 +67,7 @@ crate::action_command! {
             args.push("--head".to_string());
             args.push(head);
         }
-        if p.draft.unwrap_or(false) {
+        if p.draft.unwrap_or(false) { // absent draft flag means a normal PR; boolean option, not a measurement
             args.push("--draft".to_string());
         }
         let url = run_gh(root, args).await?;

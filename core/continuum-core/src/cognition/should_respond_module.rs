@@ -192,6 +192,8 @@ mod tests {
         let module = ShouldRespondModule::new(registry_with_ivar(persona));
         let params = serde_json::json!({
             "personaId": persona.to_string(),
+            // A1: a tick is an activity turn — the command refuses roomless input.
+            "roomId": Uuid::new_v4().to_string(),
             "burst": "teammate: where did we land on the deploy fix?",
         });
         let result = module
@@ -215,6 +217,7 @@ mod tests {
         let module = ShouldRespondModule::new(Arc::new(PersonaWorkspaceRegistry::new()));
         let params = serde_json::json!({
             "personaId": Uuid::new_v4().to_string(),
+            "roomId": Uuid::new_v4().to_string(),
             "burst": "anyone there?",
         });
         let err = module

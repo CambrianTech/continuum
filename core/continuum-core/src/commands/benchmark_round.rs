@@ -380,7 +380,7 @@ impl ActionCommand for BenchmarkRound {
                 let recipe = crate::experience::source::RecipeExperienceSource::shipped_purpose(
                     crate::experience::source::shipped::BENCHMARK_HARD_RS,
                 )
-                .unwrap_or_default();
+                .unwrap_or_default(); // no verdict file = not yet graded; caller treats empty as pending
                 match crate::modules::activity::spawn_activity_room(
                     &airc,
                     &name,

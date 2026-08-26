@@ -162,7 +162,7 @@ impl KvSlotPool {
         // the citizen free list. Costs one window; buys structural immunity
         // from every non-Turn clobber class at once.
         let scratch = (n_slots >= 3).then(|| n_slots - 1);
-        let citizen_slots = scratch.map(|s| s).unwrap_or(n_slots);
+        let citizen_slots = scratch.map(|s| s).unwrap_or(n_slots); // no scratch reserved (n_slots<3) → all slots are citizen slots
         // Low indices lease first (pop from the back), deterministic occupancy.
         let free: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new((0..citizen_slots).rev().collect()));
         let pool = PagedResourcePool::new(PoolConfig {
@@ -188,7 +188,7 @@ impl KvSlotPool {
                 let now_ms = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis() as u64)
-                    .unwrap_or(view.last_access_at);
+                    .unwrap_or(view.last_access_at); // engine has no view of a just-inserted key: fall back to its own stamp
                 let stale_hours =
                     now_ms.saturating_sub(view.last_access_at) / (3600 * 1000);
                 (tokens >> stale_hours.min(20)) as i64

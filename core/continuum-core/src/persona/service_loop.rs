@@ -980,7 +980,7 @@ async fn serve_persona_loop_inner(
                 // turn_room falls back to identity.default_room (A.6), which is minted
                 // v4 at identity creation — non-nil by construction.
                 crate::identity::ActivityRoom::from_uuid(turn_room)
-                    .expect("turn_room falls back to the identity's default_room, never nil"),
+                    .expect("turn_room falls back to the identity's default_room, never nil"), // default_room is minted v4 at identity creation; never nil
                 ws_turns,
                 Some(now_ms),
                 // The arrival that woke this turn IS its cause. A dedup Drop or a
@@ -2554,7 +2554,7 @@ async fn run_self_cycle(
     // grounding against), else her default. Before this, the composition used the
     // focus room while the anchor/burst/drive/say all used default — she reasoned
     // about her claim's room and then acted in a different one.
-    let tick_room = focus_room.unwrap_or(ctx.identity.default_room);
+    let tick_room = focus_room.unwrap_or(ctx.identity.default_room); // no focus claim → the tick drives in her default room by design
     append_ring_anchor_if_starved(
         &mut selftick_turns,
         &deliveries,
@@ -2563,7 +2563,7 @@ async fn run_self_cycle(
     );
     let burst = crate::cognition::workspace::Burst::from_turns_at(
         crate::identity::ActivityRoom::from_uuid(tick_room)
-            .expect("focus room comes from a live claim's real room; default_room is minted v4 — never nil"),
+            .expect("focus room comes from a live claim's real room; default_room is minted v4 — never nil"), // claim rooms are spawned real; default_room minted v4 — nil unreachable
         selftick_turns,
         Some(now_ms),
         // Ambient, and honestly so. The self-tick wakes on a CHANGE to a re-read

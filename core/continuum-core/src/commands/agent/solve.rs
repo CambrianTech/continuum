@@ -546,7 +546,7 @@ impl ActionCommand for AgentSolve {
                             let instance = std::path::Path::new(&ws)
                                 .file_name()
                                 .map(|s| s.to_string_lossy().to_string())
-                                .unwrap_or_default();
+                                .unwrap_or_default(); // missing progress file = empty history; the redrive covers absence
                             // #379: the attempt's PATCH is a receipt, not a transient.
                             // Read the exact candidate the grader is about to read (same
                             // helper — one definition of "her diff"), persist it beside
@@ -933,7 +933,7 @@ async fn close_claim_card_if_graded(run_id: &str) {
     let grade_path = ledger.with_extension("grade.json");
     let verdict_is_real = std::fs::read_to_string(&grade_path)
         .ok()
-        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok()) // disk boundary: reading the grade.json verdict file the grader wrote
         .is_some_and(|g| g.get("error").map_or(true, |e| e.is_null()));
     if !verdict_is_real {
         crate::probe!(
@@ -949,7 +949,7 @@ async fn close_claim_card_if_graded(run_id: &str) {
     // card up on its next tick because it is Claimed with an artifact.
     let persona = std::fs::read_to_string(&ledger)
         .ok()
-        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok()) // disk boundary: reading the grade.json verdict file the grader wrote
         .and_then(|v| {
             v.get("persona_id")
                 .and_then(|p| p.as_str())
@@ -1355,7 +1355,7 @@ impl AgentSolve {
             // vanishing.
             let room = match p.room {
                 Some(r) if !r.is_nil() => crate::identity::ActivityRoom::from_uuid(r)
-                    .expect("non-nil checked in this arm"),
+                    .expect("non-nil checked in this arm"), // non-nil checked in this arm's guard; witness refuses nil
                 _ => {
                     // A bare solve is a NEW activity, and an activity IS an airc
                     // room born from a recipe (Joel: every tab/benchmark/content
@@ -1377,13 +1377,13 @@ impl AgentSolve {
                         Some(airc) => {
                             let name = format!(
                                 "solve--{}",
-                                p.run_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+                                p.run_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string()) // bare solve without run_id gets a fresh one; identity, not a quantity
                             );
                             let recipe =
                                 crate::experience::source::RecipeExperienceSource::shipped_purpose(
                                     crate::experience::source::shipped::BENCHMARK_HARD_RS,
                                 )
-                                .unwrap_or_default();
+                                .unwrap_or_default(); // grade.json absent = ungradeable; the caller branches on that, not a default
                             crate::modules::activity::spawn_activity_room(
                                 &airc,
                                 &name,
@@ -1399,10 +1399,10 @@ impl AgentSolve {
                         }
                         None => None,
                     };
-                    let room = spawned.unwrap_or_else(crate::identity::ActivityRoom::mint);
+                    let room = spawned.unwrap_or_else(crate::identity::ActivityRoom::mint); // spawn failed → LAST-RESORT id-only mint, probed above
                     crate::probe!(
                         class = "agent.solve.room_minted",
-                        run_id = %p.run_id.clone().unwrap_or_default(),
+                        run_id = %p.run_id.clone().unwrap_or_default(), // display-only field in a probe line, never routed
                         persona_id = %p.persona_id,
                         room = %room,
                         joinable = spawned.is_some(),

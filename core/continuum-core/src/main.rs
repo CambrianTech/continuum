@@ -229,13 +229,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let loc = info
                 .location()
                 .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
-                .unwrap_or_else(|| "<unknown location>".to_string());
+                .unwrap_or_else(|| "<unknown location>".to_string()); // panic hook display path; unknown location is the honest label
             let msg = info
                 .payload()
                 .downcast_ref::<&str>()
                 .map(|s| s.to_string())
                 .or_else(|| info.payload().downcast_ref::<String>().cloned())
-                .unwrap_or_else(|| "<non-string panic payload>".to_string());
+                .unwrap_or_else(|| "<non-string panic payload>".to_string()); // panic hook display path; payload downcast miss keeps the hook alive
             let bt = std::backtrace::Backtrace::force_capture();
             tracing::error!(
                 probe_class = "panic.caught",

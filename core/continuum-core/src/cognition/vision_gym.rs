@@ -86,7 +86,7 @@ fn render_png(shapes: &[Placed]) -> Vec<u8> {
     }
     let mut out = std::io::Cursor::new(Vec::new());
     img.write_to(&mut out, image::ImageFormat::Png)
-        .expect("in-memory PNG encode cannot fail");
+        .expect("in-memory PNG encode cannot fail"); // encoding a fresh in-memory RGBA image to PNG cannot fail
     out.into_inner()
 }
 
@@ -124,7 +124,7 @@ pub fn vision_qa_jsonl() -> &'static str {
                             n.to_string(),
                         )
                     } else {
-                        let p = placed.iter().find(|p| p.shape == target).unwrap();
+                        let p = placed.iter().find(|p| p.shape == target).unwrap(); // uniqueness of the target shape is checked by the branch guard above
                         (
                             format!("What color is the {}?", SHAPES[p.shape]),
                             COLORS[p.color].1.to_string(),
@@ -144,7 +144,7 @@ pub fn vision_qa_jsonl() -> &'static str {
                 }
             };
             let png = render_png(&placed);
-            let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&png); // boundary: the gym row's setup_shell ships the PNG through a shell heredoc
             let row = serde_json::json!({
                 "id": format!("vision-qa-{i:02}"),
                 "prompt": format!(

@@ -884,7 +884,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
         crate::inference::llama_server::await_ready_serving(std::time::Duration::from_secs(30))
             .await
             .and_then(|s| s.active_model)
-            .unwrap_or_default();
+            .unwrap_or_default(); // no recorded activity yet = first dispatch of this card; mint path follows
     if model.is_empty() {
         crate::probe!(
             class = "benchmark.dispatch",
@@ -924,12 +924,12 @@ pub(crate) async fn dispatch_staged_swe_solve(
             let spawner = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
                 .and_then(|reg| reg.get(claimer.as_uuid()))
                 .map(|rt| rt.airc().clone())
-                .unwrap_or_else(|| airc.clone());
+                .unwrap_or_else(|| airc.clone()); // assignee runtime gone → curator's own handle spawns; probed below
             let name = format!("swe--{}--{}", instance, short8(card_id.as_uuid()));
             let recipe = crate::experience::source::RecipeExperienceSource::shipped_purpose(
                 crate::experience::source::shipped::BENCHMARK_HARD_RS,
             )
-            .unwrap_or_default();
+            .unwrap_or_default(); // empty name renders as unnamed room in the probe; display only
             match crate::modules::activity::spawn_activity_room(
                 &spawner,
                 &name,
@@ -1239,7 +1239,7 @@ impl ActionCommand for WorkState {
         let room_id = room_holding_card(&airc, card_id)
             .await
             .map(|r| r.channel.as_uuid().to_string())
-            .unwrap_or_default();
+            .unwrap_or_default(); // board read failure already probed as its own abort above
         emit_card_state_changed(
             serde_json::json!({
                 "card_id": card_id.as_uuid().to_string(),
@@ -1572,7 +1572,7 @@ impl ActionCommand for WorkList {
             .caller
             .as_ref()
             .map(|c| c.peer_id.as_uuid())
-            .unwrap_or_default();
+            .unwrap_or_default(); // no subscriptions = empty board; the abort branch below speaks
         let mut owner_peers: Vec<airc_core::PeerId> = Vec::new();
         for c in &board.cards {
             if let Some(o) = c.owner {

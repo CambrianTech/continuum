@@ -294,7 +294,7 @@ pub async fn web_fetch(p: WebFetchParams) -> Result<WebFetchResult, CommandError
         if let Ok(resp) = client.get(&url).send().await {
             if let Some(e) = url_error_for_status(
                 resp.status().as_u16(),
-                resp.status().canonical_reason().unwrap_or(""),
+                resp.status().canonical_reason().unwrap_or(""), // some statuses have no canonical reason; empty is the honest display
                 &url,
             ) {
                 return Err(e);
@@ -313,7 +313,7 @@ pub async fn web_fetch(p: WebFetchParams) -> Result<WebFetchResult, CommandError
     // Honest scale of the WHOLE page, independent of any filter — so `chars` always
     // reports how much is really there even when `content` is a filtered slice.
     let chars = readable.chars().count() as u32;
-    let content = filtered_or_fallback(readable, p.filter.as_deref(), p.context_lines.unwrap_or(0))?;
+    let content = filtered_or_fallback(readable, p.filter.as_deref(), p.context_lines.unwrap_or(0))?; // 0 context lines = exact-match only; documented default of the param
 
     Ok(WebFetchResult {
         url,
@@ -396,14 +396,14 @@ use std::sync::LazyLock;
 /// Every HTML tag span (`<…>`). Module-level so both `strip_tags` and the readable
 /// extractor share ONE definition.
 static TAG_RE: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"<[^>]+>").expect("static tag regex is valid"));
+    LazyLock::new(|| regex::Regex::new(r"<[^>]+>").expect("static tag regex is valid")); // static regex literal, validated at first use forever
 
 /// A `<pre>…</pre>` block — captured so its content is preserved VERBATIM (its
 /// whitespace and newlines are significant: a raw source file renders as one big
 /// `<pre>`, and a doc's code samples are `<pre>`/`<code>`). `(?is)` = case-insensitive
 /// + `.` spans newlines; non-greedy so adjacent pre blocks don't merge.
 static PRE_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"(?is)<pre\b[^>]*>(.*?)</pre>").expect("static pre regex is valid")
+    regex::Regex::new(r"(?is)<pre\b[^>]*>(.*?)</pre>").expect("static pre regex is valid") // static regex literal, validated at first use forever
 });
 
 /// Block-level close tags + `<br>` — a rendered line break. Turned into `\n` BEFORE
@@ -414,7 +414,7 @@ static BLOCK_BREAK_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(
         r"(?i)</(p|div|li|tr|h[1-6]|blockquote|section|article|ul|ol|table|thead|tbody|header|footer|nav|main|aside|dd|dt|figure)>|<br\s*/?>",
     )
-    .expect("static block-break regex is valid")
+    .expect("static block-break regex is valid") // static regex literal, validated at first use forever
 });
 
 /// Decode the handful of HTML entities the pipeline emits. Shared so tag-strip and
@@ -454,7 +454,7 @@ fn extract_readable(html: &str) -> String {
     let mut out: Vec<String> = Vec::new();
     let mut last = 0usize;
     for cap in PRE_RE.captures_iter(&cleaned) {
-        let whole = cap.get(0).expect("regex match always has group 0");
+        let whole = cap.get(0).expect("regex match always has group 0"); // group 0 is the whole match, always present by regex contract
         let prose = readable_prose(&cleaned[last..whole.start()]);
         if !prose.is_empty() {
             out.push(prose);

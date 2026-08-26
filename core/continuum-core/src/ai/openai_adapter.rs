@@ -667,8 +667,14 @@ impl OpenAICompatibleAdapter {
     /// unpinned exactly as it always did.
     fn scratch_slot_for_root(&self) -> Option<u32> {
         let root = self.endpoints().root().to_string();
-        match crate::inference::slots::directory().get(&root) {
-            Some(Some(pool)) => pool.scratch_slot(),
+        // Typed seam: the process-global SlotDirectory hands this adapter its
+        // server's KvSlotPool — the ONE paging-engine implementer for KV slots.
+        let dir: &crate::inference::slots::SlotDirectory = crate::inference::slots::directory();
+        match dir.get(&root) {
+            Some(Some(pool)) => {
+                let pool: std::sync::Arc<crate::inference::slots::KvSlotPool> = pool;
+                pool.scratch_slot()
+            }
             _ => None,
         }
     }
@@ -2008,7 +2014,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                                             .map(|c| c.len() / 4)
                                             .sum::<usize>()
                                     })
-                                    .unwrap_or(0) as u64;
+                                    .unwrap_or(0) as u64; // 0 = no usage block in the reply; the estimate only prices eviction, never budgets
                                 let root = self.endpoints().root().to_string();
                                 if let Some(Some(pool)) =
                                     crate::inference::slots::directory().get(&root)

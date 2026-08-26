@@ -148,7 +148,7 @@ pub(crate) async fn ask_the_act_question(
                     // non-nil by the service loop's A.6 fallback (#425).
                     let burst = crate::cognition::workspace::Burst::raw_in(
                         crate::identity::ActivityRoom::from_uuid(turn_room)
-                            .expect("turn_room is the service loop's non-nil turn room"),
+                            .expect("turn_room is the service loop's non-nil turn room"), // service loop guarantees a non-nil turn room; witness re-checks
                         burst_text,
                     );
                     let work_framing =
