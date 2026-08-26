@@ -324,10 +324,28 @@ pub fn resolve_gym(reference: &str) -> Result<(String, String), String> {
     if let Some((name, bytes)) = embedded_for(reference) {
         return Ok((format!("embedded:{name}"), bytes.to_string()));
     }
-    // (3) Neither — fail loud with everything tried.
+    // (3a) SIGNPOST, not a dead-end: a SWE-class benchmark reached the GYM resolver means
+    // the caller used the wrong verb — SWE does NOT run through `benchmark/round`/the gym
+    // eval path, it runs through the kanban adapter `benchmark/dispatch`. The old error
+    // ("not a committed gym. Committed gyms: <rust list>") sent every driver — human and
+    // Opus — into days of archaeology looking for a SWE gym that does not exist. Point at
+    // the right verb instead (measured 2026-08-25: this refusal, verbatim, cost a session).
+    if reference.contains("swe-bench") || reference.contains("swe-rebench") {
+        return Err(format!(
+            "'{reference}' is a SWE-bench benchmark — it does NOT run through the gym path \
+             (benchmark/round resolves GYMS only). SWE runs through the kanban adapter:\n  \
+             continuum benchmark/dispatch --name {reference} \
+             --instances '[\"<instance_id>\", ...]' --assignees '[\"<persona>\"]' \
+             --drive detached_solve --force\n\
+             Step-by-step + failure modes: benchmarks/swe/RUNBOOK.md"
+        ));
+    }
+    // (3b) Neither file, cache, committed gym, nor SWE — fail loud with everything tried.
     Err(format!(
         "eval_set '{reference}' could not be resolved: no such file on disk \
-         (cwd={cwd}), and it is not a committed gym. Committed gyms: {names}.",
+         (cwd={cwd}), and it is not a committed gym. Committed gyms: {names}. \
+         (A SWE-bench collection? Use `benchmark/dispatch`, not the gym path — \
+         see benchmarks/swe/RUNBOOK.md.)",
         cwd = std::env::current_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| "<unknown>".to_string()),
@@ -427,6 +445,20 @@ mod tests {
             err.contains("coder-eval.jsonl"),
             "lists embedded candidates"
         );
+    }
+
+    // what this catches: a SWE-bench benchmark reaching the GYM resolver (the wrong verb —
+    // benchmark/round instead of benchmark/dispatch) is a SIGNPOST, not a dead-end. The old
+    // "not a committed gym. Committed gyms: <rust list>" sent every driver into days of
+    // archaeology (measured 2026-08-25). The error must name benchmark/dispatch + the runbook.
+    #[test]
+    fn swe_benchmark_name_points_at_dispatch_not_a_dead_end() {
+        for name in ["swe-bench-verified", "swe-bench-lite", "swe-rebench"] {
+            let err = resolve_gym(name).expect_err("SWE is not a gym — must fail loud");
+            assert!(err.contains("benchmark/dispatch"), "{name}: points at the right verb: {err}");
+            assert!(err.contains("RUNBOOK"), "{name}: points at the runbook: {err}");
+            assert!(!err.contains("Committed gyms:"), "{name}: NOT the generic dead-end: {err}");
+        }
     }
 
     // what this catches: the `code` trait resolves to its measuring gym, an
