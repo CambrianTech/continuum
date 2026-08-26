@@ -64,10 +64,10 @@ impl SourceRule for NoNilRoomInProductionCognition {
 }
 
 /// String-composite id keys (`format!` gluing values with `@`) in the serving /
-/// inference path when this guard landed: 1 — the `persona@room` slot-lease key
-/// this rule was written against. Drops to 0 when the typed `ActivityKey`
-/// registry (KV-CACHE-ECONOMY §3.2 / plan slice B1) lands.
-const BASELINE_STRING_COMPOSITE_KEYS: usize = 1;
+/// inference path: ZERO. The `persona@room` slot-lease key this rule was
+/// written against died with the typed `ActivityKey` registry (slice B1,
+/// same day). This stays 0 forever.
+const BASELINE_STRING_COMPOSITE_KEYS: usize = 0;
 
 /// The serving/inference trees where id-keyed maps live.
 const SERVING_TREES: [&str; 2] = ["ai/", "inference/"];
