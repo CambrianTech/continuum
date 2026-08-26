@@ -699,6 +699,19 @@ pub struct BenchmarkDispatchParams {
     /// leads swe-bench-lite). Ignored for gym-class benchmarks.
     #[serde(default)]
     pub instances: Option<Vec<String>>,
+    /// Deterministic RANDOM SAMPLE: take this many instances chosen by `seed`
+    /// instead of the dataset head. `(dataset, seed, sample)` fully determines
+    /// the list on every machine — the flag pair IS the replication recipe, so
+    /// publish both alongside the score. Combines with `limit` (sample wins),
+    /// refused alongside explicit `instances`. SWE-class benchmarks only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub sample: Option<u32>,
+    /// RNG seed for `sample` (default 0). Same LCG as the generated gyms — no
+    /// platform rand, byte-stable selection forever.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub seed: Option<u64>,
     /// The room this run lives in. Omit to get a FRESH one per run, named
     /// `bench-<benchmark>-<epoch>`.
     ///
@@ -1158,6 +1171,34 @@ impl ActionCommand for BenchmarkDispatch {
                 .map_err(|e| {
                     CommandError::Internal(format!("swe dataset '{dataset}' load failed: {e}"))
                 })?;
+            // Deterministic sample: (dataset, seed, n) → the same list on every
+            // machine. Fisher-Yates over the dataset order with the shared LCG —
+            // the command IS the replication recipe (no operator-side scripts).
+            if let Some(n) = p.sample.filter(|n| *n > 0) {
+                if p.instances.as_ref().is_some_and(|w| !w.is_empty()) {
+                    return Err(CommandError::Invalid(
+                        "pass either `sample` (seeded random) or `instances` (explicit list),                          not both — they are competing selection recipes"
+                            .into(),
+                    ));
+                }
+                let n = (n as usize).min(instances.len());
+                let mut rng = crate::cognition::gym_rng::Lcg::new(p.seed.unwrap_or(0)); // documented default seed: 0 is part of the replication contract, not a guess
+                for i in 0..n {
+                    let j = i + rng.next(instances.len() - i);
+                    instances.swap(i, j);
+                }
+                instances.truncate(n);
+                let list: Vec<&str> =
+                    instances.iter().map(|i| i.instance_id.as_str()).collect();
+                tracing::info!(
+                    probe_class = "benchmark.dispatch.sample",
+                    dataset,
+                    n,
+                    seed = p.seed.unwrap_or(0), // same documented default as the draw above
+                    instances = ?list,
+                    "seeded sample selected — publish (dataset, seed, n) with the score"
+                );
+            }
             // Caller-targeted instances win over dataset order — select by substring (so a
             // short id resolves) and preserve the CALLER's ordering, fail loud on a miss so a
             // typo never silently dispatches the wrong (or whole) set.
@@ -3506,6 +3547,129 @@ fn fold_run_card(
         infra_error,
     }
 }
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkScoreboardParams.ts")]
+pub struct BenchmarkScoreboardParams {}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkScoreRow.ts")]
+pub struct BenchmarkScoreRow {
+    /// Catalog benchmark this tallies (e.g. `swe-bench-verified`).
+    pub benchmark: String,
+    /// Distinct instances with a REAL verdict (error-free; absences never tally).
+    #[ts(type = "number")]
+    pub attempted: u32,
+    /// Of those, resolved (all fail-to-pass passed, gate held).
+    #[ts(type = "number")]
+    pub resolved: u32,
+    /// The dataset's full size — the leaderboard denominator this samples.
+    #[ts(type = "number")]
+    pub dataset_size: u32,
+    /// Resolved instance ids — the receipt pointers.
+    pub resolved_instances: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkScoreboardResult.ts")]
+pub struct BenchmarkScoreboardResult {
+    pub rows: Vec<BenchmarkScoreRow>,
+    /// The REGIME every published number must carry: model, window, build, host.
+    pub regime: String,
+    pub summary: String,
+}
+
+#[derive(Default)]
+pub struct BenchmarkScoreboard;
+
+#[async_trait::async_trait]
+impl ActionCommand for BenchmarkScoreboard {
+    const NAME: &'static str = "benchmark/scoreboard";
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "The SCORE rollup: per SWE-class benchmark, attempted vs resolved from the durable \
+         verdicts on disk, with the serving REGIME (model, window, build sha, host) every \
+         published claim must carry. ONE read for the operator, the README chart, and a \
+         citizen grounding on how the team is scoring — instead of tallying verdict files \
+         by hand.";
+    type Params = BenchmarkScoreboardParams;
+    type Output = BenchmarkScoreboardResult;
+
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        _p: BenchmarkScoreboardParams,
+    ) -> Result<BenchmarkScoreboardResult, CommandError> {
+        let verdicts = swe_bench::recorded_verdicts();
+        let mut rows = Vec::new();
+        for spec in known_benchmarks() {
+            let Some(dataset) = spec.swe_dataset() else {
+                continue;
+            };
+            // Membership by the SAME loader the grade path searches with — one
+            // source of truth for "which dataset does this instance belong to".
+            let Ok(instances) = crate::cognition::swe_bench::load_dataset(dataset).await else {
+                continue; // not fetched yet — an un-run benchmark, not an error
+            };
+            let ids: std::collections::HashSet<&str> =
+                instances.iter().map(|i| i.instance_id.as_str()).collect();
+            let mut attempted = 0u32;
+            let mut resolved_instances = Vec::new();
+            for (id, v) in &verdicts {
+                if !ids.contains(id.as_str()) {
+                    continue;
+                }
+                if v.error.is_some() {
+                    continue; // absence, never a tallied attempt
+                }
+                attempted += 1;
+                if v.resolved {
+                    resolved_instances.push(id.clone());
+                }
+            }
+            rows.push(BenchmarkScoreRow {
+                benchmark: spec.name.to_string(),
+                attempted,
+                resolved: resolved_instances.len() as u32,
+                dataset_size: instances.len() as u32,
+                resolved_instances,
+            });
+        }
+        let serving = crate::inference::llama_server::current_serving();
+        let regime = format!(
+            "model={} served_window={} build={} sha={} host={}-{}",
+            serving.active_model.as_deref().unwrap_or("none-serving"), // absence stated, never a fake model id
+            serving.served_context_window,
+            env!("CONTINUUM_BUILD_NUMBER"),
+            env!("CONTINUUM_BUILD_GIT_SHA"),
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+        );
+        let summary = rows
+            .iter()
+            .filter(|r| r.attempted > 0)
+            .map(|r| {
+                format!(
+                    "{}: {}/{} resolved (of {} in the set)",
+                    r.benchmark, r.resolved, r.attempted, r.dataset_size
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let summary = if summary.is_empty() {
+            "no real verdicts on disk yet — dispatch a round first".to_string()
+        } else {
+            summary
+        };
+        Ok(BenchmarkScoreboardResult {
+            rows,
+            regime,
+            summary,
+        })
+    }
+}
+
+crate::register_stateless_command!(BenchmarkScoreboard);
 
 #[derive(Default)]
 pub struct BenchmarkRuns;

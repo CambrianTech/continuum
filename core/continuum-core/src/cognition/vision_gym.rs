@@ -33,14 +33,7 @@ const COLORS: [([u8; 3], &str); 6] = [
 
 const SHAPES: [&str; 3] = ["circle", "square", "triangle"];
 
-/// Tiny deterministic LCG — no rand dependency, byte-stable gyms forever.
-struct Lcg(u64);
-impl Lcg {
-    fn next(&mut self, bound: usize) -> usize {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        ((self.0 >> 33) as usize) % bound
-    }
-}
+use crate::cognition::gym_rng::Lcg;
 
 /// One placed shape: kind index, color index, cell (0..4 in a 2×2 grid).
 struct Placed {
@@ -95,7 +88,7 @@ pub fn vision_qa_jsonl() -> &'static str {
     static GYM: OnceLock<String> = OnceLock::new();
     GYM.get_or_init(|| {
         use base64::Engine as _;
-        let mut rng = Lcg(0x5EE_C1712E4 ^ 0x2026_08_26);
+        let mut rng = Lcg::new(0x5EE_C1712E4 ^ 0x2026_08_26);
         let mut rows = Vec::new();
         for i in 0..16u32 {
             // 2–4 shapes, all colors distinct, all cells distinct.
