@@ -367,7 +367,7 @@ fn parse_state(s: &str) -> Result<CardState, CommandError> {
 /// so the first hit is the only hit. A caller can only read boards of rooms it is
 /// SUBSCRIBED to, so this widens no visibility — it only stops discarding what
 /// the caller can already see.
-async fn room_holding_card(airc: &Arc<Airc>, card_id: WorkCardId) -> Option<airc_lib::Room> {
+pub(crate) async fn room_holding_card(airc: &Arc<Airc>, card_id: WorkCardId) -> Option<airc_lib::Room> {
     let set = airc.subscription_set().await.ok()?;
     for sub in set.all() {
         let room = sub.as_room();

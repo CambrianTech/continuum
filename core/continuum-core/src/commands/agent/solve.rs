@@ -890,6 +890,14 @@ impl ActionCommand for AgentSolve {
                     // the counter — the infra-void arm `continue`s above this line.
                     attempt += 1;
                 }
+                // A3 — HARNESS-ONLY TERMINAL CLOSE (BENCHMARK-AS-KANBAN: the citizen
+                // may move working states; the terminal transition belongs to the
+                // harness). The run carries a final verdict on disk (grade.json);
+                // closing the card here is what lets observe_card_event settle the
+                // round and — on the last card — reach Done. An UNGRADEABLE verdict
+                // (env fault) leaves the card OPEN on purpose: a resume re-fires it,
+                // which for an env fault is the owed retake, never a burial.
+                close_claim_card_if_graded(&run_id).await;
             });
             return Ok(AgentSolveResult {
                 persona_id: persona_ack,
@@ -905,6 +913,95 @@ impl ActionCommand for AgentSolve {
             });
         }
         Self::solve_body(p).await
+    }
+}
+
+/// The A3 terminal close: a claim-dispatched run (`run_id == claim-<card uuid>`)
+/// whose final attempt produced a REAL verdict closes its card, authored through
+/// the run's own persona (subscribed to the run room by dispatch). Non-claim runs
+/// and verdict-less runs (infra/ungradeable) leave the card as-is.
+async fn close_claim_card_if_graded(run_id: &str) {
+    let Some(card_uuid) = run_id
+        .strip_prefix("claim-")
+        .and_then(|s| Uuid::parse_str(s).ok())
+    else {
+        return; // not a claim-dispatched run — no card to close
+    };
+    let Some(ledger) = agent_solve_ledger_path(run_id) else {
+        return;
+    };
+    let grade_path = ledger.with_extension("grade.json");
+    let verdict_is_real = std::fs::read_to_string(&grade_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .is_some_and(|g| g.get("error").map_or(true, |e| e.is_null()));
+    if !verdict_is_real {
+        crate::probe!(
+            class = "benchmark.card.close_skipped",
+            run_id = %run_id,
+            "no real verdict on disk (infra/ungradeable) — card stays open so a              resume re-fires it (the owed retake)"
+        );
+        return;
+    }
+    // Author through the run's persona (her runtime is subscribed to the run
+    // room); fall back to any live citizen — same authoring rule as the lapse
+    // sweeper. No runtime at all → probe and leave it; the sweeper picks the
+    // card up on its next tick because it is Claimed with an artifact.
+    let persona = std::fs::read_to_string(&ledger)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|v| {
+            v.get("persona_id")
+                .and_then(|p| p.as_str())
+                .and_then(|p| Uuid::parse_str(p).ok())
+        });
+    let Some(reg) = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+    else {
+        return;
+    };
+    let airc = persona
+        .and_then(|p| reg.get(p))
+        .or_else(|| reg.any_live_citizen())
+        .map(|rt| rt.airc().clone());
+    let Some(airc) = airc else {
+        crate::probe!(
+            class = "benchmark.card.close_skipped",
+            run_id = %run_id,
+            "no live citizen to author the close — the lapse sweeper will close it"
+        );
+        return;
+    };
+    let card_id = airc_work::WorkCardId::from_uuid(card_uuid);
+    let Some(room) = crate::modules::work::room_holding_card(&airc, card_id).await else {
+        crate::probe!(
+            class = "benchmark.card.close_skipped",
+            run_id = %run_id,
+            "no subscribed room's board holds the card — cannot place the close"
+        );
+        return;
+    };
+    match airc
+        .change_work_card_state_in(
+            &room,
+            airc_lib::ChangeWorkCardState {
+                card_id,
+                state: airc_work::CardState::Closed,
+            },
+        )
+        .await
+    {
+        Ok(_) => crate::probe!(
+            class = "benchmark.card.closed_by_harness",
+            run_id = %run_id,
+            card_id = %card_uuid,
+            "final verdict on disk — harness closed the card; the round settles on              this event (last card → Done)"
+        ),
+        Err(e) => crate::probe!(
+            class = "benchmark.card.close_skipped",
+            run_id = %run_id,
+            error = %e.to_string(),
+            "close refused — card stays as-is; the lapse sweeper retries"
+        ),
     }
 }
 
