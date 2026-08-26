@@ -1357,15 +1357,60 @@ impl AgentSolve {
                 Some(r) if !r.is_nil() => crate::identity::ActivityRoom::from_uuid(r)
                     .expect("non-nil checked in this arm"),
                 _ => {
-                    let minted = crate::identity::ActivityRoom::mint();
+                    // A bare solve is a NEW activity, and an activity IS an airc
+                    // room born from a recipe (Joel: every tab/benchmark/content
+                    // is a room created from a recipe — wrapping airc, never
+                    // bypassing it). Spawn the REAL joinable room through the
+                    // persona's own runtime, so a human or peer can stand in the
+                    // solve and assist like any activity. The id-only mint
+                    // survives strictly as the probed last resort when no
+                    // runtime exists (unit rigs, a solve fired before hosting) —
+                    // attributable, but not yet joinable, and the probe says so.
+                    let persona_uuid = uuid::Uuid::parse_str(p.persona_id.as_str()).ok();
+                    let spawned = match persona_uuid
+                        .and_then(|pu| {
+                            crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+                                .and_then(|reg| reg.get(pu))
+                        })
+                        .map(|rt| rt.airc().clone())
+                    {
+                        Some(airc) => {
+                            let name = format!(
+                                "solve--{}",
+                                p.run_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+                            );
+                            let recipe =
+                                crate::experience::source::RecipeExperienceSource::shipped_purpose(
+                                    crate::experience::source::shipped::BENCHMARK_HARD_RS,
+                                )
+                                .unwrap_or_default();
+                            crate::modules::activity::spawn_activity_room(
+                                &airc,
+                                &name,
+                                &recipe,
+                                None,
+                                &std::collections::BTreeMap::new(),
+                            )
+                            .await
+                            .ok()
+                            .and_then(|r| {
+                                crate::identity::ActivityRoom::new(r.room_id).ok()
+                            })
+                        }
+                        None => None,
+                    };
+                    let room = spawned.unwrap_or_else(crate::identity::ActivityRoom::mint);
                     crate::probe!(
                         class = "agent.solve.room_minted",
                         run_id = %p.run_id.clone().unwrap_or_default(),
                         persona_id = %p.persona_id,
-                        room = %minted,
-                        "bare solve had no activity — minted its own room so the work is attributable (#425)",
+                        room = %room,
+                        joinable = spawned.is_some(),
+                        "bare solve named its own activity — a real airc room when her \
+                         runtime could spawn one (joinable=true), an id-only mint as the \
+                         last resort (#425)",
                     );
-                    minted
+                    room
                 }
             };
             // The workspace-grounding sentence counters the observed "new project ritual"

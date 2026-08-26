@@ -60,12 +60,15 @@ impl ActivityRoom {
         Self::new(airc_core::RoomId::from_u128(room.as_u128()))
     }
 
-    /// Mint a fresh activity identity. This is the "benchmarks mint NEW
-    /// activities (unless rejoining)" half of the law: a run/exam/solve that
-    /// has no room yet NAMES one here rather than running invisibly under nil.
-    /// The id is real and unique from birth; spawning the joinable airc room
-    /// entity around it is the activity layer's job, not a precondition for
-    /// the turn to be attributable.
+    /// LAST-RESORT activity identity — attributable, but NOT yet a joinable
+    /// airc room. The law is that every activity is an airc room born from a
+    /// recipe (its content-type), so the activity paths spawn REAL rooms via
+    /// `spawn_activity_room` (dispatch solves, bare solves with a live
+    /// runtime). This id-only mint exists solely for callers with no airc
+    /// runtime at all (unit rigs, replay, an exam fired before hosting) — the
+    /// turn stays attributable and unique rather than nil, and the caller's
+    /// probe must say the room is not joinable. Never reach for this where a
+    /// runtime can spawn the real thing.
     pub fn mint() -> Self {
         Self(airc_core::RoomId::from_u128(Uuid::new_v4().as_u128()))
     }

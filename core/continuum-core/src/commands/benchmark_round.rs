@@ -363,10 +363,51 @@ impl ActionCommand for BenchmarkRound {
             all_tasks.len(),
             if resumed { " (resumed)" } else { "" }
         );
+        // THE ROUND'S ACTIVITY ROOM (the law: every activity — a gym round
+        // included — is an airc room born from a recipe; a roomless eval was the
+        // gym-path bypass). Deterministic name per run_id, and `join` IS creation
+        // in airc, so a RESUME of the same run_id re-joins the SAME room —
+        // mint-or-rejoin with no extra state. Spawned through the examinee's own
+        // runtime so she is standing in her exam room; a human can join and
+        // assist/observe like any activity. Best-effort: no runtime (headless
+        // rigs) → the eval mints an id-only activity internally, as before.
+        let round_room: Option<uuid::Uuid> = match crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+            .and_then(|reg| reg.get(persona_uuid))
+            .map(|rt| rt.airc().clone())
+        {
+            Some(airc) => {
+                let name = format!("round--{}--{}", p.benchmark, run_id);
+                let recipe = crate::experience::source::RecipeExperienceSource::shipped_purpose(
+                    crate::experience::source::shipped::BENCHMARK_HARD_RS,
+                )
+                .unwrap_or_default();
+                match crate::modules::activity::spawn_activity_room(
+                    &airc,
+                    &name,
+                    &recipe,
+                    None,
+                    &std::collections::BTreeMap::new(),
+                )
+                .await
+                {
+                    Ok(r) => Some(r.room_id.as_uuid()),
+                    Err(e) => {
+                        crate::probe!(
+                            class = "bench.round.room_spawn_failed",
+                            run_id = %run_id,
+                            error = %e.to_string(),
+                            "round activity room could not spawn — eval mints an id-only                              activity this run"
+                        );
+                        None
+                    }
+                }
+            }
+            None => None,
+        };
         let eval_params = CognitionEvalParams {
             persona_id: persona_ref,
             gene: None,
-            room_id: None,
+            room_id: round_room.map(|r| r.to_string()),
             tasks: Some(tasks),
             eval_set: Some(p.benchmark.clone()),
             base_model_id: None,
