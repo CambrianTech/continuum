@@ -3328,7 +3328,14 @@ fn moe_host_cache_lease_inputs(
         physical_bytes,
         weights_host_bytes,
         live_kv_bytes: fp.kv_at(served_window).saturating_mul(lanes as u64),
-        compute_buffer_bytes: fp.prefill_compute_reserve(served_window, lanes),
+        // The llama-server host prompt cache (`--cache-ram`, KV-ECONOMY §4) is a
+        // real resident term of the serve's working set — accounted here so the
+        // expert-cache lease can never be derived as if that RAM were free.
+        compute_buffer_bytes: fp
+            .prefill_compute_reserve(served_window, lanes)
+            .saturating_add(
+                (crate::inference::lane_args::CACHE_RAM_MIB as u64) * 1024 * 1024,
+            ),
         os_floor_bytes: host_os_floor_bytes(physical_bytes),
         commit_charge_bytes,
     })
