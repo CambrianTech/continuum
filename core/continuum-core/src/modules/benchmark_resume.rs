@@ -114,17 +114,37 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
                             crate::cognition::bench_round::settle_card_direct(next.card, &s);
                             continue;
                         }
-                        BoardCardState::Absent => {
+                        BoardCardState::Absent if attempt >= 4 => {
+                            // ABSENT is negative evidence: post-boot the board may
+                            // simply still be replicating — measured live 2026-08-26,
+                            // a FRESH round's card read Absent minutes after boot and
+                            // an eager reconcile settled a live card as a ghost
+                            // (false completion, worse than retrying). Only after
+                            // several spaced attempts (~5 min of misses) does Absent
+                            // mean gone. Terminal reads stay immediate — a state is
+                            // positive evidence.
                             crate::probe!(
                                 class = "bench.round.reconciled",
                                 card_id = %next.card,
                                 state = "absent",
-                                "card no longer on the run room's board — settled as                                  closed so the round can complete instead of waiting                                  forever on a ghost"
+                                attempt = attempt as u64,
+                                "card absent across several spaced attempts — settled \
+                                 closed so the round completes instead of waiting on a ghost"
                             );
                             crate::cognition::bench_round::settle_card_direct(
                                 next.card, "closed",
                             );
                             continue;
+                        }
+                        BoardCardState::Absent => {
+                            crate::probe!(
+                                class = "bench.round.reconcile_deferred",
+                                card_id = %next.card,
+                                attempt = attempt as u64,
+                                "card not on the board yet — deferring judgment while \
+                                 replication catches up; the dispatch attempt's own \
+                                 named abort covers the still-absent case"
+                            );
                         }
                         BoardCardState::Workable => {}
                     }
