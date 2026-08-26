@@ -2549,15 +2549,21 @@ async fn run_self_cycle(
     // #301: the self-tick is where the live photocopy chains actually run
     // (idle re-announcements), so it gets the same ring-counted anchor
     // escalation as the message path — window-derived counters starve here too.
+    // A6 CONSISTENCY: the tick's room is her FOCUS room when she holds live work
+    // (the room of her freshest claim — the same room the composition above framed
+    // grounding against), else her default. Before this, the composition used the
+    // focus room while the anchor/burst/drive/say all used default — she reasoned
+    // about her claim's room and then acted in a different one.
+    let tick_room = focus_room.unwrap_or(ctx.identity.default_room);
     append_ring_anchor_if_starved(
         &mut selftick_turns,
         &deliveries,
         ctx.identity.peer_id,
-        ctx.identity.default_room,
+        tick_room,
     );
     let burst = crate::cognition::workspace::Burst::from_turns_at(
-        crate::identity::ActivityRoom::from_uuid(ctx.identity.default_room)
-            .expect("identity.default_room is minted v4 at creation, never nil"),
+        crate::identity::ActivityRoom::from_uuid(tick_room)
+            .expect("focus room comes from a live claim's real room; default_room is minted v4 — never nil"),
         selftick_turns,
         Some(now_ms),
         // Ambient, and honestly so. The self-tick wakes on a CHANGE to a re-read
@@ -2754,10 +2760,10 @@ async fn run_self_cycle(
             if crate::ai::json_in_prompt_tools::parse_tool_call(&text).is_some() {
                 return;
             }
-            // A self-cycle answers no one — there is no arrival room, so her
-            // default IS the correct audience. Same room the cycle framed its
-            // context against two lines up.
-            if let Err(e) = conversation.say_in(ctx.identity.default_room, &text).await {
+            // A self-cycle answers no one — the audience is the room the tick
+            // ran IN (her claim's focus room when working, else her default) —
+            // the same room the cycle framed its context against.
+            if let Err(e) = conversation.say_in(tick_room, &text).await {
                 tracing::warn!(persona = %ctx.identity.agent_name, error = %e, "self-cycle say failed");
                 return;
             }

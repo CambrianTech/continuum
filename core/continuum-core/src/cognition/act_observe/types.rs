@@ -46,6 +46,11 @@ pub struct SettleOutcome {
     /// identified" and she had no memory of identifying it — 10 acts re-deriving
     /// cse_main.py). The retry caller threads these into the next attempt's task.
     pub touched_paths: Vec<String>,
+    /// The ACTIVITY this turn belonged to — its room (non-nil, witnessed at burst
+    /// construction, #425). Carried on the outcome so the curriculum stream can
+    /// attribute a lived turn to the activity it happened in; before this, the
+    /// room survived only as prose inside `world_state`'s header.
+    pub room: uuid::Uuid,
 }
 
 impl SettleOutcome {
@@ -55,7 +60,7 @@ impl SettleOutcome {
     /// NAMED infrastructure failure — never a wrong answer — so a serving wedge
     /// never masquerades as a capability miss ([[self-improvement-is-a-control-loop]]).
     /// Zeroed metrics/acts because none accrued meaningfully. `TurnMetrics: Default`.
-    pub fn infra_failure(cause: impl Into<String>) -> Self {
+    pub fn infra_failure(room: uuid::Uuid, cause: impl Into<String>) -> Self {
         Self {
             decision: Decision::Pass,
             spoken: None,
@@ -64,6 +69,7 @@ impl SettleOutcome {
             metrics: TurnMetrics::default(),
             inference_error: Some(cause.into()),
             touched_paths: Vec::new(),
+            room,
         }
     }
 }
@@ -165,6 +171,7 @@ mod tests {
             metrics: TurnMetrics::default(),
             inference_error,
             touched_paths: Vec::new(),
+            room: uuid::Uuid::from_u128(7),
         }
     }
 

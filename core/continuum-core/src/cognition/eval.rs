@@ -4140,6 +4140,7 @@ fn scopeguard_abort(h: tokio::task::JoinHandle<()>) -> AbortOnDrop {
 /// mid-decode twice in one day).
 fn hang_backstop_outcome(
     task_id: &str,
+    room: crate::identity::ActivityRoom,
     window: std::time::Duration,
 ) -> crate::cognition::act_observe::SettleOutcome {
     crate::probe!(
@@ -4149,11 +4150,14 @@ fn hang_backstop_outcome(
         "idle backstop fired — no settle, no propagated error, and NO lane work for the \
          whole window; find the await that lost its error propagation"
     );
-    crate::cognition::act_observe::SettleOutcome::infra_failure(format!(
-        "idle backstop ({}s with zero lane work) — no settle and no propagated error; \
-         substrate bug, not a wrong answer",
-        window.as_secs()
-    ))
+    crate::cognition::act_observe::SettleOutcome::infra_failure(
+        room.as_uuid(),
+        format!(
+            "idle backstop ({}s with zero lane work) — no settle and no propagated error; \
+             substrate bug, not a wrong answer",
+            window.as_secs()
+        ),
+    )
 }
 
 /// Report one graded task on all three surfaces. Called by BOTH pass loops (solo +
@@ -4652,7 +4656,7 @@ async fn run_pass(
                         if idle < PER_TASK_IDLE_BACKSTOP {
                             continue;
                         }
-                        break hang_backstop_outcome(&t.id, PER_TASK_IDLE_BACKSTOP);
+                        break hang_backstop_outcome(&t.id, room, PER_TASK_IDLE_BACKSTOP);
                     }
                 }
             };

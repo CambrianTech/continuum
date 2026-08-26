@@ -351,6 +351,7 @@ mod tests {
             world_state: String::new(),
             acts: 1,
             source: crate::cognition::experience::ExperienceSource::Eval,
+            room: uuid::Uuid::from_u128(7),
         }
     }
 
@@ -422,6 +423,7 @@ mod tests {
             world_state: String::new(),
             acts: 0,
             source: ExperienceSource::Received,
+            room: uuid::Uuid::from_u128(7),
         };
         // A lived turn is salient-untestable too, but not directly teachable — LLM path.
         let lived = ExperienceRecord {
@@ -432,6 +434,7 @@ mod tests {
             world_state: String::new(),
             acts: 8,
             source: ExperienceSource::Lived,
+            room: uuid::Uuid::from_u128(7),
         };
         // An empty received lesson has nothing to teach.
         let empty_received = ExperienceRecord {
@@ -485,6 +488,7 @@ mod tests {
             world_state: String::new(),
             acts: 8,
             source: ExperienceSource::Lived,
+            room: uuid::Uuid::from_u128(7),
         }
     }
 
@@ -515,6 +519,7 @@ mod tests {
             world_state: String::new(),
             acts: 0,
             source: ExperienceSource::Received,
+            room: uuid::Uuid::from_u128(7),
         };
 
         let stimuli = synth.select(&[failed_lived, clean_lived, empty_stimulus, received]);

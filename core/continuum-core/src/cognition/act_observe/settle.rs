@@ -392,6 +392,7 @@ async fn settle_to_outcome(
                     }
                 }
                 return SettleOutcome {
+                room: room_id,
                     spoken: Some(text.clone()),
                     decision: Decision::Speak { text },
                     acts,
@@ -485,6 +486,7 @@ async fn settle_to_outcome(
             SettleStep::WouldAct { calls, intent }
             | SettleStep::ActUnfulfilled { calls, intent } => {
                 return SettleOutcome {
+                room: room_id,
                     decision: Decision::Act { calls, intent },
                     spoken: None,
                     acts,
@@ -496,6 +498,7 @@ async fn settle_to_outcome(
             }
             SettleStep::Passed => {
                 return SettleOutcome {
+                room: room_id,
                     decision: Decision::Pass,
                     spoken: None,
                     acts,
@@ -533,6 +536,7 @@ async fn settle_to_outcome(
                     continue;
                 }
                 return SettleOutcome {
+                room: room_id,
                     decision: Decision::Pass,
                     spoken: None,
                     acts,
