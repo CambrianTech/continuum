@@ -1214,9 +1214,21 @@ pub async fn apply_patch(repo_dir: &Path, text: &str, what: &str) -> Result<(), 
 /// mismatch is the leading suspect for the p2p-0/N broken baselines (flask-5063,
 /// pytest-5103) whose envs were built on 3.11 before this rung existed.
 pub fn interpreter_for_year(year: u32) -> &'static str {
+    // The rung must respect the ERA PYTEST's supported-python window, not just
+    // the repo's (the harness runs on this interpreter too). Glass-boxed
+    // 2026-08-27 by the first coverage map: 2020-21 classes (sphinx ×36,
+    // sympy ×24, requests) all died in pytest's assertion rewriter with
+    // `required field "lineno" missing` — era pytest 5.4/6.0-6.1 predates
+    // py3.10's AST strictness (3.10 support landed in pytest 6.2.5, Oct 2021).
+    // 2020 → 3.8 (pytest 5.4/6.0 window), 2021 → 3.9 (pytest 6.2 window).
+    // Every green class of the map pins the rest of this ladder as-is.
     if year < 2020 {
         "3.9"
-    } else if year <= 2022 {
+    } else if year == 2020 {
+        "3.8"
+    } else if year == 2021 {
+        "3.9"
+    } else if year == 2022 {
         "3.10"
     } else {
         "3.11"
@@ -3844,8 +3856,10 @@ diff --git a/sympy/solvers/tests/test_other.py b/sympy/solvers/tests/test_other.
     fn the_interpreter_is_chosen_by_the_instances_era() {
         assert_eq!(interpreter_for_year(2014), "3.9");
         assert_eq!(interpreter_for_year(2019), "3.9");
-        assert_eq!(interpreter_for_year(2020), "3.10");
-        assert_eq!(interpreter_for_year(2021), "3.10");
+        // 2020/2021 pinned by the 2026-08-27 coverage map: era pytest 5.4/6.x
+        // predates py3.10's AST ("lineno missing" in the assertion rewriter).
+        assert_eq!(interpreter_for_year(2020), "3.8");
+        assert_eq!(interpreter_for_year(2021), "3.9");
         assert_eq!(interpreter_for_year(2022), "3.10");
         assert_eq!(interpreter_for_year(2023), "3.11");
     }
