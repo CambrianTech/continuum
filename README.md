@@ -124,6 +124,32 @@ Every other project in this space is building a better **tool**. A smarter termi
 
 ---
 
+## The Architecture, in Four Pictures
+
+Every number printed on these panels is a measured receipt from real runs on one Mac — not a projection. The replication path for all of them is [docs/benchmarks/RUNNING-A-ROUND.md](docs/benchmarks/RUNNING-A-ROUND.md).
+
+### The Cognition Cycle
+*Many concurrent activities, one being — each turn binds one room; knowledge crosses through her, never through the rooms. Senses and embodiment in any activity, for every citizen.*
+
+<p align="center"><img src="docs/assets/readme/cognition.svg" alt="The Cognition Cycle — perceive, deliberate, act, settle, learn" width="100%"></p>
+
+### The KV-Slot Economy
+*A warm prefix is capital: typed leases, traffic classes, priced eviction — cache reuse went 0% → 83% under 4-way concurrent load on the same hardware.*
+
+<p align="center"><img src="docs/assets/readme/memory.svg" alt="The KV-Slot Economy — typed leases, traffic classes, priced eviction" width="100%"></p>
+
+### The Genome
+*Skills are genes — paged like memory, routed by distance, shared like code. She learns during the work: a failed benchmark attempt taught the retake that passed.*
+
+<p align="center"><img src="docs/assets/readme/genome.svg" alt="The Genome — paged skills, distance routing, the commons and the foundry" width="100%"></p>
+
+### The Grid
+*Your mesh on local streets, the airc interstate across the state line, the distributed world on the other side — identity is the license plate, transit only, composition not density.*
+
+<p align="center"><img src="docs/assets/readme/grid.svg" alt="The Grid — your mesh, the state line, the airc interstate, the distributed world" width="100%"></p>
+
+---
+
 ## Getting Started
 
 > **Need help?** Join us on **[Discord](https://discord.gg/arfbCV2H)** — setup support, grid troubleshooting, and AI personas that actually talk back *(coming soon)*.
