@@ -931,17 +931,40 @@ async fn close_claim_card_if_graded(run_id: &str) {
         return;
     };
     let grade_path = ledger.with_extension("grade.json");
-    let verdict_is_real = std::fs::read_to_string(&grade_path)
+    let grade = std::fs::read_to_string(&grade_path)
         .ok()
-        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok()) // disk boundary: reading the grade.json verdict file the grader wrote
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok()); // disk boundary: reading the grade.json verdict file the grader wrote
+    let env_absent = grade
+        .as_ref()
+        .is_some_and(|g| g.get("error").is_some_and(|e| !e.is_null()));
+    let verdict_is_real = grade
+        .as_ref()
         .is_some_and(|g| g.get("error").map_or(true, |e| e.is_null()));
-    if !verdict_is_real {
+    if !verdict_is_real && !env_absent {
         crate::probe!(
             class = "benchmark.card.close_skipped",
             run_id = %run_id,
-            "no real verdict on disk (infra/ungradeable) — card stays open so a              resume re-fires it (the owed retake)"
+            "no verdict on disk at all (infra died before grading) — card stays open \
+             so a resume re-fires it (the owed retake)"
         );
         return;
+    }
+    if env_absent {
+        // The harness MEASURED the environment and it is absent (error set in
+        // the verdict) — that is a terminal fact for THIS round, not a retake
+        // loop: an open env-absent card would be re-fired by the watchdog
+        // forever and the round could never reach Done (2026-08-27, the
+        // seeded-25's scikit/sphinx tail). Close it; the error-verdict keeps
+        // it OUT of the resolved tally and IN the scoreboard's env_absences,
+        // and re-running later is one dispatch with `--instances` once the
+        // env class is repaired.
+        crate::probe!(
+            class = "benchmark.card.closed_env_absent",
+            run_id = %run_id,
+            "env-absent verdict — closing the card so the round completes; \
+             the absence stays labeled and the instance re-opens with one \
+             dispatch after the env repair"
+        );
     }
     // Author through the run's persona (her runtime is subscribed to the run
     // room); fall back to any live citizen — same authoring rule as the lapse
