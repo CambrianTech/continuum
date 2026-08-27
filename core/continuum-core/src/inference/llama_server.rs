@@ -2805,7 +2805,13 @@ impl LlamaServerControl for LlamaServerProcess {
             mtp_draft: mtp_draft.as_deref(),
             // Ngram spec is free (no tensors, no VRAM) and decode is half of
             // act latency — on for every GPU serving lane.
-            ngram_spec: true,
+            // MEASURED OFF 2026-08-27: ngram spec ran at 2% draft acceptance on
+            // live SWE-solve decode (1 of 48 draft tokens accepted, main lane,
+            // 134k window) — at that rate the drafts cost more than they save
+            // and tax every act. [[the-depth-decode-tax-is-our-lane-config]]:
+            // the A/B said try ngram first; the A/B is done, evidence says off.
+            // Revisit only with a measured acceptance ≥ ~30% on our real mix.
+            ngram_spec: false,
             resident_override: target.resident_override.as_deref(),
             cpu_only: target.placement == LanePlacement::Cpu,
             chat_template: chat_template.as_deref(),
