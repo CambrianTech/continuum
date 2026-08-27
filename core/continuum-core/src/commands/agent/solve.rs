@@ -931,15 +931,47 @@ async fn close_claim_card_if_graded(run_id: &str) {
         return;
     };
     let grade_path = ledger.with_extension("grade.json");
-    let verdict_is_real = std::fs::read_to_string(&grade_path)
+    let grade = std::fs::read_to_string(&grade_path)
         .ok()
-        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok()) // disk boundary: reading the grade.json verdict file the grader wrote
-        .is_some_and(|g| g.get("error").map_or(true, |e| e.is_null()));
-    if !verdict_is_real {
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok()); // disk boundary: reading the grade.json verdict file the grader wrote
+    // A failed GATE is env-class too: the fail-to-pass tests already passed on
+    // the pristine tree, so the control is broken and nothing was measured —
+    // the durable layer already refuses such verdicts (record_verdict), and
+    // the card must stay open for the retake the same as any env absence.
+    let gate_failed = grade
+        .as_ref()
+        .is_some_and(|g| g.get("gate_ok").is_some_and(|k| k == false));
+    let env_absent = gate_failed
+        || grade
+            .as_ref()
+            .is_some_and(|g| g.get("error").is_some_and(|e| !e.is_null()));
+    let verdict_is_real = !env_absent
+        && grade
+            .as_ref()
+            .is_some_and(|g| g.get("error").map_or(true, |e| e.is_null()));
+    if !verdict_is_real && !env_absent {
         crate::probe!(
             class = "benchmark.card.close_skipped",
             run_id = %run_id,
-            "no real verdict on disk (infra/ungradeable) — card stays open so a              resume re-fires it (the owed retake)"
+            "no verdict on disk at all (infra died before grading) — card stays open \
+             so a resume re-fires it (the owed retake)"
+        );
+        return;
+    }
+    if env_absent {
+        // The harness measured the environment and it is ABSENT — the card
+        // stays OPEN so the retake is AUTOMATIC the boot the env heals (Joel
+        // 2026-08-27: "you'd want to get it possible to run the broken ones
+        // after a restart"). The infinite-loop hazard this used to carry is
+        // killed at the dispatch seam instead: dispatch skips instances whose
+        // env failed THIS boot's prewarm, so a still-broken card idles quietly
+        // and a healed one re-fires with zero operator action.
+        crate::probe!(
+            class = "benchmark.card.close_skipped",
+            run_id = %run_id,
+            reason = "env_absent",
+            "env-absent verdict — card stays open; the retake fires itself on \
+             the first boot whose env pre-warm succeeds"
         );
         return;
     }

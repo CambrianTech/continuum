@@ -1500,6 +1500,48 @@ fn clear_setuptools_build_debris(repo_dir: &Path) {
 /// extensions; matplotlib's vendored-freetype `make` died there twice because
 /// the fix rode only the fresh path). Returns owned pairs; empty for most repos.
 fn repo_build_env(instance: &SweInstance, env_dir: &Path) -> Result<Vec<(String, String)>, String> {
+    if instance.repo == "scikit-learn/scikit-learn" {
+        // OpenMP on Apple silicon (glass-boxed 2026-08-27, full ladder): Apple
+        // clang rejects bare -fopenmp; numpy.distutils ignores env
+        // CFLAGS/CPPFLAGS entirely, so the ONLY reliable carrier is flags
+        // EMBEDDED IN $CC/$LDSHARED (verified: the exact failing clang line
+        // gained the flags and the C build completed). Needs brew's libomp —
+        // the ensure_env gate below names the remedy when absent.
+        //
+        // KNOWN STRUCTURAL LIMIT, honestly held: sklearn < 0.22 (pre-2019-12)
+        // vendors a cloudpickle that cannot IMPORT on python >= 3.8
+        // (types.CodeType signature), and no 3.7 exists for this platform
+        // (uv ships none for macOS; CPython 3.7 predates Apple silicon). Those
+        // instances stay env-absent natively; the parity path is the official
+        // harness's era containers (docker fallback, tracked on the roadmap).
+        let libomp = std::path::Path::new("/opt/homebrew/opt/libomp");
+        if libomp.join("include/omp.h").exists() {
+            let inc = libomp.join("include").to_string_lossy().into_owned();
+            let lib = libomp.join("lib").to_string_lossy().into_owned();
+            return Ok(vec![
+                (
+                    "CC".into(),
+                    format!(
+                        "clang -Xpreprocessor -fopenmp -I{inc} \
+                         -Wno-error=implicit-function-declaration -Wno-error=int-conversion"
+                    ),
+                ),
+                (
+                    "LDSHARED".into(),
+                    format!("clang -bundle -undefined dynamic_lookup -L{lib} -lomp"),
+                ),
+                // sklearn's darwin branch suppresses bare -fopenmp only when
+                // "openmp" appears in CPPFLAGS — a valid no-op define carries it.
+                ("CPPFLAGS".into(), "-Dopenmp_via_libomp=1".into()),
+            ]);
+        }
+        return Err(format!(
+            "scikit-learn needs OpenMP and this host has no libomp: install it with \
+             `brew install libomp` and re-run — an ENV prerequisite, not a model \
+             result ({})",
+            instance.instance_id
+        ));
+    }
     if instance.repo == "matplotlib/matplotlib" {
         // System freetype via MPLSETUPCFG (vendored 2.6.1 predates Apple Silicon).
         let cfg = env_dir.join("mplsetup.cfg");

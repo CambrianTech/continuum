@@ -715,6 +715,14 @@ pub(crate) struct StagedSolveDispatch {
 /// walls one burned solve attempt at a time). The staged workspace dirs
 /// (`peers/<assignee>/workspace/swe/<instance>`) are the reliable card→instance
 /// map; instances resolve through the SAME dataset loader the grader uses.
+/// Instances whose env FAILED this boot's pre-warm — the dispatch gate reads
+/// this so a still-broken card idles (no attempt-burning loop) while a healed
+/// one re-fires automatically. Per-boot by construction: a restart re-walks.
+pub fn env_broken_this_boot() -> &'static dashmap::DashSet<String> {
+    static SET: std::sync::OnceLock<dashmap::DashSet<String>> = std::sync::OnceLock::new();
+    SET.get_or_init(dashmap::DashSet::new)
+}
+
 pub fn spawn_env_prewarm_for_working_rounds() {
     tokio::spawn(async move {
         let peers_root = match crate::commands::benchmark::continuum_home() {
@@ -767,18 +775,25 @@ pub fn spawn_env_prewarm_for_working_rounds() {
                 }
             };
             match crate::cognition::swe_bench::ensure_env(&inst, &checkout).await {
-                Ok(_) => crate::probe!(
-                    class = "benchmark.env.prewarmed",
-                    instance = %inst.instance_id,
-                    "resume-side env pre-warm: ready ahead of the driver"
-                ),
-                Err(e) => crate::probe!(
-                    class = "benchmark.env.prewarm_failed",
-                    instance = %inst.instance_id,
-                    stage = "env",
-                    error = %e,
-                    "resume-side env pre-warm FAILED — an ENV failure, never a model result"
-                ),
+                Ok(_) => {
+                    let healed = env_broken_this_boot().remove(&inst.instance_id).is_some();
+                    crate::probe!(
+                        class = "benchmark.env.prewarmed",
+                        instance = %inst.instance_id,
+                        healed,
+                        "resume-side env pre-warm: ready ahead of the driver"
+                    );
+                }
+                Err(e) => {
+                    env_broken_this_boot().insert(inst.instance_id.clone());
+                    crate::probe!(
+                        class = "benchmark.env.prewarm_failed",
+                        instance = %inst.instance_id,
+                        stage = "env",
+                        error = %e,
+                        "resume-side env pre-warm FAILED — an ENV failure, never a model result"
+                    );
+                }
             }
         }
     });
@@ -857,12 +872,28 @@ pub(crate) async fn dispatch_staged_swe_solve(
     // so a change to staging can never leave the two disagreeing about which repo a card
     // is about (they did disagree in kind already: this walk accepted any directory, that
     // one requires a `.git`, so an interrupted clone read as a staged instance here).
+    // ENV GATE: an instance whose env failed THIS boot's pre-warm cannot grade —
+    // firing a solve would burn an attempt on a wall we already measured. Skip
+    // with a named abort; the card stays open and re-fires on the first boot
+    // whose pre-warm heals it (the automatic retake).
+    let env_gate = |inst: &str| crate::modules::work::env_broken_this_boot().contains(inst);
     let (instance, workspace) = match crate::persona::staged_workspace::resolve_for_titles(
         // typed PeerId (canary's #425 struct) → the resolver's raw Uuid
         &claimer.as_uuid(),
         [card.title.as_str()],
     ) {
         crate::persona::staged_workspace::CardWorkspace::One { instance, path } => {
+            if env_gate(&instance) {
+                crate::probe!(
+                    class = "benchmark.dispatch",
+                    card_id = %card_id.as_uuid(),
+                    instance = %instance,
+                    "dispatch deferred: this instance's env failed THIS boot's \
+                     pre-warm — an attempt now would burn on a measured wall; the \
+                     open card re-fires the first boot the env heals"
+                );
+                return;
+            }
             (instance, path.to_string_lossy().to_string())
         }
         // No staged checkout for her matching this card — an ordinary (non-SWE) claim.

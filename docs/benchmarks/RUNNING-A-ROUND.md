@@ -40,6 +40,15 @@ continuum start           # build + boot the headless core, wait until ready
 continuum ping            # the version trio (build #, sha, built-at) — deploys are PROVEN, never assumed
 ```
 
+**Host build prerequisites** (macOS; each is gated with a fail-loud message
+naming its remedy when missing): `brew install freetype pkg-config libomp` —
+freetype/pkg-config for matplotlib-era builds (the vendored freetype predates
+Apple silicon), libomp for scikit-learn-era OpenMP builds. Known structural
+absence, honestly labeled: scikit-learn < 0.22 instances cannot run natively on
+Apple silicon (their vendored cloudpickle needs python ≤ 3.7, which does not
+exist for this platform) — they grade as ENV absences, never model misses; the
+parity path is the official era containers (docker fallback, tracked).
+
 Identity/airc: every citizen's identity (keypair, peer_id, rooms) lives IN the
 core — no separate airc install is needed to run a round.
 
