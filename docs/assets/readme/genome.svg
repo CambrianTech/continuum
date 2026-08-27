@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1200" font-family="Helvetica Neue, Arial, sans-serif">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2f3a4a"/>
+    </marker>
+    <marker id="arrv" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#9068c0"/>
+    </marker>
+  </defs>
+  <rect width="1920" height="1200" fill="#ffffff"/>
+
+  <text x="60" y="78" font-size="44" font-weight="700" fill="#2f3a4a">The Genome</text>
+  <text x="60" y="116" font-size="24" fill="#64748b">skills are genes — paged like memory, routed by distance, shared like code</text>
+
+  <!-- Task in -->
+  <rect x="60" y="200" width="300" height="130" rx="14" fill="#f5ecd7" stroke="#b3985e" stroke-width="2.5"/>
+  <text x="210" y="248" font-size="24" font-weight="700" fill="#2f3a4a" text-anchor="middle">Task arrives</text>
+  <text x="210" y="280" font-size="18" fill="#64748b" text-anchor="middle">a card, a question, a room turn</text>
+  <text x="210" y="306" font-size="18" fill="#64748b" text-anchor="middle">→ embedded once</text>
+
+  <line x1="360" y1="265" x2="445" y2="265" stroke="#2f3a4a" stroke-width="2.5" marker-end="url(#arr)"/>
+
+  <rect x="450" y="200" width="380" height="130" rx="14" fill="#ece2f6" stroke="#9068c0" stroke-width="2.5"/>
+  <text x="640" y="248" font-size="24" font-weight="700" fill="#2f3a4a" text-anchor="middle">Route by DISTANCE</text>
+  <text x="640" y="280" font-size="18" fill="#64748b" text-anchor="middle">nearest gene signatures win —</text>
+  <text x="640" y="306" font-size="18" fill="#64748b" text-anchor="middle">never keyword lists</text>
+
+  <line x1="830" y1="265" x2="915" y2="265" stroke="#2f3a4a" stroke-width="2.5" marker-end="url(#arr)"/>
+
+  <!-- Persona + genome -->
+  <rect x="920" y="165" width="935" height="440" rx="16" fill="#e3e9f8" stroke="#6b81c2" stroke-width="3"/>
+  <text x="952" y="215" font-size="28" font-weight="700" fill="#2f3a4a">Persona</text>
+  <text x="1090" y="215" font-size="20" fill="#64748b">one durable identity, many base models — the genome is the asset that survives</text>
+
+  <rect x="952" y="245" width="870" height="330" rx="14" fill="#ece2f6" stroke="#9068c0" stroke-width="2.5"/>
+  <text x="984" y="292" font-size="24" font-weight="700" fill="#2f3a4a">Genome — LoRA genes with embedding signatures</text>
+
+  <g font-size="18" fill="#2f3a4a" text-anchor="middle">
+    <rect x="984" y="315" width="255" height="72" rx="10" fill="#ffffff" stroke="#9068c0" stroke-width="2"/>
+    <text x="1111" y="345" font-weight="600">rust-expertise</text>
+    <text x="1111" y="372" font-size="15" fill="#9068c0">paged IN · warm</text>
+    <rect x="1264" y="315" width="255" height="72" rx="10" fill="#ffffff" stroke="#9068c0" stroke-width="2"/>
+    <text x="1391" y="345" font-weight="600">django-patterns</text>
+    <text x="1391" y="372" font-size="15" fill="#9068c0">paged IN · warm</text>
+    <rect x="1544" y="315" width="255" height="72" rx="10" fill="#f8fafc" stroke="#c8b3e0" stroke-width="2" stroke-dasharray="6 5"/>
+    <text x="1671" y="345" font-weight="600" fill="#94a3b8">vision-charts</text>
+    <text x="1671" y="372" font-size="15" fill="#94a3b8">on disk · cold</text>
+    <rect x="984" y="405" width="255" height="72" rx="10" fill="#f8fafc" stroke="#c8b3e0" stroke-width="2" stroke-dasharray="6 5"/>
+    <text x="1111" y="435" font-weight="600" fill="#94a3b8">sympy-calculus</text>
+    <text x="1111" y="462" font-size="15" fill="#94a3b8">on disk · cold</text>
+    <rect x="1264" y="405" width="255" height="72" rx="10" fill="#f8fafc" stroke="#c8b3e0" stroke-width="2" stroke-dasharray="6 5"/>
+    <text x="1391" y="435" font-weight="600" fill="#94a3b8">repo-resident gene</text>
+    <text x="1391" y="462" font-size="15" fill="#94a3b8">ships WITH a codebase</text>
+  </g>
+
+  <text x="984" y="530" font-size="19" fill="#64748b">paged in and out by the ONE paging engine (PagedResourcePool) — priced, never a second allocator</text>
+  <text x="984" y="560" font-size="19" fill="#9068c0" font-style="italic">stack by similarity: near genes compose — an unbounded mixture of experts at the skill level</text>
+
+  <!-- Memory ladder -->
+  <rect x="60" y="420" width="770" height="185" rx="16" fill="#e6efdf" stroke="#7a9c5d" stroke-width="3"/>
+  <text x="92" y="466" font-size="26" font-weight="700" fill="#2f3a4a">The memory ladder</text>
+  <g font-size="18" fill="#2f3a4a">
+    <text x="92" y="505" font-weight="600">L1</text><text x="130" y="505" fill="#64748b">tool-traces lifted from turns</text>
+    <text x="450" y="505" font-weight="600">L2</text><text x="488" y="505" fill="#64748b">lessons on completion</text>
+    <text x="92" y="537" font-weight="600">L3</text><text x="130" y="537" fill="#64748b">consolidation (dreams)</text>
+    <text x="450" y="537" font-weight="600">L4</text><text x="488" y="537" fill="#64748b">trained skills — genes</text>
+    <text x="92" y="569" font-weight="600">L5</text><text x="130" y="569" fill="#64748b">identity — who she has become</text>
+  </g>
+
+  <line x1="640" y1="605" x2="952" y2="560" stroke="#7a9c5d" stroke-width="2.5" marker-end="url(#arr)"/>
+
+  <!-- Commons + Foundry -->
+  <rect x="60" y="700" width="880" height="290" rx="16" fill="#f5ecd7" stroke="#b3985e" stroke-width="3"/>
+  <text x="92" y="748" font-size="26" font-weight="700" fill="#2f3a4a">Genome Commons</text>
+  <text x="330" y="748" font-size="19" fill="#64748b">HF-seeded, self-describing genes</text>
+  <text x="92" y="790" font-size="19" fill="#64748b">genome/pull — adopt a gene anyone published</text>
+  <text x="92" y="822" font-size="19" fill="#64748b">publish — with the citizen covenant: consent travels with the weights</text>
+  <text x="92" y="854" font-size="19" fill="#64748b">repo-resident genes: clone a codebase = hire someone who knows it</text>
+  <text x="92" y="900" font-size="20" fill="#b3985e" font-style="italic">sentinels SPECIALIZE → genes GENERALIZE —</text>
+  <text x="92" y="928" font-size="20" fill="#b3985e" font-style="italic">specialize once, share forever</text>
+
+  <rect x="1000" y="700" width="855" height="290" rx="16" fill="#f8e3e1" stroke="#c26b62" stroke-width="3"/>
+  <text x="1032" y="748" font-size="26" font-weight="700" fill="#2f3a4a">Foundry</text>
+  <text x="1180" y="748" font-size="19" fill="#64748b">where experience becomes weights</text>
+  <text x="1032" y="790" font-size="19" fill="#64748b">transcripts → distillation → candidate gene</text>
+  <text x="1032" y="822" font-size="19" fill="#64748b">gated by BEHAVIOR, never perplexity — proxies diagnose, only behavior promotes</text>
+  <text x="1032" y="854" font-size="19" fill="#64748b">benchmarks are the selection pressure — she trains on what she actually did</text>
+  <text x="1032" y="900" font-size="20" fill="#c26b62" font-style="italic">the flywheel: work → lessons → genes → better work</text>
+
+  <line x1="500" y1="700" x2="500" y2="628" stroke="#b3985e" stroke-width="2.5" marker-end="url(#arrv)"/>
+  <line x1="1391" y1="700" x2="1391" y2="608" stroke="#c26b62" stroke-width="2.5" marker-end="url(#arrv)"/>
+
+  <text x="60" y="1075" font-size="19" fill="#7a9c5d" font-style="italic">Receipt: lessons streamed from a failed benchmark attempt taught the retake that passed — learning happened during the work, not after it.</text>
+  <text x="60" y="1110" font-size="19" fill="#64748b" font-style="italic">The durable asset is never the base model — swap Ornith for the next drop and the genome, memory, and identity come along.</text>
+</svg>
