@@ -68,7 +68,7 @@ use airc_core::{Body, PeerId, TranscriptEvent};
 use airc_lib::adapter::{AdapterError, ConsumerAdapter};
 use airc_lib::grid_auth::SignedCapabilityGrant;
 use airc_lib::Airc;
-use airc_protocol::headers_keys::HEADER_AIRC_CAPABILITY_GRANT;
+use airc_protocol::headers_keys::{HEADER_AIRC_CAPABILITY_GRANT, HEADER_AIRC_CHANNEL_NAME};
 use airc_protocol::{HEADER_AIRC_CORRELATION_ID, HEADER_AIRC_REPLY_TO};
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -127,6 +127,16 @@ pub struct ParsedEnvelope {
     pub correlation_id: Uuid,
     /// The typed request body.
     pub request: AircCommandRequest,
+    /// The channel the request ARRIVED on (the envelope's `room_id`).
+    /// The reply must ride this exact channel: the requester awaits on the
+    /// room it asked in, and the responder's own current room may be a
+    /// different room entirely (operator CLI in #general vs citizens landed
+    /// in #academy — the 2026-08-27 grid-smoke 0/3 deadline class).
+    pub request_channel: airc_core::RoomId,
+    /// The request's stamped human channel name
+    /// ([`airc_protocol::HEADER_AIRC_CHANNEL_NAME`]), if present — carried
+    /// onto the reply for the blind-room heal.
+    pub request_channel_name: Option<String>,
     /// A capability grant the caller PRESENTED on the envelope (base64
     /// [`HEADER_AIRC_CAPABILITY_GRANT`], decoded). `None` if absent. Decoded in
     /// [`parse_envelope`](CommandRequestHandler::parse_envelope) so the parse step
@@ -244,6 +254,8 @@ impl CommandRequestHandler {
             reply_to,
             correlation_id,
             request,
+            request_channel: envelope.room_id,
+            request_channel_name: envelope.headers.get(HEADER_AIRC_CHANNEL_NAME).cloned(),
             presented_grant,
         })
     }
@@ -435,8 +447,21 @@ impl CommandRequestHandler {
             COMMAND_RESPONSE_BODY_HINT.to_string(),
         );
 
+        // reply_in, NOT reply: the answer must ride the channel the request
+        // arrived on. The requester awaits on the room it asked in; this
+        // responder's current room can be a different room entirely (citizens
+        // land in #academy, an operator CLI asks in #general) — reply() sent
+        // the answer somewhere the requester never subscribed and every
+        // dispatch died at the command deadline (grid-smoke 0/3, 2026-08-27).
         self.airc
-            .reply(parsed.reply_to, parsed.correlation_id, headers, body)
+            .reply_in(
+                parsed.request_channel,
+                parsed.request_channel_name.as_deref(),
+                parsed.reply_to,
+                parsed.correlation_id,
+                headers,
+                body,
+            )
             .await
             .map_err(|e| AdapterError::Io(format!("airc reply: {e}")))?;
         Ok(())
@@ -751,6 +776,8 @@ mod tests {
             reply_to: PeerId::new(),
             correlation_id: Uuid::new_v4(),
             request,
+            request_channel: airc_core::RoomId::from_uuid(Uuid::new_v4()),
+            request_channel_name: None,
             presented_grant: None,
         }
     }
@@ -884,6 +911,8 @@ mod tests {
                 env: None,
                 params: serde_json::Value::Null,
             },
+            request_channel: airc_core::RoomId::from_uuid(Uuid::new_v4()),
+            request_channel_name: None,
             presented_grant: None,
         };
 

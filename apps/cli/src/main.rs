@@ -22,12 +22,10 @@
 
 use std::env;
 use std::path::PathBuf;
-use std::sync::Arc;
 
-use airc_lib::Airc;
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
-use continuum_client::{AircIpcTransport, Connection};
+use continuum_client::{attach_local_substrate, AircIpcTransport, Connection};
 use uuid::Uuid;
 
 mod grid_smoke;
@@ -44,9 +42,10 @@ struct Cli {
     #[arg(long, env = "CONTINUUM_AIRC_HOME", global = true)]
     home: Option<PathBuf>,
 
-    /// Target substrate peer UUID. Find it via `airc status` on the
-    /// machine running continuum-core-server. Required for any command
-    /// that talks to the substrate — `--help` works without it.
+    /// Target substrate peer UUID. Defaults to the LOCAL substrate,
+    /// auto-discovered from the airc daemon's Status RPC. Pass
+    /// explicitly (or set CONTINUUM_PEER_ID) to target a REMOTE grid
+    /// peer instead.
     #[arg(long, env = "CONTINUUM_PEER_ID", global = true)]
     peer: Option<Uuid>,
 
@@ -115,19 +114,18 @@ async fn main() -> Result<()> {
         None => default_airc_home()?,
     };
 
-    let peer = cli.peer.ok_or_else(|| {
-        anyhow!(
-            "--peer is required (or set CONTINUUM_PEER_ID). Find it via `airc status` on the \
-             machine running continuum-core-server."
-        )
-    })?;
-
-    tracing::debug!(?home, "opening airc home");
-    let airc = Airc::open(&home)
+    // Attach through the RUNNING airc daemon — `Airc::open` is owner-mode
+    // (no daemon, no routes: every dispatch dies at the command deadline;
+    // the 2026-08-27 grid-smoke 0/3 was exactly that). Socket + local
+    // substrate peer are auto-discovered; --peer overrides for remote
+    // grid targets.
+    tracing::debug!(?home, "attaching to local substrate");
+    let attachment = attach_local_substrate(home.clone(), "ctm", cli.peer)
         .await
-        .with_context(|| format!("open airc home at {}", home.display()))?;
+        .with_context(|| format!("attach to substrate from airc home {}", home.display()))?;
+    let peer = attachment.substrate_peer;
 
-    let conn = Connection::connect(Arc::new(airc), peer);
+    let conn = Connection::connect(attachment.airc, peer);
 
     match cli.command {
         Command::Metrics => run_metrics(conn).await,
@@ -227,5 +225,13 @@ async fn run_generate(
 fn default_airc_home() -> Result<PathBuf> {
     let home = env::var_os("HOME")
         .ok_or_else(|| anyhow!("$HOME is unset; pass --home explicitly"))?;
-    Ok(PathBuf::from(home).join(".airc"))
+    // ctm gets its OWN scope, never the operator's `~/.airc`. Two reasons,
+    // both learned the hard way (2026-08-27 grid-smoke 0/3): a shared home
+    // would inherit the operator's CURRENT ROOM — request/reply frames are
+    // stamped with the sender's current-room channel, so a scope parked in
+    // #academy talks past a substrate living in #general and every dispatch
+    // deadlines; and steering the shared scope's room to fix that would
+    // mutate the operator's own airc state. A fresh dedicated scope lands
+    // in #general (the substrate's commons) by airc's own default.
+    Ok(PathBuf::from(home).join(".continuum").join("ctm").join("airc"))
 }

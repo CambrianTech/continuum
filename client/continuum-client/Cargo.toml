@@ -27,6 +27,9 @@ airc-core = { workspace = true }
 # airc command-bus header keys (correlation / reply-to) for the serve side —
 # the SAME crate the substrate's command_handler reads them from (zero drift).
 airc-protocol = { workspace = true }
+# Typed DaemonClient for socket-discovered Status RPC (attach.rs) — never
+# stdout parsing for process IPC.
+airc-ipc = { workspace = true }
 
 [features]
 default = []
