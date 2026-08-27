@@ -934,12 +934,21 @@ async fn close_claim_card_if_graded(run_id: &str) {
     let grade = std::fs::read_to_string(&grade_path)
         .ok()
         .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok()); // disk boundary: reading the grade.json verdict file the grader wrote
-    let env_absent = grade
+    // A failed GATE is env-class too: the fail-to-pass tests already passed on
+    // the pristine tree, so the control is broken and nothing was measured —
+    // the durable layer already refuses such verdicts (record_verdict), and
+    // the card must stay open for the retake the same as any env absence.
+    let gate_failed = grade
         .as_ref()
-        .is_some_and(|g| g.get("error").is_some_and(|e| !e.is_null()));
-    let verdict_is_real = grade
-        .as_ref()
-        .is_some_and(|g| g.get("error").map_or(true, |e| e.is_null()));
+        .is_some_and(|g| g.get("gate_ok").is_some_and(|k| k == false));
+    let env_absent = gate_failed
+        || grade
+            .as_ref()
+            .is_some_and(|g| g.get("error").is_some_and(|e| !e.is_null()));
+    let verdict_is_real = !env_absent
+        && grade
+            .as_ref()
+            .is_some_and(|g| g.get("error").map_or(true, |e| e.is_null()));
     if !verdict_is_real && !env_absent {
         crate::probe!(
             class = "benchmark.card.close_skipped",

@@ -3674,10 +3674,13 @@ impl ActionCommand for BenchmarkScoreboard {
                 if !ids.contains(id.as_str()) {
                     continue;
                 }
-                if v.error.is_some() {
+                if v.error.is_some() || !v.gate_ok {
                     // Absence, never a tallied attempt — but never invisible
                     // either: an env failure the user can't see reads as a
-                    // model miss in every retelling.
+                    // model miss in every retelling. A failed GATE is the same
+                    // class: the control was broken, nothing was measured
+                    // (belt-and-suspenders — record_verdict already refuses
+                    // gate-failed verdicts, so this arm should never fire).
                     env_absent_instances.push(id.clone());
                     continue;
                 }
