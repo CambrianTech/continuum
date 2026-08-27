@@ -43,11 +43,11 @@ continuum ping            # the version trio (build #, sha, built-at) — deploy
 **Host build prerequisites** (macOS; each is gated with a fail-loud message
 naming its remedy when missing): `brew install freetype pkg-config libomp` —
 freetype/pkg-config for matplotlib-era builds (the vendored freetype predates
-Apple silicon), libomp for scikit-learn-era OpenMP builds. Known structural
-absence, honestly labeled: scikit-learn < 0.22 instances cannot run natively on
-Apple silicon (their vendored cloudpickle needs python ≤ 3.7, which does not
-exist for this platform) — they grade as ENV absences, never model misses; the
-parity path is the official era containers (docker fallback, tracked).
+Apple silicon), libomp for scikit-learn-era OpenMP builds. scikit-learn-era
+builds work natively (proven 2026-08-27): the era harness applies the
+canonical cloudpickle py3.8 fix at checkout staging — uniformly to solve and
+grade trees — and pins platform-viable build deps; sklearn 0.21 imports clean
+on Apple silicon.
 
 Identity/airc: every citizen's identity (keypair, peer_id, rooms) lives IN the
 core — no separate airc install is needed to run a round.
