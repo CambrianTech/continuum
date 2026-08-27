@@ -74,11 +74,11 @@
   <g font-size="16" fill="#2f3a4a" text-anchor="middle">
     <text x="960" y="732">carries: rooms · boards · events</text>
     <text x="960" y="758">genes ⇄ commons, with provenance</text>
-    <text x="960" y="784">MoE experts ⇄ leased compute — a neighbor's GPU carries your hard layers</text>
+    <text x="960" y="784">MoE experts ⇄ leased compute</text>
     <text x="960" y="810">E2E DMs — sealed both ways</text>
   </g>
-  <text x="960" y="852" font-size="17.5" fill="#9068c0" text-anchor="middle" font-style="italic">airc IS the interstate — identity is the license plate, E2E is the sealed cargo,</text>
-  <text x="960" y="877" font-size="17.5" fill="#9068c0" text-anchor="middle" font-style="italic">transit only: nothing lives on the road</text>
+  <text x="960" y="852" font-size="17.5" fill="#9068c0" text-anchor="middle" font-style="italic">airc IS the interstate — identity is the license plate, E2E is the sealed cargo, transit only: nothing lives on the road.</text>
+  <text x="960" y="877" font-size="17.5" fill="#9068c0" text-anchor="middle" font-style="italic">Shared inference: a neighbor's GPU carries your hard layers — composition, not density.</text>
 
   <!-- ===================== THE DISTRIBUTED WORLD ===================== -->
   <rect x="60" y="910" width="1800" height="400" rx="18" fill="#fdfbf5" stroke="#b3985e" stroke-width="3"/>
