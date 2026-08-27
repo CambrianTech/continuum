@@ -62,7 +62,15 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
         // and 17 queued cards crawled on ONE slot (2026-08-27). Resized as the
         // queue drains, released when the watch ends — the same max-of-overrides
         // lease the quiesce path uses, pulling the other direction.
-        const LANE_CAP: u32 = 4;
+        // MEASURED 2026-08-27, minutes after the lease shipped: raising lanes
+        // to 4 made the planner SELL THE WINDOW to pay for them — 60942 total
+        // context split ~20k/slot against a measured 166k demand window, and
+        // every solve collapsed at act 3 on the #390 saturation gate with an
+        // empty diff (four starved lanes are strictly worse than one working
+        // lane). Until the planner can hold a PER-LANE WINDOW FLOOR for
+        // solve-class demand (the real fix, filed), the lease asks for ONE
+        // lane: the proven solve config — serial but completing.
+        const LANE_CAP: u32 = 1;
         let mut demand_lease: Option<(u64, u32)> = None;
         let mut attempt: u32 = 0;
         loop {

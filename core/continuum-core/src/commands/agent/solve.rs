@@ -941,14 +941,34 @@ async fn close_claim_card_if_graded(run_id: &str) {
     let gate_failed = grade
         .as_ref()
         .is_some_and(|g| g.get("gate_ok").is_some_and(|k| k == false));
-    let env_absent = gate_failed
-        || grade
-            .as_ref()
-            .is_some_and(|g| g.get("error").is_some_and(|e| !e.is_null()));
+    // "No candidate patch" is NOT an env absence — the env was fine and she
+    // simply produced no diff (measured 2026-08-27: the env label sent these
+    // through the env-retake path with a message promising "fires when the env
+    // heals", which was false and confusing in the log). Same card-stays-open
+    // outcome, honest reason.
+    let no_patch = grade.as_ref().is_some_and(|g| {
+        g.get("error")
+            .and_then(|e| e.as_str())
+            .is_some_and(|e| e.contains("no candidate patch"))
+    });
+    let env_absent = !no_patch
+        && (gate_failed
+            || grade
+                .as_ref()
+                .is_some_and(|g| g.get("error").is_some_and(|e| !e.is_null())));
     let verdict_is_real = !env_absent
         && grade
             .as_ref()
             .is_some_and(|g| g.get("error").map_or(true, |e| e.is_null()));
+    if no_patch {
+        crate::probe!(
+            class = "benchmark.card.close_skipped",
+            run_id = %run_id,
+            reason = "no_patch",
+            "she produced no diff — card stays open for a retake; not an env absence"
+        );
+        return;
+    }
     if !verdict_is_real && !env_absent {
         crate::probe!(
             class = "benchmark.card.close_skipped",
