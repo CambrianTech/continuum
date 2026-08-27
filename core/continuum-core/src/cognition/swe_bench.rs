@@ -1495,6 +1495,23 @@ fn clear_setuptools_build_debris(repo_dir: &Path) {
     }
 }
 
+/// Re-assert the PEP-660 harness floor: setuptools in [64, 70) — the only
+/// window with BOTH `build_editable` (>=64) and `dep_util` (<70). Setuptools is
+/// HARNESS, never subject ([[…]] doctrine at the build_requires site): an
+/// era-pinned resolve that sweeps it to a dated version (sympy-12481's 2017 pin
+/// left 34.3.3 — no `setuptools.build_meta` AT ALL) breaks every later
+/// editable rebuild. Idempotent and seconds-cheap; call it after ANY step that
+/// can move setuptools.
+async fn assert_harness_floor(uv: &str, py: &str) -> Result<(), String> {
+    let _ = run(
+        uv,
+        &["pip", "install", "-q", "--python", py, "setuptools>=64,<70"],
+        None,
+    )
+    .await?;
+    Ok(())
+}
+
 pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathBuf, String> {
     // PER-INSTANCE SERIALIZATION — this function used to rely on "solve/grade
     // run serially per instance"; the dispatch-time env PRE-WARM broke that
@@ -1525,6 +1542,9 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
         // instance so there is no cross-tree race.
         if let Some(uv) = which("uv") {
             let py_s = py.to_string_lossy().to_string();
+            // The cached env may hold an era-swept setuptools (34.x has no
+            // build_meta) — floor it before asking for an editable rebuild.
+            assert_harness_floor(&uv, &py_s).await?;
             let out = run_env(
                 &uv,
                 &[
@@ -1819,6 +1839,11 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
             tail(&stdout)
         ));
     }
+
+    // The era-pinned `-e .` resolve can sweep setuptools into the dated subject
+    // graph (sympy-12481: 2017 pin → setuptools 34.3.3, no build_meta) — every
+    // later re-point then dies. Floor it back: harness, never subject.
+    assert_harness_floor(&uv, &py_s).await?;
 
     // PYTEST IS SUBJECT, NOT HARNESS, for date-pinned instances (#380, glass-boxed
     // 2026-08-12): era test suites import pytest INTERNALS — flask 2.2's test_cli.py does
