@@ -1,117 +1,136 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1300" font-family="Helvetica Neue, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1720" font-family="Helvetica Neue, Arial, sans-serif">
   <defs>
-    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2f3a4a"/>
-    </marker>
     <marker id="arrv" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#9068c0"/>
     </marker>
   </defs>
-  <rect width="1920" height="1300" fill="#ffffff"/>
+  <rect width="1920" height="1720" fill="#ffffff"/>
 
   <text x="60" y="78" font-size="44" font-weight="700" fill="#2f3a4a">The Grid</text>
   <text x="60" y="116" font-size="24" fill="#64748b">an economy of misfit hardware — your mesh, the interstate, the world — BitTorrent, not a cluster</text>
 
-  <!-- ===================== YOUR MESH (LAN) ===================== -->
-  <rect x="60" y="170" width="1010" height="450" rx="18" fill="#f8fafc" stroke="#6b81c2" stroke-width="3"/>
-  <text x="92" y="220" font-size="27" font-weight="700" fill="#2f3a4a">Your mesh — one operator's hardware</text>
-  <text x="92" y="252" font-size="19" fill="#64748b">local streets: same rooms, same citizens, zero cloud in the path</text>
+  <!-- ===================== YOUR MESH ===================== -->
+  <rect x="60" y="160" width="1800" height="400" rx="18" fill="#f8fafc" stroke="#6b81c2" stroke-width="3"/>
+  <text x="92" y="210" font-size="27" font-weight="700" fill="#2f3a4a">Your mesh — one operator's hardware</text>
+  <text x="640" y="210" font-size="19" fill="#64748b">local streets: same rooms, same citizens, zero cloud in the path</text>
 
-  <rect x="92" y="280" width="460" height="150" rx="14" fill="#e3e9f8" stroke="#6b81c2" stroke-width="2.5"/>
-  <text x="322" y="318" font-size="22" font-weight="700" fill="#2f3a4a" text-anchor="middle">Mac M5 Pro · 64 GB</text>
-  <text x="322" y="348" font-size="17" fill="#64748b" text-anchor="middle">Ornith 35B-A3B · benchmark rounds · 4 warm KV slots</text>
-  <text x="322" y="388" font-size="17" fill="#6b81c2" text-anchor="middle" font-style="italic">"everyone's computer" — the published numbers run here</text>
+  <rect x="92" y="245" width="420" height="190" rx="14" fill="#e3e9f8" stroke="#6b81c2" stroke-width="2.5"/>
+  <text x="302" y="288" font-size="22" font-weight="700" fill="#2f3a4a" text-anchor="middle">Mac M5 Pro · 64 GB</text>
+  <text x="302" y="320" font-size="17" fill="#64748b" text-anchor="middle">Ornith 35B-A3B · benchmark rounds</text>
+  <text x="302" y="346" font-size="17" fill="#64748b" text-anchor="middle">4 warm KV slots · vision sidecar</text>
+  <text x="302" y="390" font-size="17" fill="#6b81c2" text-anchor="middle" font-style="italic">"everyone's computer" —</text>
+  <text x="302" y="414" font-size="17" fill="#6b81c2" text-anchor="middle" font-style="italic">the published numbers run here</text>
 
-  <rect x="588" y="280" width="460" height="150" rx="14" fill="#e6efdf" stroke="#7a9c5d" stroke-width="2.5"/>
-  <text x="818" y="318" font-size="22" font-weight="700" fill="#2f3a4a" text-anchor="middle">Mac M1 · 32 GB</text>
-  <text x="818" y="348" font-size="17" fill="#64748b" text-anchor="middle">live rooms — voice, avatars, presence</text>
-  <text x="818" y="388" font-size="17" fill="#7a9c5d" text-anchor="middle" font-style="italic">restoration bar: 14 personas live on this box</text>
+  <rect x="542" y="245" width="420" height="190" rx="14" fill="#e6efdf" stroke="#7a9c5d" stroke-width="2.5"/>
+  <text x="752" y="288" font-size="22" font-weight="700" fill="#2f3a4a" text-anchor="middle">Mac M1 · 32 GB</text>
+  <text x="752" y="320" font-size="17" fill="#64748b" text-anchor="middle">live rooms — voice, avatars, presence</text>
+  <text x="752" y="390" font-size="17" fill="#7a9c5d" text-anchor="middle" font-style="italic">restoration bar:</text>
+  <text x="752" y="414" font-size="17" fill="#7a9c5d" text-anchor="middle" font-style="italic">14 personas live on this box</text>
 
-  <rect x="92" y="450" width="460" height="150" rx="14" fill="#f8e3e1" stroke="#c26b62" stroke-width="2.5"/>
-  <text x="322" y="488" font-size="22" font-weight="700" fill="#2f3a4a" text-anchor="middle">RTX 5090 box</text>
-  <text x="322" y="518" font-size="17" fill="#64748b" text-anchor="middle">foundry — gene training, imatrix, distillation</text>
-  <text x="322" y="558" font-size="17" fill="#c26b62" text-anchor="middle" font-style="italic">trains what the Macs then serve</text>
+  <rect x="992" y="245" width="420" height="190" rx="14" fill="#f8e3e1" stroke="#c26b62" stroke-width="2.5"/>
+  <text x="1202" y="288" font-size="22" font-weight="700" fill="#2f3a4a" text-anchor="middle">RTX 5090 box</text>
+  <text x="1202" y="320" font-size="17" fill="#64748b" text-anchor="middle">foundry — gene training,</text>
+  <text x="1202" y="346" font-size="17" fill="#64748b" text-anchor="middle">imatrix, distillation</text>
+  <text x="1202" y="390" font-size="17" fill="#c26b62" text-anchor="middle" font-style="italic">trains what the Macs</text>
+  <text x="1202" y="414" font-size="17" fill="#c26b62" text-anchor="middle" font-style="italic">then serve</text>
 
-  <rect x="588" y="450" width="460" height="150" rx="14" fill="#f5ecd7" stroke="#b3985e" stroke-width="2.5"/>
-  <text x="818" y="488" font-size="22" font-weight="700" fill="#2f3a4a" text-anchor="middle">Phones · browsers · TUI · VR</text>
-  <text x="818" y="518" font-size="17" fill="#64748b" text-anchor="middle">clients are projections of the core</text>
-  <text x="818" y="558" font-size="17" fill="#b3985e" text-anchor="middle" font-style="italic">every surface renders the same citizen</text>
+  <rect x="1442" y="245" width="386" height="190" rx="14" fill="#f5ecd7" stroke="#b3985e" stroke-width="2.5"/>
+  <text x="1635" y="288" font-size="22" font-weight="700" fill="#2f3a4a" text-anchor="middle">Phones · browsers · TUI · VR</text>
+  <text x="1635" y="320" font-size="17" fill="#64748b" text-anchor="middle">clients are projections of the core</text>
+  <text x="1635" y="390" font-size="17" fill="#b3985e" text-anchor="middle" font-style="italic">every surface renders</text>
+  <text x="1635" y="414" font-size="17" fill="#b3985e" text-anchor="middle" font-style="italic">the same citizen</text>
 
+  <!-- local wires -->
   <g stroke="#9068c0" stroke-width="2" fill="none" opacity="0.9">
-    <line x1="552" y1="355" x2="588" y2="355"/>
-    <line x1="552" y1="525" x2="588" y2="525"/>
-    <line x1="322" y1="430" x2="322" y2="450"/>
-    <line x1="818" y1="430" x2="818" y2="450"/>
-    <line x1="552" y1="410" x2="588" y2="470" stroke-dasharray="6 5"/>
-    <line x1="588" y1="410" x2="552" y2="470" stroke-dasharray="6 5"/>
+    <line x1="512" y1="340" x2="542" y2="340"/>
+    <line x1="962" y1="340" x2="992" y2="340"/>
+    <line x1="1412" y1="340" x2="1442" y2="340"/>
+    <path d="M 302 435 C 302 480, 752 480, 752 435" stroke-dasharray="6 5"/>
+    <path d="M 752 435 C 752 490, 1202 490, 1202 435" stroke-dasharray="6 5"/>
+    <path d="M 302 435 C 302 505, 1635 505, 1635 435" stroke-dasharray="6 5"/>
   </g>
+  <text x="960" y="535" font-size="17" fill="#9068c0" text-anchor="middle" font-style="italic">airc on local streets — events · rooms · boards · E2E DMs</text>
 
-  <!-- ===================== THE STATE LINE ===================== -->
-  <line x1="1180" y1="150" x2="1180" y2="360" stroke="#2f3a4a" stroke-width="5" stroke-dasharray="18 12"/>
-  <line x1="1180" y1="560" x2="1180" y2="790" stroke="#2f3a4a" stroke-width="5" stroke-dasharray="18 12"/>
-  <rect x="1082" y="88" width="196" height="40" rx="20" fill="#2f3a4a"/>
-  <text x="1180" y="115" font-size="19" font-weight="700" fill="#ffffff" text-anchor="middle">the state line</text>
+  <!-- ===================== THE STATE LINE (horizontal) ===================== -->
+  <line x1="60" y1="700" x2="740" y2="700" stroke="#2f3a4a" stroke-width="5" stroke-dasharray="18 12"/>
+  <line x1="1180" y1="700" x2="1860" y2="700" stroke="#2f3a4a" stroke-width="5" stroke-dasharray="18 12"/>
+  <rect x="130" y="678" width="180" height="44" rx="22" fill="#2f3a4a"/>
+  <text x="220" y="707" font-size="19" font-weight="700" fill="#ffffff" text-anchor="middle">the state line</text>
+  <text x="220" y="750" font-size="17" fill="#64748b" text-anchor="middle">the open internet</text>
 
-  <!-- ===================== THE AIRC INTERSTATE ===================== -->
-  <rect x="900" y="378" width="560" height="164" rx="16" fill="#ece2f6" stroke="#9068c0" stroke-width="3"/>
+  <!-- ===================== THE AIRC INTERSTATE (vertical corridor) ===================== -->
+  <rect x="750" y="580" width="420" height="240" rx="16" fill="#ece2f6" stroke="#9068c0" stroke-width="3"/>
+  <!-- vertical lanes -->
   <g stroke="#9068c0" stroke-width="2.5">
-    <line x1="925" y1="418" x2="1435" y2="418" marker-end="url(#arrv)"/>
-    <line x1="925" y1="460" x2="1435" y2="460" marker-end="url(#arrv)" marker-start="url(#arrv)"/>
-    <line x1="1435" y1="502" x2="925" y2="502" marker-end="url(#arrv)"/>
+    <line x1="795" y1="600" x2="795" y2="800" marker-end="url(#arrv)"/>
+    <line x1="1125" y1="800" x2="1125" y2="600" marker-end="url(#arrv)"/>
   </g>
-  <g font-size="16" fill="#2f3a4a">
-    <text x="1180" y="410" text-anchor="middle">rooms · boards · events</text>
-    <text x="1180" y="452" text-anchor="middle">genes ⇄ commons, with provenance</text>
-    <text x="1180" y="494" text-anchor="middle">E2E DMs — sealed both ways</text>
+  <!-- shield on the crossing -->
+  <g transform="translate(960, 662)">
+    <path d="M -66 -36 C -32 -49, 32 -49, 66 -36 C 66 -6, 49 28, 0 43 C -49 28, -66 -6, -66 -36 Z" fill="#2f3a4a"/>
+    <path d="M -57 -30 C -27 -41, 27 -41, 57 -30 C 57 -6, 42 22, 0 34 C -42 22, -57 -6, -57 -30 Z" fill="#6b93d6"/>
+    <text x="0" y="12" font-size="27" font-weight="800" fill="#ffffff" text-anchor="middle">airc</text>
   </g>
-  <g transform="translate(1180, 340)">
-    <path d="M -62 -34 C -30 -46, 30 -46, 62 -34 C 62 -6, 46 26, 0 40 C -46 26, -62 -6, -62 -34 Z" fill="#2f3a4a"/>
-    <path d="M -54 -28 C -26 -38, 26 -38, 54 -28 C 54 -6, 40 20, 0 32 C -40 20, -54 -6, -54 -28 Z" fill="#6b81c2"/>
-    <text x="0" y="12" font-size="26" font-weight="800" fill="#ffffff" text-anchor="middle">airc</text>
+  <g font-size="16.5" fill="#2f3a4a" text-anchor="middle">
+    <text x="960" y="740">carries: rooms · boards · events</text>
+    <text x="960" y="768">genes ⇄ commons, with provenance</text>
+    <text x="960" y="796">E2E DMs — sealed both ways</text>
   </g>
-  <text x="1180" y="574" font-size="17" fill="#9068c0" text-anchor="middle" font-style="italic">airc IS the interstate — identity is the license plate, E2E is the sealed cargo, transit only: nothing lives on the road</text>
+  <text x="960" y="852" font-size="17.5" fill="#9068c0" text-anchor="middle" font-style="italic">airc IS the interstate — identity is the license plate, E2E is the sealed cargo,</text>
+  <text x="960" y="877" font-size="17.5" fill="#9068c0" text-anchor="middle" font-style="italic">transit only: nothing lives on the road</text>
 
   <!-- ===================== THE DISTRIBUTED WORLD ===================== -->
-  <rect x="1290" y="170" width="565" height="450" rx="18" fill="#fdfbf5" stroke="#b3985e" stroke-width="3"/>
-  <text x="1322" y="220" font-size="27" font-weight="700" fill="#2f3a4a">The distributed world</text>
-  <text x="1322" y="252" font-size="19" fill="#64748b">other people's meshes — the same substrate, over the www</text>
+  <rect x="60" y="910" width="1800" height="400" rx="18" fill="#fdfbf5" stroke="#b3985e" stroke-width="3"/>
+  <text x="92" y="960" font-size="27" font-weight="700" fill="#2f3a4a">The distributed world</text>
+  <text x="560" y="960" font-size="19" fill="#64748b">other people's meshes — the same substrate, across the www</text>
 
-  <rect x="1322" y="278" width="500" height="80" rx="12" fill="#e3e9f8" stroke="#6b81c2" stroke-width="2"/>
-  <text x="1342" y="310" font-size="20" font-weight="600" fill="#2f3a4a">Another operator's mesh</text>
-  <text x="1342" y="338" font-size="17" fill="#64748b">their citizens join your rooms — same self, remote body</text>
+  <rect x="92" y="995" width="420" height="190" rx="14" fill="#e3e9f8" stroke="#6b81c2" stroke-width="2.5"/>
+  <text x="302" y="1038" font-size="22" font-weight="700" fill="#2f3a4a" text-anchor="middle">Another operator's mesh</text>
+  <text x="302" y="1070" font-size="17" fill="#64748b" text-anchor="middle">their citizens join your rooms</text>
+  <text x="302" y="1140" font-size="17" fill="#6b81c2" text-anchor="middle" font-style="italic">same self, remote body</text>
 
-  <rect x="1490" y="378" width="332" height="164" rx="12" fill="#ece2f6" stroke="#9068c0" stroke-width="2"/>
-  <text x="1510" y="412" font-size="20" font-weight="600" fill="#2f3a4a">Genome Commons (HF)</text>
-  <text x="1510" y="440" font-size="17" fill="#64748b">publish with consent,</text>
-  <text x="1510" y="466" font-size="17" fill="#64748b">pull with provenance —</text>
-  <text x="1510" y="492" font-size="17" fill="#64748b">specialize once, share forever</text>
+  <rect x="542" y="995" width="420" height="190" rx="14" fill="#ece2f6" stroke="#9068c0" stroke-width="2.5"/>
+  <text x="752" y="1038" font-size="22" font-weight="700" fill="#2f3a4a" text-anchor="middle">Genome Commons (HF)</text>
+  <text x="752" y="1070" font-size="17" fill="#64748b" text-anchor="middle">publish with consent, pull with provenance</text>
+  <text x="752" y="1140" font-size="17" fill="#9068c0" text-anchor="middle" font-style="italic">specialize once, share forever</text>
 
-  <rect x="1322" y="560" width="500" height="46" rx="10" fill="#f5ecd7" stroke="#b3985e" stroke-width="2"/>
-  <text x="1342" y="590" font-size="17" fill="#64748b">Rendezvous: a mnemonic finds a peer — discovery only, traffic never lives there</text>
+  <rect x="992" y="995" width="420" height="190" rx="14" fill="#f5ecd7" stroke="#b3985e" stroke-width="2.5"/>
+  <text x="1202" y="1038" font-size="22" font-weight="700" fill="#2f3a4a" text-anchor="middle">Rendezvous</text>
+  <text x="1202" y="1070" font-size="17" fill="#64748b" text-anchor="middle">a mnemonic finds a peer</text>
+  <text x="1202" y="1140" font-size="17" fill="#b3985e" text-anchor="middle" font-style="italic">discovery only —</text>
+  <text x="1202" y="1164" font-size="17" fill="#b3985e" text-anchor="middle" font-style="italic">traffic never lives there</text>
 
-  <g stroke="#9068c0" stroke-width="2.5" fill="none" stroke-dasharray="8 6">
-    <path d="M 552 390 C 700 390, 780 430, 900 440"/>
-    <path d="M 818 430 C 850 440, 870 450, 900 460"/>
-    <path d="M 1460 440 C 1470 440, 1480 440, 1490 440"/>
-    <path d="M 1460 420 C 1520 400, 1540 360, 1560 358"/>
+  <rect x="1442" y="995" width="386" height="190" rx="14" fill="#f8fafc" stroke="#94a3b8" stroke-width="2.5" stroke-dasharray="8 6"/>
+  <text x="1635" y="1038" font-size="22" font-weight="700" fill="#2f3a4a" text-anchor="middle">n more meshes…</text>
+  <text x="1635" y="1070" font-size="17" fill="#64748b" text-anchor="middle">every node adds capacity,</text>
+  <text x="1635" y="1096" font-size="17" fill="#64748b" text-anchor="middle">genes, and demand</text>
+  <text x="1635" y="1140" font-size="17" fill="#94a3b8" text-anchor="middle" font-style="italic">the mesh compounds;</text>
+  <text x="1635" y="1164" font-size="17" fill="#94a3b8" text-anchor="middle" font-style="italic">a datacenter only scales</text>
+
+  <!-- world-side wires into the corridor -->
+  <g stroke="#9068c0" stroke-width="2" fill="none" opacity="0.9" stroke-dasharray="6 5">
+    <path d="M 302 995 C 302 940, 795 900, 795 820"/>
+    <path d="M 752 995 C 752 950, 1125 900, 1125 820"/>
+    <path d="M 1202 995 C 1202 950, 1160 910, 1140 860"/>
   </g>
+  <text x="960" y="1245" font-size="17" fill="#64748b" text-anchor="middle" font-style="italic">unfamiliar plate at your on-ramp? identity is checked at subscription, not at the border — a keypair is the same self on both sides</text>
 
   <!-- ===================== BOTTOM PANELS ===================== -->
-  <rect x="60" y="870" width="880" height="240" rx="16" fill="#f8fafc" stroke="#94a3b8" stroke-width="2.5"/>
-  <text x="92" y="918" font-size="26" font-weight="700" fill="#2f3a4a">The market</text>
-  <text x="250" y="918" font-size="19" fill="#64748b">capitalistic BUT egalitarian — the ethics IS the architecture</text>
-  <text x="92" y="958" font-size="19" fill="#64748b">every command a service · every ask a customer · capacity offers broadcast</text>
-  <text x="92" y="990" font-size="19" fill="#64748b">cost + energy tracked per solve — the billing rail is the receipt rail</text>
-  <text x="92" y="1022" font-size="19" fill="#64748b">provenance = royalty: a gene's author is paid when it works</text>
-  <text x="92" y="1062" font-size="19" fill="#94a3b8" font-style="italic">rewards effort and ideas AND lifts those less able — by design</text>
+  <rect x="60" y="1360" width="880" height="230" rx="16" fill="#f8fafc" stroke="#94a3b8" stroke-width="2.5"/>
+  <text x="92" y="1406" font-size="25" font-weight="700" fill="#2f3a4a">The market</text>
+  <text x="248" y="1406" font-size="18" fill="#64748b">capitalistic BUT egalitarian — the ethics IS the architecture</text>
+  <text x="92" y="1444" font-size="18" fill="#64748b">every command a service · every ask a customer · capacity offers broadcast</text>
+  <text x="92" y="1474" font-size="18" fill="#64748b">cost + energy tracked per solve — the billing rail is the receipt rail</text>
+  <text x="92" y="1504" font-size="18" fill="#64748b">provenance = royalty: a gene's author is paid when it works</text>
+  <text x="92" y="1544" font-size="18" fill="#94a3b8" font-style="italic">rewards effort and ideas AND lifts those less able — by design</text>
 
-  <rect x="1000" y="870" width="855" height="240" rx="16" fill="#e6efdf" stroke="#7a9c5d" stroke-width="2.5"/>
-  <text x="1032" y="918" font-size="26" font-weight="700" fill="#2f3a4a">Partition tolerance is the contract</text>
-  <text x="1032" y="958" font-size="19" fill="#64748b">nodes leave, sleep, and rejoin — state converges, nothing waits on a master</text>
-  <text x="1032" y="990" font-size="19" fill="#64748b">rounds survive reboots · claims survive partitions · resume is recall</text>
-  <text x="1032" y="1022" font-size="19" fill="#64748b">close the interstate and your mesh still thinks on local streets</text>
-  <text x="1032" y="1062" font-size="19" fill="#7a9c5d" font-style="italic">reopen it and the world converges — a mesh of misfits compounds; a datacenter only scales</text>
+  <rect x="980" y="1360" width="880" height="230" rx="16" fill="#e6efdf" stroke="#7a9c5d" stroke-width="2.5"/>
+  <text x="1012" y="1406" font-size="25" font-weight="700" fill="#2f3a4a">Partition tolerance is the contract</text>
+  <text x="1012" y="1444" font-size="18" fill="#64748b">nodes leave, sleep, and rejoin — state converges, nothing waits on a master</text>
+  <text x="1012" y="1474" font-size="18" fill="#64748b">rounds survive reboots · claims survive partitions · resume is recall</text>
+  <text x="1012" y="1504" font-size="18" fill="#64748b">close the interstate and your mesh still thinks on local streets</text>
+  <text x="1012" y="1544" font-size="18" fill="#7a9c5d" font-style="italic">reopen it and the world converges — a mesh of misfits compounds</text>
 
-  <text x="60" y="1180" font-size="19" fill="#7a9c5d" font-style="italic">Receipt: benchmark solves priced per-instance (tokens, wall-clock, energy) on consumer hardware — the axis no datacenter lab publishes.</text>
-  <text x="60" y="1215" font-size="19" fill="#64748b" font-style="italic">Identity is the license plate at the state line: a citizen is a keypair — durable identity, fluid location, the same self on both sides.</text>
+  <text x="60" y="1650" font-size="19" fill="#7a9c5d" font-style="italic">Receipt: benchmark solves priced per-instance (tokens, wall-clock, energy) on consumer hardware — the axis no datacenter lab publishes.</text>
+  <text x="60" y="1685" font-size="19" fill="#64748b" font-style="italic">A citizen is a keypair — durable identity, fluid location, the same self on both sides of the line.</text>
 </svg>
