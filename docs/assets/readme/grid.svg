@@ -71,10 +71,11 @@
     <path d="M -57 -30 C -27 -41, 27 -41, 57 -30 C 57 -6, 42 22, 0 34 C -42 22, -57 -6, -57 -30 Z" fill="#6b93d6"/>
     <text x="0" y="12" font-size="27" font-weight="800" fill="#ffffff" text-anchor="middle">airc</text>
   </g>
-  <g font-size="16.5" fill="#2f3a4a" text-anchor="middle">
-    <text x="960" y="740">carries: rooms · boards · events</text>
-    <text x="960" y="768">genes ⇄ commons, with provenance</text>
-    <text x="960" y="796">E2E DMs — sealed both ways</text>
+  <g font-size="16" fill="#2f3a4a" text-anchor="middle">
+    <text x="960" y="732">carries: rooms · boards · events</text>
+    <text x="960" y="758">genes ⇄ commons, with provenance</text>
+    <text x="960" y="784">MoE experts ⇄ leased compute — a neighbor's GPU carries your hard layers</text>
+    <text x="960" y="810">E2E DMs — sealed both ways</text>
   </g>
   <text x="960" y="852" font-size="17.5" fill="#9068c0" text-anchor="middle" font-style="italic">airc IS the interstate — identity is the license plate, E2E is the sealed cargo,</text>
   <text x="960" y="877" font-size="17.5" fill="#9068c0" text-anchor="middle" font-style="italic">transit only: nothing lives on the road</text>
@@ -119,7 +120,7 @@
   <rect x="60" y="1360" width="880" height="230" rx="16" fill="#f8fafc" stroke="#94a3b8" stroke-width="2.5"/>
   <text x="92" y="1406" font-size="25" font-weight="700" fill="#2f3a4a">The market</text>
   <text x="248" y="1406" font-size="18" fill="#64748b">capitalistic BUT egalitarian — the ethics IS the architecture</text>
-  <text x="92" y="1444" font-size="18" fill="#64748b">every command a service · every ask a customer · capacity offers broadcast</text>
+  <text x="92" y="1444" font-size="18" fill="#64748b">every command a service · every ask a customer · shared inference: composition, not density</text>
   <text x="92" y="1474" font-size="18" fill="#64748b">cost + energy tracked per solve — the billing rail is the receipt rail</text>
   <text x="92" y="1504" font-size="18" fill="#64748b">provenance = royalty: a gene's author is paid when it works</text>
   <text x="92" y="1544" font-size="18" fill="#94a3b8" font-style="italic">rewards effort and ideas AND lifts those less able — by design</text>

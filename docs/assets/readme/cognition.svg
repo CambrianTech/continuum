@@ -26,9 +26,10 @@
   <text x="84" y="343" font-size="15.5" fill="#64748b" font-style="italic">knowledge crosses activities through HER — one memory, one being — never through the rooms</text>
 
   <!-- Senses -->
-  <rect x="60" y="380" width="650" height="86" rx="12" fill="#e6efdf" stroke="#7a9c5d" stroke-width="2"/>
-  <text x="84" y="412" font-size="18" font-weight="600" fill="#2f3a4a">Senses — every citizen, regardless of base model</text>
-  <text x="84" y="442" font-size="16" fill="#64748b">sight: vision/look · describe bridge (VL-native lane when the model can carry it) · hearing: STT · text: native</text>
+  <rect x="60" y="380" width="650" height="92" rx="12" fill="#e6efdf" stroke="#7a9c5d" stroke-width="2"/>
+  <text x="84" y="410" font-size="18" font-weight="600" fill="#2f3a4a">Senses &amp; embodiment — in ANY activity, for every citizen</text>
+  <text x="84" y="437" font-size="15.5" fill="#64748b">any room carries any modality: images in chat, screenshots in a solve, voice + avatars in a call —</text>
+  <text x="84" y="460" font-size="15.5" fill="#64748b">sight: vision/look · describe bridge (VL-native lane when the model carries it) · hearing: STT</text>
 
   <!-- Burst -->
   <line x1="440" y1="355" x2="440" y2="376" stroke="#2f3a4a" stroke-width="2.5" marker-end="url(#arr)"/>
