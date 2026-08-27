@@ -3744,6 +3744,157 @@ impl ActionCommand for BenchmarkScoreboard {
 
 crate::register_stateless_command!(BenchmarkScoreboard);
 
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkValidateParams.ts")]
+pub struct BenchmarkValidateParams {
+    /// SWE-class benchmark to validate (default swe-bench-verified).
+    #[serde(default)]
+    #[ts(optional)]
+    pub name: Option<String>,
+    /// Cap on env classes to build (default all). Each class = one real
+    /// checkout + env build for its representative instance.
+    #[serde(default)]
+    #[ts(optional, type = "number")]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkValidateClass.ts")]
+pub struct BenchmarkValidateClass {
+    /// The env class: repo + era year.
+    pub repo: String,
+    pub era: String,
+    /// The representative instance actually built.
+    pub representative: String,
+    /// Instances in the dataset this class covers.
+    #[ts(type = "number")]
+    pub covers: u32,
+    /// Did checkout + env build + (for pytest repos) the trivial-test smoke pass?
+    pub green: bool,
+    /// The named wall when red — actionable, never a mystery.
+    #[ts(optional)]
+    pub wall: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkValidateResult.ts")]
+pub struct BenchmarkValidateResult {
+    pub classes: Vec<BenchmarkValidateClass>,
+    /// Instances covered by GREEN classes / dataset size — THE coverage number.
+    #[ts(type = "number")]
+    pub instances_green: u32,
+    #[ts(type = "number")]
+    pub dataset_size: u32,
+    pub summary: String,
+}
+
+/// `benchmark/validate` — the harness proves ITSELF before anyone trusts a
+/// round with it. One representative per (repo, era-year) class runs the SAME
+/// checkout + env-build seams every real solve and grade use; the result is
+/// the env-coverage map ("N of 500 instances sit in classes proven green on
+/// this box") with every red class carrying its named wall. Run it before a
+/// published round; cite it in the regime. No excuses, surprised-ourselves-first.
+#[derive(Default)]
+pub struct BenchmarkValidate;
+
+#[async_trait::async_trait]
+impl ActionCommand for BenchmarkValidate {
+    const NAME: &'static str = "benchmark/validate";
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Validate the benchmark harness against a dataset: build one representative env per \
+         (repo, era) class through the real checkout/env seams and report the coverage map — \
+         which instances sit in proven-green classes, and the named wall for every red one.";
+    type Params = BenchmarkValidateParams;
+    type Output = BenchmarkValidateResult;
+
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        p: BenchmarkValidateParams,
+    ) -> Result<BenchmarkValidateResult, CommandError> {
+        let name = p.name.as_deref().unwrap_or("swe-bench-verified");
+        let spec = known_benchmarks()
+            .iter()
+            .find(|b| b.name == name)
+            .ok_or_else(|| CommandError::Invalid(format!("unknown benchmark '{name}'")))?;
+        let dataset = spec.swe_dataset().ok_or_else(|| {
+            CommandError::Invalid(format!("'{name}' is not an SWE-class benchmark"))
+        })?;
+        let instances = crate::cognition::swe_bench::load_dataset(dataset)
+            .await
+            .map_err(CommandError::Internal)?;
+        let dataset_size = instances.len() as u32;
+        // Class = (repo, created_at year): the era proxy the env machinery keys
+        // dependency resolution on. First instance per class represents it.
+        let mut classes: std::collections::BTreeMap<(String, String), (String, u32)> =
+            Default::default();
+        for i in &instances {
+            let era = i.created_at.get(0..4).unwrap_or("????").to_string(); // dataset rows carry ISO dates; a malformed one groups under ???? visibly
+            let e = classes
+                .entry((i.repo.clone(), era))
+                .or_insert_with(|| (i.instance_id.clone(), 0));
+            e.1 += 1;
+        }
+        let cap = p.limit.unwrap_or(u32::MAX) as usize; // default: every class — a validation that samples silently is not a validation
+        let mut rows = Vec::new();
+        let mut instances_green = 0u32;
+        for ((repo, era), (rep, covers)) in classes.into_iter().take(cap) {
+            let inst = instances
+                .iter()
+                .find(|i| i.instance_id == rep)
+                .expect("representative came from this same list"); // same vec, same loop — cannot miss
+            let outcome = async {
+                let dir = crate::cognition::swe_bench::ensure_grade_checkout(inst)
+                    .await
+                    .map_err(|e| format!("checkout: {e}"))?;
+                crate::cognition::swe_bench::ensure_env(inst, &dir)
+                    .await
+                    .map_err(|e| format!("env: {e}"))?;
+                Ok::<(), String>(())
+            }
+            .await;
+            let green = outcome.is_ok();
+            if green {
+                instances_green += covers;
+            }
+            let wall = outcome.err().map(|e| {
+                let t: String = e.chars().take(500).collect();
+                t
+            });
+            crate::probe!(
+                class = "benchmark.validate.class",
+                repo = %repo,
+                era = %era,
+                green,
+                covers = covers as u64,
+                "env class validated through the real seams"
+            );
+            rows.push(BenchmarkValidateClass {
+                repo,
+                era,
+                representative: rep,
+                covers,
+                green,
+                wall,
+            });
+        }
+        let summary = format!(
+            "{instances_green}/{dataset_size} instances sit in proven-green env classes \
+             ({} classes green, {} red)",
+            rows.iter().filter(|r| r.green).count(),
+            rows.iter().filter(|r| !r.green).count()
+        );
+        Ok(BenchmarkValidateResult {
+            classes: rows,
+            instances_green,
+            dataset_size,
+            summary,
+        })
+    }
+}
+crate::register_stateless_command!(BenchmarkValidate);
+
 #[derive(Default)]
 pub struct BenchmarkRuns;
 
