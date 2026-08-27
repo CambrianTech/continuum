@@ -11,9 +11,10 @@
 
   <!-- Room / Burst -->
   <rect x="60" y="200" width="270" height="150" rx="14" fill="#f5ecd7" stroke="#b3985e" stroke-width="2.5"/>
-  <text x="195" y="248" font-size="26" font-weight="700" fill="#2f3a4a" text-anchor="middle">Room</text>
-  <text x="195" y="280" font-size="19" fill="#64748b" text-anchor="middle">an airc activity</text>
-  <text x="195" y="306" font-size="19" fill="#64748b" text-anchor="middle">events · board · peers</text>
+  <text x="195" y="242" font-size="26" font-weight="700" fill="#2f3a4a" text-anchor="middle">Room</text>
+  <text x="195" y="272" font-size="18" fill="#64748b" text-anchor="middle">an airc activity — airc is the</text>
+  <text x="195" y="296" font-size="18" fill="#64748b" text-anchor="middle">nervous system: events in,</text>
+  <text x="195" y="320" font-size="18" fill="#64748b" text-anchor="middle">acts and speech out</text>
 
   <line x1="330" y1="275" x2="410" y2="275" stroke="#2f3a4a" stroke-width="2.5" marker-end="url(#arr)"/>
 
