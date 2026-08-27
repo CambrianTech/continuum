@@ -3777,8 +3777,81 @@ pub struct BenchmarkValidateClass {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkPlatformFingerprint.ts")]
+pub struct BenchmarkPlatformFingerprint {
+    /// The machine CLASS a coverage claim is keyed by (e.g. `m-series-macos`,
+    /// `x86_64-linux`, `windows`) — the coarse key an alloy consumer matches.
+    pub machine_class: String,
+    pub os: String,
+    pub arch: String,
+    /// The load-bearing toolchain versions — the BITTEN-BY list, grown only
+    /// when a new wall names a new dependency (2026-08-27 initial set: clang
+    /// broke on `-march=native`, libomp/freetype were the matplotlib/sklearn
+    /// walls, uv's interpreter shelf decided the py3.7 structural question).
+    pub clang: String,
+    pub libomp: bool,
+    pub freetype: bool,
+    pub uv: String,
+    /// Interpreter majors uv can actually provide on this platform.
+    pub pythons: Vec<String>,
+}
+
+impl BenchmarkPlatformFingerprint {
+    fn capture() -> Self {
+        let run = |cmd: &str, args: &[&str]| -> String {
+            std::process::Command::new(cmd)
+                .args(args)
+                .output()
+                .ok()
+                .map(|o| String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "absent".into())
+        };
+        let machine_class = match (std::env::consts::OS, std::env::consts::ARCH) {
+            ("macos", "aarch64") => "m-series-macos",
+            ("macos", _) => "intel-macos",
+            ("linux", a) if a == "aarch64" => "arm-linux",
+            ("linux", _) => "x86_64-linux",
+            ("windows", _) => "windows",
+            _ => "other",
+        }
+        .to_string();
+        let pythons = std::process::Command::new("uv")
+            .args(["python", "list", "--only-installed"])
+            .output()
+            .ok()
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .filter_map(|l| l.split_whitespace().next().map(str::to_string))
+                    .take(8)
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self {
+            machine_class,
+            os: std::env::consts::OS.into(),
+            arch: std::env::consts::ARCH.into(),
+            clang: run("clang", &["--version"]),
+            libomp: std::path::Path::new("/opt/homebrew/opt/libomp/include/omp.h").exists()
+                || std::path::Path::new("/usr/lib/libomp.so").exists(),
+            freetype: std::process::Command::new("pkg-config")
+                .args(["--exists", "freetype2"])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false),
+            uv: run("uv", &["--version"]),
+            pythons,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
 #[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkValidateResult.ts")]
 pub struct BenchmarkValidateResult {
+    /// The platform this coverage map is TRUE FOR — coverage claims are always
+    /// per-machine-class; an alloy consumer matches this before trusting them.
+    pub platform: BenchmarkPlatformFingerprint,
     pub classes: Vec<BenchmarkValidateClass>,
     /// Instances covered by GREEN classes / dataset size — THE coverage number.
     #[ts(type = "number")]
@@ -3886,6 +3959,7 @@ impl ActionCommand for BenchmarkValidate {
             rows.iter().filter(|r| !r.green).count()
         );
         Ok(BenchmarkValidateResult {
+            platform: BenchmarkPlatformFingerprint::capture(),
             classes: rows,
             instances_green,
             dataset_size,
