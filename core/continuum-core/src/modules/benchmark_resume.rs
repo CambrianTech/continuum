@@ -55,8 +55,41 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
         // either. A watchdog tick is the missing edge; `bench.round.becalmed`
         // is the sensor that makes a stuck round LOUD instead of silent.
         const SLOW_WATCH: std::time::Duration = std::time::Duration::from_secs(300);
+        // BOARD DEMAND IS LANE DEMAND: while Working rounds hold open cards, the
+        // resume task owns a lane-demand lease sized to the queue (capped at the
+        // slot ceiling the M-class box can serve well). Without it the plan only
+        // sees live traffic: a settled cohort dropped demand to the boot floor
+        // and 17 queued cards crawled on ONE slot (2026-08-27). Resized as the
+        // queue drains, released when the watch ends — the same max-of-overrides
+        // lease the quiesce path uses, pulling the other direction.
+        const LANE_CAP: u32 = 4;
+        let mut demand_lease: Option<(u64, u32)> = None;
         let mut attempt: u32 = 0;
         loop {
+            let queued = crate::cognition::bench_round::total_unworked_cards() as u32;
+            let want = queued.clamp(1, LANE_CAP);
+            match demand_lease {
+                Some((_, held)) if held == want => {}
+                _ => {
+                    if let Some((id, _)) = demand_lease.take() {
+                        crate::modules::serving_daemon::release_lane_demand(id);
+                    }
+                    if queued > 0 {
+                        if let Some(id) =
+                            crate::modules::serving_daemon::quiesce_lane_demand(want)
+                        {
+                            crate::probe!(
+                                class = "bench.round.lane_demand",
+                                lanes = want as u64,
+                                queued = queued as u64,
+                                "board demand leased into the serving plan — queued cards \
+                                 are demand the planner can see"
+                            );
+                            demand_lease = Some((id, want));
+                        }
+                    }
+                }
+            }
             attempt += 1;
             let fast = attempt <= RESUME_RETRIES;
             if attempt == RESUME_RETRIES + 1 {
@@ -116,6 +149,9 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
             let due = crate::cognition::bench_round::next_unworked_per_round();
             if due.is_empty() {
                 if !crate::cognition::bench_round::any_working_round() {
+                    if let Some((id, _)) = demand_lease.take() {
+                        crate::modules::serving_daemon::release_lane_demand(id);
+                    }
                     return; // every round terminal — the watch has nothing left to guard
                 }
                 // In flight (the settle edge owns the chain) — keep the slow
