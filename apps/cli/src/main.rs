@@ -125,7 +125,14 @@ async fn main() -> Result<()> {
         .with_context(|| format!("attach to substrate from airc home {}", home.display()))?;
     let peer = attachment.substrate_peer;
 
-    let conn = Connection::connect(attachment.airc, peer);
+    // 120s deadline: the default 30s fits control commands but not a real
+    // generation on a contended lane (grid-smoke's ai/generate row measured
+    // 10s for 16 tokens; 128 tokens blew 30s). Refusals still return in ms —
+    // the deadline is only the ceiling.
+    let conn = Connection::new(
+        AircIpcTransport::new(attachment.airc, peer)
+            .with_deadline(std::time::Duration::from_secs(120)),
+    );
 
     match cli.command {
         Command::Metrics => run_metrics(conn).await,
