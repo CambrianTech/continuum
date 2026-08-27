@@ -116,6 +116,17 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
                 continue;
             }
             if !fast {
+                // TRULY becalmed means NO solve is running anywhere — the fast
+                // window may legitimately fan out boot re-fires, but the slow
+                // watch reviving one more card per tick while solves are LIVE
+                // is drift into parallel solving nobody decided (B7 is a
+                // deliberate, measured decision — never a watchdog side
+                // effect; caught live 2026-08-27, one extra solve per 5min).
+                let live = crate::cognition::swe_bench::in_flight_solve_runs();
+                if !live.is_empty() {
+                    tokio::time::sleep(SLOW_WATCH).await;
+                    continue;
+                }
                 crate::probe!(
                     class = "bench.round.becalmed",
                     unworked = due.len() as u64,
