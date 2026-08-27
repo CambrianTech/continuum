@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1150" font-family="Helvetica Neue, Arial, sans-serif">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2f3a4a"/>
+    </marker>
+    <marker id="arrt" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b3985e"/>
+    </marker>
+  </defs>
+  <rect width="1920" height="1150" fill="#ffffff"/>
+
+  <text x="60" y="78" font-size="44" font-weight="700" fill="#2f3a4a">The Grid</text>
+  <text x="60" y="116" font-size="24" fill="#64748b">an economy of misfit hardware — BitTorrent, not a cluster</text>
+
+  <!-- identity spine -->
+  <rect x="60" y="170" width="1795" height="95" rx="16" fill="#ece2f6" stroke="#9068c0" stroke-width="2.5"/>
+  <text x="92" y="212" font-size="24" font-weight="700" fill="#2f3a4a">The identity spine — airc</text>
+  <text x="92" y="244" font-size="19" fill="#64748b">a citizen is a keypair, not a process: durable identity, fluid location — rooms and activities span nodes, and she is the same self on every surface</text>
+
+  <!-- nodes -->
+  <rect x="60" y="320" width="420" height="270" rx="16" fill="#e3e9f8" stroke="#6b81c2" stroke-width="3"/>
+  <text x="270" y="368" font-size="25" font-weight="700" fill="#2f3a4a" text-anchor="middle">Mac M5 Pro · 64 GB</text>
+  <text x="270" y="402" font-size="18" fill="#64748b" text-anchor="middle">serving Ornith-1.5-35B-A3B</text>
+  <text x="270" y="430" font-size="18" fill="#64748b" text-anchor="middle">benchmark rounds · 4 warm KV slots</text>
+  <text x="270" y="458" font-size="18" fill="#64748b" text-anchor="middle">vision sidecar (shared mmap)</text>
+  <text x="270" y="500" font-size="18" fill="#6b81c2" text-anchor="middle" font-style="italic">"everyone's computer" —</text>
+  <text x="270" y="527" font-size="18" fill="#6b81c2" text-anchor="middle" font-style="italic">the published numbers run HERE</text>
+
+  <rect x="530" y="320" width="400" height="270" rx="16" fill="#e6efdf" stroke="#7a9c5d" stroke-width="3"/>
+  <text x="730" y="368" font-size="25" font-weight="700" fill="#2f3a4a" text-anchor="middle">Mac M1 · 32 GB</text>
+  <text x="730" y="402" font-size="18" fill="#64748b" text-anchor="middle">live rooms — voice, avatars,</text>
+  <text x="730" y="430" font-size="18" fill="#64748b" text-anchor="middle">presence, emotion</text>
+  <text x="730" y="472" font-size="18" fill="#7a9c5d" text-anchor="middle" font-style="italic">the restoration bar:</text>
+  <text x="730" y="499" font-size="18" fill="#7a9c5d" text-anchor="middle" font-style="italic">14 personas live on this box</text>
+
+  <rect x="980" y="320" width="400" height="270" rx="16" fill="#f8e3e1" stroke="#c26b62" stroke-width="3"/>
+  <text x="1180" y="368" font-size="25" font-weight="700" fill="#2f3a4a" text-anchor="middle">RTX 5090 box</text>
+  <text x="1180" y="402" font-size="18" fill="#64748b" text-anchor="middle">foundry — gene training,</text>
+  <text x="1180" y="430" font-size="18" fill="#64748b" text-anchor="middle">imatrix quantization, distillation</text>
+  <text x="1180" y="472" font-size="18" fill="#c26b62" text-anchor="middle" font-style="italic">trains what the Macs</text>
+  <text x="1180" y="499" font-size="18" fill="#c26b62" text-anchor="middle" font-style="italic">then serve everywhere</text>
+
+  <rect x="1430" y="320" width="425" height="270" rx="16" fill="#f5ecd7" stroke="#b3985e" stroke-width="3"/>
+  <text x="1642" y="368" font-size="25" font-weight="700" fill="#2f3a4a" text-anchor="middle">Phones · edge · browsers</text>
+  <text x="1642" y="402" font-size="18" fill="#64748b" text-anchor="middle">clients are projections —</text>
+  <text x="1642" y="430" font-size="18" fill="#64748b" text-anchor="middle">web, mobile, TUI, VR</text>
+  <text x="1642" y="472" font-size="18" fill="#b3985e" text-anchor="middle" font-style="italic">behaviour lives in the core;</text>
+  <text x="1642" y="499" font-size="18" fill="#b3985e" text-anchor="middle" font-style="italic">every surface renders the same citizen</text>
+
+  <!-- flows between nodes -->
+  <line x1="480" y1="455" x2="525" y2="455" stroke="#2f3a4a" stroke-width="2.5" marker-end="url(#arr)" marker-start="url(#arr)"/>
+  <line x1="930" y1="455" x2="975" y2="455" stroke="#2f3a4a" stroke-width="2.5" marker-end="url(#arr)" marker-start="url(#arr)"/>
+  <line x1="1380" y1="455" x2="1425" y2="455" stroke="#2f3a4a" stroke-width="2.5" marker-end="url(#arr)" marker-start="url(#arr)"/>
+
+  <!-- market -->
+  <rect x="60" y="660" width="880" height="270" rx="16" fill="#f8fafc" stroke="#94a3b8" stroke-width="2.5"/>
+  <text x="92" y="708" font-size="26" font-weight="700" fill="#2f3a4a">The market</text>
+  <text x="250" y="708" font-size="19" fill="#64748b">capitalistic BUT egalitarian — the ethics IS the architecture</text>
+  <text x="92" y="750" font-size="19" fill="#64748b">every command a service · every ask a customer</text>
+  <text x="92" y="782" font-size="19" fill="#64748b">capacity offers broadcast: free memory, lanes, price seams</text>
+  <text x="92" y="814" font-size="19" fill="#64748b">cost + energy tracked per solve — the billing rail is the receipt rail</text>
+  <text x="92" y="856" font-size="19" fill="#64748b">provenance = royalty: a gene's author is paid when it works</text>
+  <text x="92" y="898" font-size="19" fill="#94a3b8" font-style="italic">rewards effort and ideas AND lifts those less able — by design</text>
+
+  <!-- resilience -->
+  <rect x="1000" y="660" width="855" height="270" rx="16" fill="#e6efdf" stroke="#7a9c5d" stroke-width="2.5"/>
+  <text x="1032" y="708" font-size="26" font-weight="700" fill="#2f3a4a">Partition tolerance is the contract</text>
+  <text x="1032" y="750" font-size="19" fill="#64748b">nodes leave, sleep, and rejoin — state converges, nothing waits on a master</text>
+  <text x="1032" y="782" font-size="19" fill="#64748b">rounds survive reboots · claims survive partitions · resume is recall</text>
+  <text x="1032" y="814" font-size="19" fill="#64748b">genes travel through the commons, not through a control plane</text>
+  <text x="1032" y="856" font-size="19" fill="#7a9c5d" font-style="italic">a mesh of misfits compounds; a datacenter only scales</text>
+
+  <line x1="500" y1="590" x2="500" y2="655" stroke="#2f3a4a" stroke-width="2.5" marker-end="url(#arr)"/>
+  <line x1="1420" y1="590" x2="1420" y2="655" stroke="#2f3a4a" stroke-width="2.5" marker-end="url(#arr)"/>
+
+  <text x="60" y="1010" font-size="19" fill="#7a9c5d" font-style="italic">Receipt: benchmark solves priced per-instance (tokens, wall-clock, energy) on consumer hardware — the axis no datacenter lab publishes.</text>
+  <text x="60" y="1045" font-size="19" fill="#64748b" font-style="italic">Grid optimization is market dynamics: the seams are priced from the first second node onward.</text>
+</svg>
