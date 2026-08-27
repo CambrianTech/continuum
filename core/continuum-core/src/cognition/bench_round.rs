@@ -523,6 +523,20 @@ pub fn next_unworked_per_round() -> Vec<NextCard> {
         .collect()
 }
 
+/// Total OPEN (non-terminal) cards across every Working round — the board-side
+/// LANE DEMAND. Queued benchmark work is demand the serving plan must see:
+/// measured live 2026-08-27, the plan converged to 1 lane after a 4-way cohort
+/// settled (demand = the boot persona floor, blind to the board), and 17
+/// workable cards then crawled serially behind all room-life on one slot.
+pub fn total_unworked_cards() -> usize {
+    let rounds = ROUNDS.lock().expect("bench rounds mutex");
+    rounds
+        .values()
+        .filter(|r| r.stage == RoundStage::Working)
+        .map(|r| r.cards.values().filter(|s| s.is_none()).count())
+        .sum()
+}
+
 /// Are any Working rounds tracked at all — the boot resume's cheap early-exit.
 pub fn any_working_round() -> bool {
     ROUNDS
