@@ -1617,7 +1617,8 @@ fn repo_build_env(instance: &SweInstance, env_dir: &Path) -> Result<Vec<(String,
                     "CC".into(),
                     format!(
                         "clang -Xpreprocessor -fopenmp -I{inc} \
-                         -Wno-error=implicit-function-declaration -Wno-error=int-conversion"
+                         -Wno-implicit-function-declaration -Wno-int-conversion \
+                         -Wno-incompatible-function-pointer-types"
                     ),
                 ),
                 (
