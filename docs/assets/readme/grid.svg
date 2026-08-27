@@ -47,32 +47,38 @@
   <text x="1642" y="472" font-size="18" fill="#b3985e" text-anchor="middle" font-style="italic">behaviour lives in the core;</text>
   <text x="1642" y="499" font-size="18" fill="#b3985e" text-anchor="middle" font-style="italic">every surface renders the same citizen</text>
 
-  <!-- flows between nodes -->
-  <line x1="480" y1="455" x2="525" y2="455" stroke="#2f3a4a" stroke-width="2.5" marker-end="url(#arr)" marker-start="url(#arr)"/>
-  <line x1="930" y1="455" x2="975" y2="455" stroke="#2f3a4a" stroke-width="2.5" marker-end="url(#arr)" marker-start="url(#arr)"/>
-  <line x1="1380" y1="455" x2="1425" y2="455" stroke="#2f3a4a" stroke-width="2.5" marker-end="url(#arr)" marker-start="url(#arr)"/>
+  <!-- the airc p2p mesh: every node speaks to every node, no hub -->
+  <g stroke="#9068c0" stroke-width="2" fill="none" opacity="0.85">
+    <path d="M 270 590 C 270 630, 730 630, 730 590"/>
+    <path d="M 730 590 C 730 630, 1180 630, 1180 590"/>
+    <path d="M 1180 590 C 1180 630, 1642 630, 1642 590"/>
+    <path d="M 270 590 C 270 652, 1180 652, 1180 590" stroke-dasharray="7 5"/>
+    <path d="M 730 590 C 730 665, 1642 665, 1642 590" stroke-dasharray="7 5"/>
+    <path d="M 270 590 C 270 678, 1642 678, 1642 590" stroke-dasharray="7 5"/>
+  </g>
+  <rect x="720" y="600" width="470" height="52" rx="10" fill="#ece2f6" stroke="#9068c0" stroke-width="2"/>
+  <text x="955" y="633" font-size="19" font-weight="600" fill="#2f3a4a" text-anchor="middle">airc p2p — events · rooms · boards · E2E DMs</text>
 
   <!-- market -->
-  <rect x="60" y="660" width="880" height="270" rx="16" fill="#f8fafc" stroke="#94a3b8" stroke-width="2.5"/>
-  <text x="92" y="708" font-size="26" font-weight="700" fill="#2f3a4a">The market</text>
-  <text x="250" y="708" font-size="19" fill="#64748b">capitalistic BUT egalitarian — the ethics IS the architecture</text>
-  <text x="92" y="750" font-size="19" fill="#64748b">every command a service · every ask a customer</text>
-  <text x="92" y="782" font-size="19" fill="#64748b">capacity offers broadcast: free memory, lanes, price seams</text>
-  <text x="92" y="814" font-size="19" fill="#64748b">cost + energy tracked per solve — the billing rail is the receipt rail</text>
-  <text x="92" y="856" font-size="19" fill="#64748b">provenance = royalty: a gene's author is paid when it works</text>
-  <text x="92" y="898" font-size="19" fill="#94a3b8" font-style="italic">rewards effort and ideas AND lifts those less able — by design</text>
+  <rect x="60" y="730" width="880" height="240" rx="16" fill="#f8fafc" stroke="#94a3b8" stroke-width="2.5"/>
+  <text x="92" y="778" font-size="26" font-weight="700" fill="#2f3a4a">The market</text>
+  <text x="250" y="778" font-size="19" fill="#64748b">capitalistic BUT egalitarian — the ethics IS the architecture</text>
+  <text x="92" y="818" font-size="19" fill="#64748b">every command a service · every ask a customer</text>
+  <text x="92" y="848" font-size="19" fill="#64748b">capacity offers broadcast: free memory, lanes, price seams</text>
+  <text x="92" y="878" font-size="19" fill="#64748b">cost + energy tracked per solve — the billing rail is the receipt rail</text>
+  <text x="92" y="908" font-size="19" fill="#64748b">provenance = royalty: a gene's author is paid when it works</text>
+  <text x="92" y="938" font-size="19" fill="#94a3b8" font-style="italic">rewards effort and ideas AND lifts those less able — by design</text>
 
   <!-- resilience -->
-  <rect x="1000" y="660" width="855" height="270" rx="16" fill="#e6efdf" stroke="#7a9c5d" stroke-width="2.5"/>
-  <text x="1032" y="708" font-size="26" font-weight="700" fill="#2f3a4a">Partition tolerance is the contract</text>
-  <text x="1032" y="750" font-size="19" fill="#64748b">nodes leave, sleep, and rejoin — state converges, nothing waits on a master</text>
-  <text x="1032" y="782" font-size="19" fill="#64748b">rounds survive reboots · claims survive partitions · resume is recall</text>
-  <text x="1032" y="814" font-size="19" fill="#64748b">genes travel through the commons, not through a control plane</text>
-  <text x="1032" y="856" font-size="19" fill="#7a9c5d" font-style="italic">a mesh of misfits compounds; a datacenter only scales</text>
+  <rect x="1000" y="730" width="855" height="240" rx="16" fill="#e6efdf" stroke="#7a9c5d" stroke-width="2.5"/>
+  <text x="1032" y="778" font-size="26" font-weight="700" fill="#2f3a4a">Partition tolerance is the contract</text>
+  <text x="1032" y="818" font-size="19" fill="#64748b">nodes leave, sleep, and rejoin — state converges, nothing waits on a master</text>
+  <text x="1032" y="848" font-size="19" fill="#64748b">rounds survive reboots · claims survive partitions · resume is recall</text>
+  <text x="1032" y="878" font-size="19" fill="#64748b">genes travel through the commons, not through a control plane</text>
+  <text x="1032" y="918" font-size="19" fill="#7a9c5d" font-style="italic">a mesh of misfits compounds; a datacenter only scales</text>
 
-  <line x1="500" y1="590" x2="500" y2="655" stroke="#2f3a4a" stroke-width="2.5" marker-end="url(#arr)"/>
-  <line x1="1420" y1="590" x2="1420" y2="655" stroke="#2f3a4a" stroke-width="2.5" marker-end="url(#arr)"/>
+  <text x="955" y="700" font-size="17" fill="#9068c0" text-anchor="middle" font-style="italic">local-first routes; rendezvous only for discovery — no hub, no master</text>
 
-  <text x="60" y="1010" font-size="19" fill="#7a9c5d" font-style="italic">Receipt: benchmark solves priced per-instance (tokens, wall-clock, energy) on consumer hardware — the axis no datacenter lab publishes.</text>
-  <text x="60" y="1045" font-size="19" fill="#64748b" font-style="italic">Grid optimization is market dynamics: the seams are priced from the first second node onward.</text>
+  <text x="60" y="1050" font-size="19" fill="#7a9c5d" font-style="italic">Receipt: benchmark solves priced per-instance (tokens, wall-clock, energy) on consumer hardware — the axis no datacenter lab publishes.</text>
+  <text x="60" y="1085" font-size="19" fill="#64748b" font-style="italic">Grid optimization is market dynamics: the seams are priced from the first second node onward.</text>
 </svg>

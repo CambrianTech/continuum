@@ -48,6 +48,7 @@
   <rect x="815" y="355" width="1010" height="82" rx="10" fill="#fdf6ec" stroke="#d99a3d" stroke-width="2" stroke-dasharray="7 5"/>
   <text x="835" y="389" font-size="20" font-weight="600" fill="#2f3a4a">Deferred faculties</text>
   <text x="835" y="417" font-size="18" fill="#64748b">slow perception runs off the hot path — last-good served instantly, stamped with its own cycle and room, reprojected forward</text>
+  <text x="60" y="1180" font-size="19" fill="#9068c0" font-style="italic">While she rests: DREAMS (L3) review the stream — supersede, compress, consolidate — so the genome trains on curated experience, not raw logs.</text>
 
   <!-- Deliberation -->
   <line x1="1318" y1="465" x2="1318" y2="535" stroke="#2f3a4a" stroke-width="2.5" marker-end="url(#arr)"/>
@@ -98,9 +99,17 @@
 
   <!-- Experience stream -->
   <line x1="900" y1="1060" x2="1000" y2="1105" stroke="#2f3a4a" stroke-width="2.5" marker-end="url(#arr)"/>
-  <rect x="1005" y="1075" width="848" height="90" rx="14" fill="#ece2f6" stroke="#9068c0" stroke-width="2.5"/>
+  <rect x="1005" y="1075" width="560" height="90" rx="14" fill="#ece2f6" stroke="#9068c0" stroke-width="2.5"/>
   <text x="1025" y="1110" font-size="22" font-weight="700" fill="#2f3a4a">One experience stream</text>
-  <text x="1025" y="1142" font-size="18" fill="#64748b">lived turns + exams + received lessons → curriculum → genome training — she learns DURING the work</text>
+  <text x="1025" y="1142" font-size="18" fill="#64748b">lived turns + exams + received lessons — one being</text>
+
+  <line x1="1565" y1="1105" x2="1615" y2="1105" stroke="#9068c0" stroke-width="2.5" marker-end="url(#arr)"/>
+  <rect x="1620" y="1075" width="233" height="90" rx="14" fill="#ece2f6" stroke="#9068c0" stroke-width="2.5" stroke-dasharray="8 5"/>
+  <text x="1736" y="1108" font-size="20" font-weight="700" fill="#9068c0" text-anchor="middle">→ Genome</text>
+  <text x="1736" y="1136" font-size="16" fill="#9068c0" text-anchor="middle">lessons L2 · dreams L3 · genes L4</text>
+
+  <rect x="200" y="1145" width="700" height="0" fill="none"/>
+  <rect x="60" y="380" width="270" height="0" fill="none"/>
 
   <text x="60" y="1215" font-size="19" fill="#7a9c5d" font-style="italic">Receipt: astropy-13236 — missed on attempt 1, streamed the lesson, resolved 2/2 on the retake. The loop in one instance.</text>
 </svg>
