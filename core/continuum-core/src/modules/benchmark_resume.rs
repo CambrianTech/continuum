@@ -105,6 +105,14 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
                 }
                 continue;
             }
+            // Resumed rounds deserve the same env pre-warm dispatch gives fresh
+            // ones — without this, a reboot mid-round re-discovers its env
+            // walls one burned solve attempt at a time (2026-08-27: the
+            // operator hand-worked around it with idempotent re-dispatches).
+            // Once per task lifetime; cheap when everything is already warm.
+            if attempt == 1 {
+                crate::modules::work::spawn_env_prewarm_for_working_rounds();
+            }
             let due = crate::cognition::bench_round::next_unworked_per_round();
             if due.is_empty() {
                 if !crate::cognition::bench_round::any_working_round() {
