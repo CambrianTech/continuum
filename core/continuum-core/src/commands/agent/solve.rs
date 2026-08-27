@@ -950,21 +950,21 @@ async fn close_claim_card_if_graded(run_id: &str) {
         return;
     }
     if env_absent {
-        // The harness MEASURED the environment and it is absent (error set in
-        // the verdict) — that is a terminal fact for THIS round, not a retake
-        // loop: an open env-absent card would be re-fired by the watchdog
-        // forever and the round could never reach Done (2026-08-27, the
-        // seeded-25's scikit/sphinx tail). Close it; the error-verdict keeps
-        // it OUT of the resolved tally and IN the scoreboard's env_absences,
-        // and re-running later is one dispatch with `--instances` once the
-        // env class is repaired.
+        // The harness measured the environment and it is ABSENT — the card
+        // stays OPEN so the retake is AUTOMATIC the boot the env heals (Joel
+        // 2026-08-27: "you'd want to get it possible to run the broken ones
+        // after a restart"). The infinite-loop hazard this used to carry is
+        // killed at the dispatch seam instead: dispatch skips instances whose
+        // env failed THIS boot's prewarm, so a still-broken card idles quietly
+        // and a healed one re-fires with zero operator action.
         crate::probe!(
-            class = "benchmark.card.closed_env_absent",
+            class = "benchmark.card.close_skipped",
             run_id = %run_id,
-            "env-absent verdict — closing the card so the round completes; \
-             the absence stays labeled and the instance re-opens with one \
-             dispatch after the env repair"
+            reason = "env_absent",
+            "env-absent verdict — card stays open; the retake fires itself on \
+             the first boot whose env pre-warm succeeds"
         );
+        return;
     }
     // Author through the run's persona (her runtime is subscribed to the run
     // room); fall back to any live citizen — same authoring rule as the lapse
