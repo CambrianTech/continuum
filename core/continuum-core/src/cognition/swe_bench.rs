@@ -1021,7 +1021,60 @@ pub async fn clone_at(instance: &SweInstance, repo_dir: &Path) -> Result<(), Str
         }
     }
     shield_workspace_excludes(repo_dir);
+    era_checkout_fixups(instance, repo_dir);
     Ok(())
+}
+
+/// Era HARNESS accommodations applied to EVERY checkout of an instance —
+/// solve staging and grade clone alike, through this one shared seam, so the
+/// tree she works and the tree that scores her are identically accommodated
+/// (the same class of change the official harness's environment-setup commits
+/// make). NEVER touches anything a task's tests assert on.
+///
+/// scikit-learn < 0.22 (proven end-to-end on Apple silicon 2026-08-27,
+/// SKLEARN 0.21.dev0 imports clean): the vendored cloudpickle's
+/// `_make_cell_set_template_code` calls `types.CodeType(...)` with the
+/// pre-3.8 signature and cannot IMPORT on any interpreter this platform has
+/// (no 3.7 exists for arm64 macOS). The canonical upstream cloudpickle fix —
+/// build the template via `co.replace(...)` on 3.8+ — is injected ahead of
+/// the old constructor. Vendored build/serialization plumbing, not subject
+/// logic: no SWE task asserts on cloudpickle internals.
+fn era_checkout_fixups(instance: &SweInstance, repo_dir: &Path) {
+    if instance.repo != "scikit-learn/scikit-learn" {
+        return;
+    }
+    let cp = repo_dir.join("sklearn/externals/joblib/externals/cloudpickle/cloudpickle.py");
+    let Ok(src) = std::fs::read_to_string(&cp) else {
+        return; // newer sklearn: nothing vendored here, nothing to accommodate
+    };
+    if src.contains("continuum era harness") {
+        return; // already applied (idempotent across re-stages)
+    }
+    let anchor = "def _make_cell_set_template_code():";
+    if !src.contains(anchor) {
+        return;
+    }
+    let replacement = "def _make_cell_set_template_code():
+    import sys as _sys
+    if _sys.version_info >= (3, 8):
+        # py3.8+ compat (canonical upstream cloudpickle fix), injected by the
+        # continuum era harness at checkout staging — applied uniformly to
+        # solve and grade trees.
+        def _cell_set_factory(value):
+            lambda: cell
+            cell = value
+        co = _cell_set_factory.__code__
+        return co.replace(co_argcount=0, co_varnames=('cell',), co_name='cell_set_template', co_freevars=('cell',), co_cellvars=())
+";
+    let patched = src.replacen(anchor, replacement, 1);
+    if std::fs::write(&cp, patched).is_ok() {
+        crate::probe!(
+            class = "benchmark.env.checkout_fixup",
+            instance = %instance.instance_id,
+            fixup = "cloudpickle-py38-codetype",
+            "era harness accommodation applied at the shared clone seam"
+        );
+    }
 }
 
 /// SUBSTRATE ARTIFACTS NEVER ENTER HER PATCH (2026-08-22, seen live: an airc
@@ -1445,7 +1498,12 @@ fn era_sdist_build_deps(repo: &str) -> &'static [&'static str] {
         // the era-pin's loud unpinned retry is exactly the path that smuggles
         // modern cython in when the dated resolve hiccups. The ceiling holds
         // through BOTH paths; 0.29.x compiles every sklearn era we can meet.
-        "scikit-learn/scikit-learn" => &["numpy", "cython>=0.28,<3"],
+        // Platform-reality pins (proven build 2026-08-27): era numpy 1.16 has no
+        // arm64 wheel and modern numpy 2.x breaks the 2019 build — 1.21.6 is the
+        // oldest arm64-wheeled numpy that compiles this era. Same logic for the
+        // cython and scipy pins. These are the exact versions the end-to-end
+        // proof used; change only with a new end-to-end proof.
+        "scikit-learn/scikit-learn" => &["numpy==1.21.6", "cython==0.29.24", "scipy==1.7.3"],
         // cppy: kiwisolver 1.3's sdist imports it at build (walk 4 — the
         // dependency-sdist class this table exists for, same as astropy→pyerfa→jinja2).
         "matplotlib/matplotlib" => &["numpy", "setuptools_scm", "certifi", "cppy"],
