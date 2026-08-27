@@ -1021,7 +1021,60 @@ pub async fn clone_at(instance: &SweInstance, repo_dir: &Path) -> Result<(), Str
         }
     }
     shield_workspace_excludes(repo_dir);
+    era_checkout_fixups(instance, repo_dir);
     Ok(())
+}
+
+/// Era HARNESS accommodations applied to EVERY checkout of an instance —
+/// solve staging and grade clone alike, through this one shared seam, so the
+/// tree she works and the tree that scores her are identically accommodated
+/// (the same class of change the official harness's environment-setup commits
+/// make). NEVER touches anything a task's tests assert on.
+///
+/// scikit-learn < 0.22 (proven end-to-end on Apple silicon 2026-08-27,
+/// SKLEARN 0.21.dev0 imports clean): the vendored cloudpickle's
+/// `_make_cell_set_template_code` calls `types.CodeType(...)` with the
+/// pre-3.8 signature and cannot IMPORT on any interpreter this platform has
+/// (no 3.7 exists for arm64 macOS). The canonical upstream cloudpickle fix —
+/// build the template via `co.replace(...)` on 3.8+ — is injected ahead of
+/// the old constructor. Vendored build/serialization plumbing, not subject
+/// logic: no SWE task asserts on cloudpickle internals.
+fn era_checkout_fixups(instance: &SweInstance, repo_dir: &Path) {
+    if instance.repo != "scikit-learn/scikit-learn" {
+        return;
+    }
+    let cp = repo_dir.join("sklearn/externals/joblib/externals/cloudpickle/cloudpickle.py");
+    let Ok(src) = std::fs::read_to_string(&cp) else {
+        return; // newer sklearn: nothing vendored here, nothing to accommodate
+    };
+    if src.contains("continuum era harness") {
+        return; // already applied (idempotent across re-stages)
+    }
+    let anchor = "def _make_cell_set_template_code():";
+    if !src.contains(anchor) {
+        return;
+    }
+    let replacement = "def _make_cell_set_template_code():
+    import sys as _sys
+    if _sys.version_info >= (3, 8):
+        # py3.8+ compat (canonical upstream cloudpickle fix), injected by the
+        # continuum era harness at checkout staging — applied uniformly to
+        # solve and grade trees.
+        def _cell_set_factory(value):
+            lambda: cell
+            cell = value
+        co = _cell_set_factory.__code__
+        return co.replace(co_argcount=0, co_varnames=('cell',), co_name='cell_set_template', co_freevars=('cell',), co_cellvars=())
+";
+    let patched = src.replacen(anchor, replacement, 1);
+    if std::fs::write(&cp, patched).is_ok() {
+        crate::probe!(
+            class = "benchmark.env.checkout_fixup",
+            instance = %instance.instance_id,
+            fixup = "cloudpickle-py38-codetype",
+            "era harness accommodation applied at the shared clone seam"
+        );
+    }
 }
 
 /// SUBSTRATE ARTIFACTS NEVER ENTER HER PATCH (2026-08-22, seen live: an airc
@@ -1161,9 +1214,21 @@ pub async fn apply_patch(repo_dir: &Path, text: &str, what: &str) -> Result<(), 
 /// mismatch is the leading suspect for the p2p-0/N broken baselines (flask-5063,
 /// pytest-5103) whose envs were built on 3.11 before this rung existed.
 pub fn interpreter_for_year(year: u32) -> &'static str {
+    // The rung must respect the ERA PYTEST's supported-python window, not just
+    // the repo's (the harness runs on this interpreter too). Glass-boxed
+    // 2026-08-27 by the first coverage map: 2020-21 classes (sphinx ×36,
+    // sympy ×24, requests) all died in pytest's assertion rewriter with
+    // `required field "lineno" missing` — era pytest 5.4/6.0-6.1 predates
+    // py3.10's AST strictness (3.10 support landed in pytest 6.2.5, Oct 2021).
+    // 2020 → 3.8 (pytest 5.4/6.0 window), 2021 → 3.9 (pytest 6.2 window).
+    // Every green class of the map pins the rest of this ladder as-is.
     if year < 2020 {
         "3.9"
-    } else if year <= 2022 {
+    } else if year == 2020 {
+        "3.8"
+    } else if year == 2021 {
+        "3.9"
+    } else if year == 2022 {
         "3.10"
     } else {
         "3.11"
@@ -1400,9 +1465,15 @@ const ERA_BUILD_ENV: &[(&str, &str)] = &[
     ("SETUPTOOLS_USE_DISTUTILS", "stdlib"),
 ];
 
-const ERA_CFLAGS: &str = "-Wno-error=incompatible-function-pointer-types \
-     -Wno-error=implicit-function-declaration -Wno-error=int-conversion \
-     -Dfdopen=fdopen";
+// -Wno-X (not -Wno-error=X): on modern clang these are DEFAULT ERRORS, and
+// -Wno-error= cannot downgrade a default error — only disabling the diagnostic
+// can (coverage map 2026-08-27: pandas 0.25's C died on
+// incompatible-function-pointer-types with the old form live).
+// NUMPY_IMPORT_ARRAY_RETVAL: numpy 1.20 deleted the macro (it was NULL on
+// py3); pandas<1.0's ujson still uses it — shimmed exactly like fdopen.
+const ERA_CFLAGS: &str = "-Wno-incompatible-function-pointer-types \
+     -Wno-implicit-function-declaration -Wno-int-conversion \
+     -Dfdopen=fdopen -DNUMPY_IMPORT_ARRAY_RETVAL=NULL";
 
 /// Build deps that a repo's DEPENDENCY sdists import at build time but that nothing installs
 /// under `--no-build-isolation` (we honor the top repo's `[build-system].requires`; a
@@ -1410,6 +1481,24 @@ const ERA_CFLAGS: &str = "-Wno-error=incompatible-function-pointer-types \
 /// get built is a property of the repo's dependency graph on this platform. DATA, not logic —
 /// grow it one measured failure at a time, never speculatively.
 fn era_sdist_build_deps(repo: &str) -> &'static [&'static str] {
+    era_sdist_build_deps_for(repo, 9999)
+}
+
+/// Era-scoped variant: rows may differ by instance year (the 2026-08-27
+/// coverage map caught the sklearn platform pins — right for 2019's
+/// no-arm64-wheel era, poison for a 2023 py3.11 env).
+fn era_sdist_build_deps_for(repo: &str, year: u32) -> &'static [&'static str] {
+    if repo == "pydata/xarray" && year <= 2021 {
+        // Era xarray drags era pandas as an sdist; its build needs cython and a
+        // numpy that both carries the old C macros AND has an arm64 wheel —
+        // 1.21.6 is the proven middle (xarray 0.14 + pandas 0.25.3 import
+        // clean, 2026-08-27).
+        return &["numpy==1.21.6", "cython<3"];
+    }
+    if repo == "scikit-learn/scikit-learn" && year >= 2020 {
+        // Modern eras resolve their own numpy/cython fine — no reality pins.
+        return &["numpy", "cython"];
+    }
     match repo {
         // pyerfa's sdist build runs `erfa_generator`, which imports jinja2
         // (astropy__astropy-12907 live at dispatch, 2026-08-16).
@@ -1445,7 +1534,12 @@ fn era_sdist_build_deps(repo: &str) -> &'static [&'static str] {
         // the era-pin's loud unpinned retry is exactly the path that smuggles
         // modern cython in when the dated resolve hiccups. The ceiling holds
         // through BOTH paths; 0.29.x compiles every sklearn era we can meet.
-        "scikit-learn/scikit-learn" => &["numpy", "cython>=0.28,<3"],
+        // Platform-reality pins (proven build 2026-08-27): era numpy 1.16 has no
+        // arm64 wheel and modern numpy 2.x breaks the 2019 build — 1.21.6 is the
+        // oldest arm64-wheeled numpy that compiles this era. Same logic for the
+        // cython and scipy pins. These are the exact versions the end-to-end
+        // proof used; change only with a new end-to-end proof.
+        "scikit-learn/scikit-learn" => &["numpy==1.21.6", "cython==0.29.24", "scipy==1.7.3"],
         // cppy: kiwisolver 1.3's sdist imports it at build (walk 4 — the
         // dependency-sdist class this table exists for, same as astropy→pyerfa→jinja2).
         "matplotlib/matplotlib" => &["numpy", "setuptools_scm", "certifi", "cppy"],
@@ -1523,7 +1617,8 @@ fn repo_build_env(instance: &SweInstance, env_dir: &Path) -> Result<Vec<(String,
                     "CC".into(),
                     format!(
                         "clang -Xpreprocessor -fopenmp -I{inc} \
-                         -Wno-error=implicit-function-declaration -Wno-error=int-conversion"
+                         -Wno-implicit-function-declaration -Wno-int-conversion \
+                         -Wno-incompatible-function-pointer-types"
                     ),
                 ),
                 (
@@ -1783,7 +1878,7 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
     // the official harness's per-repo spec tables. Era-pinned with the instance's own cutoff
     // so a build tool never smuggles a modern package into a date-pinned subject graph
     // (jinja2 IS a runtime dep of some subjects, e.g. flask).
-    let sdist_deps = era_sdist_build_deps(&instance.repo);
+    let sdist_deps = era_sdist_build_deps_for(&instance.repo, instance.year());
     if !sdist_deps.is_empty() {
         // Shares `era_pinned_uv_install` with the `-e .` install below. It did NOT before,
         // and that asymmetry is what made every astropy instance ungradeable: the pin caps
@@ -1944,20 +2039,19 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
         // --reinstall is load-bearing: the modern pytest above already satisfies the bare
         // requirement, so without it this resolve is a no-op (hand-verified: flask-5063
         // stayed on 9.1.1 until --reinstall brought it to era 7.3.0, tests then green).
-        let out = run(
+        //
+        // THROUGH THE HEALING INSTALLER (2026-08-27 coverage map, ~23 instances):
+        // pre-2018 cutoffs exclude every usable setuptools (pytest's own sdist build
+        // needs >=40.8), and uv's hint names the per-package override remedy —
+        // which era_pinned_uv_install already parses and applies. The plain `run`
+        // here was the one era-resolve NOT routed through the heal loop.
+        let out = era_pinned_uv_install(
             &uv,
-            &[
-                "pip",
-                "install",
-                "-q",
-                "--python",
-                &py_s,
-                "--exclude-newer",
-                &date,
-                "--reinstall",
-                "pytest",
-            ],
+            &py_s,
+            Some(date.as_str()),
+            &["--reinstall", "pytest"],
             None,
+            ERA_BUILD_ENV,
         )
         .await?;
         if !out.status.success() {
@@ -3786,8 +3880,10 @@ diff --git a/sympy/solvers/tests/test_other.py b/sympy/solvers/tests/test_other.
     fn the_interpreter_is_chosen_by_the_instances_era() {
         assert_eq!(interpreter_for_year(2014), "3.9");
         assert_eq!(interpreter_for_year(2019), "3.9");
-        assert_eq!(interpreter_for_year(2020), "3.10");
-        assert_eq!(interpreter_for_year(2021), "3.10");
+        // 2020/2021 pinned by the 2026-08-27 coverage map: era pytest 5.4/6.x
+        // predates py3.10's AST ("lineno missing" in the assertion rewriter).
+        assert_eq!(interpreter_for_year(2020), "3.8");
+        assert_eq!(interpreter_for_year(2021), "3.9");
         assert_eq!(interpreter_for_year(2022), "3.10");
         assert_eq!(interpreter_for_year(2023), "3.11");
     }

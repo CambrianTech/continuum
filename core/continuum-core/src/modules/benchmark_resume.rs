@@ -71,10 +71,32 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
         // solve-class demand (the real fix, filed), the lease asks for ONE
         // lane: the proven solve config — serial but completing.
         const LANE_CAP: u32 = 1;
+        // THE BENCHMARK REGIME WINDOW FLOOR (no-excuses replication, Joel
+        // 2026-08-27): while Working rounds exist, this task records a standing
+        // window demand into the SAME measured-demand registry every persona
+        // reports through — so the very first post-boot plan sizes the lane for
+        // solve work instead of a cold-start guess (measured: a boot came up at
+        // 27k against a proven 134k, purely because demand was unmeasured at
+        // plan time). 40448 is the historically PROVEN solve window (the 4-way
+        // resolves of 2026-08-26 ran at exactly this). A fixed synthetic id so
+        // demand listings read it honestly as the benchmark regime.
+        // context-budget-exempt: this is the benchmark REGIME floor — a pinned,
+        // published measurement condition (the proven solve window of the
+        // 2026-08-26 resolves), deliberately NOT derived from the live window:
+        // deriving it would make the replication regime drift with the host.
+        const REGIME_WINDOW: u32 = 40448;
+        let regime_id = uuid::Uuid::from_u128(0xBE7C_11A6_2026_0827);
         let mut demand_lease: Option<(u64, u32)> = None;
         let mut attempt: u32 = 0;
         loop {
             let queued = crate::cognition::bench_round::total_unworked_cards() as u32;
+            if queued > 0 {
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0); // recency stamp is display-only for demand entries
+                crate::cognition::working_set::global().record(regime_id, REGIME_WINDOW, now_ms);
+            }
             let want = queued.clamp(1, LANE_CAP);
             match demand_lease {
                 Some((_, held)) if held == want => {}

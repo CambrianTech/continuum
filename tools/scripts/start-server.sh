@@ -8,14 +8,14 @@
 # orchestrator stays out of the loop.
 #
 # Usage:
-#   bash scripts/start-server.sh                    # cargo run (debug, fast iterate)
-#   CONTINUUM_RELEASE=1 bash scripts/start-server.sh # release build
+#   bash scripts/start-server.sh                    # release build (the default)
+#   CONTINUUM_DEBUG=1 bash scripts/start-server.sh  # debug build (fast iterate, live asserts)
 #   CONTINUUM_SOCKET=/path bash scripts/start-server.sh
 #
 # Env vars (all optional — substrate auto-discovers where possible):
 #   CONTINUUM_SOCKET        Unix socket for the substrate's IPC. Default
 #                           /tmp/continuum-core.sock. Removed if stale.
-#   CONTINUUM_RELEASE       Set non-empty for --release build.
+#   CONTINUUM_DEBUG         Set non-empty for a debug build (release is the default).
 #   AIRC_DAEMON_SOCKET      Explicit airc daemon socket. Otherwise the
 #                           substrate auto-discovers via `airc ipc-endpoint`.
 #   AIRC_DEFAULT_CHANNEL    Override default room. Otherwise derived from
@@ -451,11 +451,16 @@ stop_existing_core() {
 }
 
 # ── Launch ───────────────────────────────────────────────────────────
-PROFILE_FLAG=""
-PROFILE_LABEL="debug"
-if [ -n "$CONTINUUM_RELEASE" ]; then
-  PROFILE_FLAG="--release"
-  PROFILE_LABEL="release"
+# RELEASE IS THE DEFAULT (Joel, 2026-08-27): the core that hosts citizens and
+# takes benchmarks runs optimized unless someone is actively debugging.
+# CONTINUUM_DEBUG=1 opts into a debug build (fast compiles, live
+# debug_asserts, overflow panics); CONTINUUM_RELEASE stays honored for
+# explicitness in scripts that already set it.
+PROFILE_FLAG="--release"
+PROFILE_LABEL="release"
+if [ -n "$CONTINUUM_DEBUG" ] && [ -z "$CONTINUUM_RELEASE" ]; then
+  PROFILE_FLAG=""
+  PROFILE_LABEL="debug"
 fi
 
 

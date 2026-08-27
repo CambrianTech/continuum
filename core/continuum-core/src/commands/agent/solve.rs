@@ -979,6 +979,19 @@ async fn close_claim_card_if_graded(run_id: &str) {
         return;
     }
     if env_absent {
+        // Defer this instance for the rest of the boot: a broken control or
+        // absent env yields the SAME result on every retake, and each retake
+        // burns a full solve of her time (measured: sphinx-10614, two complete
+        // 30-minute attempts against a gate that cannot pass). The per-boot
+        // defer set the dispatch gate already consults is exactly the right
+        // parking brake; the next boot's prewarm re-tests honestly.
+        if let Some(inst) = grade
+            .as_ref()
+            .and_then(|g| g.get("instance"))
+            .and_then(|i| i.as_str())
+        {
+            crate::modules::work::env_broken_this_boot().insert(inst.to_string());
+        }
         // The harness measured the environment and it is ABSENT — the card
         // stays OPEN so the retake is AUTOMATIC the boot the env heals (Joel
         // 2026-08-27: "you'd want to get it possible to run the broken ones
