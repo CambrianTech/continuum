@@ -2604,6 +2604,34 @@ pub(crate) const SOLUTION_PATH_EXCLUDES: &[&str] = &[
 /// [`SOLUTION_PATH_EXCLUDES`] keeps substrate-authored files out — see its doc
 /// for the two incidents that make the `.airc` entry load-bearing.
 pub(crate) fn workspace_candidate_diff(ws: &str) -> Result<String, CommandError> {
+    workspace_candidate_diff_from(ws, None)
+}
+
+/// Her work is everything since the instance's BASE COMMIT — committed,
+/// staged, and unstaged alike. The old `diff HEAD` collector read only the
+/// dirty tree, so a citizen who COMMITTED her fix (sympy-12481, 2026-08-27:
+/// "Fix Permutation constructor to compose non-disjoint cycles left-to-right",
+/// the exact task, sitting in a commit) graded as "no candidate patch" — the
+/// harness punishing her best engineering habit. With `base` given, diff from
+/// there; unknown rev (odd staging) falls back to the dirty-tree read rather
+/// than failing the grade.
+pub(crate) fn workspace_candidate_diff_from(
+    ws: &str,
+    base: Option<&str>,
+) -> Result<String, CommandError> {
+    if let Some(base) = base {
+        let mut args: Vec<&str> = vec!["diff", base, "--", "."];
+        args.extend_from_slice(SOLUTION_PATH_EXCLUDES);
+        let out = std::process::Command::new("git")
+            .args(&args)
+            .current_dir(ws)
+            .output()
+            .map_err(|e| CommandError::Internal(format!("could not read {ws}'s diff: {e}")))?;
+        if out.status.success() {
+            return Ok(String::from_utf8_lossy(&out.stdout).to_string());
+        }
+        // Unknown base in this tree — fall through to the dirty-tree read.
+    }
     let mut args: Vec<&str> = vec!["diff", "HEAD", "--", "."];
     args.extend_from_slice(SOLUTION_PATH_EXCLUDES);
     let out = std::process::Command::new("git")
@@ -2711,7 +2739,7 @@ pub(crate) async fn grade_swe(p: SweGradeParams) -> Result<SweGradeResult, Comma
     let candidate: Option<String> = if p.gold.unwrap_or(false) {
         Some(instance.patch.clone())
     } else if let Some(ws) = resolved_workspace.as_ref() {
-        Some(workspace_candidate_diff(ws)?)
+        Some(workspace_candidate_diff_from(ws, Some(&instance.base_commit))?)
     } else {
         p.patch.clone()
     };
