@@ -1465,9 +1465,15 @@ const ERA_BUILD_ENV: &[(&str, &str)] = &[
     ("SETUPTOOLS_USE_DISTUTILS", "stdlib"),
 ];
 
-const ERA_CFLAGS: &str = "-Wno-error=incompatible-function-pointer-types \
-     -Wno-error=implicit-function-declaration -Wno-error=int-conversion \
-     -Dfdopen=fdopen";
+// -Wno-X (not -Wno-error=X): on modern clang these are DEFAULT ERRORS, and
+// -Wno-error= cannot downgrade a default error — only disabling the diagnostic
+// can (coverage map 2026-08-27: pandas 0.25's C died on
+// incompatible-function-pointer-types with the old form live).
+// NUMPY_IMPORT_ARRAY_RETVAL: numpy 1.20 deleted the macro (it was NULL on
+// py3); pandas<1.0's ujson still uses it — shimmed exactly like fdopen.
+const ERA_CFLAGS: &str = "-Wno-incompatible-function-pointer-types \
+     -Wno-implicit-function-declaration -Wno-int-conversion \
+     -Dfdopen=fdopen -DNUMPY_IMPORT_ARRAY_RETVAL=NULL";
 
 /// Build deps that a repo's DEPENDENCY sdists import at build time but that nothing installs
 /// under `--no-build-isolation` (we honor the top repo's `[build-system].requires`; a
@@ -1482,6 +1488,13 @@ fn era_sdist_build_deps(repo: &str) -> &'static [&'static str] {
 /// coverage map caught the sklearn platform pins — right for 2019's
 /// no-arm64-wheel era, poison for a 2023 py3.11 env).
 fn era_sdist_build_deps_for(repo: &str, year: u32) -> &'static [&'static str] {
+    if repo == "pydata/xarray" && year <= 2021 {
+        // Era xarray drags era pandas as an sdist; its build needs cython and a
+        // numpy that both carries the old C macros AND has an arm64 wheel —
+        // 1.21.6 is the proven middle (xarray 0.14 + pandas 0.25.3 import
+        // clean, 2026-08-27).
+        return &["numpy==1.21.6", "cython<3"];
+    }
     if repo == "scikit-learn/scikit-learn" && year >= 2020 {
         // Modern eras resolve their own numpy/cython fine — no reality pins.
         return &["numpy", "cython"];
