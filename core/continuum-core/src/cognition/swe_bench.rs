@@ -1475,6 +1475,17 @@ const ERA_CFLAGS: &str = "-Wno-error=incompatible-function-pointer-types \
 /// get built is a property of the repo's dependency graph on this platform. DATA, not logic —
 /// grow it one measured failure at a time, never speculatively.
 fn era_sdist_build_deps(repo: &str) -> &'static [&'static str] {
+    era_sdist_build_deps_for(repo, 9999)
+}
+
+/// Era-scoped variant: rows may differ by instance year (the 2026-08-27
+/// coverage map caught the sklearn platform pins — right for 2019's
+/// no-arm64-wheel era, poison for a 2023 py3.11 env).
+fn era_sdist_build_deps_for(repo: &str, year: u32) -> &'static [&'static str] {
+    if repo == "scikit-learn/scikit-learn" && year >= 2020 {
+        // Modern eras resolve their own numpy/cython fine — no reality pins.
+        return &["numpy", "cython"];
+    }
     match repo {
         // pyerfa's sdist build runs `erfa_generator`, which imports jinja2
         // (astropy__astropy-12907 live at dispatch, 2026-08-16).
@@ -1853,7 +1864,7 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
     // the official harness's per-repo spec tables. Era-pinned with the instance's own cutoff
     // so a build tool never smuggles a modern package into a date-pinned subject graph
     // (jinja2 IS a runtime dep of some subjects, e.g. flask).
-    let sdist_deps = era_sdist_build_deps(&instance.repo);
+    let sdist_deps = era_sdist_build_deps_for(&instance.repo, instance.year());
     if !sdist_deps.is_empty() {
         // Shares `era_pinned_uv_install` with the `-e .` install below. It did NOT before,
         // and that asymmetry is what made every astropy instance ungradeable: the pin caps
@@ -2014,20 +2025,19 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
         // --reinstall is load-bearing: the modern pytest above already satisfies the bare
         // requirement, so without it this resolve is a no-op (hand-verified: flask-5063
         // stayed on 9.1.1 until --reinstall brought it to era 7.3.0, tests then green).
-        let out = run(
+        //
+        // THROUGH THE HEALING INSTALLER (2026-08-27 coverage map, ~23 instances):
+        // pre-2018 cutoffs exclude every usable setuptools (pytest's own sdist build
+        // needs >=40.8), and uv's hint names the per-package override remedy —
+        // which era_pinned_uv_install already parses and applies. The plain `run`
+        // here was the one era-resolve NOT routed through the heal loop.
+        let out = era_pinned_uv_install(
             &uv,
-            &[
-                "pip",
-                "install",
-                "-q",
-                "--python",
-                &py_s,
-                "--exclude-newer",
-                &date,
-                "--reinstall",
-                "pytest",
-            ],
+            &py_s,
+            Some(date.as_str()),
+            &["--reinstall", "pytest"],
             None,
+            ERA_BUILD_ENV,
         )
         .await?;
         if !out.status.success() {
