@@ -1523,9 +1523,26 @@ fn repo_build_env(instance: &SweInstance, env_dir: &Path) -> Result<Vec<(String,
 /// editable rebuild. Idempotent and seconds-cheap; call it after ANY step that
 /// can move setuptools.
 async fn assert_harness_floor(uv: &str, py: &str) -> Result<(), String> {
+    // The floor is a COHERENT TRIO, not setuptools alone (sympy-12481/12489
+    // regressed twice before this was learned): wheel 0.44+ delegates
+    // bdist_wheel to setuptools.command.bdist_wheel, which only exists in
+    // setuptools >=70.1 — above our <70 dep_util ceiling — so wheel must stay
+    // <0.44 (self-contained bdist_wheel). And an era-swept packaging (2017's
+    // 16.8) lacks packaging.tags, which wheel imports. All three are HARNESS:
+    // pure metadata machinery no subject imports, safe at modern-in-window
+    // versions inside any era graph.
     let _ = run(
         uv,
-        &["pip", "install", "-q", "--python", py, "setuptools>=64,<70"],
+        &[
+            "pip",
+            "install",
+            "-q",
+            "--python",
+            py,
+            "setuptools>=64,<70",
+            "wheel>=0.40,<0.44",
+            "packaging>=21",
+        ],
         None,
     )
     .await?;
