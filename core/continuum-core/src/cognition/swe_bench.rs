@@ -1495,6 +1495,26 @@ fn clear_setuptools_build_debris(repo_dir: &Path) {
     }
 }
 
+/// Per-repo build ENV additions that must ride EVERY editable install of the
+/// repo — fresh build AND cached-env re-point (the re-point rebuilds the same
+/// extensions; matplotlib's vendored-freetype `make` died there twice because
+/// the fix rode only the fresh path). Returns owned pairs; empty for most repos.
+fn repo_build_env(instance: &SweInstance, env_dir: &Path) -> Result<Vec<(String, String)>, String> {
+    if instance.repo == "matplotlib/matplotlib" {
+        // System freetype via MPLSETUPCFG (vendored 2.6.1 predates Apple Silicon).
+        let cfg = env_dir.join("mplsetup.cfg");
+        std::fs::create_dir_all(env_dir)
+            .map_err(|e| format!("could not create {}: {e}", env_dir.display()))?;
+        std::fs::write(&cfg, "[libs]\nsystem_freetype = true\n")
+            .map_err(|e| format!("could not write {}: {e}", cfg.display()))?;
+        return Ok(vec![(
+            "MPLSETUPCFG".to_string(),
+            cfg.to_string_lossy().into_owned(),
+        )]);
+    }
+    Ok(Vec::new())
+}
+
 /// Re-assert the PEP-660 harness floor: setuptools in [64, 70) — the only
 /// window with BOTH `build_editable` (>=64) and `dep_util` (<70). Setuptools is
 /// HARNESS, never subject ([[…]] doctrine at the build_requires site): an
@@ -1545,6 +1565,9 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
             // The cached env may hold an era-swept setuptools (34.x has no
             // build_meta) — floor it before asking for an editable rebuild.
             assert_harness_floor(&uv, &py_s).await?;
+            let repo_env = repo_build_env(instance, &env_dir)?;
+            let mut env_pairs: Vec<(&str, &str)> = ERA_BUILD_ENV.to_vec();
+            env_pairs.extend(repo_env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
             let out = run_env(
                 &uv,
                 &[
@@ -1559,7 +1582,7 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
                     ".",
                 ],
                 Some(repo_dir),
-                ERA_BUILD_ENV,
+                &env_pairs,
             )
             .await?;
             if !out.status.success() {
@@ -1780,7 +1803,8 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
     // era interpreter). Fail-loud when the host lacks it: the message names
     // the exact install command, because "build backend error" is not a fix.
     let mut build_env: Vec<(&str, &str)> = ERA_BUILD_ENV.to_vec();
-    let mpl_cfg_path;
+    // Host-prereq gate for matplotlib's system-freetype build — fail LOUD with
+    // the remedy; "build backend error" is not a fix.
     if instance.repo == "matplotlib/matplotlib" {
         let freetype_ok = match which("pkg-config") {
             Some(pc) => run(&pc, &["--exists", "freetype2"], None)
@@ -1798,12 +1822,9 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
                 instance.instance_id
             ));
         }
-        let cfg = env_dir.join("mplsetup.cfg");
-        std::fs::write(&cfg, "[libs]\nsystem_freetype = true\n")
-            .map_err(|e| format!("could not write {}: {e}", cfg.display()))?;
-        mpl_cfg_path = cfg.to_string_lossy().into_owned();
-        build_env.push(("MPLSETUPCFG", mpl_cfg_path.as_str()));
     }
+    let repo_env = repo_build_env(instance, &env_dir)?;
+    build_env.extend(repo_env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
     let out = era_pinned_uv_install(
         &uv,
         &py_s,
