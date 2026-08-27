@@ -105,6 +105,14 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
                 }
                 continue;
             }
+            // Resumed rounds deserve the same env pre-warm dispatch gives fresh
+            // ones — without this, a reboot mid-round re-discovers its env
+            // walls one burned solve attempt at a time (2026-08-27: the
+            // operator hand-worked around it with idempotent re-dispatches).
+            // Once per task lifetime; cheap when everything is already warm.
+            if attempt == 1 {
+                crate::modules::work::spawn_env_prewarm_for_working_rounds();
+            }
             let due = crate::cognition::bench_round::next_unworked_per_round();
             if due.is_empty() {
                 if !crate::cognition::bench_round::any_working_round() {
@@ -116,6 +124,17 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
                 continue;
             }
             if !fast {
+                // TRULY becalmed means NO solve is running anywhere — the fast
+                // window may legitimately fan out boot re-fires, but the slow
+                // watch reviving one more card per tick while solves are LIVE
+                // is drift into parallel solving nobody decided (B7 is a
+                // deliberate, measured decision — never a watchdog side
+                // effect; caught live 2026-08-27, one extra solve per 5min).
+                let live = crate::cognition::swe_bench::in_flight_solve_runs();
+                if !live.is_empty() {
+                    tokio::time::sleep(SLOW_WATCH).await;
+                    continue;
+                }
                 crate::probe!(
                     class = "bench.round.becalmed",
                     unworked = due.len() as u64,

@@ -1440,8 +1440,15 @@ fn era_sdist_build_deps(repo: &str) -> &'static [&'static str] {
         // `oldest-supported-numpy`, which routinely fails to resolve on a
         // modern interpreter (the build_requires step warns and proceeds) — a
         // plain era-pinned numpy here is what actually lands.
-        "scikit-learn/scikit-learn" => &["numpy", "cython"],
-        "matplotlib/matplotlib" => &["numpy", "setuptools_scm", "certifi"],
+        // cython<3 is load-bearing: Cython 3 REJECTS 2019-era .pyx (CompileError
+        // on sklearn's own ball_tree.pyx, walk 4 of the seeded-25 prewarm) — and
+        // the era-pin's loud unpinned retry is exactly the path that smuggles
+        // modern cython in when the dated resolve hiccups. The ceiling holds
+        // through BOTH paths; 0.29.x compiles every sklearn era we can meet.
+        "scikit-learn/scikit-learn" => &["numpy", "cython>=0.28,<3"],
+        // cppy: kiwisolver 1.3's sdist imports it at build (walk 4 — the
+        // dependency-sdist class this table exists for, same as astropy→pyerfa→jinja2).
+        "matplotlib/matplotlib" => &["numpy", "setuptools_scm", "certifi", "cppy"],
         _ => &[],
     }
 }
@@ -1488,6 +1495,43 @@ fn clear_setuptools_build_debris(repo_dir: &Path) {
     }
 }
 
+/// Per-repo build ENV additions that must ride EVERY editable install of the
+/// repo — fresh build AND cached-env re-point (the re-point rebuilds the same
+/// extensions; matplotlib's vendored-freetype `make` died there twice because
+/// the fix rode only the fresh path). Returns owned pairs; empty for most repos.
+fn repo_build_env(instance: &SweInstance, env_dir: &Path) -> Result<Vec<(String, String)>, String> {
+    if instance.repo == "matplotlib/matplotlib" {
+        // System freetype via MPLSETUPCFG (vendored 2.6.1 predates Apple Silicon).
+        let cfg = env_dir.join("mplsetup.cfg");
+        std::fs::create_dir_all(env_dir)
+            .map_err(|e| format!("could not create {}: {e}", env_dir.display()))?;
+        std::fs::write(&cfg, "[libs]\nsystem_freetype = true\n")
+            .map_err(|e| format!("could not write {}: {e}", cfg.display()))?;
+        return Ok(vec![(
+            "MPLSETUPCFG".to_string(),
+            cfg.to_string_lossy().into_owned(),
+        )]);
+    }
+    Ok(Vec::new())
+}
+
+/// Re-assert the PEP-660 harness floor: setuptools in [64, 70) — the only
+/// window with BOTH `build_editable` (>=64) and `dep_util` (<70). Setuptools is
+/// HARNESS, never subject ([[…]] doctrine at the build_requires site): an
+/// era-pinned resolve that sweeps it to a dated version (sympy-12481's 2017 pin
+/// left 34.3.3 — no `setuptools.build_meta` AT ALL) breaks every later
+/// editable rebuild. Idempotent and seconds-cheap; call it after ANY step that
+/// can move setuptools.
+async fn assert_harness_floor(uv: &str, py: &str) -> Result<(), String> {
+    let _ = run(
+        uv,
+        &["pip", "install", "-q", "--python", py, "setuptools>=64,<70"],
+        None,
+    )
+    .await?;
+    Ok(())
+}
+
 pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathBuf, String> {
     // PER-INSTANCE SERIALIZATION — this function used to rely on "solve/grade
     // run serially per instance"; the dispatch-time env PRE-WARM broke that
@@ -1518,6 +1562,12 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
         // instance so there is no cross-tree race.
         if let Some(uv) = which("uv") {
             let py_s = py.to_string_lossy().to_string();
+            // The cached env may hold an era-swept setuptools (34.x has no
+            // build_meta) — floor it before asking for an editable rebuild.
+            assert_harness_floor(&uv, &py_s).await?;
+            let repo_env = repo_build_env(instance, &env_dir)?;
+            let mut env_pairs: Vec<(&str, &str)> = ERA_BUILD_ENV.to_vec();
+            env_pairs.extend(repo_env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
             let out = run_env(
                 &uv,
                 &[
@@ -1532,7 +1582,7 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
                     ".",
                 ],
                 Some(repo_dir),
-                ERA_BUILD_ENV,
+                &env_pairs,
             )
             .await?;
             if !out.status.success() {
@@ -1753,7 +1803,8 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
     // era interpreter). Fail-loud when the host lacks it: the message names
     // the exact install command, because "build backend error" is not a fix.
     let mut build_env: Vec<(&str, &str)> = ERA_BUILD_ENV.to_vec();
-    let mpl_cfg_path;
+    // Host-prereq gate for matplotlib's system-freetype build — fail LOUD with
+    // the remedy; "build backend error" is not a fix.
     if instance.repo == "matplotlib/matplotlib" {
         let freetype_ok = match which("pkg-config") {
             Some(pc) => run(&pc, &["--exists", "freetype2"], None)
@@ -1771,12 +1822,9 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
                 instance.instance_id
             ));
         }
-        let cfg = env_dir.join("mplsetup.cfg");
-        std::fs::write(&cfg, "[libs]\nsystem_freetype = true\n")
-            .map_err(|e| format!("could not write {}: {e}", cfg.display()))?;
-        mpl_cfg_path = cfg.to_string_lossy().into_owned();
-        build_env.push(("MPLSETUPCFG", mpl_cfg_path.as_str()));
     }
+    let repo_env = repo_build_env(instance, &env_dir)?;
+    build_env.extend(repo_env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
     let out = era_pinned_uv_install(
         &uv,
         &py_s,
@@ -1812,6 +1860,11 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
             tail(&stdout)
         ));
     }
+
+    // The era-pinned `-e .` resolve can sweep setuptools into the dated subject
+    // graph (sympy-12481: 2017 pin → setuptools 34.3.3, no build_meta) — every
+    // later re-point then dies. Floor it back: harness, never subject.
+    assert_harness_floor(&uv, &py_s).await?;
 
     // PYTEST IS SUBJECT, NOT HARNESS, for date-pinned instances (#380, glass-boxed
     // 2026-08-12): era test suites import pytest INTERNALS — flask 2.2's test_cli.py does

@@ -710,6 +710,80 @@ pub(crate) struct StagedSolveDispatch {
 /// 2026-08-11: cards staged + assigned, zero claims, zero solves). The solve is her WHOLE
 /// cognition with an exclusive warm slot (`quiesce_others`), so nothing about "she does the
 /// work herself" changes — only the trigger moves off the chat turn.
+/// Pre-warm envs for every instance a WORKING round has staged — the resume-side
+/// twin of dispatch's pre-warm (a reboot mid-round otherwise re-discovers env
+/// walls one burned solve attempt at a time). The staged workspace dirs
+/// (`peers/<assignee>/workspace/swe/<instance>`) are the reliable card→instance
+/// map; instances resolve through the SAME dataset loader the grader uses.
+pub fn spawn_env_prewarm_for_working_rounds() {
+    tokio::spawn(async move {
+        let peers_root = match crate::commands::benchmark::continuum_home() {
+            Ok(h) => h.join("citizens").join("peers"),
+            Err(_) => return, // no home = nothing staged anywhere
+        };
+        let mut names: std::collections::BTreeSet<String> = Default::default();
+        if let Ok(peers) = std::fs::read_dir(&peers_root) {
+            for peer in peers.flatten() {
+                let swe = peer.path().join("workspace").join("swe");
+                if let Ok(instances) = std::fs::read_dir(&swe) {
+                    for inst in instances.flatten() {
+                        if inst.path().is_dir() {
+                            names.insert(inst.file_name().to_string_lossy().into_owned());
+                        }
+                    }
+                }
+            }
+        }
+        if names.is_empty() {
+            return;
+        }
+        // Resolve each staged name against every SWE dataset in the catalog —
+        // the same search the grade path performs (first dataset holding the
+        // instance wins), so this can never disagree with grading.
+        for name in names {
+            let mut resolved = None;
+            for spec in crate::commands::benchmark::known_benchmarks() {
+                let Some(dataset) = spec.swe_dataset() else { continue };
+                if let Ok(instances) = crate::cognition::swe_bench::load_dataset(dataset).await {
+                    if let Some(i) = instances.into_iter().find(|i| i.instance_id == name) {
+                        resolved = Some(i);
+                        break;
+                    }
+                }
+            }
+            let Some(inst) = resolved else { continue };
+            let checkout = match crate::cognition::swe_bench::ensure_grade_checkout(&inst).await {
+                Ok(dir) => dir,
+                Err(e) => {
+                    crate::probe!(
+                        class = "benchmark.env.prewarm_failed",
+                        instance = %inst.instance_id,
+                        stage = "checkout",
+                        error = %e,
+                        "resume-side env pre-warm could not stage a checkout — an ENV \
+                         failure, not a model result"
+                    );
+                    continue;
+                }
+            };
+            match crate::cognition::swe_bench::ensure_env(&inst, &checkout).await {
+                Ok(_) => crate::probe!(
+                    class = "benchmark.env.prewarmed",
+                    instance = %inst.instance_id,
+                    "resume-side env pre-warm: ready ahead of the driver"
+                ),
+                Err(e) => crate::probe!(
+                    class = "benchmark.env.prewarm_failed",
+                    instance = %inst.instance_id,
+                    stage = "env",
+                    error = %e,
+                    "resume-side env pre-warm FAILED — an ENV failure, never a model result"
+                ),
+            }
+        }
+    });
+}
+
 pub(crate) async fn dispatch_staged_swe_solve(
     ctx: &Ctx,
     airc: &std::sync::Arc<airc_lib::Airc>,
