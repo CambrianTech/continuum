@@ -80,6 +80,10 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
         // plan time). 40448 is the historically PROVEN solve window (the 4-way
         // resolves of 2026-08-26 ran at exactly this). A fixed synthetic id so
         // demand listings read it honestly as the benchmark regime.
+        // context-budget-exempt: this is the benchmark REGIME floor — a pinned,
+        // published measurement condition (the proven solve window of the
+        // 2026-08-26 resolves), deliberately NOT derived from the live window:
+        // deriving it would make the replication regime drift with the host.
         const REGIME_WINDOW: u32 = 40448;
         let regime_id = uuid::Uuid::from_u128(0xBE7C_11A6_2026_0827);
         let mut demand_lease: Option<(u64, u32)> = None;
