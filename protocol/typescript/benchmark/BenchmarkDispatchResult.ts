@@ -27,6 +27,13 @@ card_ids: Array<string>,
  */
 skipped_needs_setup: number, 
 /**
+ * Instances withheld because THIS box already proved their (repo, era) env
+ * class red via `benchmark/validate`. Reported, never silent — the operator
+ * must see that the round is smaller than requested and WHY (the named wall
+ * rides in `kickoff_errors`).
+ */
+skipped_known_red: number, 
+/**
  * Tasks NOT dispatched because a LIVE card for that exact task is already on
  * the board (same `[bench <name>] <task_id>:` key, in any non-terminal state).
  * Dispatch is idempotent per task: re-running it tops the board up to one card

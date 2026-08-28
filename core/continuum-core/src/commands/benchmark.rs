@@ -2098,12 +2098,16 @@ mod tests {
         fn the_coverage_gate_fails_open_and_only_blocks_a_locally_proven_red_class() {
             let dataset = "swe-bench-unit-test-fixture";
             let here = BenchmarkPlatformFingerprint::capture().machine_class;
-            let path = coverage_map_path(dataset, &here);
-            let _ = std::fs::remove_file(&path);
+            // A TEMPDIR, never the operator's real ~/.continuum: writing a
+            // fixture into a person's live data directory is both a lie about
+            // isolation and a way to clobber their state — and it made this very
+            // test pass alone and FAIL in the full suite.
+            let root = std::env::temp_dir().join(format!("cov-gate-{}", uuid::Uuid::new_v4()));
+            let path = coverage_map_path_in(&root, dataset, &here);
 
             // 1. No map at all — the fresh-clone case. Must dispatch.
             assert_eq!(
-                known_red_wall(dataset, "astropy/astropy", 2017),
+                known_red_wall_in(&root, dataset, "astropy/astropy", 2017),
                 None,
                 "a user who never ran validate must never be gated"
             );
@@ -2134,22 +2138,22 @@ mod tests {
                 summary: String::new(),
             };
             if let Some(d) = path.parent() {
-                let _ = std::fs::create_dir_all(d);
+                std::fs::create_dir_all(d).unwrap();
             }
             std::fs::write(&path, serde_json::to_string(&map).unwrap()).unwrap();
 
             assert_eq!(
-                known_red_wall(dataset, "astropy/astropy", 2017).as_deref(),
+                known_red_wall_in(&root, dataset, "astropy/astropy", 2017).as_deref(),
                 Some("numpy 2 rejects copy=False"),
                 "a locally-proven red class must withhold the card AND name the wall"
             );
             assert_eq!(
-                known_red_wall(dataset, "django/django", 2022),
+                known_red_wall_in(&root, dataset, "django/django", 2022),
                 None,
                 "a green class must dispatch"
             );
             assert_eq!(
-                known_red_wall(dataset, "astropy/astropy", 2023),
+                known_red_wall_in(&root, dataset, "astropy/astropy", 2023),
                 None,
                 "an era with no row is not evidence of anything — dispatch"
             );
@@ -2158,12 +2162,12 @@ mod tests {
             map.platform.machine_class = format!("not-{here}");
             std::fs::write(&path, serde_json::to_string(&map).unwrap()).unwrap();
             assert_eq!(
-                known_red_wall(dataset, "astropy/astropy", 2017),
+                known_red_wall_in(&root, dataset, "astropy/astropy", 2017),
                 None,
                 "another box's coverage claim is not evidence about this box"
             );
 
-            let _ = std::fs::remove_file(&path);
+            let _ = std::fs::remove_dir_all(&root);
         }
     }
 
@@ -4141,6 +4145,23 @@ impl ActionCommand for BenchmarkValidate {
 /// Under the governed benchmarks root, next to the verdicts it protects — one
 /// small file per dataset, rewritten in place, so it needs no eviction story.
 pub fn coverage_map_path(dataset: &str, machine_class: &str) -> std::path::PathBuf {
+    coverage_map_path_in(
+        &crate::cognition::swe_bench::swe_cache_dir(),
+        dataset,
+        machine_class,
+    )
+}
+
+/// Root-injected core of [`coverage_map_path`] — the filesystem seam, so tests
+/// run against a tempdir instead of the operator's real `~/.continuum` (the
+/// pattern `tool_executor::spill` already sets). A test that writes into a
+/// person's live data directory is both a lie about isolation and a way to
+/// clobber their state.
+pub fn coverage_map_path_in(
+    root: &std::path::Path,
+    dataset: &str,
+    machine_class: &str,
+) -> std::path::PathBuf {
     let safe: String = dataset
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
@@ -4149,9 +4170,7 @@ pub fn coverage_map_path(dataset: &str, machine_class: &str) -> std::path::PathB
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
         .collect();
-    crate::cognition::swe_bench::swe_cache_dir()
-        .join("coverage")
-        .join(format!("{safe}.{mc}.json"))
+    root.join("coverage").join(format!("{safe}.{mc}.json"))
 }
 
 fn write_coverage_map(dataset: &str, result: &BenchmarkValidateResult) -> Result<(), String> {
@@ -4169,8 +4188,23 @@ fn write_coverage_map(dataset: &str, result: &BenchmarkValidateResult) -> Result
 /// block. Fail-open is the contract: a repo user who has never run
 /// `benchmark/validate` is never slowed down by a gate that has nothing to say.
 pub fn known_red_wall(dataset: &str, repo: &str, era_year: u32) -> Option<String> {
+    known_red_wall_in(
+        &crate::cognition::swe_bench::swe_cache_dir(),
+        dataset,
+        repo,
+        era_year,
+    )
+}
+
+/// Root-injected core of [`known_red_wall`]. See [`coverage_map_path_in`].
+pub fn known_red_wall_in(
+    root: &std::path::Path,
+    dataset: &str,
+    repo: &str,
+    era_year: u32,
+) -> Option<String> {
     let machine_class = BenchmarkPlatformFingerprint::capture().machine_class;
-    let raw = std::fs::read_to_string(coverage_map_path(dataset, &machine_class)).ok()?;
+    let raw = std::fs::read_to_string(coverage_map_path_in(root, dataset, &machine_class)).ok()?;
     let map: BenchmarkValidateResult = serde_json::from_str(&raw).ok()?;
     if map.platform.machine_class != machine_class {
         return None; // another box's claim is not evidence about this one
