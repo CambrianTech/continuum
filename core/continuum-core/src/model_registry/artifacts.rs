@@ -118,6 +118,89 @@ pub fn resolve_mtp_draft_for_model(model: &Model) -> Option<PathBuf> {
     find_mtp_draft_beside(gguf.parent()?)
 }
 
+/// Does this GGUF carry an EMBEDDED multi-token-prediction head — `nextn`
+/// tensors baked into the main weights (the DeepSeek/Ornith layout), as opposed
+/// to the sibling `mtp-*.gguf` convention above?
+///
+/// Detection = a header-only scan of tensor NAMES (never a weight load): the
+/// GGUF tensor-info section sits after the KV metadata, so this reads a few MB
+/// of names at most. Verified live 2026-08-28 on Ornith-1.5-35B-Q4_K_M: 4
+/// `blk.40.nextn.*` tensors, and `--spec-type draft-mtp` (no sidecar) engaged
+/// with **91% draft acceptance** (draft_n=90, accepted=82) on the scratch A/B.
+///
+/// CAUTION, measured the same day: acceptance is a MODEL property, throughput
+/// is a BACKEND property. On CPU the same 91%-acceptance run decoded SLOWER
+/// than the no-spec control (30.6 vs 48.6 tok/s — batch verification costs
+/// more than sequential decode for a 3B-active MoE on CPU). The Metal receipt
+/// decides whether the flag ships on; presence alone is NOT the capability
+/// signal for embedded MTP the way it is for the sidecar.
+pub fn gguf_has_embedded_mtp(gguf: &Path) -> bool {
+    fn scan(gguf: &Path) -> Option<bool> {
+        use std::io::Read;
+        let mut f = std::fs::File::open(gguf).ok()?;
+        let mut hdr = [0u8; 24];
+        f.read_exact(&mut hdr).ok()?;
+        if &hdr[0..4] != b"GGUF" {
+            return Some(false);
+        }
+        let n_tensors = u64::from_le_bytes(hdr[8..16].try_into().ok()?);
+        let n_kv = u64::from_le_bytes(hdr[16..24].try_into().ok()?);
+        let mut rdr = std::io::BufReader::new(f);
+        fn read_u32(r: &mut impl Read) -> Option<u32> {
+            let mut b = [0u8; 4];
+            r.read_exact(&mut b).ok()?;
+            Some(u32::from_le_bytes(b))
+        }
+        fn read_u64(r: &mut impl Read) -> Option<u64> {
+            let mut b = [0u8; 8];
+            r.read_exact(&mut b).ok()?;
+            Some(u64::from_le_bytes(b))
+        }
+        fn read_str(r: &mut impl Read) -> Option<String> {
+            let n = read_u64(r)? as usize;
+            if n > 1 << 20 {
+                return None; // a >1MB "string" means a corrupt header — bail
+            }
+            let mut b = vec![0u8; n];
+            r.read_exact(&mut b).ok()?;
+            Some(String::from_utf8_lossy(&b).into_owned())
+        }
+        fn skip_val(r: &mut impl Read, t: u32) -> Option<()> {
+            match t {
+                0 | 1 | 7 => std::io::copy(&mut r.take(1), &mut std::io::sink()).ok().map(|_| ()),
+                2 | 3 => std::io::copy(&mut r.take(2), &mut std::io::sink()).ok().map(|_| ()),
+                4 | 5 | 6 => std::io::copy(&mut r.take(4), &mut std::io::sink()).ok().map(|_| ()),
+                10 | 11 | 12 => std::io::copy(&mut r.take(8), &mut std::io::sink()).ok().map(|_| ()),
+                8 => read_str(r).map(|_| ()),
+                9 => {
+                    let et = read_u32(r)?;
+                    let n = read_u64(r)?;
+                    for _ in 0..n {
+                        skip_val(r, et)?;
+                    }
+                    Some(())
+                }
+                _ => None,
+            }
+        }
+        for _ in 0..n_kv {
+            read_str(&mut rdr)?;
+            let t = read_u32(&mut rdr)?;
+            skip_val(&mut rdr, t)?;
+        }
+        for _ in 0..n_tensors {
+            let name = read_str(&mut rdr)?;
+            if name.contains(".nextn.") {
+                return Some(true);
+            }
+            let nd = read_u32(&mut rdr)? as u64;
+            std::io::copy(&mut (&mut rdr).take(8 * nd + 12), &mut std::io::sink()).ok()?;
+        }
+        Some(false)
+    }
+    scan(gguf).unwrap_or(false)
+}
+
 /// Find an MTP draft-head GGUF sitting in `dir` — an `mtp-*.gguf` sibling of the
 /// model's GGUF. When several quants of the head are present, newest-mtime wins
 /// (same tie-break as main-model candidate selection).
@@ -613,6 +696,52 @@ pub(crate) fn with_test_home<T>(home: &Path, f: impl FnOnce() -> T) -> T {
 
 #[cfg(test)]
 mod tests {
+    // what this catches: the embedded-MTP capability signal lying in either
+    // direction. A false positive would push `--spec-type draft-mtp` onto a
+    // model with no nextn head (llama-server may refuse or misbehave); a false
+    // negative silently forfeits the speculation the head was trained for.
+    // Synthetic GGUF headers, no real weights — the scan is header-only by
+    // design and must stay that way (it runs at model resolution).
+    #[test]
+    fn embedded_mtp_detection_reads_headers_not_weights() {
+        use std::io::Write;
+        fn gguf_with_tensor(name: &str) -> std::path::PathBuf {
+            let dir = std::env::temp_dir().join(format!("mtp-det-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let p = dir.join("model.gguf");
+            let mut f = std::fs::File::create(&p).unwrap();
+            f.write_all(b"GGUF").unwrap();
+            f.write_all(&3u32.to_le_bytes()).unwrap(); // version
+            f.write_all(&1u64.to_le_bytes()).unwrap(); // n_tensors
+            f.write_all(&1u64.to_le_bytes()).unwrap(); // n_kv
+            // one KV: key "k" -> u32 7
+            f.write_all(&1u64.to_le_bytes()).unwrap();
+            f.write_all(b"k").unwrap();
+            f.write_all(&4u32.to_le_bytes()).unwrap(); // type u32
+            f.write_all(&7u32.to_le_bytes()).unwrap();
+            // one tensor: name, ndims=1, dim, dtype, offset
+            f.write_all(&(name.len() as u64).to_le_bytes()).unwrap();
+            f.write_all(name.as_bytes()).unwrap();
+            f.write_all(&1u32.to_le_bytes()).unwrap();
+            f.write_all(&8u64.to_le_bytes()).unwrap();
+            f.write_all(&0u32.to_le_bytes()).unwrap();
+            f.write_all(&0u64.to_le_bytes()).unwrap();
+            p
+        }
+        let with = gguf_with_tensor("blk.40.nextn.eh_proj.weight");
+        let without = gguf_with_tensor("blk.40.attn_q.weight");
+        assert!(super::gguf_has_embedded_mtp(&with), "nextn tensor must be detected");
+        assert!(!super::gguf_has_embedded_mtp(&without), "plain model must not");
+        assert!(
+            !super::gguf_has_embedded_mtp(std::path::Path::new("/nonexistent.gguf")),
+            "unreadable file is honestly false, never a panic"
+        );
+        for p in [with, without] {
+            let _ = std::fs::remove_dir_all(p.parent().unwrap());
+        }
+    }
+
+
     use super::*;
     use crate::model_registry::types::{Arch, Capability};
     use std::collections::BTreeSet;
