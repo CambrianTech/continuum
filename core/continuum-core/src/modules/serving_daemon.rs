@@ -419,6 +419,10 @@ pub struct ServingDaemonModule {
     /// for which tier the RUNNING serve actually loaded. Division rewards credit this
     /// tier, never the bandit's latest (unlaunched) choice — two-speed honesty.
     served_resident: std::sync::Mutex<Option<std::path::PathBuf>>,
+    /// The prompt-cache MiB the CURRENT serve derived and passed to its lane —
+    /// stashed so the governor-tick host-cache lease accounts the SAME number
+    /// (one derivation, two consumers; the compression contract of 1.b).
+    served_prompt_cache_mib: std::sync::Mutex<u32>,
     /// MEASUREMENT-ONLY, off by default: an explicit forced VRAM budget for K3 expert
     /// placement, read ONCE at construction from `K3_MEASURE_FORCE_EXPERT_BUDGET_BYTES`. When
     /// `Some`, it OVERRIDES the governed ceiling so a model that would otherwise fit is driven
@@ -629,6 +633,9 @@ impl ServingDaemonModule {
             moe_trace_tail: std::sync::Mutex::new(None),
             division: std::sync::Mutex::new(None),
             served_resident: std::sync::Mutex::new(None),
+            served_prompt_cache_mib: std::sync::Mutex::new(
+                crate::inference::lane_args::CACHE_RAM_MIB,
+            ),
             host_cache_lease: std::sync::Mutex::new(
                 crate::capacity::host_cache_lease::StickyLease::new(HOST_CACHE_LEASE_BAND_DIVISOR),
             ),
@@ -1364,6 +1371,10 @@ impl ServingDaemonModule {
             live.lanes,
             physical,
             system_commit_charge_bytes(),
+            self.served_prompt_cache_mib
+                .lock()
+                .map(|g| *g)
+                .unwrap_or(crate::inference::lane_args::CACHE_RAM_MIB),
         ) else {
             return;
         };
@@ -2038,7 +2049,25 @@ impl ServingDaemonModule {
         // touches it — the NvmeServingTierPool must never migrate the GGUF the
         // engine is loading or serving. Model change swaps the registration.
         self.set_active_artifact(model.gguf_local_path.clone());
+        // RESTORE-ECONOMY 1.b: derive the host prompt cache HERE, where footprint,
+        // physical memory and the citizen population are all in hand — computed
+        // once per serve, carried on the target so the lane's `--cache-ram` and
+        // the governor's host-cache lease read the SAME number (never the old
+        // constant the lease had to work around). Spawn-time snapshot only:
+        // the value changes at relaunch boundaries, never mid-serve, so there
+        // is zero flap surface (Law 2 — capacity follows measurement, structure
+        // does not).
+        let host_prompt_cache_mib = derived_prompt_cache_mib(
+            footprint_for(&model).as_ref(),
+            served_ctx,
+            lanes,
+            self.system.memory().total_bytes,
+        );
+        if let Ok(mut g) = self.served_prompt_cache_mib.lock() {
+            *g = host_prompt_cache_mib;
+        }
         let target = ServingTarget {
+            host_prompt_cache_mib,
             model,
             context_window: served_ctx,
             lanes,
@@ -3264,6 +3293,52 @@ fn serving_footprint_fn(catalog: Arc<ModelCatalog>) -> FootprintFn {
 /// derive from measured non-serving usage once mmap attribution is solved — the
 /// free-memory monitor can't be used here because mmap'd weight pages report
 /// "available" while load-bearing (see host_cache_lease module doc).
+/// The derived `--cache-ram` for a persona-population serve (restore-economy
+/// 1.b): per-citizen MEASURED demand (WorkingSetRegistry, persisted across
+/// restarts) × the model's own kv/token, clamped by what the host affords
+/// after the serve's peak resident working set and the OS floor.
+///
+/// Cold start (no demand ever measured — fresh install) and a missing
+/// footprint both return the declared prior [`lane_args::CACHE_RAM_MIB`]:
+/// "cold start is a real state, not a missing measurement". The clamp means
+/// this can only ever hand the lane RAM the resident plan was not using —
+/// never RAM the weights, live KV or OS needed.
+fn derived_prompt_cache_mib(
+    fp: Option<&crate::cognition::serving_plan::ModelFootprint>,
+    served_ctx: u32,
+    lanes: u32,
+    physical_bytes: u64,
+) -> u32 {
+    let Some(fp) = fp else {
+        return crate::inference::lane_args::CACHE_RAM_MIB;
+    };
+    let demands: Vec<u32> = crate::cognition::working_set::global()
+        .all()
+        .into_iter()
+        .map(|(_, d)| d.peak_tokens)
+        .collect();
+    if demands.is_empty() || physical_bytes == 0 {
+        return crate::inference::lane_args::CACHE_RAM_MIB;
+    }
+    let afford = physical_bytes
+        .saturating_sub(fp.peak_resident_bytes(served_ctx, lanes))
+        .saturating_sub(host_os_floor_bytes(physical_bytes));
+    let derived = crate::inference::lane_args::host_prompt_cache_mib(
+        &demands,
+        fp.kv_per_token,
+        afford,
+    );
+    crate::probe!(
+        class = "serving.prompt_cache.derived",
+        citizens = demands.len() as u64,
+        derived_mib = derived as u64,
+        afford_mib = (afford / (1024 * 1024)) as u64,
+        "host prompt cache sized from per-citizen measured demand — the lane and \
+         the host-cache lease read this SAME number"
+    );
+    derived
+}
+
 fn host_os_floor_bytes(physical_bytes: u64) -> u64 {
     (physical_bytes / 8).max(2 * 1024 * 1024 * 1024)
 }
@@ -3323,6 +3398,7 @@ fn moe_host_cache_lease_inputs(
     lanes: u32,
     physical_bytes: u64,
     commit_charge_bytes: Option<u64>,
+    prompt_cache_mib: u32,
 ) -> Option<crate::capacity::host_cache_lease::HostCacheLeaseInputs> {
     let weights_host_bytes = file_weights_bytes.saturating_sub(expert_bytes_total);
     let fp = footprint_from_parts(model_id, weights_host_bytes, model_context_window, false)?;
@@ -3336,9 +3412,10 @@ fn moe_host_cache_lease_inputs(
         // expert-cache lease can never be derived as if that RAM were free.
         compute_buffer_bytes: fp
             .prefill_compute_reserve(served_window, lanes)
-            .saturating_add(
-                (crate::inference::lane_args::CACHE_RAM_MIB as u64) * 1024 * 1024,
-            ),
+            // The DERIVED prompt cache of the current serve — the same number the
+            // lane's --cache-ram carries (restore-economy 1.b), never a constant
+            // the lease has to work around.
+            .saturating_add((prompt_cache_mib as u64) * 1024 * 1024),
         os_floor_bytes: host_os_floor_bytes(physical_bytes),
         commit_charge_bytes,
     })
@@ -3905,7 +3982,7 @@ mod tests {
         let experts = 640 * GB;
         let physical = 63 * GB;
         let inputs =
-            moe_host_cache_lease_inputs("k3", file, experts, 262_144, 4096, 2, physical, None)
+            moe_host_cache_lease_inputs("k3", file, experts, 262_144, 4096, 2, physical, None, 4096)
                 .expect("host share is real");
         assert_eq!(
             inputs.weights_host_bytes,
@@ -3932,7 +4009,7 @@ mod tests {
         // lease saturates to zero and the cache is permanently off. The subtraction
         // is load-bearing, not cosmetic.
         let blind =
-            moe_host_cache_lease_inputs("k3", file, 0, 262_144, 4096, 2, physical, None).unwrap();
+            moe_host_cache_lease_inputs("k3", file, 0, 262_144, 4096, 2, physical, None, 4096).unwrap();
         assert_eq!(
             crate::capacity::host_cache_lease::host_cache_lease_bytes(&blind),
             0,
@@ -3941,7 +4018,7 @@ mod tests {
 
         // Degenerate all-expert read → no honest host footprint → publish nothing.
         assert!(
-            moe_host_cache_lease_inputs("k3", file, file, 262_144, 4096, 2, physical, None)
+            moe_host_cache_lease_inputs("k3", file, file, 262_144, 4096, 2, physical, None, 4096)
                 .is_none()
         );
     }

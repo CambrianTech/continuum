@@ -478,6 +478,14 @@ const THINKING_SMOKE_BUDGET: u64 = 768;
 pub struct ServingTarget {
     /// The chosen base model — the grouped model info, resolved once.
     pub model: Model,
+    /// The host-RAM prompt cache (`--cache-ram`, MiB) DERIVED for this serve —
+    /// per-citizen measured demand × the model's own kv/token, clamped by what
+    /// the host affords after the resident working set (restore-economy 1.b).
+    /// Computed ONCE at target construction; the governor's host-cache lease
+    /// reads the SAME number, so the expert cache can never be sized as if
+    /// this RAM were free. Single-purpose lanes (eval, vision sidecar) pass
+    /// the declared cold-start prior.
+    pub host_prompt_cache_mib: u32,
     /// The host-fit served window the planner computed for this host — the
     /// PER-LANE window. Sized to fit the working set (tool schemas + framing +
     /// room burst + recalled memory + completion reserve) within the budget,
@@ -2797,6 +2805,7 @@ impl LlamaServerControl for LlamaServerProcess {
             port,
             lanes,
             total_ctx,
+            target.host_prompt_cache_mib,
         )
         .with_options(&crate::inference::lane_args::LaneOptions {
             kv_cache_type: kv_cache_type.as_deref(),
@@ -3664,6 +3673,7 @@ mod tests {
     fn target(id: &str) -> ServingTarget {
         use crate::model_registry::types::{Arch, MultiPartyChatStrategy};
         ServingTarget {
+            host_prompt_cache_mib: crate::inference::lane_args::CACHE_RAM_MIB,
             model: Model {
                 weights_bytes: None,
                 mmproj_bytes: None,
