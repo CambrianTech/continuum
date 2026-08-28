@@ -977,6 +977,66 @@ fn classify_grade_for_close(grade: Option<&serde_json::Value>) -> CardCloseDecis
     CardCloseDecision::Close
 }
 
+
+/// Fire the round's next card the MOMENT a run ends without settling its own.
+///
+/// The settle edge (`benchmark_grade`'s follow-on) only fires on a card-state
+/// change, so an honest non-settling outcome — no diff, env absent, a cached env
+/// that would not re-point — left the round motionless until the 5-minute
+/// becalmed watchdog happened to notice. That is advancement by TIMEOUT; the
+/// fact is known right here, so act on it here.
+///
+/// The just-finished card is excluded by the decision itself
+/// (`next_unworked_excluding`), which is what keeps this from re-firing the card
+/// that just failed in a tight loop. Best-effort by design: no live citizen
+/// simply means the watchdog picks it up on its next pass, exactly as before.
+async fn advance_round_after_non_settling(run_id: &str) {
+    let Some(card) = run_id
+        .strip_prefix("claim-")
+        .and_then(|s| Uuid::parse_str(s).ok())
+    else {
+        return; // not a claim-dispatched run — it owns no card to advance from
+    };
+    let Some(next) = crate::cognition::bench_round::next_unworked_excluding(card) else {
+        return; // round finished, or every remaining card is already in flight
+    };
+    let Some(reg) = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+    else {
+        return;
+    };
+    let Some(airc) = reg
+        .get(next.assignee)
+        .or_else(|| reg.any_live_citizen())
+        .map(|rt| rt.airc().clone())
+    else {
+        crate::probe!(
+            class = "bench.round.advance_blocked",
+            card_id = %next.card,
+            "the next card is due after a non-settling run, but no live citizen can \
+             carry the dispatch — the becalmed watchdog remains the backstop"
+        );
+        return;
+    };
+    crate::probe!(
+        class = "bench.round.advanced",
+        finished = %card,
+        next_card = %next.card,
+        assignee = %next.assignee,
+        "a run ended WITHOUT settling its card — firing the round's next card now \
+         instead of waiting out the becalmed watchdog"
+    );
+    crate::modules::work::dispatch_staged_swe_solve(
+        &Default::default(),
+        &airc,
+        crate::modules::work::StagedSolveDispatch {
+            claimer: crate::identity::PeerId::from_uuid(next.assignee),
+            card: airc_work::WorkCardId::from_uuid(next.card),
+            room: airc_core::RoomId::from_u128(next.run_room.as_u128()),
+        },
+    )
+    .await;
+}
+
 /// The A3 terminal close: a claim-dispatched run (`run_id == claim-<card uuid>`)
 /// whose final attempt produced a REAL verdict closes its card, authored through
 /// the run's own persona (subscribed to the run room by dispatch). Non-claim runs
@@ -1007,6 +1067,7 @@ async fn close_claim_card_if_graded(run_id: &str) {
             reason = "no_patch",
             "she produced no diff — card stays open for a retake; not an env absence"
         );
+        advance_round_after_non_settling(run_id).await;
         return;
     }
     if cache_repoint_failed {
@@ -1019,6 +1080,7 @@ async fn close_claim_card_if_graded(run_id: &str) {
              a sibling grader on a pristine clone may already have scored it). No \
              parking brake: this run simply does not close the card"
         );
+        advance_round_after_non_settling(run_id).await;
         return;
     }
     if !verdict_is_real && !env_absent {
@@ -1028,6 +1090,7 @@ async fn close_claim_card_if_graded(run_id: &str) {
             "no verdict on disk at all (infra died before grading) — this run does \
              not close the card, so a resume re-fires it (the owed retake)"
         );
+        advance_round_after_non_settling(run_id).await;
         return;
     }
     if env_absent {
@@ -1059,6 +1122,7 @@ async fn close_claim_card_if_graded(run_id: &str) {
              fires itself on the first boot whose env pre-warm succeeds (if the \
              card is still open — a lapse sweeper may already have closed it)"
         );
+        advance_round_after_non_settling(run_id).await;
         return;
     }
     // Author through the run's persona (her runtime is subscribed to the run
