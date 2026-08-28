@@ -33,9 +33,22 @@
 //!   measured solve means the core is not idle. The holder's OWN background
 //!   traffic passes (`caller == holder`).
 //!
+//! ## Causal, not polled (CBAR shape)
+//!
+//! The hold is a `watch` channel — the canonical substrate snapshot shape
+//! (CONCURRENCY-STYLE-GUIDE). Acquire/release are EVENTS; a deferred waiter
+//! awaits `changed()` and can never miss a transition (watch keeps the latest
+//! value), so there is no re-check tick, no poll, nothing time-based on the
+//! happy path. `subscribe()` is public so other components can REACT to the
+//! hold causally (a dream scheduler can skip assembling a prompt it would only
+//! park on) instead of discovering it at the adapter door. Serial exists in
+//! exactly one place — admission to the one physical GPU slot — because the
+//! device is serial; every mind and every deferred task stays concurrent and
+//! holds nothing while it waits.
+//!
 //! ## Bounded, never a silent park
 //!
-//! Deferral waits on a notify with a hard ceiling. A leaked lease (process
+//! Deferral has a hard ceiling. A leaked lease (process
 //! killed mid-drop, a bug) must not park dreaming forever — at the ceiling the
 //! waiter PROCEEDS and says so loudly (`inference.hold.defer_ceiling`), which
 //! is a lease-leak detector, not a policy.
@@ -47,8 +60,10 @@
 //! during a hold: ZERO Background-class rows is the pass condition.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 use std::time::Duration;
+
+use tokio::sync::watch;
 
 use uuid::Uuid;
 
@@ -59,10 +74,6 @@ use super::slots::SlotClass;
 /// behind real work while still unsticking a leak within one operator shift.
 /// A refusal-to-hang, not a tuning knob.
 pub const DEFER_CEILING: Duration = Duration::from_secs(4 * 60 * 60);
-
-/// Re-check cadence while deferred. Wakeups are notify-driven (release wakes
-/// waiters instantly); this tick only bounds how stale a missed notify can be.
-const DEFER_TICK: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HoldInfo {
@@ -79,16 +90,14 @@ pub struct HoldInfo {
 /// each other through a shared singleton (that race was observed immediately —
 /// the first parallel run of this module's own tests).
 pub struct HoldCell {
-    state: Mutex<Option<HoldInfo>>,
-    notify: tokio::sync::Notify,
+    tx: watch::Sender<Option<HoldInfo>>,
     generations: AtomicU64,
 }
 
 impl HoldCell {
     pub fn new() -> Self {
         Self {
-            state: Mutex::new(None),
-            notify: tokio::sync::Notify::new(),
+            tx: watch::channel(None).0,
             generations: AtomicU64::new(0),
         }
     }
@@ -114,23 +123,30 @@ pub struct HoldLease {
 
 impl Drop for HoldLease {
     fn drop(&mut self) {
-        let c = self.cell;
-        let mut guard = c.state.lock().unwrap_or_else(|p| p.into_inner());
+        let mut released: Option<HoldInfo> = None;
         // Only clear OUR hold. A newer acquire (last-wins) must survive a stale
         // lease's late drop — without the generation check, a leaked old lease
         // dropping late would silently release the live measurement's hold.
-        if guard.as_ref().is_some_and(|h| h.generation == self.generation) {
-            let released = guard.take();
-            drop(guard);
-            if let Some(h) = released {
-                crate::probe!(
-                    class = "inference.hold.released",
-                    holder = %h.holder,
-                    run_id = %h.run_id,
-                    "measured-work hold released — deferred background cognition wakes now"
-                );
+        // `send_if_modified` makes the release an EVENT exactly when (and only
+        // when) state actually changed: watchers wake causally, never spuriously.
+        self.cell.tx.send_if_modified(|state| {
+            if state
+                .as_ref()
+                .is_some_and(|h| h.generation == self.generation)
+            {
+                released = state.take();
+                true
+            } else {
+                false
             }
-            c.notify.notify_waiters();
+        });
+        if let Some(h) = released {
+            crate::probe!(
+                class = "inference.hold.released",
+                holder = %h.holder,
+                run_id = %h.run_id,
+                "measured-work hold released — deferred background cognition wakes now"
+            );
         }
     }
 }
@@ -146,8 +162,7 @@ pub fn acquire(holder: Uuid, run_id: &str) -> HoldLease {
 /// Injected-core acquire — tests pass their own leaked cell.
 pub fn acquire_in(c: &'static HoldCell, holder: Uuid, run_id: &str) -> HoldLease {
     let generation = c.generations.fetch_add(1, Ordering::Relaxed) + 1;
-    let mut guard = c.state.lock().unwrap_or_else(|p| p.into_inner());
-    if let Some(prev) = guard.as_ref() {
+    if let Some(prev) = c.tx.borrow().as_ref() {
         crate::probe!(
             class = "inference.hold.replaced",
             prev_holder = %prev.holder,
@@ -158,19 +173,21 @@ pub fn acquire_in(c: &'static HoldCell, holder: Uuid, run_id: &str) -> HoldLease
              serial; if both runs are real this is the bug to chase"
         );
     }
-    *guard = Some(HoldInfo {
+    c.tx.send_replace(Some(HoldInfo {
         holder,
         run_id: run_id.to_string(),
         generation,
-    });
-    drop(guard);
+    }));
     crate::probe!(
         class = "inference.hold.acquired",
         holder = %holder,
         run_id = %run_id,
         "measured-work hold acquired — Background/Probe generations defer until release"
     );
-    HoldLease { generation, cell: c }
+    HoldLease {
+        generation,
+        cell: c,
+    }
 }
 
 /// The live hold, if any.
@@ -179,7 +196,15 @@ pub fn current() -> Option<HoldInfo> {
 }
 
 fn current_in(c: &HoldCell) -> Option<HoldInfo> {
-    c.state.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    c.tx.borrow().clone()
+}
+
+/// Subscribe to hold transitions — the CBAR affordance. A component that would
+/// only park at the adapter door can instead REACT: skip assembling work while
+/// held, resume on the release event. Watch semantics: the receiver always
+/// reads the latest state, so a transition can never be missed.
+pub fn subscribe() -> watch::Receiver<Option<HoldInfo>> {
+    cell().tx.subscribe()
 }
 
 /// The PURE decision — table-tested, no clock, no locks. `true` = this
@@ -249,6 +274,11 @@ async fn defer_in(
         held_by = %held_by,
         "background generation deferring — measured work holds the core"
     );
+    // PURE EVENT WAIT — no tick, no poll. `changed()` wakes exactly on state
+    // transitions and can never miss one (watch keeps the latest value); the
+    // predicate re-check after each wake handles a hold that transitioned to a
+    // DIFFERENT holder rather than to None. The only clock is the ceiling.
+    let mut rx = c.tx.subscribe();
     loop {
         if !should_defer(class, current_in(c).as_ref(), caller) {
             crate::probe!(
@@ -260,7 +290,8 @@ async fn defer_in(
             );
             return DeferOutcome::Resumed;
         }
-        if started.elapsed() >= ceiling {
+        let remaining = ceiling.saturating_sub(started.elapsed());
+        if remaining.is_zero() || tokio::time::timeout(remaining, rx.changed()).await.is_err() {
             crate::probe!(
                 class = "inference.hold.defer_ceiling",
                 traffic = %class.as_str(),
@@ -271,8 +302,6 @@ async fn defer_in(
             );
             return DeferOutcome::CeilingProceed;
         }
-        let remaining = ceiling.saturating_sub(started.elapsed()).min(DEFER_TICK);
-        let _ = tokio::time::timeout(remaining, c.notify.notified()).await;
     }
 }
 
@@ -301,7 +330,10 @@ mod tests {
         let h = hold_of(holder);
 
         for class in [SlotClass::Turn, SlotClass::Sidecar] {
-            assert!(!should_defer(class, Some(&h), Some(other)), "{class:?} never waits");
+            assert!(
+                !should_defer(class, Some(&h), Some(other)),
+                "{class:?} never waits"
+            );
             assert!(!should_defer(class, None, Some(other)));
         }
         for class in [SlotClass::Background, SlotClass::Probe] {
