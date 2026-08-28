@@ -637,6 +637,60 @@ pub fn models() -> Vec<Model> {
             serving: ModelServingPrefs {
                 mmproj_on_main_lane: false,
                 kv_shiftable: Some(false),
+                ..ModelServingPrefs::default()
+            },
+            ..ModelSpec::default()
+        }),
+        // Qwen3.8-Flash-Next — the M64 disk-resident-n-gram drop (qwen4exp arch,
+        // GDN+QSA hybrid, 512-expert MoE, 6B active). EXCLUSIVE/EXPERIMENTAL brain,
+        // NOT the citizen lane: the pre-registered comparison protocol's depth bar
+        // failed decisively (docs/planning/FLASHNEXT-VS-ORNITH-COMPARISON-PROTOCOL.md
+        // rule 2 — measured 2026-08-28 on the union engine 920eef087, idle box:
+        // decode 16.6-17.5 t/s @31k depth vs Ornith 40.1-40.3; prefill 160 vs 510).
+        // Serving REQUIRES the prefs below, each measured the hard way the same night:
+        // the 35.8 GB `per_layer_token_embd` n-gram table (shard 00002, ONE tensor)
+        // host-pinned or Metal OOMs instantly; warmup skipped or load faults the
+        // whole table into RAM; fit off (its heuristics count the pinned table);
+        // ubatch 512 verified. Re-measure when the expert-pager arc deepens the
+        // hierarchy — the verdict is the hierarchy's, not the model's
+        // [[everything-pages-the-grid-is-one-more-tier]].
+        model(ModelSpec {
+            id: "AtomicChat/Qwen3.8-Flash-Next-GGUF",
+            name: "Qwen3.8-Flash-Next (experimental: disk-resident n-gram MoE)",
+            provider: "llama-server",
+            // ChatML family (Qwen lineage) for template/stop semantics; the true
+            // qwen4exp arch lives in the GGUF and the engine, not this hint.
+            arch: Arch::Qwen35,
+            // VERIFIED serving geometry 2026-08-28 (c=32768, zero OOMs). The model
+            // advertises more; raise only with a measured load at the larger window.
+            context_window: 32_768,
+            max_output_tokens: 8_192,
+            // Short-prompt decode, warm, idle box, union engine (23.2/23.8 t/s runs).
+            // Depth is worse (16.6-17.5 @31k) — see the protocol doc before quoting.
+            tokens_per_second: 23.5,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::Streaming,
+                // ToolUse deliberately ABSENT: the tool-shape parse receipt
+                // (protocol Phase-0 §2.2) has not run. Claims are receipts.
+            ],
+            gguf_hint: Some("huggingface.co/AtomicChat/Qwen3.8-Flash-Next-GGUF"),
+            gguf_local_path: Some(
+                "~/.continuum/models/qwen38-flash-next/Qwen3.8-Flash-Next-AD-3.84bpw-IQ4_XS-M64/Qwen3.8-Flash-Next-AD-3.84bpw-IQ4_XS-M64-00001-of-00028.gguf",
+            ),
+            hf_source: Some("AtomicChat/Qwen3.8-Flash-Next"),
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>"],
+            serving: ModelServingPrefs {
+                mmproj_on_main_lane: false,
+                // Hybrid GDN/QSA attention — shift capability unverified on this arch.
+                kv_shiftable: None,
+                host_pinned_tensors: &["per_layer_token_embd.*"],
+                fit_off: true,
+                no_warmup: true,
+                max_ubatch: Some(512),
             },
             ..ModelSpec::default()
         }),

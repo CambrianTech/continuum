@@ -366,6 +366,32 @@ pub struct ModelServingPrefs {
     /// context"): prompt shaping must then treat the prefix as EXTEND-ONLY,
     /// because any interior mutation re-prefills everything after it.
     pub kv_shiftable: Option<bool>,
+    /// Tensor-name patterns pinned to HOST memory (`--override-tensor "<pat>=CPU"`),
+    /// for models whose lookup tables are DESIGNED disk/host-resident. Embedding
+    /// gathers are memory reads, not matmul — inference stays GPU-only while the
+    /// table pages from SSD via mmap. (Flash-Next: `per_layer_token_embd`, a
+    /// single 35.8 GB n-gram table that CANNOT be Metal-resident beside 43 GB of
+    /// compute weights on a 64 GB machine — measured 2026-08-28, zero OOMs with
+    /// the pin vs instant kIOGPUCommandBufferCallbackErrorOutOfMemory without.)
+    /// Serde-skipped: consumed in-process at spawn from the catalog row; the
+    /// wire echo of prefs never drives a spawn.
+    #[serde(skip)]
+    pub host_pinned_tensors: &'static [&'static str],
+    /// Disable llama-server's `-fit` auto-sizing (default false = fit runs).
+    /// Models with host-pinned tensors opt OUT: fit's device-memory heuristics
+    /// count the pinned table as loadable and mis-size everything downstream.
+    #[serde(default)]
+    pub fit_off: bool,
+    /// Skip the load-time warmup pass (default false = warmup runs). True for
+    /// models whose warmup would fault a designed-cold tensor set fully into
+    /// RAM (Flash-Next: warmup walks the 35.8 GB table the pin exists to keep cold).
+    #[serde(default)]
+    pub no_warmup: bool,
+    /// Per-model ceiling on `--ubatch-size` (`None` = the lane default stands).
+    /// The lane default is sized for the resident coder lane's compute buffer;
+    /// a bigger-geometry model can need less (Flash-Next verified at 512).
+    #[serde(default)]
+    pub max_ubatch: Option<u32>,
 }
 
 impl Default for ModelServingPrefs {
@@ -373,6 +399,10 @@ impl Default for ModelServingPrefs {
         Self {
             mmproj_on_main_lane: false,
             kv_shiftable: None,
+            host_pinned_tensors: &[],
+            fit_off: false,
+            no_warmup: false,
+            max_ubatch: None,
         }
     }
 }

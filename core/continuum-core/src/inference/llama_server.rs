@@ -2826,6 +2826,10 @@ impl LlamaServerControl for LlamaServerProcess {
             chat_template: chat_template.as_deref(),
             loras: &lora_paths,
             expert_ot: expert_ot.as_deref(),
+            host_pinned_tensors: target.model.serving.host_pinned_tensors,
+            fit_off: target.model.serving.fit_off,
+            no_warmup: target.model.serving.no_warmup,
+            max_ubatch: target.model.serving.max_ubatch,
         });
         for a in &invocation.args {
             cmd.arg(a);

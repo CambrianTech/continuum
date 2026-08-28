@@ -352,6 +352,18 @@ pub struct LaneOptions<'a> {
     /// K3 expert paging (#278): `-ot` tensor placement for COLD layers, from the
     /// residency planner. `None` / all-hot → no flag (llama-server rejects an empty one).
     pub expert_ot: Option<&'a str>,
+    /// Catalog-declared host-pinned tensors (`ModelServingPrefs::host_pinned_tensors`)
+    /// — designed disk/host-resident lookup tables (Flash-Next's n-gram table).
+    /// Merged with `expert_ot` into ONE `--override-tensor` value: repeated flags
+    /// risk the same silent last-wins that collapsed `--lora` stacks above.
+    pub host_pinned_tensors: &'a [&'static str],
+    /// `-fit off` (`ModelServingPrefs::fit_off`) — default false = fit auto-sizing runs.
+    pub fit_off: bool,
+    /// `--no-warmup` (`ModelServingPrefs::no_warmup`) — default false = warmup runs.
+    pub no_warmup: bool,
+    /// Per-model `--ubatch-size` ceiling (`ModelServingPrefs::max_ubatch`) — only ever
+    /// LOWERS the base invocation's value, never raises it past the lane-sized default.
+    pub max_ubatch: Option<u32>,
 }
 
 impl LaneInvocation {
@@ -476,9 +488,34 @@ impl LaneInvocation {
         // to CPU while hot layers stay GPU-resident. Experts are stacked (one
         // blk.N.ffn_*_exps per layer), so `-ot` — which places WHOLE tensors — pages at
         // LAYER granularity. A change to the hot set is honored on the next relaunch (the
-        // pager decides when).
+        // pager decides when). Catalog host-pins (designed disk-resident lookup tables)
+        // join the SAME value — one flag, because repeated `--override-tensor` risks the
+        // silent last-wins that collapsed `--lora` stacks.
+        let mut ot_parts: Vec<String> = Vec::new();
         if let Some(ot) = opts.expert_ot {
-            pair(&mut self.args, "--override-tensor", ot);
+            ot_parts.push(ot.to_string());
+        }
+        for pat in opts.host_pinned_tensors {
+            ot_parts.push(format!("{pat}=CPU"));
+        }
+        if !ot_parts.is_empty() {
+            pair(&mut self.args, "--override-tensor", ot_parts.join(","));
+        }
+        // Per-model serving prefs (catalog-declared, measured — see ModelServingPrefs).
+        if opts.fit_off {
+            pair(&mut self.args, "-fit", "off");
+        }
+        if opts.no_warmup {
+            self.args.push("--no-warmup".to_string());
+        }
+        if let Some(cap) = opts.max_ubatch {
+            if let Some(i) = self.args.iter().position(|a| a == "--ubatch-size") {
+                if let Some(v) = self.args.get(i + 1).and_then(|s| s.parse::<u32>().ok()) {
+                    if cap < v {
+                        self.args[i + 1] = cap.to_string();
+                    }
+                }
+            }
         }
         if let Some(ov) = opts.resident_override {
             self.envs
@@ -695,5 +732,39 @@ mod tests {
         let i = inv(1, 4096).with_options(&LaneOptions { kv_cache_type: Some("q8_0"), ..Default::default() });
         assert_eq!(i.value_of("--cache-type-k"), Some("q8_0"));
         assert_eq!(i.value_of("--cache-type-v"), Some("q8_0"));
+    }
+
+    // what this catches: the Flash-Next serving contract (measured 2026-08-28, the
+    // first local serve). Three failure shapes, each hit live that night: (1) host
+    // pins emitted as a SECOND --override-tensor beside the expert pager's — llama's
+    // repeated-flag parsing risks last-wins (the --lora collapse shape), so both
+    // MUST merge into one comma-joined value; (2) fit/warmup flags silently absent →
+    // instant Metal OOM (fit counts the 35.8 GB pinned table as loadable) / a 36 GB
+    // warmup fault-in; (3) max_ubatch RAISING the lane default instead of only
+    // capping it (the default is sized to the resident lane's compute headroom).
+    #[test]
+    fn host_pins_merge_into_one_override_and_prefs_flags_land() {
+        let i = inv(1, 4096).with_options(&LaneOptions {
+            expert_ot: Some(r"blk\.(3|7)\.ffn.*_exps=CPU"),
+            host_pinned_tensors: &["per_layer_token_embd.*"],
+            fit_off: true,
+            no_warmup: true,
+            max_ubatch: Some(512),
+            ..Default::default()
+        });
+        // ONE --override-tensor, comma-joined, pager first then pins.
+        assert_eq!(i.args.iter().filter(|a| *a == "--override-tensor").count(), 1);
+        assert_eq!(
+            i.value_of("--override-tensor"),
+            Some(r"blk\.(3|7)\.ffn.*_exps=CPU,per_layer_token_embd.*=CPU")
+        );
+        assert_eq!(i.value_of("-fit"), Some("off"));
+        assert!(i.args.iter().any(|a| a == "--no-warmup"));
+        assert_eq!(i.value_of("--ubatch-size"), Some("512"));
+
+        // The cap only lowers: a ceiling above the lane default leaves it alone.
+        let j = inv(1, 4096)
+            .with_options(&LaneOptions { max_ubatch: Some(1 << 20), ..Default::default() });
+        assert_eq!(j.value_of("--ubatch-size"), Some("2048"));
     }
 }
