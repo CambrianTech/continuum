@@ -1328,6 +1328,17 @@ impl AgentSolve {
         //     `lane.served_ctx` carries it into her fork with no further plumbing.
         //     Bounded loudly: a planner that keeps the layout is a legitimate
         //     outcome, so `Unchanged` proceeds — it can never park the solve.
+        // The measured-work hold (restore-economy 1.a): the quiesce lease below
+        // pauses the other citizens' SERVICE LOOPS, but background cognition
+        // (dreams, module inference) never runs in those loops — measured
+        // 2026-08-28, dream-belief-review took 52 of 109 generations during a
+        // held solve and evicted the warm KV each time (~32.9s re-prefill vs
+        // ~0.1s restore). The hold is consulted at the adapter seam, where every
+        // generation crosses; RAII, so any exit path releases it.
+        let _measured_hold = crate::inference::measured_hold::acquire(
+            persona_uuid,
+            run_id.as_deref().unwrap_or("agent-solve"),
+        );
         let _quiesce_lease =
             crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global().map(
                 |reg| {

@@ -1978,6 +1978,27 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             // measured defect: sidecar gate calls pinned the turn's own slot and
             // cut its ~30k tail to their common head — reuse broke even solo.
             let class = crate::inference::slots::class_for(request.purpose.as_deref());
+            // MEASURED WORK HOLDS THE CORE (restore-economy Phase 1.a). Deferral
+            // sits HERE — after classification, BEFORE the concurrency permit
+            // below — so a parked Background/Probe request holds NOTHING while it
+            // waits: no lock, no decode permit, just its own task on a notify.
+            // Parking after the permit would be priority inversion (a sleeping
+            // dream holding the only decode slot while a real turn queues behind
+            // it — the exact too-serial hazard Joel flagged). Turn/Sidecar never
+            // enter the await at all, and release wakes ALL waiters (broadcast,
+            // not FIFO), so deferred work re-races admission rather than
+            // draining serially. Measured cause: dream-belief-review took 52 of
+            // 109 generations DURING a held solve, ~32.9s re-prefill per clobber.
+            let hold_caller = request
+                .persona_id
+                .as_deref()
+                .and_then(|p| uuid::Uuid::parse_str(p).ok());
+            crate::inference::measured_hold::defer_while_held(
+                class,
+                hold_caller,
+                request.purpose.as_deref(),
+            )
+            .await;
             let placement: Option<u32> = match class {
                 crate::inference::slots::SlotClass::Turn => {
                     // The typed activity key: (persona, room) as UUID structs — never
