@@ -174,6 +174,26 @@ fn truncate_tool_output(s: String, max: usize, spill: Option<&spill::SpillRef>) 
         return truncate_on_boundary(s, max);
     }
     let dropped = tail_start - head_end;
+    // MAKE THE FLOOD OBSERVABLE. Without this probe there is no way to answer
+    // "does her output actually flood?" — and on 2026-08-28 that question blocked
+    // a real decision: `tool/output` (the verb that reads the spilled MIDDLE) is
+    // not in the native surface, and making it native costs ~1200 tokens on EVERY
+    // prompt forever against a ceiling guard that says "do not keep bumping this".
+    // The honest answer was "no spill has ever been recorded on this box" — the
+    // demand was UNMEASURED, not proven absent. She already receives head+tail;
+    // the middle is what a spill adds. This probe is the evidence that decides it:
+    // if floods are frequent in solves the verb earns its slot; if they never
+    // happen, the surface stays lean.
+    if let Some(r) = spill {
+        crate::probe!(
+            class = "tool.output.spilled",
+            handle = %r.handle,
+            dropped_chars = %dropped,
+            "a tool result flooded and was spilled to disk — its MIDDLE is reachable \
+             only through `tool/output`, which is NOT in the native surface today \
+             (she holds the handle, not the verb)"
+        );
+    }
     let recovery = match spill {
         // The whole result is recoverable — point her at the handle, and at the
         // failure-hunting path specifically (grep for the error), per Joel: the

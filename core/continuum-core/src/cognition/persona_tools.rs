@@ -711,6 +711,7 @@ pub struct ToolSurfaceReport {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     // what this catches: the yield verb must be REACHABLE — offered on the same surface
