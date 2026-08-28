@@ -3312,9 +3312,22 @@ fn derived_prompt_cache_mib(
     let Some(fp) = fp else {
         return crate::inference::lane_args::CACHE_RAM_MIB;
     };
+    // LIVE citizens only. The WorkingSetRegistry persists every persona that
+    // EVER recorded demand — measured 2026-08-28, first live fire: citizens=332
+    // (weeks of rotated identities), a fictional want that only the
+    // affordability clamp kept sane, and which double-booked host RAM in the
+    // lease (16.8 GB reserved where the four RESIDENT minds honestly need ~9).
+    // "Live" means resident NOW: intersect with the runtime roster — the same
+    // liveness truth every other consumer uses, never a recency threshold we
+    // would have to invent (Law 1).
+    let resident: std::collections::HashSet<uuid::Uuid> =
+        crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+            .map(|r| r.live_personas().into_iter().collect())
+            .unwrap_or_default();
     let demands: Vec<u32> = crate::cognition::working_set::global()
         .all()
         .into_iter()
+        .filter(|(id, _)| resident.contains(id))
         .map(|(_, d)| d.peak_tokens)
         .collect();
     if demands.is_empty() || physical_bytes == 0 {
@@ -3328,14 +3341,21 @@ fn derived_prompt_cache_mib(
         fp.kv_per_token,
         afford,
     );
-    crate::probe!(
-        class = "serving.prompt_cache.derived",
-        citizens = demands.len() as u64,
-        derived_mib = derived as u64,
-        afford_mib = (afford / (1024 * 1024)) as u64,
-        "host prompt cache sized from per-citizen measured demand — the lane and \
-         the host-cache lease read this SAME number"
-    );
+    // Probe ON CHANGE only: this fn runs inside the serve reconciler's pass
+    // (measured post-deploy: one row every ~5-15s, saying the same number),
+    // and a probe that repeats an unchanged value is noise wearing telemetry's
+    // coat. The atomic carries the last spoken value; first fire always speaks.
+    static LAST_SPOKEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(u32::MAX);
+    if LAST_SPOKEN.swap(derived, std::sync::atomic::Ordering::Relaxed) != derived {
+        crate::probe!(
+            class = "serving.prompt_cache.derived",
+            citizens = demands.len() as u64,
+            derived_mib = derived as u64,
+            afford_mib = (afford / (1024 * 1024)) as u64,
+            "host prompt cache sized from per-citizen measured demand — the lane and \
+             the host-cache lease read this SAME number"
+        );
+    }
     derived
 }
 
