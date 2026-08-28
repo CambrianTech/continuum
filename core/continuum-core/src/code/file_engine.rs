@@ -86,7 +86,111 @@ impl From<std::io::Error> for FileEngineError {
     }
 }
 
+/// Directories never worth walking to suggest a path — they are enormous, they
+/// are never the file she meant, and on SOMEONE ELSE'S COMPUTER walking them is
+/// the difference between a helpful error and a stalled laptop.
+const SUGGEST_SKIP_DIRS: &[&str] = &[
+    ".git", "node_modules", "target", "__pycache__", ".venv", "venv", "build",
+    "dist", ".tox", ".mypy_cache", ".pytest_cache", ".cargo", "site-packages",
+];
+
+/// Hard ceiling on entries visited while looking for a near-miss. A suggestion
+/// is a courtesy; it must never become the expensive part of an error path.
+const SUGGEST_MAX_ENTRIES: usize = 20_000;
+const SUGGEST_MAX_DEPTH: usize = 12;
+const SUGGEST_MAX_RESULTS: usize = 3;
+
+/// Bounded hunt for what she probably MEANT, ranked best-first.
+///
+/// Why this exists (glass-boxed 2026-08-28, the five no-candidate-patch solve
+/// runs): a citizen spent 30 acts on django-15252, found the correct source file
+/// on her FIRST act, and still produced no diff — because 3 of her 8 reads were
+/// paths that do not exist (`django/db/backends/creation.py` missing the `base/`
+/// segment, `django/migration/commands/migrate.py` for `migrations`). Each miss
+/// cost a full act out of a 30-act budget and returned nothing but
+/// "File not found", so nothing pushed her back on track and she ran out of
+/// budget before writing. The substrate already does exactly this for mistyped
+/// COMMAND names ("did you mean"); a mistyped PATH deserves the same courtesy,
+/// and it is recoverable from the tree she is standing in.
+///
+/// Ranking mirrors how a person recovers: same file name somewhere else in the
+/// tree first (the `base/` case), then a near-miss on the name itself (the
+/// `migration`/`migrations` case).
+fn suggest_nearest_paths(root: &Path, wanted: &str) -> Vec<String> {
+    let wanted_name = Path::new(wanted)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if wanted_name.is_empty() {
+        return Vec::new();
+    }
+    let mut exact_name: Vec<String> = Vec::new();
+    let mut near_name: Vec<String> = Vec::new();
+    let mut visited = 0usize;
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
+    while let Some((dir, depth)) = stack.pop() {
+        if depth > SUGGEST_MAX_DEPTH || visited >= SUGGEST_MAX_ENTRIES {
+            break;
+        }
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            visited += 1;
+            if visited >= SUGGEST_MAX_ENTRIES {
+                break;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            if is_dir {
+                if !name.starts_with('.') && !SUGGEST_SKIP_DIRS.contains(&name.as_str()) {
+                    stack.push((entry.path(), depth + 1));
+                }
+                continue;
+            }
+            let lower = name.to_lowercase();
+            let rel = entry
+                .path()
+                .strip_prefix(root)
+                .map(|r| r.to_string_lossy().to_string())
+                .unwrap_or(name.clone());
+            if lower == wanted_name {
+                if exact_name.len() < SUGGEST_MAX_RESULTS {
+                    exact_name.push(rel);
+                }
+            } else if near_name.len() < SUGGEST_MAX_RESULTS
+                && (lower.starts_with(&wanted_name) || wanted_name.starts_with(&lower))
+            {
+                near_name.push(rel);
+            }
+        }
+        if exact_name.len() >= SUGGEST_MAX_RESULTS {
+            break;
+        }
+    }
+    exact_name.extend(near_name);
+    exact_name.truncate(SUGGEST_MAX_RESULTS);
+    exact_name
+}
+
 impl FileEngine {
+    /// A NotFound that tries to be useful — the same courtesy the executor
+    /// already extends to a mistyped COMMAND name ("did you mean"), applied to a
+    /// mistyped PATH. One constructor, used by every not-found site, so read,
+    /// edit and write all recover the same way (compression: one decision, one
+    /// place).
+    fn not_found(&self, relative_path: &str) -> FileEngineError {
+        let hits = suggest_nearest_paths(self.security.workspace_root(), relative_path);
+        if hits.is_empty() {
+            return FileEngineError::NotFound(relative_path.to_string());
+        }
+        FileEngineError::NotFound(format!(
+            "{relative_path} — no such file. Did you mean: {}? (searched this \
+             workspace; use file_tree/grep to look further)",
+            hits.join(", ")
+        ))
+    }
+
     /// Create a new FileEngine for a persona.
     pub fn new(persona_id: &str, security: PathSecurity) -> Self {
         let workspace_id = format!("workspace-{}", persona_id);
@@ -121,7 +225,7 @@ impl FileEngine {
         let abs_path = self.security.validate_read(relative_path)?;
 
         if !abs_path.exists() {
-            return Err(FileEngineError::NotFound(relative_path.to_string()));
+            return Err(self.not_found(relative_path));
         }
 
         let content = fs::read_to_string(&abs_path)?;
@@ -255,7 +359,7 @@ impl FileEngine {
         let abs_path = self.security.validate_write(relative_path)?;
 
         if !abs_path.exists() {
-            return Err(FileEngineError::NotFound(relative_path.to_string()));
+            return Err(self.not_found(relative_path));
         }
 
         let old_content = fs::read_to_string(&abs_path)?;
@@ -485,7 +589,7 @@ impl FileEngine {
         let abs_path = self.security.validate_write(relative_path)?;
 
         if !abs_path.exists() {
-            return Err(FileEngineError::NotFound(relative_path.to_string()));
+            return Err(self.not_found(relative_path));
         }
 
         let old_content = fs::read_to_string(&abs_path)?;
@@ -546,7 +650,7 @@ impl FileEngine {
         let abs_path = self.security.validate_read(relative_path)?;
 
         if !abs_path.exists() {
-            return Err(FileEngineError::NotFound(relative_path.to_string()));
+            return Err(self.not_found(relative_path));
         }
 
         let old_content = fs::read_to_string(&abs_path)?;
@@ -2002,6 +2106,62 @@ fn now_millis() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    mod path_recovery {
+        use super::super::suggest_nearest_paths;
+        use std::fs;
+
+        // what this catches: a mistyped path returning a dead end. Glass-boxed
+        // 2026-08-28 on the five no-candidate-patch solve runs — django-15252
+        // burned 30 acts, found the RIGHT file on act 1, and still wrote nothing
+        // because 3 of its 8 reads were paths that do not exist. Both real
+        // misses are pinned here: a missing directory segment
+        // (django/db/backends/creation.py -> .../base/creation.py) and a
+        // singular/plural slip (migration/ -> migrations/). Also pins the
+        // "operate on people's computers" bounds: heavy directories are never
+        // walked, so an error path can never stall someone's machine.
+        #[test]
+        fn a_mistyped_path_gets_pointed_at_the_real_one() {
+            let tmp = std::env::temp_dir().join(format!("fe-suggest-{}", uuid::Uuid::new_v4()));
+            let deep = tmp.join("django/db/backends/base");
+            fs::create_dir_all(&deep).unwrap();
+            fs::write(deep.join("creation.py"), "x").unwrap();
+            let mig = tmp.join("django/core/management/commands");
+            fs::create_dir_all(&mig).unwrap();
+            fs::write(mig.join("migrate.py"), "x").unwrap();
+
+            // The real miss: she dropped the `base/` segment.
+            let hits = suggest_nearest_paths(&tmp, "django/db/backends/creation.py");
+            assert!(
+                hits.iter().any(|h| h.ends_with("base/creation.py")),
+                "same filename elsewhere in the tree must be offered, got {hits:?}"
+            );
+
+            // The other real miss: `migration/` for `migrations/`.
+            let hits = suggest_nearest_paths(&tmp, "django/migration/commands/migrate.py");
+            assert!(
+                hits.iter().any(|h| h.ends_with("commands/migrate.py")),
+                "the correct migrate.py must be offered, got {hits:?}"
+            );
+
+            // A name nothing resembles yields nothing — never noise.
+            assert!(suggest_nearest_paths(&tmp, "totally/unrelated/zzzz.py").is_empty());
+
+            // OPERATE ON PEOPLE'S COMPUTERS: heavy dirs are not walked, so a
+            // file hiding in node_modules/.git is never even considered.
+            let heavy = tmp.join("node_modules/pkg");
+            fs::create_dir_all(&heavy).unwrap();
+            fs::write(heavy.join("recorder.py"), "x").unwrap();
+            let hits = suggest_nearest_paths(&tmp, "django/db/migrations/recorder.py");
+            assert!(
+                !hits.iter().any(|h| h.contains("node_modules")),
+                "node_modules must never be walked for suggestions, got {hits:?}"
+            );
+
+            let _ = fs::remove_dir_all(&tmp);
+        }
+    }
+
+
     use super::*;
     use std::fs;
 
