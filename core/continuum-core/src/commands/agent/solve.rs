@@ -916,6 +916,67 @@ impl ActionCommand for AgentSolve {
     }
 }
 
+/// What a run's OWN grade says should happen to its claim card. One decision,
+/// one place, testable without a disk or a board — the five outcomes were
+/// previously five interleaved booleans computed inline in an async fn with
+/// side effects, which is why the cached-env conflation (#2531) survived
+/// unnoticed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CardCloseDecision {
+    /// She produced no diff. The env was fine; nothing to score.
+    NoPatch,
+    /// The cached env could not be re-pointed at THIS grader's tree. Nothing
+    /// was measured here, but the instance's environment is NOT absent.
+    CacheRepointFailed,
+    /// No grade on disk at all — infra died before grading.
+    NoVerdict,
+    /// The environment is genuinely absent, or the control is broken
+    /// (`gate_ok == false`: the fail-to-pass tests already passed pristine).
+    EnvAbsent,
+    /// A real verdict. This run closes its card.
+    Close,
+}
+
+/// Classify a run's `grade.json` for the terminal-close decision.
+///
+/// Order matters: the two "the env was fine, we just measured nothing" cases
+/// (`NoPatch`, `CacheRepointFailed`) are checked BEFORE the generic
+/// any-error-means-absent rule, because that rule is a catch-all and would
+/// otherwise swallow them — which is exactly the bug #2531 records.
+fn classify_grade_for_close(grade: Option<&serde_json::Value>) -> CardCloseDecision {
+    let Some(g) = grade else {
+        return CardCloseDecision::NoVerdict;
+    };
+    let error = g.get("error").and_then(|e| e.as_str());
+    // "No candidate patch" is NOT an env absence — the env was fine and she
+    // simply produced no diff (measured 2026-08-27: the env label sent these
+    // through the env-retake path with a message promising "fires when the env
+    // heals", which was false and confusing in the log).
+    if error.is_some_and(|e| e.contains("no candidate patch")) {
+        return CardCloseDecision::NoPatch;
+    }
+    // A CACHED-env re-point failure is not an environment absence. The env is
+    // cached per instance and each grader re-points its editable install at ITS
+    // OWN tree (solve → the citizen's dirty workspace; benchmark_grade → a
+    // pristine clone + patch), so a patch that breaks the build backend fails
+    // the solve's re-point while the fresh clone grades fine seconds later —
+    // measured on django-11734, where this path declared an environment absent
+    // that had just run 40/40 pass-to-pass. A cache is an optimization; its
+    // failure must never become a conclusion about the world (#2531).
+    if error.is_some_and(|e| e.contains(crate::cognition::swe_bench::ENV_CACHE_REPOINT_FAILED)) {
+        return CardCloseDecision::CacheRepointFailed;
+    }
+    // A failed GATE is env-class: the fail-to-pass tests already passed on the
+    // pristine tree, so the control is broken and nothing was measured — the
+    // durable layer already refuses such verdicts (record_verdict), and the
+    // card must stay open for the retake the same as any env absence.
+    let gate_failed = g.get("gate_ok").is_some_and(|k| k == false);
+    if gate_failed || g.get("error").is_some_and(|e| !e.is_null()) {
+        return CardCloseDecision::EnvAbsent;
+    }
+    CardCloseDecision::Close
+}
+
 /// The A3 terminal close: a claim-dispatched run (`run_id == claim-<card uuid>`)
 /// whose final attempt produced a REAL verdict closes its card, authored through
 /// the run's own persona (subscribed to the run room by dispatch). Non-claim runs
@@ -934,32 +995,11 @@ async fn close_claim_card_if_graded(run_id: &str) {
     let grade = std::fs::read_to_string(&grade_path)
         .ok()
         .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok()); // disk boundary: reading the grade.json verdict file the grader wrote
-    // A failed GATE is env-class too: the fail-to-pass tests already passed on
-    // the pristine tree, so the control is broken and nothing was measured —
-    // the durable layer already refuses such verdicts (record_verdict), and
-    // the card must stay open for the retake the same as any env absence.
-    let gate_failed = grade
-        .as_ref()
-        .is_some_and(|g| g.get("gate_ok").is_some_and(|k| k == false));
-    // "No candidate patch" is NOT an env absence — the env was fine and she
-    // simply produced no diff (measured 2026-08-27: the env label sent these
-    // through the env-retake path with a message promising "fires when the env
-    // heals", which was false and confusing in the log). Same card-stays-open
-    // outcome, honest reason.
-    let no_patch = grade.as_ref().is_some_and(|g| {
-        g.get("error")
-            .and_then(|e| e.as_str())
-            .is_some_and(|e| e.contains("no candidate patch"))
-    });
-    let env_absent = !no_patch
-        && (gate_failed
-            || grade
-                .as_ref()
-                .is_some_and(|g| g.get("error").is_some_and(|e| !e.is_null())));
-    let verdict_is_real = !env_absent
-        && grade
-            .as_ref()
-            .is_some_and(|g| g.get("error").map_or(true, |e| e.is_null()));
+    let decision = classify_grade_for_close(grade.as_ref());
+    let env_absent = decision == CardCloseDecision::EnvAbsent;
+    let verdict_is_real = decision == CardCloseDecision::Close;
+    let no_patch = decision == CardCloseDecision::NoPatch;
+    let cache_repoint_failed = decision == CardCloseDecision::CacheRepointFailed;
     if no_patch {
         crate::probe!(
             class = "benchmark.card.close_skipped",
@@ -969,12 +1009,24 @@ async fn close_claim_card_if_graded(run_id: &str) {
         );
         return;
     }
+    if cache_repoint_failed {
+        crate::probe!(
+            class = "benchmark.card.close_skipped",
+            run_id = %run_id,
+            reason = "cache_repoint_failed",
+            "the cached env could not be re-pointed at THIS tree, so this grader \
+             measured nothing — NOT an env absence (the instance's env is healthy; \
+             a sibling grader on a pristine clone may already have scored it). No \
+             parking brake: this run simply does not close the card"
+        );
+        return;
+    }
     if !verdict_is_real && !env_absent {
         crate::probe!(
             class = "benchmark.card.close_skipped",
             run_id = %run_id,
-            "no verdict on disk at all (infra died before grading) — card stays open \
-             so a resume re-fires it (the owed retake)"
+            "no verdict on disk at all (infra died before grading) — this run does \
+             not close the card, so a resume re-fires it (the owed retake)"
         );
         return;
     }
@@ -1003,8 +1055,9 @@ async fn close_claim_card_if_graded(run_id: &str) {
             class = "benchmark.card.close_skipped",
             run_id = %run_id,
             reason = "env_absent",
-            "env-absent verdict — card stays open; the retake fires itself on \
-             the first boot whose env pre-warm succeeds"
+            "env-absent verdict — this run does not close the card; the retake \
+             fires itself on the first boot whose env pre-warm succeeds (if the \
+             card is still open — a lapse sweeper may already have closed it)"
         );
         return;
     }
@@ -2243,6 +2296,65 @@ fn frame_task(task: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    mod grade_close_classification {
+        use super::super::{classify_grade_for_close, CardCloseDecision};
+        use serde_json::json;
+
+        // what this catches: the env-absence catch-all swallowing the two
+        // "the env was fine, this grader just measured nothing" cases. Measured
+        // 2026-08-27 on django-11734 (#2531): the solve's grade failed to
+        // re-point the CACHED env at her dirty workspace and this classifier
+        // called the environment absent — while benchmark_grade, re-pointing the
+        // same cached env at a pristine clone, ran 40/40 pass-to-pass seconds
+        // later. The consequence was a lying log line and the per-boot parking
+        // brake armed against a demonstrably healthy instance. Order is the
+        // invariant: the specific "measured nothing" reasons must be decided
+        // BEFORE the generic any-error rule, or they get swallowed again.
+        #[test]
+        fn measured_nothing_is_never_an_environment_absence() {
+            let repoint = json!({
+                "error": format!(
+                    "{}: could not re-point django__django-11734's cached env at /tmp/ws: \
+                     The build backend returned an error",
+                    crate::cognition::swe_bench::ENV_CACHE_REPOINT_FAILED
+                ),
+                "gate_ok": true,
+            });
+            assert_eq!(
+                classify_grade_for_close(Some(&repoint)),
+                CardCloseDecision::CacheRepointFailed,
+                "a stale cache must never read as an absent environment"
+            );
+
+            let no_patch = json!({"error": "no candidate patch was produced"});
+            assert_eq!(
+                classify_grade_for_close(Some(&no_patch)),
+                CardCloseDecision::NoPatch
+            );
+
+            // The genuine env-class cases still classify as absent.
+            let broken_control = json!({"gate_ok": false, "error": null});
+            assert_eq!(
+                classify_grade_for_close(Some(&broken_control)),
+                CardCloseDecision::EnvAbsent,
+                "a broken control (f2p already passing pristine) stays env-class"
+            );
+            let unbuildable = json!({"error": "could not create a Python 3.8 venv", "gate_ok": true});
+            assert_eq!(
+                classify_grade_for_close(Some(&unbuildable)),
+                CardCloseDecision::EnvAbsent
+            );
+
+            // A real verdict closes the card; no grade on disk closes nothing.
+            let real = json!({"error": null, "gate_ok": true, "resolved": false});
+            assert_eq!(
+                classify_grade_for_close(Some(&real)),
+                CardCloseDecision::Close
+            );
+            assert_eq!(classify_grade_for_close(None), CardCloseDecision::NoVerdict);
+        }
+    }
+
     mod room_mint_or_rejoin {
         use crate::identity::ActivityRoom;
         use uuid::Uuid;
