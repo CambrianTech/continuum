@@ -310,15 +310,12 @@ async fn settle_to_outcome(
         }
         let may_act = acts < max_acts && stuck < STUCK_LIMIT && discovery_open;
         let act_started = std::time::Instant::now();
-        let (step, step_metrics) = settle_step(
-            cycle,
-            burst.clone(),
-            may_act,
-            framing,
-            situation,
-            &chain,
-        )
-        .await;
+        let (step, step_metrics) =
+            settle_step(cycle, burst.clone(), may_act, framing, situation, &chain).await;
+        // This act's model wall-time, captured before the accumulate consumes
+        // the metrics — the pace row below splits act time into model vs
+        // residue with it.
+        let act_model_ms = step_metrics.as_ref().map(|m| m.latency_ms).unwrap_or(0);
         if let Some(m) = step_metrics {
             metrics.accumulate(m);
         }
@@ -345,6 +342,16 @@ async fn settle_to_outcome(
                 rolling_mean_secs = mean as u64,
                 slow = slow,
                 stuck_streak = stuck,
+                // THE LEDGER SPLIT (restore-economy VDD): model_ms is this act's
+                // generation wall-time (the adapter's own measurement, riding up
+                // through StepMetrics); residue_ms is everything else the act
+                // spent — tool execution, RAG assembly, settle bookkeeping.
+                // Before this split the ~29s/act residue was only derivable by
+                // subtracting log aggregates; a stall hiding in tools vs a stall
+                // hiding in the model were the same number. Now each act names
+                // where its time went, per-act, at the moment it happens.
+                model_ms = act_model_ms,
+                residue_ms = ((act_secs * 1000.0) as u64).saturating_sub(act_model_ms),
                 "act pace vs this turn's own rolling mean — slow/looping visible the moment it happens"
             );
         }
@@ -392,7 +399,7 @@ async fn settle_to_outcome(
                     }
                 }
                 return SettleOutcome {
-                room: room_id,
+                    room: room_id,
                     spoken: Some(text.clone()),
                     decision: Decision::Speak { text },
                     acts,
@@ -486,7 +493,7 @@ async fn settle_to_outcome(
             SettleStep::WouldAct { calls, intent }
             | SettleStep::ActUnfulfilled { calls, intent } => {
                 return SettleOutcome {
-                room: room_id,
+                    room: room_id,
                     decision: Decision::Act { calls, intent },
                     spoken: None,
                     acts,
@@ -498,7 +505,7 @@ async fn settle_to_outcome(
             }
             SettleStep::Passed => {
                 return SettleOutcome {
-                room: room_id,
+                    room: room_id,
                     decision: Decision::Pass,
                     spoken: None,
                     acts,
@@ -536,7 +543,7 @@ async fn settle_to_outcome(
                     continue;
                 }
                 return SettleOutcome {
-                room: room_id,
+                    room: room_id,
                     decision: Decision::Pass,
                     spoken: None,
                     acts,

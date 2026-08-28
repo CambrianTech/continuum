@@ -84,28 +84,23 @@ pub struct HoldInfo {
     generation: u64,
 }
 
-/// The hold's state + wakeup machinery. Public-in-crate only for the
-/// injected-core test pattern (`spill.rs` precedent): production uses the ONE
-/// process-global cell; tests construct their own so parallel tests cannot race
-/// each other through a shared singleton (that race was observed immediately —
-/// the first parallel run of this module's own tests).
-pub struct HoldCell {
+/// The hold's state + wakeup machinery. MODULE-private on purpose: production
+/// uses the ONE process-global cell, and the injected-core tests (`spill.rs`
+/// precedent — each test its own cell, because the shared singleton made the
+/// first parallel test run race itself) live in this module and need no wider
+/// visibility. Making it pub tripped the unwired-machinery ratchet, correctly:
+/// a pub type nothing outside constructs is the #27 shape.
+struct HoldCell {
     tx: watch::Sender<Option<HoldInfo>>,
     generations: AtomicU64,
 }
 
 impl HoldCell {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             tx: watch::channel(None).0,
             generations: AtomicU64::new(0),
         }
-    }
-}
-
-impl Default for HoldCell {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -160,7 +155,7 @@ pub fn acquire(holder: Uuid, run_id: &str) -> HoldLease {
 }
 
 /// Injected-core acquire — tests pass their own leaked cell.
-pub fn acquire_in(c: &'static HoldCell, holder: Uuid, run_id: &str) -> HoldLease {
+fn acquire_in(c: &'static HoldCell, holder: Uuid, run_id: &str) -> HoldLease {
     let generation = c.generations.fetch_add(1, Ordering::Relaxed) + 1;
     if let Some(prev) = c.tx.borrow().as_ref() {
         crate::probe!(
