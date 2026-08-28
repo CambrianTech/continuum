@@ -138,44 +138,60 @@ const CACHE_RAM_HARD_FLOOR_MIB: u32 = 256;
 /// ## Why a constant was wrong
 ///
 /// `CACHE_RAM_MIB` was reasoned as "4 GiB comfortably holds every SLOT's
-/// conversation once". That is true and irrelevant: we serve `--parallel 1`, and
-/// the citizens time-share that one slot. The cache must hold one conversation
-/// per LIVE CITIZEN, not per slot. Measured 2026-08-28 with four citizens on one
+/// conversation once". True, and irrelevant: we serve `--parallel 1`, and the
+/// citizens time-share that one slot. The cache must hold one conversation per
+/// LIVE CITIZEN, not per slot. Measured 2026-08-28 with four citizens on one
 /// slot: prompt-cache hit rate 0.29-0.48, ~20k tokens re-prefilled per
-/// generation, because a switch evicted someone every time.
+/// generation, because a switch evicted somebody every time.
 ///
 /// The penalty is not marginal. This cache is the difference between a ~0.1s
-/// RESTORE and a ~32.9s RE-PREFILL — ~330x. So under-sizing it does not slow the
-/// system a little; it converts every context switch into recomputation, which is
-/// precisely the single-core-OS thrash (Joel, 2026-08-28: "It's like a really
-/// really slow cpu/os running many programs, like back in the day with one
-/// core"). At the 14-citizen bar this is the difference between the hallmark
-/// working and the machine never finishing anything.
+/// RESTORE and a ~32.9s RE-PREFILL — ~330x. Against a ~30s decode turn, a
+/// restore is ~0.3% overhead, so N citizens sharing one model run at ~full
+/// aggregate throughput; a re-prefill is ~110%, so most of the GPU goes to
+/// recomputing what it already knew. That is the whole difference between the
+/// 14-persona hallmark being seamless and the machine never finishing anything.
 ///
-/// ## The derivation
+/// ## Why PER-CITIZEN MEASURED demand, not N x max-window
 ///
-/// `citizens x kv_at(window)` — exact, from the model's own measured
-/// `kv_per_token`, never an estimate. Clamped by `affordable_bytes`, which the
-/// governor's host-cache lease computes AFTER weights, live KV and the OS floor:
-/// this cache competes honestly with the expert cache instead of being a constant
-/// the lease had to work around. Returns MiB because that is `--cache-ram`'s unit.
+/// Sizing as `citizens x kv_at(model_window)` overstates enormously — 14 x 134k
+/// x ~32 KiB/token is ~60 GiB and would make the hallmark look impossible.
+/// Conversations occupy what they USE, not the window they could: a chat turn is
+/// ~9k, a solve turn ~63k. Summing each citizen's own measured demand
+/// (`WorkingSetRegistry::all`, persisted across restarts) puts fourteen mixed
+/// citizens near ~9 GiB — feasible on this box, and honest either way.
+///
+/// Coupling to a MOVING measurement is safe HERE and is not safe for lane count:
+/// a jittering demand signal driving the lane COUNT caused the 718-replan
+/// lane-flap that wedged three benchmark runs (`serving_plan`), because it
+/// changes structure. Cache size changes no structure — it is monotone headroom,
+/// no replan, no flap.
+///
+/// Clamped by `affordable_bytes`, which the governor's host-cache lease computes
+/// AFTER weights, live KV and the OS floor: this cache competes honestly with the
+/// expert cache instead of being a constant the lease has to work around.
 ///
 /// Deliberately NOT capping citizens or slots to make the arithmetic fit — a hard
 /// limit chosen to make a benchmark tidy is the thing this replaces.
 pub fn host_prompt_cache_mib(
-    live_citizens: u32,
+    citizen_demand_tokens: &[u32],
     kv_per_token: u64,
-    served_window: u32,
     affordable_bytes: u64,
 ) -> u32 {
-    let per_conversation = kv_per_token.saturating_mul(served_window as u64);
-    let want = per_conversation.saturating_mul(live_citizens.max(1) as u64);
-    // The floor is ONE CONVERSATION, derived from this model's own geometry —
-    // below that every context switch is a guaranteed full re-prefill, which is
-    // the 330x cliff. A model-specific byte constant here would just be the old
-    // mistake wearing a different name.
-    let floor = per_conversation.max(1);
-    let granted = want.min(affordable_bytes).max(floor.min(affordable_bytes.max(1)));
+    let want: u64 = citizen_demand_tokens
+        .iter()
+        .map(|t| kv_per_token.saturating_mul(*t as u64))
+        .fold(0u64, |a, b| a.saturating_add(b));
+    // The floor is ONE conversation — the largest single one we must not thrash —
+    // derived from this model's own geometry. Below that, every context switch is
+    // a guaranteed full re-prefill: the 330x cliff. A model-specific byte constant
+    // here would just be the old mistake wearing a different name.
+    let floor = citizen_demand_tokens
+        .iter()
+        .copied()
+        .max()
+        .map(|t| kv_per_token.saturating_mul(t as u64))
+        .unwrap_or(0);
+    let granted = want.max(floor).min(affordable_bytes.max(1));
     let mib = (granted / (1024 * 1024)) as u32;
     mib.max(CACHE_RAM_HARD_FLOOR_MIB)
 }
@@ -476,43 +492,50 @@ mod tests {
     // personas collaborating; at that bar the constant is catastrophic.
     #[test]
     fn the_prompt_cache_is_sized_by_citizens_not_by_slots() {
-        // Ornith-class geometry: ~32 KiB/token, 134k window => ~4.1 GiB per
-        // conversation. One citizen wants roughly what the old constant gave.
-        let kv_per_token = 32 * 1024u64;
-        let window = 134_000u32;
+        let kv = 32 * 1024u64; // ~32 KiB/token, Ornith-class geometry
         let plenty = u64::MAX;
+        let mib = |bytes: u64| (bytes / (1024 * 1024)) as u32;
 
-        let one = super::host_prompt_cache_mib(1, kv_per_token, window, plenty);
-        let four = super::host_prompt_cache_mib(4, kv_per_token, window, plenty);
-        let fourteen = super::host_prompt_cache_mib(14, kv_per_token, window, plenty);
+        // ONE conversation vs FOUR: the cache must grow with the citizens that
+        // share the slot, because that is who evicts whom.
+        let one = super::host_prompt_cache_mib(&[60_000], kv, plenty);
+        let four = super::host_prompt_cache_mib(&[60_000; 4], kv, plenty);
+        assert!(four > one, "four citizens need more than one: {four} vs {one}");
+        assert_eq!(four, mib(kv * 60_000 * 4));
 
+        // THE HALLMARK, and why max-window sizing was wrong. Fourteen MIXED
+        // citizens (most chatting ~9k, three solving ~63k) must land in a
+        // feasible envelope — sizing all fourteen at the 134k model window would
+        // claim ~60 GiB and make the bar look impossible.
+        let mut fourteen = vec![9_000u32; 11];
+        fourteen.extend_from_slice(&[63_000, 63_000, 63_000]);
+        let mixed = super::host_prompt_cache_mib(&fourteen, kv, plenty);
+        let all_max = super::host_prompt_cache_mib(&[134_000; 14], kv, plenty);
         assert!(
-            four > one && fourteen > four,
-            "the cache must GROW with live citizens — that is the whole point: \
-             {one} / {four} / {fourteen} MiB"
+            mixed < all_max / 2,
+            "measured per-citizen demand must be far cheaper than N x max-window: \
+             {mixed} MiB vs {all_max} MiB"
         );
         assert!(
-            four >= 4 * one - 8,
-            "four citizens need about four conversations' worth, got {four} MiB \
-             vs {one} MiB for one"
+            mixed < 16 * 1024,
+            "fourteen mixed citizens must fit a sane envelope, got {mixed} MiB"
         );
 
-        // THE GOVERNOR STILL WINS. What the host can afford is the ceiling — this
-        // cache competes honestly with weights, live KV and the expert cache
-        // rather than being a constant the lease has to work around.
-        let squeezed = super::host_prompt_cache_mib(14, kv_per_token, window, 6 * 1024 * 1024 * 1024);
-        assert_eq!(
-            squeezed, 6144,
-            "an affordability ceiling must clamp the want, not be exceeded"
-        );
+        // THE GOVERNOR STILL WINS: affordability is a ceiling, never exceeded.
+        let squeezed = super::host_prompt_cache_mib(&[60_000; 14], kv, 6 * 1024 * 1024 * 1024);
+        assert_eq!(squeezed, 6144, "the lease's affordability clamps the want");
 
-        // And it never drops below one conversation, however tight things get —
-        // a zero-size prompt cache would make EVERY switch a full re-prefill.
-        let starved = super::host_prompt_cache_mib(14, kv_per_token, window, 1);
+        // The floor is ONE conversation, DERIVED — never a model-specific
+        // constant. Below it every switch is a guaranteed full re-prefill.
+        let floor_only = super::host_prompt_cache_mib(&[63_000], kv, 1);
         assert_eq!(
-            starved,
+            floor_only,
             super::CACHE_RAM_HARD_FLOOR_MIB,
-            "even fully starved we pass a real number, never a zero"
+            "fully starved we still pass a real number, never a zero"
+        );
+        assert!(
+            super::host_prompt_cache_mib(&[], kv, plenty) >= super::CACHE_RAM_HARD_FLOOR_MIB,
+            "no citizens yet is a cold start, not a zero-size cache"
         );
     }
 
