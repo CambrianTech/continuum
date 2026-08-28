@@ -3771,6 +3771,17 @@ pub struct BenchmarkScoreRow {
     pub dataset_size: u32,
     /// Resolved instance ids — the receipt pointers.
     pub resolved_instances: Vec<String>,
+    /// The harness build(s) that produced this row's verdicts, newest-first.
+    ///
+    /// MORE THAN ONE MEANS THE ROW BLENDS ERAS — and a rate averaged over a
+    /// moving instrument is not a measurement. Measured 2026-08-28: 19 of 32
+    /// verdicts here had been scored across ten days by three harness builds,
+    /// and regrading one from its IDENTICAL banked patch moved pass-to-pass
+    /// from 0/40 to 40/40. Publishing an improvement curve over that is
+    /// publishing the harness's changes as if they were hers. `<unstamped>`
+    /// marks verdicts written before provenance existed.
+    #[serde(default)]
+    pub harness_builds: Vec<String>,
     /// ENV failures (verdict carries `error`): the harness could not measure
     /// the model at all — clone/env/patch infrastructure, NEVER a model miss.
     /// These are absences owing retakes, and they must read that way.
@@ -3826,6 +3837,10 @@ impl ActionCommand for BenchmarkScoreboard {
             let mut attempted = 0u32;
             let mut resolved_instances = Vec::new();
             let mut env_absent_instances = Vec::new();
+            // Which harness build(s) actually produced the verdicts behind this
+            // rate. Collected from the TALLIED verdicts only — the absences are
+            // not part of the claim.
+            let mut builds: std::collections::BTreeSet<String> = Default::default();
             for (id, v) in &verdicts {
                 if !ids.contains(id.as_str()) {
                     continue;
@@ -3841,6 +3856,11 @@ impl ActionCommand for BenchmarkScoreboard {
                     continue;
                 }
                 attempted += 1;
+                builds.insert(if v.harness_build.is_empty() {
+                    "<unstamped>".to_string()
+                } else {
+                    v.harness_build.clone()
+                });
                 if v.resolved {
                     resolved_instances.push(id.clone());
                 }
@@ -3851,6 +3871,11 @@ impl ActionCommand for BenchmarkScoreboard {
                 resolved: resolved_instances.len() as u32,
                 dataset_size: instances.len() as u32,
                 resolved_instances,
+                harness_builds: {
+                    let mut b: Vec<String> = builds.into_iter().collect();
+                    b.sort();
+                    b
+                },
                 env_absences: env_absent_instances.len() as u32,
                 env_absent_instances,
             });
@@ -3878,8 +3903,21 @@ impl ActionCommand for BenchmarkScoreboard {
                 } else {
                     String::new()
                 };
+                // SAY IT WHEN THE RATE BLENDS ERAS. A number averaged over a
+                // moving instrument is not a measurement, and this string is
+                // what gets quoted into charts and READMEs — the exact place a
+                // silent blend becomes a published claim.
+                let mixed = if r.harness_builds.len() > 1 {
+                    format!(
+                        " · ⚠ MIXED HARNESS ERAS ({}) — regrade to one build before \
+                         publishing this as a curve",
+                        r.harness_builds.join(", ")
+                    )
+                } else {
+                    String::new()
+                };
                 format!(
-                    "{}: {}/{} resolved (of {} in the set){env}",
+                    "{}: {}/{} resolved (of {} in the set){env}{mixed}",
                     r.benchmark, r.resolved, r.attempted, r.dataset_size
                 )
             })

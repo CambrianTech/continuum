@@ -22,6 +22,18 @@ dataset_size: number,
  */
 resolved_instances: Array<string>, 
 /**
+ * The harness build(s) that produced this row's verdicts, newest-first.
+ *
+ * MORE THAN ONE MEANS THE ROW BLENDS ERAS — and a rate averaged over a
+ * moving instrument is not a measurement. Measured 2026-08-28: 19 of 32
+ * verdicts here had been scored across ten days by three harness builds,
+ * and regrading one from its IDENTICAL banked patch moved pass-to-pass
+ * from 0/40 to 40/40. Publishing an improvement curve over that is
+ * publishing the harness's changes as if they were hers. `<unstamped>`
+ * marks verdicts written before provenance existed.
+ */
+harness_builds: Array<string>, 
+/**
  * ENV failures (verdict carries `error`): the harness could not measure
  * the model at all — clone/env/patch infrastructure, NEVER a model miss.
  * These are absences owing retakes, and they must read that way.

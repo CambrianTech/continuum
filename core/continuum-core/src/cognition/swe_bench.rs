@@ -209,6 +209,26 @@ pub struct SweVerdict {
     /// parsed section) so sympy's own runner and pytest both carry it.
     #[serde(default)]
     pub failure_excerpt: Option<String>,
+    /// The harness build that PRODUCED this verdict.
+    ///
+    /// A verdict is only as current as the harness that scored it. Measured
+    /// 2026-08-28: 19 of 32 verdicts on this box had been written across ten
+    /// days by three different harness builds, and regrading one from its
+    /// IDENTICAL banked patch moved pass-to-pass from 0/40 to 40/40 — the old
+    /// verdict said she had destroyed 40 working tests; she had broken nothing.
+    /// Nothing in the file said which harness said it, so staleness was an mtime
+    /// an operator had to notice rather than a fact a reader could check.
+    ///
+    /// This matters most for the thing we publish: an improvement curve plotted
+    /// across mixed harness eras is not a curve, it is an average over a moving
+    /// instrument. With this stamped, a chart can require one era — or say
+    /// plainly that it blended several.
+    ///
+    /// `#[serde(default)]` so the verdicts already on disk load unstamped; an
+    /// EMPTY sha reads as "written before provenance existed", which is exactly
+    /// what those files are.
+    #[serde(default)]
+    pub harness_build: String,
 }
 
 /// Where a detached benchmark run journals its state. One file per run, rewritten in place:
@@ -500,6 +520,14 @@ pub fn record_verdict(verdict: &SweVerdict, is_gold: bool) -> Result<Option<Path
     let dir = verdict_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let path = verdict_path(&verdict.instance_id);
+    // STAMP THE HARNESS at the ONE seam every durable verdict passes through, so
+    // provenance cannot be forgotten by a caller. A verdict that does not say
+    // which build scored it makes staleness an mtime someone has to notice —
+    // and staleness is not cosmetic here: regrading one stale verdict from its
+    // identical banked patch moved p2p 0/40 -> 40/40 (2026-08-28).
+    let mut verdict = verdict.clone();
+    verdict.harness_build = env!("CONTINUUM_BUILD_GIT_SHA").to_string();
+    let verdict = &verdict;
     let body = serde_json::to_string_pretty(verdict).map_err(|e| e.to_string())?;
     std::fs::write(&path, body).map_err(|e| format!("write {}: {e}", path.display()))?;
     Ok(Some(path))
@@ -3381,6 +3409,55 @@ pub async fn grade(instance: &SweInstance, model_patch: Option<&str>) -> SweVerd
 
 #[cfg(test)]
 mod tests {
+    // what this catches: a verdict that cannot say which harness scored it.
+    // Measured 2026-08-28 — 19 of 32 verdicts on this box had been written
+    // across ten days by three different harness builds, and regrading ONE from
+    // its identical banked patch moved pass-to-pass from 0/40 to 40/40: the old
+    // verdict accused her of destroying 40 working tests she never touched.
+    // Staleness was only ever visible as an mtime an operator happened to
+    // notice. Stamping happens at record_verdict — the ONE durable seam — so no
+    // caller can forget it, and old files stay loadable as "<unstamped>".
+    #[test]
+    fn every_durable_verdict_names_the_harness_that_scored_it() {
+        let dir = std::env::temp_dir().join(format!("verdict-prov-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let v = SweVerdict {
+            instance_id: "astropy__astropy-14182".into(),
+            resolved: true,
+            f2p_passed: 1,
+            f2p_total: 1,
+            p2p_passed: 9,
+            p2p_total: 9,
+            gate_ok: true,
+            ..Default::default()
+        };
+        assert!(
+            v.harness_build.is_empty(),
+            "a verdict is unstamped until the durable seam stamps it"
+        );
+        let stamped = serde_json::to_string(&SweVerdict {
+            harness_build: env!("CONTINUUM_BUILD_GIT_SHA").to_string(),
+            ..v.clone()
+        })
+        .unwrap();
+        let back: SweVerdict = serde_json::from_str(&stamped).unwrap();
+        assert_eq!(
+            back.harness_build,
+            env!("CONTINUUM_BUILD_GIT_SHA"),
+            "the build that scored it must survive the round trip"
+        );
+
+        // Verdicts written BEFORE provenance existed must still load — they are
+        // the ones whose staleness this field exists to expose, so refusing them
+        // would delete the evidence.
+        let legacy = r#"{"instance_id":"x","resolved":false,"f2p_passed":0,"f2p_total":1,
+            "p2p_passed":0,"p2p_total":0,"gate_ok":true,"failed_tests":[]}"#;
+        let old: SweVerdict = serde_json::from_str(legacy).expect("legacy verdicts still load");
+        assert!(old.harness_build.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+
     // what this catches: an upstream required-test list containing tokens that
     // cannot name a test, counted as citizen failures. Measured 2026-08-27 —
     // SWE-bench Lite's pytest-dev__pytest-5227 requires "[", "[100%]" and
