@@ -510,6 +510,31 @@ pub fn next_unworked_after(card_of_round: Uuid) -> Option<NextCard> {
     first_unworked(round, &live)
 }
 
+/// The NON-SETTLING edge of the same driver decision — the fourth edge.
+///
+/// A run can finish WITHOUT its card reaching a terminal state: she produced no
+/// diff, the env was absent, the cached env would not re-point. Those are honest
+/// outcomes (the card stays open for a retake) but they emit no card-settled
+/// event, so the settle edge never fires and the round would sit still until the
+/// 5-minute becalmed watchdog noticed. Measured 2026-08-28: a non-settling run at
+/// 01:58 and another at 03:30 each left the round idle behind one finished solve.
+/// A round that advances only by TIMEOUT is polling wearing an actuator's coat;
+/// it should move the instant the fact is known ([[the-whole-system-is-event-based-not-polling]]).
+///
+/// `just_finished` is EXCLUDED, and that exclusion is the loop guard: the card is
+/// still unsettled and no longer live, so the unguarded decision would hand back
+/// the very card that just failed and re-fire it forever. The watchdog remains the
+/// backstop for everything this edge cannot see (a process that died without
+/// running its close path at all).
+pub fn next_unworked_excluding(just_finished: Uuid) -> Option<NextCard> {
+    let live = live_run_ids();
+    let rounds = ROUNDS.lock().expect("bench rounds mutex");
+    let round = rounds
+        .values()
+        .find(|r| r.cards.contains_key(&just_finished))?;
+    first_unworked_excluding(round, &live, Some(just_finished))
+}
+
 /// The boot-resume edge of the SAME decision: the first unworked card of EVERY
 /// Working detached round. Called once at benchmark-module boot (after the
 /// serving + residency parks); the card-settled edge then chains the rest.
@@ -555,6 +580,14 @@ fn live_run_ids() -> std::collections::HashSet<String> {
 
 /// The one shared decision body behind both edges.
 fn first_unworked(round: &BenchRound, live: &std::collections::HashSet<String>) -> Option<NextCard> {
+    first_unworked_excluding(round, live, None)
+}
+
+fn first_unworked_excluding(
+    round: &BenchRound,
+    live: &std::collections::HashSet<String>,
+    exclude: Option<Uuid>,
+) -> Option<NextCard> {
     if round.driver != WorkDriver::DetachedSolve {
         return None;
     }
@@ -562,6 +595,7 @@ fn first_unworked(round: &BenchRound, live: &std::collections::HashSet<String>) 
         .cards
         .iter()
         .filter(|(_, state)| state.is_none())
+        .filter(|(c, _)| Some(**c) != exclude)
         .filter(|(c, _)| !live.contains(&format!("claim-{}", c)))
         .find_map(|(c, _)| {
             round.card_assignees.get(c).map(|a| NextCard {
@@ -751,6 +785,59 @@ pub fn live_rounds() -> Vec<RoundSnapshot> {
 
 #[cfg(test)]
 mod tests {
+    // what this catches: the round advancing only by TIMEOUT, and the loop the
+    // naive fix creates. Measured 2026-08-28 — a run can finish WITHOUT settling
+    // its card (no diff, env absent, cached env would not re-point). Those emit
+    // no card-settled event, so the settle edge never fires and the round sat
+    // idle behind one finished solve until the 5-minute becalmed watchdog
+    // noticed (01:58 and 03:30 both did exactly that).
+    //
+    // The exclusion IS the loop guard: after a non-settling run the card is
+    // still unsettled and no longer live, so the unguarded decision hands back
+    // the very card that just failed — forever. Both halves are pinned here.
+    #[test]
+    fn the_non_settling_edge_advances_past_the_card_that_just_failed() {
+        fn round_with(cards: &[(Uuid, Uuid)]) -> BenchRound {
+            BenchRound {
+                round_id: Uuid::new_v4(),
+                benchmark: "swe-bench-lite".into(),
+                cards: cards.iter().map(|(c, _)| (*c, None)).collect(),
+                stage: RoundStage::Working,
+                driver: WorkDriver::DetachedSolve,
+                card_activities: Default::default(),
+                card_assignees: cards.iter().copied().collect(),
+            }
+        }
+        let live = std::collections::HashSet::new();
+        let who = Uuid::new_v4();
+        let failed = Uuid::new_v4();
+        let next = Uuid::new_v4();
+
+        // THE LOOP GUARD. One card left, and it is the one that just failed:
+        // unguarded the decision hands it straight back (re-firing forever);
+        // excluded, the chain honestly ends.
+        let only = round_with(&[(failed, who)]);
+        assert_eq!(
+            first_unworked(&only, &live).map(|n| n.card),
+            Some(failed),
+            "sanity: unguarded, the just-failed card is handed back — the tight loop"
+        );
+        assert!(
+            first_unworked_excluding(&only, &live, Some(failed)).is_none(),
+            "the last card failing must end the chain, never re-fire itself"
+        );
+
+        // THE ADVANCE. Real work remains, so the round moves NOW rather than
+        // waiting out the 5-minute becalmed watchdog.
+        let two = round_with(&[(failed, who), (next, who)]);
+        assert_eq!(
+            first_unworked_excluding(&two, &live, Some(failed)).map(|n| n.card),
+            Some(next),
+            "the non-settling edge must advance PAST the card that just failed"
+        );
+    }
+
+
     use super::*;
 
     fn cards(n: usize) -> Vec<Uuid> {
