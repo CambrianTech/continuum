@@ -992,6 +992,27 @@ async fn dream_pass(
     consolidated: Arc<Mutex<HashMap<Uuid, HashSet<Uuid>>>>,
     reviewed: Arc<Mutex<HashMap<Uuid, HashSet<Uuid>>>>,
 ) {
+    // CAUSAL EARLY-SKIP (restore-economy 1.a, the subscribe() consumer): while a
+    // measured solve holds the core, don't even ASSEMBLE the dream — cluster
+    // gathering, budget math and prompt composition are wasted work for a
+    // generation the adapter seam would only park at the door. Await the RELEASE
+    // EVENT instead (watch semantics: a transition cannot be missed), holding
+    // nothing while parked — the mind isn't locked, its idle-time work is
+    // simply queued behind measured work, which is what "idle-time" means
+    // ([[idle-is-self-directed-free-time]]). The adapter gate stays the
+    // enforcement (this is an optimization, not the guard); its 4h leak ceiling
+    // still bounds the pathological case for any dream that slips past here.
+    let mut hold = crate::inference::measured_hold::subscribe();
+    while hold.borrow_and_update().is_some() {
+        crate::probe!(
+            class = "dream.deferred_to_hold",
+            persona = %persona_id,
+            "dream pass parked on the hold's release event — measured work owns the core"
+        );
+        if hold.changed().await.is_err() {
+            break; // sender gone (process teardown) — proceed; the adapter gate still guards
+        }
+    }
     // #175 budget-at-assembly: derive the observation budget from the LIVE served
     // per-slot window (the single source of truth, same the deliberation clamp reads)
     // so a dream cluster is composed WITHIN the slot and can never overflow it →
@@ -2118,9 +2139,17 @@ mod tests {
 
         // The exact live shape: bold-wrapped on BOTH ends, so the trailing `**`
         // also has to come off or `3**` fails to parse as an index.
-        let (body, ids) = parse_supersedes_line("A consolidated fact.\n**SUPERSEDES: 1,3**", &priors);
-        assert_eq!(body, "A consolidated fact.", "the marker must never survive into the belief");
-        assert_eq!(ids, vec![priors[0].id, priors[2].id], "the ruling must be honored");
+        let (body, ids) =
+            parse_supersedes_line("A consolidated fact.\n**SUPERSEDES: 1,3**", &priors);
+        assert_eq!(
+            body, "A consolidated fact.",
+            "the marker must never survive into the belief"
+        );
+        assert_eq!(
+            ids,
+            vec![priors[0].id, priors[2].id],
+            "the ruling must be honored"
+        );
 
         // Other decorations models reach for, and case variance.
         for line in [
