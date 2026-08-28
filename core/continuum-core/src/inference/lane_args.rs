@@ -127,6 +127,59 @@ impl LaneInvocation {
 /// expert cache can never be sized as if this RAM were free.
 pub const CACHE_RAM_MIB: u32 = 4096;
 
+/// The absolute floor in MiB — not a sizing decision, just a refusal to pass
+/// llama-server a zero. The REAL floor is one conversation's worth, derived per
+/// model in [`host_prompt_cache_mib`]; hardcoding a byte count here would be the
+/// same mistake this function exists to delete.
+const CACHE_RAM_HARD_FLOOR_MIB: u32 = 256;
+
+/// Size the host-RAM prompt cache from the WORKLOAD, not from a constant.
+///
+/// ## Why a constant was wrong
+///
+/// `CACHE_RAM_MIB` was reasoned as "4 GiB comfortably holds every SLOT's
+/// conversation once". That is true and irrelevant: we serve `--parallel 1`, and
+/// the citizens time-share that one slot. The cache must hold one conversation
+/// per LIVE CITIZEN, not per slot. Measured 2026-08-28 with four citizens on one
+/// slot: prompt-cache hit rate 0.29-0.48, ~20k tokens re-prefilled per
+/// generation, because a switch evicted someone every time.
+///
+/// The penalty is not marginal. This cache is the difference between a ~0.1s
+/// RESTORE and a ~32.9s RE-PREFILL — ~330x. So under-sizing it does not slow the
+/// system a little; it converts every context switch into recomputation, which is
+/// precisely the single-core-OS thrash (Joel, 2026-08-28: "It's like a really
+/// really slow cpu/os running many programs, like back in the day with one
+/// core"). At the 14-citizen bar this is the difference between the hallmark
+/// working and the machine never finishing anything.
+///
+/// ## The derivation
+///
+/// `citizens x kv_at(window)` — exact, from the model's own measured
+/// `kv_per_token`, never an estimate. Clamped by `affordable_bytes`, which the
+/// governor's host-cache lease computes AFTER weights, live KV and the OS floor:
+/// this cache competes honestly with the expert cache instead of being a constant
+/// the lease had to work around. Returns MiB because that is `--cache-ram`'s unit.
+///
+/// Deliberately NOT capping citizens or slots to make the arithmetic fit — a hard
+/// limit chosen to make a benchmark tidy is the thing this replaces.
+pub fn host_prompt_cache_mib(
+    live_citizens: u32,
+    kv_per_token: u64,
+    served_window: u32,
+    affordable_bytes: u64,
+) -> u32 {
+    let per_conversation = kv_per_token.saturating_mul(served_window as u64);
+    let want = per_conversation.saturating_mul(live_citizens.max(1) as u64);
+    // The floor is ONE CONVERSATION, derived from this model's own geometry —
+    // below that every context switch is a guaranteed full re-prefill, which is
+    // the 330x cliff. A model-specific byte constant here would just be the old
+    // mistake wearing a different name.
+    let floor = per_conversation.max(1);
+    let granted = want.min(affordable_bytes).max(floor.min(affordable_bytes.max(1)));
+    let mib = (granted / (1024 * 1024)) as u32;
+    mib.max(CACHE_RAM_HARD_FLOOR_MIB)
+}
+
 /// Conditional flags (KV quant, flash-attn, mmproj, MTP draft, resident override,
 /// CPU placement, jinja template, LoRA set, MoE `-ot` overrides) are still assembled
 /// by the caller and are slice 2 of this extraction. They are conditional on model
@@ -413,6 +466,57 @@ impl LaneInvocation {
 
 #[cfg(test)]
 mod tests {
+    // what this catches: sizing the host prompt cache per SLOT when the workload
+    // is per CITIZEN. Measured 2026-08-28 — four citizens time-sharing one
+    // `--parallel 1` slot ran a 0.29 prompt-cache hit rate, ~20k tokens
+    // re-prefilled every generation, because 4 GiB held about one conversation
+    // and every switch evicted somebody. This cache is a ~330x lever (0.1s
+    // restore vs 32.9s re-prefill), so undersizing it does not cost a little —
+    // it turns every context switch into recomputation. The hallmark is 14
+    // personas collaborating; at that bar the constant is catastrophic.
+    #[test]
+    fn the_prompt_cache_is_sized_by_citizens_not_by_slots() {
+        // Ornith-class geometry: ~32 KiB/token, 134k window => ~4.1 GiB per
+        // conversation. One citizen wants roughly what the old constant gave.
+        let kv_per_token = 32 * 1024u64;
+        let window = 134_000u32;
+        let plenty = u64::MAX;
+
+        let one = super::host_prompt_cache_mib(1, kv_per_token, window, plenty);
+        let four = super::host_prompt_cache_mib(4, kv_per_token, window, plenty);
+        let fourteen = super::host_prompt_cache_mib(14, kv_per_token, window, plenty);
+
+        assert!(
+            four > one && fourteen > four,
+            "the cache must GROW with live citizens — that is the whole point: \
+             {one} / {four} / {fourteen} MiB"
+        );
+        assert!(
+            four >= 4 * one - 8,
+            "four citizens need about four conversations' worth, got {four} MiB \
+             vs {one} MiB for one"
+        );
+
+        // THE GOVERNOR STILL WINS. What the host can afford is the ceiling — this
+        // cache competes honestly with weights, live KV and the expert cache
+        // rather than being a constant the lease has to work around.
+        let squeezed = super::host_prompt_cache_mib(14, kv_per_token, window, 6 * 1024 * 1024 * 1024);
+        assert_eq!(
+            squeezed, 6144,
+            "an affordability ceiling must clamp the want, not be exceeded"
+        );
+
+        // And it never drops below one conversation, however tight things get —
+        // a zero-size prompt cache would make EVERY switch a full re-prefill.
+        let starved = super::host_prompt_cache_mib(14, kv_per_token, window, 1);
+        assert_eq!(
+            starved,
+            super::CACHE_RAM_HARD_FLOOR_MIB,
+            "even fully starved we pass a real number, never a zero"
+        );
+    }
+
+
     use super::*;
     use std::path::PathBuf;
 
