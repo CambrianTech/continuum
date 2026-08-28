@@ -147,6 +147,20 @@ pub struct ToolOutput;
 #[async_trait]
 impl ActionCommand for ToolOutput {
     const NAME: &'static str = "tool/output";
+    // THE RECOVERY VERB MUST BE IN HER VOCABULARY. Measured 2026-08-28: the
+    // elision marker tells her to "jump straight to what broke" with
+    // `tool/output`, and this command declared NO aliases — so under
+    // `OfferStyle::TrainedReflex` (which offers each command's PRIMARY alias,
+    // `code/read` → `read_file`) it never landed on the menu in a name her
+    // training reaches for, and across every log on this box it had been called
+    // exactly ZERO times. The substrate was handing her a handle and naming a
+    // verb she did not hold: the tail of every flood-sized error — which is
+    // usually the actual failure — was unreadable to her.
+    //
+    // Inbound resolution accepts every style (`from_wire_name`), so adding
+    // aliases can only widen what she can say, never narrow it.
+    const ALIASES: &'static [&'static str] =
+        &["read_output", "grep_output", "tail_output", "search_output"];
     const DESCRIPTION: &'static str =
         "Page or grep a large tool result that was saved to disk because it was too big \
          to show in full. Pass the `handle` from the elision marker. EASIEST: set \

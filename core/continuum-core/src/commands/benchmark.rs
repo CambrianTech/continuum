@@ -794,6 +794,12 @@ pub struct BenchmarkDispatchResult {
     /// full coverage is the lie this field exists to prevent.
     #[ts(type = "number")]
     pub skipped_needs_setup: u32,
+    /// Instances withheld because THIS box already proved their (repo, era) env
+    /// class red via `benchmark/validate`. Reported, never silent — the operator
+    /// must see that the round is smaller than requested and WHY (the named wall
+    /// rides in `kickoff_errors`).
+    #[serde(default)]
+    pub skipped_known_red: u32,
     /// Tasks NOT dispatched because a LIVE card for that exact task is already on
     /// the board (same `[bench <name>] <task_id>:` key, in any non-terminal state).
     /// Dispatch is idempotent per task: re-running it tops the board up to one card
@@ -1562,6 +1568,7 @@ impl ActionCommand for BenchmarkDispatch {
         // shorts are the human/CLI handle, not the identity).
         let mut card_uuids: Vec<uuid::Uuid> = Vec::new();
         let mut skipped_needs_setup = 0u32;
+        let mut skipped_known_red = 0u32;
         let mut skipped_already_on_board = 0u32;
         let mut kickoffs = 0u32;
         let mut solves_fired = 0u32;
@@ -1717,6 +1724,36 @@ impl ActionCommand for BenchmarkDispatch {
             }
 
             let mut staged_ok = false;
+            // THE COVERAGE GATE (the cheap half of `benchmark/validate`). If THIS
+            // box has already PROVEN this instance's (repo, era) env class red,
+            // do not spend a citizen's hours and a grader's slot discovering the
+            // same wall a third time — name it and skip. Measured 2026-08-28:
+            // astropy-6938 was dispatched into the numpy-2 wall while a validate
+            // run minutes away already knew astropy/2017 was red.
+            //
+            // A DICTIONARY LOOKUP, never a build: dispatch must stay fast for a
+            // repo user who has never run validate. Fail-open by construction —
+            // no map, a green class, or a map earned on a different machine class
+            // all return None and DISPATCH (see known_red_wall). Reported like
+            // every other skip; a partial dispatch reading as full coverage is
+            // the lie these counters exist to prevent.
+            if let CardWork::Swe { instance } = &pc.work {
+                if let Some(wall) =
+                    known_red_wall(spec.name, &instance.repo, instance.year())
+                {
+                    skipped_known_red += 1;
+                    kickoff_errors.push(format!(
+                        "skipped {} — its env class ({} {}) is PROVEN RED on this box by \
+                         benchmark/validate, so a solve here would burn hours on a known \
+                         wall: {wall}",
+                        instance.instance_id,
+                        instance.repo,
+                        instance.year()
+                    ));
+                    continue;
+                }
+            }
+
             if let (CardWork::Swe { instance }, Some(home)) = (&pc.work, stage_home.as_ref()) {
                 let dir = crate::identity::citizen_peer_dir(
                     home,
@@ -2026,6 +2063,7 @@ impl ActionCommand for BenchmarkDispatch {
             dispatched: card_ids.len() as u32,
             card_ids,
             skipped_needs_setup,
+            skipped_known_red,
             skipped_already_on_board,
             pruned_duplicates,
             contended_tasks,
@@ -2044,6 +2082,96 @@ crate::register_command!(BenchmarkDispatch);
 
 #[cfg(test)]
 mod tests {
+    mod coverage_gate {
+        use super::super::*;
+
+        // what this catches: the gate turning into a BLOCKER for people who have
+        // never run benchmark/validate. Joel's constraint, 2026-08-28: "we don't
+        // slow them down, but we run checks before wasting the persona and
+        // graders time." So every ambiguous case must DISPATCH: no map on disk, a
+        // green class, or a map earned on a DIFFERENT machine class (a coverage
+        // claim is only true for the platform that earned it). Only a class this
+        // very box proved red may withhold a card — and then it must name the
+        // wall, because a silent skip is the partial-dispatch lie the counters
+        // exist to prevent.
+        #[test]
+        fn the_coverage_gate_fails_open_and_only_blocks_a_locally_proven_red_class() {
+            let dataset = "swe-bench-unit-test-fixture";
+            let here = BenchmarkPlatformFingerprint::capture().machine_class;
+            // A TEMPDIR, never the operator's real ~/.continuum: writing a
+            // fixture into a person's live data directory is both a lie about
+            // isolation and a way to clobber their state — and it made this very
+            // test pass alone and FAIL in the full suite.
+            let root = std::env::temp_dir().join(format!("cov-gate-{}", uuid::Uuid::new_v4()));
+            let path = coverage_map_path_in(&root, dataset, &here);
+
+            // 1. No map at all — the fresh-clone case. Must dispatch.
+            assert_eq!(
+                known_red_wall_in(&root, dataset, "astropy/astropy", 2017),
+                None,
+                "a user who never ran validate must never be gated"
+            );
+
+            // 2. A map from THIS box: red class blocks (with its wall), green does not.
+            let mut map = BenchmarkValidateResult {
+                platform: BenchmarkPlatformFingerprint::capture(),
+                classes: vec![
+                    BenchmarkValidateClass {
+                        repo: "astropy/astropy".into(),
+                        era: "2017".into(),
+                        representative: "astropy__astropy-6938".into(),
+                        covers: 1,
+                        green: false,
+                        wall: Some("numpy 2 rejects copy=False".into()),
+                    },
+                    BenchmarkValidateClass {
+                        repo: "django/django".into(),
+                        era: "2022".into(),
+                        representative: "django__django-15252".into(),
+                        covers: 9,
+                        green: true,
+                        wall: None,
+                    },
+                ],
+                instances_green: 9,
+                dataset_size: 10,
+                summary: String::new(),
+            };
+            if let Some(d) = path.parent() {
+                std::fs::create_dir_all(d).unwrap();
+            }
+            std::fs::write(&path, serde_json::to_string(&map).unwrap()).unwrap();
+
+            assert_eq!(
+                known_red_wall_in(&root, dataset, "astropy/astropy", 2017).as_deref(),
+                Some("numpy 2 rejects copy=False"),
+                "a locally-proven red class must withhold the card AND name the wall"
+            );
+            assert_eq!(
+                known_red_wall_in(&root, dataset, "django/django", 2022),
+                None,
+                "a green class must dispatch"
+            );
+            assert_eq!(
+                known_red_wall_in(&root, dataset, "astropy/astropy", 2023),
+                None,
+                "an era with no row is not evidence of anything — dispatch"
+            );
+
+            // 3. A map earned on ANOTHER machine class must not gate this one.
+            map.platform.machine_class = format!("not-{here}");
+            std::fs::write(&path, serde_json::to_string(&map).unwrap()).unwrap();
+            assert_eq!(
+                known_red_wall_in(&root, dataset, "astropy/astropy", 2017),
+                None,
+                "another box's coverage claim is not evidence about this box"
+            );
+
+            let _ = std::fs::remove_dir_all(&root);
+        }
+    }
+
+
     use super::*;
 
     fn citizen(name: &str) -> (String, uuid::Uuid) {
@@ -3986,14 +4114,110 @@ impl ActionCommand for BenchmarkValidate {
             rows.iter().filter(|r| r.green).count(),
             rows.iter().filter(|r| !r.green).count()
         );
-        Ok(BenchmarkValidateResult {
+        let result = BenchmarkValidateResult {
             platform: BenchmarkPlatformFingerprint::capture(),
             classes: rows,
             instances_green,
             dataset_size,
             summary,
-        })
+        };
+        // PERSIST, so the map can GATE. A coverage map that only ever exists in
+        // one command's stdout cannot protect anything: dispatch had no way to
+        // ask "is this instance's class known-red?", so a citizen could be sent
+        // to spend hours inside an env class this box had already PROVEN cannot
+        // build (measured 2026-08-28: astropy-6938 dispatched into the numpy-2
+        // wall while a validate run sitting minutes away already knew that class
+        // was red). Written per (dataset × machine_class) because a coverage
+        // claim is only true for the platform that earned it.
+        if let Err(e) = write_coverage_map(name, &result) {
+            crate::probe!(
+                class = "benchmark.validate.map_unwritten",
+                error = %e,
+                "coverage map could not be persisted — dispatch keeps its \
+                 fail-open behaviour and gates nothing"
+            );
+        }
+        Ok(result)
     }
+}
+
+/// Where a validated coverage map lives for one (dataset, machine-class) pair.
+/// Under the governed benchmarks root, next to the verdicts it protects — one
+/// small file per dataset, rewritten in place, so it needs no eviction story.
+pub fn coverage_map_path(dataset: &str, machine_class: &str) -> std::path::PathBuf {
+    coverage_map_path_in(
+        &crate::cognition::swe_bench::swe_cache_dir(),
+        dataset,
+        machine_class,
+    )
+}
+
+/// Root-injected core of [`coverage_map_path`] — the filesystem seam, so tests
+/// run against a tempdir instead of the operator's real `~/.continuum` (the
+/// pattern `tool_executor::spill` already sets). A test that writes into a
+/// person's live data directory is both a lie about isolation and a way to
+/// clobber their state.
+pub fn coverage_map_path_in(
+    root: &std::path::Path,
+    dataset: &str,
+    machine_class: &str,
+) -> std::path::PathBuf {
+    let safe: String = dataset
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .collect();
+    let mc: String = machine_class
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .collect();
+    root.join("coverage").join(format!("{safe}.{mc}.json"))
+}
+
+fn write_coverage_map(dataset: &str, result: &BenchmarkValidateResult) -> Result<(), String> {
+    let path = coverage_map_path(dataset, &result.platform.machine_class);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let json = serde_json::to_string_pretty(result).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| e.to_string())
+}
+
+/// The named wall for an instance's env class, when THIS box has already proven
+/// that class red. `None` means "no map, or the class is green, or the map was
+/// earned on a different machine class" — every one of which must DISPATCH, not
+/// block. Fail-open is the contract: a repo user who has never run
+/// `benchmark/validate` is never slowed down by a gate that has nothing to say.
+pub fn known_red_wall(dataset: &str, repo: &str, era_year: u32) -> Option<String> {
+    known_red_wall_in(
+        &crate::cognition::swe_bench::swe_cache_dir(),
+        dataset,
+        repo,
+        era_year,
+    )
+}
+
+/// Root-injected core of [`known_red_wall`]. See [`coverage_map_path_in`].
+pub fn known_red_wall_in(
+    root: &std::path::Path,
+    dataset: &str,
+    repo: &str,
+    era_year: u32,
+) -> Option<String> {
+    let machine_class = BenchmarkPlatformFingerprint::capture().machine_class;
+    let raw = std::fs::read_to_string(coverage_map_path_in(root, dataset, &machine_class)).ok()?;
+    let map: BenchmarkValidateResult = serde_json::from_str(&raw).ok()?;
+    if map.platform.machine_class != machine_class {
+        return None; // another box's claim is not evidence about this one
+    }
+    let era = era_year.to_string();
+    map.classes
+        .iter()
+        .find(|c| c.repo == repo && c.era == era && !c.green)
+        .map(|c| {
+            c.wall
+                .clone()
+                .unwrap_or_else(|| "class proven red by benchmark/validate".to_string())
+        })
 }
 crate::register_stateless_command!(BenchmarkValidate);
 

@@ -1599,6 +1599,21 @@ fn era_sdist_build_deps_for(repo: &str, year: u32) -> &'static [&'static str] {
         // is the one the instance's own cutoff allows (the two failures above wanted >=1.10
         // and >=1.13 respectively — both far below any era cap we set), so this widens what
         // BUILDS without smuggling a modern numpy into a date-pinned subject graph.
+        // NUMPY 2 IS A HARD WALL FOR PRE-2021 ASTROPY (measured 2026-08-28, live
+        // dispatch): numpy 2.0 made `np.array(obj, copy=False)` RAISE instead of
+        // silently copying, and 2017-era astropy calls exactly that inside
+        // `Quantity._new_view` — so the env build dies with "Unable to avoid copy
+        // while creating an array as requested" before a citizen ever sees the
+        // task. A bare "numpy" here is the smuggling path this row's own comment
+        // warns about: when the dated resolve hiccups, the era-pin's loud
+        // unpinned retry lands a 2026 numpy in a 2017 subject graph.
+        //
+        // 1.21.6 is the same proven middle xarray uses above — arm64 wheels on
+        // this box, and it still carries the old C macros these eras compile
+        // against. Scoped to the OLD eras only: 2022+ astropy (12907, 13236,
+        // 14365, 14995 — all currently PASSING) resolves its own numpy fine and
+        // must not be disturbed by a ceiling it never needed.
+        "astropy/astropy" if year <= 2020 => &["jinja2", "numpy==1.21.6"],
         "astropy/astropy" => &["jinja2", "numpy"],
         // Same class, measured at prewarm 2026-08-26 (the seeded-25 round): both
         // setup.py's import numpy at metadata time under --no-build-isolation.
