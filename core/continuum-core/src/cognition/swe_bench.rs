@@ -194,6 +194,26 @@ pub fn solve_ledger_dir() -> PathBuf {
 /// [[the-same-bug-at-two-sites-is-a-missing-constraint-not-two-bugs]]
 pub const SOLVE_LEDGER_PREFIX: &str = "agent-solve-";
 
+/// Marker carried by the one error a CACHED-env re-point failure produces, so a
+/// consumer can tell "my cache is stale for THIS tree" apart from "this instance
+/// has no buildable environment". ONE definition, written at the error site and
+/// read by the close classifier — never the same prose typed in two places.
+///
+/// Why it must be distinguishable (glass-boxed 2026-08-27, django-11734): the
+/// per-instance env is cached, and each grader re-points its editable install at
+/// ITS OWN tree — `agent/solve` at the citizen's dirty workspace, `benchmark_grade`
+/// at a pristine clone + patch. A patch that breaks the build backend therefore
+/// fails the solve's re-point while the fresh clone grades fine seconds later. The
+/// close path used to read ANY grade error as an environment absence, which both
+/// lied in the log and armed the per-boot parking brake against an instance whose
+/// environment was provably healthy. A cache is an optimization; its failure must
+/// never become a conclusion about the world.
+///
+/// The deeper fix — a typed `error_kind` on the verdict rather than a marker in
+/// prose — is tracked in #2531; this constant is the seam that makes the current
+/// taxonomy honest without a wire-shape change mid-round.
+pub const ENV_CACHE_REPOINT_FAILED: &str = "cached-env re-point failed";
+
 /// The run id a ledger file name carries, or `None` if it is not a run ledger.
 ///
 /// Rejects `agent-solve-<id>.grade.json`: a grade is read as a SIBLING of its run, never
@@ -1746,7 +1766,7 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
                     t.chars().skip(t.chars().count().saturating_sub(1500)).collect()
                 };
                 return Err(format!(
-                    "could not re-point {}'s cached env at {}: {}",
+                    "{ENV_CACHE_REPOINT_FAILED}: could not re-point {}'s cached env at {}: {}",
                     instance.instance_id,
                     repo_dir.display(),
                     tail
