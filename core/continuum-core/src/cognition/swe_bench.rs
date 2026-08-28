@@ -101,13 +101,71 @@ where
     }
 }
 
+/// Is this required "test id" something that can never name a test?
+///
+/// UPSTREAM DATA DEFECT, measured 2026-08-27 across the local sets: SWE-bench's
+/// own log-parser leaked non-test tokens into the required lists. Lite's
+/// `pytest-dev__pytest-5227` requires `"["`, `"[100%]"` and
+/// `"[100%]------------------------------"` — fragments of pytest's progress
+/// bar; Verified carries six more (`"#15789"` on django-15863/16485, a bare
+/// `"\""` on django-16145/16612, `"[100%]"` on pytest-5262/7521).
+///
+/// A required id that cannot name a test is unsatisfiable for EVERY solver,
+/// including the instance's own gold patch — so counting it as a failure does
+/// not measure the citizen, it just makes the instance unwinnable. It cost a
+/// real resolve: pytest-5227 passed 3/3 fail-to-pass and every one of its 31
+/// genuine pass-to-pass tests, and was scored a MISS on three progress-bar
+/// fragments. (Upstream's own harness scores these only because its log parser
+/// is loose enough to re-emit the same garbage tokens; ours requires a real
+/// node id, so they never match.)
+///
+/// The predicate is deliberately conservative — it drops a token only when it
+/// contains NO identifier character at all. Every real test id (node id, bare
+/// function, django's `test_x (module.Class)`) has letters, so nothing
+/// legitimate can be filtered by this.
+fn is_unsatisfiable_test_id(id: &str) -> bool {
+    !id.chars().any(|c| c.is_ascii_alphabetic() || c == '_')
+}
+
 impl SweInstance {
     /// Test-id lists arrive JSON-encoded inside a string field.
+    ///
+    /// Non-test tokens are dropped here — the ONE seam every consumer (gate,
+    /// grade, scoreboard) reads through, so no caller can re-introduce them.
     pub fn f2p(&self) -> Vec<String> {
-        serde_json::from_str(&self.fail_to_pass).unwrap_or_default()
+        Self::satisfiable(
+            serde_json::from_str(&self.fail_to_pass).unwrap_or_default(),
+            &self.instance_id,
+            "FAIL_TO_PASS",
+        )
     }
     pub fn p2p(&self) -> Vec<String> {
-        serde_json::from_str(&self.pass_to_pass).unwrap_or_default()
+        Self::satisfiable(
+            serde_json::from_str(&self.pass_to_pass).unwrap_or_default(),
+            &self.instance_id,
+            "PASS_TO_PASS",
+        )
+    }
+
+    /// Drop unsatisfiable ids and SAY SO — a silently shrunk denominator is the
+    /// shape that turns a benchmark into a number nobody can audit.
+    fn satisfiable(ids: Vec<String>, instance_id: &str, field: &str) -> Vec<String> {
+        let (keep, dropped): (Vec<String>, Vec<String>) = ids
+            .into_iter()
+            .partition(|id| !is_unsatisfiable_test_id(id));
+        if !dropped.is_empty() {
+            crate::probe!(
+                class = "benchmark.dataset.unsatisfiable_ids",
+                instance = %instance_id,
+                field = %field,
+                dropped = %dropped.len(),
+                ids = ?dropped,
+                "upstream required-test list carries tokens that cannot name a test \
+                 (its log parser leaked progress output); dropped so the instance is \
+                 winnable by the gold patch — never counted as citizen failures"
+            );
+        }
+        keep
     }
     /// The era to resolve dependencies and the interpreter against.
     pub fn year(&self) -> u32 {
@@ -3308,6 +3366,54 @@ pub async fn grade(instance: &SweInstance, model_patch: Option<&str>) -> SweVerd
 
 #[cfg(test)]
 mod tests {
+    // what this catches: an upstream required-test list containing tokens that
+    // cannot name a test, counted as citizen failures. Measured 2026-08-27 —
+    // SWE-bench Lite's pytest-dev__pytest-5227 requires "[", "[100%]" and
+    // "[100%]---…" (its own log parser leaked pytest's progress bar), and
+    // Verified carries six more ("#15789", a bare quote). She passed 3/3
+    // fail-to-pass and all 31 REAL pass-to-pass tests on 5227 and was scored a
+    // MISS on those three fragments. An id no solver can satisfy — not even the
+    // gold patch — measures nothing, so it must never reach the denominator.
+    // The predicate must stay conservative: real ids always carry letters.
+    #[test]
+    fn unsatisfiable_upstream_test_ids_never_reach_the_denominator() {
+        use super::{is_unsatisfiable_test_id, SweInstance};
+        for junk in ["[", "[100%]", "[100%]------------------------------", "#15789", "\"", "  ", "42", "-"] {
+            assert!(
+                is_unsatisfiable_test_id(junk),
+                "{junk:?} cannot name a test and must be dropped"
+            );
+        }
+        for real in [
+            "tests/test_util_rst.py::test_escape",
+            "test_adjoint",
+            "test_ticket_18785 (queries.tests.Ticket18785Tests)",
+            "lib/matplotlib/tests/test_legend.py::test_alpha_rgba[png]",
+            "_private_helper",
+        ] {
+            assert!(
+                !is_unsatisfiable_test_id(real),
+                "{real:?} is a real test id and must survive"
+            );
+        }
+
+        // End to end through the accessor the gate/grade/scoreboard all read.
+        let inst = SweInstance {
+            instance_id: "pytest-dev__pytest-5227".into(),
+            repo: "pytest-dev/pytest".into(),
+            base_commit: "deadbeef".into(),
+            patch: String::new(),
+            test_patch: String::new(),
+            problem_statement: String::new(),
+            created_at: "2019-05-06T00:00:00Z".into(),
+            pass_to_pass: serde_json::json!(["[", "[100%]", "testing/test_x.py::test_real"])
+                .to_string(),
+            fail_to_pass: serde_json::json!(["testing/test_x.py::test_target"]).to_string(),
+        };
+        assert_eq!(inst.p2p(), vec!["testing/test_x.py::test_real".to_string()]);
+        assert_eq!(inst.f2p(), vec!["testing/test_x.py::test_target".to_string()]);
+    }
+
     use super::*;
 
     // what this catches: the three wire dialects of one instance family
