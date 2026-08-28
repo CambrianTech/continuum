@@ -734,6 +734,9 @@ async fn spawn_gene_eval_lane(gene: &EvalGene) -> Result<EvalLane, CommandError>
     //    the per-request `lora` field decides per turn whether it actually pages in,
     //    which is exactly the base-vs-gene A/B below).
     let target = ServingTarget {
+        // Single-purpose lane: no citizen population to derive from — the
+        // declared cold-start prior is the honest value (restore-economy 1.b).
+        host_prompt_cache_mib: crate::inference::lane_args::CACHE_RAM_MIB,
         model: base.clone(),
         context_window: lane_ctx,
         lanes: 1,
@@ -867,6 +870,9 @@ async fn build_base_eval_lane_inner(base_id: &str) -> Result<EvalLaneInner, Comm
     let (placement_evidence, vram_lease) =
         decide_eval_lane_placement(&base, lane_ctx, &format!("eval-lane base:{base_id}"));
     let target = ServingTarget {
+        // Single-purpose lane: no citizen population to derive from — the
+        // declared cold-start prior is the honest value (restore-economy 1.b).
+        host_prompt_cache_mib: crate::inference::lane_args::CACHE_RAM_MIB,
         model: base.clone(),
         context_window: lane_ctx,
         lanes: 1,

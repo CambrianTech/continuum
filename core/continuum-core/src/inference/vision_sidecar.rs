@@ -239,6 +239,9 @@ pub async fn ensure_sidecar(
     }
 
     let target = ServingTarget {
+        // Single-purpose lane: no citizen population to derive from — the
+        // declared cold-start prior is the honest value (restore-economy 1.b).
+        host_prompt_cache_mib: crate::inference::lane_args::CACHE_RAM_MIB,
         model: cand.model.clone(),
         context_window: SIDECAR_CTX,
         lanes: 1,

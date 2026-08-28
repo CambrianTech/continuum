@@ -125,6 +125,13 @@ impl LaneInvocation {
 /// geometry, and the governor accounts this exact number as a term of the
 /// host-cache lease (`serving_daemon::moe_host_cache_lease_inputs`), so the
 /// expert cache can never be sized as if this RAM were free.
+/// COLD-START PRIOR only (restore-economy 1.b): the value a lane gets when no
+/// citizen demand has ever been measured (fresh install, or a single-purpose
+/// eval/vision lane). Every steady-state serve derives the real number via
+/// [`host_prompt_cache_mib`] from per-citizen measured demand — this constant
+/// is a declared prior with provenance, the same pattern as
+/// `ServingDemand`'s bootstrap ("cold start is a real state, not a missing
+/// measurement"), never the sizing decision itself.
 pub const CACHE_RAM_MIB: u32 = 4096;
 
 /// The absolute floor in MiB — not a sizing decision, just a refusal to pass
@@ -208,6 +215,7 @@ pub fn base_invocation(
     port: u16,
     lanes: u32,
     total_ctx: u32,
+    cache_ram_mib: u32,
 ) -> LaneInvocation {
     let arg = |s: &str| s.to_string();
     LaneInvocation {
@@ -255,7 +263,7 @@ pub fn base_invocation(
             // The governed host-RAM prompt cache — see [`CACHE_RAM_MIB`]. Explicit
             // so llama.cpp's 8 GiB default can never run un-owned again (§4).
             arg("--cache-ram"),
-            CACHE_RAM_MIB.to_string(),
+            cache_ram_mib.to_string(),
             // PREFILL THROUGHPUT (#139). Live personas are prefill-bound: a real turn
             // re-prefills ~4k tokens of fresh RAG context at ~109 tok/s → 30-110s turns
             // (decode is tiny and fast; the mind is NOT slow, the re-read is). The
@@ -551,6 +559,7 @@ mod tests {
             58057,
             lanes,
             total_ctx,
+            CACHE_RAM_MIB, // the cold-start prior — these tests pin arg shape, not sizing
         )
     }
 
