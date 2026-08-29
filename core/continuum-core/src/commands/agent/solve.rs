@@ -1032,6 +1032,7 @@ async fn advance_round_after_non_settling(run_id: &str) {
             claimer: crate::identity::PeerId::from_uuid(next.assignee),
             card: airc_work::WorkCardId::from_uuid(next.card),
             room: airc_core::RoomId::from_u128(next.run_room.as_u128()),
+            teammates: Vec::new(), // solo default; team threading lands per-caller
         },
     )
     .await;

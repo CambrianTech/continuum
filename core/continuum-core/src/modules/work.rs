@@ -639,6 +639,7 @@ impl ActionCommand for WorkClaim {
                             claimer: caller.peer_id,
                             card: card_id,
                             room: room.channel,
+                            teammates: Vec::new(), // solo default; team threading lands per-caller
                         },
                     )
                     .await;
@@ -683,6 +684,36 @@ const SWE_CLAIM_ATTEMPTS: u32 = 3;
 /// ever saw the work. Making the field required moves that from a runtime shrug to an
 /// unrepresentable state: a caller that cannot name the activity cannot build the struct,
 /// so it must resolve one ([`room_holding_card`]) or report why it could not.
+/// One-per-persona solve lease — see the "ONE PAIR OF HANDS" note in
+/// [`dispatch_staged_swe_solve`]. RAII: dropping the lease (any exit path,
+/// panics included) frees the persona for the next solve.
+struct HandsLease(uuid::Uuid);
+
+fn busy_hands() -> &'static std::sync::Mutex<std::collections::HashSet<uuid::Uuid>> {
+    static BUSY: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<uuid::Uuid>>> =
+        std::sync::OnceLock::new();
+    BUSY.get_or_init(Default::default)
+}
+
+impl HandsLease {
+    fn try_take(persona: uuid::Uuid) -> Option<Self> {
+        let mut g = busy_hands().lock().expect("busy-hands lock never poisoned"); // expect: guards a HashSet op only
+        if g.insert(persona) {
+            Some(Self(persona))
+        } else {
+            None
+        }
+    }
+}
+
+impl Drop for HandsLease {
+    fn drop(&mut self) {
+        if let Ok(mut g) = busy_hands().lock() {
+            g.remove(&self.0);
+        }
+    }
+}
+
 pub(crate) struct StagedSolveDispatch {
     /// The citizen who does the work — her own airc identity.
     pub claimer: crate::identity::PeerId,
@@ -693,6 +724,11 @@ pub(crate) struct StagedSolveDispatch {
     /// solver executes radiates a receipt into it (#243), which is what makes the work
     /// visible where the work lives.
     pub room: airc_core::RoomId,
+    /// TEAM solves (#team-proof gap 1): citizens joined to the solve room
+    /// beside the claimer. Empty = solo (every existing caller). They are
+    /// INVITED members, not co-claimers — the C1 shape: presence + an
+    /// addressed charge to review, with the kanban terminal untouched.
+    pub teammates: Vec<crate::identity::PeerId>,
 }
 
 /// The #346 claim→solve dispatch. Fires a detached [`crate::commands::agent::solve::AgentSolve`]
@@ -808,7 +844,28 @@ pub(crate) async fn dispatch_staged_swe_solve(
         claimer,
         card: card_id,
         room,
+        teammates,
     } = dispatch;
+    // ONE PAIR OF HANDS (2026-08-29): a persona's ToolExecutor / file-engine
+    // re-root is PROCESS-GLOBAL (see root_acting_workspace / #312), so two
+    // concurrent solve forks of the SAME persona contend on the same hands —
+    // glass-boxed as ticks parked 25min before perception in exactly the rooms
+    // sharing a claimer, reaped by the tick deadline in a retry loop. A second
+    // solve for a busy persona is deferred to the round driver's next edge
+    // (retry machinery already exists), never run beside the first. This is a
+    // MIND fact wearing a mutex: one body, one workspace, one solve at a time.
+    let _hands = match HandsLease::try_take(claimer.as_uuid()) {
+        Some(lease) => lease,
+        None => {
+            crate::probe!(
+                class = "work.solve.hands_busy",
+                card_id = %card_id.as_uuid(),
+                claimer = %claimer,
+                "claimer already mid-solve — one pair of hands; deferred to the driver's next edge"
+            );
+            return;
+        }
+    };
     // Read the RUN ROOM's board — the dispatch HAS the room (StagedSolveDispatch
     // requires it), and boards are per-room. The previous read went through the
     // caller's GLOBAL paginated projection (work_board_complete), where a card
@@ -1065,10 +1122,11 @@ pub(crate) async fn dispatch_staged_swe_solve(
                         );
                     }
                     let act = crate::cognition::bench_round::CardActivity {
+                        teammates: teammates.iter().map(|p| p.as_uuid()).collect(),
                         solve_room: spawned.room_id.as_uuid(),
                         assignee: claimer.as_uuid(),
                     };
-                    crate::cognition::bench_round::record_card_activity(card_id.as_uuid(), act);
+                    crate::cognition::bench_round::record_card_activity(card_id.as_uuid(), act.clone()); // clone: probe below still reads the local
                     crate::probe!(
                         class = "work.solve.room_minted",
                         card_id = %short8(card_id.as_uuid()),
@@ -1096,6 +1154,66 @@ pub(crate) async fn dispatch_staged_swe_solve(
             }
         }
     };
+
+    // TEAM MEMBERSHIP (#team-proof gap 1): teammates JOIN the solve room and
+    // receive an addressed charge. Membership is room-level (their normal
+    // multi-room cognition participates from here on); accountability stays
+    // card-level with the single claimer. Join is idempotent; a failed join or
+    // invite is REPORTED and never blocks the solve (the claimer works either
+    // way — a smaller team is a degraded run, not a dead one).
+    if !teammates.is_empty() {
+        let team_room_name = format!("swe--{}--{}", instance, short8(card_id.as_uuid()));
+        for mate in &teammates {
+            let Some(rt) = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+                .and_then(|reg| reg.get(mate.as_uuid()))
+            else {
+                crate::probe!(
+                    class = "work.team.join_skipped",
+                    card_id = %short8(card_id.as_uuid()),
+                    mate = %short8(mate.as_uuid()),
+                    "teammate not resident — solve proceeds with a smaller team"
+                );
+                continue;
+            };
+            if let Err(e) = rt.join_room(&team_room_name).await {
+                crate::probe!(
+                    class = "work.team.join_failed",
+                    card_id = %short8(card_id.as_uuid()),
+                    mate = %short8(mate.as_uuid()),
+                    error = %e.to_string(),
+                    "teammate join failed — reported, never blocks the claimer"
+                );
+                continue;
+            }
+            let charge = format!(
+                "You are teamed with {} on `{}` in this room. Their patch must be                  reviewed by a teammate before it submits: read the diff when it                  lands, run what you can, and SPEAK your findings here — a miss a                  reviewer catches is the whole point of the team.",
+                short8(claimer.as_uuid()),
+                instance
+            );
+            match crate::persona::airc_citizen::publish_text_in_room(
+                rt.airc(),
+                solve_room,
+                &charge,
+            )
+            .await
+            {
+                Ok(_) => crate::probe!(
+                    class = "work.team.joined",
+                    card_id = %short8(card_id.as_uuid()),
+                    mate = %short8(mate.as_uuid()),
+                    room = %solve_room,
+                    "teammate joined the solve room and holds the review charge"
+                ),
+                Err(e) => crate::probe!(
+                    class = "work.team.invite_failed",
+                    card_id = %short8(card_id.as_uuid()),
+                    mate = %short8(mate.as_uuid()),
+                    error = %e.to_string(),
+                    "teammate joined but the charge did not send — reported"
+                ),
+            }
+        }
+    }
     // Her HANDS must resolve `python`/`pytest`/`pip` to THIS instance's venv, not the system
     // interpreter. Without this, `code/shell pytest` hits homebrew python3.14 (no pytest, no
     // repo), she loops `pip install pytest` into the wrong interpreter, and burns every action
