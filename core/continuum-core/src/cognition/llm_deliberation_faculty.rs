@@ -2237,6 +2237,11 @@ impl Faculty for LlmDeliberationFaculty {
             )
             .await;
         }
+        if ws.directed_at_self {
+            // #2561: a directed engagement marks the organism ACTIVE (with linger)
+            // — the one seam that knows directedness feeds the activity gate.
+            crate::cognition::activity_gate::note_directed();
+        }
         let gen_result = {
             crate::probe!(
                 class = "delib.gate.lane_wait",
