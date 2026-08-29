@@ -1222,7 +1222,7 @@ impl BenchmarkDispatch {
         // The ORM returns the entity ENVELOPE ({collection, id, data: {…}});
         // the recipe fields live under `data`. Tolerate both shapes so a raw
         // row (tests, future stores) parses identically.
-        let item = item.get("data").cloned().unwrap_or(item);
+        let item = item.get("data").cloned().unwrap_or(item); // unwrap_or: raw (non-enveloped) rows parse as themselves
         let item = Self::instantiate_recipe(item, params)?;
         serde_json::from_value::<BenchmarkRecipe>(item).map_err(|e| {
             CommandError::Invalid(format!(
@@ -1375,7 +1375,7 @@ impl ActionCommand for BenchmarkDispatch {
                 ));
             }
             let recipe = self
-                .load_recipe(&recipe_name, &p.params.clone().unwrap_or_default())
+                .load_recipe(&recipe_name, &p.params.clone().unwrap_or_default()) // unwrap_or: absent params = empty map, placeholders then fail loud by name
                 .await?;
             self.ensure_recipe_model(&recipe).await?;
             let mut agg: Option<BenchmarkDispatchResult> = None;
@@ -2394,7 +2394,7 @@ mod tests {
         let mut params = std::collections::BTreeMap::new();
         params.insert("model".to_string(), "org/some-model".to_string());
         params.insert("dataset".to_string(), "swe-bench-lite".to_string());
-        let out = BenchmarkDispatch::instantiate_recipe(row.clone(), &params).unwrap();
+        let out = BenchmarkDispatch::instantiate_recipe(row.clone(), &params).unwrap(); // unwrap: test asserts substitution succeeds
         assert_eq!(out["model_id"], "org/some-model");
         assert_eq!(out["dispatches"][0]["benchmark"], "swe-bench-lite");
 
@@ -2408,7 +2408,7 @@ mod tests {
             "name": "x",
             "dispatches": [{"benchmark": "swe-bench-lite"}]
         }))
-        .expect("minimal row parses");
+        .expect("minimal row parses"); // expect: test asserts the serde contract
         assert!(minimal.model_id.is_none());
         assert!(minimal.dispatches[0].instances.is_empty());
 
@@ -2422,7 +2422,7 @@ mod tests {
             ],
             "some_future_field": {"ignored": true}
         }))
-        .expect("future fields tolerated");
+        .expect("future fields tolerated"); // expect: test asserts tolerant parse
         assert_eq!(rich.dispatches.len(), 2);
         assert_eq!(rich.dispatches[0].limit, Some(3));
     }

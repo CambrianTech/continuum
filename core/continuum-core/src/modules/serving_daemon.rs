@@ -3465,7 +3465,7 @@ pub fn footprint_for(model: &Model) -> Option<ModelFootprint> {
         .serving
         .verified_ctx_ceiling
         .map(|c| model.context_window.min(c))
-        .unwrap_or(model.context_window);
+        .unwrap_or(model.context_window); // unwrap_or: no verified ceiling declared = trained max stands (the pre-2550 behavior)
     let mut fp = footprint_from_parts(
         &model.id,
         weights_bytes,

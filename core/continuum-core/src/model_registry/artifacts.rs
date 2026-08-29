@@ -47,8 +47,8 @@ pub fn hydrate_artifact_sizes(model: &mut Model) {
 /// OOM'd for six silent hours. A split shard is named `-NNNNN-of-MMMMM.gguf`;
 /// sum every sibling that shares the prefix. A single-file GGUF is its own size.
 pub fn total_gguf_bytes(first: &std::path::Path) -> u64 {
-    let name = first.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    let single = || fs::metadata(first).map(|m| m.len()).unwrap_or(0);
+    let name = first.file_name().and_then(|n| n.to_str()).unwrap_or(""); // unwrap_or: non-utf8 name = not a split pattern, single-file path below
+    let single = || fs::metadata(first).map(|m| m.len()).unwrap_or(0); // unwrap_or: unstat-able file sizes as 0, caller filters zero out
     // "-00001-of-00028.gguf" → prefix "…-", suffix "-of-00028.gguf"
     let Some(idx) = name.rfind("-of-") else { return single() };
     if idx < 6 || !name.ends_with(".gguf") { return single(); }
@@ -63,7 +63,7 @@ pub fn total_gguf_bytes(first: &std::path::Path) -> u64 {
         let f = e.file_name();
         let f = f.to_string_lossy();
         if f.starts_with(prefix) && f.ends_with(".gguf") {
-            total += e.metadata().map(|m| m.len()).unwrap_or(0);
+            total += e.metadata().map(|m| m.len()).unwrap_or(0); // unwrap_or: unreadable shard adds 0, undercount fails safe (smaller window)
         }
     }
     if total > 0 { total } else { single() }
@@ -736,7 +736,7 @@ mod tests {
         use std::io::Write;
         fn gguf_with_tensor(name: &str) -> std::path::PathBuf {
             let dir = std::env::temp_dir().join(format!("mtp-det-{}", uuid::Uuid::new_v4()));
-            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::create_dir_all(&dir).unwrap(); // unwrap: test fixture tempdir must exist
             let p = dir.join("model.gguf");
             let mut f = std::fs::File::create(&p).unwrap();
             f.write_all(b"GGUF").unwrap();
@@ -1027,10 +1027,10 @@ mod tests {
     #[test]
     fn split_gguf_bytes_sum_all_shards() {
         let dir = std::env::temp_dir().join(format!("split-gguf-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&dir).unwrap(); // unwrap: test fixture tempdir must exist
         let w = |name: &str, len: usize| {
             let p = dir.join(name);
-            std::fs::write(&p, vec![0u8; len]).unwrap();
+            std::fs::write(&p, vec![0u8; len]).unwrap(); // unwrap: test fixture shard write must succeed
             p
         };
         let s1 = w("m-00001-of-00003.gguf", 100);

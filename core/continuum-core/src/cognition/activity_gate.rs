@@ -81,7 +81,7 @@ fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+        .unwrap_or(0) // unwrap_or: pre-epoch clock = 0 reads as never-directed, the safe side
 }
 
 /// A directed generation just ran — the organism is engaged with someone.
@@ -118,6 +118,13 @@ struct Gate {
 
 static GATE: OnceLock<Gate> = OnceLock::new();
 
+/// True once [`spawn_activity_gate`] is running. When the gate task was never
+/// spawned (unit tests, gate-less embedders), the boot snapshot would read
+/// `Active` FOREVER and every waiter would park for the process's life — so
+/// waiters treat an un-spawned gate as permissive and fall back to the seams
+/// that guarded before it existed (the hold-defers).
+static GATE_LIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn gate() -> &'static Gate {
     GATE.get_or_init(|| {
         let (tx, _rx) = watch::channel(ActivitySnapshot {
@@ -141,6 +148,9 @@ pub fn current() -> ActivitySnapshot {
 
 /// Park until the organism is BORED. Returns immediately if it already is.
 pub async fn wait_for_boredom() {
+    if !GATE_LIVE.load(Ordering::Acquire) {
+        return; // gate not running: permissive — the hold-defer seams still guard
+    }
     let mut rx = subscribe();
     loop {
         if rx.borrow().state == ActivityState::Bored {
@@ -156,6 +166,9 @@ pub async fn wait_for_boredom() {
 /// work: `select!` your dream against this, and treat losing as a clean
 /// discard (paged out, re-dreamable).
 pub async fn wait_for_activity() {
+    if !GATE_LIVE.load(Ordering::Acquire) {
+        std::future::pending::<()>().await; // gate not running: never spuriously cancel work
+    }
     let mut rx = subscribe();
     loop {
         if rx.borrow().state == ActivityState::Active {
@@ -170,6 +183,7 @@ pub async fn wait_for_activity() {
 /// Spawn the gate's owning task (call once at boot, inside the runtime). The
 /// RTOS shape: own task, interval, cheap reads, publish ON CHANGE with a probe.
 pub fn spawn_activity_gate() {
+    GATE_LIVE.store(true, Ordering::Release);
     let hold_rx = crate::inference::measured_hold::subscribe();
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(GATE_TICK);
