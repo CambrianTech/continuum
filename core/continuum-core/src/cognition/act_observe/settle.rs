@@ -316,8 +316,44 @@ async fn settle_to_outcome(
             acts_so_far = acts as u64,
             "settle loop iterating — next receipt is this tick's workspace run"
         );
-        let (step, step_metrics) =
-            settle_step(cycle, burst.clone(), may_act, framing, situation, &chain).await;
+        // PER-TICK DEADLINE (2026-08-29) — the reaper the becalmed week demanded.
+        // Five distinct wedge sites in three days, each parking ONE await inside a
+        // tick with no bound: memory-era lease, faculty barrier, permit convoy,
+        // dream inversion, and finally a park past drive.start that mooted the
+        // per-seam chase. A held solve that wedges is a SYSTEM-WIDE MUTE (its
+        // measured hold defers all ambient cognition), so a tick is bounded the
+        // way every RTOS task is: generously above the slowest honest tick
+        // (Flash-Next deep tick ≈ 10-15 min incl. tools), fatally below forever.
+        // Elapse → loud infra outcome; the drive ends; the hold RELEASES; resume
+        // retries; nothing stays silently becalmed again.
+        const TICK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(25 * 60);
+        let (step, step_metrics) = match tokio::time::timeout(
+            TICK_DEADLINE,
+            settle_step(cycle, burst.clone(), may_act, framing, situation, &chain),
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(_) => {
+                crate::probe!(
+                    class = "settle.tick.deadline",
+                    room = %room_id,
+                    acts_so_far = acts as u64,
+                    deadline_s = TICK_DEADLINE.as_secs(),
+                    "tick exceeded its deadline — ending the turn LOUDLY as infra (never a capability verdict); the hold releases with the drive"
+                );
+                (
+                    SettleStep::InferenceFailed {
+                        error: format!(
+                            "tick exceeded {}s deadline at act {} — an in-tick await parked                              (infra), turn ended loudly so the measured hold releases",
+                            TICK_DEADLINE.as_secs(),
+                            acts
+                        ),
+                    },
+                    None,
+                )
+            }
+        };
         // This act's model wall-time, captured before the accumulate consumes
         // the metrics — the pace row below splits act time into model vs
         // residue with it.
