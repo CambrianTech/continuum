@@ -2243,6 +2243,11 @@ impl Faculty for LlmDeliberationFaculty {
             )
             .await;
         }
+        crate::probe!(
+            class = "delib.defer.passed",
+            persona = %self.persona_name,
+            "past the pre-gate defer — admission gates next"
+        );
         if ws.directed_at_self {
             // #2561: a directed engagement marks the organism ACTIVE (with linger)
             // — the one seam that knows directedness feeds the activity gate.

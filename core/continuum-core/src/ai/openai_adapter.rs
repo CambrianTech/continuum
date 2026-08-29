@@ -1993,12 +1993,33 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 .persona_id
                 .as_deref()
                 .and_then(|p| uuid::Uuid::parse_str(p).ok());
-            crate::inference::measured_hold::defer_while_held(
+            // FAIL-FAST, never wait (2026-08-29, the two-defer race): a caller
+            // reaching this seam may already HOLD outer admission permits (the
+            // serving lane, the prefill slot) acquired before a hold existed —
+            // glass-boxed: a background gen passed the faculty's pre-gate defer,
+            // took the lane, a solve then acquired the hold, and this seam
+            // parked it WITH the lane in hand; every solve tick starved behind
+            // it at lane_wait. Waiting here while holding permits is the
+            // priority inversion itself. So this backstop REFUSES instead: the
+            // error unwinds the caller's scope (permits drop), the settle
+            // loop's deliberation-retry re-enters through the pre-gate defer,
+            // which waits holding NOTHING. Bounded, inversion-free, race-closed.
+            if crate::inference::measured_hold::should_defer(
                 class,
+                crate::inference::measured_hold::current().as_ref(),
                 hold_caller,
-                request.purpose.as_deref(),
-            )
-            .await;
+            ) {
+                crate::probe!(
+                    class = "inference.hold.backoff",
+                    traffic = %class.as_str(),
+                    purpose = %request.purpose.as_deref().unwrap_or("-"),
+                    "hold active at the adapter seam — refusing fast so the caller drops its permits and retries through the pre-gate defer"
+                );
+                return Err(
+                    "hold-backoff: measured work owns the core; generation refused so admission                      permits release — retry after the hold (automatic via deliberation retry)"
+                        .to_string(),
+                );
+            }
             let placement: Option<u32> = match class {
                 crate::inference::slots::SlotClass::Turn => {
                     // The typed activity key: (persona, room) as UUID structs — never
