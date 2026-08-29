@@ -19,6 +19,14 @@ continuum ping
 # (auto-detection failed silently). If the probe below shows reasoning-styled
 # content, relaunch the lane with: -rea on --reasoning-format deepseek
 echo 'PROBE: verify a chat completion returns clean content (no "We need to..." reasoning-speak).'
+# THINKING-BUDGET CAP (external receipt, 8/28: Flash-Next spent 40,265 thinking
+# tokens before a 21k answer on one hard prompt). Our serving window is 32k
+# TOTAL — uncapped, it blows the window on thinking and the harness would
+# misread "wasn't allowed to finish" as "can't solve". Lane must carry:
+#   --reasoning-budget 8192
+# A miss that ends AT the reasoning cap gets noted in the verdict — that is a
+# geometry loss, not an intelligence loss, and the pager arc (bigger window at
+# 37GB resident) is its retest condition.
 
 echo "== 4/5 dispatch the hard eight (Ornith's misses — see the run doc for the full 20)"
 continuum benchmark/dispatch --name swe-bench-lite \
