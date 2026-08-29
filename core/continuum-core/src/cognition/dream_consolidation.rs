@@ -353,6 +353,19 @@ impl SemanticDistiller {
         // guarantees a waiting chat turn wins the lane — the same guarantee the
         // turn path already relies on (llm_deliberation_faculty acquires it too).
         // Held across the generate call, released on drop.
+        //
+        // DEFER BEFORE THE LANE (2026-08-29, the leaked-permit ledger): this call
+        // acquired the lane and THEN parked at the adapter's measured-hold defer —
+        // holding the very permit the held solve's next generation needed. Two
+        // such dreams drained the whole pool; the solve starved at every tick-2
+        // (grants=3/releases=1, both leaks timestamp-paired to dream defers).
+        // The rule every path owes: hold-defer FIRST holding NOTHING, gates second.
+        crate::inference::measured_hold::defer_while_held(
+            crate::inference::slots::class_for(request.purpose.as_deref()),
+            persona_id,
+            request.purpose.as_deref(),
+        )
+        .await;
         let _lane = crate::cognition::resource_admission::acquire_serving_lane(false).await;
         let response = self
             .adapter
