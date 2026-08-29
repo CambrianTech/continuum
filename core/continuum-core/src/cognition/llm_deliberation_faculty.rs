@@ -2229,6 +2229,7 @@ impl Faculty for LlmDeliberationFaculty {
                 class = "delib.gate.lane_wait",
                 persona = %self.persona_name,
                 directed = ws.directed_at_self,
+                lanes_available = crate::cognition::resource_admission::serving_lane_permits_available() as u64,
                 "at the serving-lane admission gate"
             );
             let _lane =

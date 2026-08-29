@@ -509,6 +509,12 @@ impl Default for LaneAdmission {
 /// (MAX_LANES-1) non-directed budget, guaranteeing a directed caller always finds a free
 /// physical lane. Awaits only under genuine contention; the returned permit releases
 /// every lane on drop.
+/// How many physical serving-lane permits are free RIGHT NOW — a gauge for the
+/// gate probes, so a starved waiter names the count instead of implying it.
+pub fn serving_lane_permits_available() -> usize {
+    LANES.serving_lanes().available_permits()
+}
+
 pub async fn acquire_serving_lane(directed: bool) -> ServingLanePermit {
     LANES.acquire_serving_lane(directed).await
 }
