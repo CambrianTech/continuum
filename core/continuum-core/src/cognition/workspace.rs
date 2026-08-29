@@ -2037,6 +2037,18 @@ impl WorkspaceCycle {
         // `async move` future copies the POINTER (concurrent immutable borrow), never
         // moving the Workspace.
         let mut timings: Vec<FacultyTiming> = Vec::with_capacity(self.faculties.len());
+        // PERCEPTION DEADLINE (2026-08-28, the becalmed-rounds wedge). This is a
+        // BARRIER: one faculty that never returns freezes the whole mind, invisibly
+        // (timings only record finishers). Glass-boxed live: act 1 completed, then
+        // tick 2 hung forever inside this join — recall's neural-embed path awaited
+        // a VRAM lease that never granted (tick 1 rode warm cache; tick 2 embedded
+        // act 1's fresh observation, a guaranteed miss), and the round sat becalmed
+        // while resume re-fires bounced off the in-flight guard (#2554). An RTOS
+        // perception phase has deadlines: a faculty that can't answer in budget
+        // ABSTAINS LOUDLY and the tick proceeds on what did answer — degraded
+        // recall for one tick beats a locked mind forever. The deliberation
+        // generation does NOT run on this barrier and is untouched.
+        const PERCEPTION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
         let perception_timed: Vec<(FacultyId, u128, Option<Contribution>)> =
             join_all(perception.iter().map(|f| {
                 let f = *f;
@@ -2044,7 +2056,20 @@ impl WorkspaceCycle {
                 async move {
                     let id = f.id();
                     let t0 = std::time::Instant::now();
-                    let bid = f.contribute(ws).await;
+                    let bid = match tokio::time::timeout(PERCEPTION_DEADLINE, f.contribute(ws))
+                        .await
+                    {
+                        Ok(bid) => bid,
+                        Err(_) => {
+                            crate::probe!(
+                                class = "faculty.deadline.exceeded",
+                                faculty = ?id,
+                                budget_ms = PERCEPTION_DEADLINE.as_millis() as u64,
+                                "perception faculty blew its deadline — abstaining so the tick proceeds (a hung faculty must never becalm the mind)"
+                            );
+                            None
+                        }
+                    };
                     (id, t0.elapsed().as_micros(), bid)
                 }
             }))
