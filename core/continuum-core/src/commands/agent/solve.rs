@@ -1458,6 +1458,12 @@ impl AgentSolve {
                 p.task.trim()
             ),
         ));
+        crate::probe!(
+            class = "benchmark.solve.phase",
+            run_id = %run_id.as_deref().unwrap_or("-"),
+            phase = "fork.start",
+            "forking her cognition onto the measurement lane"
+        );
         let mut cycle = None;
         for attempt in 0..FORK_WAIT_TRIES {
             cycle = registry.fork_eval_cycle_with_adapter(
@@ -1499,6 +1505,12 @@ impl AgentSolve {
         //     lifted out BEFORE the cycle is consumed, and every exit path below returns her
         //     to her own workspace. Without that, #312: after a flask solve, Anwen's LIVE
         //     self was still running `code/read(src/flask/app.py)` in her room hours later.
+        crate::probe!(
+            class = "benchmark.solve.phase",
+            run_id = %run_id.as_deref().unwrap_or("-"),
+            phase = "fork.done",
+            "cognition forked — rooting hands at the sandbox"
+        );
         let hands = crate::cognition::persona_workspace::ActingHands::of(&cycle);
         crate::cognition::persona_workspace::root_acting_workspace(
             &cycle,
@@ -1507,6 +1519,12 @@ impl AgentSolve {
             p.scored.unwrap_or(false),
         )
         .await?;
+        crate::probe!(
+            class = "benchmark.solve.phase",
+            run_id = %run_id.as_deref().unwrap_or("-"),
+            phase = "hands.rooted",
+            "hands rooted — entering the drive"
+        );
 
         // Everything the ROOTED hands touch lives in this one fallible region, so the
         // restore below runs on Ok AND on Err. A `?` added anywhere inside stays covered.
@@ -1712,6 +1730,12 @@ impl AgentSolve {
                         .map(|s| s.to_string_lossy().to_string())
                 })
                 .flatten();
+            crate::probe!(
+                class = "benchmark.solve.phase",
+                run_id = %run_id.as_deref().unwrap_or("-"),
+                phase = "drive.start",
+                "drive_to_settle entered — the next receipt is her first generation"
+            );
             let mut settled = {
                 let drive = crate::cognition::act_observe::drive_to_settle(
                     &cycle, burst, max_acts, framing,
