@@ -619,6 +619,15 @@ pub async fn settle_step(
     // swept-model bug: reassign changed the served model, the faculty still requested
     // the old one, the lane refused, and the refusal read as serene silence).
     if let Some(error) = ws.deliberation_fault() {
+        // 2026-08-29: 18 solve attempts died on this path in six hours with ZERO
+        // probe trail — the lane OOM'd every deep prefill and the harness read
+        // silence. A failed generation is a loud event or it is an invisible one.
+        crate::probe!(
+            class = "settle.inference_failed",
+            room = %room_id,
+            error = &error.to_string()[..error.to_string().len().min(160)],
+            "deliberation generation FAILED — surfacing before the step returns"
+        );
         return (
             SettleStep::InferenceFailed {
                 error: error.to_string(),

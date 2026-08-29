@@ -694,6 +694,7 @@ pub fn models() -> Vec<Model> {
                 // 8192 thinking tokens inside a 32k window: enough to reason,
                 // impossible to die mid-think (the 40k external receipt).
                 reasoning_budget: Some(8192),
+                verified_ctx_ceiling: Some(32_768),
             },
             ..ModelSpec::default()
         }),

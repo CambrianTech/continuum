@@ -401,6 +401,13 @@ pub struct ModelServingPrefs {
     /// loss, and gets annotated for retest under a larger window.
     #[serde(default)]
     pub reasoning_budget: Option<u32>,
+    /// VERIFIED serving-context ceiling — the largest window this model has
+    /// actually SERVED on this class of hardware without faulting. Clamps the
+    /// planner's window below the GGUF's trained max. The trained max is the
+    /// model's claim; this is our receipt (Flash-Next: 32k verified, the
+    /// planner's 46848 Metal-OOM'd every deep prefill for six hours, 8/29).
+    #[serde(default)]
+    pub verified_ctx_ceiling: Option<u32>,
 }
 
 impl Default for ModelServingPrefs {
@@ -413,6 +420,7 @@ impl Default for ModelServingPrefs {
             no_warmup: false,
             max_ubatch: None,
             reasoning_budget: None,
+            verified_ctx_ceiling: None,
         }
     }
 }
