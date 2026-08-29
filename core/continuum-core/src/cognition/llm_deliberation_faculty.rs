@@ -2215,6 +2215,12 @@ impl Faculty for LlmDeliberationFaculty {
         // the hold. Priority inversion; the solve's tick 2 waited forever on a
         // permit a deferred dream held. Defer FIRST, holding nothing; the adapter
         // seam stays as the backstop for entry paths that skip these gates.
+        crate::probe!(
+            class = "delib.defer.entered",
+            persona = %self.persona_name,
+            directed = ws.directed_at_self,
+            "at the pre-gate hold defer"
+        );
         {
             let mut class = crate::inference::slots::class_for(request.purpose.as_deref());
             // DIRECTEDNESS REFINES THE CLASS (2026-08-29, the convoy). `class_for`
