@@ -2225,14 +2225,30 @@ impl Faculty for LlmDeliberationFaculty {
             .await;
         }
         let gen_result = {
+            crate::probe!(
+                class = "delib.gate.lane_wait",
+                persona = %self.persona_name,
+                directed = ws.directed_at_self,
+                "at the serving-lane admission gate"
+            );
             let _lane =
                 crate::cognition::resource_admission::acquire_serving_lane(ws.directed_at_self)
                     .await;
+            crate::probe!(
+                class = "delib.gate.lane_acquired",
+                persona = %self.persona_name,
+                "lane admission granted — prefill slot next"
+            );
             // #56 prefill throttle: under live external GPU pressure (a game, the browser)
             // fewer than the served lane count may PREFILL concurrently — the instant valve
             // for the 2026-07-16 compute-buffer OOM. Same fit rule the capacity sim proves;
             // no pressure → target == lanes → this never waits. Released with the block.
             let _prefill = crate::cognition::prefill_throttle::acquire_prefill_slot().await;
+            crate::probe!(
+                class = "delib.gate.prefill_acquired",
+                persona = %self.persona_name,
+                "prefill slot granted — issuing the model call"
+            );
             if let Some(sink) = ws.token_sink.as_ref() {
                 binding.adapter.generate_stream(request, sink.clone()).await
             } else {
