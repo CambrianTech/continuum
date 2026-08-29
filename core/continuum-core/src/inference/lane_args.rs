@@ -364,6 +364,10 @@ pub struct LaneOptions<'a> {
     /// Per-model `--ubatch-size` ceiling (`ModelServingPrefs::max_ubatch`) — only ever
     /// LOWERS the base invocation's value, never raises it past the lane-sized default.
     pub max_ubatch: Option<u32>,
+    /// `--reasoning-budget N` (`ModelServingPrefs::reasoning_budget`) — cap on the
+    /// thinking phase for models whose native think-appetite exceeds the served
+    /// window (Flash-Next: 40k measured vs 32k window).
+    pub reasoning_budget: Option<u32>,
 }
 
 impl LaneInvocation {
@@ -507,6 +511,9 @@ impl LaneInvocation {
         }
         if opts.no_warmup {
             self.args.push("--no-warmup".to_string());
+        }
+        if let Some(rb) = opts.reasoning_budget {
+            pair(&mut self.args, "--reasoning-budget", rb);
         }
         if let Some(cap) = opts.max_ubatch {
             if let Some(i) = self.args.iter().position(|a| a == "--ubatch-size") {
