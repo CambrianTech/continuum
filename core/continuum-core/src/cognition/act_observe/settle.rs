@@ -310,6 +310,12 @@ async fn settle_to_outcome(
         }
         let may_act = acts < max_acts && stuck < STUCK_LIMIT && discovery_open;
         let act_started = std::time::Instant::now();
+        crate::probe!(
+            class = "settle.tick.start",
+            room = %room_id,
+            acts_so_far = acts as u64,
+            "settle loop iterating — next receipt is this tick's workspace run"
+        );
         let (step, step_metrics) =
             settle_step(cycle, burst.clone(), may_act, framing, situation, &chain).await;
         // This act's model wall-time, captured before the accumulate consumes

@@ -2207,6 +2207,23 @@ impl Faculty for LlmDeliberationFaculty {
                 let _ = writeln!(f, "{row}");
             }
         }
+        // MEASURED-HOLD DEFER, ABOVE the admission gates (2026-08-29). The adapter's
+        // own defer sits BELOW acquire_serving_lane + the prefill slot, so a
+        // Background generation (dream-belief-review, glass-boxed live) would take
+        // the lane permits, THEN park on the hold — starving the measured work's
+        // own next generation of the very permits it needs to finish and release
+        // the hold. Priority inversion; the solve's tick 2 waited forever on a
+        // permit a deferred dream held. Defer FIRST, holding nothing; the adapter
+        // seam stays as the backstop for entry paths that skip these gates.
+        {
+            let class = crate::inference::slots::class_for(request.purpose.as_deref());
+            crate::inference::measured_hold::defer_while_held(
+                class,
+                Some(self.persona_id),
+                request.purpose.as_deref(),
+            )
+            .await;
+        }
         let gen_result = {
             let _lane =
                 crate::cognition::resource_admission::acquire_serving_lane(ws.directed_at_self)

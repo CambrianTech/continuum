@@ -2074,6 +2074,11 @@ impl WorkspaceCycle {
                 }
             }))
             .await;
+        crate::probe!(
+            class = "workspace.perception.done",
+            faculties = perception_timed.len() as u64,
+            "perception barrier cleared — arbitration next, then deliberation"
+        );
         let mut context_bids: Vec<Contribution> = Vec::with_capacity(perception_timed.len());
         for (id, us, bid) in perception_timed {
             // #186 compass: a perception faculty that surfaced something FIRES its axis
