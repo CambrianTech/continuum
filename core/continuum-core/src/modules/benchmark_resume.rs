@@ -70,7 +70,7 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
         // lane). Until the planner can hold a PER-LANE WINDOW FLOOR for
         // solve-class demand (the real fix, filed), the lease asks for ONE
         // lane: the proven solve config — serial but completing.
-        const LANE_CAP: u32 = 1;
+        const LANE_CAP: u32 = 4;
         // THE BENCHMARK REGIME WINDOW FLOOR (no-excuses replication, Joel
         // 2026-08-27): while Working rounds exist, this task records a standing
         // window demand into the SAME measured-demand registry every persona
@@ -103,11 +103,15 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
                 _ => {
                     if let Some((id, _)) = demand_lease.take() {
                         crate::modules::serving_daemon::release_lane_demand(id);
+                        crate::cognition::serving_plan::set_solve_window_floor(0);
                     }
                     if queued > 0 {
                         if let Some(id) =
                             crate::modules::serving_daemon::quiesce_lane_demand(want)
                         {
+                            // The pinned per-lane floor rides WITH the lane ask:
+                            // lanes multiply only while each fits a real solve.
+                            crate::cognition::serving_plan::set_solve_window_floor(REGIME_WINDOW);
                             crate::probe!(
                                 class = "bench.round.lane_demand",
                                 lanes = want as u64,

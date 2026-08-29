@@ -149,6 +149,14 @@ pub struct ServingDemand {
     /// UNCLAMPED, so it is free to exceed what is currently served. That excess is the
     /// signal that the window is too small; nothing else in the system can produce it.
     pub window_tokens: u32,
+    /// A STABLE per-lane window floor demanded by a pinned regime (today: the
+    /// benchmark lease's published REGIME_WINDOW while rounds exist; 0 = none).
+    /// The lane COUNT may honor THIS floor because it is a constant while set —
+    /// never the jittering measured p95 (the 718 lane-flap law). This is the
+    /// "per-lane window floor for solve-class demand" the LANE_CAP=1 receipt
+    /// named as the real fix (measured 2026-08-27: 4 lanes sold the window to
+    /// 20k/slot and every solve starved at the #390 gate).
+    pub window_floor_tokens: u32,
     /// Whether `window_tokens` came from MEASUREMENT or from [`BOOTSTRAP_WORKING_SET`].
     ///
     /// The two are not interchangeable and the plan must not present them as if they
@@ -161,6 +169,21 @@ pub struct ServingDemand {
     /// more" from "the measured demand did not ask for more". A bootstrap prior wearing
     /// the `demand` label defeats exactly that.
     pub measured: bool,
+}
+
+/// The pinned solve-class window floor (see `ServingDemand::window_floor_tokens`).
+/// ONE writer — the benchmark lease (`benchmark_resume`) — sets it to the
+/// published REGIME constant while Working rounds exist and clears it after.
+/// A process global with a single stable writer, same pattern as the measured
+/// hold cell; generalizing to per-class registry floors rides #2568.
+static SOLVE_WINDOW_FLOOR: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+pub fn set_solve_window_floor(v: u32) {
+    SOLVE_WINDOW_FLOOR.store(v, std::sync::atomic::Ordering::Release);
+}
+
+pub fn solve_window_floor() -> u32 {
+    SOLVE_WINDOW_FLOOR.load(std::sync::atomic::Ordering::Acquire)
 }
 
 impl ServingDemand {
@@ -179,7 +202,7 @@ impl ServingDemand {
             lanes,
             window_tokens: measured.unwrap_or(BOOTSTRAP_WORKING_SET), // JUSTIFIED unwrap_or: cold start is a real state, not a missing measurement; the substituted value is a declared PRIOR and its provenance is preserved on `measured` below rather than discarded here
             measured: measured.is_some(), // the provenance `unwrap_or` would otherwise destroy — UNKNOWN must stay distinguishable from a quantity
-
+            window_floor_tokens: solve_window_floor(),
         }
     }
 }
@@ -576,9 +599,13 @@ pub fn plan_serving(
     // jittering demand signal is the 718-replan lane-flap that wedged three benchmark runs. The
     // served WINDOW still refines with measurement (below); the slot COUNT rests on a fixed
     // floor. THIS floor — not the `MAX_LANES` backstop — is the binding constraint (#266).
+    // Per-lane floor: the stable bootstrap, RAISED by a pinned regime floor when
+    // one stands (solve-class work). Lanes multiply only while EVERY lane still
+    // fits the floor — parallel to the max, starvation to none.
+    let per_lane_floor = BOOTSTRAP_WORKING_SET.max(demand.window_floor_tokens);
     let lanes = (1..=lane_cap)
         .rev()
-        .find(|&l| window_for(l as u64) >= BOOTSTRAP_WORKING_SET)
+        .find(|&l| window_for(l as u64) >= per_lane_floor)
         .unwrap_or(1);
     // Over-subscription: more resident personas than warm slots the window floor permits. The
     // remainder can't get a persistent slot — with N minds on M<N slots the llama.cpp per-slot
@@ -841,6 +868,20 @@ mod tests {
             coincidence.measured && !cold.measured,
             "identical windows, opposite provenance — the value cannot carry this fact"
         );
+    }
+
+    // what this catches: the per-lane solve floor (the LANE_CAP=1 receipt,
+    // 2026-08-27: 4 lanes sold the window to 20k/slot and every solve starved).
+    // The demand carries a PINNED floor while one stands and clears after —
+    // constant while set, so the lane count cannot flap with p95 (the 718 law).
+    #[test]
+    fn demand_carries_the_pinned_solve_floor() {
+        set_solve_window_floor(40_448);
+        let d = ServingDemand::new(4, Some(50_000));
+        assert_eq!(d.window_floor_tokens, 40_448, "demand carries the standing floor");
+        set_solve_window_floor(0);
+        let d0 = ServingDemand::new(4, Some(50_000));
+        assert_eq!(d0.window_floor_tokens, 0, "cleared floor = bootstrap governs");
     }
 
     // kv_per_token in BYTES; ctx is the model's trained ceiling. The served
