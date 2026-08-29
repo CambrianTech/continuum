@@ -2216,7 +2216,20 @@ impl Faculty for LlmDeliberationFaculty {
         // permit a deferred dream held. Defer FIRST, holding nothing; the adapter
         // seam stays as the backstop for entry paths that skip these gates.
         {
-            let class = crate::inference::slots::class_for(request.purpose.as_deref());
+            let mut class = crate::inference::slots::class_for(request.purpose.as_deref());
+            // DIRECTEDNESS REFINES THE CLASS (2026-08-29, the convoy). `class_for`
+            // maps purpose "cognition/deliberation" to Turn — but an UNDIRECTED
+            // self-tick is ambient work wearing a turn's purpose string. During a
+            // measured hold those ambient deliberations sailed past every defer,
+            // took the faculty lane permits, and convoyed single-file into the
+            // adapter's one-permit FIFO at slow-model speed — the solve starved
+            // behind idle chatter (avail=0 at every tick-2 lane_wait, glass-boxed).
+            // An undirected deliberation yields to a hold like any Background gen;
+            // the holder's own ticks are directed and never wait. No hold active →
+            // zero change (should_defer is a no-op on a released cell).
+            if matches!(class, crate::inference::slots::SlotClass::Turn) && !ws.directed_at_self {
+                class = crate::inference::slots::SlotClass::Background;
+            }
             crate::inference::measured_hold::defer_while_held(
                 class,
                 Some(self.persona_id),
