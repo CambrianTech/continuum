@@ -688,6 +688,12 @@ pub struct BenchmarkDispatchParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "Record<string, string>")]
     pub params: Option<std::collections::BTreeMap<String, String>>,
+    /// TEAM solve: citizen display names joined to every dispatched card's
+    /// solve room beside its claimer, each charged to cross-review before
+    /// submit (#team-proof gap 1). Recipe entries may override per dispatch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub teammates: Option<Vec<String>>,
     /// How many tasks (from the top) to post as cards. Omit for all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -1040,6 +1046,11 @@ pub struct RecipeDispatch {
     /// Optional per-dispatch card cap.
     #[serde(default)]
     pub limit: Option<u32>,
+    /// TEAM solve (#team-proof gap 1): citizens joined to each card's solve
+    /// room beside the claimer, carrying the cross-review charge. Names, like
+    /// `assignees`; non-resident names are skipped with a probe.
+    #[serde(default)]
+    pub teammates: Vec<String>,
 }
 
 /// Resolve the citizens a directed dispatch addresses — GENERALIZED for any repo user's
@@ -1383,6 +1394,11 @@ impl ActionCommand for BenchmarkDispatch {
                 let sub = BenchmarkDispatchParams {
                     name: Some(d.benchmark.clone()),
                     recipe: None,
+                    teammates: if d.teammates.is_empty() {
+                        p.teammates.clone()
+                    } else {
+                        Some(d.teammates.clone())
+                    },
                     instances: if d.instances.is_empty() {
                         None
                     } else {
@@ -1677,6 +1693,30 @@ impl ActionCommand for BenchmarkDispatch {
         // fixing ("old rooms flooded, or ones with nothing").
         let roster =
             resolve_dispatch_roster(&resident, &self.registry.roster_snapshot(), &requested)?;
+        // TEAM roster (#team-proof gap 1): resolved against the SAME resident
+        // snapshot, but LENIENTLY — a non-resident teammate shrinks the team
+        // (probed), it never refuses the dispatch the way a bad assignee does:
+        // the claimer's solve is the accountable unit, the team is the amplifier.
+        let teammates: Vec<crate::identity::PeerId> = p
+            .teammates
+            .clone()
+            .unwrap_or_default() // unwrap_or: no teammates named = solo dispatch, the default
+            .iter()
+            .filter_map(|name| {
+                let hit = resident
+                    .iter()
+                    .find(|(n, _)| n.eq_ignore_ascii_case(name))
+                    .map(|(_, id)| crate::identity::PeerId::from_uuid(*id));
+                if hit.is_none() {
+                    crate::probe!(
+                        class = "benchmark.team.mate_not_resident",
+                        mate = %name,
+                        "named teammate not resident — team shrinks, dispatch proceeds"
+                    );
+                }
+                hit
+            })
+            .collect();
 
         // Repo hint, read from the board the curator is standing in RIGHT NOW — before we
         // move her, and ONLY when the caller named no repo. The run room is fresh, so its
@@ -2278,6 +2318,11 @@ impl ActionCommand for BenchmarkDispatch {
                             // roster itself is that card's work, not a silent widening here.
                             claimer: crate::identity::PeerId::from_uuid(*who_peer),
                             card: card_id,
+                            teammates: teammates
+                                .iter()
+                                .filter(|m| m.as_uuid() != *who_peer) // the claimer is not her own teammate
+                                .cloned()
+                                .collect(),
                             room: room.room_id,
                         },
                     )

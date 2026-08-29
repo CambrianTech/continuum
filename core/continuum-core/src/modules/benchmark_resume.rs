@@ -289,6 +289,10 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
                         claimer: crate::identity::PeerId::from_uuid(next.assignee),
                         card: airc_work::WorkCardId::from_uuid(next.card),
                         room: airc_core::RoomId::from_u128(next.run_room.as_u128()),
+                        // resume re-invites the SAME team the card recorded — continuity
+                        teammates: crate::cognition::bench_round::card_activity(next.card)
+                            .map(|a| a.teammates.iter().map(|u| crate::identity::PeerId::from_uuid(*u)).collect())
+                            .unwrap_or_default(), // unwrap_or: no recorded activity yet = solo re-fire
                     },
                 )
                 .await;
