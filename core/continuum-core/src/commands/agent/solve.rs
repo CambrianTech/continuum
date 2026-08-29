@@ -1307,7 +1307,7 @@ impl AgentSolve {
         let _solve_permit = solve_admission().acquire().await.ok();
         crate::probe!(
             class = "benchmark.solve.phase",
-            run_id = %run_id.as_deref().unwrap_or("-"),
+            run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
             phase = "admission.acquired",
             available_slots = solve_admission().available_permits() as u64,
             "solve admitted — holding one serving-lane solve slot for the drive"
@@ -1345,7 +1345,7 @@ impl AgentSolve {
                     let lease = reg.quiesce_others(persona_uuid);
                     crate::probe!(
                         class = "benchmark.solve.phase",
-                        run_id = %run_id.as_deref().unwrap_or("-"),
+                        run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                         phase = "quiesce_others",
                         quiesced_peers = lease.count() as u64,
                         "measured solve holds an exclusive warm slot — idle citizens quiesced so the KV prefix survives turn-to-turn"
@@ -1370,7 +1370,7 @@ impl AgentSolve {
                 crate::inference::llama_server::SnapshotSettle::Resettled { lanes, window } => {
                     crate::probe!(
                         class = "benchmark.solve.phase",
-                        run_id = %run_id.as_deref().unwrap_or("-"),
+                        run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                         phase = "serving_resettled",
                         pre_lanes = pre.lanes as u64,
                         pre_window = pre.served_context_window as u64,
@@ -1383,7 +1383,7 @@ impl AgentSolve {
                 crate::inference::llama_server::SnapshotSettle::Unchanged => {
                     crate::probe!(
                         class = "benchmark.solve.phase",
-                        run_id = %run_id.as_deref().unwrap_or("-"),
+                        run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                         phase = "serving_unchanged",
                         lanes = pre.lanes as u64,
                         window = pre.served_context_window as u64,
@@ -1395,7 +1395,7 @@ impl AgentSolve {
         }
         crate::probe!(
             class = "benchmark.solve.phase",
-            run_id = %run_id.as_deref().unwrap_or("-"),
+            run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
             phase = "lane_acquire.start",
             base_model = %p.base_model_id,
             "solve prelude: acquiring measurement lane"
@@ -1411,7 +1411,7 @@ impl AgentSolve {
             Err(_) => {
                 crate::probe!(
                     class = "benchmark.solve.phase",
-                    run_id = %run_id.as_deref().unwrap_or("-"),
+                    run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                     phase = "lane_acquire.timeout",
                     base_model = %p.base_model_id,
                     "lane acquisition exceeded its bound — INFRA fault, run ends loudly"
@@ -1428,7 +1428,7 @@ impl AgentSolve {
         };
         crate::probe!(
             class = "benchmark.solve.phase",
-            run_id = %run_id.as_deref().unwrap_or("-"),
+            run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
             phase = "lane_acquire.done",
             "solve prelude: lane acquired"
         );
@@ -1458,6 +1458,12 @@ impl AgentSolve {
                 p.task.trim()
             ),
         ));
+        crate::probe!(
+            class = "benchmark.solve.phase",
+            run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
+            phase = "fork.start",
+            "forking her cognition onto the measurement lane"
+        );
         let mut cycle = None;
         for attempt in 0..FORK_WAIT_TRIES {
             cycle = registry.fork_eval_cycle_with_adapter(
@@ -1499,6 +1505,12 @@ impl AgentSolve {
         //     lifted out BEFORE the cycle is consumed, and every exit path below returns her
         //     to her own workspace. Without that, #312: after a flask solve, Anwen's LIVE
         //     self was still running `code/read(src/flask/app.py)` in her room hours later.
+        crate::probe!(
+            class = "benchmark.solve.phase",
+            run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
+            phase = "fork.done",
+            "cognition forked — rooting hands at the sandbox"
+        );
         let hands = crate::cognition::persona_workspace::ActingHands::of(&cycle);
         crate::cognition::persona_workspace::root_acting_workspace(
             &cycle,
@@ -1507,6 +1519,12 @@ impl AgentSolve {
             p.scored.unwrap_or(false),
         )
         .await?;
+        crate::probe!(
+            class = "benchmark.solve.phase",
+            run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
+            phase = "hands.rooted",
+            "hands rooted — entering the drive"
+        );
 
         // Everything the ROOTED hands touch lives in this one fallible region, so the
         // restore below runs on Ok AND on Err. A `?` added anywhere inside stays covered.
@@ -1712,6 +1730,12 @@ impl AgentSolve {
                         .map(|s| s.to_string_lossy().to_string())
                 })
                 .flatten();
+            crate::probe!(
+                class = "benchmark.solve.phase",
+                run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
+                phase = "drive.start",
+                "drive_to_settle entered — the next receipt is her first generation"
+            );
             let mut settled = {
                 let drive = crate::cognition::act_observe::drive_to_settle(
                     &cycle, burst, max_acts, framing,
@@ -1808,7 +1832,7 @@ impl AgentSolve {
                 let remaining = max_acts - settled.acts;
                 crate::probe!(
                     class = "benchmark.empty_diff_redrive",
-                    run_id = %run_id.as_deref().unwrap_or("-"),
+                    run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                     acts_used = settled.acts,
                     acts_remaining = remaining,
                     "workspace-deliverable attempt ended with an EMPTY diff and remaining \
@@ -1861,7 +1885,7 @@ impl AgentSolve {
                     let remaining = max_acts - settled.acts;
                     crate::probe!(
                         class = "benchmark.identical_diff_redrive",
-                        run_id = %run_id.as_deref().unwrap_or("-"),
+                        run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                         patch_sha256 = %sha,
                         acts_remaining = remaining,
                         "settle produced a patch BYTE-IDENTICAL to the previous failed \
@@ -1924,7 +1948,7 @@ impl AgentSolve {
                 if tests.is_empty() {
                     crate::probe!(
                         class = "benchmark.verifier.no_mapping",
-                        run_id = %run_id.as_deref().unwrap_or("-"),
+                        run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                         files = %files_changed.join(","),
                         "in-loop verifier found no test files for the touched paths — \
                          settle stands unverified"
@@ -1953,7 +1977,7 @@ impl AgentSolve {
                     Ok(out) if out.status.success() => {
                         crate::probe!(
                             class = "benchmark.verifier.green",
-                            run_id = %run_id.as_deref().unwrap_or("-"),
+                            run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                             tests = %tests.join(","),
                             round = verifier_round,
                             "in-loop verifier: touched-file tests PASS — settle stands"
@@ -1978,7 +2002,7 @@ impl AgentSolve {
                             .collect();
                         crate::probe!(
                             class = "benchmark.verifier.fail",
-                            run_id = %run_id.as_deref().unwrap_or("-"),
+                            run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                             tests = %tests.join(","),
                             round = verifier_round,
                             "in-loop verifier: touched-file tests FAIL — re-driving with \
@@ -2012,7 +2036,7 @@ impl AgentSolve {
                     Err(e) => {
                         crate::probe!(
                             class = "benchmark.verifier.error",
-                            run_id = %run_id.as_deref().unwrap_or("-"),
+                            run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                             error = %e,
                             "in-loop verifier could not run tests — env fault, settle \
                              stands (never blocks the attempt)"

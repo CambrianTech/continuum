@@ -3455,13 +3455,21 @@ pub fn footprint_for(model: &Model) -> Option<ModelFootprint> {
         Some(n) => n,
         None => {
             let path = crate::model_registry::artifacts::resolve_gguf_for_model(model)?;
-            std::fs::metadata(&path).ok()?.len()
+            crate::model_registry::artifacts::total_gguf_bytes(&path)
         }
     };
+    // The VERIFIED serving ceiling wins over the trained maximum: a GGUF that
+    // declares 262k trained context can still only be SERVED at the geometry we
+    // measured (Flash-Next: 32k verified, 46848 OOM'd all night, 2026-08-29).
+    let ctx_ceiling = model
+        .serving
+        .verified_ctx_ceiling
+        .map(|c| model.context_window.min(c))
+        .unwrap_or(model.context_window); // unwrap_or: no verified ceiling declared = trained max stands (the pre-2550 behavior)
     let mut fp = footprint_from_parts(
         &model.id,
         weights_bytes,
-        model.context_window,
+        ctx_ceiling,
         model.has(Capability::ToolUse),
     )?;
     Some(apply_kv_quantization(fp))

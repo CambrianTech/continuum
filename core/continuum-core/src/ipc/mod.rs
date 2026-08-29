@@ -2041,6 +2041,12 @@ pub fn start_server(
         // zombie (regression from #2051's AircInterceptor block; every sibling spawn in this fn
         // already uses `rt_handle.spawn`). Only reached when airc deps are present, so it broke
         // boot on every airc-configured host.
+        // #2561: the ACTIVITY GATE's owning task — boredom as substrate. Spawned
+        // here with every other boot task (rt_handle.spawn: synchronous boot
+        // region, no ambient reactor).
+        rt_handle.spawn(async move {
+            crate::cognition::activity_gate::spawn_activity_gate();
+        });
         rt_handle.spawn(async move {
             match airc_lib::Airc::attach_as(
                 root,

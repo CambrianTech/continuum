@@ -310,8 +310,50 @@ async fn settle_to_outcome(
         }
         let may_act = acts < max_acts && stuck < STUCK_LIMIT && discovery_open;
         let act_started = std::time::Instant::now();
-        let (step, step_metrics) =
-            settle_step(cycle, burst.clone(), may_act, framing, situation, &chain).await;
+        crate::probe!(
+            class = "settle.tick.start",
+            room = %room_id,
+            acts_so_far = acts as u64,
+            "settle loop iterating — next receipt is this tick's workspace run"
+        );
+        // PER-TICK DEADLINE (2026-08-29) — the reaper the becalmed week demanded.
+        // Five distinct wedge sites in three days, each parking ONE await inside a
+        // tick with no bound: memory-era lease, faculty barrier, permit convoy,
+        // dream inversion, and finally a park past drive.start that mooted the
+        // per-seam chase. A held solve that wedges is a SYSTEM-WIDE MUTE (its
+        // measured hold defers all ambient cognition), so a tick is bounded the
+        // way every RTOS task is: generously above the slowest honest tick
+        // (Flash-Next deep tick ≈ 10-15 min incl. tools), fatally below forever.
+        // Elapse → loud infra outcome; the drive ends; the hold RELEASES; resume
+        // retries; nothing stays silently becalmed again.
+        const TICK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(25 * 60);
+        let (step, step_metrics) = match tokio::time::timeout(
+            TICK_DEADLINE,
+            settle_step(cycle, burst.clone(), may_act, framing, situation, &chain),
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(_) => {
+                crate::probe!(
+                    class = "settle.tick.deadline",
+                    room = %room_id,
+                    acts_so_far = acts as u64,
+                    deadline_s = TICK_DEADLINE.as_secs(),
+                    "tick exceeded its deadline — ending the turn LOUDLY as infra (never a capability verdict); the hold releases with the drive"
+                );
+                (
+                    SettleStep::InferenceFailed {
+                        error: format!(
+                            "tick exceeded {}s deadline at act {} — an in-tick await parked                              (infra), turn ended loudly so the measured hold releases",
+                            TICK_DEADLINE.as_secs(),
+                            acts
+                        ),
+                    },
+                    None,
+                )
+            }
+        };
         // This act's model wall-time, captured before the accumulate consumes
         // the metrics — the pace row below splits act time into model vs
         // residue with it.
@@ -619,6 +661,15 @@ pub async fn settle_step(
     // swept-model bug: reassign changed the served model, the faculty still requested
     // the old one, the lane refused, and the refusal read as serene silence).
     if let Some(error) = ws.deliberation_fault() {
+        // 2026-08-29: 18 solve attempts died on this path in six hours with ZERO
+        // probe trail — the lane OOM'd every deep prefill and the harness read
+        // silence. A failed generation is a loud event or it is an invisible one.
+        crate::probe!(
+            class = "settle.inference_failed",
+            room = %room_id,
+            error = &error.to_string()[..error.to_string().len().min(160)],
+            "deliberation generation FAILED — surfacing before the step returns"
+        );
         return (
             SettleStep::InferenceFailed {
                 error: error.to_string(),

@@ -2126,11 +2126,20 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // backend can't page LoRA or a requested adapter isn't loaded. `None` only
         // when nothing is loaded (omit the field, no probe penalty for non-LoRA).
         let active = request.active_adapters.as_deref().unwrap_or(&[]);
+        crate::probe!(
+            class = "inference.request.lora_resolve",
+            adapters = active.len() as u64,
+            "resolving genome adapters against the lane catalog"
+        );
         if let Some(entries) = self.lora_scale_vector(active).await? {
             if let Some(obj) = body.as_object_mut() {
                 obj.insert("lora".to_string(), json!(entries));
             }
         }
+        crate::probe!(
+            class = "inference.request.lora_resolved",
+            "genome adapters resolved — shaping the rest of the request"
+        );
 
         // Thinking suppression — the REAL lever for qwen3-family forged templates.
         // When this gateway suppresses reasoning, the adapter already appends the
@@ -2290,12 +2299,21 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // can't fail here — the semaphore is never closed over the adapter's
         // lifetime.
         let queue_start = Instant::now();
+        crate::probe!(
+            class = "inference.request.permit_wait",
+            "at the concurrency gate"
+        );
         let _permit = self
             .concurrency
             .clone()
             .acquire_owned()
             .await
             .expect("adapter semaphore never closed");
+        crate::probe!(
+            class = "inference.request.permit_acquired",
+            queued_ms = queue_start.elapsed().as_millis() as u64,
+            "past the concurrency gate — next stop is the HTTP send"
+        );
         let queued_ms = queue_start.elapsed().as_millis();
         if queued_ms > 100 {
             clog_info!(

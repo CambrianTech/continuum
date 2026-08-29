@@ -392,6 +392,22 @@ pub struct ModelServingPrefs {
     /// a bigger-geometry model can need less (Flash-Next verified at 512).
     #[serde(default)]
     pub max_ubatch: Option<u32>,
+    /// Token budget for the model's THINKING phase (`--reasoning-budget`).
+    /// `None` = unrestricted (the llama default). External receipt 2026-08-28:
+    /// Flash-Next spent 40,265 thinking tokens before a 21k answer on one hard
+    /// prompt — uncapped on a 32k serving window it dies mid-think and the
+    /// harness misreads "wasn't allowed to finish" as "can't solve". A miss
+    /// that terminates AT this cap is a geometry loss, not an intelligence
+    /// loss, and gets annotated for retest under a larger window.
+    #[serde(default)]
+    pub reasoning_budget: Option<u32>,
+    /// VERIFIED serving-context ceiling — the largest window this model has
+    /// actually SERVED on this class of hardware without faulting. Clamps the
+    /// planner's window below the GGUF's trained max. The trained max is the
+    /// model's claim; this is our receipt (Flash-Next: 32k verified, the
+    /// planner's 46848 Metal-OOM'd every deep prefill for six hours, 8/29).
+    #[serde(default)]
+    pub verified_ctx_ceiling: Option<u32>,
 }
 
 impl Default for ModelServingPrefs {
@@ -403,6 +419,8 @@ impl Default for ModelServingPrefs {
             fit_off: false,
             no_warmup: false,
             max_ubatch: None,
+            reasoning_budget: None,
+            verified_ctx_ceiling: None,
         }
     }
 }

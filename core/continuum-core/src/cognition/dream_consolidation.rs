@@ -353,6 +353,19 @@ impl SemanticDistiller {
         // guarantees a waiting chat turn wins the lane — the same guarantee the
         // turn path already relies on (llm_deliberation_faculty acquires it too).
         // Held across the generate call, released on drop.
+        //
+        // DEFER BEFORE THE LANE (2026-08-29, the leaked-permit ledger): this call
+        // acquired the lane and THEN parked at the adapter's measured-hold defer —
+        // holding the very permit the held solve's next generation needed. Two
+        // such dreams drained the whole pool; the solve starved at every tick-2
+        // (grants=3/releases=1, both leaks timestamp-paired to dream defers).
+        // The rule every path owes: hold-defer FIRST holding NOTHING, gates second.
+        crate::inference::measured_hold::defer_while_held(
+            crate::inference::slots::class_for(request.purpose.as_deref()),
+            persona_id,
+            request.purpose.as_deref(),
+        )
+        .await;
         let _lane = crate::cognition::resource_admission::acquire_serving_lane(false).await;
         let response = self
             .adapter
@@ -801,15 +814,29 @@ impl DreamConsolidationRegion {
         let in_flight = Arc::clone(&self.in_flight);
         let reviewed = Arc::clone(&self.reviewed);
         tokio::spawn(async move {
-            dream_pass(
-                reflector,
-                persona_id,
-                clusters,
-                fresh,
-                consolidated,
-                reviewed,
-            )
-            .await;
+            // #2561 preemption = paging out: an arriving demand does not queue
+            // behind a dream — it CANCELS it. The dropped future closes the
+            // generation stream (the backend abandons the slot on disconnect);
+            // the half-formed dream is discarded, and it is CHEAP to discard:
+            // dreams are the lowest-priced resident in the paging economy,
+            // re-dreamable from the same engrams on the next bored window.
+            tokio::select! {
+                _ = dream_pass(
+                    reflector,
+                    persona_id,
+                    clusters,
+                    fresh,
+                    consolidated,
+                    reviewed,
+                ) => {}
+                _ = crate::cognition::activity_gate::wait_for_activity() => {
+                    crate::probe!(
+                        class = "dream.paged_out",
+                        persona = %persona_id,
+                        "activity arrived mid-dream — dream cancelled and discarded (re-dreamable)"
+                    );
+                }
+            }
             in_flight.lock().unwrap().remove(&persona_id);
         });
 
@@ -1002,17 +1029,21 @@ async fn dream_pass(
     // ([[idle-is-self-directed-free-time]]). The adapter gate stays the
     // enforcement (this is an optimization, not the guard); its 4h leak ceiling
     // still bounds the pathological case for any dream that slips past here.
-    let mut hold = crate::inference::measured_hold::subscribe();
-    while hold.borrow_and_update().is_some() {
+    // #2561: superseded by the ACTIVITY GATE — boredom as substrate. The hold
+    // is one input of the gate (hold-active ⇒ Active), so waiting for boredom
+    // subsumes the old hold-park AND adds what it never had: in-flight turns and
+    // directed-conversation linger. The dream state does not ARISE while the
+    // organism is engaged; nothing is minted, nothing queues, nothing holds.
+    if crate::cognition::activity_gate::current().state
+        != crate::cognition::activity_gate::ActivityState::Bored
+    {
         crate::probe!(
-            class = "dream.deferred_to_hold",
+            class = "dream.awaiting_boredom",
             persona = %persona_id,
-            "dream pass parked on the hold's release event — measured work owns the core"
+            "dream pass parked on the activity gate — arises only in sustained idle"
         );
-        if hold.changed().await.is_err() {
-            break; // sender gone (process teardown) — proceed; the adapter gate still guards
-        }
     }
+    crate::cognition::activity_gate::wait_for_boredom().await;
     // #175 budget-at-assembly: derive the observation budget from the LIVE served
     // per-slot window (the single source of truth, same the deliberation clamp reads)
     // so a dream cluster is composed WITHIN the slot and can never overflow it →

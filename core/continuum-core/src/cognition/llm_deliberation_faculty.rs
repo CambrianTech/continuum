@@ -2207,15 +2207,67 @@ impl Faculty for LlmDeliberationFaculty {
                 let _ = writeln!(f, "{row}");
             }
         }
+        // MEASURED-HOLD DEFER, ABOVE the admission gates (2026-08-29). The adapter's
+        // own defer sits BELOW acquire_serving_lane + the prefill slot, so a
+        // Background generation (dream-belief-review, glass-boxed live) would take
+        // the lane permits, THEN park on the hold — starving the measured work's
+        // own next generation of the very permits it needs to finish and release
+        // the hold. Priority inversion; the solve's tick 2 waited forever on a
+        // permit a deferred dream held. Defer FIRST, holding nothing; the adapter
+        // seam stays as the backstop for entry paths that skip these gates.
+        {
+            let mut class = crate::inference::slots::class_for(request.purpose.as_deref());
+            // DIRECTEDNESS REFINES THE CLASS (2026-08-29, the convoy). `class_for`
+            // maps purpose "cognition/deliberation" to Turn — but an UNDIRECTED
+            // self-tick is ambient work wearing a turn's purpose string. During a
+            // measured hold those ambient deliberations sailed past every defer,
+            // took the faculty lane permits, and convoyed single-file into the
+            // adapter's one-permit FIFO at slow-model speed — the solve starved
+            // behind idle chatter (avail=0 at every tick-2 lane_wait, glass-boxed).
+            // An undirected deliberation yields to a hold like any Background gen;
+            // the holder's own ticks are directed and never wait. No hold active →
+            // zero change (should_defer is a no-op on a released cell).
+            if matches!(class, crate::inference::slots::SlotClass::Turn) && !ws.directed_at_self {
+                class = crate::inference::slots::SlotClass::Background;
+            }
+            crate::inference::measured_hold::defer_while_held(
+                class,
+                Some(self.persona_id),
+                request.purpose.as_deref(),
+            )
+            .await;
+        }
+        if ws.directed_at_self {
+            // #2561: a directed engagement marks the organism ACTIVE (with linger)
+            // — the one seam that knows directedness feeds the activity gate.
+            crate::cognition::activity_gate::note_directed();
+        }
         let gen_result = {
+            crate::probe!(
+                class = "delib.gate.lane_wait",
+                persona = %self.persona_name,
+                directed = ws.directed_at_self,
+                lanes_available = crate::cognition::resource_admission::serving_lane_permits_available() as u64,
+                "at the serving-lane admission gate"
+            );
             let _lane =
                 crate::cognition::resource_admission::acquire_serving_lane(ws.directed_at_self)
                     .await;
+            crate::probe!(
+                class = "delib.gate.lane_acquired",
+                persona = %self.persona_name,
+                "lane admission granted — prefill slot next"
+            );
             // #56 prefill throttle: under live external GPU pressure (a game, the browser)
             // fewer than the served lane count may PREFILL concurrently — the instant valve
             // for the 2026-07-16 compute-buffer OOM. Same fit rule the capacity sim proves;
             // no pressure → target == lanes → this never waits. Released with the block.
             let _prefill = crate::cognition::prefill_throttle::acquire_prefill_slot().await;
+            crate::probe!(
+                class = "delib.gate.prefill_acquired",
+                persona = %self.persona_name,
+                "prefill slot granted — issuing the model call"
+            );
             if let Some(sink) = ws.token_sink.as_ref() {
                 binding.adapter.generate_stream(request, sink.clone()).await
             } else {

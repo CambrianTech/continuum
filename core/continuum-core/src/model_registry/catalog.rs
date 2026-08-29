@@ -691,6 +691,10 @@ pub fn models() -> Vec<Model> {
                 fit_off: true,
                 no_warmup: true,
                 max_ubatch: Some(512),
+                // 8192 thinking tokens inside a 32k window: enough to reason,
+                // impossible to die mid-think (the 40k external receipt).
+                reasoning_budget: Some(8192),
+                verified_ctx_ceiling: Some(32_768),
             },
             ..ModelSpec::default()
         }),

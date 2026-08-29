@@ -1837,11 +1837,19 @@ crate::register_command!(WorkHeartbeat);
 /// can resolve the CALLER's own airc handle and act as that persona.
 pub struct WorkModule {
     registry: PersonaAircRuntimeRegistry,
+    /// Late-bound substrate executor (the ChatModule pattern): benchmark/dispatch
+    /// composes OTHER commands — `data/list` to load a recipe row, `serving/pin`
+    /// to re-home the lane — through the universal primitive instead of
+    /// cross-module state threading. Installed by `install_executor_on_all`.
+    executor_slot: std::sync::Arc<crate::runtime::LateBound<crate::runtime::command_executor::CommandExecutor>>,
 }
 
 impl WorkModule {
     pub fn new(registry: PersonaAircRuntimeRegistry) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            executor_slot: std::sync::Arc::new(crate::runtime::LateBound::new("work::executor")),
+        }
     }
 }
 
@@ -1905,6 +1913,7 @@ impl ServiceModule for WorkModule {
             // registered-but-unroutable class (#344 audit / #362).
             Arc::new(crate::commands::benchmark::BenchmarkDispatch {
                 registry: self.registry.clone(),
+                executor_slot: self.executor_slot.clone(),
             }),
             // persona/roster reads the SAME live registry benchmark/dispatch resolves its
             // assignees against — constructed here for the same dep-ownership reason (#396
@@ -1913,6 +1922,13 @@ impl ServiceModule for WorkModule {
                 registry: self.registry.clone(),
             }),
         ]
+    }
+
+    fn install_executor(
+        &self,
+        executor: std::sync::Arc<crate::runtime::command_executor::CommandExecutor>,
+    ) {
+        self.executor_slot.install(executor);
     }
 
     fn as_any(&self) -> &dyn Any {

@@ -2830,6 +2830,7 @@ impl LlamaServerControl for LlamaServerProcess {
             fit_off: target.model.serving.fit_off,
             no_warmup: target.model.serving.no_warmup,
             max_ubatch: target.model.serving.max_ubatch,
+            reasoning_budget: target.model.serving.reasoning_budget,
         });
         for a in &invocation.args {
             cmd.arg(a);

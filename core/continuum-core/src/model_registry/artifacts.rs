@@ -26,8 +26,7 @@ pub fn resolve_model_artifacts(model: &mut Model) {
 /// after a pull) call this too, so a row never carries a path without its size.
 pub fn hydrate_artifact_sizes(model: &mut Model) {
     model.weights_bytes = resolve_gguf_for_model(model)
-        .and_then(|p| fs::metadata(p).ok())
-        .map(|md| md.len())
+        .map(|p| total_gguf_bytes(&p))
         .filter(|n| *n > 0);
     // `Some(0)` when the model HAS NO PROJECTOR — that is a real, known fact, not a
     // missing measurement. `None` is reserved for "we could not resolve it", so a
@@ -38,6 +37,36 @@ pub fn hydrate_artifact_sizes(model: &mut Model) {
         None => Some(0),
         Some(path) => fs::metadata(path).ok().map(|md| md.len()),
     };
+}
+
+/// Total on-disk weight bytes for a GGUF artifact — SUMS ALL SHARDS of a split
+/// model. The 2026-08-29 overnight killer: Flash-Next's 28-shard artifact was
+/// sized by shard 1 alone (0.69 GB of a 79 GB set), so the planner believed a
+/// 176B MoE was a toy model, derived kv_per_token ~40x too small, sized a 46848
+/// window past the verified 32k geometry, and every deep solve prefill Metal-
+/// OOM'd for six silent hours. A split shard is named `-NNNNN-of-MMMMM.gguf`;
+/// sum every sibling that shares the prefix. A single-file GGUF is its own size.
+pub fn total_gguf_bytes(first: &std::path::Path) -> u64 {
+    let name = first.file_name().and_then(|n| n.to_str()).unwrap_or(""); // unwrap_or: non-utf8 name = not a split pattern, single-file path below
+    let single = || fs::metadata(first).map(|m| m.len()).unwrap_or(0); // unwrap_or: unstat-able file sizes as 0, caller filters zero out
+    // "-00001-of-00028.gguf" → prefix "…-", suffix "-of-00028.gguf"
+    let Some(idx) = name.rfind("-of-") else { return single() };
+    if idx < 6 || !name.ends_with(".gguf") { return single(); }
+    let (head, _tail) = name.split_at(idx);
+    let Some(dash) = head.rfind('-') else { return single() };
+    if !head[dash + 1..].chars().all(|c| c.is_ascii_digit()) { return single(); }
+    let prefix = &head[..dash + 1];
+    let Some(dir) = first.parent() else { return single() };
+    let Ok(entries) = fs::read_dir(dir) else { return single() };
+    let mut total = 0u64;
+    for e in entries.flatten() {
+        let f = e.file_name();
+        let f = f.to_string_lossy();
+        if f.starts_with(prefix) && f.ends_with(".gguf") {
+            total += e.metadata().map(|m| m.len()).unwrap_or(0); // unwrap_or: unreadable shard adds 0, undercount fails safe (smaller window)
+        }
+    }
+    if total > 0 { total } else { single() }
 }
 
 pub fn resolve_gguf_for_model(model: &Model) -> Option<PathBuf> {
@@ -707,7 +736,7 @@ mod tests {
         use std::io::Write;
         fn gguf_with_tensor(name: &str) -> std::path::PathBuf {
             let dir = std::env::temp_dir().join(format!("mtp-det-{}", uuid::Uuid::new_v4()));
-            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::create_dir_all(&dir).unwrap(); // unwrap: test fixture tempdir must exist
             let p = dir.join("model.gguf");
             let mut f = std::fs::File::create(&p).unwrap();
             f.write_all(b"GGUF").unwrap();
@@ -988,5 +1017,29 @@ mod tests {
             absent, None,
             "no 70b dir exists; must not match a 32b/19b sibling"
         );
+    }
+
+    // what this catches: the 2026-08-29 overnight killer — a 28-shard split GGUF
+    // sized by shard 1 alone (0.69 of 79 GB), which poisoned kv_per_token and let
+    // the planner size a window past the verified geometry (six hours of silent
+    // Metal OOMs). Splits sum ALL siblings; singles stay their own size; a
+    // non-split name with "-of-" noise falls back to single-file size.
+    #[test]
+    fn split_gguf_bytes_sum_all_shards() {
+        let dir = std::env::temp_dir().join(format!("split-gguf-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap(); // unwrap: test fixture tempdir must exist
+        let w = |name: &str, len: usize| {
+            let p = dir.join(name);
+            std::fs::write(&p, vec![0u8; len]).unwrap(); // unwrap: test fixture shard write must succeed
+            p
+        };
+        let s1 = w("m-00001-of-00003.gguf", 100);
+        w("m-00002-of-00003.gguf", 200);
+        w("m-00003-of-00003.gguf", 300);
+        let single = w("solo.gguf", 42);
+        w("unrelated-00001-of-00002.bin", 999);
+        assert_eq!(total_gguf_bytes(&s1), 600, "split must sum every shard");
+        assert_eq!(total_gguf_bytes(&single), 42, "single file is its own size");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
