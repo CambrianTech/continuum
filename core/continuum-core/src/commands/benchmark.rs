@@ -680,6 +680,14 @@ pub struct BenchmarkDispatchParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub recipe: Option<String>,
+    /// Parameters for a TEMPLATE recipe: every `{key}` placeholder in the
+    /// row's string fields is substituted from this map before execution, so
+    /// one recipe ("challenge: candidate takes the incumbent's misses") serves
+    /// every model — the model is an ARGUMENT, never data baked into the row.
+    /// Unresolved placeholders fail loud, naming the missing key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "Record<string, string>")]
+    pub params: Option<std::collections::BTreeMap<String, String>>,
     /// How many tasks (from the top) to post as cards. Omit for all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -1177,7 +1185,11 @@ impl BenchmarkDispatch {
 
     /// Load a recipe row from the `benchmark_recipes` collection via `data/list`
     /// — the recipe is DATA authored with `data/create`, never code.
-    async fn load_recipe(&self, name: &str) -> Result<BenchmarkRecipe, CommandError> {
+    async fn load_recipe(
+        &self,
+        name: &str,
+        params: &std::collections::BTreeMap<String, String>,
+    ) -> Result<BenchmarkRecipe, CommandError> {
         let exec = self.executor()?;
         let out = exec
             .execute(
@@ -1207,11 +1219,62 @@ impl BenchmarkDispatch {
                      [{{benchmark, instances[], limit?}}])"
                 ))
             })?;
+        let item = Self::instantiate_recipe(item, params)?;
         serde_json::from_value::<BenchmarkRecipe>(item).map_err(|e| {
             CommandError::Invalid(format!(
                 "recipe '{name}' exists but does not parse as a BenchmarkRecipe: {e}"
             ))
         })
+    }
+
+    /// TEMPLATE → INSTANCE: substitute `{key}` placeholders in every string of
+    /// the recipe row from the caller's params (the recipe-doctrine split — a
+    /// recipe is a reusable template; the invocation supplies the specifics).
+    /// Pure so it is unit-testable; unresolved placeholders are a loud error
+    /// naming the key, never a silently-literal "{model}" reaching dispatch.
+    fn instantiate_recipe(
+        mut row: serde_json::Value,
+        params: &std::collections::BTreeMap<String, String>,
+    ) -> Result<serde_json::Value, CommandError> {
+        fn walk(
+            v: &mut serde_json::Value,
+            params: &std::collections::BTreeMap<String, String>,
+            missing: &mut Vec<String>,
+        ) {
+            match v {
+                serde_json::Value::String(s) => {
+                    if s.contains('{') {
+                        let mut out = s.clone();
+                        for (k, val) in params {
+                            out = out.replace(&format!("{{{k}}}"), val);
+                        }
+                        if let (Some(a), Some(b)) = (out.find('{'), out.find('}')) {
+                            if a < b {
+                                missing.push(out[a + 1..b].to_string());
+                            }
+                        }
+                        *s = out;
+                    }
+                }
+                serde_json::Value::Array(a) => a.iter_mut().for_each(|x| walk(x, params, missing)),
+                serde_json::Value::Object(o) => {
+                    o.values_mut().for_each(|x| walk(x, params, missing))
+                }
+                _ => {}
+            }
+        }
+        let mut missing = Vec::new();
+        walk(&mut row, params, &mut missing);
+        if missing.is_empty() {
+            Ok(row)
+        } else {
+            missing.sort();
+            missing.dedup();
+            Err(CommandError::Invalid(format!(
+                "recipe placeholders unresolved: {{{}}} — pass them via --params",
+                missing.join("}, {")
+            )))
+        }
     }
 
     /// Bring the lane to the recipe's model BEFORE any card fires: pin via the
@@ -1307,7 +1370,9 @@ impl ActionCommand for BenchmarkDispatch {
                         .into(),
                 ));
             }
-            let recipe = self.load_recipe(&recipe_name).await?;
+            let recipe = self
+                .load_recipe(&recipe_name, &p.params.clone().unwrap_or_default())
+                .await?;
             self.ensure_recipe_model(&recipe).await?;
             let mut agg: Option<BenchmarkDispatchResult> = None;
             for d in &recipe.dispatches {
@@ -2310,6 +2375,29 @@ mod tests {
     // fields MUST be tolerated, and instances default empty. The recipe is data
     // authored by operators; a brittle parse turns a typo into a dead experiment
     // with no compiler to catch it (2026-08-29, the two-command flow).
+    // what this catches: the template→instance substitution contract — `{model}`
+    // resolves from params everywhere in the row, and an unresolved placeholder
+    // is a LOUD error naming the key, never a literal "{model}" reaching a lane
+    // pin (Joel 2026-08-29: the model is an ARGUMENT to the recipe, recipes are
+    // templates — one "challenge" recipe serves every future model drop).
+    #[test]
+    fn recipe_templates_substitute_and_fail_loud_on_missing() {
+        let row = serde_json::json!({
+            "name": "challenge",
+            "model_id": "{model}",
+            "dispatches": [{"benchmark": "{dataset}", "instances": ["a__b-1"]}]
+        });
+        let mut params = std::collections::BTreeMap::new();
+        params.insert("model".to_string(), "org/some-model".to_string());
+        params.insert("dataset".to_string(), "swe-bench-lite".to_string());
+        let out = BenchmarkDispatch::instantiate_recipe(row.clone(), &params).unwrap();
+        assert_eq!(out["model_id"], "org/some-model");
+        assert_eq!(out["dispatches"][0]["benchmark"], "swe-bench-lite");
+
+        let err = BenchmarkDispatch::instantiate_recipe(row, &Default::default()).unwrap_err();
+        assert!(format!("{err:?}").contains("model"), "names the missing key");
+    }
+
     #[test]
     fn recipe_rows_parse_tolerantly() {
         let minimal: BenchmarkRecipe = serde_json::from_value(serde_json::json!({

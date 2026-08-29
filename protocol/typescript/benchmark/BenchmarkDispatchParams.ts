@@ -16,6 +16,14 @@ name?: string,
  */
 recipe?: string, 
 /**
+ * Parameters for a TEMPLATE recipe: every `{key}` placeholder in the
+ * row's string fields is substituted from this map before execution, so
+ * one recipe ("challenge: candidate takes the incumbent's misses") serves
+ * every model — the model is an ARGUMENT, never data baked into the row.
+ * Unresolved placeholders fail loud, naming the missing key.
+ */
+params?: Record<string, string>, 
+/**
  * How many tasks (from the top) to post as cards. Omit for all.
  */
 limit?: number, 
