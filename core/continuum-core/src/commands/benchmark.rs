@@ -668,7 +668,18 @@ crate::register_stateless_command!(BenchmarkRecord);
 )]
 pub struct BenchmarkDispatchParams {
     /// The benchmark name (see `benchmark/list`), e.g. `tool-bugfix-rs`.
-    pub name: String,
+    /// Optional when `recipe` is given (the recipe's rows carry the names).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub name: Option<String>,
+    /// Execute a stored RECIPE by name instead of hand-assembled flags: a row
+    /// in the `benchmark_recipes` collection (author with `data/create`)
+    /// carrying the model to serve and the dispatches to fire. Dispatch pins
+    /// the model (fit-gated), awaits lane readiness, then fires every entry —
+    /// the whole experiment is two commands: `reboot` + `dispatch --recipe X`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub recipe: Option<String>,
     /// How many tasks (from the top) to post as cards. Omit for all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -978,6 +989,49 @@ pub(crate) fn dispatch_swe_card_body(
 /// as any other work; nothing about the turn is exam-shaped.
 pub struct BenchmarkDispatch {
     pub registry: crate::persona::PersonaAircRuntimeRegistry,
+    /// Late-bound substrate executor (ChatModule pattern) — the recipe path
+    /// composes `data/list` (load the recipe row) and `serving/pin` (re-home
+    /// the lane, with pin.rs's full fit-gating) as COMMANDS, the universal
+    /// primitive, never cross-module state threading.
+    pub executor_slot: std::sync::Arc<
+        crate::runtime::LateBound<crate::runtime::command_executor::CommandExecutor>,
+    >,
+}
+
+/// A stored EXPERIMENT — one row in the `benchmark_recipes` collection,
+/// authored through the data layer (`data/create`), executed by
+/// `benchmark/dispatch --recipe <name>`. DATA, not code: fields grow
+/// (serde-tolerant) without touching this file, and the sophistication lives
+/// in the row — which model to serve, which dispatches to fire, and later
+/// caps, condition labels, team shapes. Nothing model-specific is ever
+/// hardcoded here; serving behavior comes from the model's own catalog row.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BenchmarkRecipe {
+    /// The name `--recipe` selects.
+    pub name: String,
+    /// One line of intent, shown when listing/erroring.
+    #[serde(default)]
+    pub description: String,
+    /// Model this run must be SERVING before any card fires. `None` = run on
+    /// whatever is live. `Some` = dispatch pins it (fit-gated by serving/pin)
+    /// and awaits lane readiness before the first card.
+    #[serde(default)]
+    pub model_id: Option<String>,
+    /// The dispatches to fire, in order — one experiment may span datasets.
+    pub dispatches: Vec<RecipeDispatch>,
+}
+
+/// One dispatch inside a recipe: a benchmark plus the exact instances.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecipeDispatch {
+    /// Benchmark name (see `benchmark/list`).
+    pub benchmark: String,
+    /// Exact instance ids. Empty = the dataset head up to `limit`.
+    #[serde(default)]
+    pub instances: Vec<String>,
+    /// Optional per-dispatch card cap.
+    #[serde(default)]
+    pub limit: Option<u32>,
 }
 
 /// Resolve the citizens a directed dispatch addresses — GENERALIZED for any repo user's
@@ -1107,6 +1161,117 @@ fn resolve_dispatch_roster(
     Ok(resolved)
 }
 
+impl BenchmarkDispatch {
+    /// The substrate executor, or a loud error naming the wiring gap — never a
+    /// silent no-op (the slot is installed by `install_executor_on_all` at boot).
+    fn executor(
+        &self,
+    ) -> Result<std::sync::Arc<crate::runtime::command_executor::CommandExecutor>, CommandError>
+    {
+        self.executor_slot.get().cloned().ok_or_else(|| {
+            CommandError::Internal(
+                "command executor not installed on benchmark/dispatch — boot wiring gap".into(),
+            )
+        })
+    }
+
+    /// Load a recipe row from the `benchmark_recipes` collection via `data/list`
+    /// — the recipe is DATA authored with `data/create`, never code.
+    async fn load_recipe(&self, name: &str) -> Result<BenchmarkRecipe, CommandError> {
+        let exec = self.executor()?;
+        let out = exec
+            .execute(
+                "data/list",
+                serde_json::json!({
+                    "collection": "benchmark_recipes",
+                    "filter": { "name": name },
+                    "limit": 1,
+                }),
+            )
+            .await
+            .map_err(|e| CommandError::Internal(format!("data/list failed: {e}")))?;
+        let crate::runtime::CommandResult::Json(v) = out else {
+            return Err(CommandError::Internal(
+                "data/list returned a non-JSON result".into(),
+            ));
+        };
+        let item = v
+            .get("items")
+            .and_then(|i| i.as_array())
+            .and_then(|a| a.first())
+            .cloned()
+            .ok_or_else(|| {
+                CommandError::NotFound(format!(
+                    "no recipe named '{name}' in `benchmark_recipes` — author one with \
+                     data/create (fields: name, description, model_id?, dispatches: \
+                     [{{benchmark, instances[], limit?}}])"
+                ))
+            })?;
+        serde_json::from_value::<BenchmarkRecipe>(item).map_err(|e| {
+            CommandError::Invalid(format!(
+                "recipe '{name}' exists but does not parse as a BenchmarkRecipe: {e}"
+            ))
+        })
+    }
+
+    /// Bring the lane to the recipe's model BEFORE any card fires: pin via the
+    /// `serving/pin` COMMAND (its fit-gate refuses loud), then await readiness
+    /// on the daemon's own snapshot — bounded, probed, never a silent hang.
+    /// The lane's readiness smoke probe doubles as the first-request warmup
+    /// models with a serving contract require.
+    async fn ensure_recipe_model(&self, recipe: &BenchmarkRecipe) -> Result<(), CommandError> {
+        let Some(model_id) = recipe.model_id.as_deref() else {
+            return Ok(()); // recipe runs on whatever is live
+        };
+        let live = crate::inference::llama_server::current_serving();
+        if live.ready && live.active_model.as_deref() == Some(model_id) {
+            return Ok(());
+        }
+        let exec = self.executor()?;
+        exec.execute("serving/pin", serde_json::json!({ "model_id": model_id }))
+            .await
+            .map_err(|e| {
+                CommandError::Denied(format!(
+                    "recipe names model '{model_id}' but serving/pin refused: {e}"
+                ))
+            })?;
+        // Await the swap. Generous bound: a cold multi-shard load is minutes.
+        const RECIPE_SERVE_DEADLINE: std::time::Duration =
+            std::time::Duration::from_secs(15 * 60);
+        let started = std::time::Instant::now();
+        loop {
+            if let Some(s) = crate::inference::llama_server::await_ready_serving(
+                std::time::Duration::from_secs(30),
+            )
+            .await
+            {
+                if s.ready && s.active_model.as_deref() == Some(model_id) {
+                    crate::probe!(
+                        class = "benchmark.recipe.model_ready",
+                        model = model_id,
+                        waited_ms = started.elapsed().as_millis() as u64,
+                        "recipe's model is serving — dispatch proceeds"
+                    );
+                    return Ok(());
+                }
+            }
+            if started.elapsed() > RECIPE_SERVE_DEADLINE {
+                return Err(CommandError::Internal(format!(
+                    "pinned '{model_id}' but it did not become the ready served model within \
+                     {}s — check serving/status and the lane log",
+                    RECIPE_SERVE_DEADLINE.as_secs()
+                )));
+            }
+            crate::probe!(
+                class = "benchmark.recipe.awaiting_model",
+                model = model_id,
+                waited_ms = started.elapsed().as_millis() as u64,
+                "recipe model not ready yet — still awaiting the lane swap"
+            );
+        }
+    }
+}
+
 #[async_trait]
 impl ActionCommand for BenchmarkDispatch {
     const NAME: &'static str = "benchmark/dispatch";
@@ -1130,13 +1295,71 @@ impl ActionCommand for BenchmarkDispatch {
         use crate::modules::work::curator_airc;
         use airc_lib::{CreateWorkCard, Priority, RepoId};
 
+        // ── RECIPE PATH: the whole experiment by name ──────────────────────
+        // `--recipe X` loads a `benchmark_recipes` row (data, not code), pins
+        // the model it names (fit-gated by serving/pin), awaits lane readiness,
+        // then fires every dispatch entry through THIS SAME verb. The design
+        // from the start: two primitives, commands composing commands.
+        if let Some(recipe_name) = p.recipe.clone() {
+            if p.name.is_some() || p.instances.is_some() {
+                return Err(CommandError::Invalid(
+                    "pass either --recipe OR --name/--instances — the recipe row carries                      its own dispatches"
+                        .into(),
+                ));
+            }
+            let recipe = self.load_recipe(&recipe_name).await?;
+            self.ensure_recipe_model(&recipe).await?;
+            let mut agg: Option<BenchmarkDispatchResult> = None;
+            for d in &recipe.dispatches {
+                let sub = BenchmarkDispatchParams {
+                    name: Some(d.benchmark.clone()),
+                    recipe: None,
+                    instances: if d.instances.is_empty() {
+                        None
+                    } else {
+                        Some(d.instances.clone())
+                    },
+                    limit: d.limit.or(p.limit),
+                    ..p.clone()
+                };
+                let r = Box::pin(self.run(ctx, sub)).await?;
+                agg = Some(match agg.take() {
+                    None => r,
+                    Some(mut a) => {
+                        a.dispatched += r.dispatched;
+                        a.card_ids.extend(r.card_ids);
+                        a.skipped_needs_setup += r.skipped_needs_setup;
+                        a.skipped_known_red += r.skipped_known_red;
+                        a.skipped_already_on_board += r.skipped_already_on_board;
+                        a.pruned_duplicates += r.pruned_duplicates;
+                        a.contended_tasks += r.contended_tasks;
+                        a.kickoffs += r.kickoffs;
+                        a.solves_fired += r.solves_fired;
+                        a.kickoff_errors.extend(r.kickoff_errors);
+                        a.benchmark = format!("recipe:{recipe_name}");
+                        a
+                    }
+                });
+            }
+            return agg.ok_or_else(|| {
+                CommandError::Invalid(format!(
+                    "recipe '{recipe_name}' has no dispatches — author at least one"
+                ))
+            });
+        }
+        let name = p.name.clone().ok_or_else(|| {
+            CommandError::Invalid(
+                "pass --name <benchmark> (see benchmark/list) or --recipe <name>".into(),
+            )
+        })?;
+
         let spec = known_benchmarks()
             .iter()
-            .find(|b| b.name == p.name)
+            .find(|b| b.name == name)
             .ok_or_else(|| {
                 CommandError::Invalid(format!(
                     "unknown benchmark '{}' — see benchmark/list",
-                    p.name
+                    name
                 ))
             })?;
         // Two shapes of dispatchable benchmark, ONE card loop below. A `PreparedCard`
@@ -1289,7 +1512,7 @@ impl ActionCommand for BenchmarkDispatch {
                 CommandError::Invalid(format!(
                     "benchmark '{}' has no runnable eval_set yet — it is catalogued but its \
                      task collection hasn't been pulled/committed (see benchmark/list `runnable`)",
-                    p.name
+                    name
                 ))
             })?;
             // Same fail-loud task loading as cognition/eval: the committed gym resolves
@@ -2082,6 +2305,35 @@ crate::register_command!(BenchmarkDispatch);
 
 #[cfg(test)]
 mod tests {
+    // what this catches: the recipe row's serde contract — a minimal hand-authored
+    // `data/create` row (name + dispatches only) MUST parse, extra/unknown future
+    // fields MUST be tolerated, and instances default empty. The recipe is data
+    // authored by operators; a brittle parse turns a typo into a dead experiment
+    // with no compiler to catch it (2026-08-29, the two-command flow).
+    #[test]
+    fn recipe_rows_parse_tolerantly() {
+        let minimal: BenchmarkRecipe = serde_json::from_value(serde_json::json!({
+            "name": "x",
+            "dispatches": [{"benchmark": "swe-bench-lite"}]
+        }))
+        .expect("minimal row parses");
+        assert!(minimal.model_id.is_none());
+        assert!(minimal.dispatches[0].instances.is_empty());
+
+        let rich: BenchmarkRecipe = serde_json::from_value(serde_json::json!({
+            "name": "hard-eight",
+            "description": "d",
+            "model_id": "some/model",
+            "dispatches": [
+                {"benchmark": "swe-bench-lite", "instances": ["a__b-1"], "limit": 3},
+                {"benchmark": "swe-bench-verified", "instances": ["c__d-2"]}
+            ],
+            "some_future_field": {"ignored": true}
+        }))
+        .expect("future fields tolerated");
+        assert_eq!(rich.dispatches.len(), 2);
+        assert_eq!(rich.dispatches[0].limit, Some(3));
+    }
     mod coverage_gate {
         use super::super::*;
 

@@ -4,8 +4,17 @@ import type { WorkDriver } from "./WorkDriver";
 export type BenchmarkDispatchParams = { 
 /**
  * The benchmark name (see `benchmark/list`), e.g. `tool-bugfix-rs`.
+ * Optional when `recipe` is given (the recipe's rows carry the names).
  */
-name: string, 
+name?: string, 
+/**
+ * Execute a stored RECIPE by name instead of hand-assembled flags: a row
+ * in the `benchmark_recipes` collection (author with `data/create`)
+ * carrying the model to serve and the dispatches to fire. Dispatch pins
+ * the model (fit-gated), awaits lane readiness, then fires every entry —
+ * the whole experiment is two commands: `reboot` + `dispatch --recipe X`.
+ */
+recipe?: string, 
 /**
  * How many tasks (from the top) to post as cards. Omit for all.
  */
