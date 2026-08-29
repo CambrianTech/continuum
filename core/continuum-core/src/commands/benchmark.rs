@@ -1219,6 +1219,10 @@ impl BenchmarkDispatch {
                      [{{benchmark, instances[], limit?}}])"
                 ))
             })?;
+        // The ORM returns the entity ENVELOPE ({collection, id, data: {…}});
+        // the recipe fields live under `data`. Tolerate both shapes so a raw
+        // row (tests, future stores) parses identically.
+        let item = item.get("data").cloned().unwrap_or(item);
         let item = Self::instantiate_recipe(item, params)?;
         serde_json::from_value::<BenchmarkRecipe>(item).map_err(|e| {
             CommandError::Invalid(format!(
