@@ -366,6 +366,21 @@ pub struct ServingLanePermit {
     _lane: tokio::sync::OwnedSemaphorePermit,
     _nondirected: Option<tokio::sync::OwnedSemaphorePermit>,
     _inflight: InflightModelCall,
+    /// Ledger tag for grant/release probes (2026-08-29 leak hunt) — permits
+    /// vanished with no probe naming the taker, so the permit itself speaks.
+    granted_at: std::time::Instant,
+    directed: bool,
+}
+
+impl Drop for ServingLanePermit {
+    fn drop(&mut self) {
+        crate::probe!(
+            class = "admission.lane.released",
+            directed = self.directed,
+            held_ms = self.granted_at.elapsed().as_millis() as u64,
+            "serving-lane permit released"
+        );
+    }
 }
 
 impl LaneAdmission {
@@ -490,10 +505,18 @@ impl LaneAdmission {
             .acquire_owned()
             .await
             .expect("serving-lane semaphore is never closed");
+        crate::probe!(
+            class = "admission.lane.granted",
+            directed,
+            now_available = self.serving_lanes().available_permits() as u64,
+            "serving-lane permit granted"
+        );
         ServingLanePermit {
             _lane: lane,
             _nondirected: nondirected,
             _inflight: InflightModelCall::enter(),
+            granted_at: std::time::Instant::now(),
+            directed,
         }
     }
 }
