@@ -24,6 +24,12 @@ recipe?: string,
  */
 params?: Record<string, string>, 
 /**
+ * TEAM solve: citizen display names joined to every dispatched card's
+ * solve room beside its claimer, each charged to cross-review before
+ * submit (#team-proof gap 1). Recipe entries may override per dispatch.
+ */
+teammates?: Array<string>, 
+/**
  * How many tasks (from the top) to post as cards. Omit for all.
  */
 limit?: number, 

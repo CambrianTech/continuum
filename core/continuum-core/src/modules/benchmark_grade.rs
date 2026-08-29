@@ -238,6 +238,7 @@ fn on_card_state_changed(registry: &PersonaAircRuntimeRegistry, payload: &Value)
                         claimer: crate::identity::PeerId::from_uuid(next.assignee),
                         card: airc_work::WorkCardId::from_uuid(next.card),
                         room: airc_core::RoomId::from_u128(next.run_room.as_u128()),
+                        teammates: Vec::new(), // solo default; team threading lands per-caller
                     },
                 )
                 .await;

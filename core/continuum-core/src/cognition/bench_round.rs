@@ -145,12 +145,21 @@ pub struct BenchRound {
     card_assignees: HashMap<Uuid, Uuid>,
 }
 
-/// Where one card's solve LIVES: its per-instance activity room and the citizen
-/// working it. Typed UUIDs, passed as a struct (Joel: "pass structs").
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+/// Where one card's solve LIVES: its per-instance activity room, the citizen
+/// working it, and — for TEAM solves (#team-proof gap 1) — the teammates joined
+/// to that room. Typed UUIDs, passed as a struct (Joel: "pass structs").
+/// Membership is ROOM-level (teammates join and participate through normal
+/// multi-room cognition); accountability stays CARD-level (one claimer, one
+/// terminal transition) — no multi-claim machinery.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CardActivity {
     pub solve_room: Uuid,
     pub assignee: Uuid,
+    /// Room-members beyond the claimer. Recorded so a resume re-invites the
+    /// SAME team (continuity), and so experience records can attribute team
+    /// outcomes (the protocol's gap 3 reads this).
+    #[serde(default)]
+    pub teammates: Vec<Uuid>,
 }
 
 impl BenchRound {
@@ -464,7 +473,7 @@ pub fn card_activity(card_id: Uuid) -> Option<CardActivity> {
     rounds
         .values()
         .find(|r| r.cards.contains_key(&card_id))
-        .and_then(|r| r.card_activities.get(&card_id).copied())
+        .and_then(|r| r.card_activities.get(&card_id).cloned())
 }
 
 /// Record (idempotently) the activity `card_id`'s solve runs in — called at the
@@ -878,15 +887,17 @@ mod tests {
         let (id, cs) = (Uuid::new_v4(), cards(2));
         let mut round = BenchRound::new(id, "swe-bench-verified", &cs, WorkDriver::DetachedSolve);
         let act = CardActivity {
+            teammates: Vec::new(), // test row: solo
+
             solve_room: Uuid::from_u128(0xA11CE),
             assignee: Uuid::from_u128(0xBEE),
         };
-        round.card_activities.insert(cs[0], act);
+        round.card_activities.insert(cs[0], act.clone()); // clone: the assert below compares against the original
         persist_round_in(&dir, &round);
 
         let reloaded = load_rounds_in(&dir);
         let r = reloaded.get(&id).expect("round reloads");
-        let got = r.card_activities.get(&cs[0]).copied().expect("activity survives");
+        let got = r.card_activities.get(&cs[0]).cloned().expect("activity survives");
         assert_eq!(got.solve_room, act.solve_room, "rejoin returns the SAME room");
         assert_eq!(got.assignee, act.assignee);
         assert!(r.card_activities.get(&cs[1]).is_none(), "unminted card has no activity yet");
