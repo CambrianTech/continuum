@@ -136,8 +136,44 @@ async function main(): Promise<void> {
       buildCommandUri('nav/select'),
       JSON.stringify({ userId: config.senderId, target, kind }),
     );
+    // The address bar mirrors the focused activity as its URI short form —
+    // `/room/<name>` · `/persona/<name>` — bookmarkable and shareable (Joel,
+    // 2026-08-30: "url subpath matches uri"). The click path hands us the
+    // UUID (identity); the nav state supplies the short name (display) when
+    // it knows the tab. replaceState: navigation-in-place, not history spam.
+    const known = widget.nav?.open_tabs?.find((t) => t.id === target);
+    const short = known?.title ? known.title.toLowerCase() : target;
+    window.history.replaceState(null, '', `/${kind}/${encodeURIComponent(short)}`);
   };
   widget.selectRoomHandler = selectRoomHandler;
+
+  // Bookmark restore: a deep-linked URL (`/room/general`) re-selects that
+  // activity — resolved against the nav state, because `nav/select` is
+  // UUID-typed (names are display, ids are identity). The pending link waits
+  // for the first nav envelope that knows the target, fires once, clears.
+  let pendingDeepLink: { kind: 'room' | 'persona'; target: string } | null = null;
+  {
+    const m = /^\/(room|persona)\/(.+)$/.exec(window.location.pathname);
+    if (m?.[1] !== undefined && m[2] !== undefined) {
+      pendingDeepLink = {
+        kind: m[1] as 'room' | 'persona',
+        target: decodeURIComponent(m[2]),
+      };
+    }
+  }
+  const resolveDeepLink = (tabs: readonly { id?: string; title?: string }[]): void => {
+    if (!pendingDeepLink) return;
+    const want = pendingDeepLink.target.toLowerCase();
+    const hit = tabs.find(
+      (t) => t.id?.toLowerCase() === want || t.title?.toLowerCase() === want,
+    );
+    if (hit?.id === undefined) return; // nav doesn't know it yet — next envelope
+    const { kind } = pendingDeepLink;
+    pendingDeepLink = null;
+    void selectRoomHandler(hit.id, kind).catch((err: unknown) => {
+      console.error(`deep link ${window.location.pathname} failed:`, err);
+    });
+  };
 
   // Settings: fetch or mutate the node's operator settings through the SAME
   // core verbs the terminal uses — `genome/sharing` (covenant consent + HF
@@ -372,6 +408,7 @@ async function main(): Promise<void> {
   state.on(NAV_KIND, (envelope: StateEnvelope) => {
     const nav = navStateFromEnvelope(envelope);
     widget.nav = nav;
+    resolveDeepLink(nav.open_tabs ?? []);
     // The tab/window title mirrors the CURRENT activity — "continuum — cambriantech"
     // (Joel 2026-07-30; the #252 router's short-title rule, brand always lowercase).
     // App-level concern: index.ts owns the document, widgets never touch it.

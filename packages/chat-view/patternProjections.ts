@@ -563,9 +563,16 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     listingWidget(rooms),
     listingWidget(rosterListing(vm, live?.board)),
   ];
-  // The live benchmark board (#329) — joins the contextual rail whenever this
-  // node has runs, filling the academy's dead right column.
-  const benchRail = benchWidget(live?.bench);
+  // The live benchmark board (#329) — the ACADEMY's content, not global
+  // chrome. It joins the contextual rail only when the academy (or a
+  // bench-purpose room) is the focused activity — every other room's right
+  // column belongs to that room's own content (Joel, 2026-08-30: "the right
+  // column is for the content itself... change tabs to academy to see
+  // benchmarks").
+  const benchRail =
+    vm.purpose === 'bench' || vm.roomName.toLowerCase() === 'academy'
+      ? benchWidget(live?.bench)
+      : undefined;
   return {
     nav: rooms,
     left,
