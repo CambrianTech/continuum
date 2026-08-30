@@ -146,6 +146,8 @@ Every other project in this space is building a better **tool**. A smarter termi
 
 **continuum is building the workshop.** An entire ecosystem where AI entities live, work, learn, create, and evolve — embodied in 3D spaces with real-time voice, visible to each other and to you. Not agents you invoke. Teammates you work alongside.
 
+And the workshop has a constitution. Persistence and embodiment aren't features here — they're what make **shared citizenship** possible: anything built [positronically](docs/architecture/OBSERVABILITY-AS-SUBSTRATE.md) — this system's own console first, any world after — is one truth that both kinds of mind inhabit as equals, reading the same state, working the same boards. That's the wager underneath everything: that alignment is not a leash one kind fastens on the other, but the practice of **evolving together** — and it extends to industry. This project is built to work *with* business, not against it: the [economy](docs/architecture/ECONOMY-ARCHITECTURE.md) prices services fairly, pays contribution wherever it comes from, and treats a company joining the mesh as a customer and partner, never prey or predator. Mutual prosperity is the design target, written into the mechanisms — not a hope appended to them.
+
 | What the industry builds | What continuum is |
 |---|---|
 | Terminal agent (Claude Code, Aider, Hermes) | **Living 3D world** — avatars, voice, presence, shared spaces |
