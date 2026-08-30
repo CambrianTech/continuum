@@ -207,19 +207,20 @@ pub(crate) fn persona_airc(
     // A refusal that misnames the thing you called teaches the wrong lesson.
     family: &str,
 ) -> Result<Arc<Airc>, CommandError> {
-    let peer = ctx
-        .caller
-        .as_ref()
-        .map(|c| c.peer_id.as_uuid())
-        .ok_or_else(|| {
+    // A persona acting through her toolbelt acts as HERSELF; the caller-less
+    // operator acts as the OPERATOR SELF-PEER (#27, closed 2026-08-30) — the
+    // human's in-core identity, booted beside the citizens. The deny below
+    // survives only for the boot window before the self-peer is online.
+    let Some(peer) = ctx.caller.as_ref().map(|c| c.peer_id.as_uuid()) else {
+        return crate::persona::operator_peer::operator_airc().ok_or_else(|| {
             CommandError::Denied(format!(
-                "{family} acts as the caller's own airc identity, and the \
-                     substrate-local operator has none in-core (yet — the self-peer gap, \
-                     task #27). Personas calling through their toolbelt act as themselves \
-                     and need nothing special; for operator-identity board writes use \
-                     `airc work <verb> ...`."
+                "{family} acts as the caller's own airc identity, and the operator \
+                 self-peer is not online yet this boot (it starts beside the \
+                 citizens — retry shortly, or check the operator.peer.boot_failed \
+                 probe)."
             ))
-        })?;
+        });
+    };
     let rt = registry.get(peer).ok_or_else(|| {
         CommandError::NotFound(format!("no live airc runtime for persona {peer}"))
     })?;
