@@ -831,4 +831,19 @@ fi
 # which re-runs cargo's build logic at launch and could second-guess (or re-stale)
 # what we already verified. We built it, we checked it reflects source, we run it.
 # Unambiguous: the process image is the verified $CORE_BIN. [[verify-the-build-actually-deployed]]
+# ── The desktop display manager's dist (Joel: 'should work like a Display
+# Manager'). Build the web client so the core can serve it — ALWAYS current
+# by construction: this runs on every start/reboot, so the greeter and the
+# core deploy as one generation. Non-fatal: a failed UI build boots a
+# headless core (desktop.dm.dist_missing probes the fix) rather than no core.
+if [ -f "$REPO_ROOT/apps/web/package.json" ] && command -v npm >/dev/null 2>&1; then
+  echo "→ building the desktop (served by the core at :\${CONTINUUM_UI_PORT:-8975})…"
+  if (cd "$REPO_ROOT" && npm run build -w @continuum/web >/dev/null 2>&1); then
+    export CONTINUUM_UI_DIST="$REPO_ROOT/apps/web/dist"
+    echo "  desktop built — continuum desktop opens it"
+  else
+    echo "  ⚠ desktop build failed — core boots headless (npm run build -w @continuum/web to diagnose)" >&2
+  fi
+fi
+
 exec "$CORE_BIN" "$CONTINUUM_SOCKET"

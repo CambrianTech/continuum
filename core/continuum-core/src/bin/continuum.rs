@@ -75,6 +75,33 @@ async fn run() -> Result<(), String> {
             reboot(force).await
         }
         "stop" => stop().await,
+        // The display-manager door: the core serves the built desktop itself
+        // (http::desktop, always-current, browsers attach/detach freely) —
+        // this verb just verifies the greeter answers and opens the browser.
+        "desktop" | "ui" => {
+            let port = std::env::var("CONTINUUM_UI_PORT")
+                .ok()
+                .and_then(|v| v.parse::<u16>().ok())
+                .unwrap_or(8975); // unwrap_or: the display manager's documented default
+            let url = format!("http://127.0.0.1:{port}/");
+            let up = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok();
+            if !up {
+                eprintln!(
+                    "✗ the desktop display manager is not answering on :{port}.\n                       Is the core running? `continuum ping` — and `continuum start` \n                       builds the web client and serves it automatically. \n                       (Probe classes desktop.dm.* in the server log say why it stayed off.)"
+                );
+                std::process::exit(1);
+            }
+            println!("🖥  {url}");
+            #[cfg(target_os = "macos")]
+            {
+                let _ = std::process::Command::new("open").arg(&url).status();
+            }
+            #[cfg(target_os = "linux")]
+            {
+                let _ = std::process::Command::new("xdg-open").arg(&url).status();
+            }
+            Ok(())
+        }
         // Dry-run of the reap `reboot`/`stop` perform. Answers "what is this
         // install still holding that nothing is using?" WITHOUT killing it —
         // the safe way to inspect a suspected leak, and the way to confirm a

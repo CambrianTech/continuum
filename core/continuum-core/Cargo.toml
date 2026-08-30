@@ -117,7 +117,7 @@ chrono.workspace = true
 # Claude Code sends POST /v1/messages — we serve it from Candle
 axum = "0.8"
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.6", features = ["cors", "fs"] }
 parking_lot.workspace = true
 tokio-stream.workspace = true
 
