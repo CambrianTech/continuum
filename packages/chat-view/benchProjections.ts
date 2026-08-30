@@ -41,6 +41,10 @@ function stateOf(row: BenchRunRow): BenchRunState {
       return 'failed';
     case 'quiet':
       return 'stalled';
+    case 'queued':
+      // The core's cross-card verdict: silent, but the solver's hands are
+      // busy on another run — waiting a turn, never an alarm.
+      return 'queued';
     default:
       return (row.acts ?? 0) > 0 ? 'working' : 'queued';
   }

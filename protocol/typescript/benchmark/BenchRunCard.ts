@@ -24,7 +24,9 @@ solver?: string,
 /**
  * `resolved` | `failed` (loud infra marker, incl. #2180 stalls the
  * deadline caught) | `active` (artifact activity within the stall
- * window) | `quiet` (non-terminal AND silent past the window — the
+ * window) | `queued` (silent past the window BUT the solver is actively
+ * working another run — one pair of hands; waiting a turn is not a
+ * stall) | `quiet` (non-terminal AND silent past the window — the
  * shape the projection exists to make visible) | `ungraded` (a staged
  * workspace holds a real diff that no grade has ever seen — durable
  * work awaiting a verdict, NOT a stall; see
