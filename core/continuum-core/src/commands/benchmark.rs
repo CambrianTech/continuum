@@ -4015,7 +4015,9 @@ pub struct BenchRunCard {
     pub solver: Option<String>,
     /// `resolved` | `failed` (loud infra marker, incl. #2180 stalls the
     /// deadline caught) | `active` (artifact activity within the stall
-    /// window) | `quiet` (non-terminal AND silent past the window — the
+    /// window) | `queued` (silent past the window BUT the solver is actively
+    /// working another run — one pair of hands; waiting a turn is not a
+    /// stall) | `quiet` (non-terminal AND silent past the window — the
     /// shape the projection exists to make visible) | `ungraded` (a staged
     /// workspace holds a real diff that no grade has ever seen — durable
     /// work awaiting a verdict, NOT a stall; see
@@ -5000,6 +5002,30 @@ pub(crate) fn scan_run_cards(
             last_activity_ms,
             now_ms,
         ));
+    }
+    // QUEUED-BEHIND-HANDS, not stalled (glass-boxed 2026-08-30): a persona
+    // runs ONE solve at a time (HandsLease), so her other claim-dispatched
+    // runs sit legitimately idle while she works — and the per-card silence
+    // window read them as "quiet", inflating the console's gone-quiet alarm
+    // with runs that are just WAITING THEIR TURN (4 of the banner's 8, live).
+    // Cross-card rule: a quiet card whose solver has an ACTIVE card is
+    // re-phased `queued`. Same-solver-and-active is the whole test — honest
+    // quiet (solver has nothing active anywhere) still alarms.
+    let active_solvers: std::collections::HashSet<String> = cards
+        .iter()
+        .filter(|c| c.phase == "active")
+        .filter_map(|c| c.solver.clone())
+        .collect();
+    for card in cards.iter_mut() {
+        if card.phase == "quiet"
+            && card
+                .solver
+                .as_ref()
+                .is_some_and(|s| active_solvers.contains(s))
+        {
+            card.phase = "queued".to_string();
+            card.stalled = false;
+        }
     }
     // Second source: staged trees holding work no grade has seen. Only when the caller is
     // asking for the BOARD — a run-id query is asking about one run's ledger, and a workspace
