@@ -43,11 +43,28 @@ fi
 echo "→ building the positron UI from current source…"
 npm run build -w @continuum/web >/dev/null 2>&1 || { echo "✗ UI build failed — run: npm run build -w @continuum/web" >&2; exit 1; }
 
-# 5) Serve the built dist on a fixed port (idempotent — reuse if already up).
+# 5) Serve the built dist on a fixed port — ALWAYS a fresh server. The old
+# "idempotent reuse" kept an hours-stale preview alive while the build swapped
+# dist/ underneath it; a browser holding the stale index then requested hashed
+# bundles that no longer existed and rendered a destroyed layout (glass-boxed
+# 2026-08-30: a 1:25PM preview serving an evening build — Joel's 'left bar is
+# destroyed'). A vite preview boots in ~300ms; reuse saves nothing and costs
+# correctness. Kill-then-start, and tell the user what happened.
 UI_PORT="${CONTINUUM_UI_PORT:-5177}"
-if ! nc -z localhost "$UI_PORT" 2>/dev/null; then
-  ( npm run preview -w @continuum/web -- --port "$UI_PORT" --strictPort >/dev/null 2>&1 & )
-  for _ in $(seq 1 20); do nc -z localhost "$UI_PORT" 2>/dev/null && break; sleep 0.3; done
+if nc -z localhost "$UI_PORT" 2>/dev/null; then
+  echo "→ restarting the UI server on :$UI_PORT (never serve a fresh build from a stale server)"
+  lsof -ti tcp:"$UI_PORT" | xargs kill 2>/dev/null || true
+  for _ in $(seq 1 10); do nc -z localhost "$UI_PORT" 2>/dev/null || break; sleep 0.2; done
+fi
+( npm run preview -w @continuum/web -- --port "$UI_PORT" --strictPort >/dev/null 2>&1 & )
+for _ in $(seq 1 20); do nc -z localhost "$UI_PORT" 2>/dev/null && break; sleep 0.3; done
+
+# 6) The system's eyes: start the eye-node if absent, so perception/observe +
+# interface/screenshot are fulfillable the whole session (citizens and ops
+# both audit the UI through it — #2624's standing-service gap).
+if ! pgrep -f "eye-node/src/index.ts" >/dev/null 2>&1; then
+  echo "→ attaching the eye-node (perception/observe provider)"
+  ( cd apps/eye-node && nohup npx tsx src/index.ts >/dev/null 2>&1 & )
 fi
 
 URL="http://localhost:$UI_PORT/?core=ws://127.0.0.1:$CORE_WS_PORT&call=ws://127.0.0.1:$CALL_WS_PORT&me=$ME"
