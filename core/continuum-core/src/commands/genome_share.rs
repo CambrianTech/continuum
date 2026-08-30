@@ -184,6 +184,14 @@ impl ActionCommand for GenomeSharing {
                     .map_err(CommandError::Invalid)?;
                 crate::probe!(class = "genome.sharing.agreed", receipt = %receipt,
                     "operator accepted the genome-commons covenant");
+                // Consent is the moment the commons promise activates: seed the
+                // currently-serving base right now instead of waiting for the
+                // next relaunch (detached; idempotent per model).
+                if let Some(model) =
+                    crate::inference::llama_server::current_serving().active_model
+                {
+                    spawn_bootstrap(model);
+                }
             }
             Some(false) => {
                 crate::config_env::upsert(CONSENT_KEY, "revoked")
@@ -489,6 +497,15 @@ impl ActionCommand for GenomePull {
         if !sharing_enabled() {
             return Err(consent_refusal("genome/pull"));
         }
+        pull_gene(&p).await
+    }
+}
+
+/// The pull body, factored so `genome/bootstrap` seeds through the SAME path a
+/// manual pull takes — one downloader, one manifest register, one signature
+/// stamp (the compression principle). Caller owns the consent gate.
+pub(crate) async fn pull_gene(p: &GenomePullParams) -> Result<GenomePullResult, CommandError> {
+    {
         let dest = pulled_dir(&p.repo).map_err(CommandError::Invalid)?;
         std::fs::create_dir_all(&dest)
             .map_err(|e| CommandError::Invalid(format!("create {}: {e}", dest.display())))?;
@@ -583,6 +600,189 @@ impl ActionCommand for GenomePull {
 }
 
 crate::register_stateless_command!(GenomePull);
+
+// ─── genome/bootstrap ───────────────────────────────────────────────────────
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/genome/GenomeBootstrapParams.ts")]
+pub struct GenomeBootstrapParams {
+    /// The CONTINUUM base-model id to seed genes for (the serving association
+    /// every pulled gene registers under).
+    pub base_model: String,
+    /// HF org to seed from (default: the continuum commons org).
+    #[serde(default)]
+    #[ts(optional)]
+    pub org: Option<String>,
+    /// Max genes to pull (default 3) — a starter genome, not a mirror.
+    #[serde(default)]
+    #[ts(optional)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/genome/GenomeBootstrapResult.ts")]
+pub struct GenomeBootstrapResult {
+    /// Genes registered this run.
+    pub pulled: Vec<String>,
+    /// Candidate repos skipped, each with its reason — counted, never silent.
+    pub skipped: Vec<String>,
+    /// True when the node already carries genes for this base — nothing to do.
+    pub already_seeded: bool,
+    /// False when the covenant is not accepted — the bootstrap waits for
+    /// consent instead of erroring (it runs automatically at serving-ready).
+    pub consent: bool,
+}
+
+#[derive(Default)]
+pub struct GenomeBootstrap;
+
+#[async_trait]
+impl ActionCommand for GenomeBootstrap {
+    const NAME: &'static str = "genome/bootstrap";
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Seed this node's genome from the commons for a base model: searches the shared HF \
+         org for compatible published genes and pulls a starter set through the same path as \
+         genome/pull. Runs automatically when a model starts serving (covenant permitting); \
+         idempotent — a node already carrying genes for the base is left untouched.";
+    type Params = GenomeBootstrapParams;
+    type Output = GenomeBootstrapResult;
+
+    async fn run(&self, _ctx: &Ctx, p: GenomeBootstrapParams) -> Result<GenomeBootstrapResult, CommandError> {
+        bootstrap_for(&p).await
+    }
+}
+
+crate::register_stateless_command!(GenomeBootstrap);
+
+/// Default commons org — the shared cards the README promises personas seed from.
+const COMMONS_ORG: &str = "continuum-ai";
+
+pub(crate) async fn bootstrap_for(
+    p: &GenomeBootstrapParams,
+) -> Result<GenomeBootstrapResult, CommandError> {
+    let org = p.org.clone().unwrap_or_else(|| COMMONS_ORG.to_string()); // unwrap_or: the commons org is the documented default, not a guess
+    let limit = p.limit.unwrap_or(3).clamp(1, 8) as usize;
+    if !sharing_enabled() {
+        crate::probe!(
+            class = "genome.bootstrap.no_consent",
+            base_model = %p.base_model,
+            "genome bootstrap waiting on the covenant — accept via genome/sharing --agree true (or the desktop Settings genome tab) and the seed runs on the next serve"
+        );
+        return Ok(GenomeBootstrapResult {
+            pulled: vec![],
+            skipped: vec![],
+            already_seeded: false,
+            consent: false,
+        });
+    }
+    // Idempotence: a node that already carries ANY gene for this base is
+    // seeded — bootstrap never overwrites a lived-in genome.
+    let manifest = crate::forge::adapter_manifest::load().map_err(CommandError::Invalid)?;
+    if manifest.iter().any(|a| a.base_model_id == p.base_model) {
+        crate::probe!(
+            class = "genome.bootstrap.already_seeded",
+            base_model = %p.base_model,
+            "node already carries genes for this base — bootstrap is a no-op"
+        );
+        return Ok(GenomeBootstrapResult {
+            pulled: vec![],
+            skipped: vec![],
+            already_seeded: true,
+            consent: true,
+        });
+    }
+    // Discovery: the commons org's published genes for this base family. The
+    // base's name segment keeps the query tight; org-prefix retention keeps it
+    // honest (search is fuzzy; the org filter is exact; the pull is the
+    // validator).
+    let base_segment = p
+        .base_model
+        .rsplit('/')
+        .next()
+        .unwrap_or(&p.base_model) // unwrap_or: an id with no '/' IS its own segment
+        .to_string();
+    let found = crate::commands::hf::search_hub(
+        crate::commands::hf::HubKind::Models,
+        crate::commands::hf::HfSearchParams {
+            query: format!("{org} {base_segment} lora"),
+            limit: Some(20),
+            sort: None,
+            filter: None,
+        },
+    )
+    .await?;
+    let candidates: Vec<String> = found
+        .hits
+        .into_iter()
+        .map(|r| r.id)
+        .filter(|id| id.starts_with(&format!("{org}/")))
+        .take(limit)
+        .collect();
+    if candidates.is_empty() {
+        crate::probe!(
+            class = "genome.bootstrap.none_found",
+            base_model = %p.base_model,
+            org = %org,
+            "no commons genes found for this base — the node starts with a fresh genome (honest empty, not an error)"
+        );
+        return Ok(GenomeBootstrapResult {
+            pulled: vec![],
+            skipped: vec![],
+            already_seeded: false,
+            consent: true,
+        });
+    }
+    let mut pulled = Vec::new();
+    let mut skipped = Vec::new();
+    for repo in candidates {
+        match pull_gene(&GenomePullParams {
+            repo: repo.clone(),
+            base_model: p.base_model.clone(),
+            alias: None,
+        })
+        .await
+        {
+            Ok(r) => pulled.push(r.gene),
+            Err(e) => skipped.push(format!("{repo}: {e}")),
+        }
+    }
+    crate::probe!(
+        class = "genome.bootstrap.seeded",
+        base_model = %p.base_model,
+        pulled = pulled.len() as u64,
+        skipped = skipped.len() as u64,
+        "starter genome seeded from the commons"
+    );
+    Ok(GenomeBootstrapResult { pulled, skipped, already_seeded: false, consent: true })
+}
+
+/// Fire-and-forget bootstrap for a newly serving base model — the serving
+/// daemon calls this at decode-ready; once per (process, model). Env gate
+/// CONTINUUM_GENOME_BOOTSTRAP=0 disables.
+pub fn spawn_bootstrap(base_model: String) {
+    use std::sync::{Mutex, OnceLock};
+    static DONE: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    if crate::config_env::read("CONTINUUM_GENOME_BOOTSTRAP").as_deref() == Some("0") {
+        return;
+    }
+    let done = DONE.get_or_init(|| Mutex::new(std::collections::HashSet::new()));
+    if !done
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) // unwrap_or: a poisoned dedup set still dedups — the data is a HashSet of strings
+        .insert(base_model.clone())
+    {
+        return;
+    }
+    tokio::spawn(async move {
+        let _ = bootstrap_for(&GenomeBootstrapParams {
+            base_model,
+            org: None,
+            limit: None,
+        })
+        .await;
+    });
+}
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
