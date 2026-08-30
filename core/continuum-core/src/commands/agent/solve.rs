@@ -178,6 +178,15 @@ pub struct AgentSolveParams {
     #[ts(optional)]
     #[ts(optional, type = "number")]
     pub attempts: Option<u32>,
+    /// Teammates on this solve (team-proof gap 3, 2026-08-30): peers who joined the
+    /// solve room to review. The measured-work quiesce lease excepts them alongside
+    /// the solver — the first team round proved a reviewer quiesced for the solve's
+    /// whole duration is structurally unable to review (Kira: 28 min, zero turns).
+    /// The lease's lane-demand override counts them too, so serving budgets a warm
+    /// slot per PARTICIPANT, not per resident.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, type = "Array<string>")]
+    pub teammates: Vec<Uuid>,
 }
 
 
@@ -1032,7 +1041,13 @@ async fn advance_round_after_non_settling(run_id: &str) {
             claimer: crate::identity::PeerId::from_uuid(next.assignee),
             card: airc_work::WorkCardId::from_uuid(next.card),
             room: airc_core::RoomId::from_u128(next.run_room.as_u128()),
-            teammates: Vec::new(), // solo default; team threading lands per-caller
+            // The card's RECORDED team rides every driver edge — dropping it here
+            // silently converted a team round into a solo round on re-dispatch.
+            teammates: next
+                .teammates
+                .iter()
+                .map(|t| crate::identity::PeerId::from_uuid(*t))
+                .collect(),
         },
     )
     .await;
@@ -1340,16 +1355,25 @@ impl AgentSolve {
             persona_uuid,
             run_id.as_deref().unwrap_or("agent-solve"),
         );
+        // PARTICIPANTS stay awake, not just the solver (team-proof gap 3): a
+        // teammate holding the review charge must be able to take turns DURING
+        // the solve — the first team round (2026-08-30) quiesced the reviewers
+        // and made review structurally impossible. The lease's demand override
+        // counts the whole except-set, so serving budgets one warm slot per
+        // participant.
+        let mut participants = vec![persona_uuid];
+        participants.extend(p.teammates.iter().copied());
         let _quiesce_lease =
             crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global().map(
                 |reg| {
-                    let lease = reg.quiesce_others(persona_uuid);
+                    let lease = reg.quiesce_others_than(&participants);
                     crate::probe!(
                         class = "benchmark.solve.phase",
                         run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                         phase = "quiesce_others",
                         quiesced_peers = lease.count() as u64,
-                        "measured solve holds an exclusive warm slot — idle citizens quiesced so the KV prefix survives turn-to-turn"
+                        awake_participants = participants.len() as u64,
+                        "measured solve holds an exclusive warm slot — non-participants quiesced so the KV prefix survives turn-to-turn"
                     );
                     lease
                 },

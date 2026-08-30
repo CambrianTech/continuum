@@ -389,7 +389,7 @@ pub(crate) async fn room_holding_card(airc: &Arc<Airc>, card_id: WorkCardId) -> 
 /// both cases the original wrong-room refusal stands, verbatim. `Some(result)`
 /// means a room-switched claim was attempted and that result REPLACES the refusal,
 /// so a genuine contention in the card's room still reports as contention.
-async fn claim_following_card_room(
+pub(crate) async fn claim_following_card_room(
     airc: &Arc<Airc>,
     card_id: WorkCardId,
     ttl_ms: u64,
@@ -639,7 +639,18 @@ impl ActionCommand for WorkClaim {
                             claimer: caller.peer_id,
                             card: card_id,
                             room: room.channel,
-                            teammates: Vec::new(), // solo default; team threading lands per-caller
+                            // An organic claim REJOINS the card's recorded team (gap 3) —
+                            // the round record is the continuity source, same as rooms.
+                            teammates: crate::cognition::bench_round::card_activity(
+                                card_id.as_uuid(),
+                            )
+                            .map(|act| {
+                                act.teammates
+                                    .iter()
+                                    .map(|t| crate::identity::PeerId::from_uuid(*t))
+                                    .collect()
+                            })
+                            .unwrap_or_default(), // unwrap_or: card outside any round = solo
                         },
                     )
                     .await;
@@ -1175,6 +1186,10 @@ pub(crate) async fn dispatch_staged_swe_solve(
                 );
                 continue;
             };
+            if mate.as_uuid() == claimer.as_uuid() {
+                // Teamed with yourself is a roster accident, not a team.
+                continue;
+            }
             if let Err(e) = rt.join_room(&team_room_name).await {
                 crate::probe!(
                     class = "work.team.join_failed",
@@ -1185,13 +1200,63 @@ pub(crate) async fn dispatch_staged_swe_solve(
                 );
                 continue;
             }
+            // AUTHOR THE CHARGE AS SOMEONE ELSE — the same law the kickoff path
+            // learned (#417, benchmark.rs "AUTHOR IT AS SOMEONE ELSE"): a citizen's
+            // inbound stream skips messages she is recorded as having said, so a
+            // charge published through the MATE'S OWN airc is dropped by her
+            // self-filter and never wakes her. Measured on the first team round
+            // (2026-08-30): Kira held the review charge in five rooms and produced
+            // zero turns in 28 minutes — the charge was her own voice. The natural
+            // author is the CLAIMER (it is their patch being reviewed); fall back
+            // to any other live citizen, and skip loudly rather than send a
+            // message that cannot be heard.
+            let registry =
+                crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global();
+            let voice_rt = registry
+                .as_ref()
+                .and_then(|reg| reg.get(claimer.as_uuid()))
+                .or_else(|| {
+                    registry
+                        .as_ref()
+                        .and_then(|reg| reg.any_live_citizen_other_than(Some(mate.as_uuid())))
+                });
+            let Some(voice_rt) = voice_rt else {
+                crate::probe!(
+                    class = "work.team.charge_unvoiced",
+                    card_id = %short8(card_id.as_uuid()),
+                    mate = %short8(mate.as_uuid()),
+                    "no live citizen other than the mate can voice the charge — \
+                     skipped loudly; a self-authored charge would be self-filtered"
+                );
+                continue;
+            };
+            // Membership is what makes the room deliverable for the voice too
+            // (idempotent; same rule as the kickoff's voice-join).
+            if let Err(e) = voice_rt.join_room(&team_room_name).await {
+                crate::probe!(
+                    class = "work.team.voice_join_failed",
+                    card_id = %short8(card_id.as_uuid()),
+                    mate = %short8(mate.as_uuid()),
+                    error = %e.to_string(),
+                    "charge voice could not join the solve room — charge skipped"
+                );
+                continue;
+            }
+            let claimer_name = registry
+                .as_ref()
+                .and_then(|reg| reg.get(claimer.as_uuid()))
+                .map(|c| c.agent_name().to_string())
+                .unwrap_or_else(|| short8(claimer.as_uuid()));
             let charge = format!(
-                "You are teamed with {} on `{}` in this room. Their patch must be                  reviewed by a teammate before it submits: read the diff when it                  lands, run what you can, and SPEAK your findings here — a miss a                  reviewer catches is the whole point of the team.",
-                short8(claimer.as_uuid()),
-                instance
+                "@{mate_name} (to you): you are teamed with {claimer_name} on \
+                 `{instance}` in this room. Their patch must be reviewed by a \
+                 teammate before it submits: read the diff when it lands, run what \
+                 you can, and SPEAK your findings here — a miss a reviewer catches \
+                 is the whole point of the team.",
+                mate_name = rt.agent_name(),
             );
             match crate::persona::airc_citizen::publish_text_in_room(
-                rt.airc(),
+                voice_rt.airc(),
                 solve_room,
                 &charge,
             )
@@ -1265,6 +1330,9 @@ pub(crate) async fn dispatch_staged_swe_solve(
         // own failure is part of the exam. Three chances: first attempt, one informed
         // retry, one consolidation — beyond that the failures repeat, not teach.
         attempts: Some(SWE_CLAIM_ATTEMPTS),
+        // Participants stay awake through the measured-work quiesce (gap 3) —
+        // the reviewers this dispatch just joined into the solve room.
+        teammates: teammates.iter().map(|m| m.as_uuid()).collect(),
     };
     match crate::commands::agent::solve::AgentSolve
         .run(ctx, params)

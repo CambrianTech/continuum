@@ -497,11 +497,15 @@ pub fn record_card_assignee(card_id: Uuid, assignee: Uuid) {
 }
 
 /// The next card the round owes a solve — passed as a struct (typed UUIDs).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct NextCard {
     pub card: Uuid,
     pub assignee: Uuid,
     pub run_room: Uuid,
+    /// The card's recorded team (empty = solo). Carried so every driver edge
+    /// re-fires the solve WITH its team — a re-dispatch that drops teammates
+    /// silently converts a team round into a solo round mid-flight.
+    pub teammates: Vec<Uuid>,
 }
 
 /// ONE driver decision, three edges (dispatch, card-settled, boot resume): given
@@ -611,6 +615,11 @@ fn first_unworked_excluding(
                 card: *c,
                 assignee: *a,
                 run_room: round.round_id,
+                teammates: round
+                    .card_activities
+                    .get(c)
+                    .map(|act| act.teammates.clone())
+                    .unwrap_or_default(), // unwrap_or: no recorded activity yet = solo card
             })
         })
 }

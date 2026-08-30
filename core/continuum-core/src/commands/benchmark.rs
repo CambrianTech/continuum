@@ -1051,6 +1051,13 @@ pub struct RecipeDispatch {
     /// `assignees`; non-resident names are skipped with a probe.
     #[serde(default)]
     pub teammates: Vec<String>,
+    /// ROLE-shaped team (recipe = content-type + RULES, #371): how many live
+    /// residents to enroll as reviewers per card, resolved against the roster
+    /// AT DISPATCH — a recipe that names citizens is brittle across machines;
+    /// a recipe that names ROLES ships anywhere. Resolved reviewers merge with
+    /// any explicit `teammates`; the assignee is never their own reviewer.
+    #[serde(default)]
+    pub reviewers: Option<u32>,
 }
 
 /// Resolve the citizens a directed dispatch addresses — GENERALIZED for any repo user's
@@ -1391,13 +1398,43 @@ impl ActionCommand for BenchmarkDispatch {
             self.ensure_recipe_model(&recipe).await?;
             let mut agg: Option<BenchmarkDispatchResult> = None;
             for d in &recipe.dispatches {
+                // ROLE → NAMES, at dispatch (recipe = content-type + RULES, #371):
+                // `reviewers: N` resolves against the LIVE resident roster here, so
+                // the recipe ships without citizen names. Merged with any explicit
+                // `teammates`; a reviewer who lands as a card's assignee is skipped
+                // per-card downstream (never their own reviewer). Short rosters
+                // degrade loudly, never silently.
+                let mut team: Vec<String> = d.teammates.clone();
+                if let Some(n) = d.reviewers.filter(|n| *n > 0) {
+                    let picked: Vec<String> = match crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global() {
+                        Some(reg) => reg
+                            .resident_snapshot()
+                            .await
+                            .into_iter()
+                            .map(|(name, _)| name)
+                            .filter(|name| !team.contains(name))
+                            .take(n as usize)
+                            .collect(),
+                        None => Vec::new(),
+                    };
+                    if (picked.len() as u32) < n {
+                        crate::probe!(
+                            class = "recipe.reviewers.short",
+                            benchmark = %d.benchmark,
+                            wanted = n as u64,
+                            resolved = picked.len() as u64,
+                            "recipe asked for more reviewers than the roster holds — team degrades, loudly"
+                        );
+                    }
+                    team.extend(picked);
+                }
                 let sub = BenchmarkDispatchParams {
                     name: Some(d.benchmark.clone()),
                     recipe: None,
-                    teammates: if d.teammates.is_empty() {
+                    teammates: if team.is_empty() {
                         p.teammates.clone()
                     } else {
-                        Some(d.teammates.clone())
+                        Some(team)
                     },
                     instances: if d.instances.is_empty() {
                         None
@@ -2179,14 +2216,31 @@ impl ActionCommand for BenchmarkDispatch {
             if pre_claim_this {
                 match self.registry.get(*who_peer) {
                     Some(rt) => {
-                        match rt
+                        let ttl_ms = crate::modules::work::DEFAULT_CLAIM_TTL_MS;
+                        let mut attempt = rt
                             .airc()
-                            .claim_work_card(airc_lib::ClaimWorkCard {
+                            .claim_work_card(airc_lib::ClaimWorkCard { card_id, ttl_ms })
+                            .await;
+                        // Follow the card to its room, same as work/claim (#328).
+                        // Sequential dispatch mints a solve room per card, so the
+                        // assignee's current-room pointer trails one card behind and
+                        // every pre-claim after the first bounced on wrong-room
+                        // (observed on the first team round, 2026-08-30: 3 of 8).
+                        if matches!(
+                            attempt,
+                            Err(airc_lib::AircError::WorkCardNotInCurrentRoom { .. })
+                        ) {
+                            if let Some(retry) = crate::modules::work::claim_following_card_room(
+                                rt.airc(),
                                 card_id,
-                                ttl_ms: crate::modules::work::DEFAULT_CLAIM_TTL_MS,
-                            })
+                                ttl_ms,
+                            )
                             .await
-                        {
+                            {
+                                attempt = retry;
+                            }
+                        }
+                        match attempt {
                             Ok(_) => pre_claimed = true,
                             Err(e) => kickoff_errors.push(format!("pre-claim {short}: {e}")),
                         }

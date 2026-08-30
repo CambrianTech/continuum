@@ -130,4 +130,13 @@ path_prepend?: Array<string>,
  * fault ends the run early. Default 1 (one shot, exactly the old behavior) — the
  * per-benchmark adapter that dispatches the run owns its N, not this abstraction.
  */
-attempts?: number, };
+attempts?: number, 
+/**
+ * Teammates on this solve (team-proof gap 3, 2026-08-30): peers who joined the
+ * solve room to review. The measured-work quiesce lease excepts them alongside
+ * the solver — the first team round proved a reviewer quiesced for the solve's
+ * whole duration is structurally unable to review (Kira: 28 min, zero turns).
+ * The lease's lane-demand override counts them too, so serving budgets a warm
+ * slot per PARTICIPANT, not per resident.
+ */
+teammates?: Array<string>, };
