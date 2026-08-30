@@ -389,7 +389,7 @@ pub(crate) async fn room_holding_card(airc: &Arc<Airc>, card_id: WorkCardId) -> 
 /// both cases the original wrong-room refusal stands, verbatim. `Some(result)`
 /// means a room-switched claim was attempted and that result REPLACES the refusal,
 /// so a genuine contention in the card's room still reports as contention.
-async fn claim_following_card_room(
+pub(crate) async fn claim_following_card_room(
     airc: &Arc<Airc>,
     card_id: WorkCardId,
     ttl_ms: u64,

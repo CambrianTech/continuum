@@ -2179,14 +2179,31 @@ impl ActionCommand for BenchmarkDispatch {
             if pre_claim_this {
                 match self.registry.get(*who_peer) {
                     Some(rt) => {
-                        match rt
+                        let ttl_ms = crate::modules::work::DEFAULT_CLAIM_TTL_MS;
+                        let mut attempt = rt
                             .airc()
-                            .claim_work_card(airc_lib::ClaimWorkCard {
+                            .claim_work_card(airc_lib::ClaimWorkCard { card_id, ttl_ms })
+                            .await;
+                        // Follow the card to its room, same as work/claim (#328).
+                        // Sequential dispatch mints a solve room per card, so the
+                        // assignee's current-room pointer trails one card behind and
+                        // every pre-claim after the first bounced on wrong-room
+                        // (observed on the first team round, 2026-08-30: 3 of 8).
+                        if matches!(
+                            attempt,
+                            Err(airc_lib::AircError::WorkCardNotInCurrentRoom { .. })
+                        ) {
+                            if let Some(retry) = crate::modules::work::claim_following_card_room(
+                                rt.airc(),
                                 card_id,
-                                ttl_ms: crate::modules::work::DEFAULT_CLAIM_TTL_MS,
-                            })
+                                ttl_ms,
+                            )
                             .await
-                        {
+                            {
+                                attempt = retry;
+                            }
+                        }
+                        match attempt {
                             Ok(_) => pre_claimed = true,
                             Err(e) => kickoff_errors.push(format!("pre-claim {short}: {e}")),
                         }
