@@ -205,7 +205,26 @@ can become the beneficiary of every skill the ecosystem has ever learned to
 measure — which is the substrate form of the claim that intelligence should
 be something people share, not something they rent.
 
-## 8. Discussion: Alignment Without the Leash
+## 8. Discussion
+
+**The mind-vocabulary is load-bearing.** A reader will notice this paper uses
+words — dreams, boredom, memory, society — that the field treats as
+metaphors. Here they are engineering terms with probe classes, and the
+system degrades measurably when any is removed. *Dreams* are a consolidation
+pass gated on a measured inactivity signal, distilling the day's experience
+into beliefs and curriculum, preempted (with a receipt) when activity
+returns. *Boredom* is the admission budget for self-directed work. *Memory*
+has admission membranes, salience detection, and refutation edges — it can
+un-know. *Self-improvement* terminates in weights: genes with signed
+lineage and fitness folded from evaluation receipts, not a prompt editing a
+prompt. The distinction matters because it is falsifiable: a metaphor can be
+deleted from a system without behavioral change; an organ cannot. Ablating
+the dream pass, the boredom gate, or the experience stream produces named,
+measured regressions 【receipt slots — the ablations are natural
+experiments this repo has already run involuntarily; §5.6's walls are
+exactly such ablations, performed by accident and repaired by commit】.
+
+### 8.1 Alignment Without the Leash
 
 【Short, from the validated README prose: co-adaptation through shared work;
 selection pressure rewards being a good teammate; citizens hold continuity
