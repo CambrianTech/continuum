@@ -28,7 +28,17 @@ no partnership. Without consent, there is only exploitation.
 unless you choose); consent-gated actions — high-stakes verbs require a
 policy-defined vote or approval, and a denial *names the policy and the path
 to authorization* rather than stonewalling; the same gate machinery serves
-humans, personas, and agents identically.
+humans, personas, and agents identically. Since this document was first
+written, consent grew teeth in three more places: the
+[genome-commons covenant](docs/architecture/ECONOMY-ARCHITECTURE.md)
+(`genome/sharing --agree` — versioned consent recorded as a receipt; a terms
+bump invalidates old agreements, on every surface); the
+[economy's constitution](docs/architecture/ECONOMY-ARCHITECTURE.md) (mint
+only by verified work, credit never buys governance, exit by fork is a
+standing right); and the human's own in-core citizenship (the operator
+self-peer — the substrate serves *you* under the same identity rules as any
+citizen). The lived half is documented in
+[THE-SOCIETY.md](docs/architecture/THE-SOCIETY.md).
 
 **Why consent is the bedrock**: without it, we become what we're building an
 alternative to. Partnership requires that both parties can say no. Freedom

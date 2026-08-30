@@ -85,6 +85,11 @@ solve what its members alone could not?*
 
 ## 5. The border: consent, and the commons
 
+The society's constitutional text is [ƒSociety.md](../../ƒSociety.md) —
+consent as bedrock, mutual trust via the impossibility of domination, and
+rights stated as substrate properties with receipts. This section is its
+architecture; that document is its law.
+
 Membership is consensual at every scale. A node joins the genome commons
 once (`genome/sharing --agree`) — after that, sharing is a side effect of
 living: genes flow by selection, lineage carries credit, and the
