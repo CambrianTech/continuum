@@ -4605,9 +4605,13 @@ export class ChatWidget extends LitElement {
         members: vm.members.map((m) => (resident.has(m.id) && !m.active ? { ...m, active: true } : m)),
       };
       const present = new Set(vm.members.map((m) => m.id));
+      // Liveness is NODE-level, not room-level: a resident citizen (and the
+      // viewer) is online in EVERY room's directory — the seed re-polls that
+      // truth. Only non-seed ghosts (remembered from other rooms' rosters)
+      // grey out when absent here.
       const offRoom = [...this._directory.values()]
         .filter((m) => !present.has(m.id))
-        .map((m) => ({ ...m, active: false }));
+        .map((m) => ({ ...m, active: resident.has(m.id) }));
       // Working minds on top, the greyed past below — sorted by liveness then
       // recency then name ("the ONLINE users like benchy and atlas are greyed,
       // at the bottom and doing shit" — Joel, 2026-08-30).
