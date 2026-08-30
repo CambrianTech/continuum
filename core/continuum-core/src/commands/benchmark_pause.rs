@@ -21,6 +21,7 @@ use uuid::Uuid;
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkPauseParams.ts")]
+#[serde(rename_all = "camelCase")]
 pub struct BenchmarkPauseParams {
     /// The round's id (= its run room id, shown by `benchmark/rounds`).
     pub round_id: String,
@@ -28,6 +29,7 @@ pub struct BenchmarkPauseParams {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkPauseResult.ts")]
+#[serde(rename_all = "camelCase")]
 pub struct BenchmarkPauseResult {
     /// The round's stage after the verb ("working" | "paused" | "done").
     pub stage: String,

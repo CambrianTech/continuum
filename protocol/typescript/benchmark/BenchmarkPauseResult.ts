@@ -12,4 +12,4 @@ changed: boolean,
 /**
  * On resume: the card the driver was kicked with, if any work remained.
  */
-kicked_card?: string, };
+kickedCard?: string, };
