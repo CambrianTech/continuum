@@ -354,7 +354,7 @@ Every commodity (LoRA layer, lesson, recipe, base model, classifier, tool) flows
 
 ### Two payoffs nobody else gets
 
-**Data abundance, not data limitation.** Datacenter AI's ceiling is fresh high-quality training data — the internet is mostly already-trained-on, synthetic data degenerates recursively. Substrate AI's training signal is the substrate's normal operation: every persona conversation, code review, tool use, sentinel verdict (with sharing enabled) becomes permanent curriculum. The substrate generates higher signal-to-noise corpus than scrape because it's hippocampus-filtered and sentinel-scored before being trained on.
+**Data abundance, not data limitation.** Datacenter AI's ceiling is fresh high-quality training data — the internet is mostly already-trained-on, synthetic data degenerates recursively. Substrate AI's training signal is the substrate's normal operation: every persona conversation, code review, tool use, [sentinel](#sentinel-engine) verdict (with sharing enabled) becomes permanent [curriculum](#the-academy--ai-that-trains-itself). The substrate generates higher signal-to-noise corpus than scrape because it's [hippocampus](docs/PHASE2B-RAG-HIPPOCAMPUS.md)-filtered and sentinel-scored before being trained on.
 
 **Distributed checkpointing via sharing.** Every persona that loaded a layer IS a verified backup of it. Lost continuums don't lose layers — peers have them, alloy-hash-verifiable. No central party can erase knowledge. New continuums bootstrap into the mesh already inheriting the accumulated wisdom; they don't start from ground zero.
 
