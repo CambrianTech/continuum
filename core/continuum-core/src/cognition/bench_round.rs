@@ -77,6 +77,9 @@ pub enum WorkDriver {
 #[serde(rename_all = "snake_case")]
 pub enum RoundStage {
     Working,
+    /// Operator-held: driver edges fire nothing, boot-resume re-parks nothing,
+    /// in-flight solves finish and settle normally. `benchmark/resume` lifts it.
+    Paused,
     Done,
 }
 
@@ -638,6 +641,12 @@ fn first_unworked_excluding(
     if round.driver != WorkDriver::DetachedSolve {
         return None;
     }
+    // A paused round is HELD: cards stay, in-flight runs finish, and every
+    // driver edge (settle-advance, non-settling advance, boot resume — all of
+    // which funnel through here) hands out nothing until resume.
+    if round.stage != RoundStage::Working {
+        return None;
+    }
     round
         .cards
         .iter()
@@ -656,6 +665,45 @@ fn first_unworked_excluding(
                     .unwrap_or_else(|| round.team.clone()), // no activity yet = the ROUND's team, never silently solo
             })
         })
+}
+
+/// Operator hold: flip a Working round to Paused (persisted). Returns false
+/// when the round is unknown or already terminal.
+pub fn pause_round(round_id: Uuid) -> bool {
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());
+    match rounds.get_mut(&round_id) {
+        Some(r) if r.stage == RoundStage::Working => {
+            r.stage = RoundStage::Paused;
+            persist_round_in(&rounds_state_dir(), r);
+            crate::probe!(
+                class = "bench.round.paused",
+                round_id = %round_id,
+                "round paused — in-flight solves finish, driver edges hand out nothing"
+            );
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Lift a pause: flip Paused → Working (persisted) and return the round's
+/// first unworked card so the caller can kick the driver immediately instead
+/// of waiting for the next settle edge.
+pub fn resume_round(round_id: Uuid) -> Option<NextCard> {
+    let live = live_run_ids();
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());
+    let r = rounds.get_mut(&round_id)?;
+    if r.stage != RoundStage::Paused {
+        return None;
+    }
+    r.stage = RoundStage::Working;
+    persist_round_in(&rounds_state_dir(), r);
+    crate::probe!(
+        class = "bench.round.resumed_by_operator",
+        round_id = %round_id,
+        "round resumed — driver kicked"
+    );
+    first_unworked(r, &live)
 }
 
 pub fn driver_for_card(card_id: Uuid) -> WorkDriver {
@@ -818,6 +866,7 @@ pub fn live_rounds() -> Vec<RoundSnapshot> {
             benchmark: r.benchmark.clone(),
             stage: match r.stage {
                 RoundStage::Working => "working",
+                RoundStage::Paused => "paused",
                 RoundStage::Done => "done",
             }
             .to_string(),
