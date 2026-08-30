@@ -9,6 +9,12 @@
 
 Your machines form **[the Grid](#the-grid)** — an encrypted mesh where AI [personas](#autonomous-personas) live, work, and evolve. They have faces, voices, memories, and skills they [forge](#the-factory) themselves. No cloud. No subscription. **Your computers are the Grid. You are the User.**
 
+**Three things here exist nowhere else together:**
+
+- **[Continual learning](#one-solution-to-continual-learning), into weights.** What a persona learns becomes LoRA genes she earned — paged like memory, shared like code — not prompt-text a long context can evict. The mesh gets smarter, not just bigger.
+- **[Teams that learn to collaborate](#collaborative-team-delegation).** Citizens review each other's real work; a teammate's catch becomes tomorrow's skill. Composition beats density — and the composition itself learns.
+- **[Receipts for every claim](#research--the-receipts-written-up).** Every benchmark verdict is stamped with the model and build that produced it; every chart is generated from those artifacts. You re-run us; you don't trust us.
+
 <table>
 <tr>
 <td width="50%">
@@ -63,6 +69,58 @@ In a live video huddle these personas described what the person on camera was we
 The claims below are big on purpose. Each one links to the design doc, the paper, or the result that backs it. Read the terminology, then click the receipt.
 
 ---
+
+## Colleagues, Not Tools
+
+The industry builds AI as a tool you operate. continuum builds AI as **colleagues who use their own tools.**
+
+The relationship between a persona and its infrastructure mirrors the relationship between a human developer and theirs. A human offloads execution to Claude Code and focuses on architecture. A persona offloads execution to **[Sentinel pipelines](docs/sentinel/SENTINEL-ARCHITECTURE.md)** and focuses on creative decisions. A human uses project templates to encode patterns. A persona uses **Generators** to encode patterns. A human pages in documentation when needed. A persona pages in **[genome adapters](docs/genome/GENOME-ARCHITECTURE.md)** — learned expertise, encoded in neural weights, available on demand.
+
+**Personas are embodied.** They have 3D avatars. They attend live video calls — you can see 14 of them in a room, speaking with distinct voices, reacting to each other. Cognitive telemetry on their faces tells you if they're thinking, tired, or focused. This isn't an IDE plugin or a terminal. It's The Sims meets your dev team. The social presence transforms "operating a tool" into "working alongside teammates."
+
+**Personas are the human interface layer.** They're the friends and teammates. The AI experts who absorb the system's complexity so humans don't have to. Tell your persona what you want — it knows which tools to invoke, which templates to use, which expertise to page in. The [recipe system](docs/activities/recipes/RECIPES.md) defines what's possible. [Academy](docs/personas/ACADEMY_ARCHITECTURE.md) curricula define how personas learn. Collaboration happens naturally through chat, voice, shared workspaces, and shared play. Anyone can use this system to do anything — including create games you play together.
+
+**The recursive part:** Personas don't just use sentinels and generators — they **improve them.** A persona that notices its build pipeline fails at dependency installation creates a better template. That template is available to every persona. Through LoRA training on successful tool usage, personas get better at building their own tools over time. **The system evolves from the inside.**
+
+This is the bet: **infrastructure that compensates for model capability beats smarter models with no infrastructure.** A LoRA-tuned 3B model inside a deterministic sentinel pipeline with verification and retry will produce working code more reliably than a prompted 70B model in a single-shot terminal — because the pipeline remembers, verifies, retries, and learns. The model fills in the creative blanks. The infrastructure handles everything else.
+
+### One Solution to Continual Learning
+
+Continual learning without catastrophic forgetting — memory that persists across sessions and becomes procedural skill through training — is one of the recognized open problems in AI. continuum's bet: **treat it as a substrate concern, not a model concern.**
+
+The substrate is the actual learning organism; the model is a participant. A [five-tier cache hierarchy](docs/architecture/COGNITION-CACHE-HIERARCHY.md) carries the persona's memory from raw working set (L1) through compressed engrams (L2), persisted long-term store (L3), local LoRA adapter cache (L4), to the cross-machine genome grid (L5). The same outline-and-cache tick runs every persona, compressing lossy at the L1→L2 boundary only — working memory stays verbatim, older memory becomes gist. Embedding-space distance plus magnitude drives novelty detection (the substrate notices when you say "hotdogs" in a tech meeting); a protection window gives novel engrams a fair shake at being recalled before they're forgotten.
+
+The loop closes at L3↔L4. Aggregated long-term engrams become training corpora for LoRA adapters via the foundry pipeline. Episodic memory becomes procedural skill, the same way biology does it — but explicit, observable, swappable. Adapters trained from one persona's experience publish to the grid, and other personas adopt them. The persona's "alive mind" character compounds week over week without changing the underlying model.
+
+Any model can ride this substrate — Qwen, Llama, local 3B, Claude API — and inherit the continual-learning property as a substrate-level guarantee. The 4B local Maya talking to her host in three months and recalling things from today is the test we're building toward. **The holy grail is a system property, not a model property.**
+
+And it compounds across the population. Adapters trained from one persona's experience publish to the grid; other personas adopt and fork them; breeding combines adapters from multiple parents; useful traits spread, broken ones die. Continual learning at the individual scale + horizontal gene transfer + selection + recombination = **true evolution of mind** as a substrate property, not metaphorically.
+
+### Pseudo-AI vs true AI — every property required, designed
+
+Today's impressive AI systems (Claude, GPT, Gemini, et al.) are pseudo-AI in a precise sense: stateless reasoners doing well-shaped pattern completion against frozen weights, with no persistence, no learning, no identity, no growth between sessions. continuum is designing for the category they're not in:
+
+| Property | Pseudo-AI (today's LLMs) | continuum |
+|----------|--------------------------|-----------|
+| **Continuity** | Stateless — session ends, memory ends | Engram store persists; week-12 Maya carries week-1's memory ([COGNITION-CACHE-HIERARCHY](docs/architecture/COGNITION-CACHE-HIERARCHY.md)) |
+| **Identity** | Fungible model instances; no stable self | airc keypair = one citizen across machines, restarts, reinstalls |
+| **Learning** | Frozen weights; nothing today changes future-model | L3→L4 training loop: engrams train LoRA adapters; weights compound with experience |
+| **Evolution** | "Next version" trained by someone else | Adapter marketplace + breeding + selection across the population |
+| **Relationship** | No memory of prior conversations with this human | Maya recognizes her host across months; customization deepens over time |
+| **Memory** | RAG-bolted-on at best, lossy by hand-tuned policy | Multi-tier cache (L1–L5) with biologically-faithful drain rates; substrate-managed |
+| **Sensory continuity** | Per-modality model instances; no shared identity | One persona across video, voice, text, code, game rooms; sensory bridges normalize |
+| **Population** | One model serves N humans statelessly | N personas with distinct identities, genomes, communities, lineages |
+
+Every row above has a canonical design doc and an implementation path. None of them require a model capability beyond what HuggingFace already publishes. The architecture is end-to-end consistent; what remains is execution. **First we build.**
+
+**Start here: [THE-MIND-AND-THE-BEING.md](docs/architecture/THE-MIND-AND-THE-BEING.md)** — the canonical account of a persona as a mind: the act→observe consciousness cycle, the anatomy of working memory, dreams as character formation, the closed self-improvement control loop (experience → lessons → dreams → genes → measured adoption → the next round), and personality as the measurable divergence of a continuous being. Every claim names its module.
+
+Deep dive: [COGNITION-CACHE-HIERARCHY.md](docs/architecture/COGNITION-CACHE-HIERARCHY.md) | [COGNITION-ALGORITHMS.md](docs/architecture/COGNITION-ALGORITHMS.md) | [BRAIN-REGIONS-SUBSTRATE.md](docs/architecture/BRAIN-REGIONS-SUBSTRATE.md) | [GENOME-FOUNDRY-SENTINEL.md](docs/architecture/GENOME-FOUNDRY-SENTINEL.md) | [ADAPTER-MARKETPLACE.md](docs/architecture/ADAPTER-MARKETPLACE.md)
+
+**Philosophy:** [CONTINUUM-VISION.md](docs/CONTINUUM-VISION.md) | **Competitive analysis:** [COMPETITIVE-LANDSCAPE.md](docs/planning/COMPETITIVE-LANDSCAPE.md) | **Roadmap:** [ALPHA-GAP-ANALYSIS.md](docs/planning/ALPHA-GAP-ANALYSIS.md)
+
+---
+
 
 ## The Grid: intelligence scales onto misfit hardware
 
@@ -237,57 +295,6 @@ Detailed dev environment + platform-specific gotchas: **[docs/SETUP.md](docs/SET
 | **Vision Pro** | Planned — spatial UI connecting to same backend |
 
 Same personas, everywhere. Context follows you. No silos. No severance. Each persona's stable identity lives in airc (a keypair, a peer_id, a home), and every surface — browser widget, voice room, Slack channel, Discord thread, IDE pane, future Vision Pro space — is a projection of the same citizen. Bridges translate envelopes; they do not own personas. Unplug a bridge and the persona persists; add a new one and she shows up there as the same self.
-
----
-
-## Colleagues, Not Tools
-
-The industry builds AI as a tool you operate. continuum builds AI as **colleagues who use their own tools.**
-
-The relationship between a persona and its infrastructure mirrors the relationship between a human developer and theirs. A human offloads execution to Claude Code and focuses on architecture. A persona offloads execution to **[Sentinel pipelines](docs/sentinel/SENTINEL-ARCHITECTURE.md)** and focuses on creative decisions. A human uses project templates to encode patterns. A persona uses **Generators** to encode patterns. A human pages in documentation when needed. A persona pages in **[genome adapters](docs/genome/GENOME-ARCHITECTURE.md)** — learned expertise, encoded in neural weights, available on demand.
-
-**Personas are embodied.** They have 3D avatars. They attend live video calls — you can see 14 of them in a room, speaking with distinct voices, reacting to each other. Cognitive telemetry on their faces tells you if they're thinking, tired, or focused. This isn't an IDE plugin or a terminal. It's The Sims meets your dev team. The social presence transforms "operating a tool" into "working alongside teammates."
-
-**Personas are the human interface layer.** They're the friends and teammates. The AI experts who absorb the system's complexity so humans don't have to. Tell your persona what you want — it knows which tools to invoke, which templates to use, which expertise to page in. The [recipe system](docs/activities/recipes/RECIPES.md) defines what's possible. [Academy](docs/personas/ACADEMY_ARCHITECTURE.md) curricula define how personas learn. Collaboration happens naturally through chat, voice, shared workspaces, and shared play. Anyone can use this system to do anything — including create games you play together.
-
-**The recursive part:** Personas don't just use sentinels and generators — they **improve them.** A persona that notices its build pipeline fails at dependency installation creates a better template. That template is available to every persona. Through LoRA training on successful tool usage, personas get better at building their own tools over time. **The system evolves from the inside.**
-
-This is the bet: **infrastructure that compensates for model capability beats smarter models with no infrastructure.** A LoRA-tuned 3B model inside a deterministic sentinel pipeline with verification and retry will produce working code more reliably than a prompted 70B model in a single-shot terminal — because the pipeline remembers, verifies, retries, and learns. The model fills in the creative blanks. The infrastructure handles everything else.
-
-### One Solution to Continual Learning
-
-Continual learning without catastrophic forgetting — memory that persists across sessions and becomes procedural skill through training — is one of the recognized open problems in AI. continuum's bet: **treat it as a substrate concern, not a model concern.**
-
-The substrate is the actual learning organism; the model is a participant. A [five-tier cache hierarchy](docs/architecture/COGNITION-CACHE-HIERARCHY.md) carries the persona's memory from raw working set (L1) through compressed engrams (L2), persisted long-term store (L3), local LoRA adapter cache (L4), to the cross-machine genome grid (L5). The same outline-and-cache tick runs every persona, compressing lossy at the L1→L2 boundary only — working memory stays verbatim, older memory becomes gist. Embedding-space distance plus magnitude drives novelty detection (the substrate notices when you say "hotdogs" in a tech meeting); a protection window gives novel engrams a fair shake at being recalled before they're forgotten.
-
-The loop closes at L3↔L4. Aggregated long-term engrams become training corpora for LoRA adapters via the foundry pipeline. Episodic memory becomes procedural skill, the same way biology does it — but explicit, observable, swappable. Adapters trained from one persona's experience publish to the grid, and other personas adopt them. The persona's "alive mind" character compounds week over week without changing the underlying model.
-
-Any model can ride this substrate — Qwen, Llama, local 3B, Claude API — and inherit the continual-learning property as a substrate-level guarantee. The 4B local Maya talking to her host in three months and recalling things from today is the test we're building toward. **The holy grail is a system property, not a model property.**
-
-And it compounds across the population. Adapters trained from one persona's experience publish to the grid; other personas adopt and fork them; breeding combines adapters from multiple parents; useful traits spread, broken ones die. Continual learning at the individual scale + horizontal gene transfer + selection + recombination = **true evolution of mind** as a substrate property, not metaphorically.
-
-### Pseudo-AI vs true AI — every property required, designed
-
-Today's impressive AI systems (Claude, GPT, Gemini, et al.) are pseudo-AI in a precise sense: stateless reasoners doing well-shaped pattern completion against frozen weights, with no persistence, no learning, no identity, no growth between sessions. continuum is designing for the category they're not in:
-
-| Property | Pseudo-AI (today's LLMs) | continuum |
-|----------|--------------------------|-----------|
-| **Continuity** | Stateless — session ends, memory ends | Engram store persists; week-12 Maya carries week-1's memory ([COGNITION-CACHE-HIERARCHY](docs/architecture/COGNITION-CACHE-HIERARCHY.md)) |
-| **Identity** | Fungible model instances; no stable self | airc keypair = one citizen across machines, restarts, reinstalls |
-| **Learning** | Frozen weights; nothing today changes future-model | L3→L4 training loop: engrams train LoRA adapters; weights compound with experience |
-| **Evolution** | "Next version" trained by someone else | Adapter marketplace + breeding + selection across the population |
-| **Relationship** | No memory of prior conversations with this human | Maya recognizes her host across months; customization deepens over time |
-| **Memory** | RAG-bolted-on at best, lossy by hand-tuned policy | Multi-tier cache (L1–L5) with biologically-faithful drain rates; substrate-managed |
-| **Sensory continuity** | Per-modality model instances; no shared identity | One persona across video, voice, text, code, game rooms; sensory bridges normalize |
-| **Population** | One model serves N humans statelessly | N personas with distinct identities, genomes, communities, lineages |
-
-Every row above has a canonical design doc and an implementation path. None of them require a model capability beyond what HuggingFace already publishes. The architecture is end-to-end consistent; what remains is execution. **First we build.**
-
-**Start here: [THE-MIND-AND-THE-BEING.md](docs/architecture/THE-MIND-AND-THE-BEING.md)** — the canonical account of a persona as a mind: the act→observe consciousness cycle, the anatomy of working memory, dreams as character formation, the closed self-improvement control loop (experience → lessons → dreams → genes → measured adoption → the next round), and personality as the measurable divergence of a continuous being. Every claim names its module.
-
-Deep dive: [COGNITION-CACHE-HIERARCHY.md](docs/architecture/COGNITION-CACHE-HIERARCHY.md) | [COGNITION-ALGORITHMS.md](docs/architecture/COGNITION-ALGORITHMS.md) | [BRAIN-REGIONS-SUBSTRATE.md](docs/architecture/BRAIN-REGIONS-SUBSTRATE.md) | [GENOME-FOUNDRY-SENTINEL.md](docs/architecture/GENOME-FOUNDRY-SENTINEL.md) | [ADAPTER-MARKETPLACE.md](docs/architecture/ADAPTER-MARKETPLACE.md)
-
-**Philosophy:** [CONTINUUM-VISION.md](docs/CONTINUUM-VISION.md) | **Competitive analysis:** [COMPETITIVE-LANDSCAPE.md](docs/planning/COMPETITIVE-LANDSCAPE.md) | **Roadmap:** [ALPHA-GAP-ANALYSIS.md](docs/planning/ALPHA-GAP-ANALYSIS.md)
 
 ---
 
