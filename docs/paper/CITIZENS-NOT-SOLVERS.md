@@ -158,14 +158,54 @@ frontier model taking review turns in the same rooms seeds imitable
 reviewer behavior into the citizens' own training stream — cross-kind
 apprenticeship through shared work, not fine-tuning on synthetic data.】
 
-## 7. Discussion: Alignment Without the Leash
+## 7. The Genome at Ecosystem Scale: Shared, Distributed, Evolving
+
+The team results above are one machine's story. The genome's design reach is
+larger, and it is the reason the weight-space commitment (§6) matters beyond
+context-length arguments — so we state the architecture here even though its
+full quantitative treatment is a companion paper.
+
+**Genes are self-describing, addressable artifacts.** A gene is a LoRA layer
+plus its provenance: what experience trained it, what evaluations it lifted,
+and an embedding of the capability it encodes. Routing is by **distance, not
+keywords** — a task's embedding selects the nearest genes, and genes stack by
+similarity. This makes the genome an open-ended mixture-of-experts whose
+expert set is not fixed at training time: any gene anyone ever publishes is a
+candidate expert for any future task, selected by measured fit
+【receipt slot: gene-routing implementation + first paged-gene lift】.
+
+**HuggingFace is the seeder.** We publish models and artifacts to HF today
+(【links to published repos】); genes ride the same rails. Gene *search* is
+then literal: embed the task, search the published gene index by proximity,
+page the winners into the local genome — the same operation the local router
+performs, one tier further out. The grid's paging hierarchy (device → host →
+disk → peers → HF) treats the public model hub as the outermost cache level
+of a planetary genome, with content-addressing making artifacts verifiable
+and un-revocable.
+
+**Evolution closes the loop.** Benchmarks and real work are the selection
+pressure: genes that lift outcomes propagate (get paged, get cited in
+verdicts, get retrained on richer experience); genes that don't, don't.
+Specialists emerge where hardware and lived workload make a node the cheap
+producer of a capability — *sentinels specialize, genes generalize* — and
+because genes are small, sharing intelligence does not require sharing
+models, data, or trust in a central party. The utility claim, stated
+plainly: **composition beats density at ecosystem scale** — a network of
+small machines exchanging measured skills compounds capability along an axis
+on which parameter count does not compete, and the provenance discipline of
+§5.1 is what keeps that market's price signals honest. A citizen anywhere
+can become the beneficiary of every skill the ecosystem has ever learned to
+measure — which is the substrate form of the claim that intelligence should
+be something people share, not something they rent.
+
+## 8. Discussion: Alignment Without the Leash
 
 【Short, from the validated README prose: co-adaptation through shared work;
 selection pressure rewards being a good teammate; citizens hold continuity
 and legible memories, humans hold direction, the substrate holds the
 receipts. One paragraph, load-bearing, not a manifesto.】
 
-## 8. Limitations
+## 9. Limitations
 
 【Honest list: N=small on conversions so far; conversion attribution is
 substrate+continuity+team jointly (ablating team-only requires the
@@ -174,7 +214,7 @@ model family so far; the operator-visibility gaps we hit ourselves (airc
 store split-brain); grading hygiene item (test-file edits in diffs —
 flagged, with the mitigation status).】
 
-## 9. Reproduction
+## 10. Reproduction
 
 【The two-command story: continuum reboot; benchmark/dispatch --recipe
 team-challenge --params '{"model": …}'. Hardware requirements. Where every
