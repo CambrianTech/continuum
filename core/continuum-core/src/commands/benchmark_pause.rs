@@ -24,7 +24,11 @@ use uuid::Uuid;
 #[serde(rename_all = "camelCase")]
 pub struct BenchmarkPauseParams {
     /// The round's id (= its run room id, shown by `benchmark/rounds`).
-    pub round_id: String,
+    /// Typed Uuid on the wire ([[uuids-are-not-strings]]): serde parses the
+    /// JSON string and a malformed id fails at DESERIALIZATION with serde's
+    /// own error — the hand-rolled parse_round below is deleted, not moved.
+    #[ts(type = "string")]
+    pub round_id: Uuid,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
@@ -39,14 +43,6 @@ pub struct BenchmarkPauseResult {
     #[serde(default)]
     #[ts(optional)]
     pub kicked_card: Option<String>,
-}
-
-fn parse_round(id: &str) -> Result<Uuid, CommandError> {
-    Uuid::parse_str(id).map_err(|e| {
-        CommandError::Invalid(format!(
-            "round_id must be the round's UUID (see benchmark/rounds): {e}"
-        ))
-    })
 }
 
 fn stage_of(round_id: Uuid) -> String {
@@ -72,7 +68,7 @@ impl ActionCommand for BenchmarkPause {
     type Output = BenchmarkPauseResult;
 
     async fn run(&self, _ctx: &Ctx, p: BenchmarkPauseParams) -> Result<BenchmarkPauseResult, CommandError> {
-        let id = parse_round(&p.round_id)?;
+        let id = p.round_id;
         let changed = crate::cognition::bench_round::pause_round(id);
         Ok(BenchmarkPauseResult { stage: stage_of(id), changed, kicked_card: None })
     }
@@ -92,7 +88,7 @@ impl ActionCommand for BenchmarkResume {
     type Output = BenchmarkPauseResult;
 
     async fn run(&self, _ctx: &Ctx, p: BenchmarkPauseParams) -> Result<BenchmarkPauseResult, CommandError> {
-        let id = parse_round(&p.round_id)?;
+        let id = p.round_id;
         let next = crate::cognition::bench_round::resume_round(id);
         let changed = next.is_some()
             || stage_of(id) == "working" && {
