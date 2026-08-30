@@ -205,6 +205,7 @@ export function listingCell(cell: ListingCell, selectFrom?: string): TemplateRes
     <li
       class="cell"
       data-status=${cell.status ?? 'none'}
+      data-nested=${cell.parent !== undefined ? '' : nothing}
       data-selectable=${select ? '' : nothing}
       tabindex=${select ? '0' : nothing}
       @click=${select ?? nothing}

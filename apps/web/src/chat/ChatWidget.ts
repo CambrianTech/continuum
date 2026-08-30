@@ -792,6 +792,19 @@ export class ChatWidget extends LitElement {
       color: var(--content-accent);
       font-size: 10px;
     }
+    /* Rail tree (#2632): a child activity nests under its parent room with a
+     * quiet indent + branch tick — activity == room == tab, now with lineage. */
+    .cell[data-nested] {
+      padding-left: 26px;
+      position: relative;
+    }
+    .cell[data-nested]::before {
+      content: '└';
+      position: absolute;
+      left: 12px;
+      color: var(--content-tertiary, #556);
+      font-size: 10px;
+    }
     /* One stacked global widget in the left rail (Metrics · Rooms · Users & Agents).
      * The rail is a vertical stack; a hairline separates each widget module. Draggable
      * heights + reorder land in task #185 (this is the static stack it resizes). */

@@ -152,9 +152,12 @@ export function roomsListingFromNav(nav: NavViewState, focusedRoomId: string): L
     cells: nav.open_tabs.map((tab): ListingCell => {
       const cell: ListingCell = {
         id: tab.id,
-        title: tab.title,
+        // A child activity draws its LINEAGE label (`<instance> · <card>`), not
+        // the raw room name — the rail-tree IA (#2632 slice b).
+        title: tab.display_label !== '' ? tab.display_label : tab.title,
         status: tab.id === focusedRoomId ? 'active' : 'idle',
         group: tab.kind,
+        ...(tab.parent_ref !== '' ? { parent: tab.parent_ref } : {}),
         // The room's recipe-defined activity purpose, carried verbatim as the
         // description line ([[room-purpose-is-per-recipe-not-an-enum]]).
         // Empty = unresolved — no subtitle drawn, never a fabricated blurb.

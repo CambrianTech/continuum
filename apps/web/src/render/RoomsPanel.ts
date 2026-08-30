@@ -84,7 +84,15 @@ export class RoomsPanel extends LitElement {
   override render(): TemplateResult {
     const view = this.view;
     if (!view) return html``;
-    const cells = facetCells(view.cells, this._facet);
+    // Tree order (#2632 slice b): roots keep their order; each root's child
+    // activities follow it directly. A child whose parent isn't visible in
+    // this facet renders as a root — never hidden work.
+    const faceted = facetCells(view.cells, this._facet);
+    const ids = new Set(faceted.map((c) => c.id));
+    const roots = faceted.filter((c) => c.parent === undefined || !ids.has(c.parent));
+    const childrenOf = (id: string): readonly ListingCell[] =>
+      faceted.filter((c) => c.parent === id && c.parent !== undefined && ids.has(c.parent));
+    const cells = roots.flatMap((r) => [r, ...childrenOf(r.id)]);
     return html`
       <section class="rail-widget" data-widget="rooms" data-id=${view.id}>
         <div class="who-head">

@@ -53,8 +53,8 @@ const navWithPersonaTab = (current: string): NavViewState => ({
   user_id: 'joel',
   current_tab: current,
   open_tabs: [
-    { id: 'room-1', title: 'general', kind: 'room', unread: 0, purpose: 'chat' },
-    { id: 'asha', title: 'Asha', kind: 'persona', unread: 0, purpose: 'persona' },
+    { id: 'room-1', title: 'general', kind: 'room', unread: 0, purpose: 'chat', parent_ref: '', display_label: '' },
+    { id: 'asha', title: 'Asha', kind: 'persona', unread: 0, purpose: 'persona', parent_ref: '', display_label: '' },
   ],
   last_read: {},
   bookmarks: [],

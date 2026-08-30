@@ -120,6 +120,11 @@ export interface ListingCell {
   readonly count?: number;
   /** Optional grouping/category key (the "bookmarked menus + categories" axis). */
   readonly group?: string;
+  /** Optional hierarchical parent — the `id` of another cell in the SAME
+   *  listing this one nests under (an activity room under its parent room,
+   *  #2632 rail tree). A target orders children after their parent and
+   *  indents; absent = a root row. */
+  readonly parent?: string;
   /** Optional longer description of the item — a citizen's published BIO, a
    *  model's card description, a room's charter line. The prose sibling of
    *  `subtitle` (one line vs a sentence); a target surfaces it as hover text

@@ -278,7 +278,7 @@ describe('renderChat (Lit)', () => {
     const nav: NavViewState = {
       user_id: 'me',
       current_tab: 'room-1',
-      open_tabs: [{ id: 'room-1', title: 'general', kind: 'room', unread: 0, purpose: 'chat' }],
+      open_tabs: [{ id: 'room-1', title: 'general', kind: 'room', unread: 0, purpose: 'chat', parent_ref: '', display_label: '' }],
       last_read: {},
       bookmarks: [],
     };
@@ -298,8 +298,8 @@ describe('renderChat (Lit)', () => {
       user_id: 'me',
       current_tab: 'room-1',
       open_tabs: [
-        { id: 'room-1', title: 'general', kind: 'room', unread: 0, purpose: 'chat' },
-        { id: 'room-2', title: 'code', kind: 'room', unread: 3, purpose: 'chat' },
+        { id: 'room-1', title: 'general', kind: 'room', unread: 0, purpose: 'chat', parent_ref: '', display_label: '' },
+        { id: 'room-2', title: 'code', kind: 'room', unread: 3, purpose: 'chat', parent_ref: '', display_label: '' },
       ],
       last_read: {},
       bookmarks: [],
