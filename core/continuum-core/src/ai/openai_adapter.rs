@@ -186,6 +186,11 @@ pub struct OpenAICompatibleAdapter {
     /// DMR → 1 slot (single-slot llama.cpp backend).
     /// Cloud providers (OpenAI / Groq / etc.) → high slot count (no throttle).
     concurrency: std::sync::Arc<tokio::sync::Semaphore>,
+    /// How many permits `concurrency` currently represents — the reconciler's
+    /// bookkeeping for tracking the served slot count both directions.
+    permit_target: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// One reconciler per adapter instance (spawned on first `initialize`).
+    permit_reconciler_started: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 
@@ -397,15 +402,28 @@ impl OpenAICompatibleAdapter {
         let client = Self::build_http_client();
 
         // Per-provider concurrency gate. A single-resident-model gateway
-        // (DMR, llama-server) serves ONE model on ONE slot, so N personas
-        // fanning out into concurrent POSTs must queue in this semaphore
-        // INSTEAD of piling onto a gateway already busy on the prior persona's
-        // forward pass — which (before streaming) was the "error sending
-        // request -> operation timed out, connect=false" failure mode and is
-        // now just wasted contention. Multi-model / cloud endpoints are
-        // effectively unbounded. Keyed on the TYPED capability (#55), never the
-        // provider id.
-        let slots = if config.single_resident_model { 1 } else { 64 };
+        // (DMR, llama-server) must not take more concurrent POSTs than it has
+        // SLOTS — excess queues here instead of piling onto a busy forward
+        // pass (the pre-streaming "error sending request -> operation timed
+        // out" failure mode). Multi-model / cloud endpoints are effectively
+        // unbounded. Keyed on the TYPED capability (#55), never the provider id.
+        //
+        // SIZED TO THE SERVED SLOTS, NOT 1 (B3, Joel 2026-08-30: "not cost a
+        // lane, it's the same model"). llama-server continuous-batches its
+        // `--parallel` slots — a short conversational reply slipstreams
+        // between a solve's decode steps. The hardcoded 1 was the artificial
+        // serializer every scarcity policy downstream compensated for: with 4
+        // served slots, citizen speech queued behind a 40k-prefill solve. The
+        // permit now starts at the LIVE served lane count and a reconciler
+        // (spawned at first use, see `spawn_permit_reconciler`) tracks
+        // relaunches both directions — grow adds permits, shrink retires them
+        // as in-flight generations finish (forget on acquire), so a smaller
+        // relaunch is never over-admitted.
+        let slots = if config.single_resident_model {
+            crate::inference::llama_server::current_serving().lanes.max(1) as usize
+        } else {
+            64
+        };
         let concurrency = std::sync::Arc::new(tokio::sync::Semaphore::new(slots));
 
         Self {
@@ -418,6 +436,10 @@ impl OpenAICompatibleAdapter {
             runtime_models: std::sync::Arc::new(std::sync::RwLock::new(None)),
             lora_support: std::sync::Arc::new(std::sync::RwLock::new(LoraSupport::Unknown)),
             concurrency,
+            permit_target: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(slots)),
+            permit_reconciler_started: std::sync::Arc::new(
+                std::sync::atomic::AtomicBool::new(false),
+            ),
         }
     }
 
@@ -1716,6 +1738,57 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
     }
 
     async fn initialize(&mut self) -> Result<(), String> {
+        // The decode permit tracks the LIVE served slot count (B3): grow adds
+        // permits the moment a relaunch serves more slots; shrink retires them
+        // as in-flight generations finish. One task per adapter, canonical
+        // watch-receiver shape — no polling, no locks across await.
+        if self.config.single_resident_model
+            && !self
+                .permit_reconciler_started
+                .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            if let Some(mut rx) = crate::inference::llama_server::serving_state_receiver() {
+                let sem = self.concurrency.clone();
+                let issued = self.permit_target.clone();
+                tokio::spawn(async move {
+                    loop {
+                        if rx.changed().await.is_err() {
+                            return; // serving sender gone — process teardown
+                        }
+                        let target = { rx.borrow().lanes.max(1) as usize };
+                        let cur = issued.load(std::sync::atomic::Ordering::SeqCst);
+                        if target > cur {
+                            sem.add_permits(target - cur);
+                            issued.store(target, std::sync::atomic::Ordering::SeqCst);
+                            crate::probe!(
+                                class = "inference.permits.grown",
+                                from = cur as u64,
+                                to = target as u64,
+                                "decode permits grew to the served slot count"
+                            );
+                        } else if target < cur {
+                            // Retire the surplus as generations finish — a
+                            // smaller relaunch is never over-admitted, and a
+                            // long drain re-checks the latest snapshot on the
+                            // next loop pass.
+                            for _ in 0..(cur - target) {
+                                match sem.acquire().await {
+                                    Ok(permit) => permit.forget(),
+                                    Err(_) => return,
+                                }
+                            }
+                            issued.store(target, std::sync::atomic::Ordering::SeqCst);
+                            crate::probe!(
+                                class = "inference.permits.shrunk",
+                                from = cur as u64,
+                                to = target as u64,
+                                "decode permits retired down to the served slot count"
+                            );
+                        }
+                    }
+                });
+            }
+        }
         // Only require API key if provider needs auth. Providers without
         // an `api_key_env` in the catalog (localhost DMR, llamacpp-local) skip
         // this entirely — their `requires_auth` is false.
