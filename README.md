@@ -217,7 +217,7 @@ previously failed solo, converted after the collaboration substrate landed.
   forbidden, and why the learning flywheel consumes the same transcripts the
   scores come from.
 
-**What the benchmarks are actually testing is a community.** A round here is
+**What the benchmarks are actually testing is a [community](docs/architecture/THE-SOCIETY.md).** A round here is
 not a harness looping a model — it's an [activity](docs/architecture/BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md):
 a room with a kanban board, worked by citizens who claim cards, radiate
 their thoughts and actions into a shared transcript, call teammates by name
