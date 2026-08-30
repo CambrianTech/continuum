@@ -31,7 +31,16 @@ use tower_http::services::{ServeDir, ServeFile};
 /// Spawn the display manager if a dist directory is configured and present.
 /// Detached; failures probe loudly and never block boot.
 pub fn spawn_if_configured(rt: &tokio::runtime::Handle) {
-    let Some(dist) = crate::config_env::read("CONTINUUM_UI_DIST").map(PathBuf::from) else {
+    // Env first (the start script's per-boot handoff — greeter and core as
+    // one deploy generation), config.env second (a durable operator pin).
+    // config_env::read is FILE-only, which is exactly how the first boot of
+    // this module reported `unconfigured` while the launch script had
+    // faithfully exported the freshly built dist (heal sweep, 2026-08-30).
+    let configured = std::env::var("CONTINUUM_UI_DIST")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| crate::config_env::read("CONTINUUM_UI_DIST"));
+    let Some(dist) = configured.map(PathBuf::from) else {
         crate::probe!(
             class = "desktop.dm.unconfigured",
             "no CONTINUUM_UI_DIST — the core serves no desktop this boot \
@@ -48,7 +57,9 @@ pub fn spawn_if_configured(rt: &tokio::runtime::Handle) {
         );
         return;
     }
-    let port: u16 = crate::config_env::read("CONTINUUM_UI_PORT")
+    let port: u16 = std::env::var("CONTINUUM_UI_PORT")
+        .ok()
+        .or_else(|| crate::config_env::read("CONTINUUM_UI_PORT"))
         .and_then(|v| v.parse().ok())
         .unwrap_or(8975); // unwrap_or: the documented default port, beside WS 8974
     let index = dist.join("index.html");
