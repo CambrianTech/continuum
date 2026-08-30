@@ -578,9 +578,24 @@ pub async fn apply_act(
         // looks wrong. Receipts are history, not imperatives — coalescing is
         // correct here (the one-block-per-imperative law governs kickoffs,
         // not transcripts).
-        let lines: Vec<String> = acts
-            .iter()
-            .map(|obs| {
+        // Her WORKING THOUGHT leads the receipt (Joel, 2026-08-30: "they
+        // should be chatty as they work like you are"). The deliberation
+        // already narrates every act batch — `intent` is her stated reasoning
+        // for these calls — and we were discarding it into capture logs. This
+        // is the running commentary of an engineer pairing: thought first,
+        // then the moves it chose. Zero extra inference; we stop throwing
+        // away what she already said.
+        let mut lines: Vec<String> = Vec::with_capacity(acts.len() + 1);
+        let thought = intent.trim();
+        if !thought.is_empty() {
+            let clipped: String = thought.chars().take(240).collect();
+            lines.push(format!(
+                "💭 {}{}",
+                clipped,
+                if thought.chars().count() > 240 { "…" } else { "" }
+            ));
+        }
+        lines.extend(acts.iter().map(|obs| {
                 let object = obs
                     .output
                     .paths
@@ -600,8 +615,7 @@ pub async fn apply_act(
                     "✓"
                 };
                 format!("⚙ {} {} {}", obs.call.name, object, mark)
-            })
-            .collect();
+            }));
         if !lines.is_empty() {
             if let Some(rt) = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
                 .and_then(|reg| reg.get(body.persona_id))
