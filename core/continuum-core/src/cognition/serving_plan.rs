@@ -477,13 +477,44 @@ pub fn plan_serving(
         m.weights_bytes.saturating_add(m.kv_at(ctx)) <= host.usable_bytes
     };
 
-    // Prefer the MOST CAPABLE model that fits a lane. Ties broken toward the
-    // larger model (more headroom spent = the more capable variant), then by
-    // id descending for deterministic selection.
-    let most_capable_fitting = |ctx: u32| {
+    // How many of the DEMANDED lanes this candidate can serve at a one-turn
+    // window (weights + per-lane KV + per-lane compute buffer, same terms the
+    // lane loop below reserves). Capped at demand — extra capacity beyond
+    // demand earns no preference.
+    let achievable_lanes = |m: &ModelFootprint, ctx: u32| -> u64 {
+        let per_lane = m.kv_at(ctx).saturating_add(m.compute_buffer_per_lane());
+        let after_weights = host.usable_bytes.saturating_sub(m.weights_bytes);
+        if m.weights_bytes > host.usable_bytes || per_lane == 0 {
+            return 0;
+        }
+        (after_weights / per_lane).min(demand_lanes.max(1) as u64)
+    };
+    // The pathology gate, and ONLY the pathology gate: a model that can serve
+    // exactly ONE lane cannot host a fleet. Any capacity ≥ 2 competes on
+    // capability exactly as before — no demand-scaled re-ranking (a rule that
+    // flips the base model between demand 2 and demand 6 is a relaunch flap
+    // and a tier-down engine; the 718 law and "never tiering down for its own
+    // sake" both forbid it).
+    let can_parallelize = |m: &ModelFootprint, ctx: u32| achievable_lanes(m, ctx) >= 2;
+
+    // Prefer the MOST CAPABLE model — excluding single-lane-only models while
+    // the fleet demands parallelism.
+    //
+    // The lane-axis twin of the 2026-08-17 window fix above (glass-boxed
+    // 2026-08-30): selection tested "fits ONE lane", so a higher-ranked model
+    // that could only ever serve one slot (Flash-Next) was crowned over a model
+    // serving every demanded lane (Ornith, 3–4) — and four minds spent hours
+    // single-file through one slot while every per-act number looked healthy.
+    // The gate is a THRESHOLD at the degenerate point, not a re-ranking: with
+    // demand > 1, a one-slot model is eligible only when NO candidate can
+    // parallelize (honest degrade — then the old capability order decides and
+    // the lane loop surfaces the starvation it always did). Solo demand leaves
+    // the capability order untouched.
+    let most_capable_where = |ctx: u32, fleet_only: bool| {
         candidates
             .iter()
             .filter(|m| fits_one_lane_at(m, ctx))
+            .filter(|m| !fleet_only || demand_lanes <= 1 || can_parallelize(m, ctx))
             .max_by(|a, b| {
                 a.capability_rank
                     .cmp(&b.capability_rank)
@@ -491,8 +522,9 @@ pub fn plan_serving(
                     .then(b.model_id.cmp(&a.model_id))
             })
     };
-    let best = most_capable_fitting(BOOTSTRAP_WORKING_SET)
-        .or_else(|| most_capable_fitting(MIN_SERVE_CTX));
+    let best = most_capable_where(BOOTSTRAP_WORKING_SET, true)
+        .or_else(|| most_capable_where(BOOTSTRAP_WORKING_SET, false))
+        .or_else(|| most_capable_where(MIN_SERVE_CTX, false));
 
     let Some(model) = best else {
         // Nothing fits a lane on the GPU budget. Degrade honestly: name the
@@ -894,6 +926,41 @@ mod tests {
             context_window: ctx,
             capability_rank: rank,
         }
+    }
+
+    // what this catches: the lane-axis twin of the window-collapse selection bug
+    // (glass-boxed 2026-08-30). A higher-ranked model that can only ever serve
+    // ONE lane (Flash-Next: giant weights, one slot) must not be crowned over a
+    // slightly lower-ranked model that serves every demanded lane — four minds
+    // spent hours single-file through one slot while per-act numbers looked
+    // healthy. Parallelism is capability; selection maximizes achievable lanes
+    // toward demand FIRST, capability second. Degrade honesty is pinned too:
+    // when demand is one lane, the capability order stands unchanged.
+    #[test]
+    fn a_one_lane_giant_never_outranks_a_model_that_serves_the_fleet() {
+        // 60GB budget. "giant" rank 5 fits ONE bootstrap lane and no more;
+        // "team" rank 3 serves 3+ lanes comfortably.
+        let host = HostBudget {
+            usable_bytes: 60 * GB,
+            perf_cores: 8,
+        };
+        let giant = fp("giant-flash", 50, 200_000, 262_144, 5);
+        let team = fp("team-brain", 20, 60_000, 262_144, 3);
+        let c = vec![giant.clone(), team.clone()];
+
+        let plan = plan_serving(host, &c, ServingDemand::new(4, None)).expect("plan");
+        assert_eq!(
+            plan.base_model.model_id, "team-brain",
+            "fleet demand 4: the model serving the fleet wins over the one-lane giant"
+        );
+        assert!(plan.lanes >= 2, "the chosen plan actually multiplies lanes: {}", plan.lanes);
+
+        // Demand 1: old capability order stands — the giant is honestly best.
+        let solo = plan_serving(host, &c, ServingDemand::new(1, None)).expect("plan");
+        assert_eq!(
+            solo.base_model.model_id, "giant-flash",
+            "solo demand: capability preference unchanged (degrade honesty)"
+        );
     }
 
     fn candidates() -> Vec<ModelFootprint> {
@@ -1728,8 +1795,16 @@ mod tests {
             usable_bytes: host.usable_bytes + 1 * GB, // small's credited weights
             perf_cores: host.perf_cores,
         };
+        // PREMISE CHANGE (2026-08-30), stated as such: demand here is now SOLO.
+        // The single-lane gate (the Flash-Next lesson) makes a 19GB-on-21GB
+        // model ineligible under MULTI-lane demand by design — near-budget
+        // weights and fleet parallelism are mutually exclusive premises at this
+        // scale, so under fleet demand this fixture's "big" is correctly never
+        // on offer and the headroom refusal would be vacuous. The INVARIANT
+        // under test — an upgrade lacking headroom must not be adopted — is
+        // demand-independent; solo demand is where both premises coexist.
         assert_eq!(
-            plan_serving(at_rest_for_setup, &models, ServingDemand::new(MAX_LANES, None))
+            plan_serving(at_rest_for_setup, &models, ServingDemand::new(1, None))
                 .unwrap()
                 .base_model
                 .model_id,
@@ -1740,7 +1815,7 @@ mod tests {
             host,
             &models,
             Some("small"),
-            ServingDemand::new(MAX_LANES, None),
+            ServingDemand::new(1, None),
         )
         .unwrap();
         assert_eq!(
