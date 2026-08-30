@@ -165,23 +165,30 @@ larger, and it is the reason the weight-space commitment (§6) matters beyond
 context-length arguments — so we state the architecture here even though its
 full quantitative treatment is a companion paper.
 
-**Genes are self-describing, addressable artifacts.** A gene is a LoRA layer
-plus its provenance: what experience trained it, what evaluations it lifted,
-and an embedding of the capability it encodes. Routing is by **distance, not
-keywords** — a task's embedding selects the nearest genes, and genes stack by
-similarity. This makes the genome an open-ended mixture-of-experts whose
-expert set is not fixed at training time: any gene anyone ever publishes is a
-candidate expert for any future task, selected by measured fit
-【receipt slot: gene-routing implementation + first paged-gene lift】.
+**Genes are self-describing, addressable artifacts — and the pipeline is in
+tree, not proposed.** A gene is a LoRA layer plus its provenance: what
+experience trained it, what evaluations it lifted, an embedding of the
+capability it encodes, and its **lineage — a signed DAG of parent-gene
+hashes** (an empty parent set marks a root gene). Search is `genome/recall`:
+candidates ranked by **distance** (embedding similarity to each gene's
+minted signature) **× fitness** (folded from real evaluation receipts, with
+an exploration bonus for young genes) **× recency/residency/trust**. Routing
+by distance rather than keywords makes the genome an open-ended
+mixture-of-experts whose expert set is not fixed at training time: any gene
+anyone ever publishes is a candidate expert for any future task, selected by
+measured fit 【receipt slot: first measured cross-node paged-gene lift】.
 
-**HuggingFace is the seeder.** We publish models and artifacts to HF today
-(【links to published repos】); genes ride the same rails. Gene *search* is
-then literal: embed the task, search the published gene index by proximity,
-page the winners into the local genome — the same operation the local router
-performs, one tier further out. The grid's paging hierarchy (device → host →
-disk → peers → HF) treats the public model hub as the outermost cache level
-of a planetary genome, with content-addressing making artifacts verifiable
-and un-revocable.
+**HuggingFace is the seeder — the built rails.** We publish models and
+alloy-carded artifacts to HF today (【links】); genes ride the same rails
+via `genome/push` / `genome/pull`, with `hf/search_models` as the discovery
+verb and HF's own `base_model:` frontmatter carrying the lineage chain
+in-band. The grid's paging hierarchy (device → host → disk → peers → HF)
+treats the public hub as the outermost cache tier of a planetary genome,
+content-addressed and verifiable. Sharing is gated by an explicit
+**genome-commons covenant** (`genome/sharing`): a node records consent to
+the covenant version before pushing or pulling, and **refinements carry the
+covenant forward through their lineage** — a copyleft for learned skills,
+enforced by the same provenance that makes the benchmarks auditable.
 
 **Evolution closes the loop.** Benchmarks and real work are the selection
 pressure: genes that lift outcomes propagate (get paged, get cited in
