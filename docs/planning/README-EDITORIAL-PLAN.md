@@ -68,7 +68,11 @@ Long essays move to docs/ and leave a linked paragraph behind.
   is one commit so review is per-section. Target: voice rules above, no
   content loss — anything cut is MOVED with a link, never deleted.
 - **P3 — structure consolidation**: the table above executed; docs absorb
-  essays; README lands ≈450 lines. Anchor-integrity check after moves.
+  essays; README lands ≈450 lines. Anchor-integrity check after moves —
+  including the known collision found in P1: `#the-grid`/`#the-factory`
+  resolve to the *first* same-named heading ("### The Grid" in
+  Architecture-in-Four-Pictures), not the main sections; rename the
+  sub-headings.
 - **P4 — the read-aloud pass**: full top-to-bottom read for cadence; fresh-
   clone command verification; final counters.
 - **P5 — the ratchet**: a source-hygiene-style CI check on README: naked-URL
