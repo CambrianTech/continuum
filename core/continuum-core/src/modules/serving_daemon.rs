@@ -2312,6 +2312,14 @@ impl ServingDaemonModule {
             if snapshot.ready && snapshot.served_context_window > 0 {
                 last_healthy_window.store(snapshot.served_context_window, Ordering::Relaxed);
                 last_healthy_lanes.store(snapshot.lanes, Ordering::Relaxed);
+                // The commons seed (README promise: personas + genome from the
+                // shared HF cards, zero manual steps): a base that just became
+                // decode-ready gets its starter genes from the commons —
+                // covenant-gated, idempotent, once per (process, model),
+                // detached (never blocks the reconcile).
+                if let Some(model) = snapshot.active_model.as_deref() {
+                    crate::commands::genome_share::spawn_bootstrap(model.to_string());
+                }
             }
             // Emit on the bus first (fan-out to every subscriber + the grid),
             // then update the in-process watch view.
