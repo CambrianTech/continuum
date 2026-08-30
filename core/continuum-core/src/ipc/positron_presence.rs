@@ -366,7 +366,7 @@ async fn run_presence_loop(
             .await
             .unwrap_or_default();
     match reader
-        .room_roster_cards(MEMBERSHIP_WINDOW, MEMBERSHIP_SCAN, None)
+        .room_roster_cards(MEMBERSHIP_WINDOW, MEMBERSHIP_SCAN, Some(room_id))
         .await
     {
         Ok(members) => {
@@ -483,7 +483,7 @@ async fn emit_once(
     directory: &mut HashMap<Uuid, RosterSlotView>,
     force: bool,
 ) -> bool {
-    let members = match reader.room_roster_cards(PRESENCE_WINDOW, ROSTER_SCAN, None).await {
+    let members = match reader.room_roster_cards(PRESENCE_WINDOW, ROSTER_SCAN, Some(room_id)).await {
         Ok(m) => m,
         Err(err) => {
             tracing::warn!(
@@ -562,6 +562,7 @@ pub fn spawn_node_presence_emitter(
             );
             return;
         }
+        let registry_socket = daemon_socket.clone();
         let airc = match airc_lib::Airc::attach_as(
             node_home.clone(),
             NODE_PRESENCE_READER_NAME,
@@ -592,15 +593,55 @@ pub fn spawn_node_presence_emitter(
             );
             return;
         }
+        // MULTI-ROOM presence (#2606): one attached reader serves EVERY room in
+        // the durable registry — the single-bootstrap-room emitter left every
+        // other room's roster empty (the who-panel changed per tab; academy
+        // rendered blank; Joel, 2026-08-30). Safe now because the chat
+        // projection pins focus after nav/select (`pinned_away_from`) instead
+        // of adopting whichever room's update lands. Reads are room-scoped
+        // (`Some(room_id)`), so N loops on one reader never cross streams.
+        let mut rooms: Vec<(Uuid, String)> = vec![(room_id, room_name.clone())];
+        match airc_ipc::DaemonClient::new(registry_socket).list_rooms().await {
+            Ok(response) => {
+                for room in response.rooms {
+                    let id = room.room_id.as_uuid();
+                    if id != room_id {
+                        rooms.push((id, room.name));
+                    }
+                }
+            }
+            Err(err) => tracing::warn!(
+                %err,
+                "positron_presence: room-registry list failed — presence serves the                  bootstrap room only until next boot (degraded, not silent)"
+            ),
+        }
+        for (id, name) in &rooms {
+            if *id != room_id {
+                if let Err(err) = airc.join(name).await {
+                    tracing::warn!(%err, room = %name, "positron_presence: join failed — this room's roster stays directory-only");
+                }
+            }
+        }
         let reader: Arc<dyn AircRosterReader> = Arc::new(
             crate::context::airc_adapter::AircHandleAdapter::new(Arc::new(airc)),
         );
         tracing::info!(
-            %room_id,
-            room = %room_name,
-            "positron_presence: node reader attached — emitting presence:updated"
+            rooms = rooms.len(),
+            bootstrap = %room_name,
+            "positron_presence: node reader attached — emitting presence:updated for every registry room"
         );
-        run_presence_loop(reader, room_id, room_name, bus).await;
+        let mut loops = Vec::new();
+        for (id, name) in rooms {
+            loops.push(tokio::spawn(run_presence_loop(
+                reader.clone(),
+                id,
+                name,
+                bus.clone(),
+            )));
+        }
+        for l in loops {
+            let _ = l.await;
+        }
     });
 }
 

@@ -152,6 +152,7 @@ async function main(): Promise<void> {
   // UUID-typed (names are display, ids are identity). The pending link waits
   // for the first nav envelope that knows the target, fires once, clears.
   let pendingDeepLink: { kind: 'room' | 'persona'; target: string } | null = null;
+  let focusPinned = false;
   {
     const m = /^\/(room|persona)\/(.+)$/.exec(window.location.pathname);
     if (m?.[1] !== undefined && m[2] !== undefined) {
@@ -409,6 +410,19 @@ async function main(): Promise<void> {
     const nav = navStateFromEnvelope(envelope);
     widget.nav = nav;
     resolveDeepLink(nav.open_tabs ?? []);
+    // Pin the chat projection on first contact: with per-room presence
+    // emitters live (#2606), an UNPINNED projection follows whichever room's
+    // update lands next. One idempotent nav/select of the current tab arms
+    // `pinned_away_from` so only explicit selection moves the view.
+    if (!focusPinned && !pendingDeepLink) {
+      const cur = nav.open_tabs?.find((t) => t.id === nav.current_tab);
+      if (cur?.id !== undefined) {
+        focusPinned = true;
+        void selectRoomHandler(cur.id, 'room').catch(() => {
+          focusPinned = false; // transient — retry on the next nav envelope
+        });
+      }
+    }
     // The tab/window title mirrors the CURRENT activity — "continuum — cambriantech"
     // (Joel 2026-07-30; the #252 router's short-title rule, brand always lowercase).
     // App-level concern: index.ts owns the document, widgets never touch it.
