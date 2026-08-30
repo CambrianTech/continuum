@@ -37,6 +37,15 @@ carry a claim and its warrant in one breath. Concretely:
 5. **Honesty blocks stay** — the "Where we are — honestly" pattern is a
    brand asset; every major claim section keeps its status line.
 6. **Screenshots dated** — every image caption says when it was real.
+7. **The poetry rule** — poetic lines are PERMITTED, in titles, section
+   heads, and a section's first/last sentence, under one test: the line must
+   be the most *precise* available statement of its claim, with its receipt
+   within arm's reach. Methods and results stay bone dry — the contrast is
+   the credibility mechanism (dry data, vivid frame). One image per idea,
+   used once, then retired. Poetry that substitutes for a claim, recurs as a
+   motif, or floats free of evidence is struck — for unaffiliated authors,
+   personality is the first thing a skimming reviewer holds against an
+   unknown name, and the receipts are what make the voice read as earned.
 
 ## Structure target (~450 lines from 1084)
 
