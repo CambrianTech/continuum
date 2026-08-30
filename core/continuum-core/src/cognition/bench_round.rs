@@ -504,6 +504,17 @@ pub fn card_activity(card_id: Uuid) -> Option<CardActivity> {
 /// callers that hold an activity's room but not its card (the experience
 /// stream's grade-time seam). `None` = no tracked round runs a solve there
 /// (solo work, non-bench rooms).
+/// The RUN room of the round whose solve runs in `room` — the tree edge the
+/// nav rail renders (#2632): a solve activity nests under its round. `None`
+/// = no tracked round solves there (top-level activity).
+pub fn run_room_for_solve(room: Uuid) -> Option<Uuid> {
+    let rounds = ROUNDS.lock().expect("bench rounds mutex");
+    rounds
+        .values()
+        .find(|r| r.card_activities.values().any(|a| a.solve_room == room))
+        .map(|r| r.round_id)
+}
+
 pub fn team_for_room(room: Uuid) -> Option<CardActivity> {
     let rounds = ROUNDS.lock().expect("bench rounds mutex");
     rounds

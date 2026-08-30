@@ -109,12 +109,24 @@ pub fn project_nav(user: Uuid, snap: NavSnapshot) -> NavViewState {
             if let Some(ts) = a.last_read {
                 last_read.insert(a.id.clone(), ts);
             }
-            NavTab {
-                id: a.id,
-                title: a.title,
-                kind: a.kind,
-                unread: a.unread,
-                purpose: a.purpose,
+            {
+                // The tree half of #2632: a solve room nests under its run
+                // room — the round tracker already RECORDS the lineage
+                // (CardActivity.solve_room ↔ round_id), so parenthood is a
+                // lookup, never new state. The humanized label derives from
+                // the same record (instance · assignee name resolved by the
+                // renderer's roster); the raw room id keeps its identity job
+                // in `id` and retreats from the reading line.
+                let (parent_ref, display_label) = activity_lineage(&a.id, &a.title);
+                NavTab {
+                    id: a.id,
+                    title: a.title,
+                    kind: a.kind,
+                    unread: a.unread,
+                    purpose: a.purpose,
+                    parent_ref,
+                    display_label,
+                }
             }
         })
         .collect();
@@ -660,6 +672,36 @@ impl NavProjectorRegistry {
             Arc::clone(&self.reader),
         );
     }
+}
+
+
+/// The activity's tree position + humanized reading-line label (#2632 slice a).
+///
+/// Pure lookup over records the substrate already keeps: a room that hosts a
+/// tracked solve card nests under its round's run room, labeled
+/// `<instance> · <assignee-short>`. Anything untracked stays top-level with
+/// its own title — honest flat, never an invented hierarchy.
+fn activity_lineage(room_ref: &str, title: &str) -> (String, String) {
+    let Ok(room) = uuid::Uuid::parse_str(room_ref) else {
+        return (String::new(), String::new());
+    };
+    let Some(act) = crate::cognition::bench_round::team_for_room(room) else {
+        return (String::new(), String::new());
+    };
+    let Some(run_room) = crate::cognition::bench_round::run_room_for_solve(room) else {
+        return (String::new(), String::new());
+    };
+    // `swe--<instance>--<card8>` → `<instance>`; an unconventional name keeps
+    // its title (label stays honest, never lossy).
+    let instance = title
+        .strip_prefix("swe--")
+        .and_then(|rest| rest.rsplit_once("--").map(|(i, _)| i))
+        .unwrap_or(title);
+    let assignee8 = act.assignee.to_string()[..8].to_string();
+    (
+        run_room.to_string(),
+        format!("{instance} · {assignee8}"),
+    )
 }
 
 #[cfg(test)]
