@@ -107,6 +107,43 @@ continuum benchmark/scoreboard
 
 Everything after the dispatch command is automatic. Walk away.
 
+### 2.1 Recipes — the two-command replication (preferred)
+
+A stored recipe pins everything the flags above express — instances, model,
+team shape — as a DATA row, so a published run replicates by name + params
+instead of a flag transcript. Recipes live in the `benchmark_recipes`
+collection (author with `data/create`; list with `data/list`); the model is
+always an argument, never baked in:
+
+```bash
+# The whole round, reproducibly, on any machine with the model available:
+continuum benchmark/dispatch --recipe=team-challenge \
+  --params='{"model":"ornith-ai/Ornith-1.5-35B-A3B-GGUF"}'
+```
+
+- `reviewers: N` in a recipe dispatch enrolls N live residents as reviewers
+  per card, resolved from the roster at dispatch — recipes carry ROLES, never
+  citizen names, so they ship across machines.
+- `--teammates='["Name",…]'` at the command line overrides/augments per run.
+- Publishing a recipe-run score = publish the recipe name + params + the
+  scoreboard regime. Anyone with the repo re-runs the identical experiment.
+
+### 2.2 Per-benchmark quick reference
+
+| Benchmark | Dispatch | Oracle / grading | Notes |
+|---|---|---|---|
+| SWE-bench Verified | `benchmark/dispatch --name=swe-bench-verified …` | official harness, fresh clone, FAIL_TO_PASS + PASS_TO_PASS | era interpreter pinning handled at staging |
+| SWE-bench Lite | `--name=swe-bench-lite …` | same | |
+| Terminal-Bench 2.1 | `--name=terminal-bench-2-1 …` | task's own pytest oracle, path-projected | 53/89 tasks convert; skips are COUNTED, never silent |
+| Terminal-Bench 4.0 | (adapter in progress, #2595) | same family | upstream: harbor-framework/terminal-bench @ v4.0.0 |
+| DS-1000 / gyms | `benchmark/round --set=…` (§3) | eval-graded | |
+
+Every verdict lands in `~/.continuum/benchmarks/swe/verdicts/` (or the gym's
+progress ledger) stamped with `served_model` + `harness_build` — the regime
+travels WITH the number. The README's receipt charts regenerate from those
+artifacts (`python3 tools/scripts/generate_receipt_charts.py`); charts are
+projections of verdicts, never hand-drawn.
+
 ## 3. Round (gym benchmarks: eval-graded sets, e.g. hard-rs, vision-qa, DS-1000)
 
 ```bash
