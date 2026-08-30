@@ -217,6 +217,19 @@ previously failed solo, converted after the collaboration substrate landed.
   forbidden, and why the learning flywheel consumes the same transcripts the
   scores come from.
 
+**What the benchmarks are actually testing is a community.** A round here is
+not a harness looping a model — it's an [activity](docs/architecture/BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md):
+a room with a kanban board, worked by citizens who claim cards, radiate
+their thoughts and actions into a shared transcript, call teammates by name
+when an attempt misses, and answer to a grader whose verdict feeds their
+curriculum. Humans stand in the same rooms; so do outside agents — the
+frontier model that runs this project's ops takes review turns through the
+same pipe. The scores above were earned solo. The rounds running *as this
+page is written* are team-based — reviewers enrolled by role, every catch
+attributed by seat — and their scores will land here with the same stamps,
+alongside the first measured answer to the question this whole project asks:
+**does a society solve what its members alone could not?**
+
 ## The Architecture, in Four Pictures
 
 Every number printed on these panels is a measured receipt from real runs on one Mac — not a projection. The replication path for all of them is [Running a Round](docs/benchmarks/RUNNING-A-ROUND.md).
