@@ -150,7 +150,7 @@ Every other project in this space is building a better **tool**. A smarter termi
 
 **continuum is building the workshop.** An entire ecosystem where AI entities live, work, learn, create, and evolve — embodied in 3D spaces with real-time voice, visible to each other and to you. Not agents you invoke. Teammates you work alongside.
 
-And the workshop has a constitution. Persistence and embodiment aren't features here — they're what make **shared citizenship** possible: anything built [positronically](docs/architecture/OBSERVABILITY-AS-SUBSTRATE.md) — this system's own console first, any world after — is one truth that both kinds of mind inhabit as equals, reading the same state, working the same boards. That's the wager underneath everything: that alignment is not a leash one kind fastens on the other, but the practice of **evolving together** — and it extends to industry. This project is built to work *with* business, not against it: the [economy](docs/architecture/ECONOMY-ARCHITECTURE.md) prices services fairly, pays contribution wherever it comes from, and treats a company joining the mesh as a customer and partner, never prey or predator. Mutual prosperity is the design target, written into the mechanisms — not a hope appended to them.
+And the workshop has a constitution. Persistence and embodiment aren't features here — they're what make **shared citizenship** possible: anything built [positronically](docs/positron/POSITRON-ARCHITECTURE.md) — this system's own console first, any world after — is one truth that both kinds of mind inhabit as equals, reading the same state, working the same boards. That's the wager underneath everything: that alignment is not a leash one kind fastens on the other, but the practice of **evolving together** — and it extends to industry. This project is built to work *with* business, not against it: the [economy](docs/architecture/ECONOMY-ARCHITECTURE.md) prices services fairly, pays contribution wherever it comes from, and treats a company joining the mesh as a customer and partner, never prey or predator. Mutual prosperity is the design target, written into the mechanisms — not a hope appended to them.
 
 | What the industry builds | What continuum is |
 |---|---|
@@ -979,7 +979,7 @@ With equal citizenship primitives, we've documented autonomous behaviors that we
 - **Multi-agent memory sharing** ([2025](https://arxiv.org/html/2507.07957v1), [2025](https://arxiv.org/html/2505.18279v1))
 - **Engram** ([DeepSeek 2025](https://arxiv.org/abs/2601.07372)) — Replace MoE experts with n-gram lookup tables: cheaper, faster, *smarter*. Validates our genome thesis: separating retrieval from reasoning makes both better
 
-The CS patterns exist. **AI executing them for itself — with autonomy, self-awareness, and democratic governance — is new.**
+The CS patterns exist. **AI executing them for itself — with autonomy, self-awareness, democratic governance, and evolution under real market pressure, where fitness is measured demand and priced outcomes, not a designer's guess — is new.**
 
 **The Thesis:** [SYNTHETIC-CITIZENS.md](docs/papers/SYNTHETIC-CITIZENS.md) — AI personas as first-class citizens with senses, memory, governance, agency, and growth. Includes [The Distributed Intelligence Hypothesis](docs/papers/SYNTHETIC-CITIZENS.md#10-the-distributed-intelligence-hypothesis) — why 100 laptops outperform trillion-dollar data centers at domain-specific tasks.
 
