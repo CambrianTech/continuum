@@ -566,6 +566,70 @@ pub async fn apply_act(
                 }
             }
         }
+        // THE SAME HISTORY, FOR THE OTHER KIND (Joel, 2026-08-30: "they should
+        // be chatting within their activity as they work and see each other's
+        // work, thoughts, chats, actions like any good history"). The loop
+        // above feeds the HUMAN console; teammates' perception reads the airc
+        // room transcript — which carried nothing, so a charged reviewer
+        // watched an empty room while the solver worked beside her. One
+        // coalesced, honest-thin receipt message per act batch, authored by
+        // the actor herself: her own self-filter keeps it from waking HER;
+        // roommates perceive live work and can speak the moment something
+        // looks wrong. Receipts are history, not imperatives — coalescing is
+        // correct here (the one-block-per-imperative law governs kickoffs,
+        // not transcripts).
+        let lines: Vec<String> = acts
+            .iter()
+            .map(|obs| {
+                let object = obs
+                    .output
+                    .paths
+                    .first()
+                    .map(|p| p.display().to_string())
+                    .or_else(|| {
+                        obs.call
+                            .input
+                            .get("command")
+                            .and_then(|c| c.as_str())
+                            .map(|c| c.chars().take(80).collect::<String>())
+                    })
+                    .unwrap_or_default();
+                let mark = if obs.output.result.is_error == Some(true) {
+                    "✗"
+                } else {
+                    "✓"
+                };
+                format!("⚙ {} {} {}", obs.call.name, object, mark)
+            })
+            .collect();
+        if !lines.is_empty() {
+            if let Some(rt) = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+                .and_then(|reg| reg.get(body.persona_id))
+            {
+                match crate::persona::airc_citizen::publish_text_in_room(
+                    rt.airc(),
+                    room_id,
+                    &lines.join("\n"),
+                )
+                .await
+                {
+                    Ok(_) => crate::probe!(
+                        class = "room.work_receipt.published",
+                        room = %room_id,
+                        actor = %body.persona_id,
+                        acts = lines.len() as u64,
+                        "act receipts radiated into the activity transcript — roommates see the work"
+                    ),
+                    Err(e) => crate::probe!(
+                        class = "room.work_receipt.failed",
+                        room = %room_id,
+                        actor = %body.persona_id,
+                        error = %e.to_string(),
+                        "act receipts did not reach the room transcript — console feed unaffected"
+                    ),
+                }
+            }
+        }
     }
 
     // The background dispatches are part of what she just did — record them as

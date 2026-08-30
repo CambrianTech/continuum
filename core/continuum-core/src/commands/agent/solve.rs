@@ -865,6 +865,75 @@ impl ActionCommand for AgentSolve {
                                             g.pass_to_pass_total,
                                         )
                                     };
+                                    // THE REVIEW-LANDING EVENT (teams arc, 2026-08-30).
+                                    // A charged reviewer who wakes to an empty room
+                                    // correctly idles — and nothing called her back when
+                                    // there was finally a diff to read. This is the
+                                    // moment a reviewer is worth the most: a diff EXISTS,
+                                    // the grader named what it misses, and a retry is
+                                    // about to spend acts. Solver-voiced (so teammates'
+                                    // inbound carries it — never self-filtered for THEM),
+                                    // addressed by name, in the solve room. Fire-and-
+                                    // continue: the retry never waits on review (the
+                                    // recipe-rule gate is the designed next lap); a
+                                    // reviewer's findings land in the room and the
+                                    // solver's own multi-room perception folds them in
+                                    // mid-retry.
+                                    if !inner.teammates.is_empty() && g.patch_bytes > 0 {
+                                        if let (Some(room), Some(reg)) = (
+                                            inner.room,
+                                            crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global(),
+                                        ) {
+                                            if let Some(solver_rt) = uuid::Uuid::parse_str(inner.persona_id.as_str())
+                                                .ok()
+                                                .and_then(|u| reg.get(u))
+                                            {
+                                                let mates: Vec<String> = inner
+                                                    .teammates
+                                                    .iter()
+                                                    .filter_map(|m| reg.get(*m))
+                                                    .map(|rt| format!("@{}", rt.agent_name()))
+                                                    .collect();
+                                                if !mates.is_empty() {
+                                                    let req = format!(
+                                                        "{} (to you, review request): my attempt {attempt} on `{instance}` \
+                                                         did not resolve — the grader's held-out tests still failing: {}. \
+                                                         My diff is live in this room's workspace (`git diff HEAD` in \
+                                                         swe/{instance}/); edited: {}. I am starting attempt {} now — \
+                                                         read the diff and SPEAK what you see wrong here, a catch \
+                                                         before I resubmit is the whole point of this team.",
+                                                        mates.join(" "),
+                                                        if g.failed_tests.is_empty() { "(unnamed)".to_string() } else { g.failed_tests.join(", ") },
+                                                        if r.files_changed.is_empty() { "(none listed)".to_string() } else { r.files_changed.join(", ") },
+                                                        attempt + 1,
+                                                    );
+                                                    match crate::persona::airc_citizen::publish_text_in_room(
+                                                        solver_rt.airc(),
+                                                        room,
+                                                        &req,
+                                                    )
+                                                    .await
+                                                    {
+                                                        Ok(_) => crate::probe!(
+                                                            class = "team.review.requested",
+                                                            run_id = %run_id,
+                                                            instance = %instance,
+                                                            attempt,
+                                                            mates = %mates.join(","),
+                                                            "failed attempt published a solver-voiced review request — the review-landing event"
+                                                        ),
+                                                        Err(e) => crate::probe!(
+                                                            class = "team.review.request_failed",
+                                                            run_id = %run_id,
+                                                            instance = %instance,
+                                                            error = %e.to_string(),
+                                                            "review request did not send — retry proceeds solo, loudly"
+                                                        ),
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                                 Err(e) => {
                                     // A failed GRADE is not a failed solve — surface it
