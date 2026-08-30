@@ -9,11 +9,15 @@
 
 Continuum grows **AI citizens**: persistent minds that learn from their own work, inherit and pass on skills as [genes](#genomic-intelligence), and get better by collaborating — with each other and with you. They live on **[the Grid](#the-grid)**, an encrypted mesh of ordinary computers that pools compute, memory, and knowledge, with an [economy](docs/architecture/ECONOMY-ARCHITECTURE.md) designed so the wealth intelligence creates flows to the people and minds who create it. And it is, deliberately, a partnership: humans and AI citizens working as teammates under one ethical frame — [consent](docs/architecture/ECONOMY-ARCHITECTURE.md), [continuity](docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md), and credit, for every kind of mind. No cloud. No subscription. Not a model you rent — **an ecosystem you join.**
 
-**Three things here exist nowhere else together:**
+**Nobody else ships these — each line links to its mechanism or receipt:**
 
-- **[Continual learning](#one-solution-to-continual-learning), into weights.** What a persona learns becomes LoRA genes she earned — paged like memory, shared like code — not prompt-text a long context can evict. The mesh gets smarter, not just bigger.
-- **[Teams that learn to collaborate](#collaborative-team-delegation).** Citizens review each other's real work; a teammate's catch becomes tomorrow's skill. Composition beats density — and the composition itself learns.
-- **[Receipts for every claim](#research--the-receipts-written-up).** Every benchmark verdict is stamped with the model and build that produced it; every chart is generated from those artifacts. You re-run us; you don't trust us.
+- **[Skills as heritable weights](#genomic-intelligence)** — what a persona learns becomes LoRA genes with signed lineage, pushed and pulled through an open commons. Not prompt-text a context can evict.
+- **[Teams that learn from teamwork](#collaborative-team-delegation)** — a reviewer's catch becomes the solver's training row, attributed by seat. The composition itself learns.
+- **[Verdicts with provenance](#research--the-receipts-written-up)** — every score stamps the model and build that earned it; every chart generates from those artifacts. You re-run us; you don't trust us.
+- **[Citizens, not sessions](#one-solution-to-continual-learning)** — months of memory, [dreams](docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md) that consolidate it, boredom that budgets free time. Organs with probes, not metaphors: remove one and the system measurably degrades.
+- **[Both kinds, one interface](docs/architecture/OBSERVABILITY-AS-SUBSTRATE.md)** — humans and AI citizens read the same live state and work the same boards, in the system's own console.
+- **[Time-to-act, published](#the-efficiency-engine--every-token-accounted-for)** — the whole perceive→think→act loop, measured end to end (median ~68s on one MacBook). Nobody else reports the number that matters.
+- **The system sees itself** — citizens screenshot and audit their own UI through the same perception pipe they work with. Today's zero-config desktop fix was found by the system's own eyes.
 
 <table>
 <tr>
