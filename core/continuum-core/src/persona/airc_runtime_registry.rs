@@ -337,7 +337,7 @@ impl PersonaAircRuntimeRegistry {
     #[must_use = "bind the lease to a named `_lease` for the eval's duration; \
                   binding to `_` drops it immediately and resumes the fleet at once"]
     pub fn quiesce_all(&self) -> QuiesceLease {
-        Self::quiesce_lease_over(self.quiesce_pairs(), None)
+        Self::quiesce_lease_over(self.quiesce_pairs(), &[])
     }
 
     /// Snapshot of every live persona's `(id, quiesce-flag)` — the input both quiesce
@@ -359,12 +359,12 @@ impl PersonaAircRuntimeRegistry {
     /// verbs; the only difference is whether `except` is `Some`.
     fn quiesce_lease_over(
         pairs: Vec<(Uuid, Arc<AtomicBool>)>,
-        except: Option<Uuid>,
+        except: &[Uuid],
     ) -> QuiesceLease {
         let total = pairs.len();
         let flags: Vec<Arc<AtomicBool>> = pairs
             .into_iter()
-            .filter(|(id, _)| except != Some(*id))
+            .filter(|(id, _)| !except.contains(id))
             .map(|(_, flag)| flag)
             .collect();
         for f in &flags {
@@ -401,7 +401,16 @@ impl PersonaAircRuntimeRegistry {
     #[must_use = "bind the lease to a named `_lease` for the solve's duration; \
                   binding to `_` drops it immediately and resumes the fleet at once"]
     pub fn quiesce_others(&self, except: Uuid) -> QuiesceLease {
-        Self::quiesce_lease_over(self.quiesce_pairs(), Some(except))
+        Self::quiesce_lease_over(self.quiesce_pairs(), &[except])
+    }
+
+    /// [`quiesce_others`] generalized to a PARTICIPANT SET — the solver plus her
+    /// teammates. A measured team solve needs every participant awake (a quiesced
+    /// reviewer cannot review — first team round, 2026-08-30); the lane-demand
+    /// override inside the lease counts the whole except-set, so serving budgets
+    /// a warm slot per participant.
+    pub fn quiesce_others_than(&self, except: &[Uuid]) -> QuiesceLease {
+        Self::quiesce_lease_over(self.quiesce_pairs(), except)
     }
 
     /// Attach a service-loop `JoinHandle` to the persona's slot. The
@@ -707,7 +716,7 @@ mod tests {
             (other_c, fc.clone()),
         ];
 
-        let lease = PersonaAircRuntimeRegistry::quiesce_lease_over(pairs, Some(solver));
+        let lease = PersonaAircRuntimeRegistry::quiesce_lease_over(pairs, &[solver]);
         assert!(fa.load(Ordering::Relaxed), "other citizen A suspended");
         assert!(
             !fs.load(Ordering::Relaxed),
@@ -733,7 +742,7 @@ mod tests {
         let fb = Arc::new(AtomicBool::new(false));
         let pairs = vec![(Uuid::new_v4(), fa.clone()), (Uuid::new_v4(), fb.clone())];
 
-        let lease = PersonaAircRuntimeRegistry::quiesce_lease_over(pairs, None);
+        let lease = PersonaAircRuntimeRegistry::quiesce_lease_over(pairs, &[]);
         assert!(
             fa.load(Ordering::Relaxed) && fb.load(Ordering::Relaxed),
             "None → the whole fleet is suspended"

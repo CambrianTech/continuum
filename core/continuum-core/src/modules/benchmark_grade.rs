@@ -238,7 +238,12 @@ fn on_card_state_changed(registry: &PersonaAircRuntimeRegistry, payload: &Value)
                         claimer: crate::identity::PeerId::from_uuid(next.assignee),
                         card: airc_work::WorkCardId::from_uuid(next.card),
                         room: airc_core::RoomId::from_u128(next.run_room.as_u128()),
-                        teammates: Vec::new(), // solo default; team threading lands per-caller
+                        // The card's RECORDED team rides every driver edge (gap 3).
+                        teammates: next
+                            .teammates
+                            .iter()
+                            .map(|t| crate::identity::PeerId::from_uuid(*t))
+                            .collect(),
                     },
                 )
                 .await;
