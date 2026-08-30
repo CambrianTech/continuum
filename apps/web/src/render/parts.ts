@@ -637,19 +637,68 @@ export function memberCardFromCell(cell: ListingCell, listingId?: string): Templ
  *  Personas speak commands (`code/list --filter src/**`, ```bash … ```) constantly, and
  *  raw backticks in the transcript are noise — a monospace block reads as an action. Lit
  *  auto-escapes every interpolation, so the code text is inert (no HTML injection). */
+/** Composed event: the reader clicked a transcript image — the widget owns
+ *  the lightbox overlay (fragments stay stateless, the MESSAGE_EXPAND_TOGGLE
+ *  pattern). Detail carries the full-resolution source. */
+export const MESSAGE_IMAGE_OPEN = 'message-image-open';
+export interface MessageImageOpenDetail {
+  readonly src: string;
+}
+function fireImageOpen(e: Event, src: string): void {
+  e.stopPropagation();
+  (e.currentTarget as HTMLElement).dispatchEvent(
+    new CustomEvent<MessageImageOpenDetail>(MESSAGE_IMAGE_OPEN, {
+      detail: { src },
+      bubbles: true,
+      composed: true,
+    }),
+  );
+}
+
+/** Inline data-URL images in a message body (an eye-node frame, a design
+ *  screenshot) render as DRILLABLE thumbnails — click opens the widget's
+ *  lightbox at full resolution. The blob itself never renders as text: a
+ *  100KB base64 wall is noise; the picture is the message. */
+const DATA_IMAGE = /data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+/g;
+
+function imageThumb(src: string): TemplateResult {
+  return html`<img
+    class="content-thumb"
+    src=${src}
+    alt="screenshot — click to view full size"
+    loading="lazy"
+    @click=${(e: Event) => fireImageOpen(e, src)}
+  />`;
+}
+
 export function formatContent(text: string): TemplateResult {
+  // Pass 0: lift drillable images out of the body (before fence parsing —
+  // a data-URL inside a code fence stays code, so slice around fences first
+  // would be over-engineering; fenced screenshots aren't a real shape).
   const parts: TemplateResult[] = [];
+  let imgLast = 0;
+  let im: RegExpExecArray | null;
+  const withoutImages: string[] = [];
+  DATA_IMAGE.lastIndex = 0;
+  while ((im = DATA_IMAGE.exec(text)) !== null) {
+    withoutImages.push(text.slice(imgLast, im.index));
+    parts.push(imageThumb(im[0]));
+    imgLast = DATA_IMAGE.lastIndex;
+  }
+  withoutImages.push(text.slice(imgLast));
+  const body = withoutImages.join('').trim();
+
   const fence = /```([\w+#.-]*)[ \t]*\n?([\s\S]*?)```/g;
   let last = 0;
   let m: RegExpExecArray | null;
-  while ((m = fence.exec(text)) !== null) {
-    if (m.index > last) parts.push(inlineCode(text.slice(last, m.index)));
+  while ((m = fence.exec(body)) !== null) {
+    if (m.index > last) parts.push(inlineCode(body.slice(last, m.index)));
     const lang = (m[1] ?? '').toLowerCase();
     const code = (m[2] ?? '').replace(/\n+$/, '');
     parts.push(codeBlock(lang, code));
     last = fence.lastIndex;
   }
-  if (last < text.length) parts.push(inlineCode(text.slice(last)));
+  if (last < body.length) parts.push(inlineCode(body.slice(last)));
   return html`${parts}`;
 }
 

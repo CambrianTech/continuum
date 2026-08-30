@@ -45,6 +45,8 @@ import {
   type SettingsFaceToggleDetail,
   type SettingsAgreeDetail,
   MESSAGE_EXPAND_TOGGLE,
+  MESSAGE_IMAGE_OPEN,
+  type MessageImageOpenDetail,
   NAV_TAB_CLOSE,
   PANEL_RESIZE_START,
   navSelectTarget,
@@ -106,6 +108,7 @@ export class ChatWidget extends LitElement {
     liveFace: { attribute: false },
     callUrl: { attribute: false },
     _mediaConnected: { state: true },
+    _lightboxSrc: { state: true },
     _micOn: { state: true },
     _draft: { state: true },
     _sending: { state: true },
@@ -259,6 +262,10 @@ export class ChatWidget extends LitElement {
   /** The live face's caption strip toggle (CC) — on by default; the strip only
    *  draws while a real turn streams, so "on" costs nothing in silence. */
   private _captionsOn = true;
+  /** The transcript lightbox: a drillable image the reader opened (data-URL).
+   *  Widget-owned presentation state, same as _expanded — set by the bubbled
+   *  MESSAGE_IMAGE_OPEN, cleared by click/Escape. */
+  private _lightboxSrc: string | null = null;
 
   /** The Settings face state + its fetched body (substrate truth; undefined
    *  while a fetch is in flight — the face shows its awaiting frame). */
@@ -510,6 +517,11 @@ export class ChatWidget extends LitElement {
     // bubbles out of the shadow tree to the host — listen on self so the pure
     // fragments need no callback threading through the render registries.
     this.addEventListener(MESSAGE_EXPAND_TOGGLE, this.onExpandToggle);
+    // Transcript screenshots: a thumb's composed open-event bubbles here; the
+    // widget owns the lightbox overlay (Escape / click closes).
+    this.addEventListener(MESSAGE_IMAGE_OPEN, ((e: Event) => {
+      this._lightboxSrc = (e as CustomEvent<MessageImageOpenDetail>).detail.src;
+    }) as EventListener);
     // Column resize: handles fire the composed start event; the widget owns
     // the drag tracking + the persisted WorkspaceLayout (same pattern).
     this.addEventListener(PANEL_RESIZE_START, this.onPanelResizeStart);
@@ -1893,6 +1905,31 @@ export class ChatWidget extends LitElement {
       box-shadow: 0 0 5px var(--status-online);
     }
     /* Emotional-event emoji, over the avatar. */
+    .content-thumb {
+      display: block;
+      max-width: min(420px, 100%);
+      max-height: 260px;
+      border-radius: 6px;
+      border: 1px solid var(--border, #30363d);
+      cursor: zoom-in;
+      margin: 4px 0;
+    }
+    .lightbox {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      background: rgba(0, 0, 0, 0.82);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: zoom-out;
+    }
+    .lightbox-img {
+      max-width: 94vw;
+      max-height: 94vh;
+      border-radius: 8px;
+      box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
+    }
     .emoji-overlay {
       position: absolute;
       top: -4px;
@@ -4718,6 +4755,20 @@ export class ChatWidget extends LitElement {
           ></cosmos-backdrop>`
         : nothing}
       ${surface}
+      ${this._lightboxSrc
+        ? html`<div
+            class="lightbox"
+            role="dialog"
+            aria-label="screenshot, full size — click or press Escape to close"
+            tabindex="0"
+            @click=${() => (this._lightboxSrc = null)}
+            @keydown=${(e: KeyboardEvent) => {
+              if (e.key === 'Escape') this._lightboxSrc = null;
+            }}
+          >
+            <img class="lightbox-img" src=${this._lightboxSrc} alt="screenshot, full size" />
+          </div>`
+        : nothing}
     `;
   }
 
