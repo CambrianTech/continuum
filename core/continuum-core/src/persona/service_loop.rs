@@ -433,20 +433,14 @@ async fn serve_persona_loop_inner(
     let mut roster_names: std::collections::HashMap<Uuid, String> =
         std::collections::HashMap::new();
 
-    // While an eval-preemption lease is held, the loop goes FULLY quiet on this beat —
-    // it neither self-ticks NOR consumes inbound. Gating only the self-tick isn't
-    // enough: a peer's reply arrives as `Wake::Msg`, so an in-flight conversation would
-    // keep the GPU busy right through the measurement. Messages simply BUFFER in the
-    // airc stream and are served when the lease drops; the poll is short so resume is
-    // prompt. The measuring eval drives cognition DIRECTLY (not through this loop), so a
-    // quiet loop never blocks it. [[benchmark-is-a-governor-preemption-lease]]
+    // While an eval-preemption lease is held, the loop suspends WANDERING, not
+    // reachability: self-ticks are skipped (the measured lane keeps its quiet)
+    // and inbound directed turns still serve — the guard inside the loop below
+    // carries the full rationale. The measuring eval drives cognition DIRECTLY
+    // (not through this loop), so a quiet loop never blocks it.
+    // [[benchmark-is-a-governor-preemption-lease]]
     // [[first-class-citizens-even-during-benchmarks]]
-    const QUIESCE_POLL: std::time::Duration = std::time::Duration::from_millis(400);
     loop {
-        if opts.quiesced.load(std::sync::atomic::Ordering::Relaxed) {
-            tokio::time::sleep(QUIESCE_POLL).await;
-            continue;
-        }
         let wake = tokio::select! {
             ev = next_event(conversation, &mut outcome) => match ev {
                 Some(m) => Wake::Msg(m),
@@ -454,6 +448,33 @@ async fn serve_persona_loop_inner(
             },
             _ = tokio::time::sleep(next_beat) => Wake::Tick,
         };
+        // QUIESCE HONORS ITS OWN CONTRACT (Joel, 2026-08-30: "I could call
+        // them up or dm — just want to make sure we're not into singular
+        // activity mode again"). The lease's documented promise is "skips
+        // INITIATING self-directed turns — she stays online and still answers
+        // explicit work" — but this arm was implemented as a full coma
+        // (neither ticks NOR inbound; DMs buffered until the lease dropped).
+        // The coma's original justification — an in-flight conversation would
+        // keep the GPU busy through the measurement — predates the slot
+        // economy: a directed reply now decodes on its own slot under a
+        // permit sized to the served slots, without touching the measured
+        // lane's KV. So: a quiesced citizen SKIPS her self-tick (no
+        // wandering; the measured lane keeps its quiet) and still ANSWERS
+        // when addressed — like a colleague heads-down on a build who still
+        // picks up the phone.
+        if opts.quiesced.load(std::sync::atomic::Ordering::Relaxed) {
+            match &wake {
+                // A suppressed beat leaves the cadence untouched — when the
+                // lease drops she resumes at whatever rhythm she had earned.
+                Wake::Tick => continue,
+                Wake::Msg(_) => crate::probe!(
+                    class = "persona.quiesced.directed_served",
+                    "quiesced citizen serving an inbound turn — leases suspend wandering, never reachability"
+                ),
+                // Stop falls through to the arm below.
+                Wake::Stop => {}
+            }
+        }
         let msg = match wake {
             Wake::Stop => break,
             Wake::Tick => {
