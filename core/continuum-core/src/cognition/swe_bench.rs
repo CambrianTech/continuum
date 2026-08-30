@@ -229,6 +229,13 @@ pub struct SweVerdict {
     /// what those files are.
     #[serde(default)]
     pub harness_build: String,
+    /// The MODEL that produced the graded patch — the serving snapshot's
+    /// active model at verdict time (2026-08-29: cards do not carry a model;
+    /// solves run on whatever serves, so "X resolved what Y couldn't" is
+    /// unpublishable without this stamp). `#[serde(default)]`: pre-stamp
+    /// verdicts read empty = "written before model provenance existed".
+    #[serde(default)]
+    pub served_model: String,
 }
 
 /// Where a detached benchmark run journals its state. One file per run, rewritten in place:
@@ -527,6 +534,9 @@ pub fn record_verdict(verdict: &SweVerdict, is_gold: bool) -> Result<Option<Path
     // identical banked patch moved p2p 0/40 -> 40/40 (2026-08-28).
     let mut verdict = verdict.clone();
     verdict.harness_build = env!("CONTINUUM_BUILD_GIT_SHA").to_string();
+    verdict.served_model = crate::inference::llama_server::current_serving()
+        .active_model
+        .unwrap_or_default(); // unwrap_or: nothing serving at grade time = honest empty, never a guess
     let verdict = &verdict;
     let body = serde_json::to_string_pretty(verdict).map_err(|e| e.to_string())?;
     std::fs::write(&path, body).map_err(|e| format!("write {}: {e}", path.display()))?;

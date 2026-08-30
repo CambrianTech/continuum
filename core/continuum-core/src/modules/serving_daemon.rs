@@ -2201,6 +2201,22 @@ impl ServingDaemonModule {
                             base_url: serving_v1_url(),
                             model_id: desired.clone(),
                         })
+                    } else if crate::cognition::serving_plan::solve_window_floor() > 0 {
+                        // SOLVE REGIME: the eyes yield (2026-08-29, "take every
+                        // architectural advantage"). While a pinned solve floor
+                        // stands the work is text-only by construction, and the
+                        // sidecar's ~9GB is exactly the budget that buys the
+                        // SECOND solve lane (measured: 84k×1 afforded, 40448×2
+                        // refused by a few GB). Drop it (RAII kills the child,
+                        // RAM freed, the next plan sees the room); it respawns
+                        // on the first plan after the floor clears — sight
+                        // returns with the idle era, like dreams.
+                        crate::probe!(
+                            class = "serving.vision.sidecar_yields_to_solves",
+                            "solve floor standing — vision sidecar yields its budget to a second solve lane"
+                        );
+                        *sidecar_slot.lock().await = None;
+                        None
                     } else {
                         use crate::inference::vision_sidecar as sidecar;
                         let rows: Vec<crate::model_registry::types::Model> =
