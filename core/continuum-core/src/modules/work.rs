@@ -2101,6 +2101,12 @@ impl ServiceModule for WorkModule {
                 registry: self.registry.clone(),
                 executor_slot: self.executor_slot.clone(),
             }),
+            // recipe/run composes arbitrary commands through the substrate
+            // executor — registered here for the same executor-slot-ownership
+            // reason benchmark/dispatch is (never registered-but-unroutable).
+            Arc::new(crate::commands::recipe_run::RecipeRun {
+                executor_slot: self.executor_slot.clone(),
+            }),
             // persona/roster reads the SAME live registry benchmark/dispatch resolves its
             // assignees against — constructed here for the same dep-ownership reason (#396
             // live-roster verb; the observability side of "dispatch targets the live roster").

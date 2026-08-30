@@ -476,6 +476,19 @@ pub fn card_activity(card_id: Uuid) -> Option<CardActivity> {
         .and_then(|r| r.card_activities.get(&card_id).cloned())
 }
 
+/// The team standing in a solve ROOM — the inverse of [`card_activity`], for
+/// callers that hold an activity's room but not its card (the experience
+/// stream's grade-time seam). `None` = no tracked round runs a solve there
+/// (solo work, non-bench rooms).
+pub fn team_for_room(room: Uuid) -> Option<CardActivity> {
+    let rounds = ROUNDS.lock().expect("bench rounds mutex");
+    rounds
+        .values()
+        .flat_map(|r| r.card_activities.values())
+        .find(|act| act.solve_room == room)
+        .cloned()
+}
+
 /// Record (idempotently) the activity `card_id`'s solve runs in — called at the
 /// MINT, persisted with the round so a post-reboot re-fire rejoins it.
 pub fn record_card_activity(card_id: Uuid, activity: CardActivity) {
