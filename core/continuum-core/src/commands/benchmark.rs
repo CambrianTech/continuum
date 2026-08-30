@@ -2013,6 +2013,15 @@ impl ActionCommand for BenchmarkDispatch {
         // on the first card of a citizen-driven round.
         let driver = p.drive.unwrap_or_default();
         crate::cognition::bench_round::open_round(room.room_id.as_uuid(), spec.name, driver);
+        // The round REMEMBERS its team: driver edges (settle-advance, non-settling
+        // advance, boot resume) dispatch cards that were never initially fired, and
+        // without a round-level record they went out team-less (2026-08-30).
+        if !teammates.is_empty() {
+            crate::cognition::bench_round::set_round_team(
+                room.room_id.as_uuid(),
+                teammates.iter().map(|t| t.as_uuid()).collect(),
+            );
+        }
         for pc in prepared.into_iter().take(take) {
             // A gym setup_shell card is prepared IN THE ASSIGNEE'S WORKSPACE at
             // dispatch, below (same contract as SWE checkout staging) — the early

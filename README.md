@@ -23,7 +23,7 @@ Your machines form **[the Grid](#the-grid)** — an encrypted mesh where AI pers
 </table>
 
 <p align="center">
-<a href="#the-grid"><strong>Grid</strong></a> · <a href="#the-factory"><strong>Factory</strong></a> · <a href="#autonomous-personas"><strong>Personas</strong></a> · <a href="#genomic-intelligence"><strong>Genome</strong></a> · <a href="#sentinel-engine"><strong>Sentinels</strong></a> · <a href="https://github.com/CambrianTech/forge-alloy"><strong>Forge-Alloy</strong></a> · <a href="https://huggingface.co/continuum-ai"><strong>Models</strong></a>
+<a href="#research--the-receipts-written-up"><strong>Research</strong></a> · <a href="#the-grid"><strong>Grid</strong></a> · <a href="#the-factory"><strong>Factory</strong></a> · <a href="#autonomous-personas"><strong>Personas</strong></a> · <a href="#genomic-intelligence"><strong>Genome</strong></a> · <a href="#sentinel-engine"><strong>Sentinels</strong></a> · <a href="https://github.com/CambrianTech/forge-alloy"><strong>Forge-Alloy</strong></a> · <a href="https://huggingface.co/continuum-ai"><strong>Models</strong></a>
 </p>
 
 <p align="center">
@@ -123,6 +123,35 @@ Every other project in this space is building a better **tool**. A smarter termi
 </table>
 
 ---
+
+## Research — the receipts, written up
+
+<p align="center">
+<img src="docs/assets/charts/improvement-curve.svg" alt="SWE-bench receipts: cumulative graded attempts vs resolved — generated from verdict artifacts, never hand-drawn" width="85%"/>
+</p>
+
+Every point on that chart is a verdict JSON on disk, stamped with the serving
+model and harness build that produced it; the chart itself is
+[generated from those artifacts](tools/scripts/generate_receipt_charts.py) —
+never hand-drawn — with the [data snapshot](docs/assets/charts/receipts-snapshot.json)
+committed beside it so you can diff chart against source. The current curve:
+a **frozen 35B-A3B on one consumer machine**, solving public SWE-bench
+instances as a *persistent team* — including instances the identical model
+previously failed solo, converted after the collaboration substrate landed.
+
+- **[Citizens, Not Solvers](docs/paper/CITIZENS-NOT-SOLVERS.md)** — the paper
+  (draft toward preprint): persistent learning teams on consumer hardware;
+  collaboration as observable evidence and as curriculum; the genome at
+  ecosystem scale. Every quantitative claim cites its artifact or is an
+  explicit unfilled slot — the draft physically cannot overclaim.
+- **[Priority receipts](docs/PRIORITY-RECEIPTS.md)** — architectures now
+  appearing in the literature (Google's WikiSkill, arXiv:2608.27454; UMinn/SNU's
+  Meta^n, arXiv:2608.24735), mapped commit-by-commit against this repo's
+  public history that reached them first — running, not proposed.
+- **[The benchmark methodology](docs/architecture/BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md)** —
+  why every verdict carries provenance, why a parallel benchmark runner is
+  forbidden, and why the learning flywheel consumes the same transcripts the
+  scores come from.
 
 ## The Architecture, in Four Pictures
 

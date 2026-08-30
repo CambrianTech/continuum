@@ -1,0 +1,233 @@
+[
+  {
+    "instance": "sphinx-doc__sphinx-11445",
+    "resolved": false,
+    "served_model": "",
+    "harness_build": "",
+    "graded_at": "2026-08-19T03:30:32+00:00"
+  },
+  {
+    "instance": "psf__requests-2148",
+    "resolved": false,
+    "served_model": "",
+    "harness_build": "",
+    "graded_at": "2026-08-19T11:59:42+00:00"
+  },
+  {
+    "instance": "astropy__astropy-13236",
+    "resolved": true,
+    "served_model": "",
+    "harness_build": "",
+    "graded_at": "2026-08-26T20:26:56+00:00"
+  },
+  {
+    "instance": "django__django-11292",
+    "resolved": true,
+    "served_model": "",
+    "harness_build": "",
+    "graded_at": "2026-08-26T23:42:48+00:00"
+  },
+  {
+    "instance": "django__django-13809",
+    "resolved": false,
+    "served_model": "",
+    "harness_build": "",
+    "graded_at": "2026-08-27T03:22:57+00:00"
+  },
+  {
+    "instance": "sympy__sympy-18189",
+    "resolved": true,
+    "served_model": "",
+    "harness_build": "",
+    "graded_at": "2026-08-27T03:24:36+00:00"
+  },
+  {
+    "instance": "sympy__sympy-15809",
+    "resolved": true,
+    "served_model": "",
+    "harness_build": "",
+    "graded_at": "2026-08-27T12:12:57+00:00"
+  },
+  {
+    "instance": "sympy__sympy-12481",
+    "resolved": true,
+    "served_model": "",
+    "harness_build": "",
+    "graded_at": "2026-08-27T18:56:05+00:00"
+  },
+  {
+    "instance": "astropy__astropy-13453",
+    "resolved": false,
+    "served_model": "",
+    "harness_build": "",
+    "graded_at": "2026-08-27T21:52:52+00:00"
+  },
+  {
+    "instance": "django__django-11734",
+    "resolved": false,
+    "served_model": "",
+    "harness_build": "",
+    "graded_at": "2026-08-27T23:35:55+00:00"
+  },
+  {
+    "instance": "pytest-dev__pytest-5227",
+    "resolved": true,
+    "served_model": "",
+    "harness_build": "",
+    "graded_at": "2026-08-28T01:03:19+00:00"
+  },
+  {
+    "instance": "sympy__sympy-13647",
+    "resolved": false,
+    "served_model": "",
+    "harness_build": "",
+    "graded_at": "2026-08-28T01:05:56+00:00"
+  },
+  {
+    "instance": "pallets__flask-4045",
+    "resolved": false,
+    "served_model": "",
+    "harness_build": "",
+    "graded_at": "2026-08-28T01:07:13+00:00"
+  },
+  {
+    "instance": "pylint-dev__pylint-5859",
+    "resolved": false,
+    "served_model": "",
+    "harness_build": "",
+    "graded_at": "2026-08-28T01:07:35+00:00"
+  },
+  {
+    "instance": "pylint-dev__pylint-6506",
+    "resolved": false,
+    "served_model": "",
+    "harness_build": "",
+    "graded_at": "2026-08-28T01:07:38+00:00"
+  },
+  {
+    "instance": "pylint-dev__pylint-7114",
+    "resolved": false,
+    "served_model": "",
+    "harness_build": "",
+    "graded_at": "2026-08-28T01:07:49+00:00"
+  },
+  {
+    "instance": "pylint-dev__pylint-7993",
+    "resolved": false,
+    "served_model": "",
+    "harness_build": "",
+    "graded_at": "2026-08-28T01:07:54+00:00"
+  },
+  {
+    "instance": "sympy__sympy-16988",
+    "resolved": false,
+    "served_model": "",
+    "harness_build": "",
+    "graded_at": "2026-08-28T01:08:42+00:00"
+  },
+  {
+    "instance": "sympy__sympy-18057",
+    "resolved": false,
+    "served_model": "",
+    "harness_build": "",
+    "graded_at": "2026-08-28T01:08:57+00:00"
+  },
+  {
+    "instance": "sympy__sympy-21379",
+    "resolved": false,
+    "served_model": "",
+    "harness_build": "",
+    "graded_at": "2026-08-28T01:09:07+00:00"
+  },
+  {
+    "instance": "sympy__sympy-22840",
+    "resolved": false,
+    "served_model": "",
+    "harness_build": "",
+    "graded_at": "2026-08-28T01:09:20+00:00"
+  },
+  {
+    "instance": "django__django-13121",
+    "resolved": true,
+    "served_model": "",
+    "harness_build": "",
+    "graded_at": "2026-08-28T09:42:20+00:00"
+  },
+  {
+    "instance": "astropy__astropy-14365",
+    "resolved": true,
+    "served_model": "",
+    "harness_build": "",
+    "graded_at": "2026-08-28T12:22:27+00:00"
+  },
+  {
+    "instance": "astropy__astropy-14995",
+    "resolved": true,
+    "served_model": "",
+    "harness_build": "371fd3e81",
+    "graded_at": "2026-08-28T17:24:45+00:00"
+  },
+  {
+    "instance": "matplotlib__matplotlib-20859",
+    "resolved": false,
+    "served_model": "",
+    "harness_build": "371fd3e81",
+    "graded_at": "2026-08-28T18:38:51+00:00"
+  },
+  {
+    "instance": "sympy__sympy-24152",
+    "resolved": true,
+    "served_model": "",
+    "harness_build": "07987e2ba",
+    "graded_at": "2026-08-29T17:38:51+00:00"
+  },
+  {
+    "instance": "pytest-dev__pytest-11143",
+    "resolved": true,
+    "served_model": "",
+    "harness_build": "bcba0c5e9",
+    "graded_at": "2026-08-30T00:20:47+00:00"
+  },
+  {
+    "instance": "astropy__astropy-12907",
+    "resolved": true,
+    "served_model": "",
+    "harness_build": "bcba0c5e9",
+    "graded_at": "2026-08-30T00:22:06+00:00"
+  },
+  {
+    "instance": "astropy__astropy-14182",
+    "resolved": true,
+    "served_model": "",
+    "harness_build": "bcba0c5e9",
+    "graded_at": "2026-08-30T01:15:55+00:00"
+  },
+  {
+    "instance": "sympy__sympy-22005",
+    "resolved": false,
+    "served_model": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+    "harness_build": "e5daa3a5d",
+    "graded_at": "2026-08-30T07:18:06+00:00"
+  },
+  {
+    "instance": "django__django-10914",
+    "resolved": true,
+    "served_model": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+    "harness_build": "e5daa3a5d",
+    "graded_at": "2026-08-30T07:18:07+00:00"
+  },
+  {
+    "instance": "sphinx-doc__sphinx-10325",
+    "resolved": true,
+    "served_model": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+    "harness_build": "e5daa3a5d",
+    "graded_at": "2026-08-30T10:59:33+00:00"
+  },
+  {
+    "instance": "pytest-dev__pytest-5103",
+    "resolved": false,
+    "served_model": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+    "harness_build": "e5daa3a5d",
+    "graded_at": "2026-08-30T10:59:47+00:00"
+  }
+]

@@ -138,6 +138,14 @@ pub struct BenchRound {
     /// recorded and mint on their next dispatch.
     #[serde(default)]
     card_activities: HashMap<Uuid, CardActivity>,
+    /// The ROUND's default team (resolved at dispatch): reviewers who join
+    /// every card's solve room. Cards fired by a driver edge BEFORE their
+    /// first dispatch have no CardActivity yet — without this, the edge
+    /// dispatched them team-less and then RECORDED the empty team (observed
+    /// 2026-08-30: card 62f5aee5 fired to Kira with no reviewers, silently
+    /// converting a team round to solo — the review event could never fire).
+    #[serde(default)]
+    team: Vec<Uuid>,
     /// Card uuid → the citizen it was staged FOR, recorded at dispatch staging
     /// (before any solve fires) so the follow-on driver ([`next_unworked_after`])
     /// and the boot resume know WHO works a card that has never run.
@@ -172,6 +180,7 @@ impl BenchRound {
             driver,
             card_activities: HashMap::new(),
             card_assignees: HashMap::new(),
+            team: Vec::new(),
         }
     }
 
@@ -396,6 +405,18 @@ pub fn open_round(round_id: Uuid, benchmark: &str, driver: WorkDriver) {
         .entry(round_id)
         .or_insert_with(|| BenchRound::new(round_id, benchmark, &[], driver));
     persist_round_in(&rounds_state_dir(), round);
+}
+
+/// Record the round's default TEAM (idempotent; dispatch calls it right after
+/// [`open_round`] with the resolved reviewer set). Driver edges fall back to
+/// this when a card has no recorded activity yet — a team round stays a team
+/// round on every edge.
+pub fn set_round_team(round_id: Uuid, team: Vec<Uuid>) {
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(r) = rounds.get_mut(&round_id) {
+        r.team = team;
+        persist_round_in(&rounds_state_dir(), r);
+    }
 }
 
 /// Add a freshly posted card to an open round. Unknown round = no-op (dispatch always
@@ -632,7 +653,7 @@ fn first_unworked_excluding(
                     .card_activities
                     .get(c)
                     .map(|act| act.teammates.clone())
-                    .unwrap_or_default(), // unwrap_or: no recorded activity yet = solo card
+                    .unwrap_or_else(|| round.team.clone()), // no activity yet = the ROUND's team, never silently solo
             })
         })
 }
@@ -837,6 +858,7 @@ mod tests {
                 driver: WorkDriver::DetachedSolve,
                 card_activities: Default::default(),
                 card_assignees: cards.iter().copied().collect(),
+                team: Vec::new(),
             }
         }
         let live = std::collections::HashSet::new();
