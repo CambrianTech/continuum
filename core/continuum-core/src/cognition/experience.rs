@@ -722,6 +722,8 @@ mod tests {
             acts: 3,
             source: ExperienceSource::Eval,
             room: Some(uuid::Uuid::from_u128(7)),
+            teammates: Vec::new(),
+            team_role: None,
         };
         let signal = detector
             .assess(&failed)
@@ -787,6 +789,8 @@ mod tests {
             acts: 8,
             source: ExperienceSource::Eval,
             room: Some(uuid::Uuid::from_u128(7)),
+            teammates: Vec::new(),
+            team_role: None,
         };
         let passed_testable = ExperienceRecord {
             task: eval_task("passed", true),
@@ -797,6 +801,8 @@ mod tests {
             acts: 1,
             source: ExperienceSource::Eval,
             room: Some(uuid::Uuid::from_u128(7)),
+            teammates: Vec::new(),
+            team_role: None,
         };
         let failed_untestable = ExperienceRecord {
             task: eval_task("no-test", false),
@@ -807,6 +813,8 @@ mod tests {
             acts: 2,
             source: ExperienceSource::Eval,
             room: Some(uuid::Uuid::from_u128(7)),
+            teammates: Vec::new(),
+            team_role: None,
         };
 
         let set = salient_teach_set(
@@ -1037,6 +1045,8 @@ mod tests {
             acts: 2,
             source: ExperienceSource::Eval,
             room: Some(uuid::Uuid::from_u128(7)),
+            teammates: Vec::new(),
+            team_role: None,
         };
         assert!(
             ReceivedSalience.assess(&failed_eval).is_none(),
@@ -1070,6 +1080,8 @@ mod tests {
             acts: 3,
             source: ExperienceSource::Eval,
             room: Some(uuid::Uuid::from_u128(7)),
+            teammates: Vec::new(),
+            team_role: None,
         };
         let received = ExperienceRecord::from_shared_lesson(&shared_lesson(
             "BigMama",
@@ -1120,6 +1132,8 @@ mod tests {
             acts: 4,
             source: ExperienceSource::Eval,
             room: Some(uuid::Uuid::from_u128(7)),
+            teammates: Vec::new(),
+            team_role: None,
         };
         let stuck = SettleOutcome {
             decision: Decision::Act {

@@ -102,7 +102,7 @@ impl ActionCommand for RecipeRun {
                     p.name
                 ))
             })?;
-        let recipe: crate::recipe::Recipe = serde_json::from_value(row)
+        let recipe: crate::recipe::Recipe = serde_json::from_value(row) // boundary: a data-layer row crossing into a typed Recipe
             .map_err(|e| CommandError::Invalid(format!("recipe `{}` row malformed: {e}", p.name)))?;
 
         let receipt = crate::recipe::PipelineExecutor::new(executor.clone())
@@ -119,3 +119,5 @@ impl ActionCommand for RecipeRun {
         })
     }
 }
+
+crate::register_command!(RecipeRun);

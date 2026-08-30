@@ -351,6 +351,8 @@ mod tests {
             world_state: String::new(),
             acts: 1,
             source: crate::cognition::experience::ExperienceSource::Eval,
+            teammates: Vec::new(),
+            team_role: None,
             room: Some(uuid::Uuid::from_u128(7)),
         }
     }
@@ -423,6 +425,8 @@ mod tests {
             world_state: String::new(),
             acts: 0,
             source: ExperienceSource::Received,
+            teammates: Vec::new(),
+            team_role: None,
             room: Some(uuid::Uuid::from_u128(7)),
         };
         // A lived turn is salient-untestable too, but not directly teachable — LLM path.
@@ -434,6 +438,8 @@ mod tests {
             world_state: String::new(),
             acts: 8,
             source: ExperienceSource::Lived,
+            teammates: Vec::new(),
+            team_role: None,
             room: Some(uuid::Uuid::from_u128(7)),
         };
         // An empty received lesson has nothing to teach.
@@ -488,6 +494,8 @@ mod tests {
             world_state: String::new(),
             acts: 8,
             source: ExperienceSource::Lived,
+            teammates: Vec::new(),
+            team_role: None,
             room: Some(uuid::Uuid::from_u128(7)),
         }
     }
@@ -519,6 +527,8 @@ mod tests {
             world_state: String::new(),
             acts: 0,
             source: ExperienceSource::Received,
+            teammates: Vec::new(),
+            team_role: None,
             room: Some(uuid::Uuid::from_u128(7)),
         };
 

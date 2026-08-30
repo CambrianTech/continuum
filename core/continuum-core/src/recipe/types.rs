@@ -68,7 +68,7 @@ mod tests {
     fn recipe_rows_parse_tolerantly_with_unknown_fields() {
         // what this catches: a row authored for a NEWER executor (extra
         // fields, absent optionals) must load on this one — data-first growth.
-        let row: Recipe = serde_json::from_value(serde_json::json!({
+        let row: Recipe = serde_json::from_value(serde_json::json!({ // boundary: test row crossing the data-layer shape into a typed Recipe
             "name": "x",
             "futureConcept": {"nested": true},
             "pipeline": [
