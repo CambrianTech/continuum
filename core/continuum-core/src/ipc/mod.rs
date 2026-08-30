@@ -2012,6 +2012,8 @@ pub fn start_server(
     // that genuinely ride it: GridCapacityModule (gossip channel) and the
     // node-level presence emitter.
     let persona_bootstrap_deps = airc_module.daemon_socket().map(|p| p.to_path_buf());
+    // #27: held for the operator self-peer boot after the executor is live.
+    let operator_peer_socket = persona_bootstrap_deps.clone();
     let discovered_default_room = airc_module.default_room();
     let persona_bootstrap_room_name = airc_module.default_room_name().map(|s| s.to_string());
     // The node-level presence emitter (WS seam below) needs BOTH the daemon
@@ -3172,6 +3174,17 @@ pub fn start_server(
     // #249: the durable-transcript reader behind persona wake hydration shares
     // the same substrate executor (one dispatch chain, no parallel query stack).
     crate::persona::durable_history::install_executor(Arc::clone(&executor));
+    // #27 CLOSED: the operator self-peer boots beside the citizens — the
+    // human's in-core airc identity, so room-scoped verbs invoked from the
+    // operator seat READ AND SPEAK instead of denying. Spawned (not awaited):
+    // identity ceremony does disk + daemon I/O, and boot must not block on it.
+    if let Some(sock) = operator_peer_socket {
+        let exec = Arc::clone(&executor);
+        let root = crate::modules::persona_instance_manager::resolve_continuum_root();
+        rt_handle.spawn(async move {
+            crate::persona::operator_peer::ensure_operator_peer(&root, sock, exec).await;
+        });
+    }
     // Autonomic dream consolidation: the dream region dispatches `memory/consolidate`
     // through the SAME wired executor, so a persona consolidates the lessons other agents
     // taught her into her genome WHILE IDLE — the being-loop's received axis going

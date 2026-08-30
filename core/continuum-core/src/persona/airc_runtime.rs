@@ -312,13 +312,39 @@ impl PersonaAircRuntime {
         source: crate::persona::identity_provider::PersonaIdentitySource,
         executor: Arc<crate::runtime::command_executor::CommandExecutor>,
     ) -> Result<Self, PersonaAircRuntimeError> {
+        Self::bootstrap_as(
+            crate::identity::IdentityKind::Persona,
+            persona_id,
+            agent_name,
+            continuum_root,
+            daemon_socket,
+            source,
+            executor,
+        )
+        .await
+    }
+
+    /// [`Self::bootstrap`] generalized over the citizen KIND — the operator
+    /// self-peer (#27) boots the SAME runtime as a persona (identity keypair,
+    /// daemon attach, transcript/roster readers) homed under its own kind dir
+    /// (`citizens/humans/<label>/airc/`), so it can never be mistaken for a
+    /// citizen by the persona resumer or the roster.
+    pub async fn bootstrap_as(
+        kind: crate::identity::IdentityKind,
+        persona_id: Uuid,
+        agent_name: impl Into<String>,
+        continuum_root: &Path,
+        daemon_socket: PathBuf,
+        source: crate::persona::identity_provider::PersonaIdentitySource,
+        executor: Arc<crate::runtime::command_executor::CommandExecutor>,
+    ) -> Result<Self, PersonaAircRuntimeError> {
         let agent_name = agent_name.into();
         // Slice 4 of #142: symmetric citizens/<kind>/<label>/airc/
         // layout. Use the shared helper so every actor kind shares
         // the same path schema.
         let home = crate::context::citizen_home_path(
             continuum_root,
-            crate::identity::IdentityKind::Persona,
+            kind,
             None,
             &agent_name,
         );
@@ -327,7 +353,7 @@ impl PersonaAircRuntime {
         // with the exact `mv` command per [[no-fallbacks-ever]].
         if let Some(legacy) = crate::context::legacy_home_path(
             continuum_root,
-            crate::identity::IdentityKind::Persona,
+            kind,
             &agent_name,
         ) {
             if tokio::fs::try_exists(&legacy).await.unwrap_or(false) {
