@@ -3029,8 +3029,24 @@ impl LessonSink {
                 "redacted lesson admitted at GRADE time — an interrupted round keeps every lesson it earned"
             );
         }
-        let episode =
+        let mut episode =
             crate::cognition::experience::ExperienceRecord::from_eval_result(task, result);
+        // The sink KNOWS the activity — carry it (A6), and when a tracked round
+        // runs a team solve in this room, stamp the team + this persona's seat.
+        // A reviewer's episode and a solver's episode from the same room teach
+        // different skills; unattributed rows can never become that corpus.
+        episode.room = Some(self.room);
+        if let Some(team) = crate::cognition::bench_round::team_for_room(self.room) {
+            episode.team_role = Some(if team.assignee == self.persona_uuid {
+                crate::cognition::experience::TeamRole::Solver
+            } else {
+                crate::cognition::experience::TeamRole::Reviewer
+            });
+            episode.teammates = std::iter::once(team.assignee)
+                .chain(team.teammates.iter().copied())
+                .filter(|p| *p != self.persona_uuid)
+                .collect();
+        }
         if let Err(e) = crate::cognition::experience::append_experience(&self.peer_dir, &episode) {
             tracing::warn!(
                 persona = %self.persona_uuid,

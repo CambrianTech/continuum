@@ -96,6 +96,18 @@ pub struct SalienceSignal {
     pub weakness: String,
 }
 
+/// Which seat this persona held in a team activity — attribution the
+/// curriculum keys on (a reviewer's episode teaches DIFFERENT skills than a
+/// solver's, from the same room).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TeamRole {
+    /// Held the card — the patch is theirs.
+    Solver,
+    /// Held the review charge — the catch is theirs.
+    Reviewer,
+}
+
 /// A lived episode retained *in full* for learning — the INPUT to curriculum
 /// synthesis. Unlike the lean `EvalTaskResult` report (a 200-char summary), this
 /// keeps the rich trajectory the teacher needs: the task (with its ground-truth
@@ -127,6 +139,18 @@ pub struct ExperienceRecord {
     /// stateless grades, out-of-turn lessons) — absence is typed, never nil.
     #[serde(default)]
     pub room: Option<uuid::Uuid>,
+    /// TEAM attribution (the glass-box half of the teams arc, 2026-08-30):
+    /// who else held this activity's room when the episode happened. Empty =
+    /// solo (or pre-team rows). This is what lets the curriculum select
+    /// "turns where a teammate's review changed the outcome" as a training
+    /// corpus — collaboration becoming genome starts with rows that KNOW they
+    /// were collaborative.
+    #[serde(default)]
+    pub teammates: Vec<uuid::Uuid>,
+    /// This persona's role in the team, when the episode came from a team
+    /// activity. `None` = solo/unknown (pre-team rows load unchanged).
+    #[serde(default)]
+    pub team_role: Option<TeamRole>,
     /// WHICH axis of the one experience this came from — lived, eval, or received.
     /// The unification made self-describing: detectors key on this (e.g. `ReceivedSalience`
     /// selects `Received`), and it makes lived-vs-eval explicit instead of implicit in the
@@ -148,6 +172,8 @@ impl ExperienceRecord {
             acts: settled.acts as u32,
             source: ExperienceSource::Eval,
             room: Some(settled.room),
+            teammates: Vec::new(),
+            team_role: None,
         }
     }
 
@@ -171,6 +197,8 @@ impl ExperienceRecord {
             // it. Default (nil) here means "not carried", the same absent-marker
             // pre-A6 rows load with; never a live roomless turn.
             room: None,
+            teammates: Vec::new(),
+            team_role: None,
         }
     }
 
@@ -233,6 +261,8 @@ impl ExperienceRecord {
             acts: settled.acts as u32,
             source: ExperienceSource::Lived,
             room: Some(settled.room),
+            teammates: Vec::new(),
+            team_role: None,
         }
     }
 
@@ -260,6 +290,8 @@ impl ExperienceRecord {
             source: ExperienceSource::Eval,
             // Grading is stateless over the artifact — no turn, no room carried.
             room: None,
+            teammates: Vec::new(),
+            team_role: None,
         }
     }
 
@@ -308,6 +340,8 @@ impl ExperienceRecord {
             source: ExperienceSource::Received,
             // A received lesson arrives out-of-turn — no room carried.
             room: None,
+            teammates: Vec::new(),
+            team_role: None,
         }
     }
 }
