@@ -55,7 +55,7 @@ export class SysPanel extends LitElement {
   /** HUD auto-cycle (the far-left corner toggle): ON rotates through the
    *  enabled faces every CYCLE_MS; picking a chip PINS. Renderer state — a
    *  lens the reader holds, never projection state. */
-  private _cycle = true;
+  private _cycle = false;
 
   private _hover = false;
 
