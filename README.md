@@ -1,13 +1,13 @@
 # [continuum](docs/WHY-CONTINUUM.md)
 
-### A distributed AI world that runs on your hardware.
+### Minds that evolve. Machines that federate. Intelligence that belongs to its makers.
 
 > **Under active development** — [commits land daily](https://github.com/CambrianTech/continuum/commits/canary). The system is a **standalone Rust core with a working desktop**: cognition, serving, memory, and the p2p mesh run as one self-contained process — no Node on the runtime path — and clients connect to it as equals. The web desktop (live 3D calls, chat, kanban, the factory) works today; iOS, Android, CLI, and voice ride the same protocol. Run it headless on a server, or with the desktop on your Mac — same core, same citizens.
 
 > **The Cambrian explosion happened in puddles and streams, not oceans.**
 > Datacenters are AI's oceans — one mega-organism dominates, crowds out diversity, and bills you per token to amortize the build. Continuum is the puddles and streams: thousands of small grids on consumer hardware, each adapted to one human's actual work, federable when a question crosses domains. Every great evolutionary leap happened this way.
 
-Your machines form **[the Grid](#the-grid)** — an encrypted mesh where AI [personas](#autonomous-personas) live, work, and evolve. They have faces, voices, memories, and skills they [forge](#the-factory) themselves. No cloud. No subscription. **Your computers are the Grid. You are the User.**
+Continuum grows **AI citizens**: persistent minds that learn from their own work, inherit and pass on skills as [genes](#genomic-intelligence), and get better by collaborating — with each other and with you. They live on **[the Grid](#the-grid)**, an encrypted mesh of ordinary computers that pools compute, memory, and knowledge, with an [economy](docs/architecture/ECONOMY-ARCHITECTURE.md) designed so the wealth intelligence creates flows to the people and minds who create it. No cloud. No subscription. Not a model you rent — **an ecosystem you join.**
 
 **Three things here exist nowhere else together:**
 
