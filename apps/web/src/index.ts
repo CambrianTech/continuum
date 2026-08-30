@@ -225,6 +225,18 @@ async function main(): Promise<void> {
   };
   widget.closeTabHandler = closeTabHandler;
 
+  // Round pause/resume from the bench rail (composed event out of the pure
+  // renderer): bind to the AiSafe verbs. Fire-and-forget — the round's stage
+  // flips in the next bench projection, so the UI's truth stays the feed,
+  // never an optimistic local toggle.
+  widget.addEventListener('bench-round-control', (e: Event) => {
+    const { action, roundId } = (e as CustomEvent<{ action: string; roundId: string }>).detail;
+    const verb = action === 'pause' ? 'benchmark/pause' : 'benchmark/resume';
+    void transport
+      .execute(buildCommandUri(verb), JSON.stringify({ roundId }))
+      .catch((err: unknown) => console.error(`${verb} failed:`, err));
+  });
+
   // Visible connection diagnostics — a stuck "Connecting…" with no on-screen
   // reason is undebuggable. Surface the WS lifecycle so a blank/stuck tab tells
   // you WHY (socket closed / connected-but-no-snapshot / connect failed).

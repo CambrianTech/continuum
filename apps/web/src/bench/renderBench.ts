@@ -37,7 +37,35 @@ function roundRow(round: BenchRoundVM): TemplateResult {
     ${round.driver === 'citizen'
       ? html`<span class="bench-round-driver" title="worked in the room — turns feed the curriculum">citizens</span>`
       : html`<span class="bench-round-driver bench-round-detached" title="detached solve — produces no room turns">detached</span>`}
+    ${round.stage === 'working'
+      ? html`<button
+          class="bench-round-ctl"
+          title="hold this round — in-flight solves finish, no new card fires until resume"
+          @click=${(e: Event) => emitRoundControl(e, 'pause', round.roundId)}
+        >⏸</button>`
+      : round.stage === 'paused'
+        ? html`<button
+            class="bench-round-ctl bench-round-ctl-resume"
+            title="lift the hold — the driver fires the next card immediately"
+            @click=${(e: Event) => emitRoundControl(e, 'resume', round.roundId)}
+          >▶</button>`
+        : nothing}
   </div>`;
+}
+
+/** Round pause/resume, as a composed event — the renderer stays pure; the
+ *  host (which owns the transport) binds `bench-round-control` to
+ *  `benchmark/pause` / `benchmark/resume`. Same seam discipline as
+ *  historyHandler: rendering never talks to the wire directly. */
+function emitRoundControl(e: Event, action: 'pause' | 'resume', roundId: string): void {
+  e.stopPropagation();
+  (e.currentTarget as HTMLElement).dispatchEvent(
+    new CustomEvent('bench-round-control', {
+      detail: { action, roundId },
+      bubbles: true,
+      composed: true,
+    }),
+  );
 }
 
 /** Compact seconds → "12s" / "3m" / "2h" — board legibility, not precision. */

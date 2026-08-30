@@ -4,4 +4,4 @@ export type BenchmarkPauseParams = {
 /**
  * The round's id (= its run room id, shown by `benchmark/rounds`).
  */
-round_id: string, };
+roundId: string, };
