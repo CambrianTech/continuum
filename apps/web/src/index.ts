@@ -51,6 +51,7 @@ import {
   canvasFromEnvelope,
   systemMetricsFromEnvelope,
   type ChatState,
+  type RosterMemberVM,
 } from '@continuum/chat-view';
 
 // Importing the module registers `<chat-widget>` as a side effect; keep the
@@ -224,6 +225,81 @@ async function main(): Promise<void> {
     );
   };
   widget.closeTabHandler = closeTabHandler;
+
+  // Seed the who-panel directory from the core's own roster + the viewer —
+  // independent of the per-room presence pipe: citizens (and YOU) visible
+  // from the first frame, in every room.
+  // Self-updating client: when a new build lands on the static server, the
+  // page swaps itself — the operator never hand-refreshes to see a fix
+  // (Joel, 2026-08-30: "i shouldnt have to refresh"). The dev server HMRs on
+  // its own; this covers the preview/dist path. The current bundle name is in
+  // the served index.html; a changed hash = a new build.
+  const bundleOf = (html: string): string | undefined =>
+    /assets\/index-[\w-]+\.js/.exec(html)?.[0];
+  void (async () => {
+    let current: string | undefined;
+    try {
+      current = bundleOf(await (await fetch('/', { cache: 'no-store' })).text());
+    } catch {
+      return; // non-static host (dev HMR) — nothing to watch
+    }
+    if (current === undefined) return;
+    setInterval(() => {
+      void (async () => {
+        try {
+          const served = bundleOf(await (await fetch('/', { cache: 'no-store' })).text());
+          if (served !== undefined && served !== current) window.location.reload();
+        } catch {
+          /* server briefly away (rebuild) — next tick retries */
+        }
+      })();
+    }, 15_000);
+  })();
+
+  // The viewer is ALWAYS in the directory, synchronously — a failed roster
+  // fetch must never render the operator themself as absent/offline.
+  widget.directorySeed = [
+    {
+      id: config.senderId,
+      name: 'you',
+      kind: 'human',
+      active: true,
+      runtime: 'interactive',
+      vitals: {},
+      lastSeenMs: Date.now(),
+    },
+  ];
+  // Liveness re-polls: right after a core reboot the roster is empty while
+  // citizens respawn — a one-shot seed would freeze that emptiness forever.
+  // NOTE: `persona/roster` is the CANONICAL name — the auth gate does not yet
+  // resolve aliases (persona/list bounces off the Owner wildcard; core fix
+  // queued), so the canonical verb is load-bearing here.
+  const seedDirectory = async (): Promise<void> => {
+    try {
+      const raw = await transport.execute(buildCommandUri('persona/roster'), '{}');
+      const parsed = JSON.parse(raw) as {
+        citizens?: readonly { agent_name?: string; peer_id?: string; resident?: boolean }[];
+      };
+      const seed: RosterMemberVM[] = (parsed.citizens ?? [])
+        .filter((c) => c.peer_id)
+        .map((c) => ({
+          id: c.peer_id as string,
+          name: c.agent_name ?? (c.peer_id as string).slice(0, 8),
+          kind: 'agent',
+          active: c.resident === true,
+          runtime: '',
+          vitals: {},
+          lastSeenMs: 0,
+        }));
+      const self = widget.directorySeed.filter((m) => m.kind === 'human');
+      widget.directorySeed = [...self, ...seed];
+      widget.requestUpdate();
+    } catch (err) {
+      console.error('directory seed failed:', err);
+    }
+  };
+  void seedDirectory();
+  setInterval(() => void seedDirectory(), 30_000);
 
   // Round pause/resume from the bench rail (composed event out of the pure
   // renderer): bind to the AiSafe verbs. Fire-and-forget — the round's stage

@@ -117,9 +117,12 @@ fn staged_swe_for(peer: &uuid::Uuid) -> Vec<String> {
 #[async_trait::async_trait]
 impl ActionCommand for PersonaRoster {
     const NAME: &'static str = "persona/roster";
-    // Operator/inspection surface: it exposes peer_ids and workspace staging, the same
-    // infra a curator/dispatch sees. Not a citizen-facing verb (that is room/members).
-    const ACCESS: AccessLevel = AccessLevel::Privileged;
+    // Read-only node directory: names, peer_ids, residency, staged instance NAMES.
+    // Nothing here is privileged — room/members already serves peer_ids at ai-safe,
+    // and the web desktop's who-panel seeds from this verb (2026-08-30: Privileged
+    // left the operator's own UI showing every citizen offline while four solves ran).
+    // Mutating persona verbs (despawn, reassign-model) keep their own locks.
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "List the citizens currently online on this machine (the roster benchmark/dispatch \
          targets when --assignees is omitted), each with her durable peer_id and the SWE \

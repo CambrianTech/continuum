@@ -24,6 +24,7 @@ import {
   focusedPersonaTab,
   historyRowsFromPoll,
   type MessageRowVM,
+  type RosterMemberVM,
 } from '@continuum/chat-view';
 import type {
   KanbanViewState,
@@ -194,6 +195,15 @@ export class ChatWidget extends LitElement {
    *  tail so no gap ever opens between buffer and window. Cleared on room
    *  switch. Reassigned (not mutated) so Lit re-renders. */
   private _history: MessageRowVM[] = [];
+  /** Per-ACTIVITY session state, keyed by room UUID (tab = content = room =
+   *  activity — Joel's law). Typing streams and the history buffer belong to
+   *  the activity they happened in; switching tabs swaps the pointer, never
+   *  clobbers. A stream running in a background room accumulates in ITS
+   *  session and is intact when its tab regains focus. */
+  private _sessions = new Map<
+    string,
+    { typing: Map<string, string>; history: MessageRowVM[]; historyExhausted: boolean }
+  >();
   /** An empty page came back — the room's history is fully on screen. */
   private _historyExhausted = false;
   /** One in-flight page at a time (the scroll handler fires per frame). */
@@ -259,6 +269,12 @@ export class ChatWidget extends LitElement {
   /** The live face's caption strip toggle (CC) — on by default; the strip only
    *  draws while a real turn streams, so "on" costs nothing in silence. */
   private _captionsOn = true;
+  /** THE DIRECTORY (Joel, 2026-08-30): the who-panel shows everyone known —
+   *  online active, offline greyed — in EVERY room, never a blank. Folded
+   *  from each roster seen this session + seeded from persona/list. */
+  private _directory = new Map<string, RosterMemberVM>();
+  /** Host-injected seed: the node's residents + the viewer themself. */
+  directorySeed: readonly RosterMemberVM[] = [];
 
   /** The Settings face state + its fetched body (substrate truth; undefined
    *  while a fetch is in flight — the face shows its awaiting frame). */
@@ -487,7 +503,20 @@ export class ChatWidget extends LitElement {
    * ignored. Never touches `state` — the authoritative message still arrives there.
    */
   applyStreamDelta(delta: StreamDelta): void {
-    if (delta.roomId !== this.state?.room_id) return;
+    if (delta.roomId !== this.state?.room_id) {
+      // A stream in ANOTHER activity accumulates in THAT activity's session —
+      // never in the tab being viewed (the "(Benchy) is responding… in every
+      // tab" leak, Joel 2026-08-30). It's all there when its tab regains focus.
+      const sess = this._sessions.get(delta.roomId) ?? {
+        typing: new Map<string, string>(),
+        history: [],
+        historyExhausted: false,
+      };
+      if (delta.done) sess.typing.delete(delta.senderId);
+      else sess.typing.set(delta.senderId, (sess.typing.get(delta.senderId) ?? '') + delta.token);
+      this._sessions.set(delta.roomId, sess);
+      return;
+    }
     const next = new Map(this._typing);
     if (delta.done) {
       next.delete(delta.senderId);
@@ -769,6 +798,12 @@ export class ChatWidget extends LitElement {
     .rail-widget {
       display: block;
       border-bottom: 1px solid var(--border-subtle);
+    }
+    /* The system HUD keeps ONE height across its faces — a rail that reflows
+     * every time a face changes reads as broken chrome (Joel, 2026-08-30:
+     * "dynamically change heights all the time"). Reserve the tallest face. */
+    .rail-widget[data-widget='system'] {
+      min-height: 128px;
     }
     .rail-widget:last-child {
       border-bottom: none;
@@ -4555,6 +4590,40 @@ export class ChatWidget extends LitElement {
     // Digest tier ([[perception-resolution-contract]]): stamp the reader's expand
     // choices onto the rows the projection classified — an expanded row renders
     // its full body with a collapse affordance; everything else stays digested.
+    // Directory union: this room's live roster as-is; every other known
+    // member appended greyed. A citizens app showing zero citizens is broken
+    // by definition ([Joel, live]) — the panel is never blank again.
+    for (const m of vm.members) this._directory.set(m.id, m);
+    for (const m of this.directorySeed) if (!this._directory.has(m.id)) this._directory.set(m.id, m);
+    {
+      // Residency wins for liveness: the room's presence flag derives from
+      // lane-readiness (away=warming), which greys a citizen precisely while
+      // she's hardest at work. A resident on THIS node is online, full stop.
+      const resident = new Set(this.directorySeed.filter((m) => m.active).map((m) => m.id));
+      vm = {
+        ...vm,
+        members: vm.members.map((m) => (resident.has(m.id) && !m.active ? { ...m, active: true } : m)),
+      };
+      const present = new Set(vm.members.map((m) => m.id));
+      const offRoom = [...this._directory.values()]
+        .filter((m) => !present.has(m.id))
+        .map((m) => ({ ...m, active: false }));
+      // Working minds on top, the greyed past below — sorted by liveness then
+      // recency then name ("the ONLINE users like benchy and atlas are greyed,
+      // at the bottom and doing shit" — Joel, 2026-08-30).
+      const merged = [...vm.members, ...offRoom].sort(
+        (a, b) =>
+          Number(b.active) - Number(a.active) ||
+          b.lastSeenMs - a.lastSeenMs ||
+          a.name.localeCompare(b.name),
+      );
+      vm = {
+        ...vm,
+        members: merged,
+        memberCount: merged.length,
+        activeCount: merged.filter((m) => m.active).length,
+      };
+    }
     if (this._expanded.size > 0) {
       vm = {
         ...vm,
@@ -4596,7 +4665,12 @@ export class ChatWidget extends LitElement {
         });
       }
       if (typingRows.length > 0) {
-        vm = { ...vm, messages: [...vm.messages, ...typingRows] };
+        vm = {
+          ...vm,
+          messages: [...vm.messages, ...typingRows],
+          transcript: [...vm.transcript, ...typingRows.map((r) => ({ row: 'message' as const, ...r }))],
+          isEmpty: false,
+        };
       }
       // The tile's SPEAKING ring: overlay the live token rail onto the roster
       // vitals (`speaking: 100`) for members mid-turn — the same widget-owned
@@ -4617,7 +4691,14 @@ export class ChatWidget extends LitElement {
     if (this._history.length > 0) {
       const liveIds = new Set(vm.messages.map((m) => m.id));
       const older = this._history.filter((r) => !liveIds.has(r.id));
-      if (older.length > 0) vm = { ...vm, messages: [...older, ...vm.messages] };
+      if (older.length > 0) {
+        vm = {
+          ...vm,
+          messages: [...older, ...vm.messages],
+          transcript: [...older.map((r) => ({ row: 'message' as const, ...r })), ...vm.transcript],
+          isEmpty: false,
+        };
+      }
     }
     // Error boundary: a render throw (e.g. the Content registry hitting an
     // unregistered room purpose) must be VISIBLE here, not swallowed into a Lit
@@ -4730,8 +4811,18 @@ export class ChatWidget extends LitElement {
     if (!changed.has('state') || !this.state) return;
     const prev = changed.get('state') as ChatState | undefined;
     if (prev && prev.room_id !== this.state.room_id) {
-      this._history = [];
-      this._historyExhausted = false;
+      // Activity switch = session swap. The outgoing room's live streams and
+      // scroll-back buffer are SAVED under its UUID; the incoming room's are
+      // restored (or start fresh). Nothing leaks, nothing is lost.
+      this._sessions.set(prev.room_id, {
+        typing: this._typing,
+        history: this._history,
+        historyExhausted: this._historyExhausted,
+      });
+      const sess = this._sessions.get(this.state.room_id);
+      this._typing = sess?.typing ?? new Map();
+      this._history = sess?.history ?? [];
+      this._historyExhausted = sess?.historyExhausted ?? false;
       return;
     }
     // A settled message retires the sender's typing bubble ONLY when it is
