@@ -3174,6 +3174,10 @@ pub fn start_server(
     // #249: the durable-transcript reader behind persona wake hydration shares
     // the same substrate executor (one dispatch chain, no parallel query stack).
     crate::persona::durable_history::install_executor(Arc::clone(&executor));
+    // The desktop display manager (Joel: 'should work like a Display Manager'):
+    // the core serves its own built UI, always current — browsers attach and
+    // detach freely; continuum desktop opens the door.
+    crate::http::desktop::spawn_if_configured(&rt_handle);
     // #27 CLOSED: the operator self-peer boots beside the citizens — the
     // human's in-core airc identity, so room-scoped verbs invoked from the
     // operator seat READ AND SPEAK instead of denying. Spawned (not awaited):
