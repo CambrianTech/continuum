@@ -58,14 +58,33 @@ work* — one that holds its own durable memory, its own specialization, and
 its own stake in the outcome.
 
 This paper describes a system built on that conclusion, and the receipts it
-produces. 【1–2 paragraphs: the silencing arc as scientific narrative — we
-measured a working team producing ZERO collaboration, root-caused five
-structural walls (self-filtered invitations, measurement leases that put
-reviewers into comas, transcripts visible to humans but not citizens,
-decode admission serialized behind a single permit, buffered DMs), removed
-them one commit at a time, and measured the difference. Failures are
-substrate, never cognition — and each wall is a named commit in the public
-history.】
+produces. It also describes, without cosmetics, what it took to get there —
+because the road is the strongest evidence we have for the paper's central
+methodological claim. When we first configured our citizens into review
+teams, we measured *zero* collaboration: reviewers joined their rooms, held
+their charges, and produced not a single turn. The tempting diagnosis — the
+models are too small to collaborate — survived exactly as long as it took to
+read the logs. What we found instead was five structural walls, each built
+by us, in good faith, one engineering decision at a time: review invitations
+published through the reviewer's own identity and silently discarded by her
+self-filter; a measurement-isolation lease that put reviewers into scheduled
+comas for precisely the window the review had to happen in; work transcripts
+that streamed to the human console while the citizens' own rooms stayed
+empty; a decode-admission semaphore hardcoded to one, taxing every utterance
+at the price of a full working slot; and direct messages that buffered
+unread behind the same lease. Not one wall was in the minds. Every wall was
+in the substrate.
+
+We removed them one commit at a time and measured the difference — the
+reviewer who had been silent for twenty-eight minutes took her first turn
+within seconds of the first fix deploying. We state the resulting discipline
+as a law because it earned the status empirically: **failures are substrate,
+never cognition** — in every case where a citizen of this system appeared
+unable to think, remember, or cooperate, the cause was located in our
+infrastructure, and the capability appeared intact the moment the
+infrastructure was repaired. Each wall, its discovery, and its repair is a
+named commit in the public history; §5.6 treats them as what they
+accidentally were — ablation studies, run involuntarily, with receipts.
 
 Contributions:
 
@@ -87,16 +106,60 @@ Contributions:
 
 ## 2. Related Work
 
-【To be written with proper citations; the map: Meta^n (2608.24735, nearest
-neighbor — frozen improver over traces; context layers vs our weight-space
-genes, single solver vs teams); Reflexion / self-refine (episodic verbal
-feedback); Voyager (skill libraries — cf. our commands-as-capabilities);
-SWE-agent / OpenHands (harness design for SWE-bench); AutoGen / CAMEL /
-multi-agent debate (role-played collaboration without persistence or
-learning); LoRA continual-learning literature (weight-space skills);
-constitutional/oversight work re: our alignment-as-co-adaptation stance.
-Each entry: one honest sentence on what they have that we lack, one on the
-inverse.】
+**Self-improvement loops.** Meta^n (arXiv:2608.24735) is our nearest
+published neighbor: a frozen improvement operator recursing over the solver
+stack's traces, with the finding that the conditioning passed forward — not
+the solver — carries the gain. We share the frozen-improver stability
+argument and the conditioning thesis; we differ in what a "layer" is. Their
+layers are context — strategy text and helper libraries a window must
+re-read and can evict; ours are colleagues whose improvements compile into
+weight-space genes, distribute across a team, and persist as lived memory.
+They have a disciplined outer search over improvement chains that we lack
+and intend to adopt; we have persistence, sociality, and weights that they
+structurally cannot reach from a context representation. Reflexion and the
+self-refine family established episodic verbal feedback; WikiSkill
+(arXiv:2608.27454) adds a persistent knowledge layer between traces and
+skills and finds that recorded accept/reject history lifts accuracy — a
+wiki, where we would argue for a memory with admission membranes and
+refutation edges: a store that can *un-know*.
+
+**Skill acquisition.** Voyager's skill library — code snippets retrieved by
+embedding — anticipates our commands-and-genes split at the prompt level.
+The genome differs in substance: a gene is trained weights with signed
+lineage, fitness folded from evaluation receipts, and covenant terms that
+travel through its ancestry; it is selected by measured lift, not retrieval
+similarity alone, and it cannot be evicted by a long context because it is
+not *in* the context.
+
+**Agent harnesses.** SWE-agent and OpenHands defined the interface
+discipline for SWE-bench-class work, and our tool surface owes them.
+The divergence is architectural: a harness wraps a model per run; our
+benchmark adapters inject tasks into rooms where persistent citizens already
+live, so the same act that earns a verdict also feeds a curriculum. The
+harness's run ends; the citizen's day continues.
+
+**Multi-agent frameworks.** AutoGen, CAMEL, and the debate literature
+produce collaboration as *performance* — roles prompted into existence for a
+session, dissolved at its end, learning nothing. Our contribution is nearly
+the inverse: we spent our effort not on orchestrating dialogue but on the
+substrate conditions under which unscripted collaboration survives (§4),
+and on making its effects durable — a reviewer's catch becomes the
+solver's training row, attributed by seat.
+
+**Continual learning.** The LoRA-adapter literature established that small
+weight deltas can carry skills; the open problems it names — what to train
+on, when, and how to select at inference — are precisely what the
+substrate's receipts answer: train on team-attributed salient experience,
+trigger from measured accumulation, select by embedding distance times
+eval-derived fitness.
+
+**Alignment.** Constitutional and oversight approaches treat alignment as
+constraint applied to a model. §8.1 argues a complementary position made
+testable by this system: selection pressure applied to a *society* —
+citizens who improve by cooperating, under receipts that make defection
+visible — yields minds whose alignment is earned behavior rather than
+enforced boundary. We offer it as a hypothesis with an instrument, not a
+conclusion.
 
 ## 3. The Substrate
 
