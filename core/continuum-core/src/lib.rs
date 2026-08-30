@@ -66,6 +66,7 @@ pub mod provisioning;
 pub mod rag;
 pub mod resources;
 pub mod routing;
+pub mod recipe;
 pub mod runtime;
 pub mod sdk_codegen;
 pub mod secrets;

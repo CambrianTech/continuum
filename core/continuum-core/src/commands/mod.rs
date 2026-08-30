@@ -51,6 +51,7 @@ pub mod migration;
 pub mod models;
 pub mod persona;
 pub mod persona_roster;
+pub mod recipe_run;
 pub mod plasticity;
 pub mod rag;
 pub mod resources;
