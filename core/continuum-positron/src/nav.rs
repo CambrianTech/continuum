@@ -93,6 +93,19 @@ pub struct NavTab {
     /// tab serialized before this field folds as empty, never dropped.
     #[serde(default)]
     pub purpose: String,
+    /// The PARENT activity's ref, when this activity nests under another —
+    /// a solve room under its benchmark run room, a design review under its
+    /// project (#2632: the rail is a tree, not a list). Empty = top-level.
+    /// Renderers group children under their parent; the raw ref stays a
+    /// tooltip/copy affordance, never the reading line.
+    #[serde(default)]
+    pub parent_ref: String,
+    /// Humanized label for the reading line (`django-10914 · Atlas`) when the
+    /// raw title is a substrate identifier. Empty = use `title` as-is.
+    /// Display labels humanize; URIs address; UUIDs identify — three jobs,
+    /// never conflated (Joel, 2026-08-30).
+    #[serde(default)]
+    pub display_label: String,
 }
 
 /// A pinned quick-nav target — the citizen's bookmarks (rooms, content,
