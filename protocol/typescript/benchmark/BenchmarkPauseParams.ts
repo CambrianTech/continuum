@@ -3,5 +3,8 @@
 export type BenchmarkPauseParams = { 
 /**
  * The round's id (= its run room id, shown by `benchmark/rounds`).
+ * Typed Uuid on the wire ([[uuids-are-not-strings]]): serde parses the
+ * JSON string and a malformed id fails at DESERIALIZATION with serde's
+ * own error — the hand-rolled parse_round below is deleted, not moved.
  */
 roundId: string, };
