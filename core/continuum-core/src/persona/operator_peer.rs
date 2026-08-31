@@ -63,6 +63,19 @@ pub async fn ensure_operator_peer(
                 peer_id = %rt.airc().peer_id(),
                 "operator self-peer online — room-scoped verbs now act as the human, not a denial (#27)"
             );
+            // The human belongs in the commons by default. Without this join the
+            // operator's chat/send to general was store+live-fed but the daemon
+            // refused the say ("this scope is not subscribed") — the human could
+            // see the room and still not be heard in it (caught live 2026-08-31,
+            // the DM-during-benchmark acid test). Idempotent; failure is loud
+            // but non-fatal — room/join remains the manual path.
+            if let Err(e) = rt.join_room("general").await {
+                crate::probe!(
+                    class = "operator.peer.commons_join_failed",
+                    error = %e.to_string(),
+                    "operator self-peer could not join general — the human speaks nowhere by default until room/join"
+                );
+            }
             let _ = OPERATOR.set(rt);
         }
         Err(e) => {

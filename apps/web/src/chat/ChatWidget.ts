@@ -5005,9 +5005,18 @@ export class ChatWidget extends LitElement {
       // lane-readiness (away=warming), which greys a citizen precisely while
       // she's hardest at work. A resident on THIS node is online, full stop.
       const resident = new Set(this.directorySeed.filter((m) => m.active).map((m) => m.id));
+      // The directory's heartbeat recency beats a room card's stale stamp —
+      // the "9d ago" rows were identity-creation dates, not activity.
+      const seedSeen = new Map(this.directorySeed.map((m) => [m.id, m.lastSeenMs]));
       vm = {
         ...vm,
-        members: vm.members.map((m) => (resident.has(m.id) && !m.active ? { ...m, active: true } : m)),
+        members: vm.members.map((m) => {
+          const fresher = Math.max(m.lastSeenMs, seedSeen.get(m.id) ?? 0);
+          const active = m.active || resident.has(m.id);
+          return active !== m.active || fresher !== m.lastSeenMs
+            ? { ...m, active, lastSeenMs: fresher }
+            : m;
+        }),
       };
       const present = new Set(vm.members.map((m) => m.id));
       // Liveness is NODE-level, not room-level: a resident citizen (and the

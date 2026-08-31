@@ -397,6 +397,48 @@ async function main(): Promise<void> {
   // resolve aliases (persona/list bounces off the Owner wildcard; core fix
   // queued), so the canonical verb is load-bearing here.
   const seedDirectory = async (): Promise<void> => {
+    // THE panel is global scope (Joel, 2026-08-31: "who all exists in this
+    // continuum and who is online — any activity"). presence/directory is the
+    // scope-wide daemon roster: every peer (humans, personas, external
+    // agents) with heartbeat-real liveness + last-seen — the same answer in
+    // every tab. Before it, only residents had a global source, so everyone
+    // else's dot was "online for the tab".
+    try {
+      const raw = await transport.execute(buildCommandUri('presence/directory'), '{}');
+      const parsed = JSON.parse(raw) as {
+        peers?: readonly {
+          name?: string;
+          peer_id?: string;
+          kind?: string;
+          runtime?: string;
+          online?: boolean;
+          last_seen_ms?: number;
+        }[];
+      };
+      const seed: RosterMemberVM[] = (parsed.peers ?? [])
+        .filter((c) => c.peer_id)
+        .map((c) => ({
+          id: c.peer_id as string,
+          name: c.name ?? (c.peer_id as string).slice(0, 8),
+          kind: c.kind === 'human' ? 'human' : 'agent',
+          active: c.online === true,
+          runtime: c.runtime ?? '',
+          vitals: {},
+          lastSeenMs: c.last_seen_ms ?? 0,
+        }));
+      // The viewer stays first + always-online regardless of what the
+      // directory knows about their peer row.
+      const self = widget.directorySeed.filter((m) => m.id === config.senderId);
+      widget.directorySeed = [...self, ...seed.filter((m) => m.id !== config.senderId)];
+      widget.requestUpdate();
+      return;
+    } catch (err) {
+      // Verb-absent (older core) → fall through to the residents-only seed;
+      // anything else is a real failure worth the console.
+      if (!/unknown command|no policy grants|not found/i.test(String(err))) {
+        console.error('presence/directory seed failed:', err);
+      }
+    }
     try {
       const raw = await transport.execute(buildCommandUri('persona/roster'), '{}');
       const parsed = JSON.parse(raw) as {

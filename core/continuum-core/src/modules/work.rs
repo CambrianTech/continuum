@@ -2128,6 +2128,9 @@ impl ServiceModule for WorkModule {
             Arc::new(crate::commands::persona_roster::PersonaRoster {
                 registry: self.registry.clone(),
             }),
+            Arc::new(crate::commands::presence_directory::PresenceDirectory {
+                registry: self.registry.clone(),
+            }),
         ]
     }
 
