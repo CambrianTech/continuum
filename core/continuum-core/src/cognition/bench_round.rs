@@ -46,9 +46,10 @@ use uuid::Uuid;
 ///   half of the objective requires — and the one that has never once been observed
 ///   end to end, because on the default path the detached solve always wins the claim.
 ///
-/// `DetachedSolve` is the default and today's behaviour: an operator opts INTO the
-/// citizen path per round. Both are real drivers, not a flag and a fallback — which is
-/// why the choice is named on the round rather than hidden behind a `skip_solve` bool.
+/// `Citizen` is the default (flipped 2026-08-31): a round teaches by default, and an
+/// operator opts INTO the detached diagnostic per round. Both are real drivers, not a
+/// flag and a fallback — which is why the choice is named on the round rather than
+/// hidden behind a `skip_solve` bool.
 #[derive(
     Debug,
     Clone,
@@ -64,8 +65,16 @@ use uuid::Uuid;
 #[serde(rename_all = "snake_case")]
 #[ts(export, export_to = "../../../protocol/typescript/benchmark/WorkDriver.ts")]
 pub enum WorkDriver {
-    #[default]
+    /// A detached fork works the card outside any citizen's cognition —
+    /// produces no room turns, feeds no curriculum, breathes no meters
+    /// (BENCHMARKS-ARE-ADAPTERS: "maximum effort, zero learning"). An
+    /// explicit diagnostic mode, NEVER the default.
     DetachedSolve,
+    /// The room is the runner: a citizen's own cognition works the card,
+    /// acts radiate, turns feed the flywheel. THE default — benchmarks use
+    /// our citizens, never disposable solvers (Joel's law; flipped
+    /// 2026-08-31 after four detached rounds ran invisible all night).
+    #[default]
     Citizen,
 }
 
@@ -1161,13 +1170,16 @@ mod tests {
         ROUNDS.lock().unwrap().remove(&round_id);
     }
 
-    // what this catches: the default biting the wrong way. A card belonging to no live
-    // round — human-claimed, undirected, or a leftover claimed after its round ended —
-    // must answer DetachedSolve, the proven path. Defaulting to Citizen would silently
-    // stop firing solves for every ordinary claim on the box.
+    // what this catches: the default biting the wrong way — INVERTED 2026-08-31
+    // (PREMISE CHANGE with the WorkDriver default flip). A card belonging to no
+    // live round — human-claimed, undirected, or a leftover claimed after its
+    // round ended — drives CITIZEN: the claimer works it in her own service
+    // loop, turns feed the flywheel. Detached is the per-round diagnostic
+    // opt-in, never what an ordinary claim silently falls into (four detached
+    // rounds ran invisible all night on the old default).
     #[test]
-    fn a_card_in_no_round_drives_by_detached_solve() {
-        assert_eq!(driver_for_card(Uuid::new_v4()), WorkDriver::DetachedSolve);
+    fn a_card_in_no_round_drives_by_citizen() {
+        assert_eq!(driver_for_card(Uuid::new_v4()), WorkDriver::Citizen);
     }
 
     // what this catches: a round that dispatched nothing must END, not sit in the map
