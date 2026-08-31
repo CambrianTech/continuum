@@ -835,6 +835,42 @@ export class ChatWidget extends LitElement {
         50% { opacity: 1; }
       }
     }
+    /* Persona home ACTIVE WORK rows — compact run rows with the board's
+     * state-stripe language; a row that knows its room is a door. */
+    .p-runs {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: var(--spacing-xs);
+    }
+    .p-run {
+      display: flex;
+      align-items: baseline;
+      gap: var(--spacing-md);
+      padding: var(--spacing-xs) var(--spacing-sm);
+      border-left: 3px solid transparent;
+      font-size: 12px;
+    }
+    .p-run.bench-state-working { border-left-color: var(--content-accent, #35d0e0); }
+    .p-run.bench-state-resolved { border-left-color: #3fb950; }
+    .p-run.bench-state-failed { border-left-color: #f85149; }
+    .p-run.bench-state-stalled { border-left-color: #d29922; }
+    .p-run[data-door] { cursor: pointer; }
+    .p-run[data-door]:hover { outline: 1px solid var(--content-accent); outline-offset: -1px; }
+    .p-run-instance { font-family: var(--font-mono, monospace); }
+    .p-run-state { text-transform: uppercase; font-size: 10px; color: var(--content-tertiary, #667); }
+    .p-run-pulse { color: var(--content-secondary, #8aa); }
+    /* PAINT BUDGET (Joel: "Lit animations are already overdrawing"):
+     * off-screen rows in the three long lists cost zero paint/layout —
+     * the browser skips rendering until they scroll into view. */
+    .messages > li,
+    .cells > li,
+    .bench-card {
+      content-visibility: auto;
+      contain-intrinsic-size: auto 72px;
+    }
     /* GROUPED BOARD: one section per round — its lifecycle row, then ITS runs
      * (live first, settled folded). A card that knows its room is a DOOR. */
     .bench-round-group {

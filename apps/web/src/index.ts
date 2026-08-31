@@ -193,10 +193,14 @@ async function main(): Promise<void> {
     // (solve rooms are navigable before they ever appear in a tab set).
     if (UUID_LINK.test(pendingDeepLink.target)) {
       const { kind, target } = pendingDeepLink;
-      pendingDeepLink = null;
-      void selectRoomHandler(target, kind).catch((err: unknown) => {
-        console.error(`deep link ${window.location.pathname} failed:`, err);
-      });
+      void selectRoomHandler(target, kind)
+        .then(() => {
+          pendingDeepLink = null; // consumed only on SUCCESS
+        })
+        .catch(() => {
+          // Transport not up yet (page-load race) — the next nav envelope
+          // retries; the link is only consumed when the select lands.
+        });
       return;
     }
     const want = pendingDeepLink.target.toLowerCase();

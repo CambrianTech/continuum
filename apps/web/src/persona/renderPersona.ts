@@ -246,6 +246,41 @@ export function renderPersona(body: PersonaContentBody): TemplateResult {
         : html`<div class="p-empty">No genes paged in — the base model is running bare.</div>`}
     </section>
 
+    <section class="p-card p-work">
+      <div class="p-card-head">active work</div>
+      ${body.runs === undefined
+        ? html`<div class="p-empty">Awaiting the benchmark feed…</div>`
+        : body.runs.length === 0
+          ? html`<div class="p-empty">No benchmark runs on the board for ${body.name || 'this citizen'}.</div>`
+          : html`<ul class="p-runs">
+              ${body.runs.map(
+                (r) => html`<li
+                  class="p-run bench-state-${r.state}"
+                  ?data-door=${r.roomId !== undefined}
+                  title=${r.roomId !== undefined ? 'open this run\'s room' : r.runId}
+                  @click=${r.roomId !== undefined
+                    ? (e: Event): void => {
+                        (e.currentTarget as HTMLElement).dispatchEvent(
+                          new CustomEvent('bench-run-open', {
+                            detail: { roomId: r.roomId, roomName: r.roomName },
+                            bubbles: true,
+                            composed: true,
+                          }),
+                        );
+                      }
+                    : nothing}
+                >
+                  <span class="p-run-instance">${r.instance}</span>
+                  <span class="p-run-state">${r.state}</span>
+                  ${r.lastGenAgeS === null
+                    ? html`<span class="p-run-pulse">no generations yet</span>`
+                    : html`<span class="p-run-pulse">${r.generations} gens</span>`}
+                  ${r.verdict?.resolved ? html`<span class="bench-resolved">✓</span>` : nothing}
+                </li>`,
+              )}
+            </ul>`}
+    </section>
+
     <section class="p-card p-claims">
       <div class="p-card-head">work board claims</div>
       ${!body.claimsLive

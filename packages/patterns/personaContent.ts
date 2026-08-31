@@ -134,6 +134,10 @@ export interface PersonaContentBody {
   readonly regions: readonly PersonaBrainRegionVM[];
   /** The PATHWAYS grid. */
   readonly pathways: readonly PersonaPathwayVM[];
+  /** This citizen's LIVE benchmark runs (state, gens, verdict, door) — the
+   *  work half of the profile: cognition (brain HUD) above, what she's
+   *  actually doing below. Absent until the bench feed delivers. */
+  readonly runs?: readonly import('./benchContent').BenchRunVM[];
   /** Work-board claims (assignee == this persona). Meaningful only when
    *  `claimsLive` — an empty list with `claimsLive: false` means the board
    *  feed hasn't delivered (awaiting), not "no claims". */

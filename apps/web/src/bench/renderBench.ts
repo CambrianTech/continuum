@@ -122,10 +122,7 @@ function runCard(run: BenchRunVM, maxGens: number): TemplateResult {
   >
     <div class="bench-card-head">
       <span class="bench-dot" title=${run.state}></span>
-      <span
-        class="bench-instance${run.state === 'working' || run.state === 'grading' ? ' wave-active' : ''}"
-        title=${run.runId}
-      >${run.instance}</span>
+      <span class="bench-instance" title=${run.runId}>${run.instance}</span>
       <span class="bench-attempt" title="attempt N of M">${run.attempt}<i>/</i>${run.maxAttempts}</span>
     </div>
     <div class="bench-card-meta">

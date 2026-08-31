@@ -513,6 +513,17 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     contentFamilyOf(vm.purpose) === BENCH_PURPOSE
       ? benchContentBody(live?.bench)
       : undefined;
+  // The persona home carries HER live benchmark runs — profile = identity +
+  // cognition + the work itself (Joel: "all the cognitive and profile pages").
+  const personaWithWork =
+    personaBody && live?.bench
+      ? {
+          ...personaBody,
+          runs: benchContentBody(live.bench).runs.filter(
+            (r) => r.persona.toLowerCase() === personaBody.name.toLowerCase(),
+          ),
+        }
+      : personaBody;
   // The ACADEMY LANDING: the default campus room renders as a landing —
   // live board center-stage, chat as the secondary layer — never a stale
   // transcript posing as the main page.
@@ -558,7 +569,7 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     | ContentView<SettingsContentBody> = settingsBody
     ? { purpose: SETTINGS_PURPOSE, body: settingsBody }
     : personaBody
-    ? { purpose: PERSONA_PURPOSE, body: personaBody }
+    ? { purpose: PERSONA_PURPOSE, body: personaWithWork ?? personaBody }
     : liveBody
       ? { purpose: LIVE_PURPOSE, body: liveBody }
       : arenaBody
