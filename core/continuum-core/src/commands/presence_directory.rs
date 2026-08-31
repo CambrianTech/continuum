@@ -11,6 +11,13 @@
 //! availability, runtime, and the published identity card. This verb is a thin
 //! read of that one truth.
 //!
+//! **INTERIM SHAPE — the durable directory belongs in the AIRC DAEMON**
+//! (Joel: "who's online, who's been online is CORE AIRC"). The daemon today
+//! derives presence by paging recent events, which is burst-blind (airc#1367
+//! has the numbers); this verb unions the node's room-directory files to
+//! compensate. When airc grows a first-class `DirectoryRequest`, this verb
+//! collapses onto it — the wire contract here stays, the plumbing goes.
+//!
 //! Liveness here is HEARTBEAT-derived (recency within the presence window) with
 //! one override: a persona RESIDENT on this node is online, full stop — the
 //! room-presence pipe greys a citizen precisely while she's hardest at work
