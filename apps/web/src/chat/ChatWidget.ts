@@ -868,6 +868,16 @@ export class ChatWidget extends LitElement {
     .metrics-spark circle {
       fill: var(--content-accent, #35d0e0);
     }
+    /* The native home frame — a bevy-rendered image, displayed, never
+     * rasterized here. */
+    .p-home-frame {
+      display: block;
+      max-width: 360px;
+      width: 100%;
+      margin: 0 auto;
+      border-radius: 6px;
+      border: 1px solid var(--border-subtle);
+    }
     /* Profile tab bar — one job per tab (PAGES-IA.md). */
     .p-tabs {
       display: flex;

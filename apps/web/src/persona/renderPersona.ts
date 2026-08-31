@@ -24,11 +24,6 @@ import type {
   PersonaPathwayVM,
 } from '@continuum/patterns';
 import { agoLabel, cognitionDiamond, loadoutStrip } from '../render/parts';
-import { homeSceneModel } from '../scene/homeSceneModel';
-// Importing registers <home-scene>; keep the symbol referenced so bundlers
-// don't tree-shake the definition away (same pattern as ChatWidget).
-import { HomeSceneElement } from '../scene/HomeSceneElement';
-void HomeSceneElement;
 // The REAL mesh brain — recovered from the original HUD (docs/images/
 // persona-brain-hud.png crop): LLM-drawn SVG anatomy is banned; the 3D-rendered
 // replacement is card eb69cfb0. Vite inlines/serves the asset.
@@ -229,21 +224,18 @@ function aboutSection(body: PersonaContentBody): TemplateResult {
 }
 
 function homeSection(body: PersonaContentBody): TemplateResult {
+  // NATIVE RENDER ONLY (Joel's law, 2026-08-31: "never JavaScript" — one
+  // performant renderer serves LiveKit AND the orthographic views; the web
+  // DISPLAYS frames, it never rasterizes scenes). Today's frame is the
+  // avatar/snapshot pipe: bevy renders her VRM inside her deterministic
+  // scene environment (identity → scene catalog) to a served PNG. The
+  // navigable orthographic home arrives as a native STREAM target on the
+  // same renderer — not as browser-side 3D.
   return html`<section class="p-card p-home">
-    <div class="p-card-head">home <span class="p-home-hint">full 3D · drag to orbit, wheel to zoom · default furniture until her home recipe lands</span></div>
-    <home-scene
-      .model=${homeSceneModel({
-        name: body.name,
-        online: body.online,
-        activeRuns: (body.runs ?? []).filter(
-          (r) => r.state === 'working' || r.state === 'grading' || r.state === 'queued',
-        ).length,
-        trophies: (body.runs ?? []).filter((r) => r.state === 'resolved').length,
-        genes: body.genes.length,
-        speaking: (body.vitals['speaking'] ?? 0) > 0,
-        avatarUrl: body.avatarUrl,
-      })}
-    ></home-scene>
+    <div class="p-card-head">home <span class="p-home-hint">native render · her deterministic scene · live navigation ships as a stream from the same renderer LiveKit uses</span></div>
+    ${body.avatarUrl
+      ? html`<img class="p-home-frame" src=${body.avatarUrl} alt="${body.name || 'citizen'} at home — native bevy render" />`
+      : html`<div class="p-empty">No native render yet — avatar/snapshot produces her frame (her VRM in her scene) on first request.</div>`}
     ${homeLegend(body)}
   </section>`;
 }

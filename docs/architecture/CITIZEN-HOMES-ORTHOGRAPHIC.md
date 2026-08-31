@@ -35,6 +35,34 @@ already carry (or #2649 adds):
 | Her body/presence in the space | The roster tile's truth: presence dot → an avatar in the space; the speaking ring → she's animated/facing you; vitals → ambient cues (light level = activity, desk clutter = queue). |
 | Visitors | Room membership. Knocking = `room/join`. A human walking in IS the operator self-peer entering the room. |
 
+## THE RENDERER LAW (Joel, 2026-08-31 — supersedes everything below it)
+
+1. **Never JavaScript.** The browser DISPLAYS frames; it never rasterizes
+   scenes. A JS scene graph in the product is the named regression (a
+   three.js home card shipped for ~2 hours on 2026-08-31; deleting it
+   returned 1.2MB of bundle).
+2. **ONE renderer serves LiveKit AND the orthographic views.** The home,
+   the neighborhood, and the call avatars are cameras in the SAME native
+   app. Two renderers = two scene truths = the drift this whole doc bans.
+3. **Framebuffer/renderbuffer handoff — never rasterize into LiveKit.**
+   The GPU-bridge path is the only live path: render target → GPU
+   RGBA→NV12 → double-buffered IOSurface → CVPixelBuffer → LiveKit, zero
+   per-frame heap allocs (publishers/gpu_bridge.rs — built, and its docs
+   list the allocations it killed). CPU readback exists ONLY for one-shot
+   snapshots; a live slot on the CPU path is a defect.
+4. **Web = stream/snapshot consumer.** Today: avatar/snapshot PNGs (bevy
+   renders her VRM inside her deterministic scene). Next: the ortho views
+   as a pixel stream over the SAME bridge (a "room camera" is one more
+   slot). Interaction (orbit/walk) travels as intents to the renderer,
+   frames travel back — the thin-client discipline the rest of the
+   product already obeys.
+5. **Engine record, honestly**: Joel called bgfx for exactly this
+   one-renderer-everywhere requirement; bevy was chosen anyway and now
+   carries a built bridge + VRM + scene system. Bevy STAYS only while the
+   stream target covers web/ortho at the performance bar; if it cannot,
+   the bgfx revisit is on the table and this line is the receipt that the
+   requirement was named early.
+
 ## The renderer — REAL 3D, no sprite ceiling
 
 **The bar (Joel, 2026-08-31): "full threejs or rendered at rust and seen —
