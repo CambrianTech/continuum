@@ -149,7 +149,10 @@ describe('renderChat (Lit)', () => {
     expect(chunks).toContain('idle'); // Joel idle
     // WHAT: the turn's sender, content and time all reach the markup as values.
     expect(chunks).toContain('hi Asha');
-    expect(chunks).toContain('00:00');
+    // The time renders in the VIEWER's timezone (chatViewModel's documented
+    // idiom), so pin the SHAPE, not a hardcoded UTC wall-clock — '00:00' only
+    // passed on UTC machines (tz-fragile, caught 2026-08-31 on CDT).
+    expect(chunks.some((c) => /^\d\d:\d\d$/.test(String(c)))).toBe(true);
   });
 
   // what this catches: a member's live vitals must actually DRAW a stat meter — a
