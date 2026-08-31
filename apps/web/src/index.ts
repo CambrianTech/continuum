@@ -173,8 +173,19 @@ async function main(): Promise<void> {
       };
     }
   }
+  const UUID_LINK = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   const resolveDeepLink = (tabs: readonly { id?: string; title?: string }[]): void => {
     if (!pendingDeepLink) return;
+    // A UUID target IS the address — select it directly, no nav lookup
+    // (solve rooms are navigable before they ever appear in a tab set).
+    if (UUID_LINK.test(pendingDeepLink.target)) {
+      const { kind, target } = pendingDeepLink;
+      pendingDeepLink = null;
+      void selectRoomHandler(target, kind).catch((err: unknown) => {
+        console.error(`deep link ${window.location.pathname} failed:`, err);
+      });
+      return;
+    }
     const want = pendingDeepLink.target.toLowerCase();
     const hit = tabs.find(
       (t) => t.id?.toLowerCase() === want || t.title?.toLowerCase() === want,
