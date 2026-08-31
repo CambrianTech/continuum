@@ -118,6 +118,20 @@ export function fireLiveCameraToggle(e: Event): void {
   );
 }
 
+/** Composed event: the media reason-card's outcome — `continue` fires the
+ *  real permission ask (the explicit gesture stage of
+ *  POSITRON-MEDIA-PERMISSIONS.md); `dismiss` closes the card. */
+export const LIVE_MEDIA_ASK = 'live-media-ask';
+export function fireLiveMediaAsk(e: Event, outcome: 'continue' | 'dismiss'): void {
+  (e.currentTarget as HTMLElement).dispatchEvent(
+    new CustomEvent<{ outcome: 'continue' | 'dismiss' }>(LIVE_MEDIA_ASK, {
+      detail: { outcome },
+      bubbles: true,
+      composed: true,
+    }),
+  );
+}
+
 /** Detail payload of a `LISTING_SELECT` event — which listing, which cell, and
  *  (when the cell carries one) its neutral `group` key: the nav tab's target
  *  kind for rooms-rail cells. The routing rule reads it to pick the select's

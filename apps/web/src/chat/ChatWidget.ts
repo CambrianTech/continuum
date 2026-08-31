@@ -39,6 +39,7 @@ import { CallClient, type CallVideoFrame } from '../live/callClient';
 import {
   LISTING_SELECT,
   LIVE_CAMERA_TOGGLE,
+  LIVE_MEDIA_ASK,
   LIVE_MIC_TOGGLE,
   LIVE_CAPTIONS_TOGGLE,
   LIVE_FACE_TOGGLE,
@@ -121,6 +122,7 @@ export class ChatWidget extends LitElement {
     _mediaConnected: { state: true },
     _micOn: { state: true },
     _camOn: { state: true },
+    _mediaAsk: { state: true },
     _draft: { state: true },
     _sending: { state: true },
     _sendError: { state: true },
@@ -274,6 +276,10 @@ export class ChatWidget extends LitElement {
   private _mediaConnected = false;
   private _micOn = false;
   private _camOn = false;
+  /** The staged media-permission flow (POSITRON-MEDIA-PERMISSIONS.md): which
+   *  capability's reason/recovery card the live face is showing. `denied`
+   *  switches the card from reason+continue to honest recovery steps. */
+  private _mediaAsk?: { kind: 'camera' | 'mic'; denied?: boolean };
   /** Call-server avatar states: personaId → speaking (merged into the streams
    *  map so the SAME projection drives borders whether speech is tokens on the
    *  chat rail or real audio on the call). */
@@ -418,32 +424,80 @@ export class ChatWidget extends LitElement {
   }
 
   /** The mic button — a REAL toggle when the media plane is connected. */
-  /** The camera button — start/stop the viewer's real camera publish. */
-  private onLiveCameraToggle = (): void => {
+  /** The platform's LIVE permission state for a capability — queried, never
+   *  assumed (the OS/browser is the single authority,
+   *  POSITRON-MEDIA-PERMISSIONS.md). Safari lacks the Permissions API:
+   *  report 'prompt', which stages the reason card first — stage-1 behavior
+   *  regardless. */
+  private async mediaPermission(kind: 'camera' | 'mic'): Promise<'granted' | 'prompt' | 'denied'> {
+    try {
+      const status = await navigator.permissions.query({
+        name: (kind === 'camera' ? 'camera' : 'microphone') as PermissionName,
+      });
+      return status.state as 'granted' | 'prompt' | 'denied';
+    } catch {
+      return 'prompt';
+    }
+  }
+
+  /** Stage 2: the ASK, fired from an explicit gesture (the reason card's
+   *  continue button, or the capability button once already granted). */
+  private startMedia(kind: 'camera' | 'mic'): void {
     const call = this._call;
     if (!call) return;
-    if (call.camLive) {
+    this._mediaAsk = undefined;
+    if (kind === 'camera') {
+      void call.startCamera(this.viewerId).then((ok) => {
+        this._camOn = ok;
+        if (!ok) this._mediaAsk = { kind: 'camera', denied: true };
+      });
+    } else {
+      void call.startMic().then((ok) => {
+        this._micOn = ok;
+        if (!ok) this._mediaAsk = { kind: 'mic', denied: true };
+      });
+    }
+  }
+
+  /** A capability button press → the staged flow: granted acts directly;
+   *  prompt opens the reason card; denied opens recovery. */
+  private toggleMedia(kind: 'camera' | 'mic'): void {
+    const call = this._call;
+    if (!call) return;
+    if (kind === 'camera' && call.camLive) {
       call.stopCamera();
       this._camOn = false;
       return;
     }
-    void call.startCamera(this.viewerId).then((ok) => {
-      this._camOn = ok;
-      if (!ok) console.warn('camera denied or unavailable — tile stays avatar/glyph');
+    if (kind === 'mic' && call.micLive) {
+      call.stopMic();
+      this._micOn = false;
+      return;
+    }
+    void this.mediaPermission(kind).then((state) => {
+      if (state === 'granted') this.startMedia(kind);
+      else this._mediaAsk = { kind, denied: state === 'denied' };
     });
+  }
+
+  /** The reason card's outcome: continue → the real ask on this explicit
+   *  gesture; dismiss (and the denied card's OK) → close. */
+  private onLiveMediaAsk = (e: Event): void => {
+    const outcome = (e as CustomEvent<{ outcome?: string }>).detail?.outcome;
+    if (outcome === 'continue' && this._mediaAsk && !this._mediaAsk.denied) {
+      this.startMedia(this._mediaAsk.kind);
+    } else {
+      this._mediaAsk = undefined;
+    }
+  };
+
+  /** The camera button — the staged permission flow, then start/stop. */
+  private onLiveCameraToggle = (): void => {
+    this.toggleMedia('camera');
   };
 
   private onLiveMicToggle = (): void => {
-    const call = this._call;
-    if (!call) return;
-    if (this._micOn) {
-      call.stopMic();
-      this._micOn = false;
-    } else {
-      void call.startMic().then((ok) => {
-        this._micOn = ok;
-      });
-    }
+    this.toggleMedia('mic');
   };
 
   /** CC toggle — flips the live caption strip (a real control). */
@@ -620,6 +674,7 @@ export class ChatWidget extends LitElement {
     this.addEventListener(SETTINGS_AGREE, this.onSettingsAgree);
     this.addEventListener(LIVE_MIC_TOGGLE, this.onLiveMicToggle);
     this.addEventListener(LIVE_CAMERA_TOGGLE, this.onLiveCameraToggle);
+    this.addEventListener(LIVE_MEDIA_ASK, this.onLiveMediaAsk);
     this.addEventListener(LIVE_CAPTIONS_TOGGLE, this.onLiveCaptionsToggle);
   }
 
@@ -4324,6 +4379,52 @@ export class ChatWidget extends LitElement {
       color: var(--content-secondary);
       font-style: italic;
     }
+    /* The staged media-permission card — reason before the native ask,
+       honest recovery after a deny (POSITRON-MEDIA-PERMISSIONS.md). */
+    .media-ask {
+      position: absolute;
+      top: 18%;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 5;
+      max-width: 380px;
+      padding: 16px 18px;
+      border-radius: 10px;
+      border: 1px solid var(--border-subtle);
+      background: var(--widget-input-area-background);
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+    }
+    .media-ask-title {
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+    .media-ask-body {
+      font-size: 13px;
+      color: var(--text-muted);
+      line-height: 1.5;
+      margin-bottom: 12px;
+    }
+    .media-ask-actions {
+      display: flex;
+      gap: 8px;
+    }
+    .media-ask-continue {
+      background: var(--content-accent);
+      color: #04121a;
+      border: none;
+      border-radius: 6px;
+      padding: 7px 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .media-ask-dismiss {
+      background: transparent;
+      color: var(--text-muted);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 7px 14px;
+      cursor: pointer;
+    }
     .live-grid {
       flex: 1;
       display: grid;
@@ -5298,6 +5399,7 @@ export class ChatWidget extends LitElement {
           mediaConnected: this._mediaConnected,
           micOn: this._micOn,
           cameraOn: this._camOn,
+          ...(this._mediaAsk !== undefined ? { mediaAsk: this._mediaAsk } : {}),
           videoSenders: Array.from(this._videoFrames.keys()),
         },
       }, { centerFooter });

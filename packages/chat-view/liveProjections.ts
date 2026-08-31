@@ -51,6 +51,8 @@ export interface LiveCallOverlay {
   readonly micOn?: boolean;
   /** Camera currently publishing (renderer state, threaded through). */
   readonly cameraOn?: boolean;
+  /** The staged permission card to show (threaded renderer state). */
+  readonly mediaAsk?: { readonly kind: 'camera' | 'mic'; readonly denied?: boolean };
   /** Participant ids with a live video frame right now — the tile paints a
    *  canvas for each (the widget draws the pixels imperatively post-render). */
   readonly videoSenders?: ReadonlyArray<string>;
@@ -182,6 +184,7 @@ export function liveContentBody(vm: ChatViewModel, overlay?: LiveCallOverlay): L
     roomId: vm.roomId,
     roomName: vm.roomName,
     participants: liveParticipants(vm, streams, overlay),
+    ...(overlay?.mediaAsk !== undefined ? { mediaAsk: overlay.mediaAsk } : {}),
     ...(caption ? { caption } : {}),
     controls: liveControls(vm, captionsOn, overlay),
     mediaPlaneLive: overlay?.mediaConnected === true,

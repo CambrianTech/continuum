@@ -93,6 +93,10 @@ export interface LiveControlsVM {
 
 /** The live call face's `Content` body (`purpose === LIVE_PURPOSE`). */
 export interface LiveContentBody {
+  /** The staged media-permission card (POSITRON-MEDIA-PERMISSIONS.md):
+   *  present = the face shows the reason (or, when `denied`, recovery) card
+   *  for that capability. Absent = no card. */
+  readonly mediaAsk?: { readonly kind: 'camera' | 'mic'; readonly denied?: boolean };
   /** The room this call face belongs to. */
   readonly roomId: string;
   readonly roomName: string;

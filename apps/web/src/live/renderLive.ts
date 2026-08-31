@@ -23,7 +23,7 @@
 
 import { html, nothing, type TemplateResult } from 'lit';
 import type { LiveContentBody, LiveParticipantVM } from '@continuum/patterns';
-import { fireLiveCameraToggle, fireLiveCaptionsToggle, fireLiveFaceToggle, fireLiveMicToggle } from '../render/parts';
+import { fireLiveCameraToggle, fireLiveCaptionsToggle, fireLiveFaceToggle, fireLiveMediaAsk, fireLiveMicToggle } from '../render/parts';
 
 /** Kind glyph for a tile with no stored avatar — the honest fallback face. */
 function tileGlyph(kind: string): string {
@@ -38,6 +38,7 @@ function participantTile(p: LiveParticipantVM): TemplateResult {
   const hide = (e: Event): void => {
     (e.currentTarget as HTMLElement).remove();
   };
+
   return html`<div
     class="live-tile"
     data-kind=${p.kind}
@@ -105,6 +106,35 @@ function renderComposition(body: LiveContentBody): TemplateResult {
   </div>`;
 }
 
+/** The staged permission card (reason before ask; recovery after deny) —
+ *  POSITRON-MEDIA-PERMISSIONS.md stage 1/3. Pure: outcomes ride composed
+ *  events, the host owns the actual getUserMedia gesture. */
+const mediaAskCard = (ask: NonNullable<LiveContentBody['mediaAsk']>): TemplateResult => {
+  const what = ask.kind === 'camera' ? 'camera' : 'microphone';
+  return html`<div class="media-ask" role="dialog" aria-label="${what} permission">
+    ${ask.denied
+      ? html`<div class="media-ask-title">${what} access is blocked</div>
+          <div class="media-ask-body">
+            Your browser remembered an earlier “no”. To turn it back on: click the
+            padlock in the address bar → Site settings → allow the ${what}, then
+            try again.
+          </div>
+          <div class="media-ask-actions">
+            <button class="media-ask-continue" @click=${(e: Event) => fireLiveMediaAsk(e, 'dismiss')}>OK</button>
+          </div>`
+      : html`<div class="media-ask-title">Use your ${what}?</div>
+          <div class="media-ask-body">
+            Citizens in this call ${ask.kind === 'camera' ? 'see you through your camera' : 'hear you through your microphone'}.
+            Your ${ask.kind === 'camera' ? 'video' : 'audio'} stays on this grid — it is never recorded
+            or sent anywhere else. Your browser will ask once and remember.
+          </div>
+          <div class="media-ask-actions">
+            <button class="media-ask-continue" @click=${(e: Event) => fireLiveMediaAsk(e, 'continue')}>Allow ${what}</button>
+            <button class="media-ask-dismiss" @click=${(e: Event) => fireLiveMediaAsk(e, 'dismiss')}>Not now</button>
+          </div>`}
+  </div>`;
+};
+
 export function renderLive(body: LiveContentBody): TemplateResult {
   const hangup = (e: Event): void => {
     fireLiveFaceToggle(e, false);
@@ -113,7 +143,7 @@ export function renderLive(body: LiveContentBody): TemplateResult {
     fireLiveCaptionsToggle(e);
   };
   const cc = body.controls;
-  return html`<div class="live-room" data-room=${body.roomId}>
+  return html`${body.mediaAsk !== undefined ? mediaAskCard(body.mediaAsk) : nothing}<div class="live-room" data-room=${body.roomId}>
     <div class="live-head">
       <span class="live-title"><span class="live-title-dot"></span>${body.roomName} — live</span>
       ${body.mediaPlaneLive
