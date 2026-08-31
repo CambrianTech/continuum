@@ -93,7 +93,9 @@ pub struct PresenceDirectory {
 #[async_trait::async_trait]
 impl ActionCommand for PresenceDirectory {
     const NAME: &'static str = "presence/directory";
-    const ALIASES: &'static [&'static str] = &["who", "directory"];
+    // No aliases: "who" is claimed by room/members (the duplicate-alias guard
+    // wedged a boot proving it, 2026-08-31) — one wire name, no sugar.
+    const ALIASES: &'static [&'static str] = &[];
     /// AiSafe read: `room/members` already serves peer_ids at ai-safe, and the
     /// who-panel seeding from a Privileged verb is exactly how the operator's
     /// own UI once showed every citizen offline.

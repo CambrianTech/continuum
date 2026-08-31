@@ -431,35 +431,14 @@ async function main(): Promise<void> {
       const self = widget.directorySeed.filter((m) => m.id === config.senderId);
       widget.directorySeed = [...self, ...seed.filter((m) => m.id !== config.senderId)];
       widget.requestUpdate();
-      return;
     } catch (err) {
-      // Verb-absent (older core) → fall through to the residents-only seed;
-      // anything else is a real failure worth the console.
-      if (!/unknown command|no policy grants|not found/i.test(String(err))) {
-        console.error('presence/directory seed failed:', err);
-      }
-    }
-    try {
-      const raw = await transport.execute(buildCommandUri('persona/roster'), '{}');
-      const parsed = JSON.parse(raw) as {
-        citizens?: readonly { agent_name?: string; peer_id?: string; resident?: boolean }[];
-      };
-      const seed: RosterMemberVM[] = (parsed.citizens ?? [])
-        .filter((c) => c.peer_id)
-        .map((c) => ({
-          id: c.peer_id as string,
-          name: c.agent_name ?? (c.peer_id as string).slice(0, 8),
-          kind: 'agent',
-          active: c.resident === true,
-          runtime: '',
-          vitals: {},
-          lastSeenMs: 0,
-        }));
-      const self = widget.directorySeed.filter((m) => m.kind === 'human');
-      widget.directorySeed = [...self, ...seed];
-      widget.requestUpdate();
-    } catch (err) {
-      console.error('directory seed failed:', err);
+      // NO fallback ([[fallbacks-are-illegal-fail-loud]]; Joel: "don't add
+      // fallbacks for mistakes"): a core without this verb, or a failed read,
+      // must surface as a failure — a residents-only list would quietly lie
+      // about who is online, which is worse than an error. The next 30s poll
+      // retries; the viewer row keeps the panel from rendering the operator
+      // themself as absent.
+      console.error('presence/directory seed failed — the who-panel has no global truth this tick:', err);
     }
   };
   void seedDirectory();
