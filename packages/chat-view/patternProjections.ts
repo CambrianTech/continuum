@@ -579,9 +579,26 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
                     };
   // The ACTIVE nav cell follows the citizen's current tab: the persona tab
   // when a persona home is focused, else the chat room on screen.
-  const rooms = live?.nav
+  const roomsBase = live?.nav
     ? roomsListingFromNav(live.nav, persona?.id ?? vm.roomId)
     : roomsListing(vm);
+  // AMBIENT PULSE (Joel, 2026-08-31: "see live benchmarks, events, etc
+  // everywhere as this dynamic system operates"): the academy's rail cell
+  // carries the node's live work heartbeat — visible from ANY room, one
+  // glance, one click to the campus.
+  const workingNow =
+    live?.bench?.runs.filter((r) => r.phase === 'active' || r.phase === 'queued').length ?? 0;
+  const rooms: ListingView =
+    workingNow > 0
+      ? {
+          ...roomsBase,
+          cells: roomsBase.cells.map((c) =>
+            c.title.toLowerCase() === 'academy'
+              ? { ...c, subtitle: `${workingNow} working now`, badges: [...(c.badges ?? []), 'live'] }
+              : c,
+          ),
+        }
+      : roomsBase;
   // The left rail = a global widget stack (the README's sidebar): System (SYS
   // gauge, when live) · AI Performance (live team cognition) · Rooms (all
   // rooms/DMs) · Users & Agents (the rich live tiles). Each is one PanelWidget
