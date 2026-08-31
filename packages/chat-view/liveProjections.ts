@@ -120,7 +120,11 @@ export function liveParticipants(
   streams: Readonly<Record<string, string>>,
   overlay?: LiveCallOverlay,
 ): readonly LiveParticipantVM[] {
-  return vm.members.map((m) => participant(m, streams, overlay));
+  // ONLINE participants only — a call grid shows who can actually be in the
+  // call, like any video-call app; offline members join the grid when they
+  // connect, never as grey placeholder tiles (Joel, 2026-08-31: "leave off
+  // offline people from the list till they connect").
+  return vm.members.filter((m) => m.active).map((m) => participant(m, streams, overlay));
 }
 
 /** The ACTIVE speaker's caption — the most recent citizen to start a turn

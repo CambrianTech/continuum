@@ -110,6 +110,8 @@ export class ChatWidget extends LitElement {
     version: { attribute: false },
     feedStatus: { attribute: false },
     mindRevision: { attribute: false },
+    viewerId: { attribute: false },
+    viewerName: { attribute: false },
     sendHandler: { attribute: false },
     settingsHandler: { attribute: false },
     selectRoomHandler: { attribute: false },
@@ -174,6 +176,15 @@ export class ChatWidget extends LitElement {
    *  learning stream reads a module store; this property exists purely so a
    *  fresh poll re-renders the open persona page). */
   mindRevision = 0;
+
+  /** The VIEWER's durable identity (the session's `?me=` uuid) — who this
+   *  human IS in a live call. Set by the host; joining a call without it is
+   *  refused loudly (the hardcoded 'operator-web' string it replaces made the
+   *  registrar drop the session — hold music, no citizens; live 2026-08-31). */
+  viewerId?: string;
+  /** The viewer's display name for call tiles (the directory's name for
+   *  `viewerId`, e.g. "joel"). */
+  viewerName?: string;
 
   /** The client build's version string (a real manifest/build stamp injected by
    *  the host) — drives the continuon header's version badge. `undefined` = no
@@ -371,12 +382,21 @@ export class ChatWidget extends LitElement {
       },
     });
     this._call = client;
+    if (this.viewerId === undefined) {
+      // No fallback identity ([[fallbacks-are-illegal-fail-loud]]): a call
+      // joined under a made-up id is a session the registrar cannot address —
+      // the exact hold-music bug this replaces.
+      console.error('cannot join call: viewerId not set on <chat-widget> — the host must set it');
+      this._call = undefined;
+      this._mediaConnected = false;
+      return;
+    }
     try {
       await client.connect(
         this.callUrl,
         this.state.room_id,
-        'operator-web',
-        'Operator (web)',
+        this.viewerId,
+        this.viewerName ?? 'you',
       );
     } catch {
       this._call = undefined;

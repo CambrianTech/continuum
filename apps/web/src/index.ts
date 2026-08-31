@@ -76,6 +76,9 @@ async function main(): Promise<void> {
   // presentation state only ([[navigation-is-airc-state-one-semantics-many-idioms]]
   // — the URL is the web idiom; recipe-declared live rooms are the substrate path).
   if (new URLSearchParams(location.search).has('live')) widget.liveFace = true;
+  // The viewer's call identity: the same uuid the session is scoped by. The
+  // name upgrades to the directory's real one when the seed resolves it.
+  widget.viewerId = config.senderId;
   const mount = document.getElementById('app') ?? document.body;
   mount.replaceChildren(widget);
 
@@ -513,6 +516,12 @@ async function main(): Promise<void> {
       // directory knows about their peer row.
       const self = widget.directorySeed.filter((m) => m.id === config.senderId);
       widget.directorySeed = [...self, ...seed.filter((m) => m.id !== config.senderId)];
+      // The directory knows the viewer's REAL name (identity card) — adopt it
+      // for call tiles instead of the local placeholder.
+      const me = (parsed.peers ?? []).find((c) => c.peer_id === config.senderId);
+      if (me?.name !== undefined && me.name.length > 0 && !me.name.startsWith('peer-')) {
+        widget.viewerName = me.name;
+      }
       widget.requestUpdate();
       // A persona deep link resolves through THIS directory — retry it on
       // every seed, not only on nav envelopes (a cold load's last nav
