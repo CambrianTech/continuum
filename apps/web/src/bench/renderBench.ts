@@ -145,7 +145,14 @@ function runCard(run: BenchRunVM, maxGens: number): TemplateResult {
 }
 
 /** The bench board content — pure fragments of the projected body. */
-export function renderBench(body: BenchContentBody): TemplateResult {
+export interface BenchRenderOptions {
+  /** \'full\' (run rooms — every settled run listed) vs \'digest\' (the academy
+   *  landing — live work + one settled-count line per PAGES-IA.md: history
+   *  lives in run rooms and on citizens' Work tabs, not on the campus page). */
+  readonly history?: 'full' | 'digest';
+}
+
+export function renderBench(body: BenchContentBody, opts?: BenchRenderOptions): TemplateResult {
   // Rounds render even with zero run rows: a freshly staged round has no run
   // ledger yet, and the board saying "nothing here" while the tracker holds a
   // working round would be the launch-and-pray blindness this region kills.
@@ -188,16 +195,20 @@ export function renderBench(body: BenchContentBody): TemplateResult {
     body.rounds.flatMap((rd) => runsOf(rd.rawId).map((r) => r.runId)),
   );
   const loose = body.runs.filter((r) => !grouped.has(r.runId)).sort(orderInside);
+  const digest = opts?.history === 'digest';
   const section = (runs: BenchRunVM[]): TemplateResult => {
     const live = runs.filter((r) => LIVE_STATES.has(r.state));
     const done = runs.filter((r) => !LIVE_STATES.has(r.state));
+    const wins = done.filter((r) => r.state === 'resolved').length;
     return html`${live.map((r) => runCard(r, maxGens))}
-    ${done.length > 0
-      ? html`<details class="bench-history">
-          <summary>${done.length} settled</summary>
-          ${done.map((r) => runCard(r, maxGens))}
-        </details>`
-      : nothing}`;
+    ${done.length === 0
+      ? nothing
+      : digest
+        ? html`<div class="bench-digest">${wins}✓ of ${done.length} settled — full history in the run room</div>`
+        : html`<details class="bench-history">
+            <summary>${done.length} settled</summary>
+            ${done.map((r) => runCard(r, maxGens))}
+          </details>`}`;
   };
   return html`<div class="bench-board">
     ${body.feedLive ? nothing : html`<div class="bench-snapshot-banner">snapshot — no live feed attached</div>`}

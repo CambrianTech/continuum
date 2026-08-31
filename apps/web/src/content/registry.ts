@@ -62,7 +62,7 @@ function academyContent(body: AcademyContentBody): TemplateResult {
           : html`<span class="academy-stat">quiet — no runs in flight</span>`}
       </div>
     </div>
-    ${renderBench(body.bench)}
+    ${renderBench(body.bench, { history: 'digest' })}
     <details class="academy-chat">
       <summary>Room chat${body.chat.isEmpty ? ' — quiet' : ''}</summary>
       ${chatContent(body.chat)}

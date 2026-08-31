@@ -1021,6 +1021,11 @@ export class ChatWidget extends LitElement {
       outline: 1px solid var(--content-accent);
       outline-offset: -1px;
     }
+    .bench-digest {
+      font-size: 11px;
+      color: var(--content-tertiary, #667);
+      padding: var(--spacing-xs) 0;
+    }
     .bench-history > summary {
       cursor: pointer;
       font-size: 11px;
