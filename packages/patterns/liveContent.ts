@@ -72,8 +72,11 @@ export interface LiveControlsVM {
   readonly micAvailable: boolean;
   /** Mic currently capturing (the button's lit state). */
   readonly micOn?: boolean;
-  /** Camera capture — false until the browser media plane lands. */
+  /** Camera capture — TRUE when the CallClient is connected (humans are
+   *  video participants inherently). */
   readonly cameraAvailable: boolean;
+  /** Camera currently publishing (the button's lit state). */
+  readonly cameraOn?: boolean;
   /** Screenshare — false until the browser media plane lands. */
   readonly screenshareAvailable: boolean;
   /** The caption strip toggle — real (it toggles the live transcript line). */

@@ -23,7 +23,7 @@
 
 import { html, nothing, type TemplateResult } from 'lit';
 import type { LiveContentBody, LiveParticipantVM } from '@continuum/patterns';
-import { fireLiveCaptionsToggle, fireLiveFaceToggle, fireLiveMicToggle } from '../render/parts';
+import { fireLiveCameraToggle, fireLiveCaptionsToggle, fireLiveFaceToggle, fireLiveMicToggle } from '../render/parts';
 
 /** Kind glyph for a tile with no stored avatar — the honest fallback face. */
 function tileGlyph(kind: string): string {
@@ -152,7 +152,13 @@ export function renderLive(body: LiveContentBody): TemplateResult {
         glyph: '🎥',
         label: 'camera',
         enabled: cc.cameraAvailable,
-        title: 'coming soon — camera lands with the browser media plane',
+        on: cc.cameraOn,
+        title: cc.cameraAvailable
+          ? cc.cameraOn
+            ? 'camera live — click to stop'
+            : 'start your camera'
+          : 'camera enables when the call connects',
+        onClick: cc.cameraAvailable ? (e: Event) => fireLiveCameraToggle(e) : undefined,
       })}
       ${controlBtn({
         glyph: '🖥️',

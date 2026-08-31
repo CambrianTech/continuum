@@ -49,6 +49,8 @@ export interface LiveCallOverlay {
   readonly mediaConnected?: boolean;
   /** Mic is currently capturing/publishing (renderer state via CallClient). */
   readonly micOn?: boolean;
+  /** Camera currently publishing (renderer state, threaded through). */
+  readonly cameraOn?: boolean;
   /** Participant ids with a live video frame right now — the tile paints a
    *  canvas for each (the widget draws the pixels imperatively post-render). */
   readonly videoSenders?: ReadonlyArray<string>;
@@ -159,7 +161,8 @@ export function liveControls(
   return {
     micAvailable: overlay?.mediaConnected === true,
     micOn: overlay?.micOn === true,
-    cameraAvailable: false,
+    cameraAvailable: overlay?.mediaConnected === true,
+    cameraOn: overlay?.cameraOn === true,
     screenshareAvailable: false,
     captionsAvailable: true,
     captionsOn,

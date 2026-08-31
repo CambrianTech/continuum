@@ -186,6 +186,83 @@ export class CallClient {
     return true;
   }
 
+  /** Camera capture state — true while frames are publishing. */
+  camLive = false;
+  private camStream?: MediaStream;
+  private camTimer?: ReturnType<typeof setInterval>;
+  private camSeq = 0;
+  private camEpoch = Date.now();
+
+  /** Start camera capture and publish RGBA frames on the SAME wire the Bevy
+   *  avatar feed rides ([0x02][VideoFrameHeader 16B LE][rgba]) — humans are
+   *  video participants inherently, no separate plane (Joel, 2026-08-31:
+   *  "needs to be a positron thing inherent for people"). 320×180@12fps keeps
+   *  a raw-RGBA upstream honest (~2.7MB/s, localhost-class); returns false
+   *  with no side effects when the user denies the camera. */
+  async startCamera(selfId?: string): Promise<boolean> {
+    try {
+      this.camStream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 640 }, height: { ideal: 360 } },
+      });
+    } catch {
+      return false;
+    }
+    const video = document.createElement('video');
+    video.srcObject = this.camStream;
+    video.muted = true;
+    await video.play();
+    const W = 320;
+    const H = 180;
+    const canvas = document.createElement('canvas');
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) {
+      this.stopCamera();
+      return false;
+    }
+    this.camTimer = setInterval(() => {
+      if (this.ws?.readyState !== WebSocket.OPEN) return;
+      ctx.drawImage(video, 0, 0, W, H);
+      const rgba = ctx.getImageData(0, 0, W, H).data;
+      const frame = new Uint8Array(1 + 16 + rgba.length);
+      const dv = new DataView(frame.buffer);
+      frame[0] = FRAME_VIDEO;
+      dv.setUint16(1, W, true);
+      dv.setUint16(3, H, true);
+      frame[5] = 0; // VideoPixelFormat::RGBA8
+      frame[6] = 0; // flags reserved
+      dv.setUint32(7, (Date.now() - this.camEpoch) >>> 0, true);
+      dv.setUint32(11, this.camSeq, true);
+      // bytes 15..17 reserved (already zero)
+      frame.set(rgba, 17);
+      this.ws.send(frame);
+      // Local echo: the server broadcast is mix-minus (excludes self), so the
+      // viewer's own tile animates from the same frame just published.
+      if (selfId !== undefined) {
+        this.events.onVideoFrame?.({
+          senderId: selfId,
+          width: W,
+          height: H,
+          pixelFormat: 0,
+          sequence: this.camSeq,
+          pixels: new Uint8Array(rgba.buffer.slice(0)),
+        });
+      }
+      this.camSeq += 1;
+    }, 1000 / 12);
+    this.camLive = true;
+    return true;
+  }
+
+  stopCamera(): void {
+    if (this.camTimer !== undefined) clearInterval(this.camTimer);
+    this.camTimer = undefined;
+    this.camStream?.getTracks().forEach((t) => t.stop());
+    this.camStream = undefined;
+    this.camLive = false;
+  }
+
   stopMic(): void {
     this.captureNode?.disconnect();
     this.captureNode = undefined;
@@ -197,6 +274,7 @@ export class CallClient {
   leave(): void {
     this.closedByUs = true;
     this.stopMic();
+    this.stopCamera();
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type: 'Leave' }));
     }

@@ -38,6 +38,7 @@ import { renderChat } from './renderChat';
 import { CallClient, type CallVideoFrame } from '../live/callClient';
 import {
   LISTING_SELECT,
+  LIVE_CAMERA_TOGGLE,
   LIVE_MIC_TOGGLE,
   LIVE_CAPTIONS_TOGGLE,
   LIVE_FACE_TOGGLE,
@@ -119,6 +120,7 @@ export class ChatWidget extends LitElement {
     callUrl: { attribute: false },
     _mediaConnected: { state: true },
     _micOn: { state: true },
+    _camOn: { state: true },
     _draft: { state: true },
     _sending: { state: true },
     _sendError: { state: true },
@@ -271,6 +273,7 @@ export class ChatWidget extends LitElement {
   private _call?: CallClient;
   private _mediaConnected = false;
   private _micOn = false;
+  private _camOn = false;
   /** Call-server avatar states: personaId → speaking (merged into the streams
    *  map so the SAME projection drives borders whether speech is tokens on the
    *  chat rail or real audio on the call). */
@@ -409,11 +412,27 @@ export class ChatWidget extends LitElement {
     this._call = undefined;
     this._mediaConnected = false;
     this._micOn = false;
+    this._camOn = false;
     this._callSpeaking = new Map();
     this._videoFrames = new Map();
   }
 
   /** The mic button — a REAL toggle when the media plane is connected. */
+  /** The camera button — start/stop the viewer's real camera publish. */
+  private onLiveCameraToggle = (): void => {
+    const call = this._call;
+    if (!call) return;
+    if (call.camLive) {
+      call.stopCamera();
+      this._camOn = false;
+      return;
+    }
+    void call.startCamera(this.viewerId).then((ok) => {
+      this._camOn = ok;
+      if (!ok) console.warn('camera denied or unavailable — tile stays avatar/glyph');
+    });
+  };
+
   private onLiveMicToggle = (): void => {
     const call = this._call;
     if (!call) return;
@@ -600,6 +619,7 @@ export class ChatWidget extends LitElement {
     this.addEventListener(SETTINGS_FACE_TOGGLE, this.onSettingsFaceToggle);
     this.addEventListener(SETTINGS_AGREE, this.onSettingsAgree);
     this.addEventListener(LIVE_MIC_TOGGLE, this.onLiveMicToggle);
+    this.addEventListener(LIVE_CAMERA_TOGGLE, this.onLiveCameraToggle);
     this.addEventListener(LIVE_CAPTIONS_TOGGLE, this.onLiveCaptionsToggle);
   }
 
@@ -5277,6 +5297,7 @@ export class ChatWidget extends LitElement {
           captionsOn: this._captionsOn,
           mediaConnected: this._mediaConnected,
           micOn: this._micOn,
+          cameraOn: this._camOn,
           videoSenders: Array.from(this._videoFrames.keys()),
         },
       }, { centerFooter });
