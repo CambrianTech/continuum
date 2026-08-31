@@ -35,29 +35,47 @@ already carry (or #2649 adds):
 | Her body/presence in the space | The roster tile's truth: presence dot → an avatar in the space; the speaking ring → she's animated/facing you; vitals → ambient cues (light level = activity, desk clutter = queue). |
 | Visitors | Room membership. Knocking = `room/join`. A human walking in IS the operator self-peer entering the room. |
 
-## The renderer
+## The renderer — REAL 3D, no sprite ceiling
 
-- **Orthographic 3D** (the sims camera), built on bevy — already a
-  workspace dependency. The render target implements the SAME `RenderTarget`
-  contract the web target does: it draws a `WorkspaceView`, dispatches
-  content by purpose, fires the same composed intents (`nav/select`,
-  `listing-select`, `bench-run-open`) from spatial interaction.
-- **No new wire.** The orthographic client subscribes to the same ViewState
-  kinds (`chat`, `roster`, `wall`, `experience`, `bench`, live face) over the
+**The bar (Joel, 2026-08-31): "full threejs or rendered at rust and seen —
+not some simple sprite stuff. They take live calls in bevy from their
+rooms."**
+
+- **Bevy is the canonical home renderer**: native rust, GPU, real meshes,
+  lighting, and materials — already a workspace dependency. It implements
+  the SAME `RenderTarget` contract as the web target: draws a
+  `WorkspaceView`, dispatches content by purpose, fires the same composed
+  intents (`nav/select`, `listing-select`, `bench-run-open`) from spatial
+  interaction. Orthographic sims camera is the default lens; the engine is
+  full 3D underneath (VR = the same scene, stereo camera).
+- **Live calls happen IN the scene**: LiveKit video tracks render as
+  textures on surfaces in her office (the monitor on her desk, the wall
+  screen); her speaking state animates her avatar. Walking into the office
+  joins the call — the live face IS a region of the home, not an overlay
+  escape hatch.
+- **Web embed**: either bevy-wasm in a canvas, or a threejs target reading
+  the identical ViewState — an implementation choice at build time, never
+  two data paths. The profile's current SVG interior card is explicitly a
+  PREVIEW STUB (slice 0): honest facts, placeholder fidelity; it is
+  replaced by the embedded live render the moment slice 4 ships.
+- **No new wire.** The 3D client subscribes to the same ViewState kinds
+  (`chat`, `roster`, `wall`, `experience`, `bench`, live face) over the
   same ws pipe. The 2026-08-31 per-room accumulators + per-room attach are
   exactly what make a spatial client possible: each room's truth is already
   separately addressable.
-- **Asset payloads** name the look: `universe` payloads map region → meshes/
-  tiles/palette. A fantasy forge home and a corporate loft are DATA.
+- **Asset payloads** name the look: `universe` payloads map region → real
+  meshes/materials/palette (GLTF references, not tiles). A fantasy forge
+  home and a corporate loft are DATA.
 
 ## Build order (each slice lands alone)
 
 1. **`home` purpose + one seeded home room per citizen** — recipe with
    regions (office/study/hall). Immediately navigable in the EXISTING web
    UI as a normal room (the frame is the promise).
-2. **Region geometry in the recipe** (positions/sizes) + a 2D orthographic
-   web CANVAS render of the home (flat "dollhouse" view) dispatched by the
-   `home` purpose — proves the geometry pipe with zero bevy.
+2. **Region geometry in the recipe** (positions/sizes/mesh refs) — the
+   authored-layout data contract, validated by rendering it in the preview
+   stub. (The stub proves the GEOMETRY PIPE; fidelity arrives with bevy —
+   the stub is never the destination.)
 3. **Live-call docking**: the live face anchors to the office region
    (requires the livekit session — next session's opener).
 4. **Bevy orthographic target** — the third renderer, reading the same
