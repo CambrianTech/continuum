@@ -37,6 +37,15 @@ already carry (or #2649 adds):
 
 ## THE RENDERER LAW (Joel, 2026-08-31 — supersedes everything below it)
 
+**The one-line form: "Never use the CPU unless you have to. It's like a
+hot potato."** Pixels live on the GPU; the CPU only orchestrates
+(dispatch + signal). The proof this bar is reachable is already in tree:
+`metal_gpu_convert.rs` — Bevy RGBA texture → Metal compute → NV12 written
+directly into IOSurface memory → CVPixelBuffer → VideoToolbox, with its
+own header stating "eliminates ALL CPU pixel work." Every new visual pipe
+must answer "where does the CPU touch pixels?" and the only passing
+answer is **nowhere**.
+
 1. **Never JavaScript.** The browser DISPLAYS frames; it never rasterizes
    scenes. A JS scene graph in the product is the named regression (a
    three.js home card shipped for ~2 hours on 2026-08-31; deleting it
