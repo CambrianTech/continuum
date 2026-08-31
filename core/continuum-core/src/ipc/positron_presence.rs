@@ -601,7 +601,7 @@ pub fn spawn_node_presence_emitter(
         // of adopting whichever room's update lands. Reads are room-scoped
         // (`Some(room_id)`), so N loops on one reader never cross streams.
         let mut rooms: Vec<(Uuid, String)> = vec![(room_id, room_name.clone())];
-        match airc_ipc::DaemonClient::new(registry_socket).list_rooms().await {
+        match airc_ipc::DaemonClient::new(registry_socket.clone()).list_rooms().await {
             Ok(response) => {
                 for room in response.rooms {
                     let id = room.room_id.as_uuid();
@@ -622,25 +622,56 @@ pub fn spawn_node_presence_emitter(
                 }
             }
         }
+        let airc = Arc::new(airc);
         let reader: Arc<dyn AircRosterReader> = Arc::new(
-            crate::context::airc_adapter::AircHandleAdapter::new(Arc::new(airc)),
+            crate::context::airc_adapter::AircHandleAdapter::new(airc.clone()),
         );
         tracing::info!(
             rooms = rooms.len(),
             bootstrap = %room_name,
             "positron_presence: node reader attached — emitting presence:updated for every registry room"
         );
-        let mut loops = Vec::new();
+        let mut known: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
         for (id, name) in rooms {
-            loops.push(tokio::spawn(run_presence_loop(
-                reader.clone(),
-                id,
-                name,
-                bus.clone(),
-            )));
+            known.insert(id);
+            tokio::spawn(run_presence_loop(reader.clone(), id, name, bus.clone()));
         }
-        for l in loops {
-            let _ = l.await;
+        // REFRESHER: activity rooms mint mid-run (a solve room per card) and new
+        // rooms join the registry after boot. Every tick, any room this emitter
+        // doesn't serve yet gets joined (by NAME) and its presence loop spawned —
+        // so a benchmark run's roster/transcript reaches the interface the same
+        // minute it exists, not at next boot. Loops are per-room and idempotent
+        // by the `known` set; a failed join retries next tick (degraded, loud).
+        const REFRESH: Duration = Duration::from_secs(30);
+        let mut ticker = tokio::time::interval(REFRESH);
+        loop {
+            ticker.tick().await;
+            let mut fresh: Vec<(Uuid, String)> =
+                crate::cognition::bench_round::activity_rooms();
+            if let Ok(response) =
+                airc_ipc::DaemonClient::new(registry_socket.clone()).list_rooms().await
+            {
+                for room in response.rooms {
+                    fresh.push((room.room_id.as_uuid(), room.name));
+                }
+            }
+            for (id, name) in fresh {
+                if known.contains(&id) || name.is_empty() {
+                    continue;
+                }
+                if let Err(err) = airc.join(&name).await {
+                    tracing::warn!(%err, room = %name, "positron_presence: refresher join failed — retrying next tick");
+                    continue;
+                }
+                known.insert(id);
+                crate::probe!(
+                    class = "presence.room.adopted",
+                    room_id = %id,
+                    room = %name,
+                    "presence emitter adopted a new room — roster + presence now project for it"
+                );
+                tokio::spawn(run_presence_loop(reader.clone(), id, name, bus.clone()));
+            }
         }
     });
 }

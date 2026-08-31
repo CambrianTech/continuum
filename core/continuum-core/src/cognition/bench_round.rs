@@ -165,6 +165,13 @@ pub struct BenchRound {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CardActivity {
     pub solve_room: Uuid,
+    /// The solve room's airc NAME (`swe--<instance>--<card8>`). Joins are
+    /// by name (never UUID-as-string — the derived-channel hazard), so any
+    /// consumer that must SUBSCRIBE to activity rooms (the presence
+    /// emitter, #2606) reads it from here. `default` folds old files as
+    /// empty — such a room stays presence-dark until its next dispatch.
+    #[serde(default)]
+    pub room_name: String,
     pub assignee: Uuid,
     /// Room-members beyond the claimer. Recorded so a resume re-invites the
     /// SAME team (continuity), and so experience records can attribute team
@@ -868,6 +875,22 @@ pub struct RoundSnapshot {
 /// Sorted by round id so two calls a second apart cannot reorder rows under a reader —
 /// a projection whose row order depends on `HashMap` iteration teaches its consumers to
 /// distrust it.
+/// Every live round's ACTIVITY rooms — `(solve_room, airc_name)` for each
+/// card that has one, skipping rows whose name predates `room_name` (empty).
+/// The presence emitter merges these with the registry rooms so per-run
+/// rosters and transcripts reach the interface (#2606 / #2632: the academy's
+/// children are rooms, and a room without presence renders blank).
+pub fn activity_rooms() -> Vec<(Uuid, String)> {
+    let rounds = ROUNDS.lock().unwrap_or_else(|e| e.into_inner());
+    rounds
+        .values()
+        .filter(|r| r.stage != RoundStage::Done)
+        .flat_map(|r| r.card_activities.values())
+        .filter(|a| !a.room_name.is_empty())
+        .map(|a| (a.solve_room, a.room_name.clone()))
+        .collect()
+}
+
 pub fn live_rounds() -> Vec<RoundSnapshot> {
     let rounds = ROUNDS.lock().unwrap_or_else(|e| e.into_inner());
     let mut out: Vec<RoundSnapshot> = rounds

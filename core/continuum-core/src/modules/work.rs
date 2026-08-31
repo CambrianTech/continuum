@@ -1136,6 +1136,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
                     let act = crate::cognition::bench_round::CardActivity {
                         teammates: teammates.iter().map(|p| p.as_uuid()).collect(),
                         solve_room: spawned.room_id.as_uuid(),
+                        room_name: name.clone(),
                         assignee: claimer.as_uuid(),
                     };
                     crate::cognition::bench_round::record_card_activity(card_id.as_uuid(), act.clone()); // clone: probe below still reads the local
