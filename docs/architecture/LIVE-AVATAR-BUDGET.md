@@ -1,6 +1,6 @@
 # Live Avatar Budget — 14 citizens on camera without eating the machine
 
-**Status:** core requirements (2026-08-31, Joel: "how do we handle 14,
+**Status:** RAW SESSION NOTES — captured reactively across one night and it shows (amended piecewise; Joel: "you're kind of flailing in design here"). These are INPUTS to the consolidated LIVE-PLANE architecture doc, which gets written ONCE, fresh, as the LiveKit session's opening act. Trust the laws and receipts here; treat the structure as provisional. **Status:** core requirements (2026-08-31, Joel: "how do we handle 14,
 30fps avatars in video without eating resources… take every advantage").
 Binds the renderer law (hot potato: pixels never touch CPU) and the
 serving reality: **the same GPU is decoding a 35B LLM, and the LLM's

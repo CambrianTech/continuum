@@ -1,6 +1,6 @@
 # Citizen Homes — the life-sim apartment as a positron render target
 
-**Status:** design note (2026-08-31, the creative night). Companion to the
+**Status:** RAW SESSION NOTES — captured reactively across one night and it shows (amended piecewise; Joel: "you're kind of flailing in design here"). These are INPUTS to the consolidated LIVE-PLANE architecture doc, which gets written ONCE, fresh, as the LiveKit session's opening act. Trust the laws and receipts here; treat the structure as provisional. **Status:** design note (2026-08-31, the creative night). Companion to the
 embodiment ladder (#2625), the citizen-page roadmap (#2649), and
 [universes-are-positron-asset-payloads]. Nothing here invents a subsystem;
 every element is a projection of state that already exists or is already
