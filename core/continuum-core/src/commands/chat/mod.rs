@@ -17,6 +17,7 @@ use std::sync::Arc;
 use crate::runtime::{CommandExecutor, LateBound};
 use crate::sdk_codegen::DynCommand;
 
+pub mod history;
 pub mod poll;
 pub mod send;
 

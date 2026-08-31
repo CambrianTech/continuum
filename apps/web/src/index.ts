@@ -272,6 +272,29 @@ async function main(): Promise<void> {
   // unexported-wire-types drift — when that regenerates, this becomes
   // `continuum.commands.execute('chat/poll', …)`.
   const historyHandler: HistoryHandler = async (roomId, beforeMessageId) => {
+    // THE DURABLE TRANSCRIPT (chat/history, 2026-08-31): the airc daemon's
+    // own store — citizen speech AND radiated 💭/⚙ receipts, the full story
+    // of an activity. chat/poll (operator collection) remains the fallback
+    // for cores that predate the verb; rows are adapted to the one parser.
+    try {
+      const rawH = await transport.execute(
+        buildCommandUri('chat/history'),
+        JSON.stringify({ roomId, limit: 50 }),
+      );
+      const hist = JSON.parse(rawH) as {
+        messages?: readonly { id: string; senderId: string; text: string; timestamp: number }[];
+      };
+      if (hist.messages !== undefined) {
+        return hist.messages.map((m) => ({
+          id: m.id,
+          senderId: m.senderId,
+          content: { text: m.text },
+          timestamp: new Date(m.timestamp).toISOString(),
+        }));
+      }
+    } catch {
+      // verb absent on this core — durable fallback below
+    }
     const raw = await transport.execute(
       buildCommandUri('chat/poll'),
       JSON.stringify({ roomId, beforeMessageId, limit: 50 }),
