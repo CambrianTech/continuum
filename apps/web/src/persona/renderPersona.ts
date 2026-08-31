@@ -140,6 +140,59 @@ function heroAvatar(body: PersonaContentBody): TemplateResult {
   </span>`;
 }
 
+/** The HOME INTERIOR — an orthographic dollhouse card, furnished entirely by
+ *  live facts (CITIZEN-HOMES-ORTHOGRAPHIC.md's mapping table, first cut):
+ *  window light = online; desk items = active runs; trophy shelf = resolved
+ *  verdicts; the plant grows with her genome. Default geometry until home
+ *  recipes carry authored layouts — but every object is TRUE. */
+function homeInterior(body: PersonaContentBody): TemplateResult {
+  const runs = body.runs ?? [];
+  const live = runs.filter((r) => r.state === 'working' || r.state === 'grading' || r.state === 'queued').length;
+  const wins = runs.filter((r) => r.state === 'resolved').length;
+  const genes = body.genes.length;
+  const lit = body.online;
+  const deskItems = Math.min(live, 4);
+  const trophies = Math.min(wins, 6);
+  const leaves = Math.min(1 + genes, 5);
+  return html`<svg class="home-iso" viewBox="0 0 220 120" role="img" aria-label="home interior — furnished by live state">
+    <!-- floor + walls: a fixed iso shell (default geometry) -->
+    <polygon class="hi-floor" points="20,80 110,110 200,80 110,50" />
+    <polygon class="hi-wall-l" points="20,80 20,30 110,0 110,50" />
+    <polygon class="hi-wall-r" points="200,80 200,30 110,0 110,50" />
+    <!-- window: LIT when she is online -->
+    <rect class="hi-window ${lit ? 'hi-lit' : ''}" x="45" y="26" width="26" height="20" transform="skewY(-18)" />
+    <!-- desk (office region) + one glowing item per ACTIVE RUN -->
+    <polygon class="hi-desk" points="120,78 160,90 185,80 145,68" />
+    ${Array.from({ length: deskItems }, (_, i) => {
+      const x = 132 + i * 13;
+      const y = 76 + i * 2.5;
+      return html`<rect class="hi-run" x=${x} y=${y - 6} width="6" height="6" transform="skewX(-8)" />`;
+    })}
+    <!-- trophy shelf on the right wall: one cup per RESOLVED verdict -->
+    <line class="hi-shelf" x1="150" y1="38" x2="192" y2="52" />
+    ${Array.from({ length: trophies }, (_, i) => {
+      const x = 152 + i * 7;
+      const y = 33 + i * 2.3;
+      return html`<circle class="hi-trophy" cx=${x} cy=${y} r="2.2" />`;
+    })}
+    <!-- the genome plant, left corner: a leaf per paged-in gene (+1 stem) -->
+    <line class="hi-stem" x1="42" y1="86" x2="42" y2=${86 - leaves * 6} />
+    ${Array.from({ length: leaves }, (_, i) => {
+      const y = 82 - i * 6;
+      const dx = i % 2 === 0 ? -6 : 6;
+      return html`<ellipse class="hi-leaf" cx=${42 + dx / 2} cy=${y} rx="4" ry="2" transform="rotate(${dx * 4} ${42 + dx / 2} ${y})" />`;
+    })}
+    <!-- her presence: the avatar dot stands in the room when online -->
+    ${lit ? html`<circle class="hi-self" cx="95" cy="84" r="4" />` : nothing}
+  </svg>
+  <div class="hi-legend">
+    <span>window ${lit ? 'lit — home' : 'dark — away'}</span>
+    <span>desk · ${live} active</span>
+    <span>shelf · ${wins} trophies</span>
+    <span>plant · ${genes} genes</span>
+  </div>`;
+}
+
 /** The persona HOME surface. Every section renders a frame — awaiting/empty
  *  states, never a vanished section (the anti-disappearance rule). */
 export function renderPersona(body: PersonaContentBody): TemplateResult {
@@ -198,6 +251,12 @@ export function renderPersona(body: PersonaContentBody): TemplateResult {
           : nothing}
       </div>
     </section>
+
+    <section class="p-card p-home">
+      <div class="p-card-head">home <span class="p-home-hint">interior · procedural until her home recipe lands</span></div>
+      ${homeInterior(body)}
+    </section>
+
 
     <section class="p-card p-brain" id="brain">
       <div class="p-card-head">

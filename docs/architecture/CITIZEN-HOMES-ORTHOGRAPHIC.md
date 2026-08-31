@@ -65,6 +65,23 @@ already carry (or #2649 adds):
 5. **Decor = wall + universe payloads**; trophies from RECORD; desk from
    ACTIVE WORK.
 
+## Entry points (Joel: "see their home interior right from profile pages, or enter the whole neighborhood")
+
+Two doors into the space, one projection behind both:
+
+- **From the profile** — the home INTERIOR renders as a card on her page
+  (the dollhouse view embedded where her story already lives). First cut is
+  procedural: default geometry, REAL facts as furniture — window light =
+  online, desk items = active runs, trophies = resolved count, the plant =
+  genome size. When home recipes land, the same card draws the authored
+  geometry. Clicking it enters the home activity (`nav/select` her home
+  room).
+- **Enter the neighborhood** — a top-level activity (a tab like academy):
+  top-down/orthographic sims camera over the room tree. The SAME activity
+  opened by a VR target walks the identical tree in stereo — VR is render
+  target #4, not a fork: web-DOM, terminal/RAG, bevy-ortho, VR, one
+  ViewState behind all four.
+
 ## The neighborhood (Joel: "I plan on full sims neighborhood")
 
 A home is ONE tab/activity; the neighborhood is the tier above — and it

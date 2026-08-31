@@ -835,6 +835,23 @@ export class ChatWidget extends LitElement {
         50% { opacity: 1; }
       }
     }
+    /* HOME INTERIOR — the orthographic dollhouse card. Quiet inks; the lit
+     * window and glowing desk items are the only saturated marks. */
+    .p-home-hint { font-size: 10px; text-transform: none; letter-spacing: 0; color: var(--content-tertiary, #667); margin-left: 8px; }
+    .home-iso { width: 100%; max-width: 360px; display: block; margin: 0 auto; }
+    .hi-floor { fill: rgba(255,255,255,0.04); stroke: var(--border-subtle, #334); stroke-width: 0.6; }
+    .hi-wall-l { fill: rgba(255,255,255,0.02); stroke: var(--border-subtle, #334); stroke-width: 0.6; }
+    .hi-wall-r { fill: rgba(255,255,255,0.05); stroke: var(--border-subtle, #334); stroke-width: 0.6; }
+    .hi-window { fill: rgba(255,255,255,0.03); stroke: var(--border-subtle, #334); stroke-width: 0.6; }
+    .hi-window.hi-lit { fill: rgba(255, 214, 100, 0.35); stroke: rgba(255, 214, 100, 0.6); }
+    .hi-desk { fill: rgba(255,255,255,0.07); stroke: var(--border-subtle, #334); stroke-width: 0.6; }
+    .hi-run { fill: rgba(53, 208, 224, 0.5); stroke: var(--content-accent, #35d0e0); stroke-width: 0.5; }
+    .hi-shelf { stroke: var(--border-subtle, #334); stroke-width: 1; }
+    .hi-trophy { fill: #d4a017; }
+    .hi-stem { stroke: #3fb950; stroke-width: 1; }
+    .hi-leaf { fill: rgba(63, 185, 80, 0.55); }
+    .hi-self { fill: var(--content-accent, #35d0e0); }
+    .hi-legend { display: flex; gap: var(--spacing-md); justify-content: center; font-size: 10px; color: var(--content-tertiary, #667); margin-top: 4px; flex-wrap: wrap; }
     /* The form curve — a thin growth polyline in metrics rows. */
     .metrics-spark {
       width: 72px;
