@@ -87,6 +87,12 @@ export class NodeSocketTransport implements Transport {
   private buffer = new Uint8Array(0);
   private readonly decoder = new TextDecoder();
 
+  /** True once {@link close} ran — distinguishes a caller teardown from a peer
+   *  drop, so self-healing never resurrects a deliberately closed transport. */
+  private closedByCaller = false;
+  private reprovideTimer?: ReturnType<typeof setTimeout>;
+  private reprovideDelayMs = 1000;
+
   /**
    * @param connect opens the socket (inject the runtime's connector).
    * @param label human name this client registers under (shown in the core's
@@ -178,11 +184,46 @@ export class NodeSocketTransport implements Transport {
 
   /** Close the socket and reject any in-flight calls. */
   close(): void {
+    this.closedByCaller = true;
+    if (this.reprovideTimer) {
+      clearTimeout(this.reprovideTimer);
+      this.reprovideTimer = undefined;
+    }
     const socket = this.socket;
     this.socket = undefined;
     this.connecting = undefined;
     if (socket) socket.end();
     this.failPending(new Error('NodeSocketTransport: closed by caller'));
+  }
+
+  /**
+   * SERVE-side self-healing. A provider client (the eye-node) only ANSWERS —
+   * it never initiates frames — so when the core drops the connection (a
+   * reboot), lazy reconnect-on-next-call never fires and the client goes
+   * silent forever while its core-side registrations are already gone
+   * (measured: perception died on every `continuum reboot`, 2026-08-31).
+   * A transport that carries providers therefore re-dials on peer drop and
+   * re-sends the `provider/register` handshake, with capped backoff, until it
+   * binds or the caller closes. Pure callers (no providers) keep lazy
+   * semantics — nothing to re-register, no timer.
+   */
+  private scheduleReprovide(): void {
+    if (this.closedByCaller || this.handlers.size === 0 || this.reprovideTimer) return;
+    this.reprovideTimer = setTimeout(() => {
+      this.reprovideTimer = undefined;
+      for (const command of this.handlers.keys()) {
+        if (!this.unregistered.includes(command)) this.unregistered.push(command);
+      }
+      this.flush().then(
+        () => {
+          this.reprovideDelayMs = 1000;
+        },
+        () => {
+          this.reprovideDelayMs = Math.min(this.reprovideDelayMs * 2, 15000);
+          this.scheduleReprovide();
+        },
+      );
+    }, this.reprovideDelayMs);
   }
 
   private ensureConnected(): Promise<DuplexSocketLike> {
@@ -206,6 +247,7 @@ export class NodeSocketTransport implements Transport {
         this.socket = undefined;
         this.connecting = undefined;
         this.failPending(new Error('NodeSocketTransport: connection closed'));
+        this.scheduleReprovide();
       });
     });
     return this.connecting;

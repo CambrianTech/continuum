@@ -779,6 +779,26 @@ start_livekit_rail() {
 }
 start_livekit_rail
 
+# ── The eye-node rail: perception is part of the stack, not an operator chore.
+# Every reboot used to orphan it (manual `npx tsx` each time); now the boot
+# path owns it ([[boot-owns-the-process-tree]]). Spawned BEFORE the core execs —
+# the eye-node dials with retry until the socket binds, and its transport
+# re-provides across core restarts, so ordering is free. Non-fatal: no
+# eye-node = `perception/observe` fails loud, core still boots.
+start_eye_node_rail() {
+  local EYE_DIR="$REPO_ROOT/apps/eye-node"
+  [ -f "$EYE_DIR/package.json" ] || return 0
+  command -v npx >/dev/null 2>&1 || { echo "⚠ npx missing — eye-node (perception) unavailable"; return 0; }
+  # Full path in the cmdline makes the process identifiable (pgrep) and the
+  # spawn idempotent across reboots.
+  if ! pgrep -f "eye-node/src/index.ts" >/dev/null 2>&1; then
+    local EYE_LOG_DIR="$HOME/.continuum/logs"; mkdir -p "$EYE_LOG_DIR"
+    echo "▶ eye-node (perception provider) starting"
+    (cd "$EYE_DIR" && nohup npx tsx "$EYE_DIR/src/index.ts" >"$EYE_LOG_DIR/eye-node.log" 2>&1 &)
+  fi
+}
+start_eye_node_rail
+
 # Now the new binary is ready: stop the old core (if any) and take the socket.
 stop_existing_core
 
