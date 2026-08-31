@@ -641,6 +641,15 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     // else the room's info card — the ContextPanel primitive, activity-scoped.
     context: {
       listings: [personaBody ? personaFactsListing(personaBody) : roomInfoListing(vm)],
+      // PAGES-IA slices 3+4: the rail carries the FOCUSED page's instruments.
+      // Run room → its round's lifecycle stats; solve room → the run's card
+      // facts + the worker. Composed from existing widget kinds, honest-absent.
+      ...(personaWithWork === undefined || personaWithWork === null
+        ? (() => {
+            const w = roomContextWidgets(vm, live);
+            return w.length > 0 ? { widgets: w } : {};
+          })()
+        : {}),
       // PROFILE RIGHT-RAIL INSTRUMENTS (Joel: "good potential for righthand
       // widgets in the profile pages") — composed from EXISTING widget kinds
       // (metrics stat-rows + listing cells), each honestly absent until its
@@ -651,6 +660,49 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
         : {}),
     },
   };
+}
+
+/** Run/solve room rail instruments (PAGES-IA slices 3+4): a run ROOM shows
+ *  its round's lifecycle; a solve room shows its card + worker. Existing
+ *  widget kinds only ([[compression]]). */
+function roomContextWidgets(vm: ChatViewModel, live?: WorkspaceLive): PanelWidget<MetricsView | ListingView>[] {
+  const widgets: PanelWidget<MetricsView | ListingView>[] = [];
+  const bench = live?.bench;
+  if (!bench) return widgets;
+  const rounds = bench.rounds ?? [];
+  const round = rounds.find((r) => r.round_id === vm.roomId);
+  if (round) {
+    widgets.push({
+      id: 'room-round',
+      kind: 'metrics',
+      title: 'Round',
+      scope: 'activity',
+      body: {
+        stats: [
+          { label: 'STAGE', value: round.stage, tone: round.stage === 'working' ? 'accent' : 'muted' },
+          { label: 'SETTLED', value: `${round.settled}/${round.dispatched}`, tone: 'good' },
+          { label: 'DRIVER', value: round.driver, tone: round.driver === 'citizen' ? 'good' : 'warn' },
+        ],
+      },
+    });
+  }
+  const run = (bench.runs ?? []).find((r) => r.solve_room === vm.roomId);
+  if (run) {
+    widgets.push({
+      id: 'room-card',
+      kind: 'metrics',
+      title: 'This work',
+      scope: 'activity',
+      body: {
+        stats: [
+          { label: 'STATE', value: run.phase, tone: run.phase === 'resolved' ? 'good' : run.phase === 'failed' ? 'warn' : 'accent' },
+          ...(run.acts !== undefined ? [{ label: 'ACTS', value: String(run.acts), tone: 'muted' as const }] : []),
+          ...(run.solver !== undefined ? [{ label: 'WORKER', value: run.solver, tone: 'accent' as const }] : []),
+        ],
+      },
+    });
+  }
+  return widgets;
 }
 
 /** The profile's right-rail instrument stack. Every widget renders from an
