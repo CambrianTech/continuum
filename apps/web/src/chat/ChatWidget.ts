@@ -835,6 +835,41 @@ export class ChatWidget extends LitElement {
         50% { opacity: 1; }
       }
     }
+    /* MICRO-SPEEDOMETERS — the tile speedline: two thin arc gauges (decode
+     * t/s, prefill t/s), needle position IS the reading. Thin lines, ~22px
+     * each, no extra tile height. */
+    .speedline {
+      display: inline-flex;
+      gap: var(--spacing-sm);
+      align-items: flex-end;
+      margin-right: var(--spacing-xs);
+    }
+    .speedo {
+      display: inline-flex;
+      flex-direction: column;
+      align-items: center;
+      line-height: 1;
+    }
+    .speedo-svg { width: 22px; height: 12px; display: block; }
+    .speedo-arc {
+      fill: none;
+      stroke: var(--border-subtle, #334);
+      stroke-width: 1.5;
+      stroke-linecap: round;
+    }
+    .speedo-needle {
+      stroke: var(--content-accent, #35d0e0);
+      stroke-width: 1;
+      transition: transform 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+      transform-origin: 11px 11px;
+    }
+    .speedo[data-key='pfx'] .speedo-needle { stroke: #b48cff; }
+    .speedo-label {
+      font-size: 7px;
+      letter-spacing: 0.05em;
+      color: var(--content-tertiary, #667);
+      margin-top: 1px;
+    }
     /* Persona home ACTIVE WORK rows — compact run rows with the board's
      * state-stripe language; a row that knows its room is a door. */
     .p-runs {

@@ -413,13 +413,45 @@ const STAT_ORDER: readonly (readonly [string, string])[] = [
   ['size', 'PAR'],
 ];
 
+/** A micro-SPEEDOMETER — a 22x12 arc gauge with a needle, the density Joel
+ *  spec'd ("speedometers not massive text; thin lines, no more real estate").
+ *  Normalized 0..=100 sweeps the needle -90deg..+90deg; the arc is a single
+ *  stroked path, the needle a 1px line — two DOM nodes, zero animation cost
+ *  at rest (the needle eases via a CSS transform transition). */
+function speedo(key: string, label: string, val: number): TemplateResult {
+  const clamped = Math.max(0, Math.min(100, val));
+  const angle = -90 + (clamped * 180) / 100;
+  return html`<span class="speedo" data-key=${key} title="${label} ${clamped}%">
+    <svg viewBox="0 0 22 12" class="speedo-svg" aria-hidden="true">
+      <path class="speedo-arc" d="M 2 11 A 9 9 0 0 1 20 11" />
+      <line
+        class="speedo-needle"
+        x1="11" y1="11" x2="11" y2="3.2"
+        transform="rotate(${angle} 11 11)"
+      />
+    </svg>
+    <span class="speedo-label">${label}</span>
+  </span>`;
+}
+
 /** The meter stack — label · track · value per row, the info-dense heart of the
  *  glass-box tile, each row hoverable ([[persona-tile-is-a-live-game-hud]]). Fill
  *  hues key off `data-key` in CSS (named theme tokens, one per vital). */
 export function personaReadout(v: Readonly<Record<string, number>>): TemplateResult | typeof nothing {
   const stats = STAT_ORDER.filter(([k]) => v[k] !== undefined);
-  if (stats.length === 0) return nothing;
+  // The SPEEDLINE: decode + prefill needles when the speed pulse is fresh —
+  // absent keys draw nothing (a stale needle is a lie the radiator refuses).
+  const needles = [
+    ['tps', 'T/S'] as const,
+    ['pfx', 'PFX'] as const,
+  ].filter(([k]) => v[k] !== undefined);
+  if (stats.length === 0 && needles.length === 0) return nothing;
   return html`<span class="meters">
+    ${needles.length > 0
+      ? html`<span class="speedline">
+          ${needles.map(([k, label]) => speedo(k, label, v[k] ?? 0))}
+        </span>`
+      : nothing}
     ${stats.map(([k, label]) => {
       const val = Math.round(Math.max(0, Math.min(100, v[k] ?? 0)));
       return html`<span class="meter" data-key=${k} title="${label} ${val}">
