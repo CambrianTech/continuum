@@ -533,11 +533,12 @@ export class ChatWidget extends LitElement {
     // lore, one definition, every citizen ([[universe-is-an-experience-not-a-theme]]).
     // The target maps the key to a skin; here it's a data-attribute the styles key off.
     // Unset → the native 'continuum' look.
-    // The living universe is the DEFAULT skin (Joel: "themes/universes —
-    // push the envelope"); ?universe=none opts back to still chrome, any
-    // other key selects its skin as before.
-    const universe = new URLSearchParams(location.search).get('universe') ?? 'cosmos';
-    if (universe !== 'none') this.setAttribute('data-universe', universe);
+    // Universes are OPT-IN (?universe=cosmos). The default-on experiment
+    // crashed the UI (2026-08-31): the backdrop's paint cost wasn't budgeted
+    // — a universe earns default status only after passing the paint budget
+    // (no per-frame shadowBlur, dPR cap, 30fps throttle, hidden-pause).
+    const universe = new URLSearchParams(location.search).get('universe');
+    if (universe && universe !== 'none') this.setAttribute('data-universe', universe);
     // Digest expand/collapse: the row's affordance fires a composed event that
     // bubbles out of the shadow tree to the host — listen on self so the pure
     // fragments need no callback threading through the render registries.
@@ -4850,8 +4851,7 @@ export class ChatWidget extends LitElement {
     :host([data-universe='cosmos']) .bench-round,
     :host([data-universe='cosmos']) .msg-body,
     :host([data-universe='cosmos']) .p-card {
-      background-color: rgba(10, 14, 24, 0.72);
-      backdrop-filter: blur(2px);
+      background-color: rgba(10, 14, 24, 0.82);
     }
     /* ── UNIVERSE: cosmos ── a universe that MOVES. <cosmos-backdrop> paints a living
        starfield + constellation network behind translucent glass panels, so the citizens
