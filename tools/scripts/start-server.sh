@@ -815,6 +815,30 @@ echo "  airc:     room=${AIRC_DEFAULT_ROOM_NAME:-?} channel=${AIRC_DEFAULT_CHANN
 # env; config.env can still override it per operator.
 export CONTINUUM_MODELS_DIR="${CONTINUUM_MODELS_DIR:-$REPO_ROOT/tools/models}"
 echo "  models:   $CONTINUUM_MODELS_DIR"
+
+# ── STT model rail (#291: a fresh clone HEARS with zero manual steps). The
+# local moonshine engine (sherpa-onnx int8, ~286MB once) is what makes citizens
+# able to listen in live calls without any API key; without this rail a new
+# machine boots deaf behind a warning. One-time fetch, non-fatal, loud on miss.
+ensure_moonshine() {
+  local DIR="$CONTINUUM_MODELS_DIR/moonshine/base"
+  local BASE="https://huggingface.co/csukuangfj/sherpa-onnx-moonshine-base-en-int8/resolve/main"
+  local files=(preprocess.onnx encode.int8.onnx uncached_decode.int8.onnx cached_decode.int8.onnx tokens.txt)
+  local missing=0
+  for f in "${files[@]}"; do [ -s "$DIR/$f" ] || missing=1; done
+  [ "$missing" = 0 ] && return 0
+  command -v curl >/dev/null 2>&1 || { echo "  ⚠ curl missing — STT (hearing) unavailable until moonshine models are placed in $DIR" >&2; return 0; }
+  echo "→ first boot: fetching the local STT model (moonshine base int8, ~286MB once)…"
+  mkdir -p "$DIR"
+  local ok=1
+  for f in "${files[@]}"; do
+    [ -s "$DIR/$f" ] && continue
+    curl -sfL -o "$DIR/$f.tmp" "$BASE/$f" && mv "$DIR/$f.tmp" "$DIR/$f" || { ok=0; rm -f "$DIR/$f.tmp"; }
+  done
+  [ "$ok" = 1 ] && echo "  STT model ready — citizens can hear" \
+    || echo "  ⚠ moonshine fetch incomplete — STT unavailable this boot (retries next boot)" >&2
+}
+ensure_moonshine
 echo ""
 
 # PUBLISH the verified artifact to the installed location, the same way this script
