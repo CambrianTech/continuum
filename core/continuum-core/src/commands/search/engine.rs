@@ -21,21 +21,15 @@ use ts_rs::TS;
 
 /// Input to any text search algorithm.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-<<<<<<<< HEAD:core/continuum-core/src/commands/search/engine.rs
 #[ts(
     export,
     export_to = "../../../protocol/typescript/search/SearchInput.ts"
 )]
 pub(crate) struct SearchInput {
-========
-#[ts(export, export_to = "../../../protocol/typescript/search/SearchInput.ts")]
-pub struct SearchInput {
->>>>>>>> origin/main:core/continuum-core/src/modules/search.rs
     pub query: String,
     pub corpus: Vec<String>,
 }
 
-<<<<<<<< HEAD:core/continuum-core/src/commands/search/engine.rs
 /// Output from any search algorithm — scores parallel to the corpus plus the
 /// indices sorted best-first.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -54,22 +48,6 @@ pub(crate) struct SearchOutput {
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
-========
-/// Output from any search algorithm
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/search/SearchOutput.ts")]
-pub struct SearchOutput {
-    /// Scores normalized to 0-1, parallel to corpus
-    pub scores: Vec<f64>,
-    /// Indices sorted by score descending
-    pub ranked_indices: Vec<usize>,
-}
-
-/// Input for vector-based search
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(
-    export,
->>>>>>>> origin/main:core/continuum-core/src/modules/search.rs
     export_to = "../../../protocol/typescript/search/VectorSearchInput.ts"
 )]
 #[serde(rename_all = "camelCase")]

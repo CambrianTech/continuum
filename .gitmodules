@@ -1,0 +1,6 @@
+[submodule "src/workers/vendor/llama.cpp"]
+	path = core/vendor/llama.cpp
+	url = https://github.com/CambrianTech/llama.cpp
+[submodule "src/workers/vendor/whisper.cpp"]
+	path = core/vendor/whisper.cpp
+	url = https://github.com/ggerganov/whisper.cpp
