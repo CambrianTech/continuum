@@ -533,8 +533,11 @@ export class ChatWidget extends LitElement {
     // lore, one definition, every citizen ([[universe-is-an-experience-not-a-theme]]).
     // The target maps the key to a skin; here it's a data-attribute the styles key off.
     // Unset → the native 'continuum' look.
-    const universe = new URLSearchParams(location.search).get('universe');
-    if (universe) this.setAttribute('data-universe', universe);
+    // The living universe is the DEFAULT skin (Joel: "themes/universes —
+    // push the envelope"); ?universe=none opts back to still chrome, any
+    // other key selects its skin as before.
+    const universe = new URLSearchParams(location.search).get('universe') ?? 'cosmos';
+    if (universe !== 'none') this.setAttribute('data-universe', universe);
     // Digest expand/collapse: the row's affordance fires a composed event that
     // bubbles out of the shadow tree to the host — listen on self so the pure
     // fragments need no callback threading through the render registries.
@@ -687,6 +690,10 @@ export class ChatWidget extends LitElement {
       display: inline-flex;
       align-items: center;
       gap: 5px;
+      max-width: 200px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      transition: color 0.12s ease, border-color 0.12s ease;
       padding: 4px 8px 5px 10px;
       border: 1px solid var(--border-subtle);
       border-bottom: none;
@@ -868,6 +875,19 @@ export class ChatWidget extends LitElement {
     .metrics-spark circle {
       fill: var(--content-accent, #35d0e0);
     }
+    /* HOVER LIFE — interactive things answer the pointer (transform-only,
+     * compositor-cheap; the fun half of "polish till it's fun"). */
+    .bench-card[data-door],
+    .p-run[data-door],
+    .cell[data-selectable] {
+      transition: transform 0.12s ease;
+    }
+    .bench-card[data-door]:hover,
+    .p-run[data-door]:hover {
+      transform: translateY(-1px);
+    }
+    .element-link { cursor: pointer; }
+    .element-link:hover { text-decoration: underline; text-underline-offset: 2px; }
     /* The native home frame — a bevy-rendered image, displayed, never
      * rasterized here. */
     .p-home-frame {
@@ -4822,6 +4842,17 @@ export class ChatWidget extends LitElement {
       color: #efdcc0;
     }
 
+    /* Cosmos legibility: the center's reading surfaces get a whisper more
+     * backing so star names never fight the text — the universe glows at
+     * the edges, the work stays crisp. */
+    :host([data-universe='cosmos']) .bench-card,
+    :host([data-universe='cosmos']) .bench-score,
+    :host([data-universe='cosmos']) .bench-round,
+    :host([data-universe='cosmos']) .msg-body,
+    :host([data-universe='cosmos']) .p-card {
+      background-color: rgba(10, 14, 24, 0.72);
+      backdrop-filter: blur(2px);
+    }
     /* ── UNIVERSE: cosmos ── a universe that MOVES. <cosmos-backdrop> paints a living
        starfield + constellation network behind translucent glass panels, so the citizens
        converse afloat in a breathing cosmos. A world in motion, not a colour swap. */
@@ -5135,6 +5166,7 @@ export class ChatWidget extends LitElement {
       ${cosmos
         ? html`<cosmos-backdrop
             .citizens=${vm.members.map((m) => ({ name: m.name, active: m.active }))}
+            .energy=${Math.min(1, (this.bench?.runs ?? []).filter((r) => r.phase === 'active').length / 4)}
           ></cosmos-backdrop>`
         : nothing}
       ${surface}
@@ -5146,7 +5178,21 @@ export class ChatWidget extends LitElement {
    *  rows that slid out of the 50-row window RETIRE onto the buffer's tail —
    *  otherwise a new message would open a silent gap between scrolled-back
    *  history and the live window. */
+  private _lastResolved = -1;
+
   protected override willUpdate(changed: PropertyValues): void {
+    // Verdict comets: a NEW resolve fires the backdrop's surge — spectacle
+    // wired to real outcomes.
+    if (changed.has('bench')) {
+      const resolved = (this.bench?.runs ?? []).filter((r) => r.resolved === true).length;
+      if (this._lastResolved >= 0 && resolved > this._lastResolved) {
+        const bg = this.renderRoot.querySelector('cosmos-backdrop') as
+          | (HTMLElement & { surge?: () => void })
+          | null;
+        for (let i = this._lastResolved; i < resolved; i++) bg?.surge?.();
+      }
+      this._lastResolved = resolved;
+    }
     if (!changed.has('state') || !this.state) return;
     const prev = changed.get('state') as ChatState | undefined;
     if (prev && prev.room_id !== this.state.room_id) {
