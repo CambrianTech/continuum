@@ -641,6 +641,81 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     // else the room's info card — the ContextPanel primitive, activity-scoped.
     context: {
       listings: [personaBody ? personaFactsListing(personaBody) : roomInfoListing(vm)],
+      // PROFILE RIGHT-RAIL INSTRUMENTS (Joel: "good potential for righthand
+      // widgets in the profile pages") — composed from EXISTING widget kinds
+      // (metrics stat-rows + listing cells), each honestly absent until its
+      // data is: RECORD (verdict identity), ENGINE (live speed needles as
+      // numbers), ACTIVE WORK (her runs as door cells).
+      ...(personaWithWork
+        ? { widgets: personaContextWidgets(personaWithWork) }
+        : {}),
     },
   };
+}
+
+/** The profile's right-rail instrument stack. Every widget renders from an
+ *  existing kind — no new renderer, no new wire type ([[compression]]). */
+function personaContextWidgets(body: PersonaContentBody): PanelWidget<MetricsView | ListingView>[] {
+  const widgets: PanelWidget<MetricsView | ListingView>[] = [];
+  // RECORD — the verdict identity, as tone-colored stats.
+  const runs = body.runs ?? [];
+  const settled = runs.filter((r) => r.state === 'resolved' || r.state === 'failed');
+  if (settled.length > 0) {
+    const wins = settled.filter((r) => r.state === 'resolved').length;
+    widgets.push({
+      id: 'p-record',
+      kind: 'metrics',
+      title: 'Record',
+      scope: 'activity',
+      body: {
+        stats: [
+          { label: 'RESOLVED', value: String(wins), tone: 'good' },
+          { label: 'SETTLED', value: String(settled.length), tone: 'muted' },
+          { label: 'RATE', value: `${Math.round((wins / settled.length) * 100)}%`, tone: wins > 0 ? 'accent' : 'warn' },
+        ],
+      },
+    });
+  }
+  // ENGINE — the speed pulse as readable numbers beside the tile needles.
+  const tps = body.vitals['tps'];
+  const pfx = body.vitals['pfx'];
+  if (tps !== undefined || pfx !== undefined) {
+    widgets.push({
+      id: 'p-engine',
+      kind: 'metrics',
+      title: 'Engine',
+      scope: 'activity',
+      body: {
+        stats: [
+          ...(tps !== undefined ? [{ label: 'DECODE', value: `${tps}%`, tone: 'accent' as const }] : []),
+          ...(pfx !== undefined ? [{ label: 'PREFILL', value: `${pfx}%`, tone: 'accent' as const }] : []),
+          ...(body.vitals['activity'] !== undefined
+            ? [{ label: 'ACT', value: String(body.vitals['activity']), tone: 'muted' as const }]
+            : []),
+        ],
+      },
+    });
+  }
+  // ACTIVE WORK — live runs as door cells (select routes like a room pick).
+  const live = runs.filter((r) => r.state === 'working' || r.state === 'grading' || r.state === 'queued');
+  if (live.length > 0) {
+    widgets.push({
+      id: 'p-active-work',
+      kind: 'listing',
+      title: 'Active work',
+      scope: 'activity',
+      body: {
+        id: 'p-active-work',
+        title: 'Active work',
+        cells: live.map((r) => ({
+          id: r.roomId ?? r.runId,
+          title: r.instance,
+          subtitle: r.state,
+          status: 'active' as const,
+          ...(r.roomId !== undefined ? { group: 'room' } : {}),
+        })),
+      },
+    });
+  }
+  return widgets;
 }

@@ -157,6 +157,12 @@ export function navSelectTarget(detail: ListingSelectDetail): NavSelectRoute | n
     if (detail.group === 'content') return null;
     return { target: detail.id, kind: 'room' };
   }
+  // The profile rail's ACTIVE WORK cells are doors: a pick with a room-kind
+  // group navigates to that run's room (same verb as a tab click).
+  if (detail.listingId === 'p-active-work') {
+    if (detail.group === 'room') return { target: detail.id, kind: 'room' };
+    return null;
+  }
   if (detail.listingId === 'roster') {
     const anchor =
       detail.element !== undefined && PERSONA_ANCHOR_ELEMENTS.has(detail.element)
