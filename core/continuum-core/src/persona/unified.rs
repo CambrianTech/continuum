@@ -889,6 +889,9 @@ mod tests {
         let substrate = continuum_positron::Substrate::new();
         substrate.store(StateBuilder::standalone().session(BenchViewState {
             runs: vec![BenchRunRow {
+                round_id: None,
+                solve_room: None,
+                solve_room_name: None,
                 run_id: "run-7".into(),
                 instance: Some("sympy__sympy-24152".into()),
                 solver: Some("Asha".into()),
