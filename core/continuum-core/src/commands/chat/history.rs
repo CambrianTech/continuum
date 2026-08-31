@@ -136,8 +136,6 @@ crate::action_command! {
     }
 }
 
-crate::register_command!(ChatHistory);
-
 #[cfg(test)]
 mod tests {
     use super::*;
