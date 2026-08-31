@@ -634,6 +634,11 @@ pub fn spawn_node_presence_emitter(
         let mut known: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
         for (id, name) in rooms {
             known.insert(id);
+            // Bridge the room's transcript too — presence without a chat
+            // bridge is a roster over an empty room.
+            if let Some(reg) = crate::airc::inbound_attach::AttachRegistry::try_global() {
+                reg.ensure_attached(airc_core::RoomId::from_uuid(id));
+            }
             tokio::spawn(run_presence_loop(reader.clone(), id, name, bus.clone()));
         }
         // REFRESHER: activity rooms mint mid-run (a solve room per card) and new
@@ -664,6 +669,9 @@ pub fn spawn_node_presence_emitter(
                     continue;
                 }
                 known.insert(id);
+                if let Some(reg) = crate::airc::inbound_attach::AttachRegistry::try_global() {
+                    reg.ensure_attached(airc_core::RoomId::from_uuid(id));
+                }
                 crate::probe!(
                     class = "presence.room.adopted",
                     room_id = %id,

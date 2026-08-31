@@ -22,6 +22,61 @@ use crate::ipc::positron_source::CHAT_POSTED;
 use crate::ipc::positron_wall_source::WALL_CHANGED;
 use crate::runtime::MessageBus;
 
+/// One attach stream per ROOM, spawned at most once — the registry the room
+/// ADOPTION path (positron_presence's refresher, #2606) calls so every room
+/// the node serves also bridges its transcript onto the projection bus.
+/// Before this, exactly ONE channel (the bootstrap room) was attached: acts
+/// radiated into solve rooms (`room.work_receipt.published` ×67 on the night
+/// this was found) and no bridge ever carried them — every activity
+/// transcript rendered empty while the work streamed (Joel, 2026-08-31:
+/// "we should see their chats as a team, acts in the center transcript").
+pub struct AttachRegistry {
+    socket: PathBuf,
+    bus: Arc<MessageBus>,
+    rt: tokio::runtime::Handle,
+    attached: std::sync::Mutex<std::collections::HashSet<RoomId>>,
+}
+
+static ATTACHES: std::sync::OnceLock<Arc<AttachRegistry>> = std::sync::OnceLock::new();
+
+impl AttachRegistry {
+    /// Install the process-wide registry (AircModule::initialize owns this).
+    /// Idempotent; the first install wins.
+    pub fn install(socket: PathBuf, bus: Arc<MessageBus>, rt: tokio::runtime::Handle) -> Arc<Self> {
+        ATTACHES
+            .get_or_init(|| {
+                Arc::new(Self {
+                    socket,
+                    bus,
+                    rt,
+                    attached: std::sync::Mutex::new(std::collections::HashSet::new()),
+                })
+            })
+            .clone()
+    }
+
+    pub fn try_global() -> Option<Arc<Self>> {
+        ATTACHES.get().cloned()
+    }
+
+    /// Bridge `room`'s transcript onto the bus — at most one stream per room.
+    pub fn ensure_attached(&self, room: RoomId) {
+        let fresh = self
+            .attached
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(room);
+        if fresh {
+            crate::probe!(
+                class = "airc.attach.room_bridged",
+                room = %room.as_uuid(),
+                "daemon attach spawned for an adopted room — its transcript now reaches the projection bus"
+            );
+            spawn_daemon_attach(self.socket.clone(), room, self.bus.clone(), &self.rt);
+        }
+    }
+}
+
 pub fn spawn_daemon_attach(
     socket_path: PathBuf,
     channel: RoomId,
