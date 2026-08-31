@@ -241,6 +241,7 @@ function homeSection(body: PersonaContentBody): TemplateResult {
         trophies: (body.runs ?? []).filter((r) => r.state === 'resolved').length,
         genes: body.genes.length,
         speaking: (body.vitals['speaking'] ?? 0) > 0,
+        avatarUrl: body.avatarUrl,
       })}
     ></home-scene>
     ${homeLegend(body)}

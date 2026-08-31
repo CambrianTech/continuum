@@ -1,4 +1,4 @@
-# Citizen Homes — the sims apartment as a positron render target
+# Citizen Homes — the life-sim apartment as a positron render target
 
 **Status:** design note (2026-08-31, the creative night). Companion to the
 embodiment ladder (#2625), the citizen-page roadmap (#2649), and
@@ -15,7 +15,7 @@ projection the profile already draws. One semantic layer, N worlds.
 
 ## What Joel described
 
-> "Sims apartment or home where they live and take live calls from their
+> "Life-sim apartment or home where they live and take live calls from their
 > office room or wherever — they have a full home lol. We will make a 3d
 > orthographic view."
 
@@ -46,7 +46,7 @@ rooms."**
   the SAME `RenderTarget` contract as the web target: draws a
   `WorkspaceView`, dispatches content by purpose, fires the same composed
   intents (`nav/select`, `listing-select`, `bench-run-open`) from spatial
-  interaction. Orthographic sims camera is the default lens; the engine is
+  interaction. Orthographic dollhouse camera is the default lens; the engine is
   full 3D underneath (VR = the same scene, stereo camera).
 - **Live calls happen IN the scene**: LiveKit video tracks render as
   textures on surfaces in her office (the monitor on her desk, the wall
@@ -95,12 +95,12 @@ Two doors into the space, one projection behind both:
   geometry. Clicking it enters the home activity (`nav/select` her home
   room).
 - **Enter the neighborhood** — a top-level activity (a tab like academy):
-  top-down/orthographic sims camera over the room tree. The SAME activity
+  top-down/orthographic dollhouse camera over the room tree. The SAME activity
   opened by a VR target walks the identical tree in stereo — VR is render
   target #4, not a fork: web-DOM, terminal/RAG, bevy-ortho, VR, one
   ViewState behind all four.
 
-## The neighborhood (Joel: "I plan on full sims neighborhood")
+## The neighborhood (Joel: "I plan on full life-sim neighborhood")
 
 A home is ONE tab/activity; the neighborhood is the tier above — and it
 already has a data structure: **the room tree IS the map.** The Activities
@@ -148,6 +148,28 @@ The audit found the plan half-built already, in the core's live plane:
 - **`apps/vr/` and `apps/ar/`** exist as app stubs — targets #4 and #5
   have homes in the tree.
 - **`CosmosBackdrop`** — the universe-as-living-experience precedent.
+
+**The deeper find (Joel: "maybe you totally forgot how we did bevy and
+our avatars")** — the identity→space pipeline is COMPLETE server-side:
+
+- `identity → hash → voice · avatar (VRM) · SCENE` — every persona already
+  gets a deterministic room environment from a GLB catalog
+  (`models/scenes/`, deploy-downloaded), and `scene/room.rs`'s own docs
+  say it: *"a persona's office is a sub-scene within their apartment,
+  which is a sub-scene within a city block"* — the apartment/neighborhood
+  hierarchy predates this doc.
+- **`avatar/snapshot {identity}`** allocates a bevy slot, loads her VRM,
+  renders a PNG served at `/avatars/<identity>.png` — with expressions,
+  poses, and viseme mouth weights. The roster portraits ARE bevy renders.
+- `capture.rs` snapshots live video per participant (JPEG, content-
+  addressed) — the "see the room" pipe.
+
+So the web home card v1.5 (shipped) billboards her REAL bevy render in
+the three.js room; v2 replaces the default shell with her deterministic
+catalog scene; v3 is the bevy-rendered room itself streaming frames.
+Reference for life-sim mechanics: FreeSO (github.com/riperiperi/FreeSO,
+open-source TSO reimplementation, C# — patterns, not code). Trademark
+note: never name the genre with EA's mark in code/docs/marketing.
 
 **Consequence (compression law):** the web `<home-scene>` element ships
 today on an interim `HomeSceneModel`; its v2 CONSUMES `SceneDescription`

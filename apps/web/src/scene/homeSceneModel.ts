@@ -52,6 +52,9 @@ export interface HomeSceneModel {
   readonly speaking: boolean;
   /** Display name (floor plaque / nameplate). */
   readonly name: string;
+  /** Her bevy-rendered VRM portrait (`/avatars/<identity>.png`, the
+   *  avatar/snapshot pipe) — the REAL her, billboarded in the room. */
+  readonly avatarUrl?: string;
   /** Default region layout (recipe-authored later). */
   readonly regions: readonly HomeRegion[];
 }
@@ -74,6 +77,7 @@ export function homeSceneModel(facts: {
   readonly trophies: number;
   readonly genes: number;
   readonly speaking?: boolean;
+  readonly avatarUrl?: string;
 }): HomeSceneModel {
   return {
     width: 8,
@@ -85,6 +89,7 @@ export function homeSceneModel(facts: {
     genes: facts.genes,
     speaking: facts.speaking ?? false,
     name: facts.name,
+    ...(facts.avatarUrl !== undefined ? { avatarUrl: facts.avatarUrl } : {}),
     regions: defaultRegions(),
   };
 }

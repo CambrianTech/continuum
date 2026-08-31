@@ -1,8 +1,8 @@
 /**
  * `<home-scene>` — the three.js render target for a citizen's HOME
  * (CITIZEN-HOMES-ORTHOGRAPHIC.md): a REAL 3D scene — meshes, lights,
- * shadows, an orthographic sims camera with orbit/zoom navigation — never
- * sprite/CSS stand-ins (Joel: "full sims game like… do a full 3d scene
+ * shadows, an orthographic dollhouse camera with orbit/zoom navigation — never
+ * sprite/CSS stand-ins (Joel: "full life-sim game like… do a full 3d scene
  * render").
  *
  * It builds ONLY from [`HomeSceneModel`] — the engine-neutral contract the
@@ -72,7 +72,7 @@ export class HomeSceneElement extends ElementBase {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
-    // Sims lens: orthographic, elevated three-quarter view.
+    // Dollhouse lens: orthographic, elevated three-quarter view.
     const cam = new THREE.OrthographicCamera(-6, 6, 4.5, -3, 0.1, 100);
     cam.position.set(9, 8, 9);
     cam.lookAt(0, 0.8, 0);
@@ -140,6 +140,13 @@ export class HomeSceneElement extends ElementBase {
     if (this.avatar) {
       this.avatar.position.y = 0.02 * Math.sin(t * 1.6);
       if (this._model?.speaking) this.avatar.rotation.y = 0.15 * Math.sin(t * 6);
+      if (this.camera) {
+        for (const child of this.avatar.children) {
+          if ((child as THREE.Object3D).userData['billboard'] === true) {
+            child.quaternion.copy(this.camera.quaternion);
+          }
+        }
+      }
     }
     if (this.windowGlow) this.windowGlow.intensity = 1.6 + 0.12 * Math.sin(t * 2.3);
     this.controls?.update();
@@ -288,22 +295,49 @@ export class HomeSceneElement extends ElementBase {
       }
     }
 
-    // ── HER: a simple capsule avatar, present exactly when she is.
+    // ── HER: the REAL her — the bevy-rendered VRM portrait
+    // (avatar/snapshot → /avatars/<identity>.png) billboarded in the room.
+    // "How we did bevy and our avatars" (Joel): the rust renderer is the
+    // avatar truth; this target shows ITS output. Capsule = honest fallback
+    // while a portrait hasn't rendered yet.
     this.avatar = undefined;
     if (m.online) {
       const g = new THREE.Group();
-      const body = new THREE.Mesh(
-        new THREE.CapsuleGeometry(0.22, 0.5, 6, 12),
-        new THREE.MeshStandardMaterial({
-          color: ACCENT,
-          emissive: ACCENT,
-          emissiveIntensity: m.speaking ? 0.6 : 0.25,
-          roughness: 0.4,
-        }),
-      );
-      body.position.y = 0.62;
-      body.castShadow = true;
-      g.add(body);
+      if (m.avatarUrl !== undefined) {
+        const tex = new THREE.TextureLoader().load(m.avatarUrl, () => {
+          if (this.visible) this.loop();
+          else if (this.renderer && this.scene && this.camera)
+            this.renderer.render(this.scene, this.camera);
+        });
+        tex.colorSpace = THREE.SRGBColorSpace;
+        const card = new THREE.Mesh(
+          new THREE.PlaneGeometry(1.0, 1.0),
+          new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide }),
+        );
+        card.position.y = 0.85;
+        // Billboard: face the camera every frame (see loop()).
+        card.userData['billboard'] = true;
+        g.add(card);
+        const base = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.26, 0.3, 0.06, 16),
+          new THREE.MeshStandardMaterial({ color: ACCENT, emissive: ACCENT, emissiveIntensity: 0.3 }),
+        );
+        base.position.y = 0.03;
+        g.add(base);
+      } else {
+        const body = new THREE.Mesh(
+          new THREE.CapsuleGeometry(0.22, 0.5, 6, 12),
+          new THREE.MeshStandardMaterial({
+            color: ACCENT,
+            emissive: ACCENT,
+            emissiveIntensity: m.speaking ? 0.6 : 0.25,
+            roughness: 0.4,
+          }),
+        );
+        body.position.y = 0.62;
+        body.castShadow = true;
+        g.add(body);
+      }
       g.position.set(0.4, 0, 0.6);
       scene.add(g);
       this.avatar = g;
