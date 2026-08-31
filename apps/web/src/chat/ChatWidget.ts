@@ -57,6 +57,7 @@ import {
 } from '../render/parts';
 import { LIVE_PURPOSE, type SettingsContentBody, type WorkspaceLayout } from '@continuum/patterns';
 import '../render/CosmosBackdrop'; // registers <cosmos-backdrop> for the cosmos universe
+import '../render/PositronTrace'; // registers <positron-trace> for the positron universe
 
 /** The send action the host injects. Resolves when the message is accepted by
  *  the core; rejects (fails loud) on a transport/command error the widget shows. */
@@ -5162,7 +5163,9 @@ export class ChatWidget extends LitElement {
       return html`<div class="render-error">Interface error rendering this room: ${cause}</div>`;
     }
     const cosmos = this.getAttribute('data-universe') === 'cosmos';
+    const positron = this.getAttribute('data-universe') === 'positron';
     return html`
+      ${positron ? html`<positron-trace></positron-trace>` : nothing}
       ${cosmos
         ? html`<cosmos-backdrop
             .citizens=${vm.members.map((m) => ({ name: m.name, active: m.active }))}
@@ -5179,6 +5182,8 @@ export class ChatWidget extends LitElement {
    *  otherwise a new message would open a silent gap between scrolled-back
    *  history and the live window. */
   private _lastResolved = -1;
+  private _lastMsgCount = -1;
+  private _lastActCount = -1;
 
   protected override willUpdate(changed: PropertyValues): void {
     // Verdict comets: a NEW resolve fires the backdrop's surge — spectacle
@@ -5189,9 +5194,30 @@ export class ChatWidget extends LitElement {
         const bg = this.renderRoot.querySelector('cosmos-backdrop') as
           | (HTMLElement & { surge?: () => void })
           | null;
-        for (let i = this._lastResolved; i < resolved; i++) bg?.surge?.();
+        const trace = this.renderRoot.querySelector('positron-trace') as
+          | (HTMLElement & { pulse?: (k: string) => void })
+          | null;
+        for (let i = this._lastResolved; i < resolved; i++) {
+          bg?.surge?.();
+          trace?.pulse?.('verdict');
+        }
       }
       this._lastResolved = resolved;
+    }
+    // Positron pulses for message/act arrivals — a light per FACT, never per
+    // render (deltas on the state's own counts).
+    if (changed.has('state') && this.state) {
+      const trace = this.renderRoot.querySelector('positron-trace') as
+        | (HTMLElement & { pulse?: (k: string) => void })
+        | null;
+      if (trace) {
+        const msgs = this.state.messages.length;
+        const acts = this.state.acts.length;
+        if (this._lastMsgCount >= 0 && msgs > this._lastMsgCount) trace.pulse?.('message');
+        if (this._lastActCount >= 0 && acts > this._lastActCount) trace.pulse?.('act');
+        this._lastMsgCount = msgs;
+        this._lastActCount = acts;
+      }
     }
     if (!changed.has('state') || !this.state) return;
     const prev = changed.get('state') as ChatState | undefined;
