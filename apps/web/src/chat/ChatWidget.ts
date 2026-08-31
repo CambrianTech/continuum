@@ -835,6 +835,22 @@ export class ChatWidget extends LitElement {
         50% { opacity: 1; }
       }
     }
+    /* The form curve — a thin growth polyline in metrics rows. */
+    .metrics-spark {
+      width: 72px;
+      height: 16px;
+      align-self: center;
+      margin-left: var(--spacing-sm);
+    }
+    .metrics-spark path {
+      fill: none;
+      stroke: var(--content-accent, #35d0e0);
+      stroke-width: 1;
+      stroke-linejoin: round;
+    }
+    .metrics-spark circle {
+      fill: var(--content-accent, #35d0e0);
+    }
     /* Record & awards — trophy chips: identity earned from verdicts. */
     .p-trophies {
       display: flex;

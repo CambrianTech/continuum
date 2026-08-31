@@ -662,12 +662,20 @@ function personaContextWidgets(body: PersonaContentBody): PanelWidget<MetricsVie
   const settled = runs.filter((r) => r.state === 'resolved' || r.state === 'failed');
   if (settled.length > 0) {
     const wins = settled.filter((r) => r.state === 'resolved').length;
+    // The FORM CURVE: a rolling resolve-rate over the settled sequence
+    // (window 3) — the shape of recent growth, oldest to newest.
+    const form: number[] = settled.map((_, i) => {
+      const win = settled.slice(Math.max(0, i - 2), i + 1);
+      const w = win.filter((r) => r.state === 'resolved').length;
+      return Math.round((w / win.length) * 100);
+    });
     widgets.push({
       id: 'p-record',
       kind: 'metrics',
       title: 'Record',
       scope: 'activity',
       body: {
+        ...(form.length > 1 ? { spark: form } : {}),
         stats: [
           { label: 'RESOLVED', value: String(wins), tone: 'good' },
           { label: 'SETTLED', value: String(settled.length), tone: 'muted' },

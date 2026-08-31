@@ -67,6 +67,24 @@ export function renderGaugeBody(view: GaugeView): TemplateResult {
 /** The team-cognition stat row (value over label, tone-coloured) — shared by the
  *  `'metrics'` rail widget and `<sys-panel>`'s AI face ([[compression]]). */
 export function renderMetricsRow(view: MetricsView): TemplateResult {
+  // The FORM CURVE: an optional 0..=100 series drawn as a thin polyline with
+  // an emphasized endpoint — "learning and improving" as a line, not prose
+  // (Joel: growth the enthusiasts can SEE). Absent spark = stats only.
+  const spark =
+    view.spark !== undefined && view.spark.length > 1
+      ? (() => {
+          const pts = view.spark ?? [];
+          const w = 72;
+          const step = w / (pts.length - 1);
+          const y = (v: number): number => 14 - (Math.max(0, Math.min(100, v)) * 12) / 100;
+          const path = pts.map((v, i) => `${i === 0 ? 'M' : 'L'} ${(i * step).toFixed(1)} ${y(v).toFixed(1)}`).join(' ');
+          const last = pts[pts.length - 1] ?? 0;
+          return html`<svg class="metrics-spark" viewBox="0 0 72 16" aria-hidden="true">
+            <path d=${path} />
+            <circle cx=${w} cy=${y(last).toFixed(1)} r="1.6" />
+          </svg>`;
+        })()
+      : nothing;
   return html`<div class="metrics-row">
     ${view.stats.map(
       (s) => html`<span class="metric" data-tone=${s.tone ?? 'muted'}>
@@ -74,6 +92,7 @@ export function renderMetricsRow(view: MetricsView): TemplateResult {
         <span class="metric-label">${s.label}</span>
       </span>`,
     )}
+    ${spark}
   </div>`;
 }
 
