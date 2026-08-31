@@ -67,26 +67,19 @@ pub use crate::experience::binding::{RoomRecipeBinding, RECIPE_WALL_CATEGORY};
 
 /// Resolve the CALLING peer's own airc handle so the room is created as THEIR
 /// identity — the creator is a real peer, never the substrate acting anonymously.
+///
+/// One resolver, not two: this is [`crate::modules::work::persona_airc`], which
+/// already routes a caller-less invocation to the OPERATOR SELF-PEER (#27). The
+/// private duplicate that lived here predated the self-peer and still carried
+/// the denial — so the human could dispatch work but could not start an
+/// activity, the exact "ask for a project should be easy and common" gap
+/// (Joel, 2026-08-31). Same bug at two sites = one missing constraint; the
+/// constraint is the shared helper.
 fn caller_airc(
     registry: &PersonaAircRuntimeRegistry,
     ctx: &Ctx,
 ) -> Result<Arc<Airc>, CommandError> {
-    let peer = ctx
-        .caller
-        .as_ref()
-        .map(|c| c.peer_id.as_uuid())
-        .ok_or_else(|| {
-            CommandError::Denied(
-                "activity verbs act as the caller's own airc identity, and the \
-                 substrate-local operator has none in-core (the self-peer gap, task \
-                 #27). Personas calling through their toolbelt act as themselves."
-                    .into(),
-            )
-        })?;
-    let rt = registry
-        .get(peer)
-        .ok_or_else(|| CommandError::NotFound(format!("no live airc runtime for peer {peer}")))?;
-    Ok(rt.airc().clone())
+    crate::modules::work::persona_airc(registry, ctx, "activity verbs")
 }
 
 // ─────────────────────────── activity/spawn ───────────────────────────
@@ -225,6 +218,159 @@ impl ActionCommand for ActivitySpawn {
     ) -> Result<ActivitySpawnResult, CommandError> {
         let airc = caller_airc(&self.registry, ctx)?;
         spawn_activity_room(&airc, &p.name, &p.recipe, p.parent, &p.params).await
+    }
+}
+
+// ─────────────────────────── activity/invite ───────────────────────────
+
+/// Bring named citizens into a room, so a freshly spawned activity has its
+/// people in one verb.
+pub struct ActivityInvite {
+    pub registry: PersonaAircRuntimeRegistry,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+pub struct ActivityInviteParams {
+    /// The room's NAME (airc joins are by name — `activity/spawn` returned it).
+    pub room: String,
+    /// Agent names to bring in (the roster's names, e.g. `["Kira", "Joaquin"]`).
+    pub members: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct ActivityInviteResult {
+    /// Members now subscribed (idempotent — already-in counts as joined).
+    pub joined: Vec<String>,
+    /// Members that could not be joined, each with the reason — a partial
+    /// invite reports honestly instead of failing the whole verb.
+    pub failed: Vec<String>,
+}
+
+#[async_trait]
+impl ActionCommand for ActivityInvite {
+    const NAME: &'static str = "activity/invite";
+    const ALIASES: &'static [&'static str] = &["invite_to_room"];
+    const NATIVE: bool = true;
+    /// AiSafe: subscribing a citizen to a room is additive — she hears it and
+    /// can speak in it, and `room/leave` remains hers ([[self-determination]]).
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    // The missing third act of "start a project": spawn made the room, but the
+    // only ways a citizen entered one were the reconciler's default set or a
+    // benchmark dispatch join — a human-started activity sat EMPTY, which is
+    // why starting a project with citizens was not "easy and common"
+    // (Joel, 2026-08-31). spawn → invite → ask is the whole flow now.
+    const DESCRIPTION: &'static str =
+        "Invite citizens into a room by name: they subscribe, hear it, and can \
+         speak there. Use after activity/spawn to staff a new activity \
+         (spawn → invite → say what it's about). Idempotent per member; \
+         partial failures are reported per-name, never silently dropped.";
+    type Params = ActivityInviteParams;
+    type Output = ActivityInviteResult;
+
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        p: ActivityInviteParams,
+    ) -> Result<ActivityInviteResult, CommandError> {
+        if p.members.is_empty() {
+            return Err(CommandError::Invalid(
+                "members is empty — name at least one citizen to invite (see persona/roster)"
+                    .into(),
+            ));
+        }
+        let mut joined = Vec::new();
+        let mut failed = Vec::new();
+        for name in &p.members {
+            match self.registry.get_by_agent_name(name) {
+                Some(rt) => match rt.join_room(&p.room).await {
+                    Ok(()) => joined.push(name.clone()),
+                    Err(e) => failed.push(format!("{name}: join failed — {e}")),
+                },
+                None => failed.push(format!(
+                    "{name}: no live runtime by that agent name (persona/roster lists who is online)"
+                )),
+            }
+        }
+        Ok(ActivityInviteResult { joined, failed })
+    }
+}
+
+// ─────────────────────────── activity/recipes ───────────────────────────
+
+/// List the live recipe catalogue — what `activity/spawn` can build.
+pub struct ActivityRecipes;
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+pub struct ActivityRecipesParams {}
+
+/// One spawnable recipe, as the catalogue declares it.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct RecipeCatalogEntry {
+    /// The EXACT string `activity/spawn` takes as `recipe`.
+    pub purpose: String,
+    /// The recipe's declared parameter knobs, each as `name (type: doc)` —
+    /// render-ready, the same wording the param refusal uses.
+    pub params: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct ActivityRecipesResult {
+    pub count: u32,
+    /// Registry order: embedded first, overlay after (later wins by purpose).
+    pub recipes: Vec<RecipeCatalogEntry>,
+}
+
+#[async_trait]
+impl ActionCommand for ActivityRecipes {
+    const NAME: &'static str = "activity/recipes";
+    const ALIASES: &'static [&'static str] = &["list_recipes"];
+    const NATIVE: bool = true;
+    /// AiSafe: reading the catalogue is how anyone — citizen or operator —
+    /// finds out what they can start.
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    // `activity/spawn`'s description says "use the exact purpose string from the
+    // recipe catalogue" — and until this verb, THE CATALOGUE HAD NO READ VERB.
+    // Discovery-by-refusal (spawn a wrong name to see the known list in the
+    // error) was the only path, which is a doc line standing in for a design
+    // ([[foolproof-over-instructions]]; Joel 2026-08-31: starting an activity
+    // must be "easy and common").
+    const DESCRIPTION: &'static str =
+        "List the spawnable recipe catalogue — the exact `purpose` strings \
+         `activity/spawn` accepts, with each recipe's declared parameters. \
+         Read this before spawning; never guess a purpose string.";
+    type Params = ActivityRecipesParams;
+    type Output = ActivityRecipesResult;
+
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        _p: ActivityRecipesParams,
+    ) -> Result<ActivityRecipesResult, CommandError> {
+        let known = crate::experience::source::RecipeExperienceSource::known_recipes(
+            &crate::experience::source::RecipeExperienceSource::overlay_dir(
+                &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            ),
+        )
+        .map_err(|e| {
+            CommandError::Invalid(format!(
+                "recipe overlay failed to load — fix or remove the named file, then retry: {e}"
+            ))
+        })?;
+        let recipes: Vec<RecipeCatalogEntry> = known
+            .iter()
+            .map(|r| RecipeCatalogEntry {
+                purpose: r.purpose.clone(),
+                params: r
+                    .params
+                    .iter()
+                    .map(|(k, d)| format!("{k} ({})", d.doc))
+                    .collect(),
+            })
+            .collect();
+        Ok(ActivityRecipesResult {
+            count: recipes.len() as u32,
+            recipes,
+        })
     }
 }
 
@@ -579,6 +725,8 @@ impl ActionCommand for ActivityProtect {
 // included — became undiscoverable while the catalog promised "Listed == callable".
 // `ModuleRegistry::register` now refuses to boot on the omission.
 crate::register_command!(ActivitySpawn);
+crate::register_command!(ActivityRecipes);
+crate::register_command!(ActivityInvite);
 crate::register_command!(ActivityArchive);
 crate::register_command!(ActivityProtect);
 
@@ -629,6 +777,10 @@ impl ServiceModule for ActivityModule {
             Arc::new(ActivitySpawn {
                 registry: self.registry.clone(),
             }),
+            Arc::new(ActivityRecipes),
+            Arc::new(ActivityInvite {
+                registry: self.registry.clone(),
+            }),
             Arc::new(ActivityArchive {
                 registry: self.registry.clone(),
             }),
@@ -646,6 +798,19 @@ impl ServiceModule for ActivityModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the start-a-project flow's wire surface. `activity/recipes`
+    // is the catalogue read `activity/spawn`'s own description points at (before it,
+    // discovery-by-refusal was the only path), and `activity/invite` is how a fresh
+    // room gets its people. Both AiSafe — a citizen or the operator starting an
+    // activity is the ordinary creative act. Renaming either orphans the UI flow.
+    #[test]
+    fn start_a_project_verbs_are_aisafe_under_their_wire_names() {
+        assert_eq!(ActivityRecipes::NAME, "activity/recipes");
+        assert_eq!(ActivityRecipes::ACCESS, AccessLevel::AiSafe);
+        assert_eq!(ActivityInvite::NAME, "activity/invite");
+        assert_eq!(ActivityInvite::ACCESS, AccessLevel::AiSafe);
+    }
 
     // what this catches: the exact live bug that made EVERY benchmark run room
     // render as plain chat — dispatch bound the recipe string "benchmark" while
