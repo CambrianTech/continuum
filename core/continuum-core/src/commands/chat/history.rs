@@ -19,7 +19,7 @@
 //! ([`decode_wire_event`] + the chat-transcript recovery in `realtime_wire`),
 //! so history and live rows can never disagree about what a message is.
 
-use crate::airc::realtime_wire::{chat_transcript_message, envelope_from_event};
+use crate::airc::realtime_wire::{chat_transcript_message, envelope_from_event, is_stream_chunk};
 use crate::airc::discover_airc_socket;
 use crate::sdk_codegen::CommandError;
 use airc_ipc::{DaemonClient, InboxRequest};
@@ -108,6 +108,12 @@ crate::action_command! {
             let Ok(event) = airc_lib::decode_wire_event(envelope_bytes) else {
                 continue; // malformed rows must not poison the read
             };
+            // Stream chunks are typing-indicator traffic — the settled utterance
+            // arrives separately via say(). Same rule as the live decoder; without
+            // it history renders one row per token fragment (seen live 2026-08-31).
+            if is_stream_chunk(&event) {
+                continue;
+            }
             // Same recovery seams as the live bridge: prefer the plain text
             // body (receipts/radiations), else the chat_transcript schema
             // (chat/send lines) — one definition of "a message".
