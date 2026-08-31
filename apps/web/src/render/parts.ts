@@ -914,12 +914,30 @@ function messageBody(msg: MessageRowVM): TemplateResult {
  *  line per act — status mark, tool name, object. No JS state — the browser
  *  owns the open/closed bit, so a re-render never fights the reader. */
 export function actGroupRow(group: ActGroupVM): TemplateResult {
+  // The actor's name is a DOOR to her page — every name everywhere navigates
+  // (pages = rooms = activities = content; Joel, 2026-08-31). stopPropagation
+  // so opening a profile never also toggles the receipt disclosure.
+  const openActor = (e: Event): void => {
+    e.stopPropagation();
+    e.preventDefault();
+    fireListingSelect(e, ROSTER_LISTING_ID, group.actorId);
+  };
   return html`
     <li class="act-group" data-actor=${group.actorId} title=${group.time}>
       <details>
         <summary>
           <span class="act-gear${group.anyFailed ? ' act-failed' : ''}">⚙</span>
-          <span class="act-actor">${group.actorName}</span>
+          <span
+            class="act-actor element-link"
+            role="button"
+            tabindex="0"
+            title="Open ${group.actorName}'s profile"
+            @click=${openActor}
+            @keydown=${(e: KeyboardEvent): void => {
+              if (e.key === 'Enter') openActor(e);
+            }}
+            >${group.actorName}</span
+          >
           <span class="act-line">${group.summaryLine}</span>
           <span class="act-count">${group.receipts.length}</span>
         </summary>

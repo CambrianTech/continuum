@@ -126,7 +126,23 @@ function runCard(run: BenchRunVM, maxGens: number): TemplateResult {
       <span class="bench-attempt" title="attempt N of M">${run.attempt}<i>/</i>${run.maxAttempts}</span>
     </div>
     <div class="bench-card-meta">
-      <span class="bench-persona">${run.persona}</span>
+      <span
+        class="bench-persona element-link"
+        role="button"
+        tabindex="0"
+        title="Open ${run.persona}'s profile"
+        @click=${(e: Event): void => {
+          e.stopPropagation();
+          (e.currentTarget as HTMLElement).dispatchEvent(
+            new CustomEvent('persona-open-by-name', {
+              detail: { name: run.persona },
+              bubbles: true,
+              composed: true,
+            }),
+          );
+        }}
+        >${run.persona}</span
+      >
       ${run.selfClaimed ? html`<span class="bench-selfclaimed">self-claimed</span>` : nothing}
       ${run.lastGenAgeS === null
         ? html`<span class="bench-nogen">no generations yet</span>`

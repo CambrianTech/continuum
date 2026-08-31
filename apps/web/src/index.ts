@@ -149,6 +149,19 @@ async function main(): Promise<void> {
 
   // A run card is a DOOR (bench-run-open, renderBench): clicking it stands
   // you in that run's activity room — same navigation verb as a tab click.
+  // A worker's NAME on a bench card doors to her page; the wire carries the
+  // display name, the directory seed resolves it to the durable id.
+  widget.addEventListener('persona-open-by-name', (e: Event) => {
+    const name = (e as CustomEvent<{ name?: string }>).detail?.name?.toLowerCase();
+    if (name === undefined || name.length === 0 || name === 'unclaimed') return;
+    const hit = widget.directorySeed.find((m) => m.name.toLowerCase() === name);
+    if (hit) {
+      void selectRoomHandler(hit.id, 'persona').catch((err: unknown) => {
+        console.error('persona-open-by-name failed:', err);
+      });
+    }
+  });
+
   widget.addEventListener('bench-run-open', (e: Event) => {
     const detail = (e as CustomEvent<{ roomId?: string; roomName?: string }>).detail;
     const roomId = detail?.roomId;
