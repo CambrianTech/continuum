@@ -868,6 +868,41 @@ export class ChatWidget extends LitElement {
     .metrics-spark circle {
       fill: var(--content-accent, #35d0e0);
     }
+    /* Profile tab bar — one job per tab (PAGES-IA.md). */
+    .p-tabs {
+      display: flex;
+      gap: var(--spacing-xs);
+      margin: var(--spacing-md) 0 var(--spacing-sm);
+      border-bottom: 1px solid var(--border-subtle);
+      padding-bottom: var(--spacing-xs);
+    }
+    .p-tab {
+      background: none;
+      border: 1px solid transparent;
+      border-radius: var(--radius-sm, 4px);
+      color: var(--content-secondary);
+      font-size: 12px;
+      padding: 4px 12px;
+      cursor: pointer;
+      letter-spacing: 0.02em;
+    }
+    .p-tab[data-active] {
+      color: var(--content-accent);
+      border-color: var(--border-subtle);
+      background: var(--button-secondary-background, rgba(255,255,255,0.04));
+    }
+    .p-idnums {
+      display: flex;
+      gap: var(--spacing-sm);
+      margin: 4px 0;
+    }
+    .p-idnum {
+      font-size: 11px;
+      padding: 1px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border-subtle);
+      color: var(--content-secondary);
+    }
     /* Record & awards — trophy chips: identity earned from verdicts. */
     .p-trophies {
       display: flex;

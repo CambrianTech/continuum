@@ -26,7 +26,12 @@ const WARM = 0xffd664;
 const TROPHY = 0xd4a017;
 const LEAF = 0x3fb950;
 
-export class HomeSceneElement extends HTMLElement {
+// Environment-safe base: specs import this module under node (no DOM);
+// the element only ever CONSTRUCTS in a browser, but the class definition
+// must not throw at import time.
+const ElementBase = (globalThis as { HTMLElement?: typeof HTMLElement }).HTMLElement ?? (class {} as unknown as typeof HTMLElement);
+
+export class HomeSceneElement extends ElementBase {
   private renderer?: THREE.WebGLRenderer;
   private scene?: THREE.Scene;
   private camera?: THREE.OrthographicCamera;
@@ -309,7 +314,9 @@ export class HomeSceneElement extends HTMLElement {
   }
 }
 
-customElements.define('home-scene', HomeSceneElement);
+if (typeof customElements !== 'undefined') {
+  customElements.define('home-scene', HomeSceneElement);
+}
 
 declare global {
   interface HTMLElementTagNameMap {
