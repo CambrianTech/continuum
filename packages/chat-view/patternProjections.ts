@@ -181,7 +181,11 @@ function tickerLine(msg: MessageRowVM, max = 34): string {
  *  reborn from data the chat state already carries — no new pipe, no fabrication).
  *  `version` is threaded from the host (a real manifest/build stamp) and honestly
  *  absent until it is. */
-export function continuonWidget(vm: ChatViewModel, version?: string): PanelWidget<ContinuonView> {
+export function continuonWidget(
+  vm: ChatViewModel,
+  version?: string,
+  feed?: string,
+): PanelWidget<ContinuonView> {
   const body: ContinuonView = {
     wordmark: 'continuum',
     tagline: 'ai workforce construction',
@@ -189,6 +193,9 @@ export function continuonWidget(vm: ChatViewModel, version?: string): PanelWidge
     // Newest last, last three turns — the ticker reads bottom-fresh like a log tail.
     ticker: vm.messages.slice(-3).map((m) => tickerLine(m)),
     alive: vm.members.some((m) => m.active),
+    // The connection status rides the continuon (with the favicon), never a
+    // text banner — the orb is the status channel by design.
+    ...(feed ? { feed } : {}),
   };
   return { id: 'continuon', kind: 'continuon', title: 'Continuum', body, scope: 'global' };
 }
@@ -399,6 +406,9 @@ export interface WorkspaceLive {
    *  app's package version). Drives the continuon header's version badge; honestly
    *  absent when the host has none to report. */
   readonly version?: string;
+  /** The state feed's connection status — drives the continuon orb + favicon
+   *  (the designed status channel). Absent = unknown/connecting. */
+  readonly feed?: string;
   /** The widget-owned live-call overlay (Go-live face state + the StreamDelta
    *  token rail + captions toggle) — renderer state threaded through so the
    *  live face projects from REAL signals. Absent = no live face requested. */
@@ -621,7 +631,7 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
   // graph is a FACE of the one HUD — cycling or pinned — and details take
   // you to the full center-stage activity).
   const left = [
-    continuonWidget(vm, live?.version),
+    continuonWidget(vm, live?.version, live?.feed),
     systemPanelWidget(vm, live?.sys, live?.serving),
     ...(nodes ? [nodes] : []),
     listingWidget(rooms),

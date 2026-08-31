@@ -69,7 +69,12 @@ webWidgetRegistry.register('continuon', (widget) => {
   return html`
     <section class="rail-widget" data-widget="continuon" data-id=${widget.id}>
       <div class="continuon">
-        <span class="continuon-orb" data-alive=${view.alive ? 'yes' : 'no'}></span>
+        <span
+          class="continuon-orb"
+          data-alive=${view.alive ? 'yes' : 'no'}
+          data-feed=${view.feed ?? 'connecting'}
+          title=${`state feed: ${view.feed ?? 'connecting'}`}
+        ></span>
         <div class="continuon-id">
           <div class="continuon-row">
             <span class="continuon-wordmark">${view.wordmark}</span>

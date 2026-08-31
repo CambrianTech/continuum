@@ -370,6 +370,11 @@ export interface ContinuonView {
   readonly ticker: readonly string[];
   /** Whether the substrate feed is live — drives the breathing mark's state. */
   readonly alive: boolean;
+  /** The state feed's connection status (`live` | `connecting` | `cached` |
+   *  `reconnecting` | `closed`) — the continuon orb + favicon ARE the status
+   *  channel (never a text banner; the raw retry bar was the anti-pattern,
+   *  2026-08-31). Absent = unknown, rendered as connecting. */
+  readonly feed?: string;
 }
 
 /** Wrap a `ListingView` as a `kind:'listing'` `PanelWidget` — the common case (the

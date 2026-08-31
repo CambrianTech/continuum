@@ -435,24 +435,50 @@ async function main(): Promise<void> {
       .catch((err: unknown) => console.error(`${verb} failed:`, err));
   });
 
-  // Visible connection diagnostics — a stuck "Connecting…" with no on-screen
-  // reason is undebuggable. Surface the WS lifecycle so a blank/stuck tab tells
-  // you WHY (socket closed / connected-but-no-snapshot / connect failed).
-  const banner = document.createElement('div');
-  banner.style.cssText =
-    'position:fixed;top:0;left:0;right:0;z-index:9;padding:6px 12px;font:12px ui-monospace,monospace;background:#2a2a30;color:#cdcdd3;border-bottom:1px solid #3a3a42';
-  const setStatus = (msg: string, warn = false): void => {
-    banner.textContent = `positron: ${msg}`;
-    banner.style.background = warn ? '#4a2a2a' : '#2a2a30';
-    banner.style.color = warn ? '#f7b7b7' : '#cdcdd3';
-    if (!banner.isConnected) document.body.appendChild(banner);
+  // CONNECTION STATE IS THE CONTINUON + FAVICON, never a text banner. The old
+  // fixed bar ("positron: state feed reconnecting — … retry #19 in 8s") was the
+  // anti-pattern this replaces (Joel, 2026-08-31: the continuon was designed to
+  // indicate status ALONG with the favicon, dynamically). Humans read the orb
+  // color and the tab icon; harnesses read `<html data-feed-status>`; engineers
+  // read the console — each channel gets its own tier, none gets a banner.
+  const favicon = ((): HTMLLinkElement => {
+    const link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+    if (link) return link;
+    const fresh = document.createElement('link');
+    fresh.rel = 'icon';
+    document.head.appendChild(fresh);
+    return fresh;
+  })();
+  const faviconHref = favicon.href; // the shipped mark, restored when live
+  const FEED_TINT: Record<string, string> = {
+    connecting: '#d8a53f',
+    cached: '#d8a53f',
+    reconnecting: '#d8a53f',
+    closed: '#e5534b',
+  };
+  const setFavicon = (status: string): void => {
+    const tint = FEED_TINT[status];
+    if (tint === undefined) {
+      favicon.href = faviconHref; // live — the real mark, untinted
+      return;
+    }
+    const c = document.createElement('canvas');
+    c.width = 64;
+    c.height = 64;
+    const ctx = c.getContext('2d');
+    if (!ctx) return;
+    ctx.beginPath();
+    ctx.arc(32, 32, 22, 0, Math.PI * 2);
+    ctx.fillStyle = tint;
+    ctx.fill();
+    favicon.href = c.toDataURL('image/png');
   };
   // Stamp the feed status SYNCHRONOUSLY before any await: from this instant the
   // page always carries `<html data-feed-status>`, so outside observers (shot
   // harness, e2e) wait on the app's own signal and can never mistake a
   // still-booting page for a settled one via the generic readyState fallback.
   document.documentElement.dataset.feedStatus = 'booting';
-  setStatus(`connecting to ${config.wsUrl} …`);
+  setFavicon('connecting');
 
   // READ socket: subscribe to chat state, merge each envelope into the widget.
   // Durability + reconnection are POSITRON-inherent (StateConnection owns them,
@@ -477,12 +503,15 @@ async function main(): Promise<void> {
     // client-side twin of #280). This is the event the capture tooling waits on
     // instead of guessing with wall-clock (or worse, virtual-time) budgets.
     document.documentElement.dataset.feedStatus = status;
+    // The three tiers: orb color (humans), favicon (the tab at a glance),
+    // console (engineers — the only place the retry detail belongs).
+    widget.feedStatus = status;
+    setFavicon(status);
     if (status === 'live') {
-      banner.remove();
       gotState = true;
       return;
     }
-    setStatus(`state feed ${status}${detail ? ` — ${detail}` : ''}`, status === 'reconnecting');
+    if (detail) console.warn(`state feed ${status} — ${detail}`);
   });
   state.on(CHAT_KIND, (envelope: StateEnvelope) => {
     latest = chatStateFromEnvelope(envelope);
@@ -551,11 +580,12 @@ async function main(): Promise<void> {
   let connectReturned = false;
   setTimeout(() => {
     if (gotState) return;
-    setStatus(
+    // Engineer-tier diagnostic (console, never a banner): a hung boot SAYS
+    // WHICH half hung. The user-facing signal is the amber orb + favicon.
+    console.warn(
       connectReturned
-        ? `connected to ${config.wsUrl} but NO room snapshot arrived in 4s — subscribe/snapshot issue`
-        : `connect() has not returned after 4s (${config.wsUrl}) — last feed status: ${lastFeedStatus} (none=hydrate never finished, connecting=socket stuck)`,
-      true,
+        ? `positron: connected to ${config.wsUrl} but NO room snapshot arrived in 4s — subscribe/snapshot issue`
+        : `positron: connect() has not returned after 4s (${config.wsUrl}) — last feed status: ${lastFeedStatus} (none=hydrate never finished, connecting=socket stuck)`,
     );
   }, 4000);
   // Connect: never throws with reconnect enabled — a dead core means cached

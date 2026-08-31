@@ -108,6 +108,7 @@ export class ChatWidget extends LitElement {
     arena: { attribute: false },
     canvas: { attribute: false },
     version: { attribute: false },
+    feedStatus: { attribute: false },
     sendHandler: { attribute: false },
     settingsHandler: { attribute: false },
     selectRoomHandler: { attribute: false },
@@ -161,6 +162,12 @@ export class ChatWidget extends LitElement {
    *  live artifact stage (DESIGN-BENCH-VISUAL-CRAFT.md §5). `undefined` =
    *  the canvas face renders its honest awaiting frame. */
   canvas?: CanvasViewState;
+
+  /** The state feed's connection status (`live`/`connecting`/`reconnecting`/
+   *  `cached`/`closed`), set by the host's `StateConnection.onStatus` — drives
+   *  the continuon orb's color (with the favicon, the designed status channel;
+   *  never a text banner). */
+  feedStatus?: string;
 
   /** The client build's version string (a real manifest/build stamp injected by
    *  the host) — drives the continuon header's version badge. `undefined` = no
@@ -1204,6 +1211,25 @@ export class ChatWidget extends LitElement {
     .continuon-orb[data-alive='no'] {
       filter: grayscale(0.8);
       opacity: 0.6;
+    }
+    /* CONNECTION STATE ON THE ORB (with the favicon, the designed status
+       channel — never a text banner). Feed state outranks the alive breath:
+       amber = connecting/reconnecting/cached (retrying quietly), red = closed. */
+    .continuon-orb[data-feed='connecting'],
+    .continuon-orb[data-feed='cached'],
+    .continuon-orb[data-feed='reconnecting'] {
+      background: radial-gradient(circle at 35% 35%, #ffd98a, #a8741a 65%, #4a3208);
+      box-shadow: 0 0 8px rgba(216, 165, 63, 0.6), inset 0 0 3px rgba(255, 255, 255, 0.35);
+      animation: continuon-retry 1.1s ease-in-out infinite;
+    }
+    .continuon-orb[data-feed='closed'] {
+      background: radial-gradient(circle at 35% 35%, #ff9a8a, #a83226 65%, #4a0f08);
+      box-shadow: 0 0 8px rgba(229, 83, 75, 0.6), inset 0 0 3px rgba(255, 255, 255, 0.35);
+      animation: none;
+    }
+    @keyframes continuon-retry {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.45; }
     }
     @media (prefers-reduced-motion: reduce) {
       .continuon-orb[data-alive='yes'] {
@@ -5147,6 +5173,7 @@ export class ChatWidget extends LitElement {
         arena: this.arena,
         canvas: this.canvas,
         version: this.version,
+        ...(this.feedStatus ? { feed: this.feedStatus } : {}),
         // The live-call overlay: the Go-live face state + the REAL StreamDelta
         // token rail (who is speaking NOW, and what they're saying — the same
         // map the typing bubbles/speaking rings draw) + the CC toggle.
