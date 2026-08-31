@@ -56,8 +56,14 @@ import {
   type PanelResizeStartDetail,
 } from '../render/parts';
 import { LIVE_PURPOSE, type SettingsContentBody, type WorkspaceLayout } from '@continuum/patterns';
-import '../render/CosmosBackdrop'; // registers <cosmos-backdrop> for the cosmos universe
-import '../render/PositronTrace'; // registers <positron-trace> for the positron universe
+import { universeRegistry, type UniverseInstance } from '../universe/Universe';
+import { CosmosUniverse } from '../universe/CosmosUniverse';
+import { PositronUniverse } from '../universe/PositronUniverse';
+
+// One registration per universe — the registry is the only list (no switches;
+// the widget resolves keys and speaks the UniverseInstance interface only).
+universeRegistry.register(new CosmosUniverse());
+universeRegistry.register(new PositronUniverse());
 
 /** The send action the host injects. Resolves when the message is accepted by
  *  the core; rejects (fails loud) on a transport/command error the widget shows. */
@@ -534,12 +540,16 @@ export class ChatWidget extends LitElement {
     // lore, one definition, every citizen ([[universe-is-an-experience-not-a-theme]]).
     // The target maps the key to a skin; here it's a data-attribute the styles key off.
     // Unset → the native 'continuum' look.
-    // Universes are OPT-IN (?universe=cosmos). The default-on experiment
-    // crashed the UI (2026-08-31): the backdrop's paint cost wasn't budgeted
-    // — a universe earns default status only after passing the paint budget
-    // (no per-frame shadowBlur, dPR cap, 30fps throttle, hidden-pause).
+    // Universes are OPT-IN (?universe=<key>) and resolved through the
+    // registry — a universe earns default status only after passing the
+    // paint budget (the 2026-08-31 cosmos crash wrote that law).
     const universe = new URLSearchParams(location.search).get('universe');
-    if (universe && universe !== 'none') this.setAttribute('data-universe', universe);
+    if (universe && universe !== 'none') {
+      this.setAttribute('data-universe', universe);
+      const world = universeRegistry.get(universe);
+      if (world) this._universe = world.mount();
+      else console.warn(`unknown universe key '${universe}' — no such registration`);
+    }
     // Digest expand/collapse: the row's affordance fires a composed event that
     // bubbles out of the shadow tree to the host — listen on self so the pure
     // fragments need no callback threading through the render registries.
@@ -561,6 +571,8 @@ export class ChatWidget extends LitElement {
   }
 
   override disconnectedCallback(): void {
+    this._universe?.dispose();
+    this._universe = undefined;
     this.removeEventListener(MESSAGE_EXPAND_TOGGLE, this.onExpandToggle);
     this.removeEventListener(LISTING_SELECT, this.onListingSelect);
     this.removeEventListener(NAV_TAB_CLOSE, this.onNavTabClose);
@@ -5162,16 +5174,14 @@ export class ChatWidget extends LitElement {
       const cause = err instanceof Error ? err.message : String(err);
       return html`<div class="render-error">Interface error rendering this room: ${cause}</div>`;
     }
-    const cosmos = this.getAttribute('data-universe') === 'cosmos';
-    const positron = this.getAttribute('data-universe') === 'positron';
+    if (this._universe) {
+      this._universe.update({
+        citizens: vm.members.map((m) => ({ name: m.name, active: m.active })),
+        energy: Math.min(1, (this.bench?.runs ?? []).filter((r) => r.phase === 'active').length / 4),
+      });
+    }
     return html`
-      ${positron ? html`<positron-trace></positron-trace>` : nothing}
-      ${cosmos
-        ? html`<cosmos-backdrop
-            .citizens=${vm.members.map((m) => ({ name: m.name, active: m.active }))}
-            .energy=${Math.min(1, (this.bench?.runs ?? []).filter((r) => r.phase === 'active').length / 4)}
-          ></cosmos-backdrop>`
-        : nothing}
+      ${this._universe?.element ?? nothing}
       ${surface}
     `;
   }
@@ -5184,40 +5194,30 @@ export class ChatWidget extends LitElement {
   private _lastResolved = -1;
   private _lastMsgCount = -1;
   private _lastActCount = -1;
+  /** The mounted universe, spoken to ONLY through UniverseInstance. */
+  private _universe?: UniverseInstance;
 
   protected override willUpdate(changed: PropertyValues): void {
     // Verdict comets: a NEW resolve fires the backdrop's surge — spectacle
     // wired to real outcomes.
+    // Universe facts — one interface call per REAL event delta, whatever
+    // world is mounted (or none). No element spelunking, ever.
     if (changed.has('bench')) {
       const resolved = (this.bench?.runs ?? []).filter((r) => r.resolved === true).length;
-      if (this._lastResolved >= 0 && resolved > this._lastResolved) {
-        const bg = this.renderRoot.querySelector('cosmos-backdrop') as
-          | (HTMLElement & { surge?: () => void })
-          | null;
-        const trace = this.renderRoot.querySelector('positron-trace') as
-          | (HTMLElement & { pulse?: (k: string) => void })
-          | null;
+      if (this._lastResolved >= 0 && resolved > this._lastResolved && this._universe) {
         for (let i = this._lastResolved; i < resolved; i++) {
-          bg?.surge?.();
-          trace?.pulse?.('verdict');
+          this._universe.onFact({ kind: 'verdict' });
         }
       }
       this._lastResolved = resolved;
     }
-    // Positron pulses for message/act arrivals — a light per FACT, never per
-    // render (deltas on the state's own counts).
-    if (changed.has('state') && this.state) {
-      const trace = this.renderRoot.querySelector('positron-trace') as
-        | (HTMLElement & { pulse?: (k: string) => void })
-        | null;
-      if (trace) {
-        const msgs = this.state.messages.length;
-        const acts = this.state.acts.length;
-        if (this._lastMsgCount >= 0 && msgs > this._lastMsgCount) trace.pulse?.('message');
-        if (this._lastActCount >= 0 && acts > this._lastActCount) trace.pulse?.('act');
-        this._lastMsgCount = msgs;
-        this._lastActCount = acts;
-      }
+    if (changed.has('state') && this.state && this._universe) {
+      const msgs = this.state.messages.length;
+      const acts = this.state.acts.length;
+      if (this._lastMsgCount >= 0 && msgs > this._lastMsgCount) this._universe.onFact({ kind: 'message' });
+      if (this._lastActCount >= 0 && acts > this._lastActCount) this._universe.onFact({ kind: 'act' });
+      this._lastMsgCount = msgs;
+      this._lastActCount = acts;
     }
     if (!changed.has('state') || !this.state) return;
     const prev = changed.get('state') as ChatState | undefined;

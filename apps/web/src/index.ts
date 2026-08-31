@@ -284,6 +284,7 @@ async function main(): Promise<void> {
   // predates `beforeMessageId` and its re-emit is blocked by the same
   // unexported-wire-types drift — when that regenerates, this becomes
   // `continuum.commands.execute('chat/poll', …)`.
+  let chatHistoryAbsenceLogged = false;
   const historyHandler: HistoryHandler = async (roomId, beforeMessageId) => {
     // THE DURABLE TRANSCRIPT (chat/history, 2026-08-31): the airc daemon's
     // own store — citizen speech AND radiated 💭/⚙ receipts, the full story
@@ -305,8 +306,17 @@ async function main(): Promise<void> {
           timestamp: new Date(m.timestamp).toISOString(),
         }));
       }
-    } catch {
-      // verb absent on this core — durable fallback below
+    } catch (err) {
+      // CLASSIFIED, never swallowed: only "this core predates the verb"
+      // falls through to chat/poll; every other failure is a real defect
+      // and propagates to the same error strip a failed poll reaches.
+      const msg = err instanceof Error ? err.message : String(err);
+      const verbAbsent = /no policy grants|unknown command|no legacy handler|not found/i.test(msg);
+      if (!verbAbsent) throw err;
+      if (!chatHistoryAbsenceLogged) {
+        chatHistoryAbsenceLogged = true;
+        console.info('chat/history not on this core — history degrades to chat/poll:', msg);
+      }
     }
     const raw = await transport.execute(
       buildCommandUri('chat/poll'),
