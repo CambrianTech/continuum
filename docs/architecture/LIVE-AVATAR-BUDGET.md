@@ -64,6 +64,39 @@ Per avatar at 640×360 NV12, 30fps:
     that tick (single command buffer submit, single signal wave) — 30
     wakeups/s total, not 420.
 
+## 2.5 The concurrency reality — ENGINES, not percentages
+
+The bar is not "avatars while decoding." It is **everything at once,
+sustained**: LLM decode + prefill, VISION ingest (image seeing = ViT
+prefill), AUDIO both ways (STT in, TTS out, VAD always-on), 14 avatar
+renders, N video encodes, inbound video decodes — live, simultaneously,
+for hours. "You cannot cheap or it burns" (Joel): Apple Silicon's
+envelope is thermal — a cheap solution that spikes any engine steals
+sustained watts from every other engine. The design principle:
+
+**Put each workload on the engine where it is almost free, and defend
+the GPU for decode.**
+
+| Workload | Engine | Rationale |
+|---|---|---|
+| LLM decode | GPU (owner) | Bandwidth-bound, latency IS the product. Everything else yields. |
+| LLM/vision prefill | GPU (scheduled) | Bursty; queues behind decode batches within its latency budget. |
+| Avatar render + RGBA→NV12 | GPU (paced, small buffers) | <0.5% bandwidth; must interleave, never wall. |
+| Video ENCODE (all avatar streams) | **Media engine** | Dedicated block; costs the GPU/CPU nothing. Never elsewhere. |
+| Inbound video DECODE (cams/screens) | **Media engine** | Same block, same rule. |
+| STT (whisper-class) + VAD | **ANE via CoreML** | The Neural Engine sits IDLE in our stack today — a whole engine of headroom. Moving speech there frees the GPU entirely of audio. |
+| TTS | ANE/CPU-AMX where the model allows; never GPU while decode runs | Speech synth must not contend with tokens. |
+| Audio DSP (resample, mix, jitter) | CPU (Accelerate/AMX) | Microseconds; keep it off everything else. |
+| Orchestration | CPU | Dispatch + signal only (hot potato). |
+
+Laws this adds:
+- **The ANE is not optional.** An idle Neural Engine while STT burns GPU
+  is the named waste. CoreML paths for VAD/STT are requirements, not
+  nice-to-haves.
+- **The media engine is the only place video codecs run.** Ever.
+- **Sustained > burst.** Every subsystem states its steady-state power
+  posture; a component that only benchmarks well for 90 seconds fails.
+
 ## 3. The budget, stated as acceptance receipts
 
 - **B1**: 14 idle avatars live: total GPU time for render+convert ≤ 3%
@@ -80,6 +113,13 @@ Per avatar at 640×360 NV12, 30fps:
 - **B5**: all of the above simultaneously with a benchmark round decoding
   — the live plane and the work plane share the machine by DESIGN, not by
   luck.
+- **B6 (the burn receipt)**: the FULL stack — decode + vision ingest +
+  STT/TTS live + 14 avatars + encodes — sustained **30 minutes** with
+  decode tok/s p50 flat (no thermal-throttle droop), verified via
+  powermetrics engine-residency + the throughput probes. Passing B1-B5
+  for a burst and failing B6 is failing.
+- **B7**: ANE residency > 0 during live speech (the STT/VAD-on-ANE
+  receipt); GPU shows no whisper/VAD kernels while decoding.
 
 ## 4. What we refuse (the cheapness list)
 
