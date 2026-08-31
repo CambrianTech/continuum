@@ -22,6 +22,7 @@
  */
 
 import { html, nothing, type TemplateResult } from 'lit';
+import { repeat } from 'lit/directives/repeat.js';
 import type { LiveContentBody, LiveParticipantVM } from '@continuum/patterns';
 import { fireLiveCameraToggle, fireLiveCaptionsToggle, fireLiveFaceToggle, fireLiveMediaAsk, fireLiveMicToggle } from '../render/parts';
 
@@ -102,7 +103,7 @@ function renderComposition(body: LiveContentBody): TemplateResult {
     </div>`;
   }
   return html`<div class="live-grid" data-composition="grid" data-count=${body.participants.length}>
-    ${body.participants.map(participantTile)}
+    ${repeat(body.participants, (p) => p.id, participantTile)}
   </div>`;
 }
 

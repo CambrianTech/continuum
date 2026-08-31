@@ -287,6 +287,10 @@ export class ChatWidget extends LitElement {
   /** senderId → latest decoded video frame, painted onto the tile canvas in
    *  updated() (imperative — canvas is not declarative Lit content). */
   private _videoFrames = new Map<string, CallVideoFrame>();
+  /** Pending typing mutations (text = latest accumulation, null = ended) —
+   *  flushed onto the reactive `_typing` at most once per animation frame. */
+  private _typingBuf = new Map<string, string | null>();
+  private _typingFlush?: number;
 
   private _draft = '';
   private _sending = false;
@@ -386,8 +390,18 @@ export class ChatWidget extends LitElement {
         if (this.state) this.applyStreamDelta({ ...d, roomId: this.state.room_id });
       },
       onVideoFrame: (f) => {
+        // OVERDRAW LAW (Joel, live 2026-08-31): a video frame repaints ITS
+        // canvas, never the widget. requestUpdate here re-rendered the entire
+        // template per frame per sender — the browser burned 40% GPU on
+        // overdraw. Structural re-render happens ONLY when a sender first
+        // appears (its tile/canvas doesn't exist yet).
+        const isNew = !this._videoFrames.has(f.senderId);
         this._videoFrames.set(f.senderId, f);
-        this.requestUpdate();
+        if (isNew) {
+          this.requestUpdate();
+          return; // the post-render paint pass below draws the first frame
+        }
+        this.paintVideoFrame(f);
       },
     });
     this._call = client;
@@ -411,6 +425,24 @@ export class ChatWidget extends LitElement {
       this._call = undefined;
       this._mediaConnected = false;
     }
+  }
+
+  /** Paint ONE video frame onto its tile canvas — imperative, render-pass-free. */
+  private paintVideoFrame(frame: CallVideoFrame): void {
+    if (frame.pixelFormat !== 0) return; // 0 = RGBA8
+    const canvas = this.renderRoot.querySelector<HTMLCanvasElement>(
+      `canvas.lt-video[data-sender="${frame.senderId}"]`,
+    );
+    if (!canvas) return;
+    if (canvas.width !== frame.width) canvas.width = frame.width;
+    if (canvas.height !== frame.height) canvas.height = frame.height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const expected = frame.width * frame.height * 4;
+    if (frame.pixels.length < expected) return;
+    const rgba = new Uint8ClampedArray(expected);
+    rgba.set(frame.pixels.subarray(0, expected));
+    ctx.putImageData(new ImageData(rgba, frame.width, frame.height), 0, 0);
   }
 
   private disconnectCall(): void {
@@ -630,13 +662,30 @@ export class ChatWidget extends LitElement {
       this._sessions.set(delta.roomId, sess);
       return;
     }
-    const next = new Map(this._typing);
+    // COALESCED: tokens arrive faster than frames, and assigning the reactive
+    // `_typing` per token re-rendered the full template per token (the
+    // overdraw class, Joel live 2026-08-31). Mutations buffer into a pending
+    // op map (string = latest text, null = stream ended) and the ONE reactive
+    // assignment flushes at most once per animation frame.
     if (delta.done) {
-      next.delete(delta.senderId);
+      this._typingBuf.set(delta.senderId, null);
     } else {
-      next.set(delta.senderId, (next.get(delta.senderId) ?? '') + delta.token);
+      const base =
+        this._typingBuf.get(delta.senderId) ?? this._typing.get(delta.senderId) ?? '';
+      this._typingBuf.set(delta.senderId, (base ?? '') + delta.token);
     }
-    this._typing = next;
+    if (this._typingFlush === undefined) {
+      this._typingFlush = requestAnimationFrame(() => {
+        this._typingFlush = undefined;
+        const next = new Map(this._typing);
+        for (const [k, v] of this._typingBuf) {
+          if (v === null) next.delete(k);
+          else next.set(k, v);
+        }
+        this._typingBuf.clear();
+        this._typing = next;
+      });
+    }
   }
 
   override connectedCallback(): void {
@@ -5224,11 +5273,14 @@ export class ChatWidget extends LitElement {
       // Working minds on top, the greyed past below — sorted by liveness then
       // recency then name ("the ONLINE users like benchy and atlas are greyed,
       // at the bottom and doing shit" — Joel, 2026-08-30).
+      // STABLE order: online first, then NAME. lastSeenMs is deliberately NOT
+      // a sort key — it refreshes on every directory poll, and a volatile sort
+      // key made the whole rail (and the call grid downstream) visibly
+      // reshuffle on every render tick (Joel, live 2026-08-31: "all the boxes
+      // randomly reordered"). Recency still renders as the row's stamp; it
+      // just doesn't move rows around.
       const merged = [...vm.members, ...offRoom].sort(
-        (a, b) =>
-          Number(b.active) - Number(a.active) ||
-          b.lastSeenMs - a.lastSeenMs ||
-          a.name.localeCompare(b.name),
+        (a, b) => Number(b.active) - Number(a.active) || a.name.localeCompare(b.name),
       );
       vm = {
         ...vm,
@@ -5610,23 +5662,9 @@ export class ChatWidget extends LitElement {
     // Paint any live video frames onto their tile canvases (imperative — the
     // canvas element is declarative in the template but its pixels are not).
     if (this._videoFrames.size > 0) {
-      for (const [sender, frame] of this._videoFrames) {
-        const canvas = this.renderRoot.querySelector<HTMLCanvasElement>(
-          `canvas.lt-video[data-sender="${sender}"]`,
-        );
-        if (!canvas || frame.pixelFormat !== 0) continue; // 0 = RGBA8
-        canvas.width = frame.width;
-        canvas.height = frame.height;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) continue;
-        const expected = frame.width * frame.height * 4;
-        if (frame.pixels.length < expected) continue;
-        // Copy into a fresh ArrayBuffer-backed clamped array (ImageData needs a
-        // real ArrayBuffer, not a subarray view over the frame's buffer).
-        const rgba = new Uint8ClampedArray(expected);
-        rgba.set(frame.pixels.subarray(0, expected));
-        ctx.putImageData(new ImageData(rgba, frame.width, frame.height), 0, 0);
-      }
+      // First-paint only: steady-state frames paint imperatively in
+      // onVideoFrame without touching the render pass.
+      for (const frame of this._videoFrames.values()) this.paintVideoFrame(frame);
     }
 
     // Element navigation (card 95844639): the anchored persona home rendered —

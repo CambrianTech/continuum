@@ -1735,11 +1735,78 @@ pub fn start_server(
     // the core itself, instead of waiting for whichever client happened to implement it.
     // Exactly one ever did (Node, in legacy/, now retired), which is why iOS/Android/TUI
     // citizens were structurally voiceless rather than merely buggy.
+    // The registrar's late-bound executor: filled beside `install_executor_on_all`
+    // so a human's call join can invoke `voice/register-session` — the verb that
+    // populates a call's CITIZENS (agents + Bevy video pumps). That verb was only
+    // ever called by the retired Node shell, so a web Go-Live produced a call
+    // with a human, hold music, and zero citizens (live 2026-08-31: four static
+    // portraits, nothing animating — the pumps' spawn block simply never ran).
+    let live_registrar_executor: std::sync::Arc<
+        crate::runtime::LateBound<crate::runtime::CommandExecutor>,
+    > = std::sync::Arc::new(crate::runtime::LateBound::new("live::session-registrar executor"));
     let call_manager = {
         let mut mgr = crate::live::transport::call_server::CallManager::new();
         let voice_for_join = voice_service.clone();
+        let citizens_exec = live_registrar_executor.clone();
         mgr.set_session_registrar(std::sync::Arc::new(
             move |call_id: &str, user_id: &str, display_name: &str, is_ai: bool| {
+                // CORE-DRIVEN CITIZEN POPULATION: the first HUMAN joining a call
+                // pulls the node's resident citizens in (idempotent — the voice
+                // module dedupes re-registration on the canonical id).
+                if !is_ai {
+                    if let Some(exec) = citizens_exec.cloned() {
+                        let call = call_id.to_string();
+                        let human_id = user_id.to_string();
+                        let human_name = display_name.to_string();
+                        tokio::spawn(async move {
+                            let Some(reg) =
+                                crate::persona::PersonaAircRuntimeRegistry::try_global()
+                            else {
+                                return;
+                            };
+                            let mut participants = vec![serde_json::json!({
+                                "user_id": human_id,
+                                "display_name": human_name,
+                                "participant_type": "human",
+                                "expertise": [],
+                            })];
+                            for rt in reg.iter() {
+                                participants.push(serde_json::json!({
+                                    "user_id": rt.persona_id().to_string(),
+                                    "display_name": rt.agent_name(),
+                                    "participant_type": "persona",
+                                    "expertise": [],
+                                }));
+                            }
+                            let n = participants.len();
+                            match exec
+                                .execute_json(
+                                    "voice/register-session",
+                                    serde_json::json!({
+                                        "session_id": call,
+                                        "room_id": call,
+                                        "participants": participants,
+                                    }),
+                                )
+                                .await
+                            {
+                                Ok(_) => crate::probe!(
+                                    class = "live.call.citizens_populated",
+                                    call_id = %call,
+                                    participants = n,
+                                    "human joined — resident citizens registered into the call \
+                                     (agents + avatar pumps spawn from here)"
+                                ),
+                                Err(e) => tracing::warn!(
+                                    call_id = %call,
+                                    error = %e,
+                                    probe_class = "live.call.citizens_populate_failed",
+                                    "citizen population failed — the call stays human-only this join"
+                                ),
+                            }
+                        });
+                    }
+                }
                 let Ok(uid) = uuid::Uuid::parse_str(user_id) else {
                     // A non-uuid participant id is a caller bug, not a runtime condition —
                     // say so rather than registering a citizen nobody can address later.
@@ -3164,6 +3231,8 @@ pub fn start_server(
     runtime
         .registry()
         .install_executor_on_all(Arc::clone(&executor));
+    // The live session-registrar's executor (citizen population on human join).
+    live_registrar_executor.install(Arc::clone(&executor));
 
     // L2 continuous-learning producer: hand the same wired executor to the
     // turn-completion training producer so a live persona reply can be scored,
