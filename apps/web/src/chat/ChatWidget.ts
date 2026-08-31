@@ -914,6 +914,22 @@ export class ChatWidget extends LitElement {
         to { background-position: -200% 0; }
       }
     }
+    /* The Activities panel never buries Users & Agents: the room list scrolls
+     * inside its own bounds past ~6 rows (Joel: "it's also pushed the user
+     * list all the way down"). Ephemeral work rooms live in one quiet
+     * disclosure, closed by default. */
+    .rooms-cells {
+      max-height: 240px;
+      overflow-y: auto;
+    }
+    .rooms-work > summary {
+      cursor: pointer;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--content-tertiary, #667);
+      padding: var(--spacing-xs) var(--spacing-md);
+    }
     /* Rail tree (#2632): a child activity nests under its parent room with a
      * quiet indent + branch tick — activity == room == tab, now with lineage. */
     .cell[data-nested] {

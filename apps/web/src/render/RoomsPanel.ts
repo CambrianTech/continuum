@@ -19,7 +19,7 @@
  * is a fake action ([[commands-do-real-work-and-return-receipts-not-promise-slop]]).
  */
 
-import { LitElement, html, type TemplateResult } from 'lit';
+import { LitElement, html, nothing, type TemplateResult } from 'lit';
 import type { ListingCell, ListingView } from '@continuum/patterns';
 import { listingCell } from './parts';
 
@@ -88,11 +88,20 @@ export class RoomsPanel extends LitElement {
     // activities follow it directly. A child whose parent isn't visible in
     // this facet renders as a root — never hidden work.
     const faceted = facetCells(view.cells, this._facet);
-    const ids = new Set(faceted.map((c) => c.id));
-    const roots = faceted.filter((c) => c.parent === undefined || !ids.has(c.parent));
+    // AN OUTSIDER'S LIST (Joel, 2026-08-31: "I don't really even comprehend
+    // what those rooms are"): the top level is DURABLE places only. Work
+    // rooms (anything with a parent_ref) either nest under their visible
+    // parent or fold into ONE collapsed "work rooms" group — never
+    // interleaved as pseudo-roots wearing branch ticks for rooms they don't
+    // belong to. Deduped by id: the same room renders once, ever.
+    const seen = new Set<string>();
+    const dedup = faceted.filter((c) => (seen.has(c.id) ? false : (seen.add(c.id), true)));
+    const ids = new Set(dedup.map((c) => c.id));
+    const places = dedup.filter((c) => c.parent === undefined);
     const childrenOf = (id: string): readonly ListingCell[] =>
-      faceted.filter((c) => c.parent === id && c.parent !== undefined && ids.has(c.parent));
-    const cells = roots.flatMap((r) => [r, ...childrenOf(r.id)]);
+      dedup.filter((c) => c.parent === id);
+    const orphans = dedup.filter((c) => c.parent !== undefined && !ids.has(c.parent));
+    const cells = places.flatMap((r) => [r, ...childrenOf(r.id)]);
     return html`
       <section class="rail-widget" data-widget="rooms" data-id=${view.id}>
         <div class="who-head">
@@ -114,9 +123,17 @@ export class RoomsPanel extends LitElement {
           </span>
           <span class="who-count">${view.cells.length}</span>
         </div>
-        ${cells.length > 0
-          ? html`<ul class="cells">
+        ${cells.length > 0 || orphans.length > 0
+          ? html`<ul class="cells rooms-cells">
               ${cells.map((c) => listingCell(c, view.id))}
+              ${orphans.length > 0
+                ? html`<details class="rooms-work">
+                    <summary>work rooms · ${orphans.length}</summary>
+                    <ul class="cells">
+                      ${orphans.map((c) => listingCell(c, view.id))}
+                    </ul>
+                  </details>`
+                : nothing}
             </ul>`
           : html`<div class="rooms-empty">
               ${this._facet === 'dms' ? 'No direct messages yet' : 'No rooms yet'}

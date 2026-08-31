@@ -697,10 +697,22 @@ fn activity_lineage(room_ref: &str, title: &str) -> (String, String) {
         .strip_prefix("swe--")
         .and_then(|rest| rest.rsplit_once("--").map(|(i, _)| i))
         .unwrap_or(title);
-    let assignee8 = act.assignee.to_string()[..8].to_string();
+    // Outsider-readable (Joel, 2026-08-31: "I don't really even comprehend
+    // what those rooms are"): `repo__repo-1234` reads as its issue half
+    // (`pylint-7114`), and the assignee is her NAME when the registry knows
+    // her — a hex prefix labels nothing for a human.
+    let short_instance = instance.rsplit_once("__").map(|(_, tail)| tail).unwrap_or(instance);
+    let who = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+        .map(|reg| reg.roster_snapshot())
+        .and_then(|snap| {
+            snap.into_iter()
+                .find(|(_, peer)| *peer == act.assignee)
+                .map(|(name, _)| name)
+        })
+        .unwrap_or_else(|| act.assignee.to_string()[..8].to_string());
     (
         run_room.to_string(),
-        format!("{instance} · {assignee8}"),
+        format!("{short_instance} · {who}"),
     )
 }
 
