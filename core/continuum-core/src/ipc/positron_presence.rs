@@ -290,6 +290,15 @@ pub(crate) fn request_presence_resync(bus: &MessageBus) {
 /// presence emitter is the ONE place this disk fact meets the wire — the
 /// shared [`roster_slot_from_member`] projection stays pure (no I/O), and the
 /// persona-grounding rail (which has no use for pixels) never pays for it.
+/// The directory verb's read of the same store — one scan implementation,
+/// exposed for `presence/directory` (the stream's enrichment only rides
+/// changed-roster publishes; the directory flows every poll).
+pub(crate) fn scan_avatar_store_for_directory() -> HashMap<Uuid, String> {
+    avatar_store_dir()
+        .map(|d| scan_avatar_store(&d))
+        .unwrap_or_default()
+}
+
 fn avatar_store_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".continuum").join("avatars"))
 }

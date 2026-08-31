@@ -5054,13 +5054,21 @@ export class ChatWidget extends LitElement {
       // The directory's heartbeat recency beats a room card's stale stamp —
       // the "9d ago" rows were identity-creation dates, not activity.
       const seedSeen = new Map(this.directorySeed.map((m) => [m.id, m.lastSeenMs]));
+      // Faces ride the directory too: the presence stream's avatar enrichment
+      // only lands on changed-roster publishes (heartbeats are channel-scoped,
+      // so fossil rosters never re-publish) — the seed's portrait fills any
+      // member the stream left faceless.
+      const seedFace = new Map(
+        this.directorySeed.flatMap((m) => (m.avatarUrl ? [[m.id, m.avatarUrl] as const] : [])),
+      );
       vm = {
         ...vm,
         members: vm.members.map((m) => {
           const fresher = Math.max(m.lastSeenMs, seedSeen.get(m.id) ?? 0);
           const active = m.active || resident.has(m.id);
-          return active !== m.active || fresher !== m.lastSeenMs
-            ? { ...m, active, lastSeenMs: fresher }
+          const face = m.avatarUrl ?? seedFace.get(m.id);
+          return active !== m.active || fresher !== m.lastSeenMs || face !== m.avatarUrl
+            ? { ...m, active, lastSeenMs: fresher, ...(face !== undefined ? { avatarUrl: face } : {}) }
             : m;
         }),
       };

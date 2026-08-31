@@ -494,6 +494,7 @@ async function main(): Promise<void> {
           runtime?: string;
           online?: boolean;
           last_seen_ms?: number;
+          avatar_url?: string;
         }[];
       };
       const seed: RosterMemberVM[] = (parsed.peers ?? [])
@@ -506,6 +507,7 @@ async function main(): Promise<void> {
           runtime: c.runtime ?? '',
           vitals: {},
           lastSeenMs: c.last_seen_ms ?? 0,
+          ...(c.avatar_url !== undefined ? { avatarUrl: c.avatar_url } : {}),
         }));
       // The viewer stays first + always-online regardless of what the
       // directory knows about their peer row.

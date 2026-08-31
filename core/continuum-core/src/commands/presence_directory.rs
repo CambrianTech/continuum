@@ -75,6 +75,14 @@ pub struct PresenceDirectoryEntry {
     /// identity-creation dates being passed off as activity).
     #[ts(type = "number")]
     pub last_seen_ms: u64,
+    /// The node's stored portrait for this peer (`/avatars/<uuid>.png`,
+    /// rendered by `avatar/snapshot`'s Bevy pass). Carried HERE because the
+    /// presence stream's enrichment only rides changed-roster publishes, and
+    /// heartbeats are channel-scoped — a fossil roster never re-publishes, so
+    /// faces never landed (2026-08-31). The directory flows every poll.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub avatar_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -146,6 +154,7 @@ impl ActionCommand for PresenceDirectory {
                 online: false, // liveness overlaid below
                 resident: false,
                 last_seen_ms: slot.last_seen_ms,
+                avatar_url: None, // stamped from the store below
             };
             merged
                 .entry(peer_uuid)
@@ -215,6 +224,7 @@ impl ActionCommand for PresenceDirectory {
                             online: false,
                             resident: false,
                             last_seen_ms: 0,
+                            avatar_url: None,
                         });
                     if card.last_seen_ms > e.last_seen_ms {
                         e.last_seen_ms = card.last_seen_ms;
@@ -226,10 +236,12 @@ impl ActionCommand for PresenceDirectory {
             }
         }
         let mut peers: Vec<PresenceDirectoryEntry> = merged.into_values().collect();
+        let avatars = crate::ipc::positron_presence::scan_avatar_store_for_directory();
         for e in &mut peers {
             e.resident = self.registry.get(e.peer_id.as_uuid()).is_some();
             e.online =
                 e.resident || now_ms.saturating_sub(e.last_seen_ms) <= live_window_ms;
+            e.avatar_url = avatars.get(&e.peer_id.as_uuid()).cloned();
         }
         peers.sort_by(|a, b| {
             bool::cmp(&b.online, &a.online)
