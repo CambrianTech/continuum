@@ -9,7 +9,7 @@
  * a target only draws them.
  */
 
-import { listingWidget } from '@continuum/patterns';
+import { HERE_NOW_LISTING_ID, WORKING_NOW_LISTING_ID, listingWidget } from '@continuum/patterns';
 import type {
   ListingView,
   ListingCell,
@@ -646,7 +646,10 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
       // facts + the worker. Composed from existing widget kinds, honest-absent.
       ...(personaWithWork === undefined || personaWithWork === null
         ? (() => {
-            const w = roomContextWidgets(vm, live);
+            // Instruments first (round/card lifecycle on run/solve rooms),
+            // then the room's PEOPLE (here-now / working-now doors) — the
+            // chat-room answer to "what do I do and monitor here".
+            const w = [...roomContextWidgets(vm, live), ...chatRoomPresenceWidgets(vm, live)];
             return w.length > 0 ? { widgets: w } : {};
           })()
         : {}),
@@ -660,6 +663,75 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
         : {}),
     },
   };
+}
+
+/** CHAT-ROOM rail instruments (Joel 2026-08-31: "think about what you want to
+ *  DO and monitor in each activity" — the rail was an info card and blank).
+ *  A chat room is PEOPLE, so the rail answers the two live questions:
+ *
+ *  - **Here now** — the members attached and awake, each cell a DOOR to their
+ *    persona home (the roster-pick verb; humans lead, then citizens).
+ *  - **Working now** — this room's members with live runs, each cell a DOOR
+ *    to the run's solve room (the run-card verb).
+ *
+ *  Honest-absent throughout: nobody active → no widget; no live runs (or no
+ *  bench feed) → no widget; a run without a minted solve room stays doorless
+ *  and is skipped rather than half-opening. Real presence + ledger data only —
+ *  never fabricated rows. */
+function chatRoomPresenceWidgets(
+  vm: ChatViewModel,
+  live?: WorkspaceLive,
+): PanelWidget<MetricsView | ListingView>[] {
+  const widgets: PanelWidget<MetricsView | ListingView>[] = [];
+  const here = vm.members.filter((m) => m.active);
+  if (here.length > 0) {
+    const lead = [...here].sort((a, b) =>
+      a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === 'human' ? -1 : 1,
+    );
+    widgets.push({
+      id: HERE_NOW_LISTING_ID,
+      kind: 'listing',
+      title: 'Here now',
+      scope: 'activity',
+      body: {
+        id: HERE_NOW_LISTING_ID,
+        title: `Here now · ${here.length}`,
+        cells: lead.slice(0, 12).map((m) => ({
+          id: m.id,
+          title: m.name,
+          subtitle: [m.kind, m.runtime].filter(Boolean).join(' · '),
+        })),
+      },
+    });
+  }
+  const memberById = new Map(vm.members.map((m) => [m.id, m.name]));
+  const working = (live?.bench?.runs ?? []).filter(
+    (r) =>
+      (r.phase === 'active' || r.phase === 'queued') &&
+      r.solver !== undefined &&
+      memberById.has(r.solver) &&
+      r.solve_room !== undefined,
+  );
+  if (working.length > 0) {
+    widgets.push({
+      id: WORKING_NOW_LISTING_ID,
+      kind: 'listing',
+      title: 'Working now',
+      scope: 'activity',
+      body: {
+        id: WORKING_NOW_LISTING_ID,
+        title: `Working now · ${working.length}`,
+        cells: working.slice(0, 8).map((r) => ({
+          id: r.solve_room as string,
+          group: 'room',
+          title: memberById.get(r.solver as string) ?? (r.solver as string),
+          subtitle: r.instance ?? r.run_id,
+          badges: [r.phase, ...(r.acts !== undefined ? [`${r.acts} acts`] : [])],
+        })),
+      },
+    });
+  }
+  return widgets;
 }
 
 /** Run/solve room rail instruments (PAGES-IA slices 3+4): a run ROOM shows

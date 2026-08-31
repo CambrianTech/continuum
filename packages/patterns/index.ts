@@ -236,6 +236,15 @@ export interface PanelWidget<Body = unknown> {
  *  can find the roster among several listing widgets without a magic string each. */
 export const ROSTER_LISTING_ID = 'roster';
 
+/** The chat-room rail's "who is here NOW" listing — every cell a DOOR to that
+ *  member's persona home (same verb as a roster pick). Single-sourced so the
+ *  select router and the projection agree without a magic string each. */
+export const HERE_NOW_LISTING_ID = 'room-here-now';
+
+/** The chat-room rail's "who is WORKING now" listing — every cell a DOOR to
+ *  that run's solve room (`group: 'room'`, same verb as a run-card click). */
+export const WORKING_NOW_LISTING_ID = 'room-working-now';
+
 /** A metrics `PanelWidget` body — a small, pre-formatted readout the rail draws as a
  *  labelled stat row (+ an optional sparkline). The projection owns the numbers AND
  *  their formatting (units, precision); a target only paints. Drives the left rail's

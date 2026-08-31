@@ -10,7 +10,7 @@
 import { html, svg, nothing, type TemplateResult } from 'lit';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import hljs from 'highlight.js/lib/common';
-import { ROSTER_LISTING_ID } from '@continuum/patterns';
+import { HERE_NOW_LISTING_ID, ROSTER_LISTING_ID, WORKING_NOW_LISTING_ID } from '@continuum/patterns';
 import type { GaugeView, ListingCell, ListingView, MetricsView } from '@continuum/patterns';
 import type {
   ActGroupVM,
@@ -188,6 +188,16 @@ export function navSelectTarget(detail: ListingSelectDetail): NavSelectRoute | n
         ? detail.element
         : undefined;
     return { target: detail.id, kind: 'persona', ...(anchor !== undefined ? { anchor } : {}) };
+  }
+  // The chat-room rail's people doors (every-name-is-a-door): a here-now pick
+  // opens that member's persona home; a working-now pick stands in the run's
+  // solve room (cells carry `group: 'room'` and the solve room's UUID).
+  if (detail.listingId === HERE_NOW_LISTING_ID) {
+    return { target: detail.id, kind: 'persona' };
+  }
+  if (detail.listingId === WORKING_NOW_LISTING_ID) {
+    if (detail.group === 'room') return { target: detail.id, kind: 'room' };
+    return null;
   }
   return null;
 }
