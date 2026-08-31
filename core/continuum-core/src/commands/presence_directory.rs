@@ -113,66 +113,116 @@ impl ActionCommand for PresenceDirectory {
         _ctx: &Ctx,
         _p: PresenceDirectoryParams,
     ) -> Result<PresenceDirectoryResult, CommandError> {
-        // Any attached handle sees the same daemon store; prefer a resident's,
-        // fall back to the operator self-peer. Neither online = boot window.
-        let airc = self
-            .registry
-            .any_live_citizen()
-            .map(|rt| rt.airc().clone())
-            .or_else(crate::persona::operator_peer::operator_airc)
-            .ok_or_else(|| {
-                CommandError::Internal(
-                    "no airc handle is attached yet this boot — retry once citizens or the \
-                     operator self-peer come online"
-                        .into(),
-                )
-            })?;
-        let cards = airc_lib::Airc::room_roster_cards_in(
-            &airc,
-            None, // the SCOPE roster — every room, one answer
-            DIRECTORY_WINDOW,
-            DIRECTORY_SCAN,
-        )
-        .await
-        .map_err(|e| CommandError::Internal(format!("scope roster read failed: {e}")))?;
+        // WHO EXISTS: the union of the node's durable room directories
+        // (`~/.continuum/state/room-directory-<room>.json` — every slot this
+        // node has ever projected, restart-proof). The first cut read the
+        // daemon's recent-events page instead, and a benchmark burst pushed
+        // every quiet peer off the page: count=3 in a continuum of ~30
+        // (measured 2026-08-31). Files, not paging — existence is durable.
+        let mut merged: std::collections::HashMap<uuid::Uuid, PresenceDirectoryEntry> =
+            std::collections::HashMap::new();
+        for slot in crate::ipc::positron_presence::scope_directory_slots() {
+            let peer_uuid = slot.member_id;
+            let kind = slot
+                .integrations
+                .get("continuum_kind")
+                .cloned()
+                .unwrap_or_else(|| match slot.kind {
+                    continuum_positron::SenderKind::Human => "human".to_string(),
+                    _ => "agent".to_string(),
+                });
+            let entry = PresenceDirectoryEntry {
+                name: slot.display_name.clone(),
+                peer_id: crate::identity::PeerId::from_uuid(peer_uuid),
+                runtime: slot.provenance.runtime.clone(),
+                kind,
+                online: false, // liveness overlaid below
+                resident: false,
+                last_seen_ms: slot.last_seen_ms,
+            };
+            merged
+                .entry(peer_uuid)
+                .and_modify(|e| {
+                    // Newest sighting wins; a real name never regresses to the
+                    // provisional peer-xxxx label (same law as the room fold).
+                    if slot.last_seen_ms > e.last_seen_ms {
+                        e.last_seen_ms = slot.last_seen_ms;
+                        if !slot.display_name.starts_with("peer-") {
+                            e.name = slot.display_name.clone();
+                        }
+                        e.runtime = slot.provenance.runtime.clone();
+                    }
+                })
+                .or_insert(entry);
+        }
+        // WHO IS ONLINE NOW: the daemon's live heartbeat window, overlaid.
+        // Best-effort — a boot window with no airc handle still serves the
+        // durable existence list (dots grey, honestly).
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|e| CommandError::Internal(e.to_string()))?
             .as_millis() as u64;
         let live_window_ms =
             crate::persona::room_roster_source::PRESENCE_WINDOW.as_millis() as u64;
-        let mut peers = Vec::with_capacity(cards.len());
-        for card in cards {
-            let peer_uuid = card.peer_id.as_uuid();
-            let resident = self.registry.get(peer_uuid).is_some();
-            let heartbeat_live = now_ms.saturating_sub(card.last_seen_ms) <= live_window_ms;
-            let kind = card
-                .identity
-                .as_ref()
-                .and_then(|i| i.integrations.get("continuum_kind").cloned())
-                .unwrap_or_else(|| {
-                    if card.runtime == "interactive" {
-                        "human".to_string()
-                    } else {
-                        "agent".to_string()
+        let airc = self
+            .registry
+            .any_live_citizen()
+            .map(|rt| rt.airc().clone())
+            .or_else(crate::persona::operator_peer::operator_airc);
+        if let Some(airc) = airc {
+            if let Ok(cards) = airc_lib::Airc::room_roster_cards_in(
+                &airc,
+                None,
+                DIRECTORY_WINDOW,
+                DIRECTORY_SCAN,
+            )
+            .await
+            {
+                for card in cards {
+                    let peer_uuid = card.peer_id.as_uuid();
+                    let name = card
+                        .identity
+                        .as_ref()
+                        .map(|i| i.name.clone())
+                        .unwrap_or_else(|| {
+                            crate::ipc::positron_source::provisional_sender_name(peer_uuid)
+                        });
+                    let kind = card
+                        .identity
+                        .as_ref()
+                        .and_then(|i| i.integrations.get("continuum_kind").cloned())
+                        .unwrap_or_else(|| {
+                            if card.runtime == "interactive" {
+                                "human".to_string()
+                            } else {
+                                "agent".to_string()
+                            }
+                        });
+                    let e = merged
+                        .entry(peer_uuid)
+                        .or_insert_with(|| PresenceDirectoryEntry {
+                            name: name.clone(),
+                            peer_id: crate::identity::PeerId::from_uuid(peer_uuid),
+                            runtime: card.runtime.clone(),
+                            kind: kind.clone(),
+                            online: false,
+                            resident: false,
+                            last_seen_ms: 0,
+                        });
+                    if card.last_seen_ms > e.last_seen_ms {
+                        e.last_seen_ms = card.last_seen_ms;
+                        if !name.starts_with("peer-") {
+                            e.name = name;
+                        }
                     }
-                });
-            let name = card
-                .identity
-                .as_ref()
-                .map(|i| i.name.clone())
-                .unwrap_or_else(|| {
-                    crate::ipc::positron_source::provisional_sender_name(peer_uuid)
-                });
-            peers.push(PresenceDirectoryEntry {
-                name,
-                peer_id: crate::identity::PeerId::from_uuid(peer_uuid),
-                runtime: card.runtime,
-                kind,
-                online: resident || heartbeat_live,
-                resident,
-                last_seen_ms: card.last_seen_ms,
-            });
+                }
+            }
+        }
+        let mut peers: Vec<PresenceDirectoryEntry> = merged.into_values().collect();
+        for e in &mut peers {
+            e.resident = self.registry.get(e.peer_id.as_uuid()).is_some();
+            e.online =
+                e.resident || now_ms.saturating_sub(e.last_seen_ms) <= live_window_ms;
         }
         peers.sort_by(|a, b| {
             bool::cmp(&b.online, &a.online)

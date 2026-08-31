@@ -96,6 +96,37 @@ fn directory_path(room_id: &Uuid) -> Option<PathBuf> {
     })
 }
 
+/// Every slot in EVERY room directory on this node — the scope-wide "who
+/// exists" read `presence/directory` unions (duplicates across rooms
+/// included; the caller merges by member id, newest sighting winning).
+/// Files, not daemon paging: existence must survive restarts and benchmark
+/// bursts, and the recent-events page provably doesn't (2026-08-31: a
+/// 4000-event page during a solve burst hid every quiet peer).
+pub fn scope_directory_slots() -> Vec<RosterSlotView> {
+    let Some(state) = dirs::home_dir().map(|h| h.join(".continuum").join("state")) else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(&state) else {
+        return Vec::new();
+    };
+    let mut slots = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Some(room) = name
+            .strip_prefix("room-directory-")
+            .and_then(|r| r.strip_suffix(".json"))
+        else {
+            continue;
+        };
+        let Ok(room_id) = Uuid::parse_str(room) else {
+            continue;
+        };
+        slots.extend(load_directory(&room_id).into_values());
+    }
+    slots
+}
+
 fn load_directory(room_id: &Uuid) -> HashMap<Uuid, RosterSlotView> {
     let Some(path) = directory_path(room_id) else {
         return HashMap::new();
