@@ -97,6 +97,10 @@ COPY . .
 # relative path the `COPY . .` above already provides (the file is checked in). No
 # `--from=shared*` build-context needed; models.json is unreferenced by the Rust core.
 
+# Model registry SSOT used by candle_adapter.rs include_str!:
+# ../../../../shared/models.json resolves to /shared/models.json here.
+COPY --from=shared models.json /shared/models.json
+
 # Fail fast if submodules are uninitialized.
 RUN test -f vendor/llama.cpp/CMakeLists.txt || ( \
     echo "ERROR: vendor/llama.cpp is empty — host submodule not initialized." >&2 && \

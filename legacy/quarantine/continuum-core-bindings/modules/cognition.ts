@@ -41,6 +41,7 @@ import type {
 	SemanticSearchResult,
 	ValidateResponseRequest,
 	ValidateResponseDecision,
+<<<<<<<< HEAD:legacy/quarantine/continuum-core-bindings/modules/cognition.ts
 } from '../../../../protocol/typescript';
 import type { PersonaResponse } from '../../../../protocol/typescript/cognition/PersonaResponse';
 import type { RecipeTurnBatchPlan } from '../../../../protocol/typescript/cognition/RecipeTurnBatchPlan';
@@ -49,6 +50,16 @@ import type { Signal } from '../../../../protocol/typescript/recipe/Signal';
 import type { PersonaContext } from '../../../../protocol/typescript/recipe/PersonaContext';
 import type { AdmissionDecision } from '../../../../protocol/typescript/persona/AdmissionDecision';
 import type { Engram } from '../../../../protocol/typescript/persona/Engram';
+========
+} from '../../../protocol/typescript';
+import type { PersonaResponse } from '../../../protocol/typescript/cognition/PersonaResponse';
+import type { RecipeTurnBatchPlan } from '../../../protocol/typescript/cognition/RecipeTurnBatchPlan';
+import type { RecipeTurnBatchRequest } from '../../../protocol/typescript/cognition/RecipeTurnBatchRequest';
+import type { Signal } from '../../../protocol/typescript/recipe/Signal';
+import type { PersonaContext } from '../../../protocol/typescript/recipe/PersonaContext';
+import type { AdmissionDecision } from '../../../protocol/typescript/persona/AdmissionDecision';
+import type { Engram } from '../../../protocol/typescript/persona/Engram';
+>>>>>>>> origin/main:sdk/typescript/modules/cognition.ts
 
 /**
  * Caller-supplied input for `cognition/respond`.

@@ -66,7 +66,7 @@ import { VisionCacheMixin } from './modules/vision_cache';
 import { PlasticityMixin } from './modules/plasticity';
 import { GridMixin } from './modules/grid';
 
-// Re-export types from shared/generated (used by consumers)
+// Re-export types from protocol/typescript (used by consumers)
 export type {
 	InboxMessageRequest,
 	CognitionDecision,
@@ -100,7 +100,11 @@ export type {
 	ToolParseResult,
 	ParsedToolCall,
 	CorrectedToolCall,
+<<<<<<<< HEAD:legacy/quarantine/continuum-core-bindings/RustCoreIPC.ts
 } from '../../../protocol/typescript';
+========
+} from '../../protocol/typescript';
+>>>>>>>> origin/main:sdk/typescript/RustCoreIPC.ts
 
 // Re-export memory types
 export type { CorpusMemory } from './CorpusMemory';
@@ -111,7 +115,11 @@ export type { MultiLayerRecallRequest } from './MultiLayerRecallRequest';
 export type { ConsciousnessContextResponse } from './ConsciousnessContextResponse';
 
 // Re-export RAG types
+<<<<<<<< HEAD:legacy/quarantine/continuum-core-bindings/RustCoreIPC.ts
 export type { RagSourceRequest, RagComposeResult } from '../../../protocol/typescript/rag';
+========
+export type { RagSourceRequest, RagComposeResult } from '../../protocol/typescript/rag';
+>>>>>>>> origin/main:sdk/typescript/RustCoreIPC.ts
 
 /**
  * Compose all mixins into the full client class.

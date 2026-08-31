@@ -1,0 +1,38 @@
+{
+  "name": "cognition/vision-describe",
+  "description": "Describe an image via the best available vision-capable model. Selects a vision-capable model from the Rust model registry, builds the describe prompt from option flags, dispatches `ai/generate` with multimodal content (text + base64 image), and parses the response into a VisionDescription. Migrated from `system/vision/VisionInferenceProvider.ts` per #1276 (oxidizer freeform-shape outlier — pairs with codex's #1284 structured-decision shape). Returns null when no vision model is registered or generation fails.",
+  "accessLevel": "ai-safe",
+  "environment": "server",
+  "params": [
+    {
+      "name": "base64Data",
+      "type": "string",
+      "description": "Base64-encoded image bytes. The Rust adapter shapes this for the destination provider (Anthropic native base64, OpenAI image_url, llama.cpp mmproj)."
+    },
+    {
+      "name": "mimeType",
+      "type": "string",
+      "description": "Image MIME type (e.g. 'image/png', 'image/jpeg')."
+    },
+    {
+      "name": "options",
+      "type": "VisionDescribeOptions",
+      "optional": true,
+      "description": "Per-call describe knobs (preferredModel, preferredProvider, maxLength, prompt override, detectObjects, detectColors, detectText). Defaults: concise prose with no structured-extraction prompts."
+    }
+  ],
+  "results": [
+    {
+      "name": "result",
+      "type": "VisionDescription | null",
+      "description": "Description envelope or null when no vision model is registered / generation failed. See shared/generated/cognition/VisionDescription.ts."
+    }
+  ],
+  "examples": [
+    {
+      "description": "Describe a PNG screenshot for the chat-side vision pipeline",
+      "command": "./jtag cognition/vision-describe --base64Data=\"<base64>\" --mimeType=\"image/png\"",
+      "expectedResult": "{ description: 'A screenshot of...', modelId: '...', provider: '...', responseTimeMs: 1234 }"
+    }
+  ]
+}

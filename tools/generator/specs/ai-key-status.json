@@ -1,0 +1,42 @@
+{
+  "name": "ai/key/status",
+  "description": "Report redacted API-key availability and fingerprints without exposing raw or masked secret values.",
+  "params": [
+    {
+      "name": "provider",
+      "type": "string",
+      "optional": true,
+      "description": "Optional provider name or config key. Omit to list all known keys."
+    }
+  ],
+  "results": [
+    {
+      "name": "entries",
+      "type": "array",
+      "description": "Redacted key status entries containing provider names, config key names, booleans, source, and short fingerprints only."
+    },
+    {
+      "name": "configuredCount",
+      "type": "number",
+      "description": "Number of configured keys."
+    },
+    {
+      "name": "totalCount",
+      "type": "number",
+      "description": "Number of checked keys."
+    }
+  ],
+  "examples": [
+    {
+      "description": "List all known AI key statuses",
+      "command": "./jtag ai/key/status",
+      "expectedResult": "{ success: true, configuredCount: 1, totalCount: 11 }"
+    },
+    {
+      "description": "Check one provider by config key",
+      "command": "./jtag ai/key/status --provider=OPENAI_API_KEY",
+      "expectedResult": "{ success: true, configuredCount: 1, totalCount: 1 }"
+    }
+  ],
+  "accessLevel": "owner-only"
+}

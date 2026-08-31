@@ -17,7 +17,11 @@ import type {
 	ShellSessionInfo,
 	ShellWatchResponse,
 	SentinelRule,
+<<<<<<<< HEAD:legacy/quarantine/continuum-core-bindings/modules/code.ts
 } from '../../../../protocol/typescript';
+========
+} from '../../../protocol/typescript';
+>>>>>>>> origin/main:sdk/typescript/modules/code.ts
 
 // ============================================================================
 // Mixin

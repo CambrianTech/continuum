@@ -9,12 +9,16 @@ import type { RustCoreIPCClientBase } from './base';
 // ============================================================================
 
 // Rust source-of-truth types. The Rust structs carry #[derive(TS)] and
-// emit to src/shared/generated/live/ at build time; inlining the shape
+// emit to protocol/typescript/live/ at build time; inlining the shape
 // here would risk silent field drift (e.g. the `expertise` list or the
 // `is_audio_native` flag diverging between Rust and TS on the IPC wire).
 // See CLAUDE.md "RUST → TYPESCRIPT TYPE BOUNDARIES" / memory
 // feedback_format_only_files_you_touched + the ts-rs rule.
+<<<<<<<< HEAD:legacy/quarantine/continuum-core-bindings/modules/voice.ts
 import type { VoiceParticipant, UtteranceEvent } from '../../../../protocol/typescript/live';
+========
+import type { VoiceParticipant, UtteranceEvent } from '../../../protocol/typescript/live';
+>>>>>>>> origin/main:sdk/typescript/modules/voice.ts
 export type { VoiceParticipant, UtteranceEvent };
 
 // ============================================================================

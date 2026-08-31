@@ -11,7 +11,11 @@ import type {
 	ToolParseResult,
 	ParsedToolCall,
 	CorrectedToolCall,
+<<<<<<<< HEAD:legacy/quarantine/continuum-core-bindings/modules/tool_parsing.ts
 } from '../../../../protocol/typescript';
+========
+} from '../../../protocol/typescript';
+>>>>>>>> origin/main:sdk/typescript/modules/tool_parsing.ts
 
 export interface ToolParsingMixin {
 	/**
