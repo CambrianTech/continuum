@@ -792,6 +792,29 @@ export class ChatWidget extends LitElement {
       color: var(--content-accent);
       font-size: 10px;
     }
+    /* THE WORKING WAVE (Joel, 2026-08-30: "active tasks wave as they are
+     * active, as a gradient cyclic"): anything mid-work carries a slow cyclic
+     * gradient sweep across its label — alive reads as MOVING, done reads as
+     * still. Text-clip sweep, one shared class, honest to reduced-motion. */
+    @media (prefers-reduced-motion: no-preference) {
+      .wave-active {
+        background: linear-gradient(
+          90deg,
+          var(--content-secondary, #8aa) 20%,
+          var(--content-accent, #35d0e0) 50%,
+          var(--content-secondary, #8aa) 80%
+        );
+        background-size: 200% 100%;
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        animation: wave-sweep 2.6s linear infinite;
+      }
+      @keyframes wave-sweep {
+        from { background-position: 200% 0; }
+        to { background-position: -200% 0; }
+      }
+    }
     /* Rail tree (#2632): a child activity nests under its parent room with a
      * quiet indent + branch tick — activity == room == tab, now with lineage. */
     .cell[data-nested] {
@@ -4749,7 +4772,7 @@ export class ChatWidget extends LitElement {
     const respondingLine =
       responders.length === 0 || composerHidden
         ? nothing
-        : html`<div class="responding-line">(${responders.join(', ')}) is responding…</div>`;
+        : html`<div class="responding-line wave-active">(${responders.join(', ')}) is responding…</div>`;
     const centerFooter = html`
       ${respondingLine}
       ${this._selectError ? html`<div class="send-error">${this._selectError}</div>` : nothing}

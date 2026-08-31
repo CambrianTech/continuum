@@ -28,7 +28,7 @@ function roundRow(round: BenchRoundVM): TemplateResult {
     round.dispatched > 0 ? Math.round((round.settled / round.dispatched) * 100) : 0;
   return html`<div class="bench-round" data-stage=${round.stage}>
     <span class="bench-round-name" title=${round.roundId}>${round.benchmark}</span>
-    <span class="bench-round-stage">${round.stage}</span>
+    <span class="bench-round-stage${round.stage === 'working' ? ' wave-active' : ''}">${round.stage}</span>
     <span class="bench-round-count" title="cards settled / dispatched">
       ${round.settled}/${round.dispatched}</span>
     <div class="bench-bar" role="progressbar" aria-label="round settle progress">
@@ -98,7 +98,10 @@ function runCard(run: BenchRunVM, maxGens: number): TemplateResult {
   return html`<div class="bench-card bench-state-${run.state}">
     <div class="bench-card-head">
       <span class="bench-dot" title=${run.state}></span>
-      <span class="bench-instance" title=${run.runId}>${run.instance}</span>
+      <span
+        class="bench-instance${run.state === 'working' || run.state === 'grading' ? ' wave-active' : ''}"
+        title=${run.runId}
+      >${run.instance}</span>
       <span class="bench-attempt" title="attempt N of M">${run.attempt}<i>/</i>${run.maxAttempts}</span>
     </div>
     <div class="bench-card-meta">
