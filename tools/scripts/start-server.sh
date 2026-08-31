@@ -857,6 +857,15 @@ fi
 # core deploy as one generation. Non-fatal: a failed UI build boots a
 # headless core (desktop.dm.dist_missing probes the fix) rather than no core.
 if [ -f "$REPO_ROOT/apps/web/package.json" ] && command -v npm >/dev/null 2>&1; then
+  # Fresh clone (#291): the workspaces' node_modules must exist before the web
+  # build or the eye-node rail can run — without this, a first boot warned
+  # "desktop build failed" + spawned an eye-node that could not resolve tsx,
+  # and the new machine got a headless, eyeless core with no manual step named.
+  if [ ! -d "$REPO_ROOT/node_modules" ]; then
+    echo "→ first boot: installing workspace deps (npm ci)…"
+    (cd "$REPO_ROOT" && npm ci >/dev/null 2>&1 || npm install >/dev/null 2>&1) \
+      || echo "  ⚠ npm install failed — desktop + eye-node unavailable (run npm ci to diagnose)" >&2
+  fi
   echo "→ building the desktop (served by the core at :\${CONTINUUM_UI_PORT:-8975})…"
   if (cd "$REPO_ROOT" && npm run build -w @continuum/web >/dev/null 2>&1); then
     export CONTINUUM_UI_DIST="$REPO_ROOT/apps/web/dist"
