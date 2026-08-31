@@ -147,6 +147,17 @@ async function main(): Promise<void> {
   };
   widget.selectRoomHandler = selectRoomHandler;
 
+  // A run card is a DOOR (bench-run-open, renderBench): clicking it stands
+  // you in that run's activity room — same navigation verb as a tab click.
+  widget.addEventListener('bench-run-open', (e: Event) => {
+    const roomId = (e as CustomEvent<{ roomId?: string }>).detail?.roomId;
+    if (typeof roomId === 'string' && roomId.length > 0) {
+      void selectRoomHandler(roomId, 'room').catch((err: unknown) => {
+        console.error('bench-run-open navigation failed:', err);
+      });
+    }
+  });
+
   // Bookmark restore: a deep-linked URL (`/room/general`) re-selects that
   // activity — resolved against the nav state, because `nav/select` is
   // UUID-typed (names are display, ids are identity). The pending link waits

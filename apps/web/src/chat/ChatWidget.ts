@@ -792,6 +792,33 @@ export class ChatWidget extends LitElement {
       color: var(--content-accent);
       font-size: 10px;
     }
+    /* GROUPED BOARD: one section per round — its lifecycle row, then ITS runs
+     * (live first, settled folded). A card that knows its room is a DOOR. */
+    .bench-round-group {
+      display: flex;
+      flex-direction: column;
+      gap: var(--spacing-sm);
+      padding: var(--spacing-sm) 0;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .bench-round-group:last-child {
+      border-bottom: none;
+    }
+    .bench-card[data-door] {
+      cursor: pointer;
+    }
+    .bench-card[data-door]:hover {
+      outline: 1px solid var(--content-accent);
+      outline-offset: -1px;
+    }
+    .bench-history > summary {
+      cursor: pointer;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--content-tertiary, #667);
+      padding: var(--spacing-xs) 0;
+    }
     /* ACADEMY LANDING — the campus page: hero strip, live board, chat below. */
     .academy-landing {
       display: flex;

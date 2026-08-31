@@ -80,6 +80,8 @@ function runVM(row: BenchRunRow): BenchRunVM {
   const acts = row.acts ?? 0;
   return {
     runId: row.run_id,
+    ...(row.round_id !== undefined ? { roundId: row.round_id } : {}),
+    ...(row.solve_room !== undefined ? { roomId: row.solve_room } : {}),
     // The board names WHAT when the ledger carries it; a non-SWE run is
     // honestly identified by its run id, never a guessed instance.
     instance: compactId(row.instance ?? row.run_id),
@@ -105,6 +107,7 @@ function runVM(row: BenchRunRow): BenchRunVM {
 function roundVM(row: BenchRoundRow): BenchRoundVM {
   return {
     roundId: compactId(row.round_id),
+    rawId: row.round_id,
     benchmark: row.benchmark,
     stage: row.stage,
     dispatched: row.dispatched,

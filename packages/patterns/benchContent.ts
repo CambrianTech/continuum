@@ -75,6 +75,10 @@ export interface BenchRunVM {
   readonly patchBytes: number | null;
   /** Last graded attempt's verdict, when one exists. */
   readonly verdict?: BenchVerdictVM;
+  /** The round this run belongs to (raw UUID) — the board groups by it. */
+  readonly roundId?: string;
+  /** The run's solve ROOM (raw UUID) — the DOOR a click navigates to. */
+  readonly roomId?: string;
 }
 
 /** One IN-FLIGHT round — the lifecycle truth behind the scoreboard (#371).
@@ -83,6 +87,9 @@ export interface BenchRunVM {
 export interface BenchRoundVM {
   /** Round id, compacted for display (which IS its run room's id). */
   readonly roundId: string;
+  /** RAW round UUID — the grouping key run rows join on, and the run
+   *  room's id a renderer may navigate to. */
+  readonly rawId?: string;
   /** Suite as catalogued ("swe-bench-lite", "ds-1000"). */
   readonly benchmark: string;
   /** `working` | `done` — on the wire means in flight. */
