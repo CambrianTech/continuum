@@ -621,6 +621,27 @@ async fn sweep_lapsed_bench_cards(
             ) {
                 continue;
             }
+            // A RESIDENT owner is not a dead session. The sweep exists as the
+            // dead-session fallback — but a reboot lapses every lease while the
+            // resume machinery is bringing the owner back, and confiscating her
+            // half-done work in that window grades a MISS she was still earning
+            // (measured 2026-08-31: both of the day's misses were exactly this —
+            // reboot → lease lapsed → swept mid-resume, "a few attempts" never
+            // happened). If her runtime is online, the card stays hers: she can
+            // finish and say done, and if her session truly dies later the lease
+            // stays lapsed and the next tick sweeps it.
+            if registry.get(owner.as_uuid()).is_some() {
+                crate::probe!(
+                    class = "benchmark_grade.sweep_deferred_owner_online",
+                    card_id = %card.card_id.as_uuid(),
+                    owner = %owner.as_uuid(),
+                    bench = %bench,
+                    instance = %instance,
+                    "lapsed claim with artifact, but the owner is RESIDENT — not a dead \
+                     session, not confiscated"
+                );
+                continue;
+            }
             let room_id = room.channel.as_uuid();
             crate::probe!(
                 class = "benchmark_grade.sweep_close",

@@ -2289,14 +2289,22 @@ impl ActionCommand for BenchmarkDispatch {
                         } else {
                             String::new()
                         };
+                        // The close coaching is NOT optional decoration: the gym arm
+                        // always carried it, this arm said "watch the room for the
+                        // verdict" — passive voice — and citizens did exactly that:
+                        // wrote real patches, never said done, and every settle came
+                        // from the lapse sweeper confiscating a partial (both misses
+                        // of 2026-08-31). The verb that fires her grade is HERS.
                         format!(
                             "@{who} (to you): card {short} is a REAL {} issue (SWE-bench, a full \
                              project).{staged} I've STARTED your scored solve on it — fix the bug \
                              in `swe/{}/` (do not edit the tests); your diff is graded against the \
                              repo's held-out tests, and you get a few attempts to investigate your \
-                             own failures. Watch the room for the verdict. Teammates each hold \
-                             their OWN card in this room — a kickoff naming someone else is not \
-                             yours; {who}, card {short} is the one and only card you work.",
+                             own failures. When your fix is ready, YOU close it: `work/state \
+                             {short} done` — that is what fires your grade; nobody fires it for \
+                             you. Teammates each hold their OWN card in this room — a kickoff \
+                             naming someone else is not yours; {who}, card {short} is the one and \
+                             only card you work.",
                             instance.repo, instance.instance_id
                         )
                     }
