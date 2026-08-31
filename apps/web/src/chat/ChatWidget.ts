@@ -36,6 +36,7 @@ import type {
 } from '@continuum/sdk-typescript';
 import { renderChat } from './renderChat';
 import { CallClient, type CallVideoFrame } from '../live/callClient';
+import type { RemoteTrack } from 'livekit-client';
 import {
   LISTING_SELECT,
   LIVE_CAMERA_TOGGLE,
@@ -114,6 +115,7 @@ export class ChatWidget extends LitElement {
     mindRevision: { attribute: false },
     viewerId: { attribute: false },
     viewerName: { attribute: false },
+    liveTokenHandler: { attribute: false },
     sendHandler: { attribute: false },
     settingsHandler: { attribute: false },
     selectRoomHandler: { attribute: false },
@@ -189,6 +191,11 @@ export class ChatWidget extends LitElement {
   /** The viewer's display name for call tiles (the directory's name for
    *  `viewerId`, e.g. "joel"). */
   viewerName?: string;
+
+  /** Host-supplied `live/token` fetch — present = the node has the WebRTC
+   *  media plane and calls join it (UDP, hardware codecs). Absent = the WS
+   *  tee remains the only lane (older core), loudly logged by the client. */
+  liveTokenHandler?: (room: string) => Promise<{ url: string; token: string }>;
 
   /** The client build's version string (a real manifest/build stamp injected by
    *  the host) — drives the continuon header's version badge. `undefined` = no
@@ -287,6 +294,10 @@ export class ChatWidget extends LitElement {
   /** senderId → latest decoded video frame, painted onto the tile canvas in
    *  updated() (imperative — canvas is not declarative Lit content). */
   private _videoFrames = new Map<string, CallVideoFrame>();
+  /** LiveKit tracks by participant identity — the REAL media plane. Attached
+   *  imperatively after render (video → its tile's <video>, audio → a hidden
+   *  autoplaying <audio>); the browser decodes off-main-thread. */
+  private _lkTracks = new Map<string, { video?: RemoteTrack; audio?: RemoteTrack }>();
   /** Pending typing mutations (text = latest accumulation, null = ended) —
    *  flushed onto the reactive `_typing` at most once per animation frame. */
   private _typingBuf = new Map<string, string | null>();
@@ -389,6 +400,18 @@ export class ChatWidget extends LitElement {
       onDelta: (d) => {
         if (this.state) this.applyStreamDelta({ ...d, roomId: this.state.room_id });
       },
+      onTrack: (identity, kind, track) => {
+        const entry = this._lkTracks.get(identity) ?? {};
+        entry[kind] = track;
+        if (entry.video === undefined && entry.audio === undefined) {
+          this._lkTracks.delete(identity);
+        } else {
+          this._lkTracks.set(identity, entry);
+        }
+        // Structural: a tile's media element set changed — one re-render, then
+        // the post-render pass attaches the tracks imperatively.
+        this.requestUpdate();
+      },
       onVideoFrame: (f) => {
         // OVERDRAW LAW (Joel, live 2026-08-31): a video frame repaints ITS
         // canvas, never the widget. requestUpdate here re-rendered the entire
@@ -414,12 +437,24 @@ export class ChatWidget extends LitElement {
       this._mediaConnected = false;
       return;
     }
+    // The media-plane door: live/token from the host. A missing handler or a
+    // failed mint is LOUD and the call proceeds control-only (WS) — never a
+    // silent fake-connected media state.
+    let livekit: { url: string; token: string } | undefined;
+    if (this.liveTokenHandler !== undefined) {
+      try {
+        livekit = await this.liveTokenHandler(this.state.room_id);
+      } catch (err) {
+        console.error('live/token failed — media plane unavailable this call:', err);
+      }
+    }
     try {
       await client.connect(
         this.callUrl,
         this.state.room_id,
         this.viewerId,
         this.viewerName ?? 'you',
+        livekit,
       );
     } catch {
       this._call = undefined;
@@ -453,6 +488,7 @@ export class ChatWidget extends LitElement {
     this._camOn = false;
     this._callSpeaking = new Map();
     this._videoFrames = new Map();
+    this._lkTracks = new Map();
   }
 
   /** The mic button — a REAL toggle when the media plane is connected. */
@@ -5453,6 +5489,12 @@ export class ChatWidget extends LitElement {
           cameraOn: this._camOn,
           ...(this._mediaAsk !== undefined ? { mediaAsk: this._mediaAsk } : {}),
           videoSenders: Array.from(this._videoFrames.keys()),
+          lkVideoSenders: [...this._lkTracks.entries()]
+            .filter(([, t]) => t.video !== undefined)
+            .map(([id]) => id),
+          lkAudioSenders: [...this._lkTracks.entries()]
+            .filter(([, t]) => t.audio !== undefined)
+            .map(([id]) => id),
         },
       }, { centerFooter });
     } catch (err) {
@@ -5665,6 +5707,23 @@ export class ChatWidget extends LitElement {
       // First-paint only: steady-state frames paint imperatively in
       // onVideoFrame without touching the render pass.
       for (const frame of this._videoFrames.values()) this.paintVideoFrame(frame);
+    }
+    // Attach LiveKit tracks to their media elements (idempotent — attach() on
+    // an already-attached element is a no-op srcObject set). The browser owns
+    // decode + paint from here; zero per-frame JS.
+    for (const [identity, tracks] of this._lkTracks) {
+      if (tracks.video !== undefined) {
+        const el = this.renderRoot.querySelector<HTMLVideoElement>(
+          `video[data-lk-video="${identity}"]`,
+        );
+        if (el && el.srcObject !== tracks.video.mediaStream) tracks.video.attach(el);
+      }
+      if (tracks.audio !== undefined) {
+        const el = this.renderRoot.querySelector<HTMLAudioElement>(
+          `audio[data-lk-audio="${identity}"]`,
+        );
+        if (el && el.srcObject !== tracks.audio.mediaStream) tracks.audio.attach(el);
+      }
     }
 
     // Element navigation (card 95844639): the anchored persona home rendered —

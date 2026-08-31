@@ -18,7 +18,8 @@
     "@continuum/foundry-view": "*",
     "@continuum/sdk-typescript": "*",
     "highlight.js": "^11.11.1",
-    "lit": "^3.3.3"
+    "lit": "^3.3.3",
+    "livekit-client": "^2.22.1"
   },
   "devDependencies": {
     "typescript": "^5.9.3",

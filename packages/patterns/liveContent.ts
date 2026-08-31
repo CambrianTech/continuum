@@ -52,6 +52,8 @@ export interface LiveParticipantVM {
   /** A live video frame is arriving for this participant (the media plane is
    *  painting real pixels onto the tile canvas). False = avatar/glyph only. */
   readonly hasVideo?: boolean;
+  /** Video arrives as a LiveKit track (tile renders <video>, host attaches). */
+  readonly lkVideo?: boolean;
 }
 
 /** The live caption line — the ACTIVE speaker's in-progress turn text (the
@@ -93,6 +95,8 @@ export interface LiveControlsVM {
 
 /** The live call face's `Content` body (`purpose === LIVE_PURPOSE`). */
 export interface LiveContentBody {
+  /** Senders with live LiveKit AUDIO tracks — one hidden <audio> each. */
+  readonly lkAudioSenders?: ReadonlyArray<string>;
   /** The staged media-permission card (POSITRON-MEDIA-PERMISSIONS.md):
    *  present = the face shows the reason (or, when `denied`, recovery) card
    *  for that capability. Absent = no card. */

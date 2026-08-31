@@ -79,6 +79,20 @@ async function main(): Promise<void> {
   // The viewer's call identity: the same uuid the session is scoped by. The
   // name upgrades to the directory's real one when the seed resolves it.
   widget.viewerId = config.senderId;
+  // The WebRTC media-plane door: live/token minted by the core for THIS
+  // viewer, room-scoped. Handler presence = the plane exists; failure is the
+  // widget's to surface loudly (control-only call, never fake-connected).
+  widget.liveTokenHandler = async (room: string) => {
+    const raw = await transport.execute(
+      buildCommandUri('live/token'),
+      JSON.stringify({ room, identity: config.senderId }),
+    );
+    const parsed = JSON.parse(raw) as { url?: string; token?: string };
+    if (parsed.url === undefined || parsed.token === undefined) {
+      throw new Error('live/token answered without url/token');
+    }
+    return { url: parsed.url, token: parsed.token };
+  };
   const mount = document.getElementById('app') ?? document.body;
   mount.replaceChildren(widget);
 

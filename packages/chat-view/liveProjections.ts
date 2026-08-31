@@ -56,6 +56,12 @@ export interface LiveCallOverlay {
   /** Participant ids with a live video frame right now — the tile paints a
    *  canvas for each (the widget draws the pixels imperatively post-render). */
   readonly videoSenders?: ReadonlyArray<string>;
+  /** Participants whose video arrives as a LiveKit TRACK (the real plane) —
+   *  their tiles render a <video> the host attaches, not the WS canvas. */
+  readonly lkVideoSenders?: ReadonlyArray<string>;
+  /** Participants with a live LiveKit AUDIO track — the host renders a hidden
+   *  autoplaying <audio> per sender (citizen VOICES). */
+  readonly lkAudioSenders?: ReadonlyArray<string>;
 }
 
 /** The live-purpose tab currently focused in the citizen's nav view, if any —
@@ -113,6 +119,7 @@ function participant(
     active: m.active,
     speaking: Object.prototype.hasOwnProperty.call(streams, m.id),
     hasVideo: overlay?.videoSenders?.includes(m.id) === true,
+    lkVideo: overlay?.lkVideoSenders?.includes(m.id) === true,
     runtime: m.runtime,
   };
 }
@@ -185,6 +192,7 @@ export function liveContentBody(vm: ChatViewModel, overlay?: LiveCallOverlay): L
     roomName: vm.roomName,
     participants: liveParticipants(vm, streams, overlay),
     ...(overlay?.mediaAsk !== undefined ? { mediaAsk: overlay.mediaAsk } : {}),
+    ...(overlay?.lkAudioSenders !== undefined ? { lkAudioSenders: overlay.lkAudioSenders } : {}),
     ...(caption ? { caption } : {}),
     controls: liveControls(vm, captionsOn, overlay),
     mediaPlaneLive: overlay?.mediaConnected === true,
