@@ -835,6 +835,24 @@ export class ChatWidget extends LitElement {
         50% { opacity: 1; }
       }
     }
+    /* Record & awards — trophy chips: identity earned from verdicts. */
+    .p-trophies {
+      display: flex;
+      gap: var(--spacing-sm);
+      flex-wrap: wrap;
+      margin-bottom: var(--spacing-sm);
+    }
+    .p-trophy {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border-subtle);
+      color: var(--content-secondary);
+    }
+    .p-trophy-wins {
+      border-color: #3fb950;
+      color: #3fb950;
+    }
     /* MICRO-SPEEDOMETERS — the tile speedline: two thin arc gauges (decode
      * t/s, prefill t/s), needle position IS the reading. Thin lines, ~22px
      * each, no extra tile height. */

@@ -246,6 +246,34 @@ export function renderPersona(body: PersonaContentBody): TemplateResult {
         : html`<div class="p-empty">No genes paged in — the base model is running bare.</div>`}
     </section>
 
+    <section class="p-card p-record">
+      <div class="p-card-head">record &amp; awards</div>
+      ${body.runs === undefined
+        ? html`<div class="p-empty">Awaiting the benchmark feed…</div>`
+        : (() => {
+            const settled = body.runs.filter((r) => r.state === 'resolved' || r.state === 'failed');
+            const wins = settled.filter((r) => r.state === 'resolved').length;
+            if (settled.length === 0)
+              return html`<div class="p-empty">No settled runs yet — the record starts with the first verdict.</div>`;
+            return html`<div class="p-trophies">
+                <span class="p-trophy p-trophy-wins" title="benchmark instances resolved">🏅 ${wins} resolved</span>
+                <span class="p-trophy" title="settled runs (resolved + failed)">${settled.length} settled</span>
+                <span class="p-trophy" title="resolve rate over settled runs">${Math.round((wins / settled.length) * 100)}%</span>
+              </div>
+              <ul class="p-runs">
+                ${settled.slice(0, 8).map(
+                  (r) => html`<li class="p-run bench-state-${r.state}">
+                    <span class="p-run-instance">${r.instance}</span>
+                    <span class="p-run-state">${r.state === 'resolved' ? '✓ resolved' : '✗ failed'}</span>
+                    ${r.verdict
+                      ? html`<span class="p-run-pulse">f2p ${r.verdict.f2pPassed}/${r.verdict.f2pTotal}</span>`
+                      : nothing}
+                  </li>`,
+                )}
+              </ul>`;
+          })()}
+    </section>
+
     <section class="p-card p-work">
       <div class="p-card-head">active work</div>
       ${body.runs === undefined
