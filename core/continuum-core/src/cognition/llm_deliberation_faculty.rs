@@ -559,11 +559,39 @@ impl LlmDeliberationFaculty {
     fn completion_reserve_within(&self, context_window: u32) -> u32 {
         let mandatory = self.mandatory_prompt_floor();
         let share = context_window / Self::COMPLETION_SHARE_DENOM;
+        // THE MEASURED RESERVE (the "output-p95 riding the working-set registry"
+        // endgame both the ceiling and the denominator comments promised). The
+        // bare share is a cold-start PRIOR, not a measurement: at a 29,440
+        // window it reserved 14,720 tokens for replies measured at 0.2–2.5k,
+        // and the prompt paid — grounding got 195 tokens and the room board
+        // dropped for want of 137, which is the meta-loop spiral live
+        // (2026-08-31, delib.context.render). Once this mind's emissions are
+        // measured, the reserve is peak×2 — headroom for a longer thought,
+        // and capped turns already record at double, so a too-small reserve
+        // grows itself back within a turn rather than freezing (the
+        // measure-the-clamp trap). Floored at MIN_SERVE_CTX so one tiny ack
+        // can never strangle the next long thought, and never ABOVE the
+        // cold-start share — measurement only ever returns prompt room, the
+        // prior already being the most generous defensible ask.
+        let measured = self
+            .working_set
+            .as_ref()
+            .and_then(|reg| reg.emission_of(self.persona_id))
+            // A single observation is a measurement, but ONE reply sizes the
+            // reserve for every turn after it — ask for a few before shrinking.
+            .filter(|e| e.turns >= 3)
+            .map(|e| {
+                e.peak_tokens
+                    .saturating_mul(2)
+                    .max(crate::cognition::serving_plan::MIN_SERVE_CTX)
+            });
         // `.max(FLOOR)` last and deliberately: below `MIN_SERVE_CTX` the floor can exceed the
         // whole window, and a zero reserve is a mute citizen — strictly worse than a prompt
         // that overshoots and gets trimmed. That regime is not reachable in production
         // (`window_for` floors at MIN_SERVE_CTX) but the ordering should not depend on it.
-        share
+        measured
+            .unwrap_or(share)
+            .min(share)
             .min(Self::COMPLETION_CEILING_TOKENS)
             .min(context_window.saturating_sub(mandatory))
             .max(Self::COMPLETION_FLOOR_TOKENS)
@@ -2316,6 +2344,20 @@ impl Faculty for LlmDeliberationFaculty {
             "delib.generate — model-call wall time (lane-queue + prefill + decode)"
         );
 
+        // MEASURE THE REPLY — the observation `completion_reserve_within` derives
+        // the reserve from. The server's own count (reasoning included), recorded
+        // for every completed generation; a Length stop records at double inside
+        // the registry (the growth path). This is the seam that turns the reserve
+        // from a `window/2` prior into a measurement.
+        if let Some(reg) = &self.working_set {
+            reg.record_emission(
+                self.persona_id,
+                resp.usage.output_tokens,
+                matches!(resp.finish_reason, FinishReason::Length),
+                ws.now_ms.unwrap_or(0),
+            );
+        }
+
         // Verbatim glass box: the EXACT request thread + the raw response. Iteration
         // is always 0 now (single shot); the act→observe driver re-enters this
         // faculty on the NEXT tick with the result folded into perception, and that
@@ -2986,6 +3028,65 @@ mod tests {
                 "prompt ({prompt_tokens}) + completion cap ({cap}) must fit the served \
              window ({window}) — else generation reaches n_ctx and llama-server 500s"
             );
+        }
+
+        // what this catches: the measured reply reserve (the "output-p95 riding the
+        // working-set registry" endgame). The cold-start `window/2` share reserved
+        // 14,720 of a 29,440 window for replies measured at 0.2–2.5k, squeezing
+        // grounding to 195 tokens and dropping the room board — the 2026-08-31
+        // meta-loop spiral. Pins: (a) fewer than 3 observations keeps the prior
+        // (one tiny ack must not size every later turn); (b) measured = peak×2,
+        // floored at MIN_SERVE_CTX, always ≤ the prior; (c) a capped turn's
+        // doubled record GROWS the reserve back, so measurement can never freeze
+        // a too-small cap in place.
+        #[test]
+        fn measured_emissions_shrink_the_reserve_and_capped_turns_grow_it_back() {
+            let persona = Uuid::new_v4();
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let window: u32 = 29_440;
+            let reg = crate::cognition::working_set::WorkingSetRegistry::new();
+            let faculty = LlmDeliberationFaculty::new(
+                persona,
+                "Ivar",
+                "You are Ivar, a thoughtful engineer on the grid.",
+                adapter,
+            )
+            .with_context_window(window)
+            .with_working_set(reg.clone());
+
+            let cold = faculty.completion_reserve_within(window);
+            // (a) below the observation bar the prior stands
+            reg.record_emission_in_memory(persona, 2_500, false, 1);
+            reg.record_emission_in_memory(persona, 1_200, false, 2);
+            assert_eq!(faculty.completion_reserve_within(window), cold);
+            // (b) measured: peak 2,500 × 2 = 5,000 — far under the 14,720 share,
+            // returning ~9.7k of prompt room to grounding
+            reg.record_emission_in_memory(persona, 2_500, false, 3);
+            let measured = faculty.completion_reserve_within(window);
+            assert_eq!(measured, 5_000);
+            assert!(measured < cold);
+            // tiny-talker floor: a 40-token ack cannot strangle the next thought
+            let quiet = Uuid::new_v4();
+            for t in 1..=3 {
+                reg.record_emission_in_memory(quiet, 40, false, t);
+            }
+            let quiet_faculty = LlmDeliberationFaculty::new(
+                quiet,
+                "Quiet",
+                "You are Quiet.",
+                Arc::new(HeuristicInferenceAdapter::new()),
+            )
+            .with_context_window(window)
+            .with_working_set(reg.clone());
+            assert_eq!(
+                quiet_faculty.completion_reserve_within(window),
+                crate::cognition::serving_plan::MIN_SERVE_CTX
+            );
+            // (c) a turn cut at 5,000 records 10,000; peak×2 = 20,000 then re-caps at
+            // the share — after a cap the reserve springs back to the full cold-start
+            // prior (growth saturates at the prior, never beyond it)
+            reg.record_emission_in_memory(persona, 5_000, true, 4);
+            assert_eq!(faculty.completion_reserve_within(window), cold);
         }
 
         // what this catches: KV-prefix cache locality — session-stable standing framing
