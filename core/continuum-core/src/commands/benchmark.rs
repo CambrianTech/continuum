@@ -2013,6 +2013,7 @@ impl ActionCommand for BenchmarkDispatch {
         // on the first card of a citizen-driven round.
         let driver = p.drive.unwrap_or_default();
         crate::cognition::bench_round::open_round(room.room_id.as_uuid(), spec.name, driver);
+        crate::cognition::bench_round::set_run_room_name(room.room_id.as_uuid(), &room_name);
         // The round REMEMBERS its team: driver edges (settle-advance, non-settling
         // advance, boot resume) dispatch cards that were never initially fired, and
         // without a round-level record they went out team-less (2026-08-30).

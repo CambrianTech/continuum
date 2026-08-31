@@ -126,6 +126,11 @@ enum SettleOutcome {
 /// "kicked off by a command, owned by events" only holds if the owner survives.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct BenchRound {
+    /// The RUN room's airc NAME (`round_id` IS the run room's UUID; joins are
+    /// by name). `default` folds pre-field files as empty — such a round's run
+    /// room stays presence-dark until a fresh dispatch names it.
+    #[serde(default)]
+    pub run_room_name: String,
     round_id: Uuid,
     benchmark: String,
     /// Card uuid → the terminal state it settled with (`None` = still working).
@@ -184,6 +189,7 @@ impl BenchRound {
     pub fn new(round_id: Uuid, benchmark: &str, card_ids: &[Uuid], driver: WorkDriver) -> Self {
         Self {
             round_id,
+            run_room_name: String::new(),
             benchmark: benchmark.to_string(),
             cards: card_ids.iter().map(|c| (*c, None)).collect(),
             stage: RoundStage::Working,
@@ -421,6 +427,17 @@ pub fn open_round(round_id: Uuid, benchmark: &str, driver: WorkDriver) {
 /// [`open_round`] with the resolved reviewer set). Driver edges fall back to
 /// this when a card has no recorded activity yet — a team round stays a team
 /// round on every edge.
+/// Record the run room's airc name (dispatch calls it right after
+/// [`open_round`]) — the presence emitter's adoption list reads it so the
+/// RUN room, not just its solve children, projects presence + transcript.
+pub fn set_run_room_name(round_id: Uuid, name: &str) {
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(round) = rounds.get_mut(&round_id) {
+        round.run_room_name = name.to_string();
+        persist_round_in(&rounds_state_dir(), round);
+    }
+}
+
 pub fn set_round_team(round_id: Uuid, team: Vec<Uuid>) {
     let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());
     if let Some(r) = rounds.get_mut(&round_id) {
@@ -885,9 +902,17 @@ pub fn activity_rooms() -> Vec<(Uuid, String)> {
     rounds
         .values()
         .filter(|r| r.stage != RoundStage::Done)
-        .flat_map(|r| r.card_activities.values())
-        .filter(|a| !a.room_name.is_empty())
-        .map(|a| (a.solve_room, a.room_name.clone()))
+        .flat_map(|r| {
+            let run = (!r.run_room_name.is_empty())
+                .then(|| (r.round_id, r.run_room_name.clone()));
+            run.into_iter().chain(
+                r.card_activities
+                    .values()
+                    .filter(|a| !a.room_name.is_empty())
+                    .map(|a| (a.solve_room, a.room_name.clone()))
+                    .collect::<Vec<_>>(),
+            )
+        })
         .collect()
 }
 
@@ -934,6 +959,7 @@ mod tests {
     fn the_non_settling_edge_advances_past_the_card_that_just_failed() {
         fn round_with(cards: &[(Uuid, Uuid)]) -> BenchRound {
             BenchRound {
+                run_room_name: String::new(),
                 round_id: Uuid::new_v4(),
                 benchmark: "swe-bench-lite".into(),
                 cards: cards.iter().map(|(c, _)| (*c, None)).collect(),
@@ -1014,6 +1040,7 @@ mod tests {
         let (id, cs) = (Uuid::new_v4(), cards(2));
         let mut round = BenchRound::new(id, "swe-bench-verified", &cs, WorkDriver::DetachedSolve);
         let act = CardActivity {
+            room_name: String::new(),
             teammates: Vec::new(), // test row: solo
 
             solve_room: Uuid::from_u128(0xA11CE),

@@ -792,6 +792,47 @@ export class ChatWidget extends LitElement {
       color: var(--content-accent);
       font-size: 10px;
     }
+    /* ACADEMY LANDING — the campus page: hero strip, live board, chat below. */
+    .academy-landing {
+      display: flex;
+      flex-direction: column;
+      gap: var(--spacing-md);
+      padding: var(--spacing-md);
+      overflow-y: auto;
+      min-height: 0;
+    }
+    .academy-hero {
+      display: flex;
+      align-items: baseline;
+      gap: var(--spacing-lg);
+      padding: var(--spacing-md) var(--spacing-sm) var(--spacing-sm);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .academy-title {
+      font-size: 22px;
+      font-weight: 650;
+      letter-spacing: 0.02em;
+      color: var(--content-accent);
+    }
+    .academy-strip {
+      display: flex;
+      gap: var(--spacing-lg);
+      font-size: 13px;
+      color: var(--content-secondary);
+    }
+    .academy-stat i {
+      font-style: normal;
+      opacity: 0.65;
+      margin-left: 2px;
+    }
+    .academy-chat > summary {
+      cursor: pointer;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--content-tertiary, #667);
+      padding: var(--spacing-sm) 0;
+    }
     /* THE WORKING WAVE (Joel, 2026-08-30: "active tasks wave as they are
      * active, as a gradient cyclic"): anything mid-work carries a slow cyclic
      * gradient sweep across its label — alive reads as MOVING, done reads as

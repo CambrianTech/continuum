@@ -44,7 +44,7 @@ import {
   personaFactsListing,
 } from './personaProjections';
 import { liveContentBody, liveFaceOpen, type LiveCallOverlay } from './liveProjections';
-import { benchContentBody, benchWidget } from './benchProjections';
+import { benchContentBody } from './benchProjections';
 import { arenaContentBody, type ArenaViewState } from './arenaProjections';
 import { canvasContentBody, type CanvasViewState } from './canvasProjections';
 
@@ -423,6 +423,18 @@ export interface WorkspaceLive {
 /** The chat activity's `Content` body — the conversation. `Content` is keyed by the
  *  room's `purpose` (here `vm.purpose`, `"chat"`), so a target's registered chat
  *  renderer draws these rows; a foundry room would carry a different purpose + body. */
+/** The ACADEMY LANDING's content — the campus page, not a chat log (Joel,
+ *  2026-08-30: "how a main academy page should look, maybe more of a
+ *  landing?"). The live board is the hero; the room's own chat rides below
+ *  as a disclosure. Counts feed the hero strip. */
+export const ACADEMY_PURPOSE = 'academy';
+export interface AcademyContentBody {
+  readonly bench: BenchContentBody;
+  readonly chat: ChatContentBody;
+  readonly memberCount: number;
+  readonly activeCount: number;
+}
+
 export interface ChatContentBody {
   readonly messages: readonly MessageRowVM[];
   /** The full interleaved transcript (speech + collapsed act receipts, #243) —
@@ -501,6 +513,24 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     contentFamilyOf(vm.purpose) === BENCH_PURPOSE
       ? benchContentBody(live?.bench)
       : undefined;
+  // The ACADEMY LANDING: the default campus room renders as a landing —
+  // live board center-stage, chat as the secondary layer — never a stale
+  // transcript posing as the main page.
+  const academyBody: AcademyContentBody | undefined =
+    !personaBody &&
+    !liveBody &&
+    !arenaBody &&
+    !servingBody &&
+    !gridBody &&
+    !benchBody &&
+    vm.roomName.toLowerCase() === 'academy'
+      ? {
+          bench: benchContentBody(live?.bench),
+          chat: { messages: vm.messages, transcript: vm.transcript, isEmpty: vm.isEmpty },
+          memberCount: vm.memberCount,
+          activeCount: vm.activeCount,
+        }
+      : undefined;
   // The CANVAS face (DESIGN-BENCH-VISUAL-CRAFT.md §5): a design-bench run
   // room's canvas region renders the persona's page LIVE — the frame renders
   // (the awaiting stage) even before the first observation delivers, exactly
@@ -523,6 +553,7 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     | ContentView<ServingContentBody>
     | ContentView<GridContentBody>
     | ContentView<BenchContentBody>
+    | ContentView<AcademyContentBody>
     | ContentView<CanvasContentBody>
     | ContentView<SettingsContentBody> = settingsBody
     ? { purpose: SETTINGS_PURPOSE, body: settingsBody }
@@ -540,10 +571,12 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
               ? { purpose: BENCH_PURPOSE, body: benchBody }
               : canvasBody
                 ? { purpose: CANVAS_PURPOSE, body: canvasBody }
-                : {
-                    purpose: vm.purpose,
-                    body: { messages: vm.messages, transcript: vm.transcript, isEmpty: vm.isEmpty },
-                  };
+                : academyBody
+                  ? { purpose: ACADEMY_PURPOSE, body: academyBody }
+                  : {
+                      purpose: vm.purpose,
+                      body: { messages: vm.messages, transcript: vm.transcript, isEmpty: vm.isEmpty },
+                    };
   // The ACTIVE nav cell follows the citizen's current tab: the persona tab
   // when a persona home is focused, else the chat room on screen.
   const rooms = live?.nav
@@ -566,16 +599,11 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     listingWidget(rooms),
     listingWidget(rosterListing(vm, live?.board)),
   ];
-  // The live benchmark board (#329) — the ACADEMY's content, not global
-  // chrome. It joins the contextual rail only when the academy (or a
-  // bench-purpose room) is the focused activity — every other room's right
-  // column belongs to that room's own content (Joel, 2026-08-30: "the right
-  // column is for the content itself... change tabs to academy to see
-  // benchmarks").
-  const benchRail =
-    vm.purpose === 'bench' || vm.roomName.toLowerCase() === 'academy'
-      ? benchWidget(live?.bench)
-      : undefined;
+  // No bench rail: the board is CONTENT — the academy landing and the run
+  // rooms render it center-stage; the right column belongs to the focused
+  // activity's own context (Joel: "the right column is for the content
+  // itself").
+
   return {
     nav: rooms,
     left,
@@ -585,7 +613,6 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     // else the room's info card — the ContextPanel primitive, activity-scoped.
     context: {
       listings: [personaBody ? personaFactsListing(personaBody) : roomInfoListing(vm)],
-      ...(benchRail ? { widgets: [benchRail] } : {}),
     },
   };
 }
