@@ -792,6 +792,37 @@ export class ChatWidget extends LitElement {
       color: var(--content-accent);
       font-size: 10px;
     }
+    /* VISUAL STATE LANGUAGE (Joel: "be more visual"): every run card carries
+     * a severity stripe — state readable from across the room, before any
+     * text. Working breathes; terminal states sit still. */
+    .bench-card {
+      border-left: 3px solid transparent;
+    }
+    .bench-card.bench-state-working,
+    .bench-card.bench-state-grading {
+      border-left-color: var(--content-accent, #35d0e0);
+    }
+    .bench-card.bench-state-resolved {
+      border-left-color: #3fb950;
+    }
+    .bench-card.bench-state-failed {
+      border-left-color: #f85149;
+    }
+    .bench-card.bench-state-stalled {
+      border-left-color: #d29922;
+    }
+    .bench-card.bench-state-queued {
+      border-left-color: var(--content-tertiary, #667);
+    }
+    @media (prefers-reduced-motion: no-preference) {
+      .bench-card.bench-state-working {
+        animation: bench-breathe 3s ease-in-out infinite;
+      }
+      @keyframes bench-breathe {
+        0%, 100% { box-shadow: inset 3px 0 0 rgba(53, 208, 224, 0); }
+        50% { box-shadow: inset 3px 0 0 rgba(53, 208, 224, 0.35); }
+      }
+    }
     /* GROUPED BOARD: one section per round — its lifecycle row, then ITS runs
      * (live first, settled folded). A card that knows its room is a DOOR. */
     .bench-round-group {

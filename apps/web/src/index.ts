@@ -150,12 +150,25 @@ async function main(): Promise<void> {
   // A run card is a DOOR (bench-run-open, renderBench): clicking it stands
   // you in that run's activity room — same navigation verb as a tab click.
   widget.addEventListener('bench-run-open', (e: Event) => {
-    const roomId = (e as CustomEvent<{ roomId?: string }>).detail?.roomId;
-    if (typeof roomId === 'string' && roomId.length > 0) {
-      void selectRoomHandler(roomId, 'room').catch((err: unknown) => {
+    const detail = (e as CustomEvent<{ roomId?: string; roomName?: string }>).detail;
+    const roomId = detail?.roomId;
+    if (typeof roomId !== 'string' || roomId.length === 0) return;
+    void (async () => {
+      try {
+        // Standing in a room requires MEMBERSHIP: join first (by name — the
+        // derived-channel law), then select. Without the name (a pre-naming
+        // room) selection alone still works when already a member.
+        if (detail.roomName !== undefined && detail.roomName.length > 0) {
+          await transport.execute(
+            buildCommandUri('room/join'),
+            JSON.stringify({ userId: config.senderId, room: detail.roomName }),
+          );
+        }
+        await selectRoomHandler(roomId, 'room');
+      } catch (err) {
         console.error('bench-run-open navigation failed:', err);
-      });
-    }
+      }
+    })();
   });
 
   // Bookmark restore: a deep-linked URL (`/room/general`) re-selects that

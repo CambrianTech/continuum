@@ -42,12 +42,16 @@ fn row_of(card: BenchRunCard) -> BenchRunRow {
         .strip_prefix("claim-")
         .and_then(|t| uuid::Uuid::parse_str(t).ok());
     let round_id = card_uuid.and_then(crate::cognition::bench_round::room_for_card);
-    let solve_room = card_uuid
-        .and_then(crate::cognition::bench_round::card_activity)
-        .map(|a| a.solve_room);
+    let activity = card_uuid.and_then(crate::cognition::bench_round::card_activity);
+    let solve_room = activity.as_ref().map(|a| a.solve_room);
+    let solve_room_name = activity
+        .as_ref()
+        .filter(|a| !a.room_name.is_empty())
+        .map(|a| a.room_name.clone());
     BenchRunRow {
         round_id: round_id.map(|u| u.to_string()),
         solve_room: solve_room.map(|u| u.to_string()),
+        solve_room_name,
         run_id: card.run_id,
         instance: card.instance,
         solver: card.solver,
@@ -84,6 +88,7 @@ fn live_exam_row() -> Option<BenchRunRow> {
         Some(s) => BenchRunRow {
             round_id: None,
             solve_room: None,
+            solve_room_name: None,
             run_id,
             instance: Some(format!("exam · last: {}", s.current_task)),
             solver: Some("cognition/eval".to_string()),
@@ -103,6 +108,7 @@ fn live_exam_row() -> Option<BenchRunRow> {
         None => BenchRunRow {
             round_id: None,
             solve_room: None,
+            solve_room_name: None,
             run_id,
             instance: Some("exam · provisioning".to_string()),
             solver: Some("cognition/eval".to_string()),

@@ -93,9 +93,13 @@ function verdictCell(v: BenchVerdictVM): TemplateResult {
 
 /** Open the run's activity room — the composed-event seam (same discipline as
  *  `emitRoundControl`): the renderer stays pure, the host binds navigation. */
-function emitRunOpen(e: Event, roomId: string): void {
+function emitRunOpen(e: Event, roomId: string, roomName?: string): void {
   (e.currentTarget as HTMLElement).dispatchEvent(
-    new CustomEvent('bench-run-open', { detail: { roomId }, bubbles: true, composed: true }),
+    new CustomEvent('bench-run-open', {
+      detail: { roomId, roomName },
+      bubbles: true,
+      composed: true,
+    }),
   );
 }
 
@@ -109,10 +113,10 @@ function runCard(run: BenchRunVM, maxGens: number): TemplateResult {
     ?data-door=${door !== undefined}
     title=${door !== undefined ? 'open this run\'s room — watch the work live' : nothing}
     tabindex=${door !== undefined ? '0' : nothing}
-    @click=${door !== undefined ? (e: Event): void => emitRunOpen(e, door) : nothing}
+    @click=${door !== undefined ? (e: Event): void => emitRunOpen(e, door, run.roomName) : nothing}
     @keydown=${door !== undefined
       ? (e: KeyboardEvent): void => {
-          if (e.key === 'Enter') emitRunOpen(e, door);
+          if (e.key === 'Enter') emitRunOpen(e, door, run.roomName);
         }
       : nothing}
   >

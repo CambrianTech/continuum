@@ -79,6 +79,9 @@ export interface BenchRunVM {
   readonly roundId?: string;
   /** The run's solve ROOM (raw UUID) — the DOOR a click navigates to. */
   readonly roomId?: string;
+  /** The solve room's airc NAME — standing in a room requires JOINING it
+   *  (by name) before selecting; a door without a name stays closed. */
+  readonly roomName?: string;
 }
 
 /** One IN-FLIGHT round — the lifecycle truth behind the scoreboard (#371).

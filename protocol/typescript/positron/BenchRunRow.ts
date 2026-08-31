@@ -49,4 +49,10 @@ round_id?: string,
  * The run's SOLVE ROOM — the DOOR: a renderer navigates here to stand
  * in the activity (transcript + act receipts). Absent before the mint.
  */
-solve_room?: string, };
+solve_room?: string, 
+/**
+ * The solve room's airc NAME — joins are by name, and standing in the
+ * room requires joining it first. Absent for rooms minted before names
+ * were recorded; such a door stays closed rather than half-opening.
+ */
+solve_room_name?: string, };

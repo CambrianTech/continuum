@@ -78,6 +78,12 @@ pub struct BenchRunRow {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     #[ts(optional)]
     pub solve_room: Option<String>,
+    /// The solve room's airc NAME — joins are by name, and standing in the
+    /// room requires joining it first. Absent for rooms minted before names
+    /// were recorded; such a door stays closed rather than half-opening.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[ts(optional)]
+    pub solve_room_name: Option<String>,
 }
 
 /// One IN-FLIGHT round — the real lifecycle object behind the board's
@@ -152,6 +158,7 @@ mod tests {
             run_id: "r1".into(),
             round_id: None,
             solve_room: None,
+            solve_room_name: None,
             instance: None,
             solver: None,
             phase: "active".into(),
