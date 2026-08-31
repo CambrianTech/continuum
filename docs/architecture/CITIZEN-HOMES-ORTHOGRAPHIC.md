@@ -123,6 +123,41 @@ town, with each lot's ambient cues (lights on = presence, activity =
 citizens working) fed by the per-room rosters that multi-room presence
 already serves.
 
+## LEGACY AUDIT (2026-08-31 — Joel: "take audit of even past legacy work")
+
+The audit found the plan half-built already, in the core's live plane:
+
+- **`live/video/bevy_renderer/` — a full Bevy headless avatar system**:
+  16 avatar slots, per-avatar camera → render target → GPU readback →
+  LiveKit video loops (zero-copy IOSurface on Apple Silicon). VRM avatars
+  (blend shapes, humanoid bones, lookAt), animation systems (blink,
+  breathing, speech, emotion, gesture, cognitive), and animation PROFILES
+  as data — whose own docs already anticipate this direction: *"a Sims
+  character walking has larger body movement than a webcam portrait."*
+- **`bevy_renderer/scene/` — a whole scene substrate**: `room.rs`,
+  `builder.rs` + `builder_api.rs` (fluent), `birther.rs` (procedural),
+  `library.rs`, `physics.rs`, `object.rs`, `slot.rs`.
+- **`scene/description.rs` — `SceneDescription`: THE one-to-one contract,
+  already defined.** Backend-neutral, representation-neutral serde data
+  (no engine types), a scene-graph tree of `SceneNode`s, `AssetRef` +
+  open `AssetKind` (mesh / VRM rig / gaussian splat / generated), and
+  **ts-rs exported** — produced by RON file, builder, or birther;
+  instantiated per backend. Its own docblock promises exactly Joel's bar:
+  a future backend "instantiates the *same* description into its own
+  graph."
+- **`apps/vr/` and `apps/ar/`** exist as app stubs — targets #4 and #5
+  have homes in the tree.
+- **`CosmosBackdrop`** — the universe-as-living-experience precedent.
+
+**Consequence (compression law):** the web `<home-scene>` element ships
+today on an interim `HomeSceneModel`; its v2 CONSUMES `SceneDescription`
+via the existing ts-rs types, and homes/neighborhood layouts are authored
+as SceneDescriptions (RON or birthed) that the bevy renderer and the
+three.js target instantiate identically. LiveKit docking follows the
+avatar system's existing readback pattern — the office screen surface
+joins the same scene graph the call avatars already render in. No
+parallel scene format survives this convergence.
+
 ## Laws that bind this doc
 
 - The room IS the runner / tab = content = room = activity — homes are
