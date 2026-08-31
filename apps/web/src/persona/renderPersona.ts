@@ -37,6 +37,74 @@ function brainMark(): TemplateResult {
   return html`<img class="brain-mark" src=${brainMeshUrl} alt="" aria-hidden="true" />`;
 }
 
+// ── LIVE LEARNING FEED (Joel 2026-08-31: "want to see continuous learning,
+// engrams, in a dynamic ui") ─────────────────────────────────────────────
+//
+// The flywheel's raw truth, straight from the persona's admitted-engram store
+// (`cognition/recall-engrams`) + genome coverage — polled by the HOST while a
+// persona tab is focused and handed here through the module store below (the
+// content registry dispatches on `body` alone; the feed is a live sidecar,
+// honest-absent until the first poll returns). NO fabricated rows: every line
+// IS an admitted engram with its real age.
+
+/** One admitted engram, as the mind tab renders it. */
+export interface MindEngramVM {
+  readonly content: string;
+  readonly kind: string;
+  readonly admittedAtMs: number;
+  readonly roomId?: string;
+}
+
+export interface MindFeed {
+  readonly personaId: string;
+  readonly fetchedAtMs: number;
+  readonly engramCount: number;
+  readonly engrams: readonly MindEngramVM[];
+  /** Genome coverage ratio 0..1, when the report answered. */
+  readonly coverageRatio?: number;
+  readonly coveredDomains?: readonly string[];
+}
+
+let currentMindFeed: MindFeed | undefined;
+
+/** Host-side setter: the poller stores the focused persona's feed here, then
+ *  bumps a reactive property so Lit re-renders the open page. */
+export function setMindFeed(feed: MindFeed | undefined): void {
+  currentMindFeed = feed;
+}
+
+function learningSection(body: PersonaContentBody): TemplateResult {
+  const feed = currentMindFeed?.personaId === body.personaId ? currentMindFeed : undefined;
+  return html`<section class="p-card p-learning" id="learning">
+    <div class="p-card-head">
+      learning — engram stream
+      ${feed
+        ? html`<span class="p-live-chip" data-on>live · ${feed.engramCount} admitted</span>`
+        : html`<span class="p-live-chip" title="polling the engram store">awaiting recall</span>`}
+      ${feed?.coverageRatio !== undefined
+        ? html`<span class="b-stat" title=${feed.coveredDomains?.join(', ') ?? ''}
+            >🧬 coverage ${Math.round(feed.coverageRatio * 100)}%</span
+          >`
+        : nothing}
+    </div>
+    ${feed === undefined
+      ? html`<div class="p-empty">
+          Recalling admitted engrams — this stream lights the moment her store answers.
+        </div>`
+      : feed.engrams.length === 0
+        ? html`<div class="p-empty">No engrams admitted yet — experience lands here as she works.</div>`
+        : html`<div class="engram-stream">
+            ${feed.engrams.map(
+              (e) => html`<div class="engram-row" data-kind=${e.kind}>
+                <span class="engram-age">${agoLabel(e.admittedAtMs)}</span>
+                <span class="engram-kind">${e.kind}</span>
+                <span class="engram-content">${e.content.slice(0, 220)}</span>
+              </div>`,
+            )}
+          </div>`}
+  </section>`;
+}
+
 /** One brain-region card — label, [ role ], live level (bar + status word),
  *  drill-down facts inside a native <details>. Absent level = the honest
  *  AWAITING frame (dashed, dim), never a fabricated 0-bar. */
@@ -415,7 +483,7 @@ export class PersonaPageElement extends LitElement {
     if (!body) return html``;
     const content: Record<PersonaTab, TemplateResult> = {
       overview: html`${aboutSection(body)}${homeSection(body)}${workSection(body, 3)}${recordSection(body)}`,
-      mind: html`${brainSection(body)}${pathwaysSection(body)}`,
+      mind: html`${brainSection(body)}${learningSection(body)}${pathwaysSection(body)}`,
       genome: html`${genomeSection(body)}`,
       work: html`${workSection(body)}${recordSection(body)}${claimsSection(body)}`,
       wall: html`${writingsSection(body)}`,

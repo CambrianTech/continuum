@@ -27,6 +27,7 @@ import {
   type StateEnvelope,
 } from '@continuum/sdk-typescript';
 import { resolveConfig } from './config';
+import { setMindFeed } from './persona/renderPersona';
 import {
   ChatWidget,
   type CloseTabHandler,
@@ -131,11 +132,77 @@ async function main(): Promise<void> {
   // `kind` rides the verb (NavSelectParams.kind): 'room' switches the room on
   // screen; 'persona' opens that citizen's HOME tab (profile/brain) while the
   // chat projection stays pinned — the content dispatch keys off the tab kind.
+  // LIVE LEARNING FEED (Joel: "see continuous learning, engrams, in a dynamic
+  // ui"): while a persona tab is focused, poll her admitted-engram store +
+  // genome coverage and hand the feed to the mind tab's learning stream. Real
+  // rows only — the section renders awaiting/empty states until data lands.
+  let mindTimer: ReturnType<typeof setInterval> | undefined;
+  const pollMind = async (personaId: string): Promise<void> => {
+    try {
+      const raw = await transport.execute(
+        buildCommandUri('cognition/recall-engrams'),
+        JSON.stringify({ personaId, limit: 12 }),
+      );
+      const parsed = JSON.parse(raw) as {
+        count?: number;
+        engrams?: readonly {
+          content?: string;
+          kind?: string;
+          admittedAtMs?: number;
+          contextId?: string;
+        }[];
+      };
+      let coverageRatio: number | undefined;
+      let coveredDomains: readonly string[] | undefined;
+      try {
+        const cov = JSON.parse(
+          await transport.execute(
+            buildCommandUri('cognition/genome-coverage-report'),
+            JSON.stringify({ personaId }),
+          ),
+        ) as { ratio?: number; covered?: readonly string[] };
+        coverageRatio = cov.ratio;
+        coveredDomains = cov.covered;
+      } catch {
+        /* coverage is optional enrichment — the engram stream stands alone */
+      }
+      setMindFeed({
+        personaId,
+        fetchedAtMs: Date.now(),
+        engramCount: parsed.count ?? parsed.engrams?.length ?? 0,
+        engrams: (parsed.engrams ?? [])
+          .filter((e) => e.content !== undefined && e.admittedAtMs !== undefined)
+          .map((e) => ({
+            content: e.content as string,
+            kind: e.kind ?? 'Episodic',
+            admittedAtMs: e.admittedAtMs as number,
+            ...(e.contextId !== undefined ? { roomId: e.contextId } : {}),
+          })),
+        ...(coverageRatio !== undefined ? { coverageRatio } : {}),
+        ...(coveredDomains !== undefined ? { coveredDomains } : {}),
+      });
+      widget.mindRevision = Date.now();
+    } catch (err) {
+      console.error('mind feed poll failed:', err);
+    }
+  };
+  const focusMind = (personaId: string | undefined): void => {
+    if (mindTimer !== undefined) clearInterval(mindTimer);
+    mindTimer = undefined;
+    if (personaId === undefined) {
+      setMindFeed(undefined);
+      return;
+    }
+    void pollMind(personaId);
+    mindTimer = setInterval(() => void pollMind(personaId), 10_000);
+  };
+
   const selectRoomHandler: SelectRoomHandler = async (target: string, kind: 'room' | 'persona') => {
     await transport.execute(
       buildCommandUri('nav/select'),
       JSON.stringify({ userId: config.senderId, target, kind }),
     );
+    focusMind(kind === 'persona' ? target : undefined);
     // The address bar mirrors the focused activity as its URI short form —
     // `/room/<name>` · `/persona/<name>` — bookmarkable and shareable (Joel,
     // 2026-08-30: "url subpath matches uri"). The click path hands us the
@@ -217,6 +284,20 @@ async function main(): Promise<void> {
       return;
     }
     const want = pendingDeepLink.target.toLowerCase();
+    // A persona link resolves by NAME through the directory — persona tabs
+    // aren't in the nav's room set, so `/persona/kira` on a cold load fell
+    // through to the default room forever (caught live 2026-08-31 framing
+    // the learning feed). The directory seed re-polls, so an early miss
+    // retries on the next envelope like every other pending link.
+    if (pendingDeepLink.kind === 'persona') {
+      const member = widget.directorySeed.find((m) => m.name.toLowerCase() === want);
+      if (member === undefined) return; // directory not seeded yet — next envelope
+      pendingDeepLink = null;
+      void selectRoomHandler(member.id, 'persona').catch((err: unknown) => {
+        console.error(`deep link ${window.location.pathname} failed:`, err);
+      });
+      return;
+    }
     const hit = tabs.find(
       (t) => t.id?.toLowerCase() === want || t.title?.toLowerCase() === want,
     );
@@ -431,6 +512,10 @@ async function main(): Promise<void> {
       const self = widget.directorySeed.filter((m) => m.id === config.senderId);
       widget.directorySeed = [...self, ...seed.filter((m) => m.id !== config.senderId)];
       widget.requestUpdate();
+      // A persona deep link resolves through THIS directory — retry it on
+      // every seed, not only on nav envelopes (a cold load's last nav
+      // envelope can land before the first seed does).
+      resolveDeepLink(widget.nav?.open_tabs ?? []);
     } catch (err) {
       // NO fallback ([[fallbacks-are-illegal-fail-loud]]; Joel: "don't add
       // fallbacks for mistakes"): a core without this verb, or a failed read,

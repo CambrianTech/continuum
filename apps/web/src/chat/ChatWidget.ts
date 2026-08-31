@@ -109,6 +109,7 @@ export class ChatWidget extends LitElement {
     canvas: { attribute: false },
     version: { attribute: false },
     feedStatus: { attribute: false },
+    mindRevision: { attribute: false },
     sendHandler: { attribute: false },
     settingsHandler: { attribute: false },
     selectRoomHandler: { attribute: false },
@@ -168,6 +169,11 @@ export class ChatWidget extends LitElement {
    *  the continuon orb's color (with the favicon, the designed status channel;
    *  never a text banner). */
   feedStatus?: string;
+
+  /** Monotonic bump from the host's mind-feed poller (renderPersona's live
+   *  learning stream reads a module store; this property exists purely so a
+   *  fresh poll re-renders the open persona page). */
+  mindRevision = 0;
 
   /** The client build's version string (a real manifest/build stamp injected by
    *  the host) — drives the continuon header's version badge. `undefined` = no
@@ -3459,6 +3465,46 @@ export class ChatWidget extends LitElement {
       color: var(--content-primary);
     }
     /* --- brain HUD ------------------------------------------------------ */
+    /* LIVE LEARNING FEED — the engram stream on the mind tab. Rows are real
+       admitted engrams (age · kind · digest); newest first, compositor-cheap. */
+    .engram-stream {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      max-height: 340px;
+      overflow-y: auto;
+    }
+    .engram-row {
+      display: grid;
+      grid-template-columns: 64px 74px 1fr;
+      gap: 8px;
+      align-items: baseline;
+      padding: 6px 8px;
+      border-left: 2px solid var(--content-accent);
+      background: color-mix(in srgb, var(--content-accent) 6%, transparent);
+      border-radius: 4px;
+      font-size: 12px;
+      animation: engram-land 0.5s ease-out;
+    }
+    .engram-row[data-kind='Semantic'] { border-left-color: #b48cff; }
+    .engram-row[data-kind='Procedural'] { border-left-color: #3fb950; }
+    .engram-age { color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .engram-kind { text-transform: uppercase; font-size: 10px; letter-spacing: 0.06em; color: var(--text-muted); }
+    .engram-content {
+      color: var(--text-primary);
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      white-space: pre-line;
+    }
+    @keyframes engram-land {
+      from { opacity: 0; transform: translateY(-3px); }
+      to { opacity: 1; transform: none; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .engram-row { animation: none; }
+    }
     .p-brain {
       background:
         radial-gradient(ellipse 70% 60% at 50% 40%, rgba(0, 212, 255, 0.06), transparent 70%),
