@@ -2294,7 +2294,9 @@ impl ActionCommand for BenchmarkDispatch {
                              project).{staged} I've STARTED your scored solve on it — fix the bug \
                              in `swe/{}/` (do not edit the tests); your diff is graded against the \
                              repo's held-out tests, and you get a few attempts to investigate your \
-                             own failures. Watch the room for the verdict.",
+                             own failures. Watch the room for the verdict. Teammates each hold \
+                             their OWN card in this room — a kickoff naming someone else is not \
+                             yours; {who}, card {short} is the one and only card you work.",
                             instance.repo, instance.instance_id
                         )
                     }

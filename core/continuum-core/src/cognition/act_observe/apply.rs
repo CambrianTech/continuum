@@ -616,6 +616,9 @@ pub async fn apply_act(
                 };
                 format!("⚙ {} {} {}", obs.call.name, object, mark)
             }));
+        // The vitals ACT PULSE: executed acts are the thinking-right-now
+        // signal during a held-work turn (the cycle-delta is blind inside one).
+        crate::ipc::vitals_emitter::record_acts(body.persona_id, acts.len() as u64);
         if !lines.is_empty() {
             if let Some(rt) = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
                 .and_then(|reg| reg.get(body.persona_id))

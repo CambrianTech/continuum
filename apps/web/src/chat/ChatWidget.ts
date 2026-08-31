@@ -815,12 +815,24 @@ export class ChatWidget extends LitElement {
       border-left-color: var(--content-tertiary, #667);
     }
     @media (prefers-reduced-motion: no-preference) {
+      /* Compositor-only breathe: animate OPACITY of a painted-once overlay —
+       * box-shadow keyframes repainted every card every frame (Joel:
+       * "animation issues, speed issues"). */
       .bench-card.bench-state-working {
+        position: relative;
+      }
+      .bench-card.bench-state-working::after {
+        content: '';
+        position: absolute;
+        inset: 0 auto 0 0;
+        width: 3px;
+        background: rgba(53, 208, 224, 0.45);
         animation: bench-breathe 3s ease-in-out infinite;
+        pointer-events: none;
       }
       @keyframes bench-breathe {
-        0%, 100% { box-shadow: inset 3px 0 0 rgba(53, 208, 224, 0); }
-        50% { box-shadow: inset 3px 0 0 rgba(53, 208, 224, 0.35); }
+        0%, 100% { opacity: 0; }
+        50% { opacity: 1; }
       }
     }
     /* GROUPED BOARD: one section per round — its lifecycle row, then ITS runs
