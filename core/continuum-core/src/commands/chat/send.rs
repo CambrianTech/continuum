@@ -71,15 +71,55 @@ crate::action_command! {
                 "no sender: pass senderId, or wait for the operator self-peer to come \
                  online this boot (it starts beside the citizens)".into(),
             ))?;
-        ChatModule::from_slot(this.executor_slot.clone())
+        let mut result = ChatModule::from_slot(this.executor_slot.clone())
             .send(ChatSendParams {
                 room_id: p.room_id,
                 sender_id,
-                text: p.text,
+                text: p.text.clone(),
                 reply_to_id: p.reply_to_id,
             })
             .await
-            .map_err(CommandError::Internal)
+            .map_err(CommandError::Internal)?;
+        // ── The DAEMON half of the voice (found live 2026-08-31) ──
+        // ChatModule::send dual-writes data + the realtime ENVELOPE store — the
+        // web's live feed — but citizens hear rooms through the airc DAEMON
+        // transcript (`say`), and `chat/history` reads the same store. Without
+        // this leg, a chat/send message rendered on screens while every citizen
+        // in the room stayed deaf to it, and history showed nothing: the
+        // operator asked a question into a void. Speak it through the SENDER'S
+        // own runtime (persona from the registry; the operator self-peer only
+        // for its own id — never misattributed). Best-effort like the envelope
+        // leg: the stored message is ground truth either way, and a miss is
+        // named in `warning`, never silent.
+        let runtime = crate::persona::PersonaAircRuntimeRegistry::try_global()
+            .and_then(|r| r.get(sender_id))
+            .or_else(|| {
+                crate::persona::operator_peer::operator_runtime()
+                    .filter(|rt| rt.airc().peer_id().as_uuid() == sender_id)
+            });
+        match runtime {
+            Some(rt) => {
+                if let Err(e) = crate::persona::airc_citizen::publish_text_in_room(
+                    rt.airc(),
+                    p.room_id,
+                    &p.text,
+                )
+                .await
+                {
+                    result.warning = Some(format!(
+                        "message stored + live-fed, but the daemon-room say failed — \
+                         citizens in the room did not hear it: {e}"
+                    ));
+                }
+            }
+            None => {
+                result.warning = Some(format!(
+                    "message stored + live-fed, but no airc runtime speaks for sender \
+                     {sender_id} — citizens in the room did not hear it"
+                ));
+            }
+        }
+        Ok(result)
     }
 }
 
