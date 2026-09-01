@@ -737,16 +737,35 @@ pub fn resume_round(round_id: Uuid) -> Option<NextCard> {
     let live = live_run_ids();
     let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());
     let r = rounds.get_mut(&round_id)?;
-    if r.stage != RoundStage::Paused {
-        return None;
+    match r.stage {
+        RoundStage::Paused => {
+            r.stage = RoundStage::Working;
+            persist_round_in(&rounds_state_dir(), r);
+            crate::probe!(
+                class = "bench.round.resumed_by_operator",
+                round_id = %round_id,
+                "round resumed from pause — driver kicked"
+            );
+        }
+        // A WORKING round can still be IDLE — the zombie state a core reload
+        // leaves behind (found live 2026-09-01: a lite round reloaded
+        // 'working, 4 remaining', demand leased, and sat a full day with
+        // card_activities empty, because the settle-edge driver needs a
+        // settle that an idle round can never produce). The verb's own doc
+        // promises 'the driver is kicked immediately' — make that true here
+        // too: no stage change, just the kick. The in-flight guard
+        // (`live_run_ids` via `first_unworked`) keeps this idempotent — a
+        // round with a genuinely live run returns None and nothing double-
+        // fires ([[launch-and-pray-is-the-defect-read-the-state-pipe-before-staging-work]]).
+        RoundStage::Working => {
+            crate::probe!(
+                class = "bench.round.kicked_while_working",
+                round_id = %round_id,
+                "working round kicked by operator — firing the next unworked card if any run is not already live"
+            );
+        }
+        _ => return None,
     }
-    r.stage = RoundStage::Working;
-    persist_round_in(&rounds_state_dir(), r);
-    crate::probe!(
-        class = "bench.round.resumed_by_operator",
-        round_id = %round_id,
-        "round resumed — driver kicked"
-    );
     first_unworked(r, &live)
 }
 
@@ -1193,6 +1212,29 @@ mod tests {
             ROUNDS.lock().unwrap().get(&round_id).is_none(),
             "an empty round must not remain tracked"
         );
+    }
+
+    // what this catches: the ZOMBIE round (found live 2026-09-01) — a core
+    // reload leaves a round WORKING with no live run and no settle edge ever
+    // coming, and resume_round used to no-op on anything not Paused, so the
+    // one verb whose doc promises "the driver is kicked immediately" left the
+    // exact stalled state it exists for. A Working round with no live run must
+    // hand back its first unworked card.
+    #[test]
+    fn resume_kicks_a_working_idle_round() {
+        let ids = cards(2);
+        let round_id = Uuid::new_v4();
+        let mut r = BenchRound::new(round_id, "swe-bench-lite", &ids, WorkDriver::DetachedSolve);
+        for c in &ids {
+            r.card_assignees.insert(*c, Uuid::new_v4());
+        }
+        ROUNDS.lock().unwrap().insert(round_id, r);
+        let next = resume_round(round_id);
+        assert!(
+            next.as_ref().is_some_and(|n| ids.contains(&n.card)),
+            "a WORKING round with no live run must kick its first unworked card: {next:?}"
+        );
+        ROUNDS.lock().unwrap().remove(&round_id);
     }
 
     // what this catches: the END transition firing more than once. All-settled must yield
