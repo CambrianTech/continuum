@@ -1492,7 +1492,19 @@ impl LlmDeliberationFaculty {
             .unwrap_or(0)
             .min(after_framing / 2);
         let msg_budget = after_framing.saturating_sub(ctx_floor);
-        let all_messages = self.messages_unfitted(ws);
+        // The volatile framing (clock + own-time/presence) rides the FACTS phase
+        // of the conversation — flicker-class content, before the ask — never the
+        // system message it invalidated on every act (see the split note below).
+        let trailing_framing = deliberation_prompt::compose_trailing(
+            ws.now_ms,
+            ws.self_initiated,
+            ws.directed_at_self,
+            holds_live_work,
+        );
+        let all_messages = self.messages_unfitted(
+            ws,
+            (!trailing_framing.is_empty()).then_some(trailing_framing.as_str()),
+        );
 
         // WHAT THIS TURN WOULD HAVE COST WITH NO BUDGET — recorded before either
         // fitting step throws the evidence away, and deliberately free to exceed
@@ -1565,26 +1577,36 @@ impl LlmDeliberationFaculty {
             ),
         );
 
-        // #266 KV-cache fix lives in the block ORDER (see `deliberation_prompt::stable_blocks`
-        // and `volatile_blocks`, assembled by `compose_split`):
-        // the per-turn presence/own-time framing now renders LAST in the system message,
-        // AFTER the standing grounding context, instead of before it. The raw
-        // prompt-captures caught the framing sitting at char ~7607, ahead of the context,
-        // so every directed/silence flip shortened the reusable KV prefix to ~7.6k chars
-        // and re-prefilled the whole tail. With the framing last, the served slot's reused
-        // prefix now extends through identity + tools + the stable head of the grounding —
-        // the framing flip falls past it and costs only its own short re-prefill. The ask
-        // stays the last CONVERSATION turn (framing is system-role instruction, not a
-        // conversation message), so nothing pulls the model off the freshest peer turn.
+        // #266 KV-cache fix, THE SPLIT ACTUALLY APPLIED. The split composer
+        // existed and its own docs called it "the live path" — but this view
+        // was still built with `compose_system_holding` (stable ++ trailing in
+        // ONE system message), so the [now] minute clock and the presence/
+        // own-time flip kept churning the system prefix at char ~8.4k. Wire-
+        // capture diff 2026-09-01: consecutive turns diverged exactly at
+        // `[now …]` / `[Conversational Presence]`→`[Your own time]`, with the
+        // server's reuse proven perfect the same hour (same prompt ×2 on one
+        // slot → cache_n 397/401). A prefix that mutates every act caches
+        // nothing; hit_rate was 0.0 fleet-wide with every persona on her OWN
+        // slot ([[a-mutating-system-prompt-destroys-kv-reuse-for-everything-after-it]]).
+        //
+        // Now: `stable` (identity + tools + grounding context) IS the system
+        // message; `trailing` (clock + presence framing) rides as the NEWEST
+        // user turn — same text, nearest generation, zero prefix invalidation.
+        // Same delivery the `.trailing()` contributions already use and test.
+        // The trailing half was already rendered into the FACTS phase of the
+        // conversation by `messages_unfitted` (before the ask, parrot order
+        // preserved); only the byte-stable half may touch the system message.
         DeliberationPromptView {
-            system: self.compose_system_holding(
-                &context,
-                &expanded,
-                ws.directed_at_self,
-                ws.self_initiated,
-                ws.now_ms,
-                holds_live_work,
-            ),
+            system: self
+                .compose_system_split(
+                    &context,
+                    &expanded,
+                    ws.directed_at_self,
+                    ws.self_initiated,
+                    ws.now_ms,
+                    holds_live_work,
+                )
+                .stable,
             messages,
         }
     }
@@ -1622,7 +1644,7 @@ impl LlmDeliberationFaculty {
     /// so it neither bleeds identity nor replays the transcript (the echo-loop root
     /// cause — PERSONA-COGNITION-PIPELINE §7.5).
     fn messages_within(&self, ws: &Workspace, budget_tokens: usize) -> Vec<ChatMessage> {
-        self.fit_messages(self.messages_unfitted(ws), budget_tokens)
+        self.fit_messages(self.messages_unfitted(ws, None), budget_tokens)
     }
 
     /// The conversation as it stands BEFORE any budget is applied — every turn, every
@@ -1633,7 +1655,11 @@ impl LlmDeliberationFaculty {
     /// it has run the question "how much did this turn actually want?" is
     /// unanswerable — which is precisely why the served window had to be sized by a
     /// constant instead of by demand. [`super::working_set`] measures this.
-    fn messages_unfitted(&self, ws: &Workspace) -> Vec<ChatMessage> {
+    fn messages_unfitted(
+        &self,
+        ws: &Workspace,
+        trailing_framing: Option<&str>,
+    ) -> Vec<ChatMessage> {
         // Collapse consecutive same-role turns into one message each (chronological).
         // Her OWN near-duplicate turns are DROPPED after the first: replaying
         // `assistant: X` three times teaches the model that repeating X is its
@@ -1828,6 +1854,16 @@ impl LlmDeliberationFaculty {
         // immediately before the ask (parrot-fix order preserved).
         for fact in facts {
             messages.push(ChatMessage::text("user", fact));
+        }
+        // The volatile framing (clock + own-time/presence flip) — same flicker
+        // class as the facts, so it rides HERE: before the ask (the parrot-fix
+        // order), after everything stable. It lived at the tail of the system
+        // message until 2026-09-01, where its per-act mutation (the [now]
+        // minute tick, DIRECTED↔SILENCE) invalidated the KV prefix behind it
+        // on nearly every act — hit_rate 0.0 with per-resident slots and a
+        // server whose reuse measured perfect the same hour.
+        if let Some(framing) = trailing_framing {
+            messages.push(ChatMessage::text("user", framing.to_string()));
         }
         if let Some(ask) = ask {
             messages.push(ask);
@@ -3655,27 +3691,29 @@ mod tests {
             let undirected = faculty.prompt_view(&with_grounding(false));
             let directed = faculty.prompt_view(&with_grounding(true));
 
-            // The longest shared leading run of the two system messages IS the KV prefix
-            // the served slot reuses across the flip.
-            let common_len = directed
-                .system
-                .bytes()
-                .zip(undirected.system.bytes())
-                .take_while(|(a, b)| a == b)
-                .count();
-            let reusable_prefix = &directed.system[..common_len];
-            assert!(
-                reusable_prefix.contains("[What you are working with"),
-                "the reusable KV prefix must extend THROUGH the grounding context — the \
-                 framing flip falls after it (#266). prefix ended at byte {common_len}:\n{reusable_prefix}"
+            // 2026-09-01, the full fix: the system message is now the STABLE half
+            // only, so the directedness flip cannot touch it AT ALL — the two
+            // system messages are byte-identical, and the entire system prefix
+            // (identity + tools + grounding) is reusable KV across the flip.
+            assert_eq!(
+                directed.system, undirected.system,
+                "the system message is the stable half — a presence flip must not move a byte of it"
             );
-            // The presence variants diverge only in the tail past that prefix, and stay in
-            // the system message (framing is system-role instruction, not a conversation
-            // turn — so the ask remains the last conversation message).
             assert!(
-                directed.system.contains("This message names you")
-                    && !undirected.system.contains("This message names you"),
-                "the directed presence variant renders in the system tail, past the reusable prefix"
+                directed.system.contains("[What you are working with"),
+                "grounding context stays in the (fully reusable) system prefix"
+            );
+            // The presence variants ride the conversation tail (facts phase,
+            // before the ask) — directed carries its marker, undirected does not.
+            let tail_has = |v: &DeliberationPromptView, needle: &str| {
+                v.messages.iter().any(
+                    |m| matches!(&m.content, crate::ai::types::MessageContent::Text(t) if t.contains(needle)),
+                )
+            };
+            assert!(
+                tail_has(&directed, "This message names you")
+                    && !tail_has(&undirected, "This message names you"),
+                "the directed presence variant renders as a conversation turn, never in the system prefix"
             );
         }
 
@@ -4166,9 +4204,11 @@ mod tests {
             // WorkingMemory (this harness faculty has none), so no ledger
             // message here — the ledger-specific behavior is pinned in
             // steps_ledger_renders_receipts_and_explicit_zero_case below.
+            // …plus the volatile presence-framing turn (2026-09-01: it rides the
+            // facts phase instead of churning the system prefix), still ask-last.
             assert_eq!(
                 roles,
-                vec!["user", "assistant", "user", "user"],
+                vec!["user", "assistant", "user", "user", "user"],
                 "view: {view:?}"
             );
             assert!(
@@ -4821,35 +4861,48 @@ mod tests {
         // output is never filtered.
         #[test]
         fn directed_turn_withholds_the_silence_escape() {
+            use crate::ai::types::MessageContent;
             let adapter = Arc::new(ScriptedAdapter::new(vec![]));
             let faculty =
                 LlmDeliberationFaculty::new(Uuid::new_v4(), "Asha", "You are Asha.", adapter);
+            // 2026-09-01: presence framing rides the conversation tail (the KV
+            // split applied for real), so these assertions read the WHOLE
+            // delivered prompt — system + turns — not the system string alone.
+            let whole = |v: &DeliberationPromptView| {
+                let mut s = v.system.clone();
+                for m in &v.messages {
+                    if let MessageContent::Text(t) = &m.content {
+                        s.push('\n');
+                        s.push_str(t);
+                    }
+                }
+                s
+            };
 
-            let ambient = faculty.prompt_view(&Workspace::new("just some room chatter"));
+            let ambient = whole(&faculty.prompt_view(&Workspace::new("just some room chatter")));
             assert!(
-                ambient.system.contains("[Conversational Presence]"),
+                ambient.contains("[Conversational Presence]"),
                 "an ambient turn carries the presence/PASS affordance block"
             );
             assert!(
-                !ambient.system.contains("stay silent"),
+                !ambient.contains("stay silent"),
                 "the turn-taking block is posture-neutral — no 'stay silent' nudge"
             );
 
-            let directed =
-                faculty.prompt_view(&Workspace::new("answer me: what is 2+2?").directed(true));
+            let directed = whole(
+                &faculty.prompt_view(&Workspace::new("answer me: what is 2+2?").directed(true)),
+            );
             assert!(
-                directed.system.contains("This message names you"),
+                directed.contains("This message names you"),
                 "a directed turn carries the DIRECTED presence variant (never ghost a \
                  question; a pure pleasantry may rest — the natural spiral-break)"
             );
             assert!(
-                !directed
-                    .system
-                    .contains("do not need to be addressed by name"),
+                !directed.contains("do not need to be addressed by name"),
                 "a directed turn never carries the ambient block"
             );
             assert!(
-                !directed.system.contains("stay silent"),
+                !directed.contains("stay silent"),
                 "and carries no 'stay silent' nudge on a directed turn either"
             );
         }
