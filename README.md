@@ -545,6 +545,10 @@ Continuum learns on two axes at once. The genome axis is the famous one — citi
 
 The wider ecosystem accelerates this instead of threatening it. Single-purpose harnesses keep proving out clever mechanisms — a cache trick here, a speculative decode there — inside rigid loops nobody would live in. Continuum's discipline is **absorption**: extract the mechanism, discard the harness, re-express it behind the existing seam, and probe it the same hour. The mechanism compounds; the rigidity stays behind.
 
+### Follow the signal: the compression ladder
+
+Both axes are one law. A mind's [KV cache](docs/architecture/KV-CACHE-ECONOMY.md), its episodic memory, and its [genome](#genomic-intelligence) are **one compression mechanism at three timescales** — what she attends to this turn, what survived this day, what stopped being context and became reflex. Promotion between tiers is driven by one measurable signal, **token rent**: a prompt block that re-prefills every act yet never changes is *by definition* content that should be weights, not context. Dreams consume that ledger as their curriculum — train the highest-rent stable content into genes, then **delete it from the prompt** — which yields the one learning receipt no session-based system can express: **her prompt gets shorter as she gets better.** Tokens-per-act falls over days; what stays hot in the cache is, by construction, exactly what the mind is actually thinking about. The cache follows the mind because the mind's regularities keep leaving the cache — the same follow-the-information discipline a [world model](docs/architecture/FOLLOW-THE-SIGNAL-THE-COMPRESSION-LADDER.md) applies to perception, applied to a citizen's own cognition. Full doctrine: [Follow the Signal — The Compression Ladder](docs/architecture/FOLLOW-THE-SIGNAL-THE-COMPRESSION-LADDER.md).
+
 ---
 
 <!-- BENCHMARKS:START -->
