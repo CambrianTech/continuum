@@ -642,6 +642,38 @@ pub fn next_unworked_per_round() -> Vec<NextCard> {
         .collect()
 }
 
+/// Every unworked card of every Working CITIZEN-driven round — the cards whose
+/// driver is the citizens' own perception, not a detached dispatch. The boot
+/// resume RE-SAYS their kickoffs into the run room (through the assignee's own
+/// subscribed runtime), because a reload leaves the original kickoffs buried
+/// beyond every window: found live 2026-09-01, a lite round sat 'working, 4
+/// remaining' a full day while its four assignees idled beside their own
+/// unworked cards ([[bench-rounds-die-at-perception-run-rooms-are-deaf]]).
+/// One entry per card (not first-only): re-perception addresses every
+/// assignee, unlike the one-at-a-time detached dispatch.
+pub fn unworked_citizen_cards() -> Vec<NextCard> {
+    let rounds = ROUNDS.lock().expect("bench rounds mutex");
+    rounds
+        .values()
+        .filter(|r| r.stage == RoundStage::Working && r.driver == WorkDriver::Citizen)
+        .flat_map(|r| {
+            let run_room = r.round_id;
+            r.cards
+                .iter()
+                .filter(|(_, state)| state.is_none())
+                .filter_map(move |(card, _)| {
+                    r.card_assignees.get(card).map(|assignee| NextCard {
+                        card: *card,
+                        assignee: *assignee,
+                        run_room,
+                        teammates: r.team.clone(),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 /// Total OPEN (non-terminal) cards across every Working round — the board-side
 /// LANE DEMAND. Queued benchmark work is demand the serving plan must see:
 /// measured live 2026-08-27, the plan converged to 1 lane after a 4-way cohort

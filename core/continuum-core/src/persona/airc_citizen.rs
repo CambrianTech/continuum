@@ -267,6 +267,34 @@ pub(crate) async fn publish_text_in_room(
     .map(|receipt| receipt.event_id)
 }
 
+/// Resolve the channel NAME for `room_id` from ANY runtime in this process
+/// that already subscribes to it — the core hosts every citizen runtime, so a
+/// room at least one citizen belongs to is always nameable, even though the
+/// channel-id → name mapping is one-way (ids are hashes of names).
+///
+/// Exists for the operator/agent JOIN-ON-SEND heal (chat/send): after the
+/// 2026-09-01 reboot marathon, the self-peers' scopes had no subscription to
+/// rooms the citizens lived in, so every CLI send stored + live-fed but the
+/// daemon say was refused — the operator asked questions into a void, and
+/// join-by-uuid is structurally impossible from outside. Failure-path only
+/// (one subscription-set read per runtime, and only after a refused publish),
+/// so it costs the hot path nothing.
+pub(crate) async fn room_name_by_id(room_id: Uuid) -> Option<String> {
+    let reg = crate::persona::PersonaAircRuntimeRegistry::try_global()?;
+    let runtimes: Vec<_> = reg.iter().collect();
+    for rt in runtimes {
+        if let Ok(set) = rt.airc().subscription_set().await {
+            if let Some(sub) = set
+                .all()
+                .find(|s| s.as_room().channel.as_uuid() == room_id)
+            {
+                return Some(sub.name.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Test fixture implementing [`AircCitizen`] without standing up the
 /// airc daemon. Holds the peer_id the test wants to project; subscribe
 /// and say resolve to errors (the service-loop tests don't drive

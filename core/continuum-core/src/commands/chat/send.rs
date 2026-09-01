@@ -112,13 +112,55 @@ crate::action_command! {
             });
         match runtime {
             Some(rt) => {
-                if let Err(e) = crate::persona::airc_citizen::publish_text_in_room(
+                let mut publish_err = crate::persona::airc_citizen::publish_text_in_room(
                     rt.airc(),
                     p.room_id,
                     &p.text,
                 )
                 .await
-                {
+                .err();
+                // JOIN-ON-SEND heal, SELF-PEERS ONLY (operator/agent). Their
+                // scopes lose room subscriptions across reboots (found live
+                // 2026-09-01: after ~12 restarts even `general` refused, and
+                // every CLI send stored + live-fed while citizens stayed deaf
+                // — questions into a void). For a human/agent DELIBERATELY
+                // addressing a room, sending IS the intent to be in it, so the
+                // heal subscribes (membership without moving focus) and
+                // retries once. Citizens keep the documented no-auto-join
+                // safety untouched — answering must never silently change
+                // which rooms a persona belongs to; this guard is scoped to
+                // exactly the two self-peers
+                // ([[a-design-fork-is-usually-a-guard-scoped-too-broadly]]).
+                let is_self_peer = crate::persona::operator_peer::operator_runtime()
+                    .map(|o| o.airc().peer_id().as_uuid() == sender_id)
+                    .unwrap_or(false) // unwrap_or: self-peer not up this boot = the sender simply isn't it
+                    || crate::persona::operator_peer::agent_runtime()
+                        .map(|a| a.airc().peer_id().as_uuid() == sender_id)
+                        .unwrap_or(false); // unwrap_or: same — absence of the agent peer is a fact, not an error
+                if publish_err.is_some() && is_self_peer {
+                    if let Some(name) =
+                        crate::persona::airc_citizen::room_name_by_id(p.room_id).await
+                    {
+                        if rt.airc().subscribe_room(&name).await.is_ok() {
+                            crate::probe!(
+                                class = "chat.send.join_on_send",
+                                room = %p.room_id,
+                                room_name = %name,
+                                sender = %sender_id,
+                                "self-peer subscribed on send — its scope had no membership \
+                                 for a room it deliberately addressed; retrying the say",
+                            );
+                            publish_err = crate::persona::airc_citizen::publish_text_in_room(
+                                rt.airc(),
+                                p.room_id,
+                                &p.text,
+                            )
+                            .await
+                            .err();
+                        }
+                    }
+                }
+                if let Some(e) = publish_err {
                     result.warning = Some(format!(
                         "message stored + live-fed, but the daemon-room say failed — \
                          citizens in the room did not hear it: {e}"
