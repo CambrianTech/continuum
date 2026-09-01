@@ -51,6 +51,9 @@ export interface LiveCallOverlay {
   readonly micOn?: boolean;
   /** Camera currently publishing (renderer state, threaded through). */
   readonly cameraOn?: boolean;
+  /** Who is IN the call (self + joined + track holders). Present = the grid
+   *  tiles only these; absent = legacy behavior (everyone online). */
+  readonly callParticipants?: ReadonlyArray<string>;
   /** The staged permission card to show (threaded renderer state). */
   readonly mediaAsk?: { readonly kind: 'camera' | 'mic'; readonly denied?: boolean };
   /** Participant ids with a live video frame right now — the tile paints a
@@ -135,7 +138,11 @@ export function liveParticipants(
   // call, like any video-call app; offline members join the grid when they
   // connect, never as grey placeholder tiles (Joel, 2026-08-31: "leave off
   // offline people from the list till they connect").
-  return vm.members.filter((m) => m.active).map((m) => participant(m, streams, overlay));
+  const inCall =
+    overlay?.callParticipants !== undefined ? new Set(overlay.callParticipants) : undefined;
+  return vm.members
+    .filter((m) => (inCall !== undefined ? inCall.has(m.id) : m.active))
+    .map((m) => participant(m, streams, overlay));
 }
 
 /** The ACTIVE speaker's caption — the most recent citizen to start a turn

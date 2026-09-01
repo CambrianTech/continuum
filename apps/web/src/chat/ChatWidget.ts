@@ -298,6 +298,10 @@ export class ChatWidget extends LitElement {
    *  imperatively after render (video → its tile's <video>, audio → a hidden
    *  autoplaying <audio>); the browser decodes off-main-thread. */
   private _lkTracks = new Map<string, { video?: RemoteTrack; audio?: RemoteTrack }>();
+  /** Who is actually IN the call (ws ParticipantJoined + lk track holders +
+   *  self) — the grid tiles THESE, not everyone room-online (a call app never
+   *  shows offline/absent people as static tiles; they appear on connect). */
+  private _callParticipants = new Set<string>();
   /** Pending typing mutations (text = latest accumulation, null = ended) —
    *  flushed onto the reactive `_typing` at most once per animation frame. */
   private _typingBuf = new Map<string, string | null>();
@@ -389,6 +393,16 @@ export class ChatWidget extends LitElement {
         this._micOn = false;
         this._call = undefined;
         this._callSpeaking = new Map();
+      },
+      onParticipantJoined: (userId) => {
+        this._callParticipants = new Set(this._callParticipants).add(userId);
+        this.requestUpdate();
+      },
+      onParticipantLeft: (userId) => {
+        const next = new Set(this._callParticipants);
+        next.delete(userId);
+        this._callParticipants = next;
+        this.requestUpdate();
       },
       onAvatar: (a) => {
         const next = new Map(this._callSpeaking);
@@ -489,6 +503,7 @@ export class ChatWidget extends LitElement {
     this._callSpeaking = new Map();
     this._videoFrames = new Map();
     this._lkTracks = new Map();
+    this._callParticipants = new Set();
   }
 
   /** The mic button — a REAL toggle when the media plane is connected. */
@@ -4616,6 +4631,23 @@ export class ChatWidget extends LitElement {
     }
     /* Wide rooms cap at 4 columns worth of tile width via the minmax above;
        small screens fall to 1–2 columns naturally. */
+    /* LIVE MEDIA fills its tile — video and the WS-tee canvas alike. This
+       block was MISSING entirely: the elements sat intrinsic-size in a
+       centered grid, so streams rendered as clipped corners with the glyph
+       floating on top (Joel's screenshot, 2026-08-31). */
+    .lt-video {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    /* A tile with live media hides its glyph/portrait fallbacks — the stream
+       IS the face. */
+    .live-tile:has(.lt-video) .lt-glyph,
+    .live-tile:has(.lt-video) .live-avatar {
+      display: none;
+    }
     .live-tile {
       position: relative;
       aspect-ratio: 16 / 10;
@@ -5495,6 +5527,13 @@ export class ChatWidget extends LitElement {
           lkAudioSenders: [...this._lkTracks.entries()]
             .filter(([, t]) => t.audio !== undefined)
             .map(([id]) => id),
+          callParticipants: [
+            ...new Set([
+              ...(this.viewerId !== undefined ? [this.viewerId] : []),
+              ...this._callParticipants,
+              ...this._lkTracks.keys(),
+            ]),
+          ],
         },
       }, { centerFooter });
     } catch (err) {

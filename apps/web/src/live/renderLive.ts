@@ -50,7 +50,15 @@ function participantTile(p: LiveParticipantVM): TemplateResult {
     <span class="lt-glyph">${tileGlyph(p.kind)}</span>
     ${p.avatarUrl ? html`<img class="lt-img" src=${p.avatarUrl} alt="" @error=${hide} />` : nothing}
     ${p.lkVideo
-      ? html`<video class="lt-video" data-lk-video=${p.id} autoplay playsinline muted></video>`
+      ? html`<video
+          class="lt-video"
+          data-lk-video=${p.id}
+          autoplay
+          playsinline
+          muted
+          disablepictureinpicture
+          controlslist="nodownload noremoteplayback"
+        ></video>`
       : p.hasVideo
         ? html`<canvas class="lt-video" data-sender=${p.id}></canvas>`
         : nothing}
@@ -96,21 +104,31 @@ function controlBtn(opts: {
  *  rail, so focus follows actual tokens, never a timer), GRID otherwise
  *  (equal tiles). `data-composition` carries the state for CSS + tests. */
 function renderComposition(body: LiveContentBody): TemplateResult {
-  const focused = body.participants.find((p) => p.speaking);
+  // Citizen VOICES are composition-independent — hidden autoplaying sinks that
+  // must survive panel↔grid flips (they rendered only in the grid branch once,
+  // which would have muted the room the moment someone spoke).
+  const audioSinks = (body.lkAudioSenders ?? []).map(
+    (id) => html`<audio data-lk-audio=${id} autoplay></audio>`,
+  );
+  // STAGE-FIRST (Slack/Teams shape, Joel 2026-08-31): the stage engages
+  // whenever there is anything worth staging — the active speaker, else the
+  // first participant with live video. Flat grid only for an all-static lobby.
+  const focused =
+    body.participants.find((p) => p.speaking) ??
+    body.participants.find((p) => p.lkVideo || p.hasVideo);
   if (focused) {
     const rail = body.participants.filter((p) => p.id !== focused.id);
     return html`<div class="live-panel" data-composition="panel">
       <div class="live-stage">${participantTile(focused)}</div>
       ${rail.length > 0
-        ? html`<div class="live-rail">${rail.map(participantTile)}</div>`
+        ? html`<div class="live-rail">${repeat(rail, (p) => p.id, participantTile)}</div>`
         : nothing}
+      ${audioSinks}
     </div>`;
   }
   return html`<div class="live-grid" data-composition="grid" data-count=${body.participants.length}>
     ${repeat(body.participants, (p) => p.id, participantTile)}
-    ${(body.lkAudioSenders ?? []).map(
-      (id) => html`<audio data-lk-audio=${id} autoplay></audio>`,
-    )}
+    ${audioSinks}
   </div>`;
 }
 
