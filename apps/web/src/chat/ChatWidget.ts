@@ -41,6 +41,7 @@ import {
   LISTING_SELECT,
   LIVE_CAMERA_TOGGLE,
   LIVE_MEDIA_ASK,
+  LIVE_TILE_PIN,
   LIVE_MIC_TOGGLE,
   LIVE_CAPTIONS_TOGGLE,
   LIVE_FACE_TOGGLE,
@@ -125,6 +126,7 @@ export class ChatWidget extends LitElement {
     _micOn: { state: true },
     _camOn: { state: true },
     _mediaAsk: { state: true },
+    _pinnedTile: { state: true },
     _draft: { state: true },
     _sending: { state: true },
     _sendError: { state: true },
@@ -302,6 +304,8 @@ export class ChatWidget extends LitElement {
    *  self) — the grid tiles THESE, not everyone room-online (a call app never
    *  shows offline/absent people as static tiles; they appear on connect). */
   private _callParticipants = new Set<string>();
+  /** The reader's pinned call tile (explicit stage); undefined = unpinned. */
+  private _pinnedTile?: string;
   /** Pending typing mutations (text = latest accumulation, null = ended) —
    *  flushed onto the reactive `_typing` at most once per animation frame. */
   private _typingBuf = new Map<string, string | null>();
@@ -504,6 +508,7 @@ export class ChatWidget extends LitElement {
     this._videoFrames = new Map();
     this._lkTracks = new Map();
     this._callParticipants = new Set();
+    this._pinnedTile = undefined;
   }
 
   /** The mic button — a REAL toggle when the media plane is connected. */
@@ -562,6 +567,13 @@ export class ChatWidget extends LitElement {
       else this._mediaAsk = { kind, denied: state === 'denied' };
     });
   }
+
+  /** Tile click: pin it to the stage; clicking the pinned tile unpins. */
+  private onLiveTilePin = (e: Event): void => {
+    const id = (e as CustomEvent<{ id?: string }>).detail?.id;
+    if (id === undefined) return;
+    this._pinnedTile = this._pinnedTile === id ? undefined : id;
+  };
 
   /** The reason card's outcome: continue → the real ask on this explicit
    *  gesture; dismiss (and the denied card's OK) → close. */
@@ -775,6 +787,7 @@ export class ChatWidget extends LitElement {
     this.addEventListener(LIVE_MIC_TOGGLE, this.onLiveMicToggle);
     this.addEventListener(LIVE_CAMERA_TOGGLE, this.onLiveCameraToggle);
     this.addEventListener(LIVE_MEDIA_ASK, this.onLiveMediaAsk);
+    this.addEventListener(LIVE_TILE_PIN, this.onLiveTilePin);
     this.addEventListener(LIVE_CAPTIONS_TOGGLE, this.onLiveCaptionsToggle);
   }
 
@@ -5520,6 +5533,7 @@ export class ChatWidget extends LitElement {
           micOn: this._micOn,
           cameraOn: this._camOn,
           ...(this._mediaAsk !== undefined ? { mediaAsk: this._mediaAsk } : {}),
+          ...(this._pinnedTile !== undefined ? { pinnedId: this._pinnedTile } : {}),
           videoSenders: Array.from(this._videoFrames.keys()),
           lkVideoSenders: [...this._lkTracks.entries()]
             .filter(([, t]) => t.video !== undefined)

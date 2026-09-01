@@ -51,6 +51,8 @@ export interface LiveCallOverlay {
   readonly micOn?: boolean;
   /** Camera currently publishing (renderer state, threaded through). */
   readonly cameraOn?: boolean;
+  /** The reader's pinned tile id (explicit stage). */
+  readonly pinnedId?: string;
   /** Who is IN the call (self + joined + track holders). Present = the grid
    *  tiles only these; absent = legacy behavior (everyone online). */
   readonly callParticipants?: ReadonlyArray<string>;
@@ -200,6 +202,7 @@ export function liveContentBody(vm: ChatViewModel, overlay?: LiveCallOverlay): L
     participants: liveParticipants(vm, streams, overlay),
     ...(overlay?.mediaAsk !== undefined ? { mediaAsk: overlay.mediaAsk } : {}),
     ...(overlay?.lkAudioSenders !== undefined ? { lkAudioSenders: overlay.lkAudioSenders } : {}),
+    ...(overlay?.pinnedId !== undefined ? { pinnedId: overlay.pinnedId } : {}),
     ...(caption ? { caption } : {}),
     controls: liveControls(vm, captionsOn, overlay),
     mediaPlaneLive: overlay?.mediaConnected === true,

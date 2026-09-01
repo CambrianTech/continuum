@@ -24,7 +24,7 @@
 import { html, nothing, type TemplateResult } from 'lit';
 import { repeat } from 'lit/directives/repeat.js';
 import type { LiveContentBody, LiveParticipantVM } from '@continuum/patterns';
-import { fireLiveCameraToggle, fireLiveCaptionsToggle, fireLiveFaceToggle, fireLiveMediaAsk, fireLiveMicToggle } from '../render/parts';
+import { fireLiveCameraToggle, fireLiveCaptionsToggle, fireLiveFaceToggle, fireLiveMediaAsk, fireLiveMicToggle, fireLiveTilePin } from '../render/parts';
 
 /** Kind glyph for a tile with no stored avatar — the honest fallback face. */
 function tileGlyph(kind: string): string {
@@ -42,6 +42,7 @@ function participantTile(p: LiveParticipantVM): TemplateResult {
 
   return html`<div
     class="live-tile"
+    @click=${(e: Event) => fireLiveTilePin(e, p.id)}
     data-kind=${p.kind}
     data-speaking=${p.speaking ? '' : nothing}
     data-active=${p.active ? '' : nothing}
@@ -110,12 +111,17 @@ function renderComposition(body: LiveContentBody): TemplateResult {
   const audioSinks = (body.lkAudioSenders ?? []).map(
     (id) => html`<audio data-lk-audio=${id} autoplay></audio>`,
   );
-  // STAGE-FIRST (Slack/Teams shape, Joel 2026-08-31): the stage engages
-  // whenever there is anything worth staging — the active speaker, else the
-  // first participant with live video. Flat grid only for an all-static lobby.
+  // THE COMPOSITION RULE (surveyed 2026-08-31 — Discord/Teams/Meet: grid by
+  // default, speaking highlights IN PLACE, fullscreen only on explicit pin or
+  // screenshare; Zoom's Speaker View is the one auto-stage and even that is a
+  // chosen mode; TikTok's host-fullscreen is broadcast-shaped, wrong for a
+  // room of peers): stage engages when the reader PINNED a tile (click), else
+  // while someone is actively SPEAKING (real tokens flowing). Never merely
+  // because video exists — a quiet call is a grid.
   const focused =
-    body.participants.find((p) => p.speaking) ??
-    body.participants.find((p) => p.lkVideo || p.hasVideo);
+    (body.pinnedId !== undefined
+      ? body.participants.find((p) => p.id === body.pinnedId)
+      : undefined) ?? body.participants.find((p) => p.speaking);
   if (focused) {
     const rail = body.participants.filter((p) => p.id !== focused.id);
     return html`<div class="live-panel" data-composition="panel">

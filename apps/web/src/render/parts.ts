@@ -132,6 +132,19 @@ export function fireLiveMediaAsk(e: Event, outcome: 'continue' | 'dismiss'): voi
   );
 }
 
+/** Composed event: the reader pinned/unpinned a call tile (the CHOSEN stage —
+ *  the composition rule's explicit half; clicking the pinned tile unpins). */
+export const LIVE_TILE_PIN = 'live-tile-pin';
+export function fireLiveTilePin(e: Event, id: string): void {
+  (e.currentTarget as HTMLElement).dispatchEvent(
+    new CustomEvent<{ id: string }>(LIVE_TILE_PIN, {
+      detail: { id },
+      bubbles: true,
+      composed: true,
+    }),
+  );
+}
+
 /** Detail payload of a `LISTING_SELECT` event — which listing, which cell, and
  *  (when the cell carries one) its neutral `group` key: the nav tab's target
  *  kind for rooms-rail cells. The routing rule reads it to pick the select's

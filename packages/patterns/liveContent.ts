@@ -95,6 +95,8 @@ export interface LiveControlsVM {
 
 /** The live call face's `Content` body (`purpose === LIVE_PURPOSE`). */
 export interface LiveContentBody {
+  /** The reader's pinned tile (explicit stage choice); absent = unpinned. */
+  readonly pinnedId?: string;
   /** Senders with live LiveKit AUDIO tracks — one hidden <audio> each. */
   readonly lkAudioSenders?: ReadonlyArray<string>;
   /** The staged media-permission card (POSITRON-MEDIA-PERMISSIONS.md):
