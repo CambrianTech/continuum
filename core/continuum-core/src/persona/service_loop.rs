@@ -1651,43 +1651,50 @@ pub(crate) fn project_room_roster(
     }
 }
 
-/// Collapse near-identical substantial turns to their NEWEST copy, annotating
-/// the surviving turn's author with "(×N near-identical)". Same-`is_self` only
-/// (role attribution stays intact), authorless opaque turns pass through
-/// untouched, and the geometry is [`near_identical_substantial`]'s — one
-/// definition of "nearly identical" shared with the perception facts. See the
-/// call site in [`build_workspace_turns`] for the why (repetition ≈ bad RAG).
+/// Collapse near-identical substantial turns by SUPPRESSING later copies —
+/// the OLDEST copy stays, byte-untouched, at its original position. Same-
+/// `is_self` only (role attribution stays intact), authorless opaque turns
+/// pass through untouched, and the geometry is [`near_identical_substantial`]'s
+/// — one definition of "nearly identical" shared with the perception facts.
+/// See the call site in [`build_workspace_turns`] for the why (repetition ≈
+/// bad RAG).
+///
+/// ## Why oldest-survivor, unannotated (2026-09-01, the KV-prefix churn)
+///
+/// The first cut kept the NEWEST copy and stamped the survivor's author with
+/// "(×N near-identical)". Both choices rewrite EARLY bytes of the rendered
+/// conversation whenever a fresh duplicate arrives — the representative
+/// relocates and the count increments — and a mutation at 1% depth of an 80k
+/// prompt invalidates the entire KV tail behind it (measured live: Benchy's
+/// consecutive prompts diverging at char ~660 on exactly this annotation,
+/// hit_rate 0.0 while his peers cached 0.38–0.50). Suppression is prefix-
+/// stable by construction: a new duplicate simply never renders, so the bytes
+/// already prefilled stay bytes. The repetition EVIDENCE still reaches her —
+/// the `[pattern]`/`[repetition]` perception facts detect on the RAW turns
+/// and render in the volatile facts phase, where flicker belongs.
+///
+/// The LAST turn is never suppressed: it is the burst's trigger/ask, and the
+/// reply anchor must always see it even when it near-duplicates history.
 pub(crate) fn collapse_near_duplicate_turns(
     turns: Vec<crate::cognition::workspace::BurstTurn>,
 ) -> Vec<crate::cognition::workspace::BurstTurn> {
     use crate::cognition::deliberation_budget::near_identical_substantial;
+    let last_idx = turns.len().saturating_sub(1);
     let mut kept: Vec<crate::cognition::workspace::BurstTurn> = Vec::with_capacity(turns.len());
-    let mut counts: Vec<usize> = Vec::new();
-    // Newest-first so the surviving representative is the freshest copy (the
-    // one the trigger anchor and reply context care about).
-    for t in turns.into_iter().rev() {
-        if t.author.trim().is_empty() {
+    for (i, t) in turns.into_iter().enumerate() {
+        if t.author.trim().is_empty() || i == last_idx {
             kept.push(t);
-            counts.push(1);
             continue;
         }
-        if let Some(i) = kept.iter().position(|k| {
+        let already_represented = kept.iter().any(|k| {
             !k.author.trim().is_empty()
                 && k.is_self == t.is_self
                 && near_identical_substantial(&k.content, &t.content)
-        }) {
-            counts[i] += 1;
-        } else {
+        });
+        if !already_represented {
             kept.push(t);
-            counts.push(1);
         }
     }
-    for (k, c) in kept.iter_mut().zip(counts.iter()) {
-        if *c > 1 {
-            k.author = format!("{} (×{c} near-identical)", k.author);
-        }
-    }
-    kept.reverse();
     kept
 }
 
@@ -3006,13 +3013,17 @@ mod tests {
     }
 
     // what this catches: the RAG-side mirror-hall cure (Joel 2026-07-12,
-    // "repetition almost always bad RAG"). Near-identical substantial turns
-    // collapse to their NEWEST copy with an "(×N near-identical)" author
-    // annotation; distinct turns, short acks (token floor), and opaque
-    // observation turns pass through untouched. Specimens are the live
-    // grep/file_tree loop that fed each mind 4-8 copies of one message.
+    // "repetition almost always bad RAG") in its KV-STABLE form (2026-09-01):
+    // near-identical substantial turns are SUPPRESSED — the OLDEST copy stays
+    // at its position, byte-untouched (no relocating representative, no
+    // mutating "(×N)" author annotation; both rewrote early prompt bytes and
+    // killed the whole KV tail — Benchy's consecutive prompts diverged at
+    // char ~660 on exactly the annotation). The LAST turn (the trigger/ask)
+    // is never suppressed even when it near-duplicates history. Distinct
+    // turns, short acks (token floor), and opaque observation turns pass
+    // through untouched.
     #[test]
-    fn near_dup_turns_collapse_to_annotated_newest_copy() {
+    fn near_dup_turns_suppress_later_copies_and_never_the_trigger() {
         use crate::cognition::workspace::BurstTurn;
         let loop_msg = "I see that we're all trying to find Rust files in the workspace. \
                         Let me use file_tree with a deeper recursion limit to explore the \
@@ -3031,26 +3042,30 @@ mod tests {
             ),
         ];
         let out = collapse_near_duplicate_turns(turns);
-        // 3 loop copies → 1 (the NEWEST, Atlas's variant); 2 short acks kept
-        // (token floor); opaque observation kept.
+        // Asha's mid-window copy suppressed; Anwen's OLDEST copy survives
+        // untouched; Atlas's trigger variant survives because the LAST turn is
+        // sacred; acks + opaque pass through.
         assert_eq!(
             out.len(),
-            4,
+            5,
             "{:?}",
             out.iter().map(|t| &t.author).collect::<Vec<_>>()
         );
         let survivor = out
             .iter()
             .find(|t| t.content.contains("find Rust files"))
-            .expect("one representative survives");
-        assert!(
-            survivor.author.contains("Atlas") && survivor.author.contains("(×3 near-identical)"),
-            "newest copy, annotated: {}",
-            survivor.author
+            .expect("the oldest representative survives");
+        assert_eq!(
+            survivor.author, "Anwen",
+            "oldest copy survives with its author BYTE-UNTOUCHED (no ×N annotation)"
         );
         assert!(
-            survivor.content.contains("aren't being returned"),
-            "newest copy is the representative"
+            !out.iter().any(|t| t.author.contains("Asha")),
+            "the interior duplicate is suppressed entirely"
+        );
+        assert!(
+            out.last().unwrap().content.contains("aren't being returned"),
+            "the trigger (last turn) is never suppressed, near-dup or not"
         );
         assert_eq!(out.iter().filter(|t| t.content == "thanks!").count(), 2);
         assert!(out.iter().any(|t| t.content.starts_with("[pattern]")));

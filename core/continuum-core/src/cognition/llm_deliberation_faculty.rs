@@ -1909,36 +1909,62 @@ impl LlmDeliberationFaculty {
             .sum()
     }
 
-    /// Fit an already-built conversation to `budget_tokens`.
+    /// The window-start advance QUANTUM divisor: when the conversation outgrows
+    /// its budget, the front is dropped in chunks of `budget/8` (floored at 512
+    /// tokens) rather than message-by-message. See [`Self::fit_messages`].
+    // context-budget-exempt: a stability/latency trade ratio, not a token budget — the actual chunk derives from the live budget at the call
+    const FRONT_DROP_QUANTUM_DIVISOR: usize = 8;
+
+    /// Fit an already-built conversation to `budget_tokens` — with a
+    /// QUANTIZED, whole-message front drop, because the fit's cut point is the
+    /// byte-stability of the entire conversation prefix.
+    ///
+    /// The old shape walked NEWEST-first, spending the budget backward: correct
+    /// per-act, and a KV catastrophe across acts — every act appends new tokens
+    /// at the tail, so the exact-fit cut point advanced the window START by a
+    /// few messages per act, and the straddling message was tail-trimmed to a
+    /// different byte offset each time. Measured 2026-09-01 (wire-capture
+    /// diffs): consecutive prompts diverging at ~1% depth on exactly this seam,
+    /// re-prefilling the other 99%.
+    ///
+    /// Now the drop is quantized: the minimum front mass that must go is
+    /// rounded UP to a chunk (`budget/8`, ≥512 tokens), whole messages only, so
+    /// the window start stays BYTE-IDENTICAL for ~a chunk's worth of new
+    /// conversation and then advances once, in one jump. The cost is a window
+    /// that runs up to one chunk under-full — a deliberate stability/capacity
+    /// trade, same law as the scratch slot: reuse of a 20-80k prefix is worth
+    /// vastly more than the last few k of oldest history
+    /// ([[collapse-dont-clip-condense-the-past-never-erode-it]] — and when the
+    /// jump does land, it drops whole turns, never a mid-message shear).
     fn fit_messages(&self, messages: Vec<ChatMessage>, budget_tokens: usize) -> Vec<ChatMessage> {
-        // Fit to the served window, NEWEST-first: walk the thread from the most
-        // recent message backward, giving each the remaining budget. A whole message
-        // that fits is kept intact; the one that straddles the budget boundary is
-        // head-trimmed (keeping its TAIL — the latest lines) via `tail_to_tokens`;
-        // anything older is dropped. This is the turn-granular successor to the old
-        // flat head-trim: the latest activity always survives (it is what the turn is
-        // about), and for the opaque single-turn (eval/test/replay) path it reduces
-        // EXACTLY to the previous `tail_to_tokens(world_state, budget)` behavior.
         // Per-message template overhead: `Self::PER_MESSAGE_TEMPLATE_TOKENS`, shared
         // with `messages_cost` so measurement and fitting charge identically.
         let per_message_template_tokens = Self::PER_MESSAGE_TEMPLATE_TOKENS;
+        let costs: Vec<usize> = messages
+            .iter()
+            .map(|m| est_tokens(&m.content_text()) + per_message_template_tokens)
+            .collect();
+        let total: usize = costs.iter().sum();
         let mut fitted: Vec<ChatMessage> = Vec::new();
-        let mut remaining = budget_tokens;
-        for msg in messages.iter().rev() {
-            let body = msg.content_text();
-            let cost = est_tokens(&body) + per_message_template_tokens;
-            if cost <= remaining {
-                remaining -= cost;
-                fitted.push(msg.clone());
-            } else {
-                // The straddling message: keep as much of its TAIL as still fits.
-                let trimmed =
-                    tail_to_tokens(&body, remaining.saturating_sub(per_message_template_tokens));
-                if !trimmed.is_empty() {
-                    fitted.push(ChatMessage::text(msg.role.clone(), trimmed));
-                }
-                break;
+        if total <= budget_tokens {
+            fitted = messages.clone();
+        } else if messages.len() > 1 {
+            let min_drop = total - budget_tokens;
+            let quantum = (budget_tokens / Self::FRONT_DROP_QUANTUM_DIVISOR).max(512);
+            let drop_q = min_drop.div_ceil(quantum).saturating_mul(quantum);
+            let mut dropped = 0usize;
+            let mut start = 0usize;
+            // Whole messages only, and never the newest — it is what the turn
+            // is about (the pre-existing guarantee, preserved).
+            while start + 1 < messages.len() && dropped < drop_q {
+                dropped += costs[start];
+                start += 1;
             }
+            if total - dropped <= budget_tokens {
+                fitted = messages[start..].to_vec();
+            }
+            // else: the surviving suffix alone still exceeds the budget (a
+            // giant newest message) — fall through to the tail-trim guarantee.
         }
         // The newest message alone can exceed the whole budget (a giant single burst
         // at a tiny window). Keep its trimmed tail regardless — a turn must reach the
@@ -1969,7 +1995,6 @@ impl LlmDeliberationFaculty {
                 return vec![ChatMessage::text(last.role.clone(), body)];
             }
         }
-        fitted.reverse();
         fitted
     }
 
@@ -4246,6 +4271,62 @@ mod tests {
                     .content_text()
                     .starts_with("Operator: "),
                 "the ask (last peer turn) stays LAST, after the grounding facts"
+            );
+        }
+
+        // what this catches: the fit's cut point IS the byte-stability of the
+        // whole conversation prefix (2026-09-01, wire-diffed: consecutive
+        // prompts diverging at ~1% depth because the exact-fit window start
+        // advanced every act). The front must stay byte-identical across small
+        // growth (a quantum of headroom), then advance in ONE whole-message
+        // jump — and the fitted suffix must always fit the budget.
+        #[test]
+        fn fit_front_advances_in_quanta_not_per_act() {
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let faculty =
+                LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
+            let msgs: Vec<ChatMessage> = (0..40)
+                .map(|i| ChatMessage::text("user", format!("m{i} {}", "word ".repeat(95))))
+                .collect();
+            let budget = 2000;
+            // Simulate 20 consecutive acts, each appending one ~160-token
+            // message. Old behavior: the exact-fit start advanced EVERY act
+            // (20 moves). Quantized: total growth ≈ 3.2k tokens ÷ the 512
+            // quantum ⇒ at most ~7 boundary crossings, so most acts keep a
+            // byte-identical front. (Counted, not position-pinned, so the
+            // assertion cannot land on a quantum edge as token estimates
+            // drift.)
+            let mut moves = 0usize;
+            let mut prev_first: Option<String> = None;
+            let mut last_fit: Vec<ChatMessage> = Vec::new();
+            for n in 20..=40 {
+                let fit = faculty.fit_messages(msgs[..n].to_vec(), budget);
+                assert!(!fit.is_empty());
+                let first = fit.first().map(|m| m.content_text());
+                if prev_first.is_some() && first != prev_first {
+                    moves += 1;
+                }
+                prev_first = first;
+                last_fit = fit;
+            }
+            assert!(
+                (1..=8).contains(&moves),
+                "front moved {moves} times across 20 acts — it must advance in \
+                 QUANTA (a handful of jumps), never per act, and must still \
+                 advance eventually (bounded memory)"
+            );
+            // Whole messages only at the front: the first fitted message is one
+            // of the originals, never a mid-message shear.
+            let first = last_fit.first().unwrap().content_text();
+            assert!(
+                msgs.iter().any(|m| m.content_text() == first),
+                "front message must be a whole original message"
+            );
+            // The fitted suffix honors the budget.
+            assert!(
+                LlmDeliberationFaculty::messages_cost(&last_fit) <= budget,
+                "fitted cost {} exceeds budget {budget}",
+                LlmDeliberationFaculty::messages_cost(&last_fit)
             );
         }
 
