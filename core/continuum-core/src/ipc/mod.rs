@@ -3255,7 +3255,8 @@ pub fn start_server(
         let exec = Arc::clone(&executor);
         let root = crate::modules::persona_instance_manager::resolve_continuum_root();
         rt_handle.spawn(async move {
-            crate::persona::operator_peer::ensure_operator_peer(&root, sock, exec).await;
+            crate::persona::operator_peer::ensure_operator_peer(&root, sock.clone(), exec.clone()).await;
+            crate::persona::operator_peer::ensure_agent_peer(&root, sock, exec).await;
         });
     }
     // Autonomic dream consolidation: the dream region dispatches `memory/consolidate`

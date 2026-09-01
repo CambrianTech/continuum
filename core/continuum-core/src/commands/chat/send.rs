@@ -60,12 +60,21 @@ crate::action_command! {
     params: ChatSendWireParams,
     output: ChatSendResult,
     run(this, ctx, p) => {
+        // An AGENT-driven session (actorKind claim from the CLI env) speaks as
+        // the AGENT self-peer — never as the human operator. Attribution is
+        // identity's whole point (Joel, 2026-09-01).
+        let agent_session = ctx.claimed_actor_kind.as_deref() == Some("agent");
         let sender_id = p
             .sender_id
             .or_else(|| ctx.caller.as_ref().map(|c| c.peer_id.as_uuid()))
             .or_else(|| {
-                crate::persona::operator_peer::operator_runtime()
-                    .map(|rt| rt.airc().peer_id().as_uuid())
+                if agent_session {
+                    crate::persona::operator_peer::agent_runtime()
+                        .map(|rt| rt.airc().peer_id().as_uuid())
+                } else {
+                    crate::persona::operator_peer::operator_runtime()
+                        .map(|rt| rt.airc().peer_id().as_uuid())
+                }
             })
             .ok_or_else(|| CommandError::Invalid(
                 "no sender: pass senderId, or wait for the operator self-peer to come \
@@ -95,6 +104,10 @@ crate::action_command! {
             .and_then(|r| r.get(sender_id))
             .or_else(|| {
                 crate::persona::operator_peer::operator_runtime()
+                    .filter(|rt| rt.airc().peer_id().as_uuid() == sender_id)
+            })
+            .or_else(|| {
+                crate::persona::operator_peer::agent_runtime()
                     .filter(|rt| rt.airc().peer_id().as_uuid() == sender_id)
             });
         match runtime {

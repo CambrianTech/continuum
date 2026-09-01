@@ -417,6 +417,7 @@ impl PersonaAircRuntime {
         // persona/agent was the who-panel's you-vs-joel confusion.
         let (runtime_label, kind_label) = match kind {
             crate::identity::IdentityKind::Human => ("interactive", "human"),
+            crate::identity::IdentityKind::Agent => ("agent", "agent"),
             _ => ("persona", "persona"),
         };
         let peer_id_uuid = airc.peer_id().as_uuid();

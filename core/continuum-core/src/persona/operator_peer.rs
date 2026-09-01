@@ -22,6 +22,7 @@ use std::sync::{Arc, OnceLock};
 use crate::persona::airc_runtime::PersonaAircRuntime;
 
 static OPERATOR: OnceLock<Arc<PersonaAircRuntime>> = OnceLock::new();
+static AGENT: OnceLock<Arc<PersonaAircRuntime>> = OnceLock::new();
 
 /// The operator's label — the OS user, falling back to "operator" only when
 /// the environment carries no user at all (containers).
@@ -90,6 +91,55 @@ pub async fn ensure_operator_peer(
             );
         }
     }
+}
+
+/// Boot (or resume) the AGENT self-peer — the identity an AI agent session
+/// (Claude Code, Codex…) speaks as when it drives this node's CLI. Its own
+/// durable peer, kind [`IdentityKind::Agent`], so an agent's probes and chat
+/// never wear the human's name (Joel, 2026-09-01: "the chat history is
+/// clearly attributing shit you did to me"). Same no-service-loop shape as
+/// the operator peer.
+pub async fn ensure_agent_peer(
+    continuum_root: &Path,
+    daemon_socket: PathBuf,
+    executor: Arc<crate::runtime::command_executor::CommandExecutor>,
+) {
+    if AGENT.get().is_some() {
+        return;
+    }
+    match PersonaAircRuntime::bootstrap_as(
+        crate::identity::IdentityKind::Agent,
+        uuid::Uuid::new_v4(), // pre-mint; the durable identity is the home keypair
+        "Claude",
+        continuum_root,
+        daemon_socket,
+        crate::persona::identity_provider::PersonaIdentitySource::ResumedFromDisk,
+        executor,
+    )
+    .await
+    {
+        Ok(rt) => {
+            let rt = Arc::new(rt);
+            crate::probe!(
+                class = "agent.peer.online",
+                peer_id = %rt.airc().peer_id(),
+                "agent self-peer online — agent-driven CLI sessions speak as Claude, never as the human"
+            );
+            let _ = AGENT.set(rt);
+        }
+        Err(e) => {
+            crate::probe!(
+                class = "agent.peer.boot_failed",
+                error = %e.to_string(),
+                "agent self-peer failed to boot — agent sessions fall back to DENIAL on caller-less verbs, never to the human's identity"
+            );
+        }
+    }
+}
+
+/// The agent self-peer's runtime, when online.
+pub fn agent_runtime() -> Option<Arc<PersonaAircRuntime>> {
+    AGENT.get().cloned()
 }
 
 /// The operator's airc handle, when the self-peer is online.

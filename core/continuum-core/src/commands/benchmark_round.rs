@@ -430,6 +430,7 @@ impl ActionCommand for BenchmarkRound {
             user_id: None,
             context_id: None,
             caller: None,
+            claimed_actor_kind: None,
         };
         let ack = CognitionEval.run(&ctx, eval_params).await?;
         crate::probe!(

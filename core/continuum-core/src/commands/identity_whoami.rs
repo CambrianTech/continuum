@@ -60,6 +60,19 @@ crate::action_command! {
                 .unwrap_or_else(|| id.to_string());
             return Ok(WhoamiResult { id: id.to_string(), name, kind: "persona".into() });
         }
+        // An AGENT-driven session (actorKind claim) is the AGENT self-peer.
+        if ctx.claimed_actor_kind.as_deref() == Some("agent") {
+            let rt = crate::persona::operator_peer::agent_runtime().ok_or_else(|| {
+                CommandError::Internal(
+                    "the agent self-peer is not online yet this boot — retry shortly;                      an agent session never resolves to the human's identity".into(),
+                )
+            })?;
+            return Ok(WhoamiResult {
+                id: rt.airc().peer_id().as_uuid().to_string(),
+                name: rt.agent_name().to_string(),
+                kind: "agent".into(),
+            });
+        }
         // A caller-less local session is the node's OPERATOR (the durable human
         // identity, #27). Not online yet this boot = a loud retryable error —
         // never a minted stand-in.

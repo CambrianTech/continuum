@@ -131,6 +131,10 @@ pub struct Ctx {
     /// may run) and propagate it when composing other commands — the same identity
     /// that crossed the grid keeps flowing, never escalating.
     pub caller: Option<crate::routing::CallerIdentity>,
+    /// The calling process's CLAIMED actor kind (`"agent"` = an AI agent
+    /// session drives this CLI/client — attribution, never authentication;
+    /// see `CommandRequest::actor_kind`).
+    pub claimed_actor_kind: Option<String>,
 }
 
 impl Ctx {
@@ -240,6 +244,7 @@ where
         user_id: req.user_id,
         context_id: req.context_id,
         caller,
+        claimed_actor_kind: req.actor_kind,
     };
 
     let outcome = handler
