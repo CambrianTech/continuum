@@ -1842,8 +1842,74 @@ pub fn start_server(
                 }
             },
         ));
+        // SPEECH → PERCEPTION (the second STT dead link, closed 2026-09-01):
+        // a transcribed human utterance posts as a ROOM MESSAGE from the human
+        // (the call id IS the airc RoomId), through the full chat/send
+        // composition — store + live feed + daemon say — so citizens perceive
+        // speech exactly like text and the whole reply pipeline (directedness,
+        // turns, voice-out) fires. Subtitles alone reached screens, no minds.
+        {
+            let exec_slot = live_registrar_executor.clone();
+            mgr.set_transcript_sink(std::sync::Arc::new(
+                move |call_id: &str, user_id: &str, _display_name: &str, text: &str| {
+                    let Some(exec) = exec_slot.cloned() else { return };
+                    let (room, speaker, said) =
+                        (call_id.to_string(), user_id.to_string(), text.to_string());
+                    tokio::spawn(async move {
+                        match exec
+                            .execute_json(
+                                "chat/send",
+                                serde_json::json!({
+                                    "roomId": room,
+                                    "senderId": speaker,
+                                    "text": said,
+                                }),
+                            )
+                            .await
+                        {
+                            Ok(_) => crate::probe!(
+                                class = "live.stt.utterance_to_room",
+                                room = %room,
+                                speaker = %speaker,
+                                chars = said.len(),
+                                "spoken words landed as a room message — citizens can now \
+                                 answer speech"
+                            ),
+                            Err(e) => tracing::warn!(
+                                room = %room,
+                                error = %e,
+                                probe_class = "live.stt.utterance_to_room_failed",
+                                "transcription could not post to the room — subtitles only \
+                                 for this utterance"
+                            ),
+                        }
+                    });
+                },
+            ));
+        }
         std::sync::Arc::new(mgr)
     };
+    {
+        // STT WIRE (closed 2026-09-01): bridge-heard human audio → the
+        // CallServer's existing VAD → speech-end → transcription pipeline.
+        // The bridge reader is a plain thread; this bounded channel + task is
+        // its one hop into async land. Capacity ~2s of 20ms frames: a stalled
+        // consumer drops frames (stay current) instead of building a backlog
+        // of stale speech.
+        let (tx, mut rx) =
+            tokio::sync::mpsc::channel::<crate::live::transport::bridge_client::HumanAudioChunk>(
+                128,
+            );
+        crate::live::transport::bridge_client::install_human_audio_forwarder(tx);
+        let manager = call_manager.clone();
+        rt_handle.spawn(async move {
+            while let Some(chunk) = rx.recv().await {
+                manager
+                    .push_remote_human_audio(&chunk.call_id, &chunk.user_id, chunk.samples)
+                    .await;
+            }
+        });
+    }
     {
         let port = crate::config_env::read("CONTINUUM_CALL_WS")
             .and_then(|s| s.trim().parse::<u16>().ok())

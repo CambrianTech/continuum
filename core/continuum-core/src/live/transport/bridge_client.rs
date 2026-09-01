@@ -760,14 +760,33 @@ fn reader_loop(mut stream: UnixStream, pending: Arc<Mutex<HashMap<u64, Arc<Pendi
     }
 }
 
+/// One human speaker's PCM chunk (16k mono i16, the core-wide audio contract),
+/// hopping from the bridge reader THREAD into async land where the CallServer
+/// lives. Bounded; a saturated channel drops frames (stay-current rule).
+pub struct HumanAudioChunk {
+    pub call_id: String,
+    pub user_id: String,
+    pub samples: Vec<i16>,
+}
+
+/// The installed forwarder for bridge-heard human audio. Filled once at IPC
+/// startup (beside the CallManager's construction) by
+/// [`install_human_audio_forwarder`]; absent = the reader warns on a speaker's
+/// first frame instead of silently eating speech.
+static HUMAN_AUDIO_TX: std::sync::OnceLock<tokio::sync::mpsc::Sender<HumanAudioChunk>> =
+    std::sync::OnceLock::new();
+
+/// Install the channel the bridge reader forwards human audio through.
+pub fn install_human_audio_forwarder(tx: tokio::sync::mpsc::Sender<HumanAudioChunk>) {
+    let _ = HUMAN_AUDIO_TX.set(tx);
+}
+
 /// Per-speaker audio processing state (VAD frame accumulation).
 struct AudioProcessor {
     call_id: String,
     speaker_id: String,
     speaker_name: String,
     track_sid: String,
-    /// Accumulation buffer for VAD (needs 512 samples = 32ms at 16kHz).
-    accum_buf: Vec<i16>,
     frame_count: u64,
 }
 
@@ -778,7 +797,6 @@ impl AudioProcessor {
             speaker_id,
             speaker_name,
             track_sid,
-            accum_buf: Vec::with_capacity(crate::audio_constants::AUDIO_FRAME_SIZE),
             frame_count: 0,
         }
     }
@@ -834,20 +852,33 @@ fn handle_bridge_event(
                 );
             }
 
-            // Accumulate into VAD-sized chunks and process
-            processor.accum_buf.extend_from_slice(&samples);
-            let vad_frame_size = crate::audio_constants::AUDIO_FRAME_SIZE;
-
-            while processor.accum_buf.len() >= vad_frame_size {
-                let vad_frame: Vec<i16> = processor.accum_buf.drain(..vad_frame_size).collect();
-
-                // TODO: Feed vad_frame into ProductionVAD → STT pipeline.
-                // This requires initializing VAD per-speaker (spawn_blocking for ORT)
-                // and routing completed transcriptions to the TS server.
-                // For now, the frame accumulation is correct and ready for wiring.
-                // The VAD/STT integration is the next step after verifying the
-                // bridge audio transport works end-to-end.
-                let _ = vad_frame; // Silence unused warning
+            // THE WIRE THAT WAS NEVER RUN (closed 2026-09-01): these frames
+            // used to accumulate into perfect VAD-sized chunks and die in a
+            // TODO — the bridge heard the first audio frame and citizens never
+            // answered speech, because the pipeline simply STOPPED here. Now
+            // each frame forwards to the CallServer's existing VAD →
+            // speech-end → transcription path (the human's handle + VAD were
+            // minted by her WS-control join all along). This loop is a plain
+            // thread, so the hop to async land is one bounded channel; a full
+            // channel drops the frame (stay current, never backlog — the same
+            // rule the transcription semaphore applies downstream).
+            if let Some(tx) = HUMAN_AUDIO_TX.get() {
+                let chunk = HumanAudioChunk {
+                    call_id: processor.call_id.clone(),
+                    user_id: processor.speaker_id.clone(),
+                    samples,
+                };
+                if tx.try_send(chunk).is_err() && processor.frame_count % 500 == 1 {
+                    clog_warn!(
+                        "🎤 human-audio forwarder saturated — dropping frames from '{}' to stay current",
+                        processor.speaker_name
+                    );
+                }
+            } else if processor.frame_count == 1 {
+                clog_warn!(
+                    "🎤 no human-audio forwarder installed — speech from '{}' cannot reach STT",
+                    processor.speaker_name
+                );
             }
         }
         BridgeEvent::ParticipantJoined {

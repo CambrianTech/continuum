@@ -353,7 +353,20 @@ pub struct CallManager {
     /// installs it; a call still works without it, it is just not registered — which
     /// is precisely the state the live-call view now renders instead of hiding.
     session_registrar: Option<SessionRegistrar>,
+    /// Where a HUMAN's transcribed utterance goes so the CITIZENS can perceive
+    /// it (closed 2026-09-01 — the second STT dead link: transcriptions
+    /// forwarded to WebSocket SUBTITLES only, so even a heard human was never
+    /// answered; the words reached screens and no minds). The call id IS the
+    /// airc RoomId, so the sink posts the utterance as a ROOM MESSAGE from the
+    /// human — and the whole existing pipeline (perception, directedness,
+    /// turns, voice-out) fires as if she had typed it. Same callback shape and
+    /// reason as [`SessionRegistrar`]: transport announces a fact, never
+    /// learns what cognition does with it.
+    transcript_sink: Option<TranscriptSink>,
 }
+
+/// `(call_id/room, speaker user_id, speaker display name, transcribed text)`.
+pub type TranscriptSink = Arc<dyn Fn(&str, &str, &str, &str) + Send + Sync>;
 
 /// Told when a participant joins a live call, so the CORE can register the session
 /// itself (#58).
@@ -376,6 +389,12 @@ impl CallManager {
     /// and the call manager both exist; absent in tests, where a call needs no session.
     pub fn set_session_registrar(&mut self, registrar: SessionRegistrar) {
         self.session_registrar = Some(registrar);
+    }
+
+    /// Install the transcript→room sink. Called once at boot beside the
+    /// registrar; absent in tests, where subtitles alone are the contract.
+    pub fn set_transcript_sink(&mut self, sink: TranscriptSink) {
+        self.transcript_sink = Some(sink);
     }
 
     /// Every LIVE call and how many participants are in it — the read side the live-call
@@ -412,6 +431,7 @@ impl CallManager {
             capability_registry: Arc::new(ModelCapabilityRegistry::new()),
             persona_audio_handles: RwLock::new(HashMap::new()),
             session_registrar: None,
+            transcript_sink: None,
         }
     }
 
@@ -829,15 +849,23 @@ impl CallManager {
                         let semaphore = TRANSCRIPTION_SEMAPHORE.clone();
                         match semaphore.clone().try_acquire_owned() {
                             Ok(permit) => {
-                                // Spawn transcription task with permit
+                                // Spawn transcription task with permit. The sink
+                                // (when installed) turns the utterance into a ROOM
+                                // message so citizens PERCEIVE speech — subtitles
+                                // alone reached screens and no minds (2026-09-01).
+                                let sink = self.transcript_sink.clone();
+                                let room = call_id.clone();
                                 tokio::spawn(async move {
-                                    Self::transcribe_and_broadcast(
+                                    let text = Self::transcribe_and_broadcast(
                                         transcription_tx,
-                                        user_id,
-                                        display_name,
+                                        user_id.clone(),
+                                        display_name.clone(),
                                         speech_samples,
                                     )
                                     .await;
+                                    if let (Some(sink), Some(text)) = (sink, text) {
+                                        sink(&room, &user_id, &display_name, &text);
+                                    }
                                     // Permit automatically released when dropped
                                     drop(permit);
                                 });
@@ -981,6 +1009,45 @@ impl CallManager {
         let _ = call.push_audio(&handle, samples);
     }
 
+    /// Bridge-fed HUMAN audio (the LiveKit media lane): route a remote
+    /// participant's 16k PCM into the SAME VAD → speech-end → transcription
+    /// pipeline the WS lane has always used.
+    ///
+    /// This closes the STT dead leg (found live 2026-09-01: the bridge heard
+    /// the first audio frame and nothing followed — `bridge_client`'s frame
+    /// loop accumulated perfect VAD-sized chunks into a `TODO` and dropped
+    /// them, so citizens never answered speech). The human's handle + VAD
+    /// already exist from her WS-control `join_call`; media frames just never
+    /// reached them. One lookup, then the existing `push_audio` does speech-end
+    /// detection and spawns transcription exactly as before — no second
+    /// pipeline ([[the-same-bug-at-two-sites-is-a-missing-constraint-not-two-bugs]]).
+    pub async fn push_remote_human_audio(
+        &self,
+        call_id: &str,
+        user_id: &str,
+        samples: Vec<i16>,
+    ) {
+        let call = {
+            let calls = self.calls.read().await;
+            calls.get(call_id).cloned()
+        };
+        let Some(call) = call else {
+            return; // no native Call — nobody has this call open on this node
+        };
+        let handle = {
+            let call = call.read().await;
+            call.mixer.find_handle_by_user_id(user_id)
+        };
+        let Some(handle) = handle else {
+            // Media arrived before (or without) the WS-control join that mints
+            // her handle + VAD — a real ordering that self-heals when the join
+            // lands; frames until then are honestly droppable (they predate
+            // her being a participant here).
+            return;
+        };
+        self.push_audio(&handle, samples).await;
+    }
+
     /// Broadcast a CallMessage to all participants in a call (avatar updates, etc.)
     pub async fn broadcast_message(&self, call_id: &str, msg: CallMessage) {
         let call = {
@@ -997,16 +1064,19 @@ impl CallManager {
     }
 
     /// Transcribe speech samples and broadcast to all participants
+    /// Returns the transcribed text (when non-empty) so the caller can also
+    /// deliver it to cognition via the [`TranscriptSink`] — the broadcast here
+    /// reaches SCREENS (subtitles); the sink reaches MINDS.
     async fn transcribe_and_broadcast(
         transcription_tx: broadcast::Sender<TranscriptionEvent>,
         user_id: String,
         display_name: String,
         samples: Vec<i16>,
-    ) {
+    ) -> Option<String> {
         // Check if STT is initialized
         if !stt::is_initialized() {
             clog_warn!("STT adapter not initialized - skipping transcription");
-            return;
+            return None;
         }
 
         clog_info!(
@@ -1057,12 +1127,15 @@ impl CallManager {
 
                         // Critical issue already logged via tracing::error above
                     }
+                    Some(text.to_string())
                 } else {
                     clog_info!("📝 Empty transcription result from {}", display_name);
+                    None
                 }
             }
             Err(e) => {
                 clog_error!("Transcription failed for {}: {}", display_name, e);
+                None
             }
         }
     }
