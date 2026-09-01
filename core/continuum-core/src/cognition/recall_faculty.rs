@@ -398,6 +398,12 @@ fn recall_near_duplicate(a: &str, b: &str) -> bool {
 // context-budget-exempt: minimum body length for a dedup KEY to be meaningful, never text shown to the model
 const WM_DEDUP_MIN_BODY_CHARS: usize = 24;
 
+/// How many leading chars of an engram's body must appear verbatim in the
+/// current burst for the memory to count as "already in the window" (burst
+/// dedup). Long enough that containment means the SAME text, short enough to
+/// survive the window's own trimming of a long message's tail.
+const BURST_DEDUP_HEAD_CHARS: usize = 64;
+
 #[async_trait]
 impl Faculty for RecallFaculty {
     fn id(&self) -> FacultyId {
@@ -586,6 +592,32 @@ impl Faculty for RecallFaculty {
                     !wm_bodies.iter().any(|b| engram.content.starts_with(b))
                 });
             }
+        }
+        // BURST DEDUP (rung 3c, the ledger's third same-evening verdict,
+        // 2026-09-01 night): relevance-ranking against the current burst
+        // surfaces the engrams OF the messages already sitting in the window —
+        // recall re-serving the conversation to itself, 2k tokens below the
+        // original. It cost three ways at once: duplicated content pays rent
+        // twice; the recall top tracked the window's bleeding edge, so it
+        // changed EVERY turn and the sticky cache never engaged (0 fires in
+        // two live windows); and the block stopped being what recall is FOR —
+        // the broader past. Same shape as the WM dedup above, one level up:
+        // an engram whose (stamp-stripped) head the burst already contains is
+        // already perceived — drop it from recall. Head-window containment,
+        // char-boundary safe, zero allocation per check.
+        if !ws.world_state.is_empty() {
+            surfaced.retain(|(_, engram, _, _)| {
+                let body = strip_action_stamp(&engram.content);
+                if body.len() < WM_DEDUP_MIN_BODY_CHARS {
+                    return true; // short memories: containment is coincidence-prone
+                }
+                let head_end = body
+                    .char_indices()
+                    .nth(BURST_DEDUP_HEAD_CHARS)
+                    .map(|(i, _)| i)
+                    .unwrap_or(body.len());
+                !ws.world_state.contains(&body[..head_end])
+            });
         }
         let scored = surfaced;
 
@@ -1040,6 +1072,73 @@ mod tests {
             c.content
         );
         assert!(c.salience > 0.0);
+    }
+
+    // what this catches: burst dedup (rung 3c). A memory whose content the
+    // current window ALREADY shows is re-served duplication — it must drop
+    // from recall (it paid rent twice, and its per-turn novelty as the recall
+    // top is why the sticky cache never engaged: 0 fires across two live
+    // windows). Memories NOT visible in the burst survive; short bodies are
+    // exempt (containment is coincidence-prone).
+    #[tokio::test]
+    async fn burst_dedup_drops_window_visible_memories_but_keeps_the_past() {
+        let now = 1_000_000_000u64;
+        // Own fixture: bodies long enough to clear the dedup floor (the shared
+        // fixture's ~20-char bodies are deliberately exempt as too short).
+        let persona = Uuid::parse_str("00000000-0000-0000-0000-000000000bbb").unwrap();
+        let recall_meta = Arc::new(RecallMetadataRegistry::new());
+        let state = Arc::new(AdmissionState::new(recall_meta.clone()));
+        let body = |i: usize| {
+            format!("long memory number {i} — it stretches well past the dedup floor with detail")
+        };
+        for i in 0..2usize {
+            let id = Uuid::new_v4();
+            state.push_for_test(Engram {
+                context_id: None,
+                id,
+                kind: EngramKind::Episodic,
+                content: body(i),
+                origin: EngramOrigin::Chat(ChatMessageRef {
+                    message_id: Uuid::new_v4(),
+                    room_id: Uuid::new_v4(),
+                    sender_id: Uuid::new_v4(),
+                    posted_at_ms: now,
+                    content_hash: format!("hash-{i}"),
+                }),
+                recall_keys: Vec::new(),
+                admitted_at_ms: now,
+                trust_state_at_admission: TrustState::ApprovedPeer,
+                admission_trace_id: None,
+            });
+            recall_meta.admit(
+                id,
+                RecallMetadata {
+                    salience: 0.9,
+                    access_count: 0,
+                    last_accessed_ms: 0,
+                    protected_until_ms: 0,
+                    last_decayed_ms: now,
+                },
+            );
+        }
+        let faculty = RecallFaculty::new(persona, state).with_clock(Arc::new(move || now));
+        // Memory 1 appears VERBATIM in the burst: already perceived — recall
+        // must not re-serve it. Memory 0 stays recallable.
+        let burst = format!("Alice: earlier someone said\n{}\nAlice: next?", body(1));
+        let c = faculty
+            .contribute(&Workspace::new(burst.as_str()))
+            .await
+            .expect("the non-visible memory still bids");
+        assert!(
+            !c.content.contains("long memory number 1"),
+            "a memory the window already shows must not be re-served: {}",
+            c.content
+        );
+        assert!(
+            c.content.contains("long memory number 0"),
+            "the broader past survives dedup: {}",
+            c.content
+        );
     }
 
     // what this catches: sticky rendering (rung 3, from the rent ledger's first
