@@ -52,6 +52,14 @@ use crate::persona::engram::{Engram, EngramOrigin};
 /// limiter on a live persona.
 const DEFAULT_RECALL_LIMIT: usize = 16;
 
+/// How many consecutive turns the sticky recall rendering may hold its bytes
+/// against LOW-RANK set churn before a refresh re-renders with accumulated
+/// novelty (a NEW TOP memory always refreshes immediately, countdown or not).
+/// The exploitation half of the ladder's promotion mix, applied at the recall
+/// tier; deliberately small so staleness is bounded at a few acts. Tunable as
+/// the rent ledger accumulates ("tune it as we go", 2026-09-01).
+const RECALL_STICKY_TURNS: u8 = 3;
+
 /// Fallback absolute cosine floor handed to the default [`SignificanceRanker`]
 /// for an UNCALIBRATED embedding space only. An absolute floor can never be the
 /// primary gate: it is calibrated against one embedder's similarity distribution
@@ -228,11 +236,13 @@ pub struct RecallFaculty {
     /// ([`crate::persona::focus::registry`]) — one home for focus state.
     focus_policy: Arc<dyn crate::cognition::focus_policy::FocusPolicy>,
     /// STICKY RENDER CACHE (rung 3): per room, the last surfaced set (ids, in
-    /// order) and its rendered block. While the set is unchanged the block is
-    /// reused byte-identical — killing the two mutation sources (re-scored
-    /// ordering, ticking age labels) the rent ledger attributed warm KV breaks
-    /// to. Tiny: N-rooms entries of a few KB each, per persona.
-    sticky: parking_lot::Mutex<std::collections::HashMap<Uuid, (Vec<Uuid>, String)>>,
+    /// order), its rendered block, and the refresh countdown. The block is
+    /// reused byte-identical under the hysteresis rules at the reuse site —
+    /// killing the mutation sources (re-scored ordering, ticking age labels)
+    /// the rent ledger attributed warm KV breaks to, with staleness bounded at
+    /// [`RECALL_STICKY_TURNS`] turns and a new TOP memory always fresh. Tiny:
+    /// N-rooms entries of a few KB each, per persona.
+    sticky: parking_lot::Mutex<std::collections::HashMap<Uuid, (Vec<Uuid>, String, u8)>>,
 }
 
 impl RecallFaculty {
@@ -666,22 +676,46 @@ impl Faculty for RecallFaculty {
         // surfaced, one dropped, order moved) re-renders fresh with fresh ages.
         // Scoring, uplift, and the bid salience stay live every turn — only the
         // BYTES the model re-reads go still.
-        if let Some((prev_ids, prev_content)) = self.sticky.lock().get(&ws.room_id) {
-            if *prev_ids == surfaced_ids {
-                let reasoning = format!(
-                    "recalled {} memor{} (sticky re-render — set unchanged, bytes frozen for KV reuse)",
-                    scored.len(),
-                    if scored.len() == 1 { "y" } else { "ies" },
-                );
-                return Some(
-                    Contribution::context(
-                        FacultyId::Recall,
-                        prev_content.clone(),
-                        top_salience,
-                        reasoning,
-                    )
-                    .trailing(),
-                );
+        // HYSTERESIS, not exact-match (v2, hours after v1): live rooms admit
+        // new engrams every act, so "identical set" NEVER held (0 sticky fires
+        // in the first live window) — the cache must tolerate LOW-RANK churn.
+        // Reuse rules: (a) identical set → reuse and re-arm the countdown;
+        // (b) the fresh TOP memory is already in the cached set and the
+        // countdown is live → reuse (the newcomer is lower-ranked shuffle;
+        // staleness bounded at RECALL_STICKY_TURNS turns); (c) a NEW TOP
+        // memory always renders immediately — answering-relevance never waits
+        // on cache stability. The exploration/exploitation mix of the
+        // promotion doctrine, applied at the recall tier; the countdown is the
+        // tunable ("tune it as we go").
+        {
+            let mut sticky = self.sticky.lock();
+            if let Some((prev_ids, prev_content, remaining)) = sticky.get_mut(&ws.room_id) {
+                let set_equal = *prev_ids == surfaced_ids;
+                let top_already_cached = surfaced_ids
+                    .first()
+                    .is_some_and(|top| prev_ids.contains(top));
+                if set_equal || (*remaining > 0 && top_already_cached) {
+                    if set_equal {
+                        *remaining = RECALL_STICKY_TURNS;
+                    } else {
+                        *remaining -= 1;
+                    }
+                    let reasoning = format!(
+                        "recalled {} memor{} (sticky re-render — bytes held for KV reuse; refresh in {} turn(s))",
+                        scored.len(),
+                        if scored.len() == 1 { "y" } else { "ies" },
+                        remaining,
+                    );
+                    return Some(
+                        Contribution::context(
+                            FacultyId::Recall,
+                            prev_content.clone(),
+                            top_salience,
+                            reasoning,
+                        )
+                        .trailing(),
+                    );
+                }
             }
         }
         let now_ms = (self.clock)();
@@ -699,9 +733,10 @@ impl Faculty for RecallFaculty {
         // prefix per line already marks WHO/WHEN; this frames the whole block so the
         // pastness is unmissable. Not a directive about what to do — just what this IS.
         let content = format!("{RECALL_MEMORY_FRAME}\n{lines}");
-        self.sticky
-            .lock()
-            .insert(ws.room_id, (surfaced_ids, content.clone()));
+        self.sticky.lock().insert(
+            ws.room_id,
+            (surfaced_ids, content.clone(), RECALL_STICKY_TURNS),
+        );
         let reasoning = format!(
             "recalled {} memor{} ({}) — salience-uplifted, loop closed",
             scored.len(),
