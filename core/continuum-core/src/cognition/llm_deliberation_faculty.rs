@@ -1641,18 +1641,21 @@ impl LlmDeliberationFaculty {
         // The trailing half was already rendered into the FACTS phase of the
         // conversation by `messages_unfitted` (before the ask, parrot order
         // preserved); only the byte-stable half may touch the system message.
+        let system = self
+            .compose_system_split(
+                &context,
+                &expanded,
+                ws.directed_at_self,
+                ws.self_initiated,
+                ws.now_ms,
+                holds_live_work,
+            )
+            .stable;
+        let segments = segment_map(&system, &messages);
         DeliberationPromptView {
-            system: self
-                .compose_system_split(
-                    &context,
-                    &expanded,
-                    ws.directed_at_self,
-                    ws.self_initiated,
-                    ws.now_ms,
-                    holds_live_work,
-                )
-                .stable,
+            system,
             messages,
+            segments,
         }
     }
 
@@ -2122,6 +2125,15 @@ pub struct DeliberationPromptView {
     /// Replaces the single flat `user` string that collapsed her own turns into the
     /// conversation and caused the identity bleed / transcript replay / echo loop.
     pub messages: Vec<ChatMessage>,
+    /// THE RENT LEDGER'S SPINE (compression-ladder rung 2): the prompt's segment
+    /// runs in send order, each `(label, cumulative estimated-token END)`. After
+    /// generation, the server's reused-prefix length (`cached_tokens`) lands
+    /// somewhere in this map, and the run containing that frontier NAMES the
+    /// segment that broke reuse — turning every cache miss from a number into an
+    /// attribution, and accumulating each segment's true daily cost (its rent).
+    /// Estimated tokens (chars/4 class), so attribution is segment-scale
+    /// (thousands of tokens), never byte-exact — which is all promotion needs.
+    pub segments: Vec<(&'static str, u32)>,
 }
 
 impl DeliberationPromptView {
@@ -2496,6 +2508,37 @@ impl Faculty for LlmDeliberationFaculty {
             );
         }
 
+        // SEGMENT ATTRIBUTION (the rent ledger, compression-ladder rung 2):
+        // the server's reused-prefix length lands somewhere in the prompt's
+        // segment map — the run containing that frontier NAMES what broke
+        // reuse this turn, and the stream of these rows IS each segment's
+        // rent. Only when the lane measured timings (same honesty rule as
+        // delib.generate.cache: a fabricated attribution is a lying receipt).
+        if let Some(t) = resp.timing.as_ref() {
+            let cached = t.cached_tokens as u32;
+            let frontier = view
+                .segments
+                .iter()
+                .find(|(_, end)| *end > cached)
+                .map(|(label, _)| *label)
+                .unwrap_or("fully-warm"); // reuse extends past every mapped segment — nothing broke
+            let mut map = String::with_capacity(64);
+            for (label, end) in &view.segments {
+                use std::fmt::Write as _;
+                let _ = write!(map, "{label}:{end},");
+            }
+            crate::probe!(
+                class = "delib.segment.attribution",
+                persona = %self.persona_name,
+                cached_tokens = cached as u64,
+                broke_in = %frontier,
+                cold = cached == 0,
+                segments = %map,
+                "which prompt segment the KV reuse frontier died in — every miss becomes \
+                 an attribution, and the stream is the rent ledger the dream curriculum reads",
+            );
+        }
+
         // Verbatim glass box: the EXACT request thread + the raw response. Iteration
         // is always 0 now (single shot); the act→observe driver re-enters this
         // faculty on the NEXT tick with the result folded into perception, and that
@@ -2794,6 +2837,34 @@ impl Faculty for LlmDeliberationFaculty {
         // Speak). The organism settles here.
         Some(self.verdict(&resp, ws))
     }
+}
+
+/// Build the segment map for a rendered prompt — the rent ledger's spine
+/// ([`DeliberationPromptView::segments`]). Labels are STRUCTURAL (no model
+/// call, zero copies of content): the system head, then message runs
+/// classified by shape — her own `assistant` turns and peers' plain turns are
+/// `history`; bracketed blocks and act results (`[recall]`, `[context]`,
+/// `[pattern]`, `[now …]`, `Full result of …`, `⚙`) are `grounding`.
+/// Consecutive same-label messages merge into one run, so the map stays a
+/// handful of entries however long the thread.
+fn segment_map(system: &str, messages: &[ChatMessage]) -> Vec<(&'static str, u32)> {
+    let mut runs: Vec<(&'static str, u32)> = Vec::with_capacity(8);
+    let mut cum = est_tokens(system);
+    runs.push(("system", cum as u32));
+    for m in messages {
+        let body = m.content_text();
+        let label = if body.starts_with('[') || body.starts_with("Full result of") || body.starts_with('⚙') {
+            "grounding"
+        } else {
+            "history"
+        };
+        cum += est_tokens(&body) + LlmDeliberationFaculty::PER_MESSAGE_TEMPLATE_TOKENS;
+        match runs.last_mut() {
+            Some((l, end)) if *l == label => *end = cum as u32,
+            _ => runs.push((label, cum as u32)),
+        }
+    }
+    runs
 }
 
 /// Lift the speed/latency cost of one generation off the adapter response — the
@@ -4421,6 +4492,49 @@ mod tests {
                 LlmDeliberationFaculty::messages_cost(&last_fit) <= budget,
                 "fitted cost {} exceeds budget {budget}",
                 LlmDeliberationFaculty::messages_cost(&last_fit)
+            );
+        }
+
+        // what this catches: the rent ledger's spine (compression-ladder rung
+        // 2). The segment map must (1) open with the system run, (2) merge
+        // consecutive same-label messages into one run, (3) classify bracketed
+        // blocks and act results as grounding, and (4) let a cached-token
+        // frontier name the run it died in — the attribution every miss
+        // becomes and the number the dream curriculum reads.
+        #[test]
+        fn segment_map_names_the_run_a_reuse_frontier_dies_in() {
+            let msgs = vec![
+                ChatMessage::text("user", "Alice: how goes the fix?"),
+                ChatMessage::text("assistant", "landed it, running tests"),
+                ChatMessage::text("user", "[recall]\n(my memories …)"),
+                ChatMessage::text("user", "Full result of your most recent action (#3): ok"),
+                ChatMessage::text("user", "Alice: and the grade?"),
+            ];
+            let map = segment_map("SYSTEM ".repeat(100).as_str(), &msgs);
+            let labels: Vec<&str> = map.iter().map(|(l, _)| *l).collect();
+            assert_eq!(
+                labels,
+                vec!["system", "history", "grounding", "history"],
+                "runs merge by label in send order: {map:?}"
+            );
+            assert!(
+                map.windows(2).all(|w| w[0].1 < w[1].1),
+                "cumulative ends are strictly increasing: {map:?}"
+            );
+            // A frontier inside the grounding run attributes to grounding.
+            let frontier = map[1].1 + 1; // just past history's end
+            let broke = map
+                .iter()
+                .find(|(_, end)| *end > frontier)
+                .map(|(l, _)| *l)
+                .unwrap_or("fully-warm");
+            assert_eq!(broke, "grounding");
+            // A frontier past everything is fully warm.
+            let past = map.last().unwrap().1 + 1;
+            assert_eq!(
+                map.iter().find(|(_, end)| *end > past).map(|(l, _)| *l),
+                None,
+                "reuse past every segment attributes to nothing — fully warm"
             );
         }
 
