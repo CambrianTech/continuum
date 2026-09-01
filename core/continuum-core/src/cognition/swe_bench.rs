@@ -2941,13 +2941,12 @@ pub fn parse_pytest_report(report: &str) -> (HashMap<String, bool>, HashMap<Stri
     let report = strip_ansi(report);
     for line in report.lines() {
         let line = line.trim();
-        let Some((node, rest)) = line.split_once(char::is_whitespace) else {
+        let Some((node, verdict)) = split_node_outcome(line) else {
             continue;
         };
         if !node.contains("::") {
             continue;
         }
-        let verdict = rest.trim_start();
         let ok = if verdict.starts_with("PASSED")
             || verdict.starts_with("XFAIL")
             || verdict.starts_with("SKIPPED")
@@ -2976,6 +2975,51 @@ pub fn parse_pytest_report(report: &str) -> (HashMap<String, bool>, HashMap<Stri
     (by_node, by_func)
 }
 
+/// The six outcome words a pytest `-v` line can carry after its node id.
+const PYTEST_OUTCOMES: [&str; 6] = ["PASSED", "FAILED", "ERROR", "XFAIL", "XPASS", "SKIPPED"];
+
+/// Split a `-v` report line into `(node_id, outcome…)`.
+///
+/// A node id is NOT whitespace-free: parameterized ids embed their params
+/// verbatim, and a `pytest.raises(match=…)` glob puts real spaces inside the
+/// brackets — pytest-7432's `test_xfail_raises[(AttributeError, IndexError)-…-*1
+/// TypeError*]`. The old first-whitespace split truncated every such line into a
+/// node fragment plus a rest that starts mid-param, so the whole family was
+/// invisible to the grader and each required id fell through to "failed" — three
+/// phantom p2p regressions on an f2p-clean solve (measured live 2026-09-01).
+///
+/// So: find the outcome WORD (whitespace-delimited) and split there.
+fn split_node_outcome(line: &str) -> Option<(&str, &str)> {
+    // Short-summary rows lead WITH the outcome (`FAILED x.py::t - message`) and
+    // their free-text tail may contain outcome-shaped words — they are not the
+    // verbose shape this parser reads, so refuse them before scanning.
+    if PYTEST_OUTCOMES.iter().any(|o| {
+        line.strip_prefix(o)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+    }) {
+        return None;
+    }
+    let mut split_at: Option<usize> = None;
+    for outcome in PYTEST_OUTCOMES {
+        let mut from = 0;
+        while let Some(found) = line[from..].find(outcome) {
+            let at = from + found;
+            let ends_clean = line[at + outcome.len()..]
+                .chars()
+                .next()
+                .is_none_or(char::is_whitespace);
+            if at > 0 && line[..at].ends_with(char::is_whitespace) && ends_clean {
+                // Earliest valid outcome token wins — a param glob later in the
+                // line can never pull the split point rightward past it.
+                split_at = Some(split_at.map_or(at, |best| best.min(at)));
+                break;
+            }
+            from = at + outcome.len();
+        }
+    }
+    split_at.map(|at| (line[..at].trim_end(), &line[at..]))
+}
+
 /// Look one required id up in a parsed report, by node id or by bare function name.
 pub fn verdict_for(
     id: &str,
@@ -2984,6 +3028,25 @@ pub fn verdict_for(
 ) -> Option<bool> {
     if let Some(v) = by_node.get(id) {
         return Some(*v);
+    }
+    // Upstream truncation: SWE-bench's own log parser split parameterized node
+    // ids on whitespace when it BUILT the required lists, so the dataset can
+    // require `test_xfail_raises[(AttributeError,` — a fragment no report ever
+    // contains verbatim (pytest-7432, three phantom p2p regressions on an
+    // f2p-clean solve, 2026-09-01). An id with an unclosed `[` is such a
+    // fragment, and it is a strict PREFIX of exactly the parameterized cases it
+    // meant — score it as the AND of every reported node it prefixes, which
+    // keeps those tests in the denominator instead of dropping them.
+    if id.contains('[') && !id.ends_with(']') {
+        let mut all_ok: Option<bool> = None;
+        for (node, ok) in by_node {
+            if node.starts_with(id) {
+                all_ok = Some(all_ok.unwrap_or(true) && *ok);
+            }
+        }
+        if all_ok.is_some() {
+            return all_ok;
+        }
     }
     // django ids are `test_name (module.Class)` — the bare name is the LEADING token, and
     // the rsplit('.') chain below would extract `Class)` instead. Must come first.
@@ -3517,6 +3580,52 @@ mod tests {
     }
 
     use super::*;
+
+    // what this catches: node ids with SPACES inside their params, and the
+    // truncated fragments upstream requires for them (pytest-7432, 2026-09-01:
+    // the dataset's P2P list carries `test_xfail_raises[(AttributeError,` —
+    // its own log parser split the real id on whitespace — while our report
+    // parser ALSO split at the first whitespace, so the whole family was
+    // invisible and graded as three phantom regressions on an f2p-clean solve).
+    // The parser must record the full space-bearing node id; the lookup must
+    // score an unclosed-`[` fragment as the AND of the nodes it prefixes; and
+    // outcome-leading short-summary rows must never parse as verbose rows.
+    #[test]
+    fn space_bearing_param_ids_parse_and_truncated_fragments_score_by_prefix() {
+        let report = "\
+testing/test_skipping.py::TestXFail::test_xfail_raises[(AttributeError, IndexError)-TypeError-*1 TypeError*] PASSED [ 10%]
+testing/test_skipping.py::TestXFail::test_xfail_raises[TypeError-IndexError-*1 IndexError*] FAILED [ 20%]
+testing/test_skipping.py::test_plain PASSED [ 30%]
+FAILED testing/test_skipping.py::TestXFail::test_xfail_raises[TypeError-IndexError-*1 IndexError*] - assert PASSED
+";
+        let (by_node, by_func) = parse_pytest_report(report);
+        assert_eq!(
+            by_node.get("testing/test_skipping.py::TestXFail::test_xfail_raises[(AttributeError, IndexError)-TypeError-*1 TypeError*]"),
+            Some(&true),
+            "a space-bearing node id must be recorded whole"
+        );
+        // The short-summary row must not have minted a bogus PASSED node.
+        assert_eq!(by_node.len(), 3, "exactly the three verbose rows: {by_node:?}");
+        // Upstream's truncated fragment prefixes exactly one real node each.
+        assert_eq!(
+            verdict_for(
+                "testing/test_skipping.py::TestXFail::test_xfail_raises[(AttributeError,",
+                &by_node,
+                &by_func
+            ),
+            Some(true),
+            "an unclosed-[ fragment scores as the node it prefixes"
+        );
+        assert_eq!(
+            verdict_for(
+                "testing/test_skipping.py::TestXFail::test_xfail_raises[TypeError-IndexError-*1",
+                &by_node,
+                &by_func
+            ),
+            Some(false),
+            "prefix scoring must still see a REAL failure"
+        );
+    }
 
     // what this catches: the three wire dialects of one instance family
     // (2026-08-23 import): SWE-bench string-encoded F2P, SWE-rebench REAL-LIST
