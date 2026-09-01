@@ -673,12 +673,21 @@ impl Faculty for RecallFaculty {
             }
         );
 
-        Some(Contribution::context(
-            FacultyId::Recall,
-            content,
-            top_salience,
-            reasoning,
-        ))
+        Some(
+            Contribution::context(FacultyId::Recall, content, top_salience, reasoning)
+                // TRAILING, not stable: recall is re-scored EVERY turn (salience ×
+                // recency, new engrams admitted between turns), so its block churns
+                // mid-list — measured 2026-09-01 as the system prompt mutating at
+                // char ~8.5k between consecutive turns (an insert + a re-fit that
+                // shrank the head 12.3k→10.7k), which invalidated the entire KV
+                // prefix behind it: hit_rate 0.0 with every persona on her OWN
+                // slot and the server's reuse proven perfect the same hour (test
+                // prompt ×2 → cache_n 397/401). The stable_blocks doc already
+                // promises "recall … is separated out as its own .trailing()
+                // turns (#205)"; this makes that promise true for FacultyId::
+                // Recall ([[a-mutating-system-prompt-destroys-kv-reuse-for-everything-after-it]]).
+                .trailing(),
+        )
     }
 }
 
@@ -945,6 +954,10 @@ mod tests {
             .expect("recall should bid when the store is non-empty");
         assert_eq!(c.faculty, FacultyId::Recall);
         assert!(c.decision.is_none(), "recall is context, never a verdict");
+        // Regression for the 2026-09-01 KV-prefix churn: recall is re-scored
+        // every turn, so it must render TRAILING (nearest generation), never in
+        // the cacheable system prefix it would invalidate on every mutation.
+        assert!(c.trailing, "recall must ride the volatile tail, not the stable head");
         // The most salient engram (highest index in the fixture) leads.
         assert!(
             c.content.contains("memory body number 4"),
