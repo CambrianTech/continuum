@@ -505,10 +505,15 @@ async function main(): Promise<void> {
 
   // The viewer is ALWAYS in the directory, synchronously — a failed roster
   // fetch must never render the operator themself as absent/offline.
+  // The viewer's row carries their REAL name (whoami's answer) — the client
+  // never re-names a person the substrate already named (the literal 'you'
+  // label survived every directory poll because the self row was kept and the
+  // directory's version filtered out: a second joel, hand-built client-side.
+  // Joel, 2026-09-01: 'are you even looking?').
   widget.directorySeed = [
     {
       id: senderId,
-      name: 'you',
+      name: myName ?? senderId.slice(0, 8),
       kind: 'human',
       active: true,
       runtime: 'interactive',
@@ -555,7 +560,13 @@ async function main(): Promise<void> {
         }));
       // The viewer stays first + always-online regardless of what the
       // directory knows about their peer row.
-      const self = widget.directorySeed.filter((m) => m.id === senderId);
+      // The directory's row for the viewer WINS over the boot-time seed (it
+      // carries the identity card's name + real recency); the hand-built row
+      // survives only until the first successful poll.
+      const dirSelf = seed.find((m) => m.id === senderId);
+      const self = dirSelf !== undefined
+        ? [{ ...dirSelf, active: true }]
+        : widget.directorySeed.filter((m) => m.id === senderId);
       widget.directorySeed = [...self, ...seed.filter((m) => m.id !== senderId)];
       // The directory knows the viewer's REAL name (identity card) — adopt it
       // for call tiles instead of the local placeholder.
