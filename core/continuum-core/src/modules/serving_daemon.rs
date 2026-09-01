@@ -3509,7 +3509,49 @@ pub fn footprint_for(model: &Model) -> Option<ModelFootprint> {
         ctx_ceiling,
         model.has(Capability::ToolUse),
     )?;
+    // THE ARTIFACT'S OWN KV GEOMETRY beats the weights-scaled guess. Measured
+    // 2026-09-01: the heuristic read a 35B fine-grained MoE at ~244 KB/token
+    // (experts add weights, zero KV) where the header declares ~61 KB f16 —
+    // and the 4× inflation starved --cache-ram to ONE mind's worth (686 MiB,
+    // every restore a miss, hit_rate 0.0 fleet-wide) AND under-granted lanes
+    // vs resident demand. Header read is memoized per path: this runs on the
+    // governor's accounting tick and a GGUF header parse is real I/O.
+    if let Some(path) = crate::model_registry::artifacts::resolve_gguf_for_model(model) {
+        if let Some(rate) = kv_rate_from_header_cached(&path) {
+            fp.kv_per_token = rate;
+        }
+    }
     Some(apply_kv_quantization(fp))
+}
+
+/// Memoized `gguf_keys::kv_bytes_per_token_f16` per artifact path. `None` is
+/// cached too (header unreadable / geometry keys absent → the heuristic
+/// stands), so a broken artifact costs one parse, not one per tick.
+fn kv_rate_from_header_cached(path: &std::path::Path) -> Option<u64> {
+    static CACHE: std::sync::OnceLock<
+        dashmap::DashMap<std::path::PathBuf, Option<u64>>,
+    > = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(dashmap::DashMap::new);
+    if let Some(hit) = cache.get(path) {
+        return *hit;
+    }
+    let rate = (|| {
+        let mut file = std::fs::File::open(path).ok()?;
+        let content =
+            candle_core::quantized::gguf_file::Content::read(&mut file).ok()?;
+        let arch = crate::inference_capability::gguf_keys::architecture(&content)?;
+        crate::inference_capability::gguf_keys::kv_bytes_per_token_f16(&content, &arch)
+    })();
+    crate::probe!(
+        class = "serving.kv_rate.header",
+        path = %path.display(),
+        rate_f16 = rate.unwrap_or(0), // 0 = header did not answer; the weights heuristic stands (the probe's absence-vs-zero reading rides `answered`)
+        answered = rate.is_some(),
+        "KV bytes/token from the artifact's own declared geometry — replaces the \
+         weights-scaled guess that over-charged MoE models ~4x",
+    );
+    cache.insert(path.to_path_buf(), rate);
+    rate
 }
 
 /// KV CACHE QUANTIZATION (#232): a lane running quantized KV holds proportionally
