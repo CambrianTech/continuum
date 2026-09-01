@@ -88,6 +88,10 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
         let regime_id = uuid::Uuid::from_u128(0xBE7C_11A6_2026_0827);
         let mut demand_lease: Option<(u64, u32)> = None;
         let mut attempt: u32 = 0;
+        // Cards whose citizen-round kickoff was already re-said this boot —
+        // re-perception happens once, never per watch tick (a failed or
+        // not-yet-resident attempt un-marks itself for a later tick).
+        let mut nudged: std::collections::HashSet<uuid::Uuid> = std::collections::HashSet::new();
         loop {
             let queued = crate::cognition::bench_round::total_unworked_cards() as u32;
             if queued > 0 {
@@ -179,6 +183,56 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
             // Once per task lifetime; cheap when everything is already warm.
             if attempt == 1 {
                 crate::modules::work::spawn_env_prewarm_for_working_rounds();
+            }
+            // CITIZEN-driven rounds resume by RE-PERCEPTION, not dispatch: a
+            // reload buries the original kickoffs beyond every window, and the
+            // assignees then idle beside their own unworked cards (live
+            // 2026-09-01: a lite round 'working, 4 remaining' for a full day).
+            // Re-say the kickoff through the ASSIGNEE'S OWN runtime — she is
+            // subscribed to the run room by construction, so no operator-scope
+            // membership is needed. Once per card per boot; the say is
+            // perception, and repeating it every watch tick would be the
+            // room-join flood shape.
+            for next in crate::cognition::bench_round::unworked_citizen_cards() {
+                if !nudged.insert(next.card) {
+                    continue;
+                }
+                let Some(rt) = registry.get(next.assignee) else {
+                    nudged.remove(&next.card); // not resident yet — retry a later tick
+                    continue;
+                };
+                let short = next.card.simple().to_string()[..8].to_string();
+                let text = format!(
+                    "[resume] This round survived a core restart and your kickoff predates \
+                     your window. Your card {short} is still yours and unworked: check \
+                     work/list for its title, claim it, work it in your workspace, and when \
+                     your patch is verified green say `work/state {short} done` — that is \
+                     what fires your grade; nobody fires it for you."
+                );
+                match crate::persona::airc_citizen::publish_text_in_room(
+                    rt.airc(),
+                    next.run_room,
+                    &text,
+                )
+                .await
+                {
+                    Ok(_) => crate::probe!(
+                        class = "bench.round.kickoff_resaid",
+                        card_id = %next.card,
+                        assignee = %next.assignee,
+                        room = %next.run_room,
+                        "citizen-round kickoff re-said after reload — re-perception, not dispatch"
+                    ),
+                    Err(e) => {
+                        nudged.remove(&next.card); // say failed — retry a later tick
+                        crate::probe!(
+                            class = "bench.round.kickoff_resay_failed",
+                            card_id = %next.card,
+                            error = %e,
+                            "kickoff re-say failed — will retry on a later watch tick"
+                        );
+                    }
+                }
             }
             let due = crate::cognition::bench_round::next_unworked_per_round();
             if due.is_empty() {
