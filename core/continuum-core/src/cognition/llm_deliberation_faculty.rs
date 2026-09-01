@@ -128,6 +128,23 @@ pub fn model_binding(
 /// voice, not so much it drifts.
 const DEFAULT_TEMPERATURE: f32 = 0.7;
 
+/// The act-latency target the CONVERSATION fill budgets against — how long a
+/// turn's history prefill is allowed to take at [`CONSERVATIVE_PREFILL_TOKENS_PER_S`].
+/// From the act-latency law: human expectations set the bar; a turn that spends
+/// minutes re-reading history before thinking is disqualified regardless of how
+/// smart the answer is. 30s of prefill is already generous — the point is that
+/// window HEADROOM above this is reserve, not default fill.
+// context-budget-exempt: a TIME target, not a token budget — the token cap derives from time x measured-class rate at the call site
+const PREFILL_TARGET_SECONDS: usize = 30;
+
+/// Deliberately UNDER every measured live ingest rate (636–676 t/s on the
+/// M-series reference box, 2026-09-01 probes) so the derived cap over-admits
+/// rather than starves. Upgrade path: derive from the live
+/// `inference.prefill.complete` ingest measurements once the segment probe
+/// lands — capacity follows measurement.
+// context-budget-exempt: a measured throughput floor (tokens/second), not a context-size constant
+const CONSERVATIVE_PREFILL_TOKENS_PER_S: usize = 500;
+
 /// The reasoner faculty. Persona-scoped; shared model backend.
 pub struct LlmDeliberationFaculty {
     persona_id: Uuid,
@@ -1492,6 +1509,34 @@ impl LlmDeliberationFaculty {
             .unwrap_or(0)
             .min(after_framing / 2);
         let msg_budget = after_framing.saturating_sub(ctx_floor);
+        // LATENCY-BUDGETED FILL (act-latency law + compression ladder): a
+        // bigger served window is only a gift if its content earns the prefill
+        // time. When the honest kv-rate fix grew slots to ~134k, the demand-
+        // derived budgets happily filled them — prompts ballooned 19-24k →
+        // 24-43k in an afternoon and five concurrent 35k prefills serialized
+        // acts to 339-888s (measured 2026-09-01, the worst of the day, WITH
+        // the best hit rates). So the CONVERSATION fill is capped by a time
+        // target: target seconds × a conservative prefill rate. The window's
+        // remaining headroom stays available to everything that earns depth —
+        // grounding, the pinned act result, working memory — and to reply
+        // reserve; it is RESERVE, not default fill. The rent ledger (segment
+        // probe) is what will let this cap adapt per-segment; until then the
+        // rate constant is deliberately below every measured ingest
+        // (636-676 t/s live) so the cap over-admits rather than starves.
+        let latency_fill_cap = PREFILL_TARGET_SECONDS * CONSERVATIVE_PREFILL_TOKENS_PER_S;
+        let msg_budget = if msg_budget > latency_fill_cap {
+            crate::probe!(
+                class = "delib.fill.latency_capped",
+                persona = %self.persona_name,
+                window_budget = msg_budget,
+                cap = latency_fill_cap,
+                "conversation fill capped by the act-latency target — window headroom \
+                 is reserve for content that earns its prefill, never default fill",
+            );
+            latency_fill_cap
+        } else {
+            msg_budget
+        };
         // The volatile framing (clock + own-time/presence) rides the FACTS phase
         // of the conversation — flicker-class content, before the ask — never the
         // system message it invalidated on every act (see the split note below).
@@ -1959,6 +2004,32 @@ impl LlmDeliberationFaculty {
             while start + 1 < messages.len() && dropped < drop_q {
                 dropped += costs[start];
                 start += 1;
+            }
+            // CLUSTERS ARE THE EVICTION GRANULARITY (Joel 2026-09-01:
+            // "information flows in groups … a room, code we're looking at,
+            // any context that flows semantically together"). A window that
+            // opens mid-cluster — an assistant answer without its question, a
+            // tool result without its act — costs tokens while carrying broken
+            // meaning, worse than dropping the fragment too. Advance the start
+            // past continuation-shaped messages to a clean opener. Structural
+            // v1 (no model call): an assistant turn or a result/receipt block
+            // continues a cluster; a plain user turn opens one. Bounded so a
+            // pathological run can't eat the window; the causal-thread work
+            // (ladder rung 4) replaces this with true causal subtrees.
+            let continues_cluster = |m: &ChatMessage| {
+                let body = m.content_text();
+                m.role == "assistant"
+                    || body.starts_with("Full result of")
+                    || body.starts_with('⚙')
+            };
+            let mut opener_advance = 0usize;
+            while start + 1 < messages.len()
+                && opener_advance < 6
+                && continues_cluster(&messages[start])
+            {
+                dropped += costs[start];
+                start += 1;
+                opener_advance += 1;
             }
             if total - dropped <= budget_tokens {
                 fitted = messages[start..].to_vec();
@@ -4321,6 +4392,23 @@ mod tests {
             assert!(
                 msgs.iter().any(|m| m.content_text() == first),
                 "front message must be a whole original message"
+            );
+            // CLUSTER GRANULARITY (Joel 9/1): the window must open on a clean
+            // opener — when the quantized cut lands on an assistant answer or a
+            // tool-result continuation, the front advances past the fragment.
+            let mut clustered: Vec<ChatMessage> = Vec::new();
+            for i in 0..30 {
+                clustered.push(ChatMessage::text("user", format!("q{i} {}", "word ".repeat(60))));
+                clustered.push(ChatMessage::text(
+                    "assistant",
+                    format!("a{i} {}", "word ".repeat(60)),
+                ));
+            }
+            let fit = faculty.fit_messages(clustered, budget);
+            assert_eq!(
+                fit.first().unwrap().role,
+                "user",
+                "the window must never open on an answer without its question"
             );
             // The fitted suffix honors the budget.
             assert!(
