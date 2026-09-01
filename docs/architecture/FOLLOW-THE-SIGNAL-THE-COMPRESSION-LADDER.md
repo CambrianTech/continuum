@@ -98,6 +98,17 @@ becomes room for new signal; cache pressure drops; latency drops. The improvemen
 chart is "cost of being this mind, over time, falling" — measured by the same ledger
 that drives the training.
 
+And the deepest corollary closes the loop: **novelty drives learning.** After
+compression does its work, the misses that remain are not residual inefficiency —
+they are the purified learning signal: prediction error at the context tier, the
+mind's surprise measured in tokens. The live warm-hit distribution is honestly
+bimodal (0.80–0.95 on consecutive work turns, 0.45–0.49 on turns right after fresh
+peer messages), and the low band marks exactly the content worth admitting at high
+salience and worth dreaming on. The ledger's two sides are the promotion mix itself:
+high-reuse stable content promotes to weights (exploitation); low-reuse novel
+content is the curriculum's raw material (exploration). Learn where prediction
+fails — the same law a JEPA-class world model trains by.
+
 The corollary reads the other way too: **a cache miss is unconsolidated experience,
 quantified.** A segment that keeps churning is the system reporting "this hasn't been
 generalized yet." The steady state the ladder converges toward: a mind's live context
