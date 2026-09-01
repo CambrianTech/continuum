@@ -73,5 +73,12 @@ userId?: string,
  * params. First-class for every citizen — a persona servicing a room is
  * a citizen scoped to that room's contextId, the same shape a browser tab
  * uses (this is what fills the persona cognition's tool_context).
+ * The calling process's CLAIMED actor kind — `"agent"` when an AI agent
+ * session (Claude Code, Codex…) drives the CLI, stamped by the CLI from
+ * its own environment. A CLAIM for local attribution (the caller-less
+ * sender chain resolves to the AGENT self-peer instead of the human
+ * operator — Joel, 2026-09-01: "the chat history is clearly attributing
+ * shit you did to me"), never an authentication: authenticated identity
+ * stays `ctx.caller` (the airc gate).
  */
-contextId?: string, } & P;
+actorKind?: string, contextId?: string, } & P;

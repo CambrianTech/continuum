@@ -9,7 +9,11 @@ export type ChatHistoryMessage = {
 /**
  * The event's durable id (the daemon's event id — stable across reads).
  */
-id: string, senderId: string, 
+id: string, 
+/**
+ * The sender's peer uuid — typed, not text ([[uuids-are-not-strings-and-never-hand-drawn]]).
+ */
+senderId: string, 
 /**
  * Message text (chat line, 💭 intent, or ⚙ receipt block — the
  * transcript carries the WORK, not just the words).
