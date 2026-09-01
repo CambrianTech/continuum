@@ -804,41 +804,51 @@ impl OpenAICompatibleAdapter {
         key: &crate::inference::slots::ActivityKey,
         action: &str,
     ) -> bool {
-        let url = format!(
-            "{}/slots/{}?action={}",
-            self.endpoints().root().trim_end_matches('/'),
-            slot,
-            action
-        );
-        let filename = crate::inference::slots::page_filename(key);
-        let started = std::time::Instant::now();
-        let resp = self
-            .client
-            .post(&url)
-            .timeout(std::time::Duration::from_secs(10))
-            .json(&json!({ "filename": filename }))
-            .send()
-            .await;
-        let ok = matches!(&resp, Ok(r) if r.status().is_success());
-        let status = resp
-            .as_ref()
-            .map(|r| r.status().as_u16())
-            .unwrap_or(0); // 0 = transport error, distinguished from any HTTP status
-        crate::probe!(
-            class = "inference.kv_page.action",
-            action = %action,
-            slot = slot as u64,
-            persona = %key.persona,
-            room = %key.room,
-            ok,
-            status = status as u64,
-            ms = started.elapsed().as_millis() as u64,
-            "KV page context switch — save pages the evictee's state out, restore pages \
-             the returner's state in (~0.1s measured; a miss means this turn re-prefills)",
-        );
-        ok
+        kv_page_action_at(&self.client, self.endpoints().root(), slot, key, action).await
     }
+}
 
+/// The free-function body of [`OpenAICompatibleAdapter::kv_page_action`], so the
+/// spawned [`warm_ahead`](AIProviderAdapter::warm_ahead) task (which cannot hold
+/// `&self`) drives the SAME seam as the pin-time backstop — one page protocol,
+/// two schedulers.
+async fn kv_page_action_at(
+    client: &reqwest::Client,
+    root: &str,
+    slot: u32,
+    key: &crate::inference::slots::ActivityKey,
+    action: &str,
+) -> bool {
+    let url = format!("{}/slots/{}?action={}", root.trim_end_matches('/'), slot, action);
+    let filename = crate::inference::slots::page_filename(key);
+    let started = std::time::Instant::now();
+    let resp = client
+        .post(&url)
+        .timeout(std::time::Duration::from_secs(10))
+        .json(&json!({ "filename": filename }))
+        .send()
+        .await;
+    let ok = matches!(&resp, Ok(r) if r.status().is_success());
+    let status = resp
+        .as_ref()
+        .map(|r| r.status().as_u16())
+        .unwrap_or(0); // 0 = transport error, distinguished from any HTTP status
+    crate::probe!(
+        class = "inference.kv_page.action",
+        action = %action,
+        slot = slot as u64,
+        persona = %key.persona,
+        room = %key.room,
+        ok,
+        status = status as u64,
+        ms = started.elapsed().as_millis() as u64,
+        "KV page context switch — save pages the evictee's state out, restore pages \
+         the returner's state in (~0.1s measured; a miss means this turn re-prefills)",
+    );
+    ok
+}
+
+impl OpenAICompatibleAdapter {
     pub(crate) async fn probe_lora_catalog(&self) -> Result<(), String> {
         let url = self.endpoints().lora_adapters();
         let mut req = self.client.get(&url);
@@ -1700,6 +1710,54 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
 
     fn name(&self) -> &str {
         &self.config.name
+    }
+
+    /// RESTORE-AHEAD (compression-ladder rung 1): the scheduler knows this
+    /// activity generates next, so page its KV in NOW, overlapped with the
+    /// caller's prompt assembly. Runs the SAME lease + save/restore protocol
+    /// as the pin-time path — `lease_paged` is idempotent for the same key, so
+    /// when the pin arrives the slot is already warm (`prev == key`) and the
+    /// backstop performs nothing. Pin-time restores were measured queueing
+    /// behind busy slots to the 10s timeout (2026-09-01); this moves the wait
+    /// off the turn's critical path. Fire-and-forget by design: a failed
+    /// warm-ahead costs nothing — the backstop still runs.
+    fn warm_ahead(&self, persona: uuid::Uuid, room: uuid::Uuid) {
+        let Some(key) = crate::inference::slots::ActivityKey::new(persona, room) else {
+            return; // nil halves (test workspaces, roomless background) — nothing to warm
+        };
+        let root = self.endpoints().root().to_string();
+        // Discovery is the pin path's job — warm-ahead only acts on servers
+        // whose slot pool is already installed (every server after its first
+        // real turn), so it can never race the /props probe or mis-latch it.
+        let Some(Some(pool)) = crate::inference::slots::directory().get(&root) else {
+            return;
+        };
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            let started = std::time::Instant::now();
+            let Some(pg) = pool.lease_paged(key).await else {
+                return; // every slot pinned — the pin-time path will retry
+            };
+            if let Some(prev) = pg.save_first {
+                if kv_page_action_at(&client, &root, pg.slot, &prev, "save").await {
+                    pool.note_saved(prev);
+                }
+            }
+            if pg.restore && !kv_page_action_at(&client, &root, pg.slot, &key, "restore").await {
+                pool.note_page_lost(&key);
+            }
+            crate::probe!(
+                class = "inference.kv_warm_ahead",
+                persona = %key.persona,
+                room = %key.room,
+                slot = pg.slot as u64,
+                saved_evictee = pg.save_first.is_some(),
+                restored = pg.restore,
+                ms = started.elapsed().as_millis() as u64,
+                "restore-ahead — the scheduler's knowledge of who generates next IS the \
+                 cache prediction; the page lands during prompt assembly, not during the turn",
+            );
+        });
     }
 
     fn capabilities(&self) -> AdapterCapabilities {
