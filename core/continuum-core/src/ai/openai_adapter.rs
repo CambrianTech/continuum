@@ -704,13 +704,13 @@ impl OpenAICompatibleAdapter {
     async fn slot_for_activity(
         &self,
         key: crate::inference::slots::ActivityKey,
-    ) -> Option<u32> {
+    ) -> Option<crate::inference::slots::SlotPaging> {
         let root = self.endpoints().root().to_string();
         let dir = crate::inference::slots::directory();
         // Fast path: this server's state already known (process-global directory —
         // every adapter instance talking to the same server shares ONE assignment).
         match dir.get(&root) {
-            Some(Some(pool)) => return pool.lease(key).await,
+            Some(Some(pool)) => return pool.lease_paged(key).await,
             Some(None) => return None, // latched unsupported
             None => {}                 // never probed — probe below
         }
@@ -790,7 +790,53 @@ impl OpenAICompatibleAdapter {
             n_slots,
             "slot affinity enabled — activities lease llama-server slots (props-discovered)"
         );
-        pool.lease(key).await
+        pool.lease_paged(key).await
+    }
+
+    /// Execute one KV page action against the server (`/slots/{id}?action=save|restore`)
+    /// — the restore economy's context switch, ordered on the slot exactly like the
+    /// inference it brackets. Measured ~0.1s at 20k tokens; the 10s cap is for a
+    /// wedged server, not a slow page. Returns success; failures probe loudly and the
+    /// turn proceeds as a plain prefill — slower, never wrong.
+    async fn kv_page_action(
+        &self,
+        slot: u32,
+        key: &crate::inference::slots::ActivityKey,
+        action: &str,
+    ) -> bool {
+        let url = format!(
+            "{}/slots/{}?action={}",
+            self.endpoints().root().trim_end_matches('/'),
+            slot,
+            action
+        );
+        let filename = crate::inference::slots::page_filename(key);
+        let started = std::time::Instant::now();
+        let resp = self
+            .client
+            .post(&url)
+            .timeout(std::time::Duration::from_secs(10))
+            .json(&json!({ "filename": filename }))
+            .send()
+            .await;
+        let ok = matches!(&resp, Ok(r) if r.status().is_success());
+        let status = resp
+            .as_ref()
+            .map(|r| r.status().as_u16())
+            .unwrap_or(0); // 0 = transport error, distinguished from any HTTP status
+        crate::probe!(
+            class = "inference.kv_page.action",
+            action = %action,
+            slot = slot as u64,
+            persona = %key.persona,
+            room = %key.room,
+            ok,
+            status = status as u64,
+            ms = started.elapsed().as_millis() as u64,
+            "KV page context switch — save pages the evictee's state out, restore pages \
+             the returner's state in (~0.1s measured; a miss means this turn re-prefills)",
+        );
+        ok
     }
 
     pub(crate) async fn probe_lora_catalog(&self) -> Result<(), String> {
@@ -2112,8 +2158,33 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                         .and_then(|(p, r)| crate::inference::slots::ActivityKey::new(p, r));
                     match key {
                         Some(k) => {
-                            let leased = self.slot_for_activity(k).await;
-                            if leased.is_some() {
+                            let paging = self.slot_for_activity(k).await;
+                            if let Some(pg) = paging {
+                                // THE CONTEXT SWITCH (restore economy): page the
+                                // evictee's registers out, page the returner's in —
+                                // both ordered on this slot exactly like the
+                                // inference they bracket, so nothing else waits.
+                                let root = self.endpoints().root().to_string();
+                                let pool = match crate::inference::slots::directory().get(&root) {
+                                    Some(Some(pool)) => Some(pool),
+                                    _ => None,
+                                };
+                                if let Some(prev) = pg.save_first {
+                                    if self.kv_page_action(pg.slot, &prev, "save").await {
+                                        if let Some(pool) = pool.as_ref() {
+                                            pool.note_saved(prev);
+                                        }
+                                    }
+                                }
+                                if pg.restore
+                                    && !self.kv_page_action(pg.slot, &k, "restore").await
+                                {
+                                    // Dead page (geometry swept, file missing): stop
+                                    // offering it; this turn re-prefills plainly.
+                                    if let Some(pool) = pool.as_ref() {
+                                        pool.note_page_lost(&k);
+                                    }
+                                }
                                 // Price basis for the eviction policy (B5): this
                                 // activity's current prompt size, the same chars/4
                                 // estimate the overshoot alarm uses — comparable
@@ -2130,14 +2201,11 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                                             .sum::<usize>()
                                     })
                                     .unwrap_or(0) as u64; // 0 = no usage block in the reply; the estimate only prices eviction, never budgets
-                                let root = self.endpoints().root().to_string();
-                                if let Some(Some(pool)) =
-                                    crate::inference::slots::directory().get(&root)
-                                {
+                                if let Some(pool) = pool.as_ref() {
                                     pool.note_tail(&k, approx_tokens);
                                 }
                             }
-                            leased
+                            paging.map(|pg| pg.slot)
                         }
                         None => None,
                     }
