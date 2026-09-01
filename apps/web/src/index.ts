@@ -62,10 +62,37 @@ void ChatWidget;
 async function main(): Promise<void> {
   const config = resolveConfig();
 
-  // Citizen-scope the session: `?me=<uuid>` on the connect URL is WHO this
-  // session belongs to — the core resolves per-user views (kind="nav") to this
-  // citizen's substrate and spawns their nav projector on first arrival.
-  const scopedWsUrl = `${config.wsUrl}${config.wsUrl.includes('?') ? '&' : '?'}me=${config.senderId}`;
+  // IDENTITY FIRST ([[one-logical-decision-one-place]]; Joel, 2026-09-01: two
+  // joels in the roster because every browser minted its own "human"): the
+  // command transport dials UNSCOPED, asks `identity/whoami`, and the session
+  // ADOPTS the durable identity the core resolves (the operator self-peer for
+  // a local session). Explicit ?me= (a harness) skips the ask. Retries until
+  // the core answers — the continuon shows connecting; a minted stand-in is
+  // never an option.
+  const transport = new WebSocketTransport(config.wsUrl);
+  let me = config.senderId;
+  let myName: string | undefined;
+  while (me === undefined) {
+    try {
+      const raw = await transport.execute(buildCommandUri('identity/whoami'), '{}');
+      const parsed = JSON.parse(raw) as { id?: string; name?: string };
+      if (parsed.id !== undefined && parsed.id.length > 0) {
+        me = parsed.id;
+        myName = parsed.name;
+        break;
+      }
+      throw new Error('whoami answered without an id');
+    } catch (err) {
+      console.warn('identity/whoami not ready — retrying in 3s:', err);
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+  const senderId: string = me;
+
+  // Citizen-scope the STATE session: `?me=<uuid>` on the connect URL is WHO
+  // this session belongs to — the core resolves per-user views (kind="nav")
+  // to this citizen's substrate and spawns their nav projector on arrival.
+  const scopedWsUrl = `${config.wsUrl}${config.wsUrl.includes('?') ? '&' : '?'}me=${senderId}`;
 
   const widget = document.createElement('chat-widget');
   widget.callUrl = config.callUrl;
@@ -78,14 +105,15 @@ async function main(): Promise<void> {
   if (new URLSearchParams(location.search).has('live')) widget.liveFace = true;
   // The viewer's call identity: the same uuid the session is scoped by. The
   // name upgrades to the directory's real one when the seed resolves it.
-  widget.viewerId = config.senderId;
+  widget.viewerId = senderId;
+  if (myName !== undefined) widget.viewerName = myName;
   // The WebRTC media-plane door: live/token minted by the core for THIS
   // viewer, room-scoped. Handler presence = the plane exists; failure is the
   // widget's to surface loudly (control-only call, never fake-connected).
   widget.liveTokenHandler = async (room: string) => {
     const raw = await transport.execute(
       buildCommandUri('live/token'),
-      JSON.stringify({ room, identity: config.senderId }),
+      JSON.stringify({ room, identity: senderId }),
     );
     const parsed = JSON.parse(raw) as { url?: string; token?: string };
     if (parsed.url === undefined || parsed.token === undefined) {
@@ -100,9 +128,8 @@ async function main(): Promise<void> {
   // `room_id` so a message always targets the room on screen.
   let latest: ChatState | undefined;
 
-  // SEND socket: the command client. Fails loud if the send lands before any
-  // snapshot named a room (no room to send into is a real error, not a no-op).
-  const transport = new WebSocketTransport(scopedWsUrl);
+  // SEND path: the command client over the SAME unscoped transport identity
+  // rides in params, resolved above.
   const continuum = Continuum.connect(transport);
   const sendHandler: SendHandler = async (text: string) => {
     if (!latest) {
@@ -110,7 +137,7 @@ async function main(): Promise<void> {
     }
     const result = await continuum.commands.execute('chat/send', {
       roomId: latest.room_id,
-      senderId: config.senderId,
+      senderId,
       text,
     });
     // A kernel-level failure already rejected in the transport (this line never
@@ -217,7 +244,7 @@ async function main(): Promise<void> {
   const selectRoomHandler: SelectRoomHandler = async (target: string, kind: 'room' | 'persona') => {
     await transport.execute(
       buildCommandUri('nav/select'),
-      JSON.stringify({ userId: config.senderId, target, kind }),
+      JSON.stringify({ userId: senderId, target, kind }),
     );
     focusMind(kind === 'persona' ? target : undefined);
     // The address bar mirrors the focused activity as its URI short form —
@@ -258,7 +285,7 @@ async function main(): Promise<void> {
         if (detail.roomName !== undefined && detail.roomName.length > 0) {
           await transport.execute(
             buildCommandUri('room/join'),
-            JSON.stringify({ userId: config.senderId, room: detail.roomName }),
+            JSON.stringify({ userId: senderId, room: detail.roomName }),
           );
         }
         await selectRoomHandler(roomId, 'room');
@@ -335,7 +362,7 @@ async function main(): Promise<void> {
   const settingsHandler: SettingsHandler = async (agree?: boolean) => {
     const sharingRaw = await transport.execute(
       buildCommandUri('genome/sharing'),
-      JSON.stringify(agree === undefined ? { userId: config.senderId } : { userId: config.senderId, agree }),
+      JSON.stringify(agree === undefined ? { userId: senderId } : { userId: senderId, agree }),
     );
     const sharing = JSON.parse(sharingRaw) as {
       agreed: boolean;
@@ -346,7 +373,7 @@ async function main(): Promise<void> {
     };
     const listRaw = await transport.execute(
       buildCommandUri('genome/list'),
-      JSON.stringify({ userId: config.senderId }),
+      JSON.stringify({ userId: senderId }),
     );
     const list = JSON.parse(listRaw) as {
       genes: {
@@ -441,7 +468,7 @@ async function main(): Promise<void> {
   const closeTabHandler: CloseTabHandler = async (target) => {
     await transport.execute(
       buildCommandUri('nav/close'),
-      JSON.stringify({ userId: config.senderId, target }),
+      JSON.stringify({ userId: senderId, target }),
     );
   };
   widget.closeTabHandler = closeTabHandler;
@@ -480,7 +507,7 @@ async function main(): Promise<void> {
   // fetch must never render the operator themself as absent/offline.
   widget.directorySeed = [
     {
-      id: config.senderId,
+      id: senderId,
       name: 'you',
       kind: 'human',
       active: true,
@@ -528,11 +555,11 @@ async function main(): Promise<void> {
         }));
       // The viewer stays first + always-online regardless of what the
       // directory knows about their peer row.
-      const self = widget.directorySeed.filter((m) => m.id === config.senderId);
-      widget.directorySeed = [...self, ...seed.filter((m) => m.id !== config.senderId)];
+      const self = widget.directorySeed.filter((m) => m.id === senderId);
+      widget.directorySeed = [...self, ...seed.filter((m) => m.id !== senderId)];
       // The directory knows the viewer's REAL name (identity card) — adopt it
       // for call tiles instead of the local placeholder.
-      const me = (parsed.peers ?? []).find((c) => c.peer_id === config.senderId);
+      const me = (parsed.peers ?? []).find((c) => c.peer_id === senderId);
       if (me?.name !== undefined && me.name.length > 0 && !me.name.startsWith('peer-')) {
         widget.viewerName = me.name;
       }

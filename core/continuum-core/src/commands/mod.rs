@@ -52,6 +52,7 @@ pub mod migration;
 pub mod models;
 pub mod persona;
 pub mod persona_roster;
+pub mod identity_whoami;
 pub mod live_token;
 pub mod presence_directory;
 pub mod recipe_run;
