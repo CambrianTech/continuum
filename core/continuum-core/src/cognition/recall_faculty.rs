@@ -402,6 +402,7 @@ const WM_DEDUP_MIN_BODY_CHARS: usize = 24;
 /// current burst for the memory to count as "already in the window" (burst
 /// dedup). Long enough that containment means the SAME text, short enough to
 /// survive the window's own trimming of a long message's tail.
+// context-budget-exempt: a MATCH-WINDOW length for dedup containment (how many chars must appear verbatim to count as the same text), not a prompt/context size — it neither budgets nor clamps any window
 const BURST_DEDUP_HEAD_CHARS: usize = 64;
 
 #[async_trait]
