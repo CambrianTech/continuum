@@ -24,7 +24,7 @@
 //! (single-machine first), but the snapshot is the rail it slots onto.
 
 use crate::model_registry::Model;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -771,6 +771,67 @@ pub fn port_of_base_url(url: &str) -> Option<u16> {
     let after_scheme = url.split("://").nth(1).unwrap_or(url);
     let host_port = after_scheme.split('/').next()?;
     host_port.rsplit_once(':')?.1.parse().ok()
+}
+
+/// The KV disk-page dir for one serve GEOMETRY (restore economy): a page saved
+/// under one model + per-slot window must never restore into another. The
+/// geometry is IN THE PATH so mismatch is structurally impossible — a new
+/// geometry simply reads an empty dir. Rooted under `~/.continuum/cache/`
+/// (tracked in `system_resources::disk_reporters`, eviction decided in
+/// `disk_eviction` — the no-new-cache-dir-without-an-eviction-decision law).
+pub fn kv_page_dir(model_id: &str, per_slot_ctx: u32) -> PathBuf {
+    let sanitized: String = model_id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
+        .collect();
+    kv_pages_root().join(format!("{sanitized}--c{per_slot_ctx}"))
+}
+
+/// The root every geometry dir lives under — the ONE path the disk reporter
+/// tracks and the spawn sweep walks.
+pub fn kv_pages_root() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(std::env::temp_dir) // JUSTIFIED unwrap_or_else: no home dir = containerized oddity; pages in tmp still work, and the lane must not fail to spawn over cache placement
+        .join(".continuum")
+        .join("cache")
+        .join("kv-pages")
+}
+
+/// Sweep sibling GENERATIONS of the current geometry dir: same model prefix,
+/// different `--c<n>` suffix. Their pages can never be restored again (the
+/// geometry is gone), so the spawn — the one place that knows the new truth —
+/// deletes them. This is the eviction story `disk_eviction` records for
+/// `cache/kv-pages`; cross-model dirs are left for their own lanes' spawns.
+pub fn sweep_stale_page_generations(current: &Path) {
+    let (Some(parent), Some(name)) = (current.parent(), current.file_name().and_then(|n| n.to_str()))
+    else {
+        return;
+    };
+    let Some((model_prefix, _)) = name.rsplit_once("--c") else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let entry_name = entry.file_name();
+        let Some(entry_name) = entry_name.to_str() else {
+            continue;
+        };
+        if entry_name != name
+            && entry_name.starts_with(model_prefix)
+            && entry_name[model_prefix.len()..].starts_with("--c")
+        {
+            let stale = entry.path();
+            let removed = std::fs::remove_dir_all(&stale).is_ok();
+            crate::probe!(
+                class = "inference.kv_page.generation_swept",
+                dir = %stale.display(),
+                removed,
+                "stale KV page generation removed — its geometry no longer exists to restore into",
+            );
+        }
+    }
 }
 
 /// Path to the `llama-server` binary — the inference engine WE OWN, built from
@@ -2797,6 +2858,25 @@ impl LlamaServerControl for LlamaServerProcess {
             target.adapters.iter().map(|a| a.path.clone()).collect();
         let expert_ot = target.expert_ot_value();
 
+        // KV disk-paging dir (restore economy): GEOMETRY-KEYED — model + the
+        // per-slot window — so a saved page can never be restored into a slot
+        // of a different size or model (llama-server would refuse or corrupt).
+        // Stale sibling generations for the SAME model are swept at spawn: a
+        // relaunch that changed geometry orphans its old pages, and the spawn
+        // is the one place that knows the new truth. Tracked + eviction-decided
+        // in system_resources (the no-new-cache-dir-without-eviction law).
+        let slot_save_dir = kv_page_dir(&target.model.id, total_ctx / lanes.max(1));
+        if let Err(e) = std::fs::create_dir_all(&slot_save_dir) {
+            tracing::warn!(
+                probe_class = "inference.kv_page.dir_failed",
+                dir = %slot_save_dir.display(),
+                error = %e,
+                "could not create the KV page dir — the lane still serves, but rotation \
+                 pays full re-prefill (the paging tier is amputated for this serve)"
+            );
+        } else {
+            sweep_stale_page_generations(&slot_save_dir);
+        }
         let mut cmd = tokio::process::Command::new(&self.bin);
         let invocation = crate::inference::lane_args::base_invocation(
             &gguf,
@@ -2806,6 +2886,7 @@ impl LlamaServerControl for LlamaServerProcess {
             lanes,
             total_ctx,
             target.host_prompt_cache_mib,
+            &slot_save_dir,
         )
         .with_options(&crate::inference::lane_args::LaneOptions {
             kv_cache_type: kv_cache_type.as_deref(),

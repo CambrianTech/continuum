@@ -216,6 +216,7 @@ pub fn base_invocation(
     lanes: u32,
     total_ctx: u32,
     cache_ram_mib: u32,
+    slot_save_dir: &Path,
 ) -> LaneInvocation {
     let arg = |s: &str| s.to_string();
     LaneInvocation {
@@ -264,6 +265,17 @@ pub fn base_invocation(
             // so llama.cpp's 8 GiB default can never run un-owned again (§4).
             arg("--cache-ram"),
             cache_ram_mib.to_string(),
+            // KV DISK PAGING (restore economy, the OS-context-switch design):
+            // `/slots/{id}?action=save|restore` only works when the server was
+            // LAUNCHED with a save path, so the flag is part of the
+            // unconditional spine — a lane without it silently amputates the
+            // whole paging tier and rotation on an oversubscribed server costs
+            // a full re-prefill per turn (measured 2026-09-01: hit_rate 0.0 on
+            // every act, 35-45s each; restore of the same state measured
+            // ~0.1s). The dir is GEOMETRY-KEYED by the caller (model + per-slot
+            // ctx) so a stale page can never restore into a mismatched slot.
+            arg("--slot-save-path"),
+            slot_save_dir.to_string_lossy().into_owned(),
             // PREFILL THROUGHPUT (#139). Live personas are prefill-bound: a real turn
             // re-prefills ~4k tokens of fresh RAG context at ~109 tok/s → 30-110s turns
             // (decode is tiny and fast; the mind is NOT slow, the re-read is). The
@@ -604,7 +616,24 @@ mod tests {
             lanes,
             total_ctx,
             CACHE_RAM_MIB, // the cold-start prior — these tests pin arg shape, not sizing
+            &PathBuf::from("/tmp/kv-pages/test"),
         )
+    }
+
+    // what this catches: the KV disk-paging tier silently amputated. Slot
+    // save/restore (`/slots/{id}?action=…`) only exists when the server was
+    // LAUNCHED with `--slot-save-path`; a lane missing it turns every rotation
+    // on an oversubscribed server into a full re-prefill (hit_rate 0.0 across
+    // all acts, 2026-09-01) while the code above it believes paging works.
+    #[test]
+    fn slot_save_path_is_part_of_the_unconditional_spine() {
+        let i = inv(4, 65_536);
+        assert_eq!(
+            i.value_of("--slot-save-path"),
+            Some("/tmp/kv-pages/test"),
+            "the paging tier must be launched into existence: {:?}",
+            i.args
+        );
     }
 
     // what this catches: the window-quartering regression — `--parallel` inherited

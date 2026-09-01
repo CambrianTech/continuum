@@ -162,6 +162,41 @@ pub struct KvSlotPool {
     /// evict a citizen's warm tail. `None` on small servers (≤2 slots): there,
     /// non-Turn traffic goes unpinned with `cache_prompt: false` instead.
     scratch: Option<u32>,
+    /// slot index → the activity whose KV last WARMED that slot. This is the
+    /// paging ledger's "who is resident" half: when a lease hands a slot to a
+    /// DIFFERENT activity, the previous holder's KV is still physically in the
+    /// server slot and must be SAVED to its disk page before the new turn
+    /// overwrites it. Tiny map (n_slots entries), cold path (one pin per turn).
+    holders: Mutex<std::collections::HashMap<u32, ActivityKey>>,
+    /// Activities with a valid KV page on disk (written via
+    /// `/slots/{id}?action=save` under the lane's `--slot-save-path`). The
+    /// restore half of the ledger: a re-entering activity whose slot was
+    /// recycled restores its page (~0.1s measured at 20k tokens) instead of
+    /// re-prefilling (~35s at 22k — the 330× cliff the restore economy names).
+    saved: Mutex<std::collections::HashSet<ActivityKey>>,
+}
+
+/// What a Turn must do AROUND its request to honor the KV paging design — the
+/// OS-context-switch shape (Joel: "many threads but one at a time … they page
+/// in and out per persona"). Both actions are ordered on the slot itself, the
+/// same FIFO inference already imposes; nothing else waits on them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SlotPaging {
+    pub slot: u32,
+    /// A different activity's KV is still resident in this slot — save it to
+    /// its disk page BEFORE the new turn's prefill overwrites it.
+    pub save_first: Option<ActivityKey>,
+    /// This activity has a page on disk and the slot does not currently hold
+    /// its (fresher) KV — restore the page before the turn.
+    pub restore: bool,
+}
+
+/// The page filename for an activity — stable across processes, one file per
+/// activity, overwritten on each save. Lives under the lane's geometry-keyed
+/// `--slot-save-path` dir, so a page can never be restored into a slot with a
+/// different context size or model.
+pub fn page_filename(key: &ActivityKey) -> String {
+    format!("a-{}-{}.bin", key.persona.simple(), key.room.simple())
 }
 
 impl KvSlotPool {
@@ -216,6 +251,8 @@ impl KvSlotPool {
             free,
             n_slots,
             scratch,
+            holders: Mutex::new(std::collections::HashMap::new()),
+            saved: Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -297,6 +334,43 @@ impl KvSlotPool {
             }
         }
         None
+    }
+
+    /// [`Self::lease`] plus the paging ledger: who to SAVE before this turn
+    /// overwrites the slot, and whether to RESTORE this activity's own page.
+    ///
+    /// The rules, in order:
+    /// - slot still holds THIS activity (warm re-lease) → no save, no restore:
+    ///   the in-slot KV is fresher than any page on disk.
+    /// - slot last warmed a DIFFERENT activity → save THEIRS first (their KV is
+    ///   physically still in the server slot), then restore OURS if a page
+    ///   exists.
+    /// - slot holder unknown (fresh pool over a pre-existing server) → restore
+    ///   ours if a page exists; nothing known to save.
+    pub async fn lease_paged(&self, key: ActivityKey) -> Option<SlotPaging> {
+        let slot = self.lease(key).await?;
+        let prev = self.holders.lock().insert(slot, key);
+        let save_first = prev.filter(|p| *p != key);
+        let slot_holds_ours = prev == Some(key);
+        let restore = !slot_holds_ours && self.saved.lock().contains(&key);
+        Some(SlotPaging {
+            slot,
+            save_first,
+            restore,
+        })
+    }
+
+    /// Record that `key`'s page was successfully written to disk — it becomes
+    /// restorable. Called by the adapter AFTER the save HTTP call succeeds.
+    pub fn note_saved(&self, key: ActivityKey) {
+        self.saved.lock().insert(key);
+    }
+
+    /// The page turned out unusable (restore failed: file gone, geometry
+    /// mismatch) — stop offering it so the turn falls back to a plain prefill
+    /// instead of retrying a dead restore every pin.
+    pub fn note_page_lost(&self, key: &ActivityKey) {
+        self.saved.lock().remove(key);
     }
 }
 
@@ -404,6 +478,50 @@ mod tests {
         assert_ne!(c, a, "c must not steal the warm slot that was just refreshed");
         // And the evicted activity can come back (cold) on whatever frees next.
         let _ = pool.lease(key(1, 2)).await.expect("evicted activity re-leases");
+    }
+
+    // what this catches: the paging ledger around slot recycling (the restore-
+    // economy context switch). A recycled slot must (1) name the previous
+    // holder for SAVE before the new turn overwrites their KV, (2) offer
+    // RESTORE only to an activity with a written page whose KV is not already
+    // in the slot, (3) never save/restore on a warm same-holder re-lease, and
+    // (4) stop offering a page after note_page_lost. Without (1) rotation on
+    // an oversubscribed server is a full re-prefill per turn — measured live
+    // 2026-09-01 as hit_rate 0.0 across every act, 35-45s prefill each.
+    #[tokio::test]
+    async fn slot_recycling_pages_the_evictee_out_and_the_returner_in() {
+        let pool = KvSlotPool::new("test", 2); // 2 slots, no scratch
+        let a = key(1, 1);
+        let b = key(1, 2);
+        let c = key(1, 3);
+        let pa = pool.lease_paged(a).await.expect("a");
+        assert_eq!(pa.save_first, None, "fresh slot: nobody to save");
+        assert!(!pa.restore, "no page written yet");
+        // Warm re-lease: same holder, nothing to page either way.
+        let pa2 = pool.lease_paged(a).await.expect("a warm");
+        assert_eq!(pa2.slot, pa.slot);
+        assert_eq!(pa2.save_first, None, "same holder — no save");
+        assert!(!pa2.restore, "slot already holds a's fresher KV — no restore");
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let _pb = pool.lease_paged(b).await.expect("b");
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        // c arrives on a full pool: someone (LRU = a) is evicted; the paging
+        // ledger must name the previous holder of the recycled slot for save.
+        let pc = pool.lease_paged(c).await.expect("c");
+        assert_eq!(pc.save_first, Some(a), "the evictee's KV must be saved before overwrite");
+        pool.note_saved(a); // adapter reports the save HTTP call succeeded
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        // a returns: her slot was recycled, but she has a page → restore.
+        let pa3 = pool.lease_paged(a).await.expect("a returns");
+        assert!(pa3.restore, "a has a page and the slot holds someone else's KV");
+        // A dead page stops being offered.
+        pool.note_page_lost(&a);
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let _ = pool.lease_paged(b).await.expect("b again");
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let pa4 = pool.lease_paged(a).await.expect("a after lost page");
+        assert!(!pa4.restore, "a lost page must not be offered again");
+        assert_eq!(page_filename(&a), format!("a-{}-{}.bin", a.persona.simple(), a.room.simple()));
     }
 
     // what this catches: the scratch reservation and the placement law. On a

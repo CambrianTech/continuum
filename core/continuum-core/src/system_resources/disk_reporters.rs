@@ -228,6 +228,15 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
         // bounded by operator attention in practice — tracked so "in practice"
         // never becomes the 2026-07-13 silent-class shape.
         TrackedDir::new("eval-captures", home.join(".continuum/eval-captures")),
+        // KV disk pages (restore economy): one file per activity, overwritten on
+        // each save, under a GEOMETRY-KEYED subdir per serve (model + per-slot
+        // ctx). Bounded by residents × rooms per geometry; stale geometry
+        // generations are swept at lane spawn
+        // (`inference::llama_server::sweep_stale_page_generations` — the owner
+        // of this class's eviction decision). A page at 20-40k tokens of q8_0
+        // KV is hundreds of MB, so the class is small in COUNT but real in
+        // bytes — exactly what must never be an untracked writer.
+        TrackedDir::new("kv-pages", home.join(".continuum/cache/kv-pages")),
     ];
     // Present only when its real location is KNOWN (see the warn above). Kept
     // CONDITIONAL rather than defaulted: fabricating a path here is how a class

@@ -724,6 +724,22 @@ mod tests {
                 "#155: broker-reachable pool over cognition/eval::live_eval_roots(); \
                  sweep + RAII already own the steady state and the crash path",
             ),
+            // Steady-state owner ALREADY EXISTS at lane spawn:
+            // `inference::llama_server::sweep_stale_page_generations` deletes every
+            // sibling geometry the moment a serve's geometry changes — a page whose
+            // slot size no longer exists can never be restored, so the sweep is
+            // reference-safe by construction, and within a live geometry each
+            // activity owns ONE file that saves overwrite in place (count bounded
+            // by residents × rooms). Deferred only for the broker seam: under real
+            // disk pressure the broker cannot yet claw back the CURRENT
+            // generation's pages — that wants a pool that asks the slot pool which
+            // activities are resident (their pages are one eviction from being
+            // needed) versus departed, never a blind LRU.
+            (
+                "kv-pages",
+                "#155: broker-reachable pool keyed on slot-pool residency; the \
+                 spawn-time generation sweep already owns the stale-geometry path",
+            ),
         ];
         use super::super::disk_pressure::DiskReporter as _;
         for dir in super::super::disk_reporters::standard_tracked_dirs(Path::new("/h")) {
