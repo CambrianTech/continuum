@@ -17,7 +17,7 @@ use crate::runtime;
 
 /// Qwen2 safetensors backend.
 #[allow(dead_code)]
-pub struct Qwen2SafetensorsBackend {
+pub(crate) struct Qwen2SafetensorsBackend {
     model: Qwen2,
     tokenizer: Tokenizer,
     device: Device,

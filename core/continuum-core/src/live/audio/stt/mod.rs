@@ -260,7 +260,12 @@ pub async fn transcribe(
 /// mistake-masking fallback: each miss is named loudly, and the winner is
 /// promoted to active so every later transcribe uses the engine that proved
 /// it loads.
-const INIT_PREFERENCE: &[&str] = &["moonshine", "openai-realtime", "stub"];
+/// The STUB is deliberately ABSENT: it fabricates transcriptions (canned
+/// text for any audio — the gunfire false-positive test's whole point), so
+/// auto-selecting it would make silence indistinguishable from speech. Tests
+/// that want it call `set_active("stub")` explicitly; a box with no real
+/// engine errs loudly instead ([[fallbacks-are-illegal-fail-loud]]).
+const INIT_PREFERENCE: &[&str] = &["moonshine", "openai-realtime"];
 
 pub async fn initialize() -> Result<(), STTError> {
     // Try each preferred engine in order; first successful init wins and

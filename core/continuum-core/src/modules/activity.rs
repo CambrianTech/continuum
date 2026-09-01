@@ -225,7 +225,7 @@ impl ActionCommand for ActivitySpawn {
 
 /// Bring named citizens into a room, so a freshly spawned activity has its
 /// people in one verb.
-pub struct ActivityInvite {
+pub(crate) struct ActivityInvite {
     pub registry: PersonaAircRuntimeRegistry,
 }
 

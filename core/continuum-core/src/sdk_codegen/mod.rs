@@ -934,11 +934,13 @@ mod tests {
         // enveloped. This pins the migration: the moment chat/send regresses back to
         // an envelope wrapper, this fails.
         assert!(
-            out.contains("'chat/send': { params: ChatSendParams; result: ChatSendResult }"),
+            // Params renamed ChatSendParams → ChatSendWireParams (2026-08-31: senderId
+            // went optional at the wire; the kernel keeps the resolved struct).
+            out.contains("'chat/send': { params: ChatSendWireParams; result: ChatSendResult }"),
             "migrated chat/send must be Bare (no envelope):\n{out}"
         );
         assert!(
-            !out.contains("CommandRequest<ChatSendParams>")
+            !out.contains("CommandRequest<ChatSendWireParams>")
                 && !out.contains("CommandResponse<ChatSendResult>"),
             "the envelope must NOT wrap the migrated bare chat/send"
         );
@@ -990,7 +992,7 @@ mod tests {
         // Bare: typed accessor, bare signature. `chat/send` migrated to Bare, so its
         // accessor is now bare both ends — no envelope.
         assert!(
-            out.contains("chatSend(params: ChatSendParams): Promise<ChatSendResult> {"),
+            out.contains("chatSend(params: ChatSendWireParams): Promise<ChatSendResult> {"),
             "migrated chat/send accessor is bare both ends:\n{out}"
         );
         assert!(

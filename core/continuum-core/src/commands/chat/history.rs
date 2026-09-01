@@ -54,7 +54,9 @@ pub struct ChatHistoryParams {
 pub struct ChatHistoryMessage {
     /// The event's durable id (the daemon's event id — stable across reads).
     pub id: String,
-    pub sender_id: String,
+    /// The sender's peer uuid — typed, not text ([[uuids-are-not-strings-and-never-hand-drawn]]).
+    #[ts(type = "string")]
+    pub sender_id: uuid::Uuid,
     /// Message text (chat line, 💭 intent, or ⚙ receipt block — the
     /// transcript carries the WORK, not just the words).
     pub text: String,
@@ -90,7 +92,7 @@ crate::action_command! {
             .map_err(|e| CommandError::Internal(format!(
                 "chat/history needs the airc daemon socket and discovery failed: {e}"
             )))?;
-        let limit = p.limit.unwrap_or(50).min(500) as usize;
+        let limit = p.limit.unwrap_or(50).min(500) as usize; // JUSTIFIED unwrap_or: the declared wire default (param doc says 50)
         let response = DaemonClient::new(socket)
             .inbox(InboxRequest {
                 since: None,
@@ -133,7 +135,7 @@ crate::action_command! {
             };
             messages.push(ChatHistoryMessage {
                 id: event.event_id.as_uuid().to_string(),
-                sender_id: sender.to_string(),
+                sender_id: sender,
                 text,
                 timestamp: event.occurred_at_ms as i64,
             });

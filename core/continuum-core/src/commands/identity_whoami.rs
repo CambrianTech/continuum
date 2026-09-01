@@ -57,7 +57,7 @@ crate::action_command! {
             let name = crate::persona::PersonaAircRuntimeRegistry::try_global()
                 .and_then(|r| r.get(id))
                 .map(|rt| rt.agent_name().to_string())
-                .unwrap_or_else(|| id.to_string());
+                .unwrap_or_else(|| id.to_string()); // JUSTIFIED unwrap_or_else: an unregistered caller renders as its uuid — honest identity, never an invented name
             return Ok(WhoamiResult { id: id.to_string(), name, kind: "persona".into() });
         }
         // An AGENT-driven session (actorKind claim) is the AGENT self-peer.

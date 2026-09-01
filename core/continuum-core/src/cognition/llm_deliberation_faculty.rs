@@ -590,7 +590,7 @@ impl LlmDeliberationFaculty {
         // that overshoots and gets trimmed. That regime is not reachable in production
         // (`window_for` floors at MIN_SERVE_CTX) but the ordering should not depend on it.
         measured
-            .unwrap_or(share)
+            .unwrap_or(share) // JUSTIFIED unwrap_or: no measurement yet = the documented cold-start PRIOR (the share); the honest absence has a named owner above
             .min(share)
             .min(Self::COMPLETION_CEILING_TOKENS)
             .min(context_window.saturating_sub(mandatory))
@@ -1517,7 +1517,7 @@ impl LlmDeliberationFaculty {
                 // `now_ms` is the workspace's own clock when the cycle stamped one;
                 // 0 when it didn't. The registry keeps peaks, not a time series, so an
                 // unstamped cycle still contributes its measurement honestly.
-                ws.now_ms.unwrap_or(0),
+                ws.now_ms.unwrap_or(0), // JUSTIFIED unwrap_or: unstamped cycle still measures honestly (registry keeps peaks, not a time series)
             );
         }
         crate::probe!(
@@ -2354,7 +2354,7 @@ impl Faculty for LlmDeliberationFaculty {
                 self.persona_id,
                 resp.usage.output_tokens,
                 matches!(resp.finish_reason, FinishReason::Length),
-                ws.now_ms.unwrap_or(0),
+                ws.now_ms.unwrap_or(0), // JUSTIFIED unwrap_or: unstamped cycle still measures honestly (registry keeps peaks, not a time series)
             );
         }
 
@@ -4067,7 +4067,17 @@ mod tests {
             // Same conscious trade as the web/github adds: the tight-window LCD
             // persona pays with less recall room; Ornith at 166k doesn't notice.
             // If another addition wants in, SHRINK first (#333).
-            const AGENTIC_SURFACE_CEILING: u32 = 10400;
+            //
+            // 10400 → 10700, stated plainly (2026-09-01): TWO native activity verbs —
+            // `activity/recipes` + `activity/invite` (+~565 tokens, their param
+            // schemas). A citizen with an idea could already SPAWN a room
+            // (activity/spawn has been native since #274) but could neither
+            // discover what recipes exist nor staff the room she made — spawn →
+            // invite → say-what-it's-about is ONE flow (Joel, 2026-08-31:
+            // starting an activity must be "easy and common", and citizens mint
+            // their own activities per [[activities-are-self-hosting]]). Same
+            // conscious trade as vision/look above.
+            const AGENTIC_SURFACE_CEILING: u32 = 10700;
             let surface =
                 faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
             assert!(

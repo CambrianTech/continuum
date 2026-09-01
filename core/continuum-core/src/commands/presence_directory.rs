@@ -142,7 +142,7 @@ impl ActionCommand for PresenceDirectory {
                 .integrations
                 .get("continuum_kind")
                 .cloned()
-                .unwrap_or_else(|| match slot.kind {
+                .unwrap_or_else(|| match slot.kind { // JUSTIFIED unwrap_or_else: no continuum_kind integration = derive the coarse kind from the neutral SenderKind — documented derivation, never invented
                     continuum_positron::SenderKind::Human => "human".to_string(),
                     _ => "agent".to_string(),
                 });
@@ -200,14 +200,14 @@ impl ActionCommand for PresenceDirectory {
                         .identity
                         .as_ref()
                         .map(|i| i.name.clone())
-                        .unwrap_or_else(|| {
+                        .unwrap_or_else(|| { // JUSTIFIED unwrap_or_else: uncarded peer renders the deliberately-unmistakable provisional label ([[fallbacks-are-illegal-fail-loud]])
                             crate::ipc::positron_source::provisional_sender_name(peer_uuid)
                         });
                     let kind = card
                         .identity
                         .as_ref()
                         .and_then(|i| i.integrations.get("continuum_kind").cloned())
-                        .unwrap_or_else(|| {
+                        .unwrap_or_else(|| { // JUSTIFIED unwrap_or_else: same documented kind derivation as the file-union arm above
                             if card.runtime == "interactive" {
                                 "human".to_string()
                             } else {

@@ -115,7 +115,7 @@ pub struct PersonaDemand {
 /// 2026-08-31, the meta-loop spiral). Both reserve comments named this exact
 /// registry pattern as the honest endgame; this is it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PersonaEmission {
+pub(crate) struct PersonaEmission {
     /// High-water mark, in tokens, of a completed generation. A turn that hit
     /// its output cap records DOUBLE its emission — the observation is a floor
     /// on true demand, not a measurement of it, and doubling is the growth
@@ -205,7 +205,7 @@ impl WorkingSetRegistry {
     /// so it records at double (a floor on true demand, and the growth path — see
     /// [`PersonaEmission::peak_tokens`]). Zero-token completions are the empty-
     /// completion fault's territory, not a data point to drag the peak with.
-    pub fn record_emission(&self, persona: Uuid, output_tokens: u32, hit_cap: bool, now_ms: u64) {
+    pub(crate) fn record_emission(&self, persona: Uuid, output_tokens: u32, hit_cap: bool, now_ms: u64) {
         if output_tokens == 0 {
             return;
         }
@@ -218,7 +218,7 @@ impl WorkingSetRegistry {
                 std::fs::create_dir_all(dir)?;
             }
             let tmp = path.with_extension("json.tmp");
-            std::fs::write(&tmp, serde_json::to_vec(&updated)?)?;
+            std::fs::write(&tmp, serde_json::to_vec(&updated)?)?; // BOUNDARY: disk — the per-persona emission.json durable format
             std::fs::rename(&tmp, &path)
         };
         if let Err(e) = write() {
@@ -261,7 +261,7 @@ impl WorkingSetRegistry {
     }
 
     /// This persona's observed reply size, for the reserve derivation and the glass box.
-    pub fn emission_of(&self, persona: Uuid) -> Option<PersonaEmission> {
+    pub(crate) fn emission_of(&self, persona: Uuid) -> Option<PersonaEmission> {
         self.emitted.get(&persona).map(|e| *e.value())
     }
 

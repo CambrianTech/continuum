@@ -84,13 +84,13 @@ crate::action_command! {
                 .ok_or_else(|| CommandError::Invalid(
                     "no identity: pass one, or wait for the operator self-peer this boot".into(),
                 ))?;
-            let name = p.name.unwrap_or_else(|| identity.clone());
+            let name = p.name.unwrap_or_else(|| identity.clone()); // JUSTIFIED unwrap_or_else: declared default — display name falls back to the identity itself
             // Same key resolution as the bridge (dev keys as the local default —
             // the boot rail starts livekit-server with them).
-            let api_key = std::env::var("LIVEKIT_API_KEY").unwrap_or_else(|_| "devkey".into());
+            let api_key = std::env::var("LIVEKIT_API_KEY").unwrap_or_else(|_| "devkey".into()); // JUSTIFIED unwrap_or_else: the boot rail starts livekit-server with these dev creds — same default as the bridge (agent.rs DEV_API_KEY)
             let api_secret =
-                std::env::var("LIVEKIT_API_SECRET").unwrap_or_else(|_| "secret".into());
-            let url = std::env::var("LIVEKIT_URL").unwrap_or_else(|_| "ws://localhost:7880".into());
+                std::env::var("LIVEKIT_API_SECRET").unwrap_or_else(|_| "secret".into()); // JUSTIFIED unwrap_or_else: dev-cred default paired with the boot rail (see api_key above)
+            let url = std::env::var("LIVEKIT_URL").unwrap_or_else(|_| "ws://localhost:7880".into()); // JUSTIFIED unwrap_or_else: the boot rail binds the SFU here; env overrides for remote SFUs
             let token = livekit_api::access_token::AccessToken::with_api_key(&api_key, &api_secret)
                 .with_identity(&identity)
                 .with_name(&name)
