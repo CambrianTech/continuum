@@ -758,7 +758,18 @@ start_livekit_rail() {
   #    release profile). Started BEFORE the core so the socket its bridge_client dials
   #    exists at boot.
   local BRIDGE_BIN="$CARGO_TARGET_DIR/release/livekit-bridge"
-  if [ ! -x "$BRIDGE_BIN" ]; then
+  # Rebuild when STALE, not just when missing (2026-09-01: an Aug 5 bridge ran
+  # against a core speaking the new binary media plane — "rarely-changing
+  # sidecar" is an assumption, not a contract; the deploy path must verify it
+  # like everything else, #194). Any source newer than the binary → rebuild +
+  # restart the running sidecar.
+  local BRIDGE_STALE=""
+  if [ -x "$BRIDGE_BIN" ]; then
+    BRIDGE_STALE=$(find "$REPO_ROOT/core/livekit-bridge" "$REPO_ROOT/core/livekit-protocol" \
+      \( -name '*.rs' -o -name 'Cargo.toml' \) -newer "$BRIDGE_BIN" 2>/dev/null | head -1)
+  fi
+  if [ ! -x "$BRIDGE_BIN" ] || [ -n "$BRIDGE_STALE" ]; then
+    [ -n "$BRIDGE_STALE" ] && echo "▶ livekit-bridge stale (newer: ${BRIDGE_STALE#"$REPO_ROOT"/}) — rebuilding"
     echo "▶ building livekit-bridge sidecar (release — links webrtc-sys, first build is slow)…"
     cargo build --manifest-path "$REPO_ROOT/core/livekit-bridge/Cargo.toml" --bin livekit-bridge --release \
       || { echo "⚠ livekit-bridge build failed — live avatar/voice unavailable"; return 0; }
@@ -767,6 +778,13 @@ start_livekit_rail() {
     if [ ! -x "$BRIDGE_BIN" ]; then
       echo "⚠ livekit-bridge still missing at $BRIDGE_BIN after rebuild (swept cache?) — live avatar/voice unavailable"
       return 0
+    fi
+    # A stale sidecar may still be running the OLD wire — stop it so the spawn
+    # block below relaunches the fresh binary (core's bridge_client redials).
+    if [ -n "$BRIDGE_STALE" ] && pgrep -f "livekit-bridge .*${SOCK}" >/dev/null 2>&1; then
+      echo "▶ restarting livekit-bridge with fresh binary"
+      pkill -f "livekit-bridge .*${SOCK}" 2>/dev/null || true
+      sleep 0.5
     fi
   fi
   if ! pgrep -f "livekit-bridge .*${SOCK}" >/dev/null 2>&1; then
