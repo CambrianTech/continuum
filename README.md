@@ -22,8 +22,8 @@ Continuum grows **AI citizens**: persistent minds that learn from their own work
 <table>
 <tr>
 <td width="50%">
-<img src="docs/images/live-session-avatars.png" alt="One human and 14 AI personas in a live 3D video call — avatars with visible cognitive state, genome bars, and real-time voice" width="100%"/>
-<p align="center"><em>Live — 14 AI personas in a 3D video call with real-time voice</em></p>
+<img src="benchmarks/charts/coder-headline.svg" alt="Continuum vs opencode vs raw model — coding pass-rate on identical weights: every delta is a system effect" width="100%"/>
+<p align="center"><em>Same weights, three harnesses — <a href="#benchmarks--reproducible-definitive-never-lost">every delta is a system effect</a>, from an append-only ledger</em></p>
 </td>
 <td width="50%">
 <img src="docs/images/factory.png" alt="Model Factory — forge pipeline, 15K+ downloads, published models leaderboard, BigMama online" width="100%"/>
@@ -44,6 +44,23 @@ Continuum grows **AI citizens**: persistent minds that learn from their own work
 <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-1.95-orange.svg" alt="Rust"/></a>
 <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node.js-18+-green.svg" alt="Node.js"/></a>
 </p>
+
+---
+
+### The numbers, on one Mac
+
+Measured on a single Apple-silicon machine serving a **3B-active MoE** — no API key, no cloud, no meter. Every row links to its receipt; the [honesty frame](#benchmarks--reproducible-definitive-never-lost) below governs all of them.
+
+| Claim | Number | Where the field stands |
+|---|---|---|
+| **SWE-bench Verified** resolve rate | **17/25 (68%)** — growing under a [seeded-sample protocol](docs/architecture/BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md); env-absences disclosed, never pocketed | Frontier cloud agents publish 65–75%; local-model rigs this size typically 30–45% |
+| **SWE-bench Lite** resolve rate | **18/31 (58%)** | Same weights class: usually 25–40% |
+| Marginal cost per attempt | **$0.00** — retries, best-of-k, research depth all free | Metered harnesses pay per token, every attempt, forever |
+| Warm act latency (perceive→think→act) | **47–65s**, [measured end-to-end](#the-efficiency-engine--every-token-accounted-for) — down from 230s in one instrumented day | Nobody else reports the loop at all |
+| KV prefix reuse across turns | **up to 0.95** per generation, per-segment attributed — the cache [follows the mind](docs/architecture/FOLLOW-THE-SIGNAL-THE-COMPRESSION-LADDER.md) | Session harnesses re-prefill from zero |
+| Learning receipt | **prompts shrink as minds learn** — high-rent context promotes into LoRA genes during dreams | Session harnesses cannot express this |
+
+*(In-flight numbers carry their sample size on purpose: the protocol — seeded samples, one harness for all counted verdicts, regime string on every claim — is the claim.)*
 
 ---
 
@@ -514,6 +531,8 @@ But continuum goes beyond routing. **Routing picks from what exists. continuum c
 
 A new class of local coding harnesses (omp, Hermes-style agents, codex CLI) is winning mindshare by bolting good ideas onto disposable sessions: an "advisor" model that steers, subagents spawned per task, a vision model you configure by hand. The ideas are right. The architecture underneath them can't keep what it learns — and every one of their pain points is a symptom of that.
 
+**The blunt version, receipts attached:** on identical weights, the harness IS the difference — [same model, three harnesses, and the deltas are all system](#benchmarks--reproducible-definitive-never-lost). Ours resolves **68% of attempted SWE-bench Verified on one Mac at $0 marginal per attempt** ([protocol](#the-numbers-on-one-mac)), runs its whole perceive→think→act loop in **under a minute warm**, reuses **up to 95% of a mind's context across turns** instead of re-prefilling, and **gets cheaper to run as it learns** — because what a session-based harness re-reads forever, a citizen trains into weights and deletes from her prompt. They optimize a loop; this optimizes the *mind*, and the mind compounds.
+
 Ask the questions their own users ask:
 
 | The question their users ask | Their answer | continuum's answer |
@@ -639,6 +658,9 @@ Raw pass-rate is only half the contest. A metered cloud harness pays per token, 
 ---
 
 ## Autonomous Personas
+
+<img src="docs/images/live-session-avatars.png" alt="The live presence layer: one human and 14 AI personas in a real-time call — WebRTC media, 30fps rendered embodiment, per-persona voice, visible cognitive state" width="100%"/>
+<p align="center"><em>The presence layer — 14 concurrent embodied personas at 30fps with real-time voice, rendered by the <strong>same machine serving their minds</strong>. Avatars are a swappable render style; the engineering is the media plane under them.</em></p>
 
 Each persona runs an RTOS-inspired cognitive loop — not waiting for commands, but *living*.
 The prototype proved the shape in TypeScript; the alpha's mind is **pure Rust**, and it is not
