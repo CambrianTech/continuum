@@ -92,6 +92,87 @@ pub fn attention_head_count_kv_per_layer(ct: &Content, arch: &str) -> Option<Vec
     }
 }
 
+/// `{arch}.attention.head_count_kv` in its SCALAR form — uniform models.
+/// `None` for the per-layer array form (see
+/// [`attention_head_count_kv_per_layer`]) or a missing key.
+pub fn attention_head_count_kv_scalar(ct: &Content, arch: &str) -> Option<u32> {
+    match ct
+        .metadata
+        .get(&format!("{arch}.attention.head_count_kv"))?
+    {
+        Value::Array(_) => None,
+        v => v.to_u32().ok(),
+    }
+}
+
+/// `{arch}.attention.head_count` — the query-head count. Needed only as the
+/// divisor when deriving head_dim from `embedding_length` (exporters that
+/// omit `attention.key_length`).
+pub fn attention_head_count(ct: &Content, arch: &str) -> Option<u32> {
+    ct.metadata
+        .get(&format!("{arch}.attention.head_count"))
+        .and_then(|v| v.to_u32().ok())
+}
+
+/// `{arch}.attention.key_length` — the per-head key dimension, written by
+/// exporters whose head_dim ≠ embedding/heads (GQA with widened heads, MLA).
+pub fn attention_key_length(ct: &Content, arch: &str) -> Option<u32> {
+    ct.metadata
+        .get(&format!("{arch}.attention.key_length"))
+        .and_then(|v| v.to_u32().ok())
+}
+
+/// `{arch}.attention.value_length` — per-head value dimension; absent means
+/// "same as key_length" for every exporter observed.
+pub fn attention_value_length(ct: &Content, arch: &str) -> Option<u32> {
+    ct.metadata
+        .get(&format!("{arch}.attention.value_length"))
+        .and_then(|v| v.to_u32().ok())
+}
+
+/// `{arch}.embedding_length` — the model width; head_dim fallback divisor.
+pub fn embedding_length(ct: &Content, arch: &str) -> Option<u32> {
+    ct.metadata
+        .get(&format!("{arch}.embedding_length"))
+        .and_then(|v| v.to_u32().ok())
+}
+
+/// The artifact's OWN f16 KV bytes/token — Σ over layers of
+/// `kv_heads × (key_len + value_len) × 2 bytes` — from the header's declared
+/// geometry, no family knowledge, no size heuristic.
+///
+/// Why this exists (measured 2026-09-01): the planner's `weights/80_000`
+/// KV-rate heuristic read a 35B fine-grained MoE at ~244 KB/token where the
+/// artifact's real geometry is ~61 KB f16 (~30 KB served at q8_0, confirmed
+/// against llama-server's own prompt-cache entry sizes). Expert weights add
+/// ZERO KV, so any weights-scaled guess over-charges MoE models ~4×; the
+/// inflation starved the host prompt cache to one mind's worth (686 MiB) AND
+/// capped the lane grant below resident demand — one wrong constant, both
+/// symptoms. The header knows; ask the header.
+///
+/// Per-layer `head_count_kv` arrays (hybrid recurrent models) are summed with
+/// zeros counting zero — recurrent layers hold no per-token KV, which is
+/// exactly what their zero declares.
+pub fn kv_bytes_per_token_f16(ct: &Content, arch: &str) -> Option<u64> {
+    let key_len = attention_key_length(ct, arch)
+        .or_else(|| {
+            let width = embedding_length(ct, arch)?;
+            let heads = attention_head_count(ct, arch)?;
+            (heads > 0).then(|| width / heads)
+        })? as u64;
+    let value_len = attention_value_length(ct, arch).map(|v| v as u64).unwrap_or(key_len); // unwrap_or: absent value_length means symmetric heads — every observed exporter's convention, not a guess over a present-but-unreadable key
+    let per_head = (key_len + value_len).saturating_mul(2); // f16 = 2 bytes/element
+    let total_kv_heads: u64 = match attention_head_count_kv_per_layer(ct, arch) {
+        Some(per_layer) => per_layer.into_iter().map(|h| h as u64).sum(),
+        None => {
+            let uniform = attention_head_count_kv_scalar(ct, arch)? as u64;
+            uniform.saturating_mul(block_count(ct, arch)? as u64)
+        }
+    };
+    let rate = total_kv_heads.saturating_mul(per_head);
+    (rate > 0).then_some(rate)
+}
+
 /// `{arch}.expert_count` — the total number of routed experts in an MoE
 /// model (e.g. 896 for a K3-class model, 128 for a Qwen3-MoE). `None` on a
 /// dense model that never wrote the key — the caller's cue to treat the
@@ -191,6 +272,60 @@ mod tests {
 
         let empty = content_with(vec![]);
         assert_eq!(architecture(&empty), None);
+    }
+
+    // what this catches: the KV rate comes from the artifact's DECLARED
+    // geometry, never a weights-scaled guess (2026-09-01: the guess read a
+    // 35B MoE at ~4× its real rate — experts add weights, zero KV — which
+    // starved --cache-ram to one mind and under-granted lanes). Three shapes:
+    // uniform scalar GQA, per-layer array with recurrent zeros (each zero
+    // contributes zero KV), and the key_length-absent fallback (head_dim =
+    // embedding/heads). Missing geometry = None, never a fabricated rate.
+    #[test]
+    fn kv_rate_reads_declared_geometry_for_all_three_header_shapes() {
+        // Uniform GQA: 48 layers × 4 kv-heads × (128+128) dims × 2 bytes.
+        let uniform = content_with(vec![
+            ("qwen3.block_count", Value::U32(48)),
+            ("qwen3.attention.head_count_kv", Value::U32(4)),
+            ("qwen3.attention.key_length", Value::U32(128)),
+        ]);
+        assert_eq!(
+            kv_bytes_per_token_f16(&uniform, "qwen3"),
+            Some(48 * 4 * (128 + 128) * 2)
+        );
+        // Per-layer array with recurrent zeros: only the 2 attention layers
+        // (8 heads each) hold KV; the zeros are SSM layers and count nothing.
+        let hybrid = content_with(vec![
+            ("kimi.block_count", Value::U32(4)),
+            (
+                "kimi.attention.head_count_kv",
+                Value::Array(vec![
+                    Value::U32(0),
+                    Value::U32(8),
+                    Value::U32(0),
+                    Value::U32(8),
+                ]),
+            ),
+            ("kimi.attention.key_length", Value::U32(64)),
+        ]);
+        assert_eq!(
+            kv_bytes_per_token_f16(&hybrid, "kimi"),
+            Some(16 * (64 + 64) * 2)
+        );
+        // key_length absent → head_dim = embedding / head_count.
+        let derived = content_with(vec![
+            ("llama.block_count", Value::U32(2)),
+            ("llama.attention.head_count_kv", Value::U32(2)),
+            ("llama.attention.head_count", Value::U32(32)),
+            ("llama.embedding_length", Value::U32(4096)),
+        ]);
+        assert_eq!(
+            kv_bytes_per_token_f16(&derived, "llama"),
+            Some(2 * 2 * (128 + 128) * 2)
+        );
+        // No geometry at all → None (the weights heuristic stands upstream).
+        let bare = content_with(vec![("x.block_count", Value::U32(10))]);
+        assert_eq!(kv_bytes_per_token_f16(&bare, "x"), None);
     }
 
     // what this catches: THE reason this module exists — the context_length
