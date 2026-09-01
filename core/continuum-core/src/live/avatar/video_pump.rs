@@ -145,7 +145,7 @@ pub async fn spawn_avatar_video_pump(
                 .await;
 
             match manager
-                .publish_video_frame(&call_id, &identity, &frame.data, frame.width, frame.height)
+                .publish_video_frame(&call_id, &identity, frame.data, frame.width, frame.height)
                 .await
             {
                 Ok(()) => {

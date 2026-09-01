@@ -64,6 +64,10 @@ pub struct LiveKitAgentManager {
     /// Media-plane queue head. Replaced on every reconnect; the old pump thread
     /// exits when its receiver disconnects.
     media_tx: Mutex<Option<std::sync::mpsc::SyncSender<MediaFrame>>>,
+    /// Outbound binary media channels: (call, user, kind) → channel, bound once
+    /// via `OpenMediaOut` — identity leaves the frame path entirely.
+    out_channels: Mutex<std::collections::HashMap<(String, String, u8), u16>>,
+    next_out_channel: AtomicU64,
     /// Frames dropped because the media queue was full (bridge stalled). Loud
     /// via rate-limited warn in [`Self::send_media`]; MUST stay 0 steady-state.
     media_dropped: Arc<AtomicU64>,
@@ -79,12 +83,51 @@ pub struct LiveKitAgentManager {
     reader_started: Mutex<bool>,
 }
 
-/// One queued media-plane frame: fully wire-encoded (envelope + payload), ready
-/// for a single `write_all`. Encoding happens on the caller's thread so the
-/// pump does nothing but move bytes to the kernel.
+/// One queued media-plane frame on the BINARY plane (2026-09-01): a fixed
+/// 8-byte header ([len][magic][kind][channel]), optional 4-byte video dims,
+/// and the payload MOVED from the producer — at 30fps HD RGBA the payload is
+/// ~3.7MB and is never copied after the pump hands it over (forward-on, no
+/// copies — the airc law). The writer emits the parts back-to-back; identity
+/// strings bound once at channel open, never per frame.
 struct MediaFrame {
-    frame: Vec<u8>,
+    header: [u8; 8],
+    dims: Option<[u8; 4]>,
+    payload: Vec<u8>,
     kind: &'static str,
+}
+
+impl MediaFrame {
+    fn new(
+        kind: continuum_bridge_protocol::MediaKind,
+        channel: u16,
+        dims: Option<(u16, u16)>,
+        payload: Vec<u8>,
+        label: &'static str,
+    ) -> Self {
+        let dim_len = if dims.is_some() { 4 } else { 0 };
+        let total = 1 + 1 + 2 + dim_len + payload.len();
+        let mut header = [0u8; 8];
+        header[0..4].copy_from_slice(&(total as u32).to_le_bytes());
+        header[4] = continuum_bridge_protocol::MEDIA_MAGIC;
+        header[5] = kind as u8;
+        header[6..8].copy_from_slice(&channel.to_le_bytes());
+        let dims = dims.map(|(w, h)| {
+            let mut d = [0u8; 4];
+            d[0..2].copy_from_slice(&w.to_le_bytes());
+            d[2..4].copy_from_slice(&h.to_le_bytes());
+            d
+        });
+        Self {
+            header,
+            dims,
+            payload,
+            kind: label,
+        }
+    }
+
+    fn wire_len(&self) -> usize {
+        8 + self.dims.map_or(0, |_| 4) + self.payload.len()
+    }
 }
 
 /// Media queue depth. Sized for burst absorption (~a second of mixed PCM chunks
@@ -120,6 +163,8 @@ impl LiveKitAgentManager {
             writer: Arc::new(Mutex::new(None)),
             pending: Arc::new(Mutex::new(HashMap::new())),
             media_tx: Mutex::new(None),
+            out_channels: Mutex::new(std::collections::HashMap::new()),
+            next_out_channel: AtomicU64::new(1),
             media_dropped: Arc::new(AtomicU64::new(0)),
             bridge_socket_path,
             livekit_url,
@@ -189,31 +234,56 @@ impl LiveKitAgentManager {
     /// Grid contract: this is the LOCAL media plane. A remote node never speaks
     /// this socket — it acquires a media handle via a command (grid calls are
     /// commands) and its bytes arrive through that handle's plane.
+    /// Bind (once) the outbound binary channel for `(call, user, kind)`. The
+    /// control round-trip happens on the FIRST frame of a stream; every frame
+    /// after rides the binary plane with no identity and no JSON.
+    fn ensure_out_channel(
+        &self,
+        call_id: &str,
+        user_id: &str,
+        kind: continuum_bridge_protocol::MediaKind,
+    ) -> Result<u16, String> {
+        let key = (call_id.to_string(), user_id.to_string(), kind as u8);
+        if let Some(ch) = self.out_channels.lock().unwrap().get(&key) {
+            return Ok(*ch);
+        }
+        let channel = self.next_out_channel.fetch_add(1, Ordering::Relaxed) as u16;
+        self.send_command(
+            BridgeCommand::OpenMediaOut {
+                channel,
+                kind,
+                call_id: call_id.to_string(),
+                user_id: user_id.to_string(),
+            },
+            None,
+        )?;
+        self.out_channels.lock().unwrap().insert(key, channel);
+        crate::probe!(
+            class = "media.pump.channel_open",
+            module = "livekit-bridge",
+            channel = channel as u64,
+            "outbound media channel bound — identity once, binary frames from here on"
+        );
+        Ok(channel)
+    }
+
     fn send_media(
         &self,
-        command: BridgeCommand,
-        binary: &[u8],
-        kind: &'static str,
+        kind: continuum_bridge_protocol::MediaKind,
+        channel: u16,
+        dims: Option<(u16, u16)>,
+        payload: Vec<u8>,
+        label: &'static str,
     ) -> Result<(), String> {
         self.ensure_connected()?;
-
-        let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
-        let mut envelope =
-            serde_json::to_value(&command).map_err(|e| format!("Serialize error: {}", e))?;
-        envelope
-            .as_object_mut()
-            .unwrap()
-            .insert("request_id".to_string(), request_id.into());
-        let json_bytes =
-            serde_json::to_vec(&envelope).map_err(|e| format!("Serialize error: {}", e))?;
-        let frame = continuum_bridge_protocol::encode_frame(&json_bytes, Some(binary));
-
         let tx_guard = self.media_tx.lock().unwrap();
         let Some(tx) = tx_guard.as_ref() else {
             return Err("Not connected".to_string());
         };
-        let frame_bytes = frame.len();
-        match tx.try_send(MediaFrame { frame, kind }) {
+        let item = MediaFrame::new(kind, channel, dims, payload, label);
+        let frame_bytes = item.wire_len();
+        let kind = label;
+        match tx.try_send(item) {
             Ok(()) => {
                 crate::probe!(
                     class = "media.pump.enqueue",
@@ -459,17 +529,20 @@ impl LiveKitAgentManager {
         // Bevy animation (stays in core)
         self.trigger_speech_animation(user_id, text, &synthesis.samples, sample_rate, duration_ms);
 
-        // Send PCM audio to bridge for LiveKit publishing — media plane,
-        // fire-and-forget: the speak turn must never block behind the bridge.
-        let pcm_bytes = pcm_le_bytes(&synthesis.samples);
-
+        // Send PCM audio to bridge for LiveKit publishing — BINARY media
+        // plane, fire-and-forget: identity bound once, payload moved (never
+        // copied), the speak turn never blocks behind the bridge.
+        let _ = num_samples;
+        let channel = self.ensure_out_channel(
+            call_id,
+            user_id,
+            continuum_bridge_protocol::MediaKind::AudioPcm,
+        )?;
         self.send_media(
-            BridgeCommand::Speak {
-                call_id: call_id.to_string(),
-                user_id: user_id.to_string(),
-                sample_count: num_samples as u32,
-            },
-            &pcm_bytes,
+            continuum_bridge_protocol::MediaKind::AudioPcm,
+            channel,
+            None,
+            pcm_le_bytes(&synthesis.samples),
             "speak-pcm",
         )?;
 
@@ -484,14 +557,16 @@ impl LiveKitAgentManager {
         user_id: &str,
         samples: Vec<i16>,
     ) -> Result<(), String> {
-        let pcm_bytes = pcm_le_bytes(&samples);
+        let channel = self.ensure_out_channel(
+            call_id,
+            user_id,
+            continuum_bridge_protocol::MediaKind::AudioPcm,
+        )?;
         self.send_media(
-            BridgeCommand::InjectAudio {
-                call_id: call_id.to_string(),
-                user_id: user_id.to_string(),
-                sample_count: samples.len() as u32,
-            },
-            &pcm_bytes,
+            continuum_bridge_protocol::MediaKind::AudioPcm,
+            channel,
+            None,
+            pcm_le_bytes(&samples),
             "inject-audio",
         )
     }
@@ -508,17 +583,22 @@ impl LiveKitAgentManager {
         &self,
         call_id: &str,
         user_id: &str,
-        rgba: &[u8],
+        rgba: Vec<u8>,
         width: u32,
         height: u32,
     ) -> Result<(), String> {
+        // BINARY plane: [w][h] ride as a 4-byte header part; the ~3.7MB RGBA
+        // payload is MOVED end-to-end — pump → queue → kernel, zero copies
+        // (30fps × N personas forbids any other answer).
+        let channel = self.ensure_out_channel(
+            call_id,
+            user_id,
+            continuum_bridge_protocol::MediaKind::VideoRgba,
+        )?;
         self.send_media(
-            BridgeCommand::PublishVideoFrame {
-                call_id: call_id.to_string(),
-                user_id: user_id.to_string(),
-                width,
-                height,
-            },
+            continuum_bridge_protocol::MediaKind::VideoRgba,
+            channel,
+            Some((width as u16, height as u16)),
             rgba,
             "video-frame",
         )
@@ -555,16 +635,21 @@ impl LiveKitAgentManager {
         handle: &str,
         samples: Vec<i16>,
     ) -> Result<(), String> {
+        // Ambient stays on the COMMAND plane: the bridge's ambient sink is a
+        // no-op ack today (server.rs dispatches InjectAmbient to `{"ack"}`),
+        // so this is not a live per-frame path. When the ambient mixer gets
+        // built bridge-side it joins the binary plane with its own MediaKind —
+        // do NOT stream a real 50fps bed through here.
         let pcm_bytes = pcm_le_bytes(&samples);
-        self.send_media(
+        self.send_command(
             BridgeCommand::InjectAmbient {
                 call_id: call_id.to_string(),
                 handle: handle.to_string(),
                 sample_count: samples.len() as u32,
             },
-            &pcm_bytes,
-            "inject-ambient",
+            Some(&pcm_bytes),
         )
+        .map(|_| ())
     }
 
     pub async fn remove_ambient_source(&self, call_id: &str, handle: &str) -> Result<(), String> {
@@ -682,7 +767,16 @@ fn media_pump_loop(
         let mut guard = writer.lock().unwrap();
         match guard.as_mut() {
             Some(stream) => {
-                if let Err(e) = stream.write_all(&item.frame) {
+                // Parts back-to-back — the payload was MOVED here, never
+                // copied into a combined frame (30fps HD forbids it).
+                let write = stream
+                    .write_all(&item.header)
+                    .and_then(|_| match &item.dims {
+                        Some(d) => stream.write_all(d),
+                        None => Ok(()),
+                    })
+                    .and_then(|_| stream.write_all(&item.payload));
+                if let Err(e) = write {
                     clog_warn!("🌉 media pump write failed ({}): {}", item.kind, e);
                     *guard = None;
                     return;
@@ -696,7 +790,7 @@ fn media_pump_loop(
                     class = "media.pump.write",
                     module = "livekit-bridge",
                     kind = item.kind,
-                    bytes = item.frame.len(),
+                    bytes = item.wire_len(),
                     write_us = start.elapsed().as_micros() as u64
                 );
             }
@@ -708,12 +802,24 @@ fn media_pump_loop(
     }
 }
 
+/// One bound INBOUND media channel: identity strings held once as `Arc<str>`
+/// so the per-frame path clones two pointers, never bytes.
+struct InMediaBinding {
+    kind: continuum_bridge_protocol::MediaKind,
+    call_id: std::sync::Arc<str>,
+    speaker_id: std::sync::Arc<str>,
+    speaker_name: std::sync::Arc<str>,
+    frames: u64,
+}
+
 fn reader_loop(mut stream: UnixStream, pending: Arc<Mutex<HashMap<u64, Arc<PendingRequest>>>>) {
     let mut buf = vec![0u8; 4 * 1024 * 1024];
     let mut data = Vec::new();
 
     // Audio processing state per speaker (call_id + speaker_id → VAD state)
     let mut audio_processors: HashMap<String, AudioProcessor> = HashMap::new();
+    // Inbound binary media channels (bound once via MediaChannelOpened).
+    let mut in_channels: HashMap<u16, InMediaBinding> = HashMap::new();
 
     loop {
         let n = match stream.read(&mut buf) {
@@ -736,6 +842,78 @@ fn reader_loop(mut stream: UnixStream, pending: Arc<Mutex<HashMap<u64, Arc<Pendi
                 break;
             }
 
+            // BINARY MEDIA plane first (2026-09-01): one byte decides, the
+            // frame is processed as a BORROW of the socket buffer — no
+            // to_vec, no JSON, no double-parse. The old shape parsed every
+            // 20ms audio frame as JSON TWICE (response-then-event) with four
+            // identity strings each; at 50fps/speaker that was the
+            // eat-the-cpu-at-the-boundary mistake the airc design forbids.
+            if let Some((kind, channel, payload)) =
+                continuum_bridge_protocol::parse_media_frame(&data[4..4 + frame_len])
+            {
+                match in_channels.get_mut(&channel) {
+                    Some(binding) if binding.kind != kind => {
+                        clog_warn!(
+                            "🌉 media frame kind {:?} ≠ bound {:?} on ch {} — dropped",
+                            kind,
+                            binding.kind,
+                            channel
+                        );
+                    }
+                    Some(binding) => match kind {
+                        continuum_bridge_protocol::MediaKind::AudioPcm => {
+                            binding.frames += 1;
+                            let samples: Vec<i16> = payload
+                                .chunks_exact(2)
+                                .map(|c| i16::from_le_bytes([c[0], c[1]]))
+                                .collect();
+                            if let Some(tx) = HUMAN_AUDIO_TX.get() {
+                                let saturated = tx
+                                    .try_send(HumanAudioChunk {
+                                        call_id: binding.call_id.clone(),
+                                        user_id: binding.speaker_id.clone(),
+                                        samples,
+                                    })
+                                    .is_err();
+                                if saturated && binding.frames % 500 == 1 {
+                                    clog_warn!(
+                                        "🎤 human-audio forwarder saturated — dropping frames from '{}' to stay current",
+                                        binding.speaker_name
+                                    );
+                                }
+                            } else if binding.frames == 1 {
+                                clog_warn!(
+                                    "🎤 no human-audio forwarder installed — speech from '{}' cannot reach STT",
+                                    binding.speaker_name
+                                );
+                            }
+                        }
+                        continuum_bridge_protocol::MediaKind::VideoJpeg => {
+                            if let Some((_w, _h, jpeg)) =
+                                continuum_bridge_protocol::parse_video_payload(payload)
+                            {
+                                crate::media::perception_ingest::try_enqueue(
+                                    crate::media::perception_ingest::IngestFrame {
+                                        call_id: binding.call_id.to_string(),
+                                        speaker_id: binding.speaker_id.to_string(),
+                                        jpeg: jpeg.to_vec(),
+                                        mime: "image/jpeg".to_string(),
+                                    },
+                                );
+                            }
+                        }
+                        continuum_bridge_protocol::MediaKind::VideoRgba => {
+                            clog_warn!("🌉 VideoRgba is outbound-only — dropped (ch {channel})");
+                        }
+                    },
+                    None => {
+                        clog_warn!("🌉 media frame on unbound in-channel {channel} — dropped");
+                    }
+                }
+                data.drain(..4 + frame_len);
+                continue;
+            }
+
             let frame_data = data[4..4 + frame_len].to_vec();
             data.drain(..4 + frame_len);
 
@@ -754,7 +932,7 @@ fn reader_loop(mut stream: UnixStream, pending: Arc<Mutex<HashMap<u64, Arc<Pendi
 
             // Try as BridgeEvent (pushed from bridge)
             if let Ok(event) = serde_json::from_slice::<BridgeEvent>(json_bytes) {
-                handle_bridge_event(event, binary, &mut audio_processors);
+                handle_bridge_event(event, binary, &mut audio_processors, &mut in_channels);
             }
         }
     }
@@ -764,8 +942,8 @@ fn reader_loop(mut stream: UnixStream, pending: Arc<Mutex<HashMap<u64, Arc<Pendi
 /// hopping from the bridge reader THREAD into async land where the CallServer
 /// lives. Bounded; a saturated channel drops frames (stay-current rule).
 pub struct HumanAudioChunk {
-    pub call_id: String,
-    pub user_id: String,
+    pub call_id: std::sync::Arc<str>,
+    pub user_id: std::sync::Arc<str>,
     pub samples: Vec<i16>,
 }
 
@@ -781,22 +959,24 @@ pub fn install_human_audio_forwarder(tx: tokio::sync::mpsc::Sender<HumanAudioChu
     let _ = HUMAN_AUDIO_TX.set(tx);
 }
 
-/// Per-speaker audio processing state (VAD frame accumulation).
+/// Per-speaker audio processing state for the LEGACY JSON AudioFrame arm
+/// (kept as wire-compat while older bridges drain; the binary plane's
+/// per-channel state lives in [`InMediaBinding`]). track_sid was dropped when
+/// the accumulate-into-VAD path moved to the CallServer — routing needs only
+/// call + speaker identity.
 struct AudioProcessor {
     call_id: String,
     speaker_id: String,
     speaker_name: String,
-    track_sid: String,
     frame_count: u64,
 }
 
 impl AudioProcessor {
-    fn new(call_id: String, speaker_id: String, speaker_name: String, track_sid: String) -> Self {
+    fn new(call_id: String, speaker_id: String, speaker_name: String) -> Self {
         Self {
             call_id,
             speaker_id,
             speaker_name,
-            track_sid,
             frame_count: 0,
         }
     }
@@ -807,13 +987,43 @@ fn handle_bridge_event(
     event: BridgeEvent,
     binary: Option<&[u8]>,
     processors: &mut HashMap<String, AudioProcessor>,
+    in_channels: &mut HashMap<u16, InMediaBinding>,
 ) {
     match event {
+        BridgeEvent::MediaChannelOpened {
+            channel,
+            kind,
+            call_id,
+            speaker_id,
+            speaker_name,
+            track_sid: _,
+        } => {
+            // Identity binds ONCE per (speaker, kind); every subsequent frame
+            // on this channel is header + payload only. The Strings arriving
+            // here are the LAST per-speaker identity allocations on this path.
+            clog_info!(
+                "🌉 media in-channel {} bound: {:?} from '{}' in call {}",
+                channel,
+                kind,
+                speaker_name,
+                &call_id[..8.min(call_id.len())]
+            );
+            in_channels.insert(
+                channel,
+                InMediaBinding {
+                    kind,
+                    call_id: call_id.into(),
+                    speaker_id: speaker_id.into(),
+                    speaker_name: speaker_name.into(),
+                    frames: 0,
+                },
+            );
+        }
         BridgeEvent::AudioFrame {
             call_id,
             speaker_id,
             speaker_name,
-            track_sid,
+            track_sid: _,
             sample_count: _,
         } => {
             // Decode PCM samples from binary payload
@@ -832,12 +1042,7 @@ fn handle_bridge_event(
                     speaker_name,
                     &call_id[..8.min(call_id.len())]
                 );
-                AudioProcessor::new(
-                    call_id.clone(),
-                    speaker_id.clone(),
-                    speaker_name.clone(),
-                    track_sid.clone(),
-                )
+                AudioProcessor::new(call_id.clone(), speaker_id.clone(), speaker_name.clone())
             });
 
             processor.frame_count += 1;
@@ -864,8 +1069,8 @@ fn handle_bridge_event(
             // rule the transcription semaphore applies downstream).
             if let Some(tx) = HUMAN_AUDIO_TX.get() {
                 let chunk = HumanAudioChunk {
-                    call_id: processor.call_id.clone(),
-                    user_id: processor.speaker_id.clone(),
+                    call_id: processor.call_id.as_str().into(),
+                    user_id: processor.speaker_id.as_str().into(),
                     samples,
                 };
                 if tx.try_send(chunk).is_err() && processor.frame_count % 500 == 1 {

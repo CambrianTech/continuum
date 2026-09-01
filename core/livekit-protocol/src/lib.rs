@@ -131,6 +131,18 @@ pub enum BridgeCommand {
     SnapshotParticipant {
         identity: String,
     },
+
+    /// Bind a CORE-assigned outbound media channel (binary plane, 2026-09-01):
+    /// after this, frames for `(call_id, user_id, kind)` arrive as
+    /// [`MEDIA_MAGIC`] binary frames on `channel` — identity once, then
+    /// streaming. Replaces per-frame `Speak`/`InjectAudio`/`PublishVideoFrame`
+    /// JSON envelopes for continuous media.
+    OpenMediaOut {
+        channel: u16,
+        kind: MediaKind,
+        call_id: String,
+        user_id: String,
+    },
 }
 
 // =============================================================================
@@ -159,6 +171,20 @@ pub enum BridgeEvent {
         speaker_name: String,
         width: u32,
         height: u32,
+    },
+
+    /// Bind a BRIDGE-assigned inbound media channel (binary plane,
+    /// 2026-09-01): after this, `(call_id, speaker_id, kind)`'s media arrives
+    /// as [`MEDIA_MAGIC`] binary frames on `channel` — identity once, then
+    /// streaming. Replaces the per-frame `AudioFrame`/`VideoFrame` JSON
+    /// envelopes for continuous media.
+    MediaChannelOpened {
+        channel: u16,
+        kind: MediaKind,
+        call_id: String,
+        speaker_id: String,
+        speaker_name: String,
+        track_sid: String,
     },
 
     /// Human participant connected to the LiveKit room.
@@ -240,6 +266,99 @@ pub struct BridgeResponse {
     /// Command-specific response data.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<serde_json::Value>,
+}
+
+// =============================================================================
+// BINARY MEDIA PLANE — handle + stream, never JSON-per-frame (2026-09-01)
+// =============================================================================
+//
+// Continuous media (audio PCM, avatar/video frames — and tomorrow, 3D/game
+// state streams) must NEVER pay a JSON envelope per frame. The old shape —
+// `{type:"AudioFrame", call_id:"<uuid>", speaker_id:"<uuid>", …}` serialized
+// and DOUBLE-parsed 50×/sec/speaker, and `PublishVideoFrame` JSON wrapping
+// ~1MB of RGBA 30×/sec/persona — is the handle-less anti-pattern: identity
+// restated per frame, parse cost per frame, allocation per frame.
+//
+// The plane: identity binds ONCE on the control plane (a JSON channel-open
+// message), yielding a u16 CHANNEL handle; media then flows as tight binary
+// frames. A JSON frame always begins with `{` (0x7B); a media frame begins
+// with [`MEDIA_MAGIC`] — one byte disambiguates the planes on the same socket
+// with zero scanning.
+//
+//   [len: u32 LE] [0xB1] [kind: u8] [channel: u16 LE] [payload…]
+//     kind 1 = AUDIO_PCM:  payload = i16 LE mono PCM at the core rate (16k)
+//     kind 2 = VIDEO_RGBA: payload = [w: u16 LE][h: u16 LE][rgba bytes]
+//     kind 3 = VIDEO_JPEG: payload = [w: u16 LE][h: u16 LE][jpeg bytes]
+//
+// Channel id spaces are PER-DIRECTION (each sender assigns its own ids and
+// announces the binding), so no negotiation and no races. Receivers hold a
+// tiny channel→binding map and touch no strings on the frame path.
+
+/// First byte of a binary media frame. JSON frames start with `{` (0x7B).
+pub const MEDIA_MAGIC: u8 = 0xB1;
+
+/// Media payload kinds for the binary plane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaKind {
+    AudioPcm = 1,
+    VideoRgba = 2,
+    VideoJpeg = 3,
+}
+
+impl MediaKind {
+    pub fn from_u8(b: u8) -> Option<Self> {
+        match b {
+            1 => Some(Self::AudioPcm),
+            2 => Some(Self::VideoRgba),
+            3 => Some(Self::VideoJpeg),
+            _ => None,
+        }
+    }
+}
+
+/// Encode one binary media frame into `buf` (cleared first, capacity reused —
+/// the caller keeps one buffer per stream so the frame path allocates nothing
+/// once warm).
+pub fn encode_media_frame_into(buf: &mut Vec<u8>, kind: MediaKind, channel: u16, payload: &[u8]) {
+    buf.clear();
+    let total = 1 + 1 + 2 + payload.len();
+    buf.reserve(4 + total);
+    buf.extend_from_slice(&(total as u32).to_le_bytes());
+    buf.push(MEDIA_MAGIC);
+    buf.push(kind as u8);
+    buf.extend_from_slice(&channel.to_le_bytes());
+    buf.extend_from_slice(payload);
+}
+
+/// Parse a frame (length prefix already stripped) as a binary media frame.
+/// `None` = not a media frame (fall through to the JSON plane).
+pub fn parse_media_frame(frame: &[u8]) -> Option<(MediaKind, u16, &[u8])> {
+    if frame.len() < 4 || frame[0] != MEDIA_MAGIC {
+        return None;
+    }
+    let kind = MediaKind::from_u8(frame[1])?;
+    let channel = u16::from_le_bytes([frame[2], frame[3]]);
+    Some((kind, channel, &frame[4..]))
+}
+
+/// Prepend a `[w][h]` dimension header to a video payload (RGBA or JPEG).
+pub fn encode_video_payload_into(buf: &mut Vec<u8>, width: u16, height: u16, pixels: &[u8]) {
+    buf.clear();
+    buf.reserve(4 + pixels.len());
+    buf.extend_from_slice(&width.to_le_bytes());
+    buf.extend_from_slice(&height.to_le_bytes());
+    buf.extend_from_slice(pixels);
+}
+
+/// Split a video payload into `(width, height, pixels)`.
+pub fn parse_video_payload(payload: &[u8]) -> Option<(u16, u16, &[u8])> {
+    if payload.len() < 4 {
+        return None;
+    }
+    let w = u16::from_le_bytes([payload[0], payload[1]]);
+    let h = u16::from_le_bytes([payload[2], payload[3]]);
+    Some((w, h, &payload[4..]))
 }
 
 // =============================================================================
@@ -336,6 +455,34 @@ mod tests {
         let (decoded_json, decoded_bin) = decode_frame(&frame[4..4 + len]);
         assert_eq!(decoded_json, json);
         assert_eq!(decoded_bin.unwrap(), &audio[..]);
+    }
+
+    #[test]
+    fn media_frame_roundtrip_and_json_disambiguation() {
+        // what this catches: the binary media plane and the JSON plane share
+        // one socket — a media frame must round-trip losslessly AND a JSON
+        // frame must NEVER parse as media (0xB1 vs '{' is the whole contract).
+        let mut buf = Vec::new();
+        let pcm: Vec<u8> = (0u16..320).flat_map(|s| s.to_le_bytes()).collect();
+        encode_media_frame_into(&mut buf, MediaKind::AudioPcm, 7, &pcm);
+        let len = u32::from_le_bytes(buf[0..4].try_into().unwrap()) as usize;
+        let (kind, channel, payload) = parse_media_frame(&buf[4..4 + len]).unwrap();
+        assert_eq!(kind, MediaKind::AudioPcm);
+        assert_eq!(channel, 7);
+        assert_eq!(payload, &pcm[..]);
+
+        // JSON frames fall through to the JSON plane.
+        assert!(parse_media_frame(b"{\"type\":\"Speak\"}").is_none());
+        // Unknown kind byte refuses rather than mis-routing.
+        let mut bogus = buf[4..4 + len].to_vec();
+        bogus[1] = 99;
+        assert!(parse_media_frame(&bogus).is_none());
+
+        // Video payload dims survive the [w][h] header round-trip.
+        let mut vbuf = Vec::new();
+        encode_video_payload_into(&mut vbuf, 640, 360, &[9, 8, 7]);
+        let (w, h, px) = parse_video_payload(&vbuf).unwrap();
+        assert_eq!((w, h, px), (640, 360, &[9u8, 8, 7][..]));
     }
 
     #[test]
