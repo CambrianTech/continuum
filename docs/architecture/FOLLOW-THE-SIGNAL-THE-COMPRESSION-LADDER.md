@@ -63,9 +63,31 @@ curriculum and a metric:
 3. **Metric:** did consolidation reduce next-day rent? Did hit rates rise? A dream
    that lowers nobody's rent compressed nothing real, and the ledger says so.
 
-An exploratory budget rides alongside the greedy rent ranking, so low-rent-but-novel
-material still gets consolidation attention — pure exploitation of the ledger would
-never nominate the genuinely new.
+Promotion uses **both signals together** — rent-ranked exploitation AND an
+exploratory budget for low-rent-but-novel material — and the mix itself is a tunable
+the system adjusts as it goes (Joel, 2026-09-01: "use the two together … tune it as we
+go"). Pure exploitation of the ledger would never nominate the genuinely new; pure
+exploration would never pay down the rent.
+
+## Continuous, and across minds
+
+Two properties keep the ladder honest:
+
+**It runs continuously, not in batches.** Engrams flow from cache through
+dream/self-refinement/synthesis into codified genes as a standing stream — the same
+way the substrate treats everything else as event-driven rather than polled. There is
+no "consolidation day"; every act's rent updates the ledger, every idle window can
+advance the highest-value promotion in flight.
+
+**The top rung is a commons.** Rents aggregate ACROSS personas and contexts: a
+pattern that is high-rent for one mind is a personal gene candidate, but a pattern
+that recurs across *many* minds and *many* contexts carries the strongest possible
+generalization evidence — cross-context recurrence IS the proof it generalizes — and
+consolidates into a shared gene the whole team inherits
+([GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md): sentinels specialize,
+genes generalize). This is what a good teammate does: distill what the team keeps
+re-deriving into practice everyone gets for free. The optimizing mix of many persona
+minds is the team's collective compression, and the ledger is its accounting.
 
 ## The receipt: prompts shrink as minds learn
 
