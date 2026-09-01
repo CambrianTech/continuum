@@ -419,6 +419,18 @@ pub trait AIProviderAdapter: Send + Sync {
         ApiStyle::Local
     }
 
+    /// RESTORE-AHEAD (compression-ladder rung 1, FOLLOW-THE-SIGNAL doc): the
+    /// caller is ABOUT to generate for this activity — begin paging its warm
+    /// KV state into a serving slot NOW, overlapped with the caller's own
+    /// prompt assembly, instead of racing the restore against the turn at pin
+    /// time (measured 2026-09-01: pin-time restores queue behind busy slots to
+    /// the 10s timeout; the scheduler knowing "she is next" IS the cache
+    /// prediction, so use it). Non-blocking: implementations spawn and return.
+    ///
+    /// Default: no-op — cloud adapters and adapters without slot paging have
+    /// nothing to warm.
+    fn warm_ahead(&self, _persona: uuid::Uuid, _room: uuid::Uuid) {}
+
     /// The LIVE served context window (tokens) of the lane THIS adapter serves on,
     /// or `None` when the adapter's own binding window is already authoritative.
     ///
