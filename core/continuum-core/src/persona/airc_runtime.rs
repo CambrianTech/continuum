@@ -315,6 +315,7 @@ impl PersonaAircRuntime {
     ) -> Result<Self, PersonaAircRuntimeError> {
         Self::bootstrap_as(
             crate::identity::IdentityKind::Persona,
+            None,
             persona_id,
             agent_name,
             continuum_root,
@@ -332,6 +333,9 @@ impl PersonaAircRuntime {
     /// citizen by the persona resumer or the roster.
     pub async fn bootstrap_as(
         kind: crate::identity::IdentityKind,
+        // Agent kinds REQUIRE a provider (citizens/agents/<provider>/<label>/);
+        // every other kind passes None (citizen_path enforces the contract).
+        provider: Option<&str>,
         persona_id: Uuid,
         agent_name: impl Into<String>,
         continuum_root: &Path,
@@ -346,7 +350,7 @@ impl PersonaAircRuntime {
         let home = crate::context::citizen_home_path(
             continuum_root,
             kind,
-            None,
+            provider,
             &agent_name,
         );
 
