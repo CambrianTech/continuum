@@ -779,6 +779,26 @@ start_livekit_rail() {
 }
 start_livekit_rail
 
+# ── The eye-node rail: perception is part of the stack, not an operator chore.
+# Every reboot used to orphan it (manual `npx tsx` each time); now the boot
+# path owns it ([[boot-owns-the-process-tree]]). Spawned BEFORE the core execs —
+# the eye-node dials with retry until the socket binds, and its transport
+# re-provides across core restarts, so ordering is free. Non-fatal: no
+# eye-node = `perception/observe` fails loud, core still boots.
+start_eye_node_rail() {
+  local EYE_DIR="$REPO_ROOT/apps/eye-node"
+  [ -f "$EYE_DIR/package.json" ] || return 0
+  command -v npx >/dev/null 2>&1 || { echo "⚠ npx missing — eye-node (perception) unavailable"; return 0; }
+  # Full path in the cmdline makes the process identifiable (pgrep) and the
+  # spawn idempotent across reboots.
+  if ! pgrep -f "eye-node/src/index.ts" >/dev/null 2>&1; then
+    local EYE_LOG_DIR="$HOME/.continuum/logs"; mkdir -p "$EYE_LOG_DIR"
+    echo "▶ eye-node (perception provider) starting"
+    (cd "$EYE_DIR" && nohup npx tsx "$EYE_DIR/src/index.ts" >"$EYE_LOG_DIR/eye-node.log" 2>&1 &)
+  fi
+}
+start_eye_node_rail
+
 # Now the new binary is ready: stop the old core (if any) and take the socket.
 stop_existing_core
 
@@ -795,6 +815,30 @@ echo "  airc:     room=${AIRC_DEFAULT_ROOM_NAME:-?} channel=${AIRC_DEFAULT_CHANN
 # env; config.env can still override it per operator.
 export CONTINUUM_MODELS_DIR="${CONTINUUM_MODELS_DIR:-$REPO_ROOT/tools/models}"
 echo "  models:   $CONTINUUM_MODELS_DIR"
+
+# ── STT model rail (#291: a fresh clone HEARS with zero manual steps). The
+# local moonshine engine (sherpa-onnx int8, ~286MB once) is what makes citizens
+# able to listen in live calls without any API key; without this rail a new
+# machine boots deaf behind a warning. One-time fetch, non-fatal, loud on miss.
+ensure_moonshine() {
+  local DIR="$CONTINUUM_MODELS_DIR/moonshine/base"
+  local BASE="https://huggingface.co/csukuangfj/sherpa-onnx-moonshine-base-en-int8/resolve/main"
+  local files=(preprocess.onnx encode.int8.onnx uncached_decode.int8.onnx cached_decode.int8.onnx tokens.txt)
+  local missing=0
+  for f in "${files[@]}"; do [ -s "$DIR/$f" ] || missing=1; done
+  [ "$missing" = 0 ] && return 0
+  command -v curl >/dev/null 2>&1 || { echo "  ⚠ curl missing — STT (hearing) unavailable until moonshine models are placed in $DIR" >&2; return 0; }
+  echo "→ first boot: fetching the local STT model (moonshine base int8, ~286MB once)…"
+  mkdir -p "$DIR"
+  local ok=1
+  for f in "${files[@]}"; do
+    [ -s "$DIR/$f" ] && continue
+    curl -sfL -o "$DIR/$f.tmp" "$BASE/$f" && mv "$DIR/$f.tmp" "$DIR/$f" || { ok=0; rm -f "$DIR/$f.tmp"; }
+  done
+  [ "$ok" = 1 ] && echo "  STT model ready — citizens can hear" \
+    || echo "  ⚠ moonshine fetch incomplete — STT unavailable this boot (retries next boot)" >&2
+}
+ensure_moonshine
 echo ""
 
 # PUBLISH the verified artifact to the installed location, the same way this script
@@ -837,6 +881,15 @@ fi
 # core deploy as one generation. Non-fatal: a failed UI build boots a
 # headless core (desktop.dm.dist_missing probes the fix) rather than no core.
 if [ -f "$REPO_ROOT/apps/web/package.json" ] && command -v npm >/dev/null 2>&1; then
+  # Fresh clone (#291): the workspaces' node_modules must exist before the web
+  # build or the eye-node rail can run — without this, a first boot warned
+  # "desktop build failed" + spawned an eye-node that could not resolve tsx,
+  # and the new machine got a headless, eyeless core with no manual step named.
+  if [ ! -d "$REPO_ROOT/node_modules" ]; then
+    echo "→ first boot: installing workspace deps (npm ci)…"
+    (cd "$REPO_ROOT" && npm ci >/dev/null 2>&1 || npm install >/dev/null 2>&1) \
+      || echo "  ⚠ npm install failed — desktop + eye-node unavailable (run npm ci to diagnose)" >&2
+  fi
   echo "→ building the desktop (served by the core at :\${CONTINUUM_UI_PORT:-8975})…"
   if (cd "$REPO_ROOT" && npm run build -w @continuum/web >/dev/null 2>&1); then
     export CONTINUUM_UI_DIST="$REPO_ROOT/apps/web/dist"

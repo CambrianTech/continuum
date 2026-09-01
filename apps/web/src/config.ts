@@ -32,7 +32,7 @@ export interface WebChatConfig {
    *  host's :8790 (the boot default CONTINUUM_CALL_WS). */
   readonly callUrl?: string;
   /** The human citizen's UUID, threaded as `chat/send`'s `senderId`. */
-  readonly senderId: string;
+  readonly senderId?: string;
 }
 
 /** Read a value from `?key=` then `import.meta.env[VITE_key]`, else `undefined`. */
@@ -49,30 +49,24 @@ function lookup(queryKey: string, envKey: string): string | undefined {
 const CORE_DEFAULT_WS_PORT = 8974;
 
 /** localStorage key for this browser's minted-once human identity. */
-const IDENTITY_KEY = 'continuum-web-identity';
-
-/** This browser's persistent human identity: minted once, stable across loads.
- *  Storage-denied contexts (private windows with storage off) get a per-load
- *  identity — degraded but functional, never a blank screen. */
-function persistentIdentity(): string {
-  try {
-    const existing = globalThis.localStorage.getItem(IDENTITY_KEY);
-    if (existing && existing.length > 0) return existing;
-    const minted = globalThis.crypto.randomUUID();
-    globalThis.localStorage.setItem(IDENTITY_KEY, minted);
-    return minted;
-  } catch {
-    return globalThis.crypto.randomUUID();
-  }
-}
-
 export function resolveConfig(): WebChatConfig {
   const wsUrl =
     lookup('core', 'VITE_CONTINUUM_WS') ??
     `ws://${globalThis.location.hostname || '127.0.0.1'}:${CORE_DEFAULT_WS_PORT}`;
   const callUrl =
     lookup('call', 'VITE_CONTINUUM_CALL_WS') ?? wsUrl.replace(/:\d+$/, ':8790');
-  const senderId = lookup('me', 'VITE_CONTINUUM_USER_ID') ?? persistentIdentity();
+  // IDENTITY IS NEVER MINTED HERE (Joel, 2026-09-01: two joels — every
+  // browser profile had minted its own 'human'). Explicit ?me= (a test
+  // harness impersonating a specific citizen) passes through; otherwise the
+  // session ADOPTS its identity from `identity/whoami` at boot — the durable
+  // spine, resolved by the core ([[one-logical-decision-one-place]]). The old
+  // localStorage mint is actively removed so stale ghosts stop being worn.
+  try {
+    globalThis.localStorage.removeItem('continuum-web-identity');
+  } catch {
+    /* storage-denied context — nothing stale to remove */
+  }
+  const senderId = lookup('me', 'VITE_CONTINUUM_USER_ID');
 
   return { wsUrl, callUrl, senderId };
 }

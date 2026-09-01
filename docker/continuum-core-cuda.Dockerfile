@@ -83,6 +83,10 @@ COPY . .
 # relative path the `COPY . .` above already provides (the file is checked in). No
 # `--from=shared*` build-context needed; models.json is unreferenced by the Rust core.
 
+# Model registry SSOT used by candle_adapter.rs include_str!:
+# ../../../../shared/models.json resolves to /shared/models.json here.
+COPY --from=shared models.json /shared/models.json
+
 # Fail fast if the host forgot to init submodules. Without this, cmake's
 # CMakeLists-not-found error surfaces deep inside the CUDA build —
 # terrible signal-to-noise. See issue #893.

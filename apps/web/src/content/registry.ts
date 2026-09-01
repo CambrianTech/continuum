@@ -32,6 +32,8 @@ import {
 import type { ChatContentBody } from '@continuum/chat-view';
 import { modelCell, type ForgeContentBody } from '@continuum/foundry-view';
 import { actGroupRow, listingCell, messageRow } from '../render/parts';
+import { ACADEMY_PURPOSE, type AcademyContentBody } from '@continuum/chat-view';
+import type { BenchRunVM } from '@continuum/patterns';
 import { renderPersona } from '../persona/renderPersona';
 import { renderLive } from '../live/renderLive';
 import { renderBench } from '../bench/renderBench';
@@ -40,6 +42,33 @@ import { renderServing } from '../serving/renderServing';
 import { renderGrid } from '../grid/renderGrid';
 import { renderSettings } from '../settings/renderSettings';
 import { renderCanvas } from '../canvas/renderCanvas';
+
+/** The ACADEMY LANDING — the campus page a human lands on: a hero strip
+ *  (who's here, what's running — the working wave carries the pulse), the
+ *  LIVE benchmark board center-stage, and the room's own conversation as a
+ *  disclosure below. Chat is a layer of the academy, never its face. */
+function academyContent(body: AcademyContentBody): TemplateResult {
+  const working = body.bench.runs.filter(
+    (r: BenchRunVM) => r.state === 'working' || r.state === 'grading' || r.state === 'queued',
+  ).length;
+  return html`<div class="academy-landing">
+    <div class="academy-hero">
+      <div class="academy-title">Academy</div>
+      <div class="academy-strip">
+        <span class="academy-stat">${body.activeCount} <i>active</i></span>
+        <span class="academy-stat">${body.memberCount} <i>citizens</i></span>
+        ${working > 0
+          ? html`<span class="academy-stat wave-active">${working} <i>working now</i></span>`
+          : html`<span class="academy-stat">quiet — no runs in flight</span>`}
+      </div>
+    </div>
+    ${renderBench(body.bench, { history: 'digest' })}
+    <details class="academy-chat">
+      <summary>Room chat${body.chat.isEmpty ? ' — quiet' : ''}</summary>
+      ${chatContent(body.chat)}
+    </details>
+  </div>`;
+}
 
 /** The chat activity's center: the conversation (or an honest empty state). */
 function chatContent(body: ChatContentBody): TemplateResult {
@@ -90,6 +119,7 @@ webContentRegistry.register<ServingContentBody>(SERVING_PURPOSE, (body) => rende
 // The Academy's live BENCHMARK BOARD — one progress row per run, operator and
 // citizen-claimed alike, dispatched when the room recipe's purpose is "bench".
 webContentRegistry.register<BenchContentBody>(BENCH_PURPOSE, (body) => renderBench(body));
+webContentRegistry.register<AcademyContentBody>(ACADEMY_PURPOSE, (body) => academyContent(body));
 // The GRID view — every node's panel (resources + serving), the NODES
 // strip's full activity, dispatched when the room's purpose is "grid".
 webContentRegistry.register<GridContentBody>(GRID_PURPOSE, (body) => renderGrid(body));

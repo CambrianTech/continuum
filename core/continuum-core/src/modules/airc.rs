@@ -220,7 +220,15 @@ impl ServiceModule for AircModule {
         // remedy path is obvious.
         match (self.attach_socket_path.clone(), self.attach_channel) {
             (Some(socket_path), Some(channel)) => {
-                spawn_daemon_attach(socket_path, channel, ctx.bus.clone(), &ctx.runtime);
+                // The registry owns per-room attach streams: the bootstrap
+                // channel seeds it, and the presence adoption path bridges
+                // every further room the node serves (solve rooms included).
+                let registry = crate::airc::inbound_attach::AttachRegistry::install(
+                    socket_path,
+                    ctx.bus.clone(),
+                    ctx.runtime.clone(),
+                );
+                registry.ensure_attached(channel);
             }
             (Some(_), None) | (None, Some(_)) | (None, None) => {
                 // Already warned during construction; stay silent here

@@ -531,6 +531,9 @@ mod tests {
             rounds: vec![],
             runs: vec![
                 BenchRunRow {
+                round_id: None,
+                solve_room: None,
+                solve_room_name: None,
                     run_id: "r1".into(),
                     instance: Some("sympy__sympy-21055".into()),
                     solver: Some("Asha".into()),
@@ -548,6 +551,9 @@ mod tests {
                     infra_error: None,
                 },
                 BenchRunRow {
+                round_id: None,
+                solve_room: None,
+                solve_room_name: None,
                     run_id: "r2".into(),
                     instance: Some("requests__requests-863".into()),
                     solver: Some("Atlas".into()),

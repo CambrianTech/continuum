@@ -85,6 +85,10 @@ fn demand_path(persona: Uuid) -> std::path::PathBuf {
     personas_root().join(persona.to_string()).join("working-set.json")
 }
 
+fn emission_path(persona: Uuid) -> std::path::PathBuf {
+    personas_root().join(persona.to_string()).join("emission.json")
+}
+
 /// One mind's observed demand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersonaDemand {
@@ -101,6 +105,31 @@ pub struct PersonaDemand {
     pub turns: u64,
 }
 
+/// One mind's observed REPLY size — the output-side twin of [`PersonaDemand`].
+///
+/// Demand measures what a turn's PROMPT wanted; emission measures what its
+/// generation actually PRODUCED (the server's own `usage.output_tokens`). The
+/// completion reserve was a bare `window/2` ratio — at a 29k window that
+/// reserved 14,720 tokens for replies measuring 0.2–2.5k, squeezing grounding
+/// to 195 tokens and dropping the room board for want of 137 (measured
+/// 2026-08-31, the meta-loop spiral). Both reserve comments named this exact
+/// registry pattern as the honest endgame; this is it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PersonaEmission {
+    /// High-water mark, in tokens, of a completed generation. A turn that hit
+    /// its output cap records DOUBLE its emission — the observation is a floor
+    /// on true demand, not a measurement of it, and doubling is the growth
+    /// path that keeps a measured reserve from freezing itself too small
+    /// (the same measure-the-clamp trap `demand_tokens` documents).
+    pub peak_tokens: u32,
+    /// The most recent observation — the peak's honest companion.
+    pub last_tokens: u32,
+    /// Wall clock of the most recent observation.
+    pub last_seen_ms: u64,
+    /// Observation count — what lets a reader judge how much to trust the peak.
+    pub turns: u64,
+}
+
 /// Per-persona observed turn demand for ONE core.
 ///
 /// Cheap to clone (`Arc` inside) so the deliberation faculty, the serving daemon,
@@ -109,6 +138,7 @@ pub struct PersonaDemand {
 #[derive(Debug, Clone, Default)]
 pub struct WorkingSetRegistry {
     observed: Arc<DashMap<Uuid, PersonaDemand>>,
+    emitted: Arc<DashMap<Uuid, PersonaEmission>>,
 }
 
 impl WorkingSetRegistry {
@@ -167,6 +197,74 @@ impl WorkingSetRegistry {
             })
     }
 
+    /// Record one completed generation's measured output for `persona`.
+    ///
+    /// `output_tokens` is the SERVER's count (`usage.output_tokens`) — reasoning
+    /// tokens included, never an estimate. `hit_cap` marks a `FinishReason::Length`
+    /// stop: that emission was clamped by the very reserve this measurement sizes,
+    /// so it records at double (a floor on true demand, and the growth path — see
+    /// [`PersonaEmission::peak_tokens`]). Zero-token completions are the empty-
+    /// completion fault's territory, not a data point to drag the peak with.
+    pub(crate) fn record_emission(&self, persona: Uuid, output_tokens: u32, hit_cap: bool, now_ms: u64) {
+        if output_tokens == 0 {
+            return;
+        }
+        let updated = self.record_emission_in_memory(persona, output_tokens, hit_cap, now_ms);
+        // Same persistence contract as demand: every observation, atomic, best-effort
+        // — a restart is a pause, and a mind must not re-earn its reply size per boot.
+        let path = emission_path(persona);
+        let write = || -> std::io::Result<()> {
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            let tmp = path.with_extension("json.tmp");
+            std::fs::write(&tmp, serde_json::to_vec(&updated)?)?; // BOUNDARY: disk — the per-persona emission.json durable format
+            std::fs::rename(&tmp, &path)
+        };
+        if let Err(e) = write() {
+            tracing::warn!(
+                persona_id = %persona, error = %e, path = %path.display(),
+                "emission not persisted — this mind re-measures its reply size after the next restart"
+            );
+        }
+    }
+
+    /// The in-memory half of [`Self::record_emission`], without the disk write —
+    /// same split (and same reason) as [`Self::record_in_memory`].
+    pub(crate) fn record_emission_in_memory(
+        &self,
+        persona: Uuid,
+        output_tokens: u32,
+        hit_cap: bool,
+        now_ms: u64,
+    ) -> PersonaEmission {
+        let observed = if hit_cap {
+            output_tokens.saturating_mul(2)
+        } else {
+            output_tokens
+        };
+        *self
+            .emitted
+            .entry(persona)
+            .and_modify(|e| {
+                e.peak_tokens = e.peak_tokens.max(observed);
+                e.last_tokens = observed;
+                e.last_seen_ms = now_ms;
+                e.turns += 1;
+            })
+            .or_insert(PersonaEmission {
+                peak_tokens: observed,
+                last_tokens: observed,
+                last_seen_ms: now_ms,
+                turns: 1,
+            })
+    }
+
+    /// This persona's observed reply size, for the reserve derivation and the glass box.
+    pub(crate) fn emission_of(&self, persona: Uuid) -> Option<PersonaEmission> {
+        self.emitted.get(&persona).map(|e| *e.value())
+    }
+
     /// Atomic tmp+rename so a crash mid-write never leaves a torn file that would
     /// fail to parse and silently wake her at the cold-start window.
     fn save(persona: Uuid, demand: &PersonaDemand) {
@@ -211,6 +309,20 @@ impl WorkingSetRegistry {
                 persona_id = %persona, error = %e, path = %path.display(),
                 "working-set file unreadable — this mind re-measures its window from scratch"
             ),
+        }
+        // The emission twin rides the same rehydration pass: absent/unreadable stays
+        // silent (the reserve falls back to the cold-start share — honest, never invented).
+        if let Ok(bytes) = std::fs::read(emission_path(persona)) {
+            match serde_json::from_slice::<PersonaEmission>(&bytes) {
+                Ok(e) if e.peak_tokens > 0 => {
+                    self.emitted.insert(persona, e);
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!(
+                    persona_id = %persona, error = %e,
+                    "emission file unreadable — this mind re-measures its reply size from scratch"
+                ),
+            }
         }
     }
 
@@ -344,6 +456,25 @@ mod tests {
         reg.record(p(2), 31_000, 1_000);
         reg.record(p(3), 4_000, 1_000);
         assert_eq!(reg.ceiling(), Some(31_000));
+    }
+
+    // what this catches: the growth path of the measured reply reserve. A turn that
+    // stopped at its output cap is a CLAMPED observation — recording it verbatim
+    // would freeze the reserve at whatever strangled it (the same measure-the-clamp
+    // trap the demand side documents). It must record at double so the next turn's
+    // reserve is larger than the cap that cut this one.
+    #[test]
+    fn a_capped_emission_records_double_and_an_uncapped_one_verbatim() {
+        let reg = WorkingSetRegistry::new();
+        reg.record_emission_in_memory(p(1), 2_500, false, 1_000);
+        assert_eq!(reg.emission_of(p(1)).map(|e| e.peak_tokens), Some(2_500));
+        reg.record_emission_in_memory(p(1), 3_000, true, 2_000);
+        let e = reg.emission_of(p(1)).expect("observed");
+        assert_eq!(e.peak_tokens, 6_000, "a Length stop is a floor, not a measurement");
+        assert_eq!(e.turns, 2);
+        // and, as on the demand side, a later small reply never lowers the peak
+        reg.record_emission_in_memory(p(1), 40, false, 3_000);
+        assert_eq!(reg.emission_of(p(1)).map(|e| e.peak_tokens), Some(6_000));
     }
 
     // what this catches: a restart that demotes her. The registry is in-memory, so

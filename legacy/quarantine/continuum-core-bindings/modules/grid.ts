@@ -11,7 +11,11 @@ import type {
 	TransportAddress as RustTransportAddress,
 	NodeCapability as RustNodeCapability,
 	TrustLevel as RustTrustLevel,
+<<<<<<<< HEAD:legacy/quarantine/continuum-core-bindings/modules/grid.ts
 } from '../../../../protocol/typescript/grid';
+========
+} from '../../../protocol/typescript/grid';
+>>>>>>>> origin/main:sdk/typescript/modules/grid.ts
 
 // Re-export generated types (already camelCase from ts-rs)
 export type { RustGridNode as GridNode, RustTransportAddress as TransportAddress, RustNodeCapability as NodeCapability, RustTrustLevel as TrustLevel };

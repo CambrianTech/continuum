@@ -812,8 +812,11 @@ mod tests {
         );
 
         // And it stays BOUNDED (the muting guardrail) — nowhere near the full registry.
+        // < 40 → < 42, stated plainly (2026-09-01): activity/recipes + activity/invite
+        // joined the native set (the spawn→invite→brief flow — see the agentic-surface
+        // ceiling note in llm_deliberation_faculty for the full rationale + token cost).
         assert!(
-            names.len() < 40,
+            names.len() < 42,
             "native set stayed bounded ({} tools); a full dump would re-mute personas",
             names.len()
         );

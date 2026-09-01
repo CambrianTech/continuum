@@ -68,6 +68,22 @@ pub struct BenchRunRow {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     #[ts(optional)]
     pub infra_error: Option<String>,
+    /// The ROUND this run belongs to (== its run room's UUID) — the board
+    /// groups runs under their round. Absent for unrounded/legacy rows.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[ts(optional)]
+    pub round_id: Option<String>,
+    /// The run's SOLVE ROOM — the DOOR: a renderer navigates here to stand
+    /// in the activity (transcript + act receipts). Absent before the mint.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[ts(optional)]
+    pub solve_room: Option<String>,
+    /// The solve room's airc NAME — joins are by name, and standing in the
+    /// room requires joining it first. Absent for rooms minted before names
+    /// were recorded; such a door stays closed rather than half-opening.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[ts(optional)]
+    pub solve_room_name: Option<String>,
 }
 
 /// One IN-FLIGHT round — the real lifecycle object behind the board's
@@ -140,6 +156,9 @@ mod tests {
         // Optional fields elide from the wire — the TS optional contract.
         let row = BenchRunRow {
             run_id: "r1".into(),
+            round_id: None,
+            solve_room: None,
+            solve_room_name: None,
             instance: None,
             solver: None,
             phase: "active".into(),

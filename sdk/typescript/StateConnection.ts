@@ -492,7 +492,15 @@ export class StateConnection {
         // Reject the handshake either way (a settled promise ignores a 2nd reject).
         clearTimeout(openTimer);
         this.connecting = undefined;
-        reject(new Error(`StateConnection: connection to ${this.url} failed: ${String(ev)}`));
+        // A WS error Event carries NO reason by spec — `String(ev)` printed the
+        // useless "[object Event]" into every retry line. Say what is honestly
+        // knowable: the socket was refused or dropped before opening.
+        void ev;
+        reject(
+          new Error(
+            `StateConnection: connection to ${this.url} failed — socket refused or dropped before open (the browser withholds the reason; check the core is listening)`,
+          ),
+        );
       };
       socket.onclose = () => {
         this.socket = undefined;

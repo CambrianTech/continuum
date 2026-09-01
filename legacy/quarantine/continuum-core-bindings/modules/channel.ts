@@ -8,7 +8,11 @@ import type {
 	ChannelEnqueueRequest,
 	ActivityDomain,
 	CognitionDecision,
+<<<<<<<< HEAD:legacy/quarantine/continuum-core-bindings/modules/channel.ts
 } from '../../../../protocol/typescript';
+========
+} from '../../../protocol/typescript';
+>>>>>>>> origin/main:sdk/typescript/modules/channel.ts
 
 // ============================================================================
 // Types

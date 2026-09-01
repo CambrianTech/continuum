@@ -230,8 +230,8 @@ describe('chat → pattern projections', () => {
       user_id: 'joel',
       current_tab: 'room-2',
       open_tabs: [
-        { id: 'room-1', title: 'general', kind: 'room', unread: 0, purpose: 'chat' },
-        { id: 'room-2', title: 'dev-updates', kind: 'room', unread: 4, purpose: '' },
+        { id: 'room-1', title: 'general', kind: 'room', unread: 0, purpose: 'chat', parent_ref: '', display_label: '' },
+        { id: 'room-2', title: 'dev-updates', kind: 'room', unread: 4, purpose: '', parent_ref: '', display_label: '' },
       ],
       last_read: { 'room-1': 1 },
       bookmarks: [],
@@ -266,7 +266,7 @@ describe('recipe-purpose family dispatch (#431)', () => {
   // and the registry threw `no content renderer for room purpose` — measured
   // live 2026-08-22 on every run room the dispatcher spawned.
   it('a benchmark-family room renders the bench board, frame-first before the feed', () => {
-    const bench = { ...vm, purpose: 'benchmark/hard-rs' };
+    const bench = { ...vm, purpose: 'benchmark/hard-rs', parent_ref: '', display_label: '' };
     const ws = chatWorkspace(bench);
     expect(ws.content.purpose).toBe('bench');
     // Honest pre-feed frame (same contract as arena/serving): the face renders

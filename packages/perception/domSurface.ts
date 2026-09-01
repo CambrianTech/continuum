@@ -168,6 +168,20 @@ export class DomSurface implements Surface<DomViewSpec, DomAction> {
       const g = globalThis as { __name?: (fn: unknown) => unknown };
       g.__name = g.__name ?? ((fn) => fn);
     });
+    // GLASS-BOX the page's own voice: console lines (warnings, [Violation]s,
+    // errors) and page crashes stream to OUR stderr, so an operator/agent
+    // reading the eye-node log sees exactly what a human sees in devtools
+    // (2026-08-31: "the site draws at 5fps — are you able to get these
+    // warnings?" — now yes).
+    page.on('console', (msg) => {
+      const type = msg.type();
+      if (type === 'warning' || type === 'error') {
+        console.error(`[page-console:${type}] ${msg.text().slice(0, 400)}`);
+      }
+    });
+    page.on('pageerror', (err) => {
+      console.error(`[page-error] ${String(err).slice(0, 400)}`);
+    });
     await page.goto(opts.url, { waitUntil: 'networkidle' });
     return new DomSurface(browser, page);
   }

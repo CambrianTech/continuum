@@ -14,8 +14,13 @@ import type {
 	ProcessStats as RustProcessStats,
 	PressureSnapshot as RustPressureSnapshot,
 	PressureLevel,
+<<<<<<<< HEAD:legacy/quarantine/continuum-core-bindings/modules/system_resources.ts
 } from '../../../../protocol/typescript/system';
 import type { DockerTierStats } from '../../../../protocol/typescript/resources';
+========
+} from '../../../protocol/typescript/system';
+import type { DockerTierStats } from '../../../protocol/typescript/resources';
+>>>>>>>> origin/main:sdk/typescript/modules/system_resources.ts
 
 // ============================================================================
 // Types (camelCase for TypeScript consumers)

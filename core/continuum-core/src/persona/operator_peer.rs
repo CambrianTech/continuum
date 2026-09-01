@@ -22,6 +22,7 @@ use std::sync::{Arc, OnceLock};
 use crate::persona::airc_runtime::PersonaAircRuntime;
 
 static OPERATOR: OnceLock<Arc<PersonaAircRuntime>> = OnceLock::new();
+static AGENT: OnceLock<Arc<PersonaAircRuntime>> = OnceLock::new();
 
 /// The operator's label — the OS user, falling back to "operator" only when
 /// the environment carries no user at all (containers).
@@ -46,6 +47,7 @@ pub async fn ensure_operator_peer(
     let label = operator_label();
     match PersonaAircRuntime::bootstrap_as(
         crate::identity::IdentityKind::Human,
+        None,
         uuid::Uuid::new_v4(), // pre-mint id; the durable identity is the home keypair (post-collapse peer id wins)
         &label,
         continuum_root,
@@ -63,6 +65,19 @@ pub async fn ensure_operator_peer(
                 peer_id = %rt.airc().peer_id(),
                 "operator self-peer online — room-scoped verbs now act as the human, not a denial (#27)"
             );
+            // The human belongs in the commons by default. Without this join the
+            // operator's chat/send to general was store+live-fed but the daemon
+            // refused the say ("this scope is not subscribed") — the human could
+            // see the room and still not be heard in it (caught live 2026-08-31,
+            // the DM-during-benchmark acid test). Idempotent; failure is loud
+            // but non-fatal — room/join remains the manual path.
+            if let Err(e) = rt.join_room("general").await {
+                crate::probe!(
+                    class = "operator.peer.commons_join_failed",
+                    error = %e.to_string(),
+                    "operator self-peer could not join general — the human speaks nowhere by default until room/join"
+                );
+            }
             let _ = OPERATOR.set(rt);
         }
         Err(e) => {
@@ -77,6 +92,56 @@ pub async fn ensure_operator_peer(
             );
         }
     }
+}
+
+/// Boot (or resume) the AGENT self-peer — the identity an AI agent session
+/// (Claude Code, Codex…) speaks as when it drives this node's CLI. Its own
+/// durable peer, kind [`IdentityKind::Agent`], so an agent's probes and chat
+/// never wear the human's name (Joel, 2026-09-01: "the chat history is
+/// clearly attributing shit you did to me"). Same no-service-loop shape as
+/// the operator peer.
+pub async fn ensure_agent_peer(
+    continuum_root: &Path,
+    daemon_socket: PathBuf,
+    executor: Arc<crate::runtime::command_executor::CommandExecutor>,
+) {
+    if AGENT.get().is_some() {
+        return;
+    }
+    match PersonaAircRuntime::bootstrap_as(
+        crate::identity::IdentityKind::Agent,
+        Some("claude-code"),
+        uuid::Uuid::new_v4(), // pre-mint; the durable identity is the home keypair
+        "Claude",
+        continuum_root,
+        daemon_socket,
+        crate::persona::identity_provider::PersonaIdentitySource::ResumedFromDisk,
+        executor,
+    )
+    .await
+    {
+        Ok(rt) => {
+            let rt = Arc::new(rt);
+            crate::probe!(
+                class = "agent.peer.online",
+                peer_id = %rt.airc().peer_id(),
+                "agent self-peer online — agent-driven CLI sessions speak as Claude, never as the human"
+            );
+            let _ = AGENT.set(rt);
+        }
+        Err(e) => {
+            crate::probe!(
+                class = "agent.peer.boot_failed",
+                error = %e.to_string(),
+                "agent self-peer failed to boot — agent sessions fall back to DENIAL on caller-less verbs, never to the human's identity"
+            );
+        }
+    }
+}
+
+/// The agent self-peer's runtime, when online.
+pub fn agent_runtime() -> Option<Arc<PersonaAircRuntime>> {
+    AGENT.get().cloned()
 }
 
 /// The operator's airc handle, when the self-peer is online.

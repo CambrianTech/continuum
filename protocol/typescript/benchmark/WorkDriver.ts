@@ -14,8 +14,9 @@
  *   half of the objective requires — and the one that has never once been observed
  *   end to end, because on the default path the detached solve always wins the claim.
  *
- * `DetachedSolve` is the default and today's behaviour: an operator opts INTO the
- * citizen path per round. Both are real drivers, not a flag and a fallback — which is
- * why the choice is named on the round rather than hidden behind a `skip_solve` bool.
+ * `Citizen` is the default (flipped 2026-08-31): a round teaches by default, and an
+ * operator opts INTO the detached diagnostic per round. Both are real drivers, not a
+ * flag and a fallback — which is why the choice is named on the round rather than
+ * hidden behind a `skip_solve` bool.
  */
 export type WorkDriver = "detached_solve" | "citizen";

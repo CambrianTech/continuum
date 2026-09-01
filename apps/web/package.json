@@ -2,7 +2,7 @@
   "name": "@continuum/web",
   "version": "0.1.0",
   "private": true,
-  "description": "Thin browser UI shell for Continuum. UI-only \u2014 DOM rendering, event subscription, command dispatch through @continuum/sdk-typescript. NO business logic; substrate decisions stay in core/. Replaces the legacy src/{browser,widgets,server,daemons} monolith (task #215).",
+  "description": "Thin browser UI shell for Continuum. UI-only — DOM rendering, event subscription, command dispatch through @continuum/sdk-typescript. NO business logic; substrate decisions stay in core/. Replaces the legacy src/{browser,widgets,server,daemons} monolith (task #215).",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -18,7 +18,8 @@
     "@continuum/foundry-view": "*",
     "@continuum/sdk-typescript": "*",
     "highlight.js": "^11.11.1",
-    "lit": "^3.3.3"
+    "lit": "^3.3.3",
+    "livekit-client": "^2.22.1"
   },
   "devDependencies": {
     "typescript": "^5.9.3",

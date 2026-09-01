@@ -476,6 +476,27 @@ pub(crate) struct ResolvedSender {
 /// A free function over `&[RosterSlotView]` (not a method) so both the
 /// chat and wall projections share the exact resolution — the compression
 /// point of extracting it.
+/// Re-resolve each stored message's identity from the room's current roster.
+/// Only **upgrades** — a message whose sender is present in the roster adopts
+/// the card; a sender who has since left keeps its already-resolved identity.
+fn reresolve_messages(accum: &mut RoomAccum) {
+    let roster = &accum.roster;
+    let mut resolved: Vec<(usize, RosterSlotView)> = Vec::new();
+    for (i, msg) in accum.messages.iter().enumerate() {
+        if let Some(slot) = roster.iter().find(|s| s.member_id == msg.sender_id) {
+            resolved.push((i, slot.clone()));
+        }
+    }
+    for (i, slot) in resolved {
+        if let Some(msg) = accum.messages.get_mut(i) {
+            msg.sender_name = slot.display_name.clone();
+            msg.sender_kind = slot.kind;
+            msg.integrations = slot.integrations.clone();
+            msg.provenance = slot.provenance.clone();
+        }
+    }
+}
+
 pub(crate) fn resolve_identity(roster: &[RosterSlotView], id: Uuid) -> ResolvedSender {
     match roster.iter().find(|s| s.member_id == id) {
         Some(slot) => ResolvedSender {
@@ -520,26 +541,21 @@ struct ChatProjection {
     /// `None` in tests/headless — the node substrate alone, today's behavior.
     rooms: Option<std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates>>,
     builder: StateBuilder,
-    /// The room this accumulator currently describes. `None` before the
-    /// first recognized event.
+    /// The FOCUSED room — the one the node substrate mirrors. `None` before
+    /// the first recognized event (cold boot adopts the first event's room).
     room_id: Option<Uuid>,
-    /// An EXPLICIT focus (the `nav/select` verb via [`CHAT_FOCUSED`]). While
-    /// held, the single-cache-per-kind view is PINNED to this room: events for
-    /// other rooms no longer steal it (the exact "room B's presence yanks the
-    /// chat projector off room A" hazard `positron_presence`'s resync doc
-    /// warns about). `None` before the first select — the accumulator then
-    /// follows events, the pre-nav behavior.
+    /// An EXPLICIT focus (the `nav/select` verb via [`CHAT_FOCUSED`]). Once
+    /// held, only another select moves the node mirror. With per-room
+    /// accumulators (2026-08-31) events NEVER move it — each room folds into
+    /// its own accumulator regardless of focus, so nothing is dropped and
+    /// nothing wanders (the "room B's presence yanks the view" hazard is
+    /// structurally gone, not guarded against).
     explicit_focus: Option<Uuid>,
-    room_name: String,
-    /// Bounded ring of recent messages, oldest first (the order
-    /// `ChatViewState.messages` is documented to carry).
-    messages: VecDeque<ChatMessageView>,
-    /// Bounded ring of recent tool-act receipts, oldest first — the
-    /// transcript's work stream (#243), folded from `persona:act` events
-    /// the same way `messages` folds `chat:posted`. Cleared on room switch
-    /// with the rest of the per-room state.
-    acts: VecDeque<ActReceiptView>,
-    roster: Vec<RosterSlotView>,
+    /// PER-ROOM accumulators (tab = content = room = activity, server half):
+    /// every room this projection has seen folds its own messages / acts /
+    /// roster / name and its own emit-on-change caches. The node substrate
+    /// mirrors exactly one of these — the focused room's.
+    accums: HashMap<Uuid, RoomAccum>,
     /// Latest live vitals per member id, folded from `persona:vitals` events
     /// (design B). Kept SEPARATE from the presence roster — presence replaces
     /// the roster wholesale on every update, so vitals live here and are merged
@@ -572,23 +588,24 @@ struct ChatProjection {
     /// Own monotonic revisions well for the `"experience"` kind — the projection is
     /// its sole writer, exactly as `builder` is for `"chat"`.
     experience_builder: StateBuilder,
-    /// Last-published manifest, for emit-on-change: the Experience only shifts when
-    /// membership/purpose change (presence), NOT on every message, so re-publishing
-    /// an identical manifest per message is wasted work + churned revisions
-    /// (`[[optimization-is-always-first]]`, `[[never-thrash-sticky-hysteresis-on-every-lane]]`).
-    /// `RefCell` because `store` takes `&self`.
-    last_experience: std::cell::RefCell<Option<Experience>>,
     /// Own Revisions well for the decomposed `"roster"` kind (path-3): the Experience
     /// manifest's roster region binds to this rich payload (names/kinds/vitals).
     roster_builder: StateBuilder,
-    /// Last-published roster, for emit-on-change (roster shifts on presence, not per
-    /// message) — same discipline as `last_experience`.
-    last_roster: std::cell::RefCell<Option<Vec<RosterSlotView>>>,
-    /// Emit-on-change for the CHAT kind itself — the largest payload this
-    /// projection publishes (2026-08-23 audit: five ungated call sites,
-    /// vitals ticks re-serializing the full 100-message transcript ~2×/s).
-    /// Same discipline as `last_experience`, twelve lines above it.
-    last_chat: std::cell::RefCell<Option<ChatViewState>>,
+}
+
+/// One room's fold state — everything that is a fact about A ROOM rather than
+/// the node: its transcript rings, its live roster, its name, and its own
+/// emit-on-change caches. Member-truth overlays (vitals/loadout/genes) stay on
+/// the projection: a citizen's energy is HERS, in every room she stands in.
+#[derive(Default)]
+struct RoomAccum {
+    room_name: String,
+    messages: VecDeque<ChatMessageView>,
+    acts: VecDeque<ActReceiptView>,
+    roster: Vec<RosterSlotView>,
+    last_experience: Option<Experience>,
+    last_roster: Option<Vec<RosterSlotView>>,
+    last_chat: Option<ChatViewState>,
 }
 
 impl ChatProjection {
@@ -648,61 +665,39 @@ impl ChatProjection {
             builder: StateBuilder::standalone(),
             room_id: None,
             explicit_focus: None,
-            room_name: String::new(),
-            messages: VecDeque::new(),
-            acts: VecDeque::new(),
-            roster: Vec::new(),
+            accums: HashMap::new(),
             vitals: HashMap::new(),
             loadout: HashMap::new(),
             genes: HashMap::new(),
             experience_source,
             experience_builder: StateBuilder::standalone(),
-            last_experience: std::cell::RefCell::new(None),
             roster_builder: StateBuilder::standalone(),
-            last_roster: std::cell::RefCell::new(None),
-            last_chat: std::cell::RefCell::new(None),
             purpose_source,
         }
     }
 
-    /// Switch the accumulator to `room_id` if it differs from the current
-    /// room, clearing the prior room's ring + roster + stale name. The
-    /// single-cache-per-kind substrate holds one room's view at a time.
-    /// The room *name* is an identity-card fact carried by presence, not
-    /// by messages, so this does NOT set it — a message that focuses a
-    /// fresh room leaves `room_name` empty until presence resolves it.
-    fn switch_room(&mut self, room_id: Uuid) {
-        if self.room_id != Some(room_id) {
-            self.room_id = Some(room_id);
-            self.room_name.clear();
-            self.messages.clear();
-            self.acts.clear();
-            self.roster.clear();
-            self.vitals.clear();
-            self.loadout.clear();
-            self.genes.clear();
+    /// Cold-boot adoption: the first event's room becomes the node mirror so
+    /// a fresh session shows SOMETHING; after that only `apply_focus` moves it.
+    fn adopt_if_unfocused(&mut self, room: Uuid) {
+        if self.room_id.is_none() {
+            self.room_id = Some(room);
         }
     }
 
-    /// Is `room` shut out by a held explicit focus? While the citizen has
-    /// selected a room, events for OTHER rooms must not steal the single
-    /// focused view (they still reach the nav rail's unread badges through the
-    /// digest path — nothing is lost, only the center pane stops following).
-    fn pinned_away_from(&self, room: Uuid) -> bool {
-        self.explicit_focus.is_some_and(|focus| focus != room)
-    }
-
-    /// Apply an EXPLICIT focus switch (the `nav/select` verb): pin the
-    /// accumulator to `room` and store the view. A quiet room (no events
-    /// observed since boot) stores the HONEST empty view — room id set, no
-    /// messages/roster/name until events or the presence re-assert arrive.
-    /// Deeper history for a quiet room is a `chat/history` backfill pull, the
-    /// documented follow-up (see the `MAX_MESSAGES_PER_SNAPSHOT` doc) — never
-    /// a fabricated transcript.
+    /// Apply an EXPLICIT focus switch (the `nav/select` verb): point the node
+    /// mirror at `room` and re-publish that room's OWN accumulated view. A
+    /// quiet room (no events observed since boot) publishes the honest empty
+    /// view — room id set, nothing else — never another room's leftovers.
     fn apply_focus(&mut self, room: Uuid) {
         self.explicit_focus = Some(room);
-        self.switch_room(room);
-        self.store();
+        self.room_id = Some(room);
+        // Clear the emit-on-change caches so the focus re-publishes to the
+        // node substrate even when the room's content hasn't changed.
+        let accum = self.accums.entry(room).or_default();
+        accum.last_chat = None;
+        accum.last_roster = None;
+        accum.last_experience = None;
+        self.store_for(room);
     }
 
     /// Fold a persona's radiated vitals into the per-member map and re-store.
@@ -723,7 +718,17 @@ impl ChatProjection {
         // Genes REPLACE (not merge): an empty list is a real "paged out to
         // base" fact from the radiator, not an absence to preserve across.
         self.genes.insert(update.member_id, update.genes);
-        self.store();
+        // Member-truth overlay: re-store every room whose roster holds this
+        // member — her meters breathe in each room she stands in.
+        let rooms: Vec<Uuid> = self
+            .accums
+            .iter()
+            .filter(|(_, a)| a.roster.iter().any(|slot| slot.member_id == update.member_id))
+            .map(|(id, _)| *id)
+            .collect();
+        for room in rooms {
+            self.store_for(room);
+        }
     }
 
     /// Fold a posted message into the view and store the new snapshot.
@@ -737,21 +742,18 @@ impl ChatProjection {
     /// ids the bus minted for it. Identity is resolved from the roster, never
     /// carried on the message (see `AircChatPosted`).
     fn apply_message(&mut self, msg: AircChatPosted) {
-        // A held explicit focus pins the view: a message in another room no
-        // longer refocuses the accumulator (its unread still reaches the nav
-        // rail via the digest path).
-        if self.pinned_away_from(msg.room_id) {
-            return;
-        }
-        self.switch_room(msg.room_id);
-        let is_duplicate = self.messages.iter().any(|m| {
+        // Per-room fold: the message lands in ITS room's accumulator — the
+        // focused view never wanders, and no room's store starves.
+        self.adopt_if_unfocused(msg.room_id);
+        let accum = self.accums.entry(msg.room_id).or_default();
+        let is_duplicate = accum.messages.iter().any(|m| {
             m.id == msg.message_id || (m.sender_id == msg.sender_id && m.content == msg.content)
         });
         if is_duplicate {
             return;
         }
-        let resolved = resolve_identity(&self.roster, msg.sender_id);
-        self.messages.push_back(ChatMessageView {
+        let resolved = resolve_identity(&accum.roster, msg.sender_id);
+        accum.messages.push_back(ChatMessageView {
             id: msg.message_id,
             room_id: msg.room_id,
             sender_id: msg.sender_id,
@@ -762,10 +764,10 @@ impl ChatProjection {
             content: msg.content,
             timestamp: msg.timestamp,
         });
-        while self.messages.len() > MAX_MESSAGES_PER_SNAPSHOT {
-            self.messages.pop_front();
+        while accum.messages.len() > MAX_MESSAGES_PER_SNAPSHOT {
+            accum.messages.pop_front();
         }
-        self.store();
+        self.store_for(msg.room_id);
     }
 
     /// Fold one executed tool act into the receipt ring and store — the act
@@ -778,22 +780,22 @@ impl ChatProjection {
     fn apply_act(&mut self, act: PersonaActUpdate) {
         // A nil room is not a room: headless solves radiate acts with
         // Uuid::nil() (guarded at the producer, kept here as defense in
-        // depth) — folding one would switch_room(nil) and wipe the live
-        // room's view onto a phantom (observed live 2026-08-12).
-        if act.room_id.is_nil() || self.pinned_away_from(act.room_id) {
+        // depth) — a per-room fold keyed on nil would mint a phantom room.
+        if act.room_id.is_nil() {
             return;
         }
-        self.switch_room(act.room_id);
-        if self.acts.iter().any(|a| a.id == act.act_id) {
+        self.adopt_if_unfocused(act.room_id);
+        let accum = self.accums.entry(act.room_id).or_default();
+        if accum.acts.iter().any(|a| a.id == act.act_id) {
             return;
         }
-        let name = self
+        let name = accum
             .roster
             .iter()
             .find(|s| s.member_id == act.actor_id)
             .map(|s| s.display_name.clone())
             .unwrap_or(act.actor_name);
-        self.acts.push_back(ActReceiptView {
+        accum.acts.push_back(ActReceiptView {
             id: act.act_id,
             room_id: act.room_id,
             actor_id: act.actor_id,
@@ -803,10 +805,10 @@ impl ChatProjection {
             ok: act.ok,
             timestamp: act.timestamp,
         });
-        while self.acts.len() > MAX_ACTS_PER_SNAPSHOT {
-            self.acts.pop_front();
+        while accum.acts.len() > MAX_ACTS_PER_SNAPSHOT {
+            accum.acts.pop_front();
         }
-        self.store();
+        self.store_for(act.room_id);
     }
 
     /// Replace the focused room's roster from a presence snapshot and
@@ -815,20 +817,17 @@ impl ChatProjection {
     /// any message whose sender was provisional (posted before its card
     /// arrived) now that the card is known.
     fn apply_presence(&mut self, update: AircPresenceUpdate) {
-        // Same pin as `apply_message`: this is the guard the resync doc in
-        // `positron_presence` names — once a citizen explicitly selects a room,
-        // a broadcast presence re-assert for a DIFFERENT room must not yank
-        // the view off it.
-        if self.pinned_away_from(update.room_id) {
-            return;
-        }
-        self.switch_room(update.room_id);
-        self.room_name = update.room_name;
+        // Per-room fold: presence lands in ITS room's accumulator — with
+        // per-room emitters (#2606) every room's roster stays current and
+        // none of them can yank the focused view (structural, not a guard).
+        self.adopt_if_unfocused(update.room_id);
+        let accum = self.accums.entry(update.room_id).or_default();
+        accum.room_name = update.room_name;
         // The update's roster IS the neutral slot type — move it in directly,
         // no per-field copy through a twin struct.
-        self.roster = update.roster;
-        self.reresolve_messages();
-        self.store();
+        accum.roster = update.roster;
+        reresolve_messages(accum);
+        self.store_for(update.room_id);
     }
 
     /// Re-resolve each stored message's identity from the current roster.
@@ -837,29 +836,22 @@ impl ChatProjection {
     /// resolved identity (presence is authoritative for who is here NOW,
     /// not for who authored a past message). This is what makes the
     /// provisional-until-card projection settle to the truth in place.
-    fn reresolve_messages(&mut self) {
-        let roster = &self.roster;
-        for msg in self.messages.iter_mut() {
-            if let Some(slot) = roster.iter().find(|s| s.member_id == msg.sender_id) {
-                msg.sender_name = slot.display_name.clone();
-                msg.sender_kind = slot.kind;
-                msg.integrations = slot.integrations.clone();
-                msg.provenance = slot.provenance.clone();
-            }
-        }
+    fn store_for(&mut self, room_id: Uuid) {
+        self.store_room(room_id);
     }
 
-    /// Frame the current accumulator as a `chat` `StateEnvelope` and write
-    /// it to the substrate (cache + live broadcast).
-    fn store(&self) {
-        let Some(room_id) = self.room_id else {
+    /// Frame ONE room's accumulator as its `chat`/`roster`/`experience`
+    /// envelopes and write them: the room's own store always; the node
+    /// substrate only when this room is the focused mirror.
+    fn store_room(&mut self, room_id: Uuid) {
+        let Some(accum) = self.accums.get(&room_id) else {
             return;
         };
         // Merge each member's latest radiated vitals into its neutral slot
         // (design B fold): presence owns the roster shape; vitals are the live
         // cognition overlay keyed by id. A member with no vitals entry keeps the
         // slot's empty map — no fabricated bars.
-        let roster: Vec<RosterSlotView> = self
+        let roster: Vec<RosterSlotView> = accum
             .roster
             .iter()
             .map(|slot| {
@@ -886,19 +878,18 @@ impl ChatProjection {
         // Members). `Experience` is renderer-agnostic (no positron-core dep), so it
         // rides `session_raw` under its own `KIND`. No recipe for the room's purpose
         // → nothing published (fail-quiet on this OPTIONAL surface; chat still ships).
-        if let Some(exp) = self.build_experience(room_id, &roster) {
+        let mirror_node = self.room_id == Some(room_id);
+        let exp = self.build_experience(room_id, &roster);
+        let accum = self.accums.get_mut(&room_id).expect("accum checked above");
+        if let Some(exp) = exp {
             // Emit-on-change: skip re-publishing an identical manifest (messages don't
             // move membership/purpose). Only presence-driven changes reach the wire.
-            let unchanged = self.last_experience.borrow().as_ref() == Some(&exp);
-            if !unchanged {
+            if accum.last_experience.as_ref() != Some(&exp) {
                 let payload = serde_json::to_value(&exp)
                     .expect("Experience must serialize — substrate bug, not a runtime error");
-                self.store_room_scoped(
-                    room_id,
-                    self.experience_builder
-                        .session_raw(Experience::KIND, payload),
-                );
-                *self.last_experience.borrow_mut() = Some(exp);
+                let env = self.experience_builder.session_raw(Experience::KIND, payload);
+                Self::sink(&self.rooms, &self.substrate, mirror_node, room_id, env);
+                self.accums.get_mut(&room_id).expect("accum").last_experience = Some(exp);
             }
         }
 
@@ -906,37 +897,37 @@ impl ChatProjection {
         // ViewState): the Experience manifest's roster region binds to this for
         // names/kinds/vitals — the display data the manifest's minimal Member omits.
         // Emit-on-change (roster only shifts on presence, not per message).
-        if self.last_roster.borrow().as_deref() != Some(roster.as_slice()) {
-            self.store_room_scoped(
+        if self.accums[&room_id].last_roster.as_deref() != Some(roster.as_slice()) {
+            let env = self.roster_builder.session(RosterViewState {
                 room_id,
-                self.roster_builder.session(RosterViewState {
-                    room_id,
-                    roster: roster.clone(),
-                }),
-            );
-            *self.last_roster.borrow_mut() = Some(roster.clone());
+                roster: roster.clone(),
+            });
+            Self::sink(&self.rooms, &self.substrate, mirror_node, room_id, env);
+            self.accums.get_mut(&room_id).expect("accum").last_roster = Some(roster.clone());
         }
 
+        let accum = &self.accums[&room_id];
         let view = ChatViewState {
             room_id,
-            room_name: self.room_name.clone(),
+            room_name: accum.room_name.clone(),
             // The room's activity purpose — resolved through the `RoomPurposeSource`
             // seam (#6), NOT hardcoded. Today the default answers "chat" for every
             // room; when the recipe-backed resolver is injected, a foundry / scada /
             // academy room reports its own purpose and the client's Content primitive
             // dispatches on it (ACTIVITY-ROOM-PATTERNS.md) with no change here.
             purpose: self.purpose_source.purpose_for(room_id),
-            messages: self.messages.iter().cloned().collect(),
-            acts: self.acts.iter().cloned().collect(),
+            messages: accum.messages.iter().cloned().collect(),
+            acts: accum.acts.iter().cloned().collect(),
             roster,
         };
         // Emit-on-change: a vitals/presence tick that moved nothing in the
         // chat view must not re-serialize and re-broadcast 100 messages.
-        if self.last_chat.borrow().as_ref() == Some(&view) {
+        if accum.last_chat.as_ref() == Some(&view) {
             return;
         }
-        self.store_room_scoped(room_id, self.builder.session(view.clone()));
-        *self.last_chat.borrow_mut() = Some(view);
+        let env = self.builder.session(view.clone());
+        Self::sink(&self.rooms, &self.substrate, mirror_node, room_id, env);
+        self.accums.get_mut(&room_id).expect("accum").last_chat = Some(view);
     }
 
     /// Store one per-room envelope to BOTH sinks: the node substrate (what the
@@ -945,15 +936,23 @@ impl ChatProjection {
     ///
     /// ONE place decides the dual-sink rule, so a future kind cannot be added to one
     /// sink and forgotten in the other — the compression law applied to a write path.
-    fn store_room_scoped(&self, room_id: Uuid, envelope: continuum_positron::StateEnvelope) {
-        // One allocation, both sinks (2026-08-23 audit): the by-value clone
-        // deep-copied the full ~100-message chat payload tree per store for
-        // the second sink — the largest single producer-side copy in the core.
+    fn sink(
+        rooms: &Option<std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates>>,
+        substrate: &Substrate,
+        mirror_node: bool,
+        room_id: Uuid,
+        envelope: continuum_positron::StateEnvelope,
+    ) {
+        // One allocation, both sinks (2026-08-23 audit). The node substrate is
+        // the FOCUSED room's mirror only — an unfocused room writes its own
+        // store and never the center pane (the anti-wander rule, structural).
         let envelope = std::sync::Arc::new(envelope);
-        if let Some(rooms) = &self.rooms {
+        if let Some(rooms) = rooms {
             rooms.for_room(room_id).store_shared(std::sync::Arc::clone(&envelope));
         }
-        self.substrate.store_shared(envelope);
+        if mirror_node {
+            substrate.store_shared(envelope);
+        }
     }
 
     /// Assemble this room's [`Experience`] manifest: recipe (by the room's purpose)
@@ -1227,6 +1226,8 @@ mod tests {
         assert_eq!(r.actor_name, "Asha");
         assert!(r.ok);
         // Room switch clears the receipt ring with the rest of the state.
+        // PREMISE CHANGE (anti-wander): the switch is explicit focus now.
+        p.apply_focus(Uuid::from_u128(0x9));
         if let Some(ProjectionInput::Act(a)) = classify(
             PERSONA_ACT,
             &act_payload(
@@ -1364,8 +1365,10 @@ mod tests {
             }
         }
 
-        // The node holds the LAST room — today's focused-room behavior, unchanged.
-        assert_eq!(current_chat(&node).room_id, room_b);
+        // PREMISE CHANGE (anti-wander): the node mirror holds the FIRST
+        // adopted room — later rooms' events fold into their own stores and
+        // never move the center pane; only nav/select does.
+        assert_eq!(current_chat(&node).room_id, room_a);
 
         // But each room's OWN store kept its own view: room A is not lost.
         let read = |room: Uuid| -> ChatViewState {
@@ -1807,6 +1810,10 @@ mod tests {
         {
             p.apply_message(m);
         }
+        // PREMISE CHANGE (2026-08-31 anti-wander): events no longer switch the
+        // view — only explicit focus does. The clearing behavior under test is
+        // unchanged; the switch is now the nav/select path.
+        p.apply_focus(room_b);
         if let ProjectionInput::Message(m) =
             classify(CHAT_POSTED, &posted(room_b, Uuid::from_u128(0xc), "b")).unwrap()
         {
@@ -1854,7 +1861,11 @@ mod tests {
             Some(&70)
         );
 
-        // Same member id focuses room B → the vitals map is cleared, no leak.
+        // PREMISE CHANGE (2026-08-31, per-room accumulators): vitals are
+        // MEMBER-truth, not room state — the same citizen standing in room B
+        // carries the same live meters she radiated in room A. The old clear
+        // was an artifact of the single shared accumulator.
+        p.apply_focus(room_b);
         if let ProjectionInput::Presence(u) = classify(
             PRESENCE_UPDATED,
             &presence_one(room_b, m, "Asha", "agent", json!({})),
@@ -1865,9 +1876,10 @@ mod tests {
         }
         let view = current_chat(&substrate);
         assert_eq!(view.room_id, room_b);
-        assert!(
-            view.roster[0].vitals.is_empty(),
-            "vitals leaked from room A into room B"
+        assert_eq!(
+            view.roster[0].vitals.get("energy"),
+            Some(&70),
+            "a member's radiated vitals follow HER into every room she stands in"
         );
     }
 

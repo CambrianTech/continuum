@@ -194,7 +194,15 @@ fn ai_safe_commands() -> &'static std::collections::HashSet<String> {
         crate::sdk_codegen::command_registry()
             .iter()
             .filter(|d| d.access_level == crate::sdk_codegen::AccessLevel::AiSafe)
-            .map(|d| d.name.to_string())
+            // ALIASES AUTHORIZE TOO: the gate checks the raw invoked path, and
+            // an alias is the same command — persona/list (alias of
+            // persona/roster) fell through to the Owner wildcard and the
+            // operator's own desktop was refused a read-only roster
+            // (live-found 2026-08-30). One command, every name it answers to.
+            .flat_map(|d| {
+                std::iter::once(d.name.to_string())
+                    .chain(d.aliases.iter().map(|a| a.to_string()))
+            })
             .collect()
     })
 }
@@ -211,7 +219,11 @@ fn privileged_commands() -> &'static std::collections::HashSet<String> {
         crate::sdk_codegen::command_registry()
             .iter()
             .filter(|d| d.access_level == crate::sdk_codegen::AccessLevel::Privileged)
-            .map(|d| d.name.to_string())
+            // Same alias rule as ai_safe_commands: one command, every name.
+            .flat_map(|d| {
+                std::iter::once(d.name.to_string())
+                    .chain(d.aliases.iter().map(|a| a.to_string()))
+            })
             .collect()
     })
 }
@@ -251,6 +263,30 @@ fn command_access_level(command: &str) -> CommandAccess {
 
 #[cfg(test)]
 mod tests {
+    // what this catches: an ALIAS of an ai-safe command must authorize at the
+    // same tier as its canonical name — the gate checks the raw invoked path,
+    // and before this rule persona/list (alias of ai-safe persona/roster)
+    // fell to the Owner wildcard, refusing the operator's own desktop a
+    // read-only roster. regression for the 2026-08-30 who-panel outage.
+    #[test]
+    fn an_alias_authorizes_at_its_canonical_commands_tier() {
+        let registry = crate::sdk_codegen::command_registry();
+        let canonical_ai_safe = registry
+            .iter()
+            .find(|d| {
+                d.access_level == crate::sdk_codegen::AccessLevel::AiSafe
+                    && !d.aliases.is_empty()
+            })
+            .expect("at least one aliased ai-safe command exists");
+        for alias in canonical_ai_safe.aliases {
+            assert!(
+                is_command_authorized(alias, TrustLevel::Provisional),
+                "alias `{alias}` of ai-safe `{}` must authorize at Provisional",
+                canonical_ai_safe.name
+            );
+        }
+    }
+
     use super::*;
 
     #[test]

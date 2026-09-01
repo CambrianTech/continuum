@@ -8,7 +8,7 @@
 //! FIRST frame, so this pump just streams frames as the renderer produces them;
 //! there is no explicit track setup here.
 //!
-//! Frame-driven, not sleep-polled: Bevy ticks at ~15fps and `frame_notify`
+//! Frame-driven, not sleep-polled: Bevy ticks at AVATAR_FPS (30) and `frame_notify`
 //! fires once per readback, so the pump `.await`s the notifier and publishes the
 //! freshest frame each time. When it falls behind it drains to the latest frame
 //! rather than shipping a backlog (webrtc wants the current pose, not stale
@@ -54,7 +54,7 @@ fn config_for_identity(identity: &str, display_name: &str) -> Result<AvatarConfi
         display_name: display_name.to_string(),
         width: AVATAR_WIDTH,
         height: AVATAR_HEIGHT,
-        fps: 15.0,
+        fps: 30.0,
         vrm_model_path: Some(vrm_path.to_string_lossy().to_string()),
         preference: Default::default(),
     })

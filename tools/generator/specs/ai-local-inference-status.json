@@ -1,0 +1,35 @@
+{
+  "name": "ai/local-inference/status",
+  "description": "Query Continuum's local inference HTTP server (Anthropic-compatible Messages API). Returns whether the server is running and the URL external agents (Claude Code via ANTHROPIC_BASE_URL, future Codex via OPENAI_BASE_URL) should point at to use local Continuum models instead of cloud APIs. First-class surface for the AGENT-BACKBONE integration story (PR #976 §1-§4).",
+  "params": [],
+  "results": [
+    {
+      "name": "running",
+      "type": "boolean",
+      "description": "True if the local inference HTTP server is bound + accepting requests"
+    },
+    {
+      "name": "url",
+      "type": "string",
+      "description": "Base URL to use for external-agent ANTHROPIC_BASE_URL injection (e.g., http://127.0.0.1:8421). Empty when running=false."
+    },
+    {
+      "name": "port",
+      "type": "number",
+      "description": "TCP port the server is bound to. 0 when running=false."
+    },
+    {
+      "name": "protocol",
+      "type": "string",
+      "description": "Wire protocol the server speaks. Currently always 'anthropic' (Messages API). 'openai' will be added when openai_compat.rs lands per AGENT-BACKBONE §4.1."
+    }
+  ],
+  "examples": [
+    {
+      "description": "Check if local inference is up",
+      "params": {}
+    }
+  ],
+  "accessLevel": "ai-safe",
+  "category": "ai"
+}

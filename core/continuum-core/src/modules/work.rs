@@ -1081,7 +1081,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
     // after a reboot, a retry attempt — same room, continuity). MINT: spawn a
     // real activity room, child of the run room, and record it.
     let solve_room = match crate::cognition::bench_round::card_activity(card_id.as_uuid()) {
-        Some(act) => {
+        Some(mut act) => {
             crate::probe!(
                 class = "work.solve.room_rejoined",
                 card_id = %short8(card_id.as_uuid()),
@@ -1089,6 +1089,14 @@ pub(crate) async fn dispatch_staged_swe_solve(
                 room = %act.solve_room,
                 "solve REJOINS its recorded activity room — resume and dispatch are one motion"
             );
+            // BACKFILL the room's name for activities recorded before names
+            // existed: the mint name is deterministic (`swe--<instance>--<card8>`),
+            // so a rejoin can restore it — and with it, presence adoption +
+            // nav for this room (#2606). Idempotent; new records carry it.
+            if act.room_name.is_empty() {
+                act.room_name = format!("swe--{}--{}", instance, short8(card_id.as_uuid()));
+                crate::cognition::bench_round::record_card_activity(card_id.as_uuid(), act.clone());
+            }
             act.solve_room
         }
         None => {
@@ -1136,6 +1144,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
                     let act = crate::cognition::bench_round::CardActivity {
                         teammates: teammates.iter().map(|p| p.as_uuid()).collect(),
                         solve_room: spawned.room_id.as_uuid(),
+                        room_name: name.clone(),
                         assignee: claimer.as_uuid(),
                     };
                     crate::cognition::bench_round::record_card_activity(card_id.as_uuid(), act.clone()); // clone: probe below still reads the local
@@ -2117,6 +2126,9 @@ impl ServiceModule for WorkModule {
             // assignees against — constructed here for the same dep-ownership reason (#396
             // live-roster verb; the observability side of "dispatch targets the live roster").
             Arc::new(crate::commands::persona_roster::PersonaRoster {
+                registry: self.registry.clone(),
+            }),
+            Arc::new(crate::commands::presence_directory::PresenceDirectory {
                 registry: self.registry.clone(),
             }),
         ]

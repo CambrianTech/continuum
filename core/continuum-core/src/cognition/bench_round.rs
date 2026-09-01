@@ -46,9 +46,10 @@ use uuid::Uuid;
 ///   half of the objective requires — and the one that has never once been observed
 ///   end to end, because on the default path the detached solve always wins the claim.
 ///
-/// `DetachedSolve` is the default and today's behaviour: an operator opts INTO the
-/// citizen path per round. Both are real drivers, not a flag and a fallback — which is
-/// why the choice is named on the round rather than hidden behind a `skip_solve` bool.
+/// `Citizen` is the default (flipped 2026-08-31): a round teaches by default, and an
+/// operator opts INTO the detached diagnostic per round. Both are real drivers, not a
+/// flag and a fallback — which is why the choice is named on the round rather than
+/// hidden behind a `skip_solve` bool.
 #[derive(
     Debug,
     Clone,
@@ -64,8 +65,16 @@ use uuid::Uuid;
 #[serde(rename_all = "snake_case")]
 #[ts(export, export_to = "../../../protocol/typescript/benchmark/WorkDriver.ts")]
 pub enum WorkDriver {
-    #[default]
+    /// A detached fork works the card outside any citizen's cognition —
+    /// produces no room turns, feeds no curriculum, breathes no meters
+    /// (BENCHMARKS-ARE-ADAPTERS: "maximum effort, zero learning"). An
+    /// explicit diagnostic mode, NEVER the default.
     DetachedSolve,
+    /// The room is the runner: a citizen's own cognition works the card,
+    /// acts radiate, turns feed the flywheel. THE default — benchmarks use
+    /// our citizens, never disposable solvers (Joel's law; flipped
+    /// 2026-08-31 after four detached rounds ran invisible all night).
+    #[default]
     Citizen,
 }
 
@@ -126,6 +135,11 @@ enum SettleOutcome {
 /// "kicked off by a command, owned by events" only holds if the owner survives.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct BenchRound {
+    /// The RUN room's airc NAME (`round_id` IS the run room's UUID; joins are
+    /// by name). `default` folds pre-field files as empty — such a round's run
+    /// room stays presence-dark until a fresh dispatch names it.
+    #[serde(default)]
+    pub run_room_name: String,
     round_id: Uuid,
     benchmark: String,
     /// Card uuid → the terminal state it settled with (`None` = still working).
@@ -165,6 +179,13 @@ pub struct BenchRound {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CardActivity {
     pub solve_room: Uuid,
+    /// The solve room's airc NAME (`swe--<instance>--<card8>`). Joins are
+    /// by name (never UUID-as-string — the derived-channel hazard), so any
+    /// consumer that must SUBSCRIBE to activity rooms (the presence
+    /// emitter, #2606) reads it from here. `default` folds old files as
+    /// empty — such a room stays presence-dark until its next dispatch.
+    #[serde(default)]
+    pub room_name: String,
     pub assignee: Uuid,
     /// Room-members beyond the claimer. Recorded so a resume re-invites the
     /// SAME team (continuity), and so experience records can attribute team
@@ -177,6 +198,7 @@ impl BenchRound {
     pub fn new(round_id: Uuid, benchmark: &str, card_ids: &[Uuid], driver: WorkDriver) -> Self {
         Self {
             round_id,
+            run_room_name: String::new(),
             benchmark: benchmark.to_string(),
             cards: card_ids.iter().map(|c| (*c, None)).collect(),
             stage: RoundStage::Working,
@@ -414,6 +436,17 @@ pub fn open_round(round_id: Uuid, benchmark: &str, driver: WorkDriver) {
 /// [`open_round`] with the resolved reviewer set). Driver edges fall back to
 /// this when a card has no recorded activity yet — a team round stays a team
 /// round on every edge.
+/// Record the run room's airc name (dispatch calls it right after
+/// [`open_round`]) — the presence emitter's adoption list reads it so the
+/// RUN room, not just its solve children, projects presence + transcript.
+pub fn set_run_room_name(round_id: Uuid, name: &str) {
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(round) = rounds.get_mut(&round_id) {
+        round.run_room_name = name.to_string();
+        persist_round_in(&rounds_state_dir(), round);
+    }
+}
+
 pub fn set_round_team(round_id: Uuid, team: Vec<Uuid>) {
     let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());
     if let Some(r) = rounds.get_mut(&round_id) {
@@ -868,6 +901,30 @@ pub struct RoundSnapshot {
 /// Sorted by round id so two calls a second apart cannot reorder rows under a reader —
 /// a projection whose row order depends on `HashMap` iteration teaches its consumers to
 /// distrust it.
+/// Every live round's ACTIVITY rooms — `(solve_room, airc_name)` for each
+/// card that has one, skipping rows whose name predates `room_name` (empty).
+/// The presence emitter merges these with the registry rooms so per-run
+/// rosters and transcripts reach the interface (#2606 / #2632: the academy's
+/// children are rooms, and a room without presence renders blank).
+pub fn activity_rooms() -> Vec<(Uuid, String)> {
+    let rounds = ROUNDS.lock().unwrap_or_else(|e| e.into_inner());
+    rounds
+        .values()
+        .filter(|r| r.stage != RoundStage::Done)
+        .flat_map(|r| {
+            let run = (!r.run_room_name.is_empty())
+                .then(|| (r.round_id, r.run_room_name.clone()));
+            run.into_iter().chain(
+                r.card_activities
+                    .values()
+                    .filter(|a| !a.room_name.is_empty())
+                    .map(|a| (a.solve_room, a.room_name.clone()))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect()
+}
+
 pub fn live_rounds() -> Vec<RoundSnapshot> {
     let rounds = ROUNDS.lock().unwrap_or_else(|e| e.into_inner());
     let mut out: Vec<RoundSnapshot> = rounds
@@ -911,6 +968,7 @@ mod tests {
     fn the_non_settling_edge_advances_past_the_card_that_just_failed() {
         fn round_with(cards: &[(Uuid, Uuid)]) -> BenchRound {
             BenchRound {
+                run_room_name: String::new(),
                 round_id: Uuid::new_v4(),
                 benchmark: "swe-bench-lite".into(),
                 cards: cards.iter().map(|(c, _)| (*c, None)).collect(),
@@ -991,6 +1049,7 @@ mod tests {
         let (id, cs) = (Uuid::new_v4(), cards(2));
         let mut round = BenchRound::new(id, "swe-bench-verified", &cs, WorkDriver::DetachedSolve);
         let act = CardActivity {
+            room_name: String::new(),
             teammates: Vec::new(), // test row: solo
 
             solve_room: Uuid::from_u128(0xA11CE),
@@ -1111,13 +1170,16 @@ mod tests {
         ROUNDS.lock().unwrap().remove(&round_id);
     }
 
-    // what this catches: the default biting the wrong way. A card belonging to no live
-    // round — human-claimed, undirected, or a leftover claimed after its round ended —
-    // must answer DetachedSolve, the proven path. Defaulting to Citizen would silently
-    // stop firing solves for every ordinary claim on the box.
+    // what this catches: the default biting the wrong way — INVERTED 2026-08-31
+    // (PREMISE CHANGE with the WorkDriver default flip). A card belonging to no
+    // live round — human-claimed, undirected, or a leftover claimed after its
+    // round ended — drives CITIZEN: the claimer works it in her own service
+    // loop, turns feed the flywheel. Detached is the per-round diagnostic
+    // opt-in, never what an ordinary claim silently falls into (four detached
+    // rounds ran invisible all night on the old default).
     #[test]
-    fn a_card_in_no_round_drives_by_detached_solve() {
-        assert_eq!(driver_for_card(Uuid::new_v4()), WorkDriver::DetachedSolve);
+    fn a_card_in_no_round_drives_by_citizen() {
+        assert_eq!(driver_for_card(Uuid::new_v4()), WorkDriver::Citizen);
     }
 
     // what this catches: a round that dispatched nothing must END, not sit in the map

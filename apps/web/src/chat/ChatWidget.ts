@@ -36,8 +36,12 @@ import type {
 } from '@continuum/sdk-typescript';
 import { renderChat } from './renderChat';
 import { CallClient, type CallVideoFrame } from '../live/callClient';
+import type { RemoteTrack } from 'livekit-client';
 import {
   LISTING_SELECT,
+  LIVE_CAMERA_TOGGLE,
+  LIVE_MEDIA_ASK,
+  LIVE_TILE_PIN,
   LIVE_MIC_TOGGLE,
   LIVE_CAPTIONS_TOGGLE,
   LIVE_FACE_TOGGLE,
@@ -56,7 +60,14 @@ import {
   type PanelResizeStartDetail,
 } from '../render/parts';
 import { LIVE_PURPOSE, type SettingsContentBody, type WorkspaceLayout } from '@continuum/patterns';
-import '../render/CosmosBackdrop'; // registers <cosmos-backdrop> for the cosmos universe
+import { universeRegistry, type UniverseInstance } from '../universe/Universe';
+import { CosmosUniverse } from '../universe/CosmosUniverse';
+import { PositronUniverse } from '../universe/PositronUniverse';
+
+// One registration per universe — the registry is the only list (no switches;
+// the widget resolves keys and speaks the UniverseInstance interface only).
+universeRegistry.register(new CosmosUniverse());
+universeRegistry.register(new PositronUniverse());
 
 /** The send action the host injects. Resolves when the message is accepted by
  *  the core; rejects (fails loud) on a transport/command error the widget shows. */
@@ -101,6 +112,11 @@ export class ChatWidget extends LitElement {
     arena: { attribute: false },
     canvas: { attribute: false },
     version: { attribute: false },
+    feedStatus: { attribute: false },
+    mindRevision: { attribute: false },
+    viewerId: { attribute: false },
+    viewerName: { attribute: false },
+    liveTokenHandler: { attribute: false },
     sendHandler: { attribute: false },
     settingsHandler: { attribute: false },
     selectRoomHandler: { attribute: false },
@@ -108,6 +124,9 @@ export class ChatWidget extends LitElement {
     callUrl: { attribute: false },
     _mediaConnected: { state: true },
     _micOn: { state: true },
+    _camOn: { state: true },
+    _mediaAsk: { state: true },
+    _pinnedTile: { state: true },
     _draft: { state: true },
     _sending: { state: true },
     _sendError: { state: true },
@@ -154,6 +173,31 @@ export class ChatWidget extends LitElement {
    *  live artifact stage (DESIGN-BENCH-VISUAL-CRAFT.md §5). `undefined` =
    *  the canvas face renders its honest awaiting frame. */
   canvas?: CanvasViewState;
+
+  /** The state feed's connection status (`live`/`connecting`/`reconnecting`/
+   *  `cached`/`closed`), set by the host's `StateConnection.onStatus` — drives
+   *  the continuon orb's color (with the favicon, the designed status channel;
+   *  never a text banner). */
+  feedStatus?: string;
+
+  /** Monotonic bump from the host's mind-feed poller (renderPersona's live
+   *  learning stream reads a module store; this property exists purely so a
+   *  fresh poll re-renders the open persona page). */
+  mindRevision = 0;
+
+  /** The VIEWER's durable identity (the session's `?me=` uuid) — who this
+   *  human IS in a live call. Set by the host; joining a call without it is
+   *  refused loudly (the hardcoded 'operator-web' string it replaces made the
+   *  registrar drop the session — hold music, no citizens; live 2026-08-31). */
+  viewerId?: string;
+  /** The viewer's display name for call tiles (the directory's name for
+   *  `viewerId`, e.g. "joel"). */
+  viewerName?: string;
+
+  /** Host-supplied `live/token` fetch — present = the node has the WebRTC
+   *  media plane and calls join it (UDP, hardware codecs). Absent = the WS
+   *  tee remains the only lane (older core), loudly logged by the client. */
+  liveTokenHandler?: (room: string) => Promise<{ url: string; token: string }>;
 
   /** The client build's version string (a real manifest/build stamp injected by
    *  the host) — drives the continuon header's version badge. `undefined` = no
@@ -240,6 +284,11 @@ export class ChatWidget extends LitElement {
   private _call?: CallClient;
   private _mediaConnected = false;
   private _micOn = false;
+  private _camOn = false;
+  /** The staged media-permission flow (POSITRON-MEDIA-PERMISSIONS.md): which
+   *  capability's reason/recovery card the live face is showing. `denied`
+   *  switches the card from reason+continue to honest recovery steps. */
+  private _mediaAsk?: { kind: 'camera' | 'mic'; denied?: boolean };
   /** Call-server avatar states: personaId → speaking (merged into the streams
    *  map so the SAME projection drives borders whether speech is tokens on the
    *  chat rail or real audio on the call). */
@@ -247,6 +296,20 @@ export class ChatWidget extends LitElement {
   /** senderId → latest decoded video frame, painted onto the tile canvas in
    *  updated() (imperative — canvas is not declarative Lit content). */
   private _videoFrames = new Map<string, CallVideoFrame>();
+  /** LiveKit tracks by participant identity — the REAL media plane. Attached
+   *  imperatively after render (video → its tile's <video>, audio → a hidden
+   *  autoplaying <audio>); the browser decodes off-main-thread. */
+  private _lkTracks = new Map<string, { video?: RemoteTrack; audio?: RemoteTrack }>();
+  /** Who is actually IN the call (ws ParticipantJoined + lk track holders +
+   *  self) — the grid tiles THESE, not everyone room-online (a call app never
+   *  shows offline/absent people as static tiles; they appear on connect). */
+  private _callParticipants = new Set<string>();
+  /** The reader's pinned call tile (explicit stage); undefined = unpinned. */
+  private _pinnedTile?: string;
+  /** Pending typing mutations (text = latest accumulation, null = ended) —
+   *  flushed onto the reactive `_typing` at most once per animation frame. */
+  private _typingBuf = new Map<string, string | null>();
+  private _typingFlush?: number;
 
   private _draft = '';
   private _sending = false;
@@ -335,6 +398,16 @@ export class ChatWidget extends LitElement {
         this._call = undefined;
         this._callSpeaking = new Map();
       },
+      onParticipantJoined: (userId) => {
+        this._callParticipants = new Set(this._callParticipants).add(userId);
+        this.requestUpdate();
+      },
+      onParticipantLeft: (userId) => {
+        const next = new Set(this._callParticipants);
+        next.delete(userId);
+        this._callParticipants = next;
+        this.requestUpdate();
+      },
       onAvatar: (a) => {
         const next = new Map(this._callSpeaking);
         if (a.speaking) next.set(a.personaId, true);
@@ -345,18 +418,61 @@ export class ChatWidget extends LitElement {
       onDelta: (d) => {
         if (this.state) this.applyStreamDelta({ ...d, roomId: this.state.room_id });
       },
-      onVideoFrame: (f) => {
-        this._videoFrames.set(f.senderId, f);
+      onTrack: (identity, kind, track) => {
+        const entry = this._lkTracks.get(identity) ?? {};
+        entry[kind] = track;
+        if (entry.video === undefined && entry.audio === undefined) {
+          this._lkTracks.delete(identity);
+        } else {
+          this._lkTracks.set(identity, entry);
+        }
+        // Structural: a tile's media element set changed — one re-render, then
+        // the post-render pass attaches the tracks imperatively.
         this.requestUpdate();
+      },
+      onVideoFrame: (f) => {
+        // OVERDRAW LAW (Joel, live 2026-08-31): a video frame repaints ITS
+        // canvas, never the widget. requestUpdate here re-rendered the entire
+        // template per frame per sender — the browser burned 40% GPU on
+        // overdraw. Structural re-render happens ONLY when a sender first
+        // appears (its tile/canvas doesn't exist yet).
+        const isNew = !this._videoFrames.has(f.senderId);
+        this._videoFrames.set(f.senderId, f);
+        if (isNew) {
+          this.requestUpdate();
+          return; // the post-render paint pass below draws the first frame
+        }
+        this.paintVideoFrame(f);
       },
     });
     this._call = client;
+    if (this.viewerId === undefined) {
+      // No fallback identity ([[fallbacks-are-illegal-fail-loud]]): a call
+      // joined under a made-up id is a session the registrar cannot address —
+      // the exact hold-music bug this replaces.
+      console.error('cannot join call: viewerId not set on <chat-widget> — the host must set it');
+      this._call = undefined;
+      this._mediaConnected = false;
+      return;
+    }
+    // The media-plane door: live/token from the host. A missing handler or a
+    // failed mint is LOUD and the call proceeds control-only (WS) — never a
+    // silent fake-connected media state.
+    let livekit: { url: string; token: string } | undefined;
+    if (this.liveTokenHandler !== undefined) {
+      try {
+        livekit = await this.liveTokenHandler(this.state.room_id);
+      } catch (err) {
+        console.error('live/token failed — media plane unavailable this call:', err);
+      }
+    }
     try {
       await client.connect(
         this.callUrl,
         this.state.room_id,
-        'operator-web',
-        'Operator (web)',
+        this.viewerId,
+        this.viewerName ?? 'you',
+        livekit,
       );
     } catch {
       this._call = undefined;
@@ -364,27 +480,119 @@ export class ChatWidget extends LitElement {
     }
   }
 
+  /** Paint ONE video frame onto its tile canvas — imperative, render-pass-free. */
+  private paintVideoFrame(frame: CallVideoFrame): void {
+    if (frame.pixelFormat !== 0) return; // 0 = RGBA8
+    const canvas = this.renderRoot.querySelector<HTMLCanvasElement>(
+      `canvas.lt-video[data-sender="${frame.senderId}"]`,
+    );
+    if (!canvas) return;
+    if (canvas.width !== frame.width) canvas.width = frame.width;
+    if (canvas.height !== frame.height) canvas.height = frame.height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const expected = frame.width * frame.height * 4;
+    if (frame.pixels.length < expected) return;
+    const rgba = new Uint8ClampedArray(expected);
+    rgba.set(frame.pixels.subarray(0, expected));
+    ctx.putImageData(new ImageData(rgba, frame.width, frame.height), 0, 0);
+  }
+
   private disconnectCall(): void {
     this._call?.leave();
     this._call = undefined;
     this._mediaConnected = false;
     this._micOn = false;
+    this._camOn = false;
     this._callSpeaking = new Map();
     this._videoFrames = new Map();
+    this._lkTracks = new Map();
+    this._callParticipants = new Set();
+    this._pinnedTile = undefined;
   }
 
   /** The mic button — a REAL toggle when the media plane is connected. */
-  private onLiveMicToggle = (): void => {
+  /** The platform's LIVE permission state for a capability — queried, never
+   *  assumed (the OS/browser is the single authority,
+   *  POSITRON-MEDIA-PERMISSIONS.md). Safari lacks the Permissions API:
+   *  report 'prompt', which stages the reason card first — stage-1 behavior
+   *  regardless. */
+  private async mediaPermission(kind: 'camera' | 'mic'): Promise<'granted' | 'prompt' | 'denied'> {
+    try {
+      const status = await navigator.permissions.query({
+        name: (kind === 'camera' ? 'camera' : 'microphone') as PermissionName,
+      });
+      return status.state as 'granted' | 'prompt' | 'denied';
+    } catch {
+      return 'prompt';
+    }
+  }
+
+  /** Stage 2: the ASK, fired from an explicit gesture (the reason card's
+   *  continue button, or the capability button once already granted). */
+  private startMedia(kind: 'camera' | 'mic'): void {
     const call = this._call;
     if (!call) return;
-    if (this._micOn) {
-      call.stopMic();
-      this._micOn = false;
+    this._mediaAsk = undefined;
+    if (kind === 'camera') {
+      void call.startCamera(this.viewerId).then((ok) => {
+        this._camOn = ok;
+        if (!ok) this._mediaAsk = { kind: 'camera', denied: true };
+      });
     } else {
       void call.startMic().then((ok) => {
         this._micOn = ok;
+        if (!ok) this._mediaAsk = { kind: 'mic', denied: true };
       });
     }
+  }
+
+  /** A capability button press → the staged flow: granted acts directly;
+   *  prompt opens the reason card; denied opens recovery. */
+  private toggleMedia(kind: 'camera' | 'mic'): void {
+    const call = this._call;
+    if (!call) return;
+    if (kind === 'camera' && call.camLive) {
+      call.stopCamera();
+      this._camOn = false;
+      return;
+    }
+    if (kind === 'mic' && call.micLive) {
+      call.stopMic();
+      this._micOn = false;
+      return;
+    }
+    void this.mediaPermission(kind).then((state) => {
+      if (state === 'granted') this.startMedia(kind);
+      else this._mediaAsk = { kind, denied: state === 'denied' };
+    });
+  }
+
+  /** Tile click: pin it to the stage; clicking the pinned tile unpins. */
+  private onLiveTilePin = (e: Event): void => {
+    const id = (e as CustomEvent<{ id?: string }>).detail?.id;
+    if (id === undefined) return;
+    this._pinnedTile = this._pinnedTile === id ? undefined : id;
+  };
+
+  /** The reason card's outcome: continue → the real ask on this explicit
+   *  gesture; dismiss (and the denied card's OK) → close. */
+  private onLiveMediaAsk = (e: Event): void => {
+    const outcome = (e as CustomEvent<{ outcome?: string }>).detail?.outcome;
+    if (outcome === 'continue' && this._mediaAsk && !this._mediaAsk.denied) {
+      this.startMedia(this._mediaAsk.kind);
+    } else {
+      this._mediaAsk = undefined;
+    }
+  };
+
+  /** The camera button — the staged permission flow, then start/stop. */
+  private onLiveCameraToggle = (): void => {
+    this.toggleMedia('camera');
+  };
+
+  private onLiveMicToggle = (): void => {
+    this.toggleMedia('mic');
   };
 
   /** CC toggle — flips the live caption strip (a real control). */
@@ -517,13 +725,30 @@ export class ChatWidget extends LitElement {
       this._sessions.set(delta.roomId, sess);
       return;
     }
-    const next = new Map(this._typing);
+    // COALESCED: tokens arrive faster than frames, and assigning the reactive
+    // `_typing` per token re-rendered the full template per token (the
+    // overdraw class, Joel live 2026-08-31). Mutations buffer into a pending
+    // op map (string = latest text, null = stream ended) and the ONE reactive
+    // assignment flushes at most once per animation frame.
     if (delta.done) {
-      next.delete(delta.senderId);
+      this._typingBuf.set(delta.senderId, null);
     } else {
-      next.set(delta.senderId, (next.get(delta.senderId) ?? '') + delta.token);
+      const base =
+        this._typingBuf.get(delta.senderId) ?? this._typing.get(delta.senderId) ?? '';
+      this._typingBuf.set(delta.senderId, (base ?? '') + delta.token);
     }
-    this._typing = next;
+    if (this._typingFlush === undefined) {
+      this._typingFlush = requestAnimationFrame(() => {
+        this._typingFlush = undefined;
+        const next = new Map(this._typing);
+        for (const [k, v] of this._typingBuf) {
+          if (v === null) next.delete(k);
+          else next.set(k, v);
+        }
+        this._typingBuf.clear();
+        this._typing = next;
+      });
+    }
   }
 
   override connectedCallback(): void {
@@ -533,8 +758,16 @@ export class ChatWidget extends LitElement {
     // lore, one definition, every citizen ([[universe-is-an-experience-not-a-theme]]).
     // The target maps the key to a skin; here it's a data-attribute the styles key off.
     // Unset → the native 'continuum' look.
+    // Universes are OPT-IN (?universe=<key>) and resolved through the
+    // registry — a universe earns default status only after passing the
+    // paint budget (the 2026-08-31 cosmos crash wrote that law).
     const universe = new URLSearchParams(location.search).get('universe');
-    if (universe) this.setAttribute('data-universe', universe);
+    if (universe && universe !== 'none') {
+      this.setAttribute('data-universe', universe);
+      const world = universeRegistry.get(universe);
+      if (world) this._universe = world.mount();
+      else console.warn(`unknown universe key '${universe}' — no such registration`);
+    }
     // Digest expand/collapse: the row's affordance fires a composed event that
     // bubbles out of the shadow tree to the host — listen on self so the pure
     // fragments need no callback threading through the render registries.
@@ -552,10 +785,15 @@ export class ChatWidget extends LitElement {
     this.addEventListener(SETTINGS_FACE_TOGGLE, this.onSettingsFaceToggle);
     this.addEventListener(SETTINGS_AGREE, this.onSettingsAgree);
     this.addEventListener(LIVE_MIC_TOGGLE, this.onLiveMicToggle);
+    this.addEventListener(LIVE_CAMERA_TOGGLE, this.onLiveCameraToggle);
+    this.addEventListener(LIVE_MEDIA_ASK, this.onLiveMediaAsk);
+    this.addEventListener(LIVE_TILE_PIN, this.onLiveTilePin);
     this.addEventListener(LIVE_CAPTIONS_TOGGLE, this.onLiveCaptionsToggle);
   }
 
   override disconnectedCallback(): void {
+    this._universe?.dispose();
+    this._universe = undefined;
     this.removeEventListener(MESSAGE_EXPAND_TOGGLE, this.onExpandToggle);
     this.removeEventListener(LISTING_SELECT, this.onListingSelect);
     this.removeEventListener(NAV_TAB_CLOSE, this.onNavTabClose);
@@ -687,6 +925,10 @@ export class ChatWidget extends LitElement {
       display: inline-flex;
       align-items: center;
       gap: 5px;
+      max-width: 200px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      transition: color 0.12s ease, border-color 0.12s ease;
       padding: 4px 8px 5px 10px;
       border: 1px solid var(--border-subtle);
       border-bottom: none;
@@ -792,6 +1034,354 @@ export class ChatWidget extends LitElement {
       color: var(--content-accent);
       font-size: 10px;
     }
+    /* VISUAL STATE LANGUAGE (Joel: "be more visual"): every run card carries
+     * a severity stripe — state readable from across the room, before any
+     * text. Working breathes; terminal states sit still. */
+    .bench-card {
+      border-left: 3px solid transparent;
+    }
+    .bench-card.bench-state-working,
+    .bench-card.bench-state-grading {
+      border-left-color: var(--content-accent, #35d0e0);
+    }
+    .bench-card.bench-state-resolved {
+      border-left-color: #3fb950;
+    }
+    .bench-card.bench-state-failed {
+      border-left-color: #f85149;
+    }
+    .bench-card.bench-state-stalled {
+      border-left-color: #d29922;
+    }
+    .bench-card.bench-state-queued {
+      border-left-color: var(--content-tertiary, #667);
+    }
+    @media (prefers-reduced-motion: no-preference) {
+      /* Compositor-only breathe: animate OPACITY of a painted-once overlay —
+       * box-shadow keyframes repainted every card every frame (Joel:
+       * "animation issues, speed issues"). */
+      .bench-card.bench-state-working {
+        position: relative;
+      }
+      .bench-card.bench-state-working::after {
+        content: '';
+        position: absolute;
+        inset: 0 auto 0 0;
+        width: 3px;
+        background: rgba(53, 208, 224, 0.45);
+        animation: bench-breathe 3s ease-in-out infinite;
+        pointer-events: none;
+      }
+      @keyframes bench-breathe {
+        0%, 100% { opacity: 0; }
+        50% { opacity: 1; }
+      }
+    }
+    /* HOME INTERIOR — the orthographic dollhouse card. Quiet inks; the lit
+     * window and glowing desk items are the only saturated marks. */
+    .p-home-hint { font-size: 10px; text-transform: none; letter-spacing: 0; color: var(--content-tertiary, #667); margin-left: 8px; }
+    .home-iso { width: 100%; max-width: 360px; display: block; margin: 0 auto; }
+    .hi-floor { fill: rgba(255,255,255,0.04); stroke: var(--border-subtle, #334); stroke-width: 0.6; }
+    .hi-wall-l { fill: rgba(255,255,255,0.02); stroke: var(--border-subtle, #334); stroke-width: 0.6; }
+    .hi-wall-r { fill: rgba(255,255,255,0.05); stroke: var(--border-subtle, #334); stroke-width: 0.6; }
+    .hi-window { fill: rgba(255,255,255,0.03); stroke: var(--border-subtle, #334); stroke-width: 0.6; }
+    .hi-window.hi-lit { fill: rgba(255, 214, 100, 0.35); stroke: rgba(255, 214, 100, 0.6); }
+    .hi-desk { fill: rgba(255,255,255,0.07); stroke: var(--border-subtle, #334); stroke-width: 0.6; }
+    .hi-run { fill: rgba(53, 208, 224, 0.5); stroke: var(--content-accent, #35d0e0); stroke-width: 0.5; }
+    .hi-shelf { stroke: var(--border-subtle, #334); stroke-width: 1; }
+    .hi-trophy { fill: #d4a017; }
+    .hi-stem { stroke: #3fb950; stroke-width: 1; }
+    .hi-leaf { fill: rgba(63, 185, 80, 0.55); }
+    .hi-self { fill: var(--content-accent, #35d0e0); }
+    .hi-legend { display: flex; gap: var(--spacing-md); justify-content: center; font-size: 10px; color: var(--content-tertiary, #667); margin-top: 4px; flex-wrap: wrap; }
+    /* The form curve — a thin growth polyline in metrics rows. */
+    .metrics-spark {
+      width: 72px;
+      height: 16px;
+      align-self: center;
+      margin-left: var(--spacing-sm);
+    }
+    .metrics-spark path {
+      fill: none;
+      stroke: var(--content-accent, #35d0e0);
+      stroke-width: 1;
+      stroke-linejoin: round;
+    }
+    .metrics-spark circle {
+      fill: var(--content-accent, #35d0e0);
+    }
+    /* HOVER LIFE — interactive things answer the pointer (transform-only,
+     * compositor-cheap; the fun half of "polish till it's fun"). */
+    .bench-card[data-door],
+    .p-run[data-door],
+    .cell[data-selectable] {
+      transition: transform 0.12s ease;
+    }
+    .bench-card[data-door]:hover,
+    .p-run[data-door]:hover {
+      transform: translateY(-1px);
+    }
+    .element-link { cursor: pointer; }
+    .element-link:hover { text-decoration: underline; text-underline-offset: 2px; }
+    /* The native home frame — a bevy-rendered image, displayed, never
+     * rasterized here. */
+    .p-home-frame {
+      display: block;
+      max-width: 360px;
+      width: 100%;
+      margin: 0 auto;
+      border-radius: 6px;
+      border: 1px solid var(--border-subtle);
+    }
+    /* Profile tab bar — one job per tab (PAGES-IA.md). */
+    .p-tabs {
+      display: flex;
+      gap: var(--spacing-xs);
+      margin: var(--spacing-md) 0 var(--spacing-sm);
+      border-bottom: 1px solid var(--border-subtle);
+      padding-bottom: var(--spacing-xs);
+    }
+    .p-tab {
+      background: none;
+      border: 1px solid transparent;
+      border-radius: var(--radius-sm, 4px);
+      color: var(--content-secondary);
+      font-size: 12px;
+      padding: 4px 12px;
+      cursor: pointer;
+      letter-spacing: 0.02em;
+    }
+    .p-tab[data-active] {
+      color: var(--content-accent);
+      border-color: var(--border-subtle);
+      background: var(--button-secondary-background, rgba(255,255,255,0.04));
+    }
+    .p-idnums {
+      display: flex;
+      gap: var(--spacing-sm);
+      margin: 4px 0;
+    }
+    .p-idnum {
+      font-size: 11px;
+      padding: 1px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border-subtle);
+      color: var(--content-secondary);
+    }
+    /* Record & awards — trophy chips: identity earned from verdicts. */
+    .p-trophies {
+      display: flex;
+      gap: var(--spacing-sm);
+      flex-wrap: wrap;
+      margin-bottom: var(--spacing-sm);
+    }
+    .p-trophy {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border-subtle);
+      color: var(--content-secondary);
+    }
+    .p-trophy-wins {
+      border-color: #3fb950;
+      color: #3fb950;
+    }
+    /* MICRO-SPEEDOMETERS — the tile speedline: two thin arc gauges (decode
+     * t/s, prefill t/s), needle position IS the reading. Thin lines, ~22px
+     * each, no extra tile height. */
+    .speedline {
+      display: inline-flex;
+      gap: var(--spacing-sm);
+      align-items: flex-end;
+      margin-right: var(--spacing-xs);
+    }
+    .speedo {
+      display: inline-flex;
+      flex-direction: column;
+      align-items: center;
+      line-height: 1;
+    }
+    .speedo-svg { width: 22px; height: 12px; display: block; }
+    .speedo-arc {
+      fill: none;
+      stroke: var(--border-subtle, #334);
+      stroke-width: 1.5;
+      stroke-linecap: round;
+    }
+    .speedo-needle {
+      stroke: var(--content-accent, #35d0e0);
+      stroke-width: 1;
+      transition: transform 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+      transform-origin: 11px 11px;
+    }
+    .speedo[data-key='pfx'] .speedo-needle { stroke: #b48cff; }
+    .speedo-label {
+      font-size: 7px;
+      letter-spacing: 0.05em;
+      color: var(--content-tertiary, #667);
+      margin-top: 1px;
+    }
+    /* Persona home ACTIVE WORK rows — compact run rows with the board's
+     * state-stripe language; a row that knows its room is a door. */
+    .p-runs {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: var(--spacing-xs);
+    }
+    .p-run {
+      display: flex;
+      align-items: baseline;
+      gap: var(--spacing-md);
+      padding: var(--spacing-xs) var(--spacing-sm);
+      border-left: 3px solid transparent;
+      font-size: 12px;
+    }
+    .p-run.bench-state-working { border-left-color: var(--content-accent, #35d0e0); }
+    .p-run.bench-state-resolved { border-left-color: #3fb950; }
+    .p-run.bench-state-failed { border-left-color: #f85149; }
+    .p-run.bench-state-stalled { border-left-color: #d29922; }
+    .p-run[data-door] { cursor: pointer; }
+    .p-run[data-door]:hover { outline: 1px solid var(--content-accent); outline-offset: -1px; }
+    .p-run-instance { font-family: var(--font-mono, monospace); }
+    .p-run-state { text-transform: uppercase; font-size: 10px; color: var(--content-tertiary, #667); }
+    .p-run-pulse { color: var(--content-secondary, #8aa); }
+    /* PAINT BUDGET (Joel: "Lit animations are already overdrawing"):
+     * off-screen rows in the three long lists cost zero paint/layout —
+     * the browser skips rendering until they scroll into view. */
+    .messages > li,
+    .cells > li,
+    .bench-card {
+      content-visibility: auto;
+      contain-intrinsic-size: auto 72px;
+    }
+    /* GROUPED BOARD: one section per round — its lifecycle row, then ITS runs
+     * (live first, settled folded). A card that knows its room is a DOOR. */
+    .bench-round-group {
+      display: flex;
+      flex-direction: column;
+      gap: var(--spacing-sm);
+      padding: var(--spacing-sm) 0;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .bench-round-group:last-child {
+      border-bottom: none;
+    }
+    .bench-card[data-door] {
+      cursor: pointer;
+    }
+    .bench-card[data-door]:hover {
+      outline: 1px solid var(--content-accent);
+      outline-offset: -1px;
+    }
+    .bench-digest {
+      font-size: 11px;
+      color: var(--content-tertiary, #667);
+      padding: var(--spacing-xs) 0;
+    }
+    .bench-history > summary {
+      cursor: pointer;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--content-tertiary, #667);
+      padding: var(--spacing-xs) 0;
+    }
+    /* ACADEMY LANDING — the campus page: hero strip, live board, chat below. */
+    .academy-landing {
+      display: flex;
+      flex-direction: column;
+      gap: var(--spacing-md);
+      padding: var(--spacing-md);
+      overflow-y: auto;
+      min-height: 0;
+    }
+    .academy-hero {
+      display: flex;
+      align-items: baseline;
+      gap: var(--spacing-lg);
+      padding: var(--spacing-md) var(--spacing-sm) var(--spacing-sm);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .academy-title {
+      font-size: 22px;
+      font-weight: 650;
+      letter-spacing: 0.02em;
+      color: var(--content-accent);
+    }
+    .academy-strip {
+      display: flex;
+      gap: var(--spacing-lg);
+      font-size: 13px;
+      color: var(--content-secondary);
+    }
+    .academy-stat i {
+      font-style: normal;
+      opacity: 0.65;
+      margin-left: 2px;
+    }
+    .academy-chat > summary {
+      cursor: pointer;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--content-tertiary, #667);
+      padding: var(--spacing-sm) 0;
+    }
+    /* THE WORKING WAVE (Joel, 2026-08-30: "active tasks wave as they are
+     * active, as a gradient cyclic"): anything mid-work carries a slow cyclic
+     * gradient sweep across its label — alive reads as MOVING, done reads as
+     * still. Text-clip sweep, one shared class, honest to reduced-motion. */
+    @media (prefers-reduced-motion: no-preference) {
+      .wave-active {
+        background: linear-gradient(
+          90deg,
+          var(--content-secondary, #8aa) 20%,
+          var(--content-accent, #35d0e0) 50%,
+          var(--content-secondary, #8aa) 80%
+        );
+        background-size: 200% 100%;
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        animation: wave-sweep 2.6s linear infinite;
+      }
+      @keyframes wave-sweep {
+        from { background-position: 200% 0; }
+        to { background-position: -200% 0; }
+      }
+    }
+    /* The Activities panel never buries Users & Agents: the room list scrolls
+     * inside its own bounds past ~6 rows (Joel: "it's also pushed the user
+     * list all the way down"). Ephemeral work rooms live in one quiet
+     * disclosure, closed by default. */
+    .rooms-cells {
+      max-height: 240px;
+      overflow-y: auto;
+    }
+    .rooms-work > summary {
+      cursor: pointer;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--content-tertiary, #667);
+      padding: var(--spacing-xs) var(--spacing-md);
+    }
+    /* Rail tree (#2632): a child activity nests under its parent room with a
+     * quiet indent + branch tick — activity == room == tab, now with lineage. */
+    .cell[data-nested] {
+      padding-left: 26px;
+      position: relative;
+    }
+    .cell[data-nested]::before {
+      content: '└';
+      position: absolute;
+      left: 12px;
+      color: var(--content-tertiary, #556);
+      font-size: 10px;
+    }
     /* One stacked global widget in the left rail (Metrics · Rooms · Users & Agents).
      * The rail is a vertical stack; a hairline separates each widget module. Draggable
      * heights + reorder land in task #185 (this is the static stack it resizes). */
@@ -835,6 +1425,25 @@ export class ChatWidget extends LitElement {
     .continuon-orb[data-alive='no'] {
       filter: grayscale(0.8);
       opacity: 0.6;
+    }
+    /* CONNECTION STATE ON THE ORB (with the favicon, the designed status
+       channel — never a text banner). Feed state outranks the alive breath:
+       amber = connecting/reconnecting/cached (retrying quietly), red = closed. */
+    .continuon-orb[data-feed='connecting'],
+    .continuon-orb[data-feed='cached'],
+    .continuon-orb[data-feed='reconnecting'] {
+      background: radial-gradient(circle at 35% 35%, #ffd98a, #a8741a 65%, #4a3208);
+      box-shadow: 0 0 8px rgba(216, 165, 63, 0.6), inset 0 0 3px rgba(255, 255, 255, 0.35);
+      animation: continuon-retry 1.1s ease-in-out infinite;
+    }
+    .continuon-orb[data-feed='closed'] {
+      background: radial-gradient(circle at 35% 35%, #ff9a8a, #a83226 65%, #4a0f08);
+      box-shadow: 0 0 8px rgba(229, 83, 75, 0.6), inset 0 0 3px rgba(255, 255, 255, 0.35);
+      animation: none;
+    }
+    @keyframes continuon-retry {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.45; }
     }
     @media (prefers-reduced-motion: reduce) {
       .continuon-orb[data-alive='yes'] {
@@ -3064,6 +3673,46 @@ export class ChatWidget extends LitElement {
       color: var(--content-primary);
     }
     /* --- brain HUD ------------------------------------------------------ */
+    /* LIVE LEARNING FEED — the engram stream on the mind tab. Rows are real
+       admitted engrams (age · kind · digest); newest first, compositor-cheap. */
+    .engram-stream {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      max-height: 340px;
+      overflow-y: auto;
+    }
+    .engram-row {
+      display: grid;
+      grid-template-columns: 64px 74px 1fr;
+      gap: 8px;
+      align-items: baseline;
+      padding: 6px 8px;
+      border-left: 2px solid var(--content-accent);
+      background: color-mix(in srgb, var(--content-accent) 6%, transparent);
+      border-radius: 4px;
+      font-size: 12px;
+      animation: engram-land 0.5s ease-out;
+    }
+    .engram-row[data-kind='Semantic'] { border-left-color: #b48cff; }
+    .engram-row[data-kind='Procedural'] { border-left-color: #3fb950; }
+    .engram-age { color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .engram-kind { text-transform: uppercase; font-size: 10px; letter-spacing: 0.06em; color: var(--text-muted); }
+    .engram-content {
+      color: var(--text-primary);
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      white-space: pre-line;
+    }
+    @keyframes engram-land {
+      from { opacity: 0; transform: translateY(-3px); }
+      to { opacity: 1; transform: none; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .engram-row { animation: none; }
+    }
     .p-brain {
       background:
         radial-gradient(ellipse 70% 60% at 50% 40%, rgba(0, 212, 255, 0.06), transparent 70%),
@@ -3843,6 +4492,52 @@ export class ChatWidget extends LitElement {
       color: var(--content-secondary);
       font-style: italic;
     }
+    /* The staged media-permission card — reason before the native ask,
+       honest recovery after a deny (POSITRON-MEDIA-PERMISSIONS.md). */
+    .media-ask {
+      position: absolute;
+      top: 18%;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 5;
+      max-width: 380px;
+      padding: 16px 18px;
+      border-radius: 10px;
+      border: 1px solid var(--border-subtle);
+      background: var(--widget-input-area-background);
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+    }
+    .media-ask-title {
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+    .media-ask-body {
+      font-size: 13px;
+      color: var(--text-muted);
+      line-height: 1.5;
+      margin-bottom: 12px;
+    }
+    .media-ask-actions {
+      display: flex;
+      gap: 8px;
+    }
+    .media-ask-continue {
+      background: var(--content-accent);
+      color: #04121a;
+      border: none;
+      border-radius: 6px;
+      padding: 7px 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .media-ask-dismiss {
+      background: transparent;
+      color: var(--text-muted);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 7px 14px;
+      cursor: pointer;
+    }
     .live-grid {
       flex: 1;
       display: grid;
@@ -3949,6 +4644,23 @@ export class ChatWidget extends LitElement {
     }
     /* Wide rooms cap at 4 columns worth of tile width via the minmax above;
        small screens fall to 1–2 columns naturally. */
+    /* LIVE MEDIA fills its tile — video and the WS-tee canvas alike. This
+       block was MISSING entirely: the elements sat intrinsic-size in a
+       centered grid, so streams rendered as clipped corners with the glyph
+       floating on top (Joel's screenshot, 2026-08-31). */
+    .lt-video {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    /* A tile with live media hides its glyph/portrait fallbacks — the stream
+       IS the face. */
+    .live-tile:has(.lt-video) .lt-glyph,
+    .live-tile:has(.lt-video) .live-avatar {
+      display: none;
+    }
     .live-tile {
       position: relative;
       aspect-ratio: 16 / 10;
@@ -4487,6 +5199,16 @@ export class ChatWidget extends LitElement {
       color: #efdcc0;
     }
 
+    /* Cosmos legibility: the center's reading surfaces get a whisper more
+     * backing so star names never fight the text — the universe glows at
+     * the edges, the work stays crisp. */
+    :host([data-universe='cosmos']) .bench-card,
+    :host([data-universe='cosmos']) .bench-score,
+    :host([data-universe='cosmos']) .bench-round,
+    :host([data-universe='cosmos']) .msg-body,
+    :host([data-universe='cosmos']) .p-card {
+      background-color: rgba(10, 14, 24, 0.82);
+    }
     /* ── UNIVERSE: cosmos ── a universe that MOVES. <cosmos-backdrop> paints a living
        starfield + constellation network behind translucent glass panels, so the citizens
        converse afloat in a breathing cosmos. A world in motion, not a colour swap. */
@@ -4600,22 +5322,46 @@ export class ChatWidget extends LitElement {
       // lane-readiness (away=warming), which greys a citizen precisely while
       // she's hardest at work. A resident on THIS node is online, full stop.
       const resident = new Set(this.directorySeed.filter((m) => m.active).map((m) => m.id));
+      // The directory's heartbeat recency beats a room card's stale stamp —
+      // the "9d ago" rows were identity-creation dates, not activity.
+      const seedSeen = new Map(this.directorySeed.map((m) => [m.id, m.lastSeenMs]));
+      // Faces ride the directory too: the presence stream's avatar enrichment
+      // only lands on changed-roster publishes (heartbeats are channel-scoped,
+      // so fossil rosters never re-publish) — the seed's portrait fills any
+      // member the stream left faceless.
+      const seedFace = new Map(
+        this.directorySeed.flatMap((m) => (m.avatarUrl ? [[m.id, m.avatarUrl] as const] : [])),
+      );
       vm = {
         ...vm,
-        members: vm.members.map((m) => (resident.has(m.id) && !m.active ? { ...m, active: true } : m)),
+        members: vm.members.map((m) => {
+          const fresher = Math.max(m.lastSeenMs, seedSeen.get(m.id) ?? 0);
+          const active = m.active || resident.has(m.id);
+          const face = m.avatarUrl ?? seedFace.get(m.id);
+          return active !== m.active || fresher !== m.lastSeenMs || face !== m.avatarUrl
+            ? { ...m, active, lastSeenMs: fresher, ...(face !== undefined ? { avatarUrl: face } : {}) }
+            : m;
+        }),
       };
       const present = new Set(vm.members.map((m) => m.id));
+      // Liveness is NODE-level, not room-level: a resident citizen (and the
+      // viewer) is online in EVERY room's directory — the seed re-polls that
+      // truth. Only non-seed ghosts (remembered from other rooms' rosters)
+      // grey out when absent here.
       const offRoom = [...this._directory.values()]
         .filter((m) => !present.has(m.id))
-        .map((m) => ({ ...m, active: false }));
+        .map((m) => ({ ...m, active: resident.has(m.id) }));
       // Working minds on top, the greyed past below — sorted by liveness then
       // recency then name ("the ONLINE users like benchy and atlas are greyed,
       // at the bottom and doing shit" — Joel, 2026-08-30).
+      // STABLE order: online first, then NAME. lastSeenMs is deliberately NOT
+      // a sort key — it refreshes on every directory poll, and a volatile sort
+      // key made the whole rail (and the call grid downstream) visibly
+      // reshuffle on every render tick (Joel, live 2026-08-31: "all the boxes
+      // randomly reordered"). Recency still renders as the row's stamp; it
+      // just doesn't move rows around.
       const merged = [...vm.members, ...offRoom].sort(
-        (a, b) =>
-          Number(b.active) - Number(a.active) ||
-          b.lastSeenMs - a.lastSeenMs ||
-          a.name.localeCompare(b.name),
+        (a, b) => Number(b.active) - Number(a.active) || a.name.localeCompare(b.name),
       );
       vm = {
         ...vm,
@@ -4732,7 +5478,7 @@ export class ChatWidget extends LitElement {
     const respondingLine =
       responders.length === 0 || composerHidden
         ? nothing
-        : html`<div class="responding-line">(${responders.join(', ')}) is responding…</div>`;
+        : html`<div class="responding-line wave-active">(${responders.join(', ')}) is responding…</div>`;
     const centerFooter = html`
       ${respondingLine}
       ${this._selectError ? html`<div class="send-error">${this._selectError}</div>` : nothing}
@@ -4764,6 +5510,7 @@ export class ChatWidget extends LitElement {
         arena: this.arena,
         canvas: this.canvas,
         version: this.version,
+        ...(this.feedStatus ? { feed: this.feedStatus } : {}),
         // The live-call overlay: the Go-live face state + the REAL StreamDelta
         // token rail (who is speaking NOW, and what they're saying — the same
         // map the typing bubbles/speaking rings draw) + the CC toggle.
@@ -4784,20 +5531,37 @@ export class ChatWidget extends LitElement {
           captionsOn: this._captionsOn,
           mediaConnected: this._mediaConnected,
           micOn: this._micOn,
+          cameraOn: this._camOn,
+          ...(this._mediaAsk !== undefined ? { mediaAsk: this._mediaAsk } : {}),
+          ...(this._pinnedTile !== undefined ? { pinnedId: this._pinnedTile } : {}),
           videoSenders: Array.from(this._videoFrames.keys()),
+          lkVideoSenders: [...this._lkTracks.entries()]
+            .filter(([, t]) => t.video !== undefined)
+            .map(([id]) => id),
+          lkAudioSenders: [...this._lkTracks.entries()]
+            .filter(([, t]) => t.audio !== undefined)
+            .map(([id]) => id),
+          callParticipants: [
+            ...new Set([
+              ...(this.viewerId !== undefined ? [this.viewerId] : []),
+              ...this._callParticipants,
+              ...this._lkTracks.keys(),
+            ]),
+          ],
         },
       }, { centerFooter });
     } catch (err) {
       const cause = err instanceof Error ? err.message : String(err);
       return html`<div class="render-error">Interface error rendering this room: ${cause}</div>`;
     }
-    const cosmos = this.getAttribute('data-universe') === 'cosmos';
+    if (this._universe) {
+      this._universe.update({
+        citizens: vm.members.map((m) => ({ name: m.name, active: m.active })),
+        energy: Math.min(1, (this.bench?.runs ?? []).filter((r) => r.phase === 'active').length / 4),
+      });
+    }
     return html`
-      ${cosmos
-        ? html`<cosmos-backdrop
-            .citizens=${vm.members.map((m) => ({ name: m.name, active: m.active }))}
-          ></cosmos-backdrop>`
-        : nothing}
+      ${this._universe?.element ?? nothing}
       ${surface}
     `;
   }
@@ -4807,7 +5571,34 @@ export class ChatWidget extends LitElement {
    *  rows that slid out of the 50-row window RETIRE onto the buffer's tail —
    *  otherwise a new message would open a silent gap between scrolled-back
    *  history and the live window. */
+  private _lastResolved = -1;
+  private _lastMsgCount = -1;
+  private _lastActCount = -1;
+  /** The mounted universe, spoken to ONLY through UniverseInstance. */
+  private _universe?: UniverseInstance;
+
   protected override willUpdate(changed: PropertyValues): void {
+    // Verdict comets: a NEW resolve fires the backdrop's surge — spectacle
+    // wired to real outcomes.
+    // Universe facts — one interface call per REAL event delta, whatever
+    // world is mounted (or none). No element spelunking, ever.
+    if (changed.has('bench')) {
+      const resolved = (this.bench?.runs ?? []).filter((r) => r.resolved === true).length;
+      if (this._lastResolved >= 0 && resolved > this._lastResolved && this._universe) {
+        for (let i = this._lastResolved; i < resolved; i++) {
+          this._universe.onFact({ kind: 'verdict' });
+        }
+      }
+      this._lastResolved = resolved;
+    }
+    if (changed.has('state') && this.state && this._universe) {
+      const msgs = this.state.messages.length;
+      const acts = this.state.acts.length;
+      if (this._lastMsgCount >= 0 && msgs > this._lastMsgCount) this._universe.onFact({ kind: 'message' });
+      if (this._lastActCount >= 0 && acts > this._lastActCount) this._universe.onFact({ kind: 'act' });
+      this._lastMsgCount = msgs;
+      this._lastActCount = acts;
+    }
     if (!changed.has('state') || !this.state) return;
     const prev = changed.get('state') as ChatState | undefined;
     if (prev && prev.room_id !== this.state.room_id) {
@@ -4966,22 +5757,25 @@ export class ChatWidget extends LitElement {
     // Paint any live video frames onto their tile canvases (imperative — the
     // canvas element is declarative in the template but its pixels are not).
     if (this._videoFrames.size > 0) {
-      for (const [sender, frame] of this._videoFrames) {
-        const canvas = this.renderRoot.querySelector<HTMLCanvasElement>(
-          `canvas.lt-video[data-sender="${sender}"]`,
+      // First-paint only: steady-state frames paint imperatively in
+      // onVideoFrame without touching the render pass.
+      for (const frame of this._videoFrames.values()) this.paintVideoFrame(frame);
+    }
+    // Attach LiveKit tracks to their media elements (idempotent — attach() on
+    // an already-attached element is a no-op srcObject set). The browser owns
+    // decode + paint from here; zero per-frame JS.
+    for (const [identity, tracks] of this._lkTracks) {
+      if (tracks.video !== undefined) {
+        const el = this.renderRoot.querySelector<HTMLVideoElement>(
+          `video[data-lk-video="${identity}"]`,
         );
-        if (!canvas || frame.pixelFormat !== 0) continue; // 0 = RGBA8
-        canvas.width = frame.width;
-        canvas.height = frame.height;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) continue;
-        const expected = frame.width * frame.height * 4;
-        if (frame.pixels.length < expected) continue;
-        // Copy into a fresh ArrayBuffer-backed clamped array (ImageData needs a
-        // real ArrayBuffer, not a subarray view over the frame's buffer).
-        const rgba = new Uint8ClampedArray(expected);
-        rgba.set(frame.pixels.subarray(0, expected));
-        ctx.putImageData(new ImageData(rgba, frame.width, frame.height), 0, 0);
+        if (el && el.srcObject !== tracks.video.mediaStream) tracks.video.attach(el);
+      }
+      if (tracks.audio !== undefined) {
+        const el = this.renderRoot.querySelector<HTMLAudioElement>(
+          `audio[data-lk-audio="${identity}"]`,
+        );
+        if (el && el.srcObject !== tracks.audio.mediaStream) tracks.audio.attach(el);
       }
     }
 

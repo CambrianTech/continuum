@@ -39,4 +39,20 @@ fail_to_pass?: string, pass_to_pass?: string,
 /**
  * Failed test NAMES (capped upstream) — a verdict that can teach.
  */
-failed_tests: Array<string>, infra_error?: string, };
+failed_tests: Array<string>, infra_error?: string, 
+/**
+ * The ROUND this run belongs to (== its run room's UUID) — the board
+ * groups runs under their round. Absent for unrounded/legacy rows.
+ */
+round_id?: string, 
+/**
+ * The run's SOLVE ROOM — the DOOR: a renderer navigates here to stand
+ * in the activity (transcript + act receipts). Absent before the mint.
+ */
+solve_room?: string, 
+/**
+ * The solve room's airc NAME — joins are by name, and standing in the
+ * room requires joining it first. Absent for rooms minted before names
+ * were recorded; such a door stays closed rather than half-opening.
+ */
+solve_room_name?: string, };

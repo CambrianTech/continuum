@@ -3146,6 +3146,14 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
 
         // Per-call PREFILL-vs-DECODE split for the speed harness. cache_n vs
         // prompt_n is the KV-cache hit/miss that dominates Metal wall-clock.
+        if let Some(t) = &stream_timings {
+            // The roster tile's speed needles — one map write per stream close.
+            crate::ipc::vitals_emitter::record_speed(
+                &probe_persona,
+                t.predicted_per_second,
+                t.prompt_per_second,
+            );
+        }
         let timing = stream_timings.map(|t| GenerationTiming {
             cached_tokens: t.cache_n,
             prefill_tokens: t.prompt_n,

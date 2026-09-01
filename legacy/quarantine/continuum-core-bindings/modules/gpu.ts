@@ -6,7 +6,11 @@
  */
 
 import type { RustCoreIPCClientBase } from './base';
+<<<<<<<< HEAD:legacy/quarantine/continuum-core-bindings/modules/gpu.ts
 import type { GpuStats as RustGpuStats, SubsystemStats as RustSubsystemStats, AllocationsByPriority as RustAllocationsByPriority, EvictableEntry as RustEvictableEntry, EvictionRegistrySnapshot as RustEvictionRegistrySnapshot } from '../../../../protocol/typescript/gpu';
+========
+import type { GpuStats as RustGpuStats, SubsystemStats as RustSubsystemStats, AllocationsByPriority as RustAllocationsByPriority, EvictableEntry as RustEvictableEntry, EvictionRegistrySnapshot as RustEvictionRegistrySnapshot } from '../../../protocol/typescript/gpu';
+>>>>>>>> origin/main:sdk/typescript/modules/gpu.ts
 
 // ============================================================================
 // Types (camelCase for TypeScript consumers)

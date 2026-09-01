@@ -149,7 +149,10 @@ describe('renderChat (Lit)', () => {
     expect(chunks).toContain('idle'); // Joel idle
     // WHAT: the turn's sender, content and time all reach the markup as values.
     expect(chunks).toContain('hi Asha');
-    expect(chunks).toContain('00:00');
+    // The time renders in the VIEWER's timezone (chatViewModel's documented
+    // idiom), so pin the SHAPE, not a hardcoded UTC wall-clock — '00:00' only
+    // passed on UTC machines (tz-fragile, caught 2026-08-31 on CDT).
+    expect(chunks.some((c) => /^\d\d:\d\d$/.test(String(c)))).toBe(true);
   });
 
   // what this catches: a member's live vitals must actually DRAW a stat meter — a
@@ -278,7 +281,7 @@ describe('renderChat (Lit)', () => {
     const nav: NavViewState = {
       user_id: 'me',
       current_tab: 'room-1',
-      open_tabs: [{ id: 'room-1', title: 'general', kind: 'room', unread: 0, purpose: 'chat' }],
+      open_tabs: [{ id: 'room-1', title: 'general', kind: 'room', unread: 0, purpose: 'chat', parent_ref: '', display_label: '' }],
       last_read: {},
       bookmarks: [],
     };
@@ -298,8 +301,8 @@ describe('renderChat (Lit)', () => {
       user_id: 'me',
       current_tab: 'room-1',
       open_tabs: [
-        { id: 'room-1', title: 'general', kind: 'room', unread: 0, purpose: 'chat' },
-        { id: 'room-2', title: 'code', kind: 'room', unread: 3, purpose: 'chat' },
+        { id: 'room-1', title: 'general', kind: 'room', unread: 0, purpose: 'chat', parent_ref: '', display_label: '' },
+        { id: 'room-2', title: 'code', kind: 'room', unread: 3, purpose: 'chat', parent_ref: '', display_label: '' },
       ],
       last_read: {},
       bookmarks: [],

@@ -55,6 +55,53 @@ const GEN_FULL_SCALE_GENES: usize = 6;
 /// precision gauge (the raw count rides the tooltip via the meter value).
 const QUE_FULL_SCALE_UNREAD: usize = 8;
 
+/// The ACT PULSE: per-persona executed-act counter, bumped by the act-observe
+/// path each time a tool act completes. A HELD-WORK turn is one long service
+/// cycle — the cycle-delta reads 0 exactly while she works hardest (Joel,
+/// 2026-08-31: "AIs look still greyed" during a live benchmark round). Acts
+/// are the true thinking-right-now signal inside a turn; activity radiates the
+/// LOUDER of the two deltas.
+static ACT_PULSE: std::sync::LazyLock<std::sync::Mutex<HashMap<Uuid, u64>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// Record `n` completed acts for `persona` — called by the act-observe apply
+/// path; cheap (one map bump under a short lock, no allocation on the hot path
+/// beyond the entry).
+pub fn record_acts(persona: Uuid, n: u64) {
+    let mut pulse = ACT_PULSE.lock().unwrap_or_else(|e| e.into_inner());
+    *pulse.entry(persona).or_insert(0) += n;
+}
+
+/// Executed-acts-per-interval that read as a FULL activity bar (a solve turn
+/// lands ~1-3 acts per generation; 4 in a 2s window is flat-out).
+const ACT_PULSE_FULL_SCALE: u64 = 4;
+
+/// THE SPEED PULSE: per-persona decode + prefill tokens/sec from the last
+/// completed generation (llama-server's own `timings`), recorded by the
+/// inference adapter at stream close. Radiated as `tps`/`pfx` vitals while
+/// fresh — the roster tile draws them as micro-speedometers (Joel:
+/// "speedometers not massive text; thin lines and meters").
+static SPEED_PULSE: std::sync::LazyLock<
+    std::sync::Mutex<HashMap<Uuid, (f64, f64, std::time::Instant)>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// Record the last generation's speeds for `persona` (uuid-string; non-uuid
+/// callers — CLI, probes — are silently not a tile and skip).
+pub fn record_speed(persona: &str, decode_tps: f64, prefill_tps: f64) {
+    let Ok(id) = Uuid::parse_str(persona) else {
+        return;
+    };
+    let mut pulse = SPEED_PULSE.lock().unwrap_or_else(|e| e.into_inner());
+    pulse.insert(id, (decode_tps, prefill_tps, std::time::Instant::now()));
+}
+
+/// A speed sample older than this stops radiating — a stale needle is a lie.
+const SPEED_FRESH: Duration = Duration::from_secs(20);
+/// Decode t/s that reads as a pegged needle (Ornith depth-tax band tops ~40).
+const TPS_FULL_SCALE: u64 = 40;
+/// Prefill/ingest t/s that reads as pegged (M-series ingest ~300-800).
+const PFX_FULL_SCALE: u64 = 800;
+
 fn pct_u64(v: u64, full: u64) -> u8 {
     (v.saturating_mul(100) / full.max(1)).min(100) as u8
 }
@@ -98,6 +145,12 @@ pub(crate) fn sample_vitals(
         let ticks = cycle.cycle_count();
         let delta = ticks.saturating_sub(last_ticks.get(&id).copied().unwrap_or(ticks));
         last_ticks.insert(id, ticks);
+        // The act pulse (held-work turns): drain this persona's executed-act
+        // count since the last sample and let the LOUDER signal drive the bar.
+        let act_pulse = {
+            let mut pulse = ACT_PULSE.lock().unwrap_or_else(|e| e.into_inner());
+            pulse.remove(&id).unwrap_or(0)
+        };
 
         // QUEUE: the staged unread depth across every channel the digest
         // region pre-staged for this persona — the legacy QUE bar's honest
@@ -109,13 +162,29 @@ pub(crate) fn sample_vitals(
             .map(|(_, digest)| digest.unread().len())
             .sum();
 
+        // Speed needles: radiate while fresh, drop when stale (honest-absent).
+        let speed = {
+            let pulse = SPEED_PULSE.lock().unwrap_or_else(|e| e.into_inner());
+            pulse
+                .get(&id)
+                .filter(|(_, _, at)| at.elapsed() < SPEED_FRESH)
+                .map(|(d, p, _)| (*d, *p))
+        };
         let genome = cycle.genome();
         let mut vitals = BTreeMap::new();
-        vitals.insert("activity".to_string(), pct_u64(delta, ACT_FULL_SCALE_TICKS));
+        vitals.insert(
+            "activity".to_string(),
+            pct_u64(delta, ACT_FULL_SCALE_TICKS)
+                .max(pct_u64(act_pulse, ACT_PULSE_FULL_SCALE)),
+        );
         vitals.insert(
             "queue".to_string(),
             pct_usize(queued, QUE_FULL_SCALE_UNREAD),
         );
+        if let Some((decode, prefill)) = speed {
+            vitals.insert("tps".to_string(), pct_u64(decode as u64, TPS_FULL_SCALE));
+            vitals.insert("pfx".to_string(), pct_u64(prefill as u64, PFX_FULL_SCALE));
+        }
         // Omit genome entirely when the persona has none paged in — an
         // honest missing meter, not a 0% fabricated one.
         if !genome.is_empty() {

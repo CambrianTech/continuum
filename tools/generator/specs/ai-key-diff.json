@@ -1,0 +1,54 @@
+{
+  "name": "ai/key/diff",
+  "description": "Compare redacted AI key status entries and produce a value-free merge plan for trusted grid reconciliation.",
+  "params": [
+    {
+      "name": "localEntries",
+      "type": "array",
+      "optional": false,
+      "description": "Local redacted ai/key/status entries."
+    },
+    {
+      "name": "remoteEntries",
+      "type": "array",
+      "optional": false,
+      "description": "Remote redacted ai/key/status entries from a trusted target node."
+    },
+    {
+      "name": "targetNode",
+      "type": "string",
+      "optional": true,
+      "description": "Optional target node id or name for merge-plan labels."
+    }
+  ],
+  "results": [
+    {
+      "name": "mergePlanId",
+      "type": "string",
+      "description": "Stable id for this value-free merge plan."
+    },
+    {
+      "name": "actions",
+      "type": "array",
+      "description": "Merge actions containing provider/key/action/reason/fingerprint metadata only."
+    },
+    {
+      "name": "conflictCount",
+      "type": "number",
+      "description": "Number of conflicts requiring owner approval."
+    },
+    {
+      "name": "actionCount",
+      "type": "number",
+      "description": "Number of generated actions."
+    }
+  ],
+  "examples": [
+    {
+      "description": "Compare local and remote redacted key states",
+      "command": "./jtag ai/key/diff --localEntries='[...]' --remoteEntries='[...]' --targetNode=windows-rtx",
+      "expectedResult": "{ success: true, actionCount: 1, conflictCount: 0 }"
+    }
+  ],
+  "accessLevel": "owner-only"
+}

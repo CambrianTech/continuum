@@ -254,13 +254,49 @@ pub async fn transcribe(
 }
 
 /// Initialize the active adapter
-pub async fn initialize() -> Result<(), STTError> {
-    let adapter = get_registry()
-        .read()
-        .get_active()
-        .ok_or_else(|| STTError::AdapterNotFound("No active STT adapter".to_string()))?;
+/// Adapter preference at init: LOCAL first (sovereignty — a fresh clone with
+/// models on disk hears with zero keys), cloud second, stub last (tests only).
+/// This is engine SELECTION by design (the TTS registry's shape), not a
+/// mistake-masking fallback: each miss is named loudly, and the winner is
+/// promoted to active so every later transcribe uses the engine that proved
+/// it loads.
+/// The STUB is deliberately ABSENT: it fabricates transcriptions (canned
+/// text for any audio — the gunfire false-positive test's whole point), so
+/// auto-selecting it would make silence indistinguishable from speech. Tests
+/// that want it call `set_active("stub")` explicitly; a box with no real
+/// engine errs loudly instead ([[fallbacks-are-illegal-fail-loud]]).
+const INIT_PREFERENCE: &[&str] = &["moonshine", "openai-realtime"];
 
-    adapter.initialize().await
+pub async fn initialize() -> Result<(), STTError> {
+    // Try each preferred engine in order; first successful init wins and
+    // becomes active. Before this, init consulted only the FIRST-registered
+    // adapter — OpenAI, keyless — so a machine with a perfectly good local
+    // moonshine/whisper model sat deaf behind a misleading "download
+    // ggml-base" warning (found live 2026-08-31, the voice-spec audit).
+    let mut misses: Vec<String> = Vec::new();
+    for name in INIT_PREFERENCE {
+        let Some(adapter) = get_registry().read().get(name) else {
+            continue; // not registered in this build (whisper is gated off)
+        };
+        match adapter.initialize().await {
+            Ok(()) => {
+                get_registry().write().set_active(adapter.name())?;
+                if !misses.is_empty() {
+                    clog_info!(
+                        "STT: '{}' active (earlier engines unavailable: {})",
+                        name,
+                        misses.join("; ")
+                    );
+                }
+                return Ok(());
+            }
+            Err(e) => misses.push(format!("{name}: {e}")),
+        }
+    }
+    Err(STTError::AdapterNotFound(format!(
+        "no STT engine could initialize — {}",
+        misses.join("; ")
+    )))
 }
 
 // Audio utility functions moved to crate::utils::audio

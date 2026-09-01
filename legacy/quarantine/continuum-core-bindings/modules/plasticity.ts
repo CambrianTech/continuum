@@ -11,7 +11,11 @@ import type {
 	CompactionResult,
 	CompressionPipelineResult,
 	HeadTopology,
+<<<<<<<< HEAD:legacy/quarantine/continuum-core-bindings/modules/plasticity.ts
 } from '../../../../protocol/typescript/plasticity';
+========
+} from '../../../protocol/typescript/plasticity';
+>>>>>>>> origin/main:sdk/typescript/modules/plasticity.ts
 
 // ============================================================================
 // Types (camelCase for TypeScript consumers)

@@ -63,7 +63,8 @@ export {
   roomInfoListing,
   chatWorkspace,
 } from './patternProjections';
-export type { ChatContentBody, WorkspaceLive } from './patternProjections';
+export type { AcademyContentBody, ChatContentBody, WorkspaceLive } from './patternProjections';
+export { ACADEMY_PURPOSE } from './patternProjections';
 
 // The persona HOME projections — the profile/brain surface as a purpose-
 // dispatched activity (PERSONA_PURPOSE), lit from the SAME live pulse the

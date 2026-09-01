@@ -38,6 +38,23 @@ export class CosmosBackdrop extends LitElement {
   private _canvas?: HTMLCanvasElement;
   private _ctx?: CanvasRenderingContext2D | null;
   private _stars: Star[] = [];
+  /** Live WORK energy 0..1 (the widget feeds working-run count): the field
+   *  breathes brighter/faster when the grid is thinking hard. */
+  energy = 0;
+  private _comets: { x: number; y: number; vx: number; vy: number; life: number }[] = [];
+
+  /** A RESOLVED VERDICT fires a comet — spectacle tied to truth, never
+   *  decoration on a dead system. */
+  surge(): void {
+    const w = this._canvas?.width ?? 800;
+    this._comets.push({
+      x: Math.random() * w * 0.3,
+      y: Math.random() * 120,
+      vx: 6 + Math.random() * 5,
+      vy: 2.2 + Math.random() * 1.6,
+      life: 1,
+    });
+  }
   private _raf = 0;
   private _t0 = 0;
 
@@ -50,29 +67,65 @@ export class CosmosBackdrop extends LitElement {
     return html`<canvas></canvas>`;
   }
 
+  private _nebula?: HTMLCanvasElement;
+  private _lastFrame = 0;
+
   override firstUpdated(): void {
     this._canvas = this.renderRoot.querySelector('canvas') ?? undefined;
     this._ctx = this._canvas?.getContext('2d');
     this._resize();
     window.addEventListener('resize', this._resize);
+    document.addEventListener('visibilitychange', this._vis);
     this._t0 = performance.now();
     this._raf = requestAnimationFrame(this._loop);
+  }
+
+  private _vis = (): void => {
+    cancelAnimationFrame(this._raf);
+    if (!document.hidden) this._raf = requestAnimationFrame(this._loop);
+  };
+
+  /** Paint the nebula ONCE per resize into an offscreen layer — three
+   *  full-screen radial gradients per FRAME was a founding member of the
+   *  5fps crash (2026-08-31); a blit is one composited draw. */
+  private _paintNebula(w: number, h: number): void {
+    const off = document.createElement('canvas');
+    off.width = w;
+    off.height = h;
+    const ctx = off.getContext('2d');
+    if (!ctx) return;
+    ctx.globalCompositeOperation = 'lighter';
+    const blobs: [number, number, string, number][] = [
+      [w * 0.22, h * 0.24, 'rgba(90,40,180,', 340],
+      [w * 0.8, h * 0.34, 'rgba(30,90,205,', 380],
+      [w * 0.55, h * 0.82, 'rgba(185,40,140,', 320],
+    ];
+    for (const [bx, by, col, r] of blobs) {
+      const g = ctx.createRadialGradient(bx, by, 0, bx, by, r);
+      g.addColorStop(0, `${col}0.13)`);
+      g.addColorStop(1, `${col}0)`);
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, w, h);
+    }
+    this._nebula = off;
   }
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
     cancelAnimationFrame(this._raf);
     window.removeEventListener('resize', this._resize);
+    document.removeEventListener('visibilitychange', this._vis);
   }
 
   private _resize = (): void => {
     if (!this._canvas) return;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.25);
     const w = this.offsetWidth || 1200;
     const h = this.offsetHeight || 800;
     this._canvas.width = w * dpr;
     this._canvas.height = h * dpr;
     this._ctx?.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this._paintNebula(w, h);
     const count = Math.max(30, Math.min(110, Math.round((w * h) / 15000)));
     this._stars = Array.from({ length: count }, () => ({
       x: Math.random() * w,
@@ -87,29 +140,21 @@ export class CosmosBackdrop extends LitElement {
   private _loop = (t: number): void => {
     const ctx = this._ctx;
     if (!ctx) return;
+    // PAINT BUDGET: ambience earns 30fps, never more; hidden pages earn 0.
+    if (t - this._lastFrame < 33) {
+      this._raf = requestAnimationFrame(this._loop);
+      return;
+    }
+    this._lastFrame = t;
     const w = this.offsetWidth;
     const h = this.offsetHeight;
     const time = (t - this._t0) / 1000;
 
-    // deep space
+    // deep space + the pre-painted nebula (one blit, not three gradients)
     ctx.fillStyle = '#05010f';
     ctx.fillRect(0, 0, w, h);
-
-    // nebula — soft additive blooms that slowly breathe
+    if (this._nebula) ctx.drawImage(this._nebula, 0, 0, w, h);
     ctx.globalCompositeOperation = 'lighter';
-    const blobs: [number, number, string, number][] = [
-      [w * 0.22, h * 0.24, 'rgba(90,40,180,', 340],
-      [w * 0.80, h * 0.34, 'rgba(30,90,205,', 380],
-      [w * 0.55, h * 0.82, 'rgba(185,40,140,', 320],
-    ];
-    for (const [bx, by, col, r] of blobs) {
-      const pulse = 0.1 + 0.05 * Math.sin(time * 0.3 + bx * 0.01);
-      const g = ctx.createRadialGradient(bx, by, 0, bx, by, r);
-      g.addColorStop(0, `${col}${pulse})`);
-      g.addColorStop(1, `${col}0)`);
-      ctx.fillStyle = g;
-      ctx.fillRect(0, 0, w, h);
-    }
 
     // drift + wrap
     for (const s of this._stars) {
@@ -143,17 +188,15 @@ export class CosmosBackdrop extends LitElement {
       }
     }
 
-    // stars — twinkle with a soft glow
+    // stars — twinkle, no shadowBlur (a gaussian per star per frame was the
+    // other founding member of the 5fps crash)
     for (const s of this._stars) {
       const tw = 0.5 + 0.5 * Math.sin(time * 1.6 + s.phase);
       ctx.fillStyle = `rgba(215,228,255,${0.45 * tw + 0.35})`;
-      ctx.shadowColor = 'rgba(150,190,255,0.9)';
-      ctx.shadowBlur = 4 + 3 * tw;
       ctx.beginPath();
       ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
       ctx.fill();
     }
-    ctx.shadowBlur = 0;
     ctx.globalCompositeOperation = 'source-over';
 
     // The CITIZENS as a living constellation — the room reflected in the sky. Each
@@ -168,34 +211,61 @@ export class CosmosBackdrop extends LitElement {
         const ang = (i / cz.length) * Math.PI * 2 + time * 0.05;
         return { c, x: cx + Math.cos(ang) * rr * 1.15, y: cy + Math.sin(ang) * rr };
       });
-      ctx.strokeStyle = 'rgba(150,190,255,0.32)';
+      // A quiet RING (neighbor links only): 33 citizens = 33 thin lines,
+      // not 528 — the full mesh was both the perf killer and an eyesore.
+      ctx.strokeStyle = 'rgba(150,190,255,0.14)';
       ctx.lineWidth = 1;
+      ctx.beginPath();
       for (let i = 0; i < pos.length; i++) {
-        for (let j = i + 1; j < pos.length; j++) {
-          const a = pos[i];
-          const b = pos[j];
-          if (!a || !b) continue;
-          ctx.beginPath();
-          ctx.moveTo(a.x, a.y);
-          ctx.lineTo(b.x, b.y);
-          ctx.stroke();
-        }
+        const a = pos[i];
+        const b = pos[(i + 1) % pos.length];
+        if (!a || !b) continue;
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
       }
+      ctx.stroke();
       ctx.textAlign = 'center';
       ctx.font = '600 12px system-ui, -apple-system, sans-serif';
       for (const p of pos) {
-        const pulse = p.c.active ? 0.6 + 0.4 * Math.sin(time * 2.2) : 0.4;
-        ctx.shadowColor = 'rgba(150,190,255,0.95)';
-        ctx.shadowBlur = 14 * pulse + 6;
+        const pulse = p.c.active
+          ? 0.6 + (0.4 + 0.3 * this.energy) * Math.sin(time * (2.2 + 2 * this.energy))
+          : 0.4;
+        ctx.fillStyle = `rgba(150,190,255,${0.2 * pulse})`;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
+        ctx.fill();
         ctx.fillStyle = `rgba(222,236,255,${0.7 + 0.3 * pulse})`;
         ctx.beginPath();
-        ctx.arc(p.x, p.y, 3.6, 0, Math.PI * 2);
+        ctx.arc(p.x, p.y, 3.4, 0, Math.PI * 2);
         ctx.fill();
-        ctx.shadowBlur = 0;
         ctx.fillStyle = 'rgba(200,215,255,0.9)';
         ctx.fillText(p.c.name, p.x, p.y + 20);
       }
       ctx.textAlign = 'start';
+    }
+
+    // COMETS — one per resolved verdict (surge()); a bright head with a
+    // fading tail, gone in ~1.5s. Truth-driven spectacle.
+    if (this._comets.length > 0) {
+      for (const c of this._comets) {
+        c.x += c.vx;
+        c.y += c.vy;
+        c.life -= 0.012;
+        const grad = ctx.createLinearGradient(c.x - c.vx * 12, c.y - c.vy * 12, c.x, c.y);
+        grad.addColorStop(0, 'rgba(120,220,255,0)');
+        grad.addColorStop(1, `rgba(190,240,255,${0.85 * c.life})`);
+        ctx.strokeStyle = grad;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(c.x - c.vx * 12, c.y - c.vy * 12);
+        ctx.lineTo(c.x, c.y);
+        ctx.stroke();
+        ctx.fillStyle = `rgba(230,250,255,${c.life})`;
+        ctx.beginPath();
+        ctx.arc(c.x, c.y, 2.4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      this._comets = this._comets.filter((c) => c.life > 0);
     }
 
     this._raf = requestAnimationFrame(this._loop);

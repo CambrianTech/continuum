@@ -816,7 +816,20 @@ impl ServingDaemonModule {
     /// assembled yet on this host, and [`ServingDemand::new`] names the cold-start
     /// decision in one place.
     fn serving_demand(&self) -> ServingDemand {
-        ServingDemand::new(self.lane_demand(), self.working_set.ceiling())
+        let residents = self.lane_demand();
+        // +1 SCRATCH LANE: the adapter's traffic-class placement
+        // (`inference/slots`) reserves the HIGHEST slot for sidecar/background/
+        // probe traffic whenever n_slots ≥ 3 — so a plan sized to the resident
+        // count leaves residents−1 warm slots for residents minds, and one
+        // citizen is ALWAYS being LRU-evicted (measured 2026-09-01: interleaved
+        // hit_rate=0.0 turns between 0.55–0.77 ones — the rotation thrash).
+        // Fund the scratch slot HERE, in the demand the fixpoint solves for:
+        // the window shrinks slightly to pay for it (floor-guarded at one full
+        // assembled turn), and every resident keeps her prefilled prefix warm.
+        // residents < 2 keeps the old shape (the adapter reserves nothing
+        // below n_slots 3, so asking for the extra lane would waste it).
+        let lanes = if residents >= 2 { residents + 1 } else { residents };
+        ServingDemand::new(lanes, self.working_set.ceiling())
     }
 
     /// The registry personas report their turn demand into. Cheap clone — handed to

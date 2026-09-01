@@ -54,6 +54,11 @@ COPY . .
 # relative path the `COPY . .` above already provides (the file is checked in). No
 # `--from=shared*` build-context needed; models.json is unreferenced by the Rust core.
 
+# src/shared/models.json is the model-registry SSOT. candle_adapter.rs embeds it
+# via include_str!("../../../../shared/models.json"), which resolves to
+# /shared/models.json from this Docker build layout.
+COPY --from=shared models.json /shared/models.json
+
 # Fail fast if the host forgot to init submodules. Without this, cmake's
 # CMakeLists-not-found error surfaces ~15 min into the cargo build —
 # terrible signal-to-noise. See issue #893.

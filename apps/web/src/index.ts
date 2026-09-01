@@ -27,6 +27,7 @@ import {
   type StateEnvelope,
 } from '@continuum/sdk-typescript';
 import { resolveConfig } from './config';
+import { setMindFeed } from './persona/renderPersona';
 import {
   ChatWidget,
   type CloseTabHandler,
@@ -61,10 +62,37 @@ void ChatWidget;
 async function main(): Promise<void> {
   const config = resolveConfig();
 
-  // Citizen-scope the session: `?me=<uuid>` on the connect URL is WHO this
-  // session belongs to — the core resolves per-user views (kind="nav") to this
-  // citizen's substrate and spawns their nav projector on first arrival.
-  const scopedWsUrl = `${config.wsUrl}${config.wsUrl.includes('?') ? '&' : '?'}me=${config.senderId}`;
+  // IDENTITY FIRST ([[one-logical-decision-one-place]]; Joel, 2026-09-01: two
+  // joels in the roster because every browser minted its own "human"): the
+  // command transport dials UNSCOPED, asks `identity/whoami`, and the session
+  // ADOPTS the durable identity the core resolves (the operator self-peer for
+  // a local session). Explicit ?me= (a harness) skips the ask. Retries until
+  // the core answers — the continuon shows connecting; a minted stand-in is
+  // never an option.
+  const transport = new WebSocketTransport(config.wsUrl);
+  let me = config.senderId;
+  let myName: string | undefined;
+  while (me === undefined) {
+    try {
+      const raw = await transport.execute(buildCommandUri('identity/whoami'), '{}');
+      const parsed = JSON.parse(raw) as { id?: string; name?: string };
+      if (parsed.id !== undefined && parsed.id.length > 0) {
+        me = parsed.id;
+        myName = parsed.name;
+        break;
+      }
+      throw new Error('whoami answered without an id');
+    } catch (err) {
+      console.warn('identity/whoami not ready — retrying in 3s:', err);
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+  const senderId: string = me;
+
+  // Citizen-scope the STATE session: `?me=<uuid>` on the connect URL is WHO
+  // this session belongs to — the core resolves per-user views (kind="nav")
+  // to this citizen's substrate and spawns their nav projector on arrival.
+  const scopedWsUrl = `${config.wsUrl}${config.wsUrl.includes('?') ? '&' : '?'}me=${senderId}`;
 
   const widget = document.createElement('chat-widget');
   widget.callUrl = config.callUrl;
@@ -75,6 +103,24 @@ async function main(): Promise<void> {
   // presentation state only ([[navigation-is-airc-state-one-semantics-many-idioms]]
   // — the URL is the web idiom; recipe-declared live rooms are the substrate path).
   if (new URLSearchParams(location.search).has('live')) widget.liveFace = true;
+  // The viewer's call identity: the same uuid the session is scoped by. The
+  // name upgrades to the directory's real one when the seed resolves it.
+  widget.viewerId = senderId;
+  if (myName !== undefined) widget.viewerName = myName;
+  // The WebRTC media-plane door: live/token minted by the core for THIS
+  // viewer, room-scoped. Handler presence = the plane exists; failure is the
+  // widget's to surface loudly (control-only call, never fake-connected).
+  widget.liveTokenHandler = async (room: string) => {
+    const raw = await transport.execute(
+      buildCommandUri('live/token'),
+      JSON.stringify({ room, identity: senderId }),
+    );
+    const parsed = JSON.parse(raw) as { url?: string; token?: string };
+    if (parsed.url === undefined || parsed.token === undefined) {
+      throw new Error('live/token answered without url/token');
+    }
+    return { url: parsed.url, token: parsed.token };
+  };
   const mount = document.getElementById('app') ?? document.body;
   mount.replaceChildren(widget);
 
@@ -82,9 +128,8 @@ async function main(): Promise<void> {
   // `room_id` so a message always targets the room on screen.
   let latest: ChatState | undefined;
 
-  // SEND socket: the command client. Fails loud if the send lands before any
-  // snapshot named a room (no room to send into is a real error, not a no-op).
-  const transport = new WebSocketTransport(scopedWsUrl);
+  // SEND path: the command client over the SAME unscoped transport identity
+  // rides in params, resolved above.
   const continuum = Continuum.connect(transport);
   const sendHandler: SendHandler = async (text: string) => {
     if (!latest) {
@@ -92,7 +137,7 @@ async function main(): Promise<void> {
     }
     const result = await continuum.commands.execute('chat/send', {
       roomId: latest.room_id,
-      senderId: config.senderId,
+      senderId,
       text,
     });
     // A kernel-level failure already rejected in the transport (this line never
@@ -131,13 +176,182 @@ async function main(): Promise<void> {
   // `kind` rides the verb (NavSelectParams.kind): 'room' switches the room on
   // screen; 'persona' opens that citizen's HOME tab (profile/brain) while the
   // chat projection stays pinned — the content dispatch keys off the tab kind.
+  // LIVE LEARNING FEED (Joel: "see continuous learning, engrams, in a dynamic
+  // ui"): while a persona tab is focused, poll her admitted-engram store +
+  // genome coverage and hand the feed to the mind tab's learning stream. Real
+  // rows only — the section renders awaiting/empty states until data lands.
+  let mindTimer: ReturnType<typeof setInterval> | undefined;
+  const pollMind = async (personaId: string): Promise<void> => {
+    try {
+      const raw = await transport.execute(
+        buildCommandUri('cognition/recall-engrams'),
+        JSON.stringify({ personaId, limit: 12 }),
+      );
+      const parsed = JSON.parse(raw) as {
+        count?: number;
+        engrams?: readonly {
+          content?: string;
+          kind?: string;
+          admittedAtMs?: number;
+          contextId?: string;
+        }[];
+      };
+      let coverageRatio: number | undefined;
+      let coveredDomains: readonly string[] | undefined;
+      try {
+        const cov = JSON.parse(
+          await transport.execute(
+            buildCommandUri('cognition/genome-coverage-report'),
+            JSON.stringify({ personaId }),
+          ),
+        ) as { ratio?: number; covered?: readonly string[] };
+        coverageRatio = cov.ratio;
+        coveredDomains = cov.covered;
+      } catch {
+        /* coverage is optional enrichment — the engram stream stands alone */
+      }
+      setMindFeed({
+        personaId,
+        fetchedAtMs: Date.now(),
+        engramCount: parsed.count ?? parsed.engrams?.length ?? 0,
+        engrams: (parsed.engrams ?? [])
+          .filter((e) => e.content !== undefined && e.admittedAtMs !== undefined)
+          .map((e) => ({
+            content: e.content as string,
+            kind: e.kind ?? 'Episodic',
+            admittedAtMs: e.admittedAtMs as number,
+            ...(e.contextId !== undefined ? { roomId: e.contextId } : {}),
+          })),
+        ...(coverageRatio !== undefined ? { coverageRatio } : {}),
+        ...(coveredDomains !== undefined ? { coveredDomains } : {}),
+      });
+      widget.mindRevision = Date.now();
+    } catch (err) {
+      console.error('mind feed poll failed:', err);
+    }
+  };
+  const focusMind = (personaId: string | undefined): void => {
+    if (mindTimer !== undefined) clearInterval(mindTimer);
+    mindTimer = undefined;
+    if (personaId === undefined) {
+      setMindFeed(undefined);
+      return;
+    }
+    void pollMind(personaId);
+    mindTimer = setInterval(() => void pollMind(personaId), 10_000);
+  };
+
   const selectRoomHandler: SelectRoomHandler = async (target: string, kind: 'room' | 'persona') => {
     await transport.execute(
       buildCommandUri('nav/select'),
-      JSON.stringify({ userId: config.senderId, target, kind }),
+      JSON.stringify({ userId: senderId, target, kind }),
     );
+    focusMind(kind === 'persona' ? target : undefined);
+    // The address bar mirrors the focused activity as its URI short form —
+    // `/room/<name>` · `/persona/<name>` — bookmarkable and shareable (Joel,
+    // 2026-08-30: "url subpath matches uri"). The click path hands us the
+    // UUID (identity); the nav state supplies the short name (display) when
+    // it knows the tab. replaceState: navigation-in-place, not history spam.
+    const known = widget.nav?.open_tabs?.find((t) => t.id === target);
+    const short = known?.title ? known.title.toLowerCase() : target;
+    window.history.replaceState(null, '', `/${kind}/${encodeURIComponent(short)}`);
   };
   widget.selectRoomHandler = selectRoomHandler;
+
+  // A run card is a DOOR (bench-run-open, renderBench): clicking it stands
+  // you in that run's activity room — same navigation verb as a tab click.
+  // A worker's NAME on a bench card doors to her page; the wire carries the
+  // display name, the directory seed resolves it to the durable id.
+  widget.addEventListener('persona-open-by-name', (e: Event) => {
+    const name = (e as CustomEvent<{ name?: string }>).detail?.name?.toLowerCase();
+    if (name === undefined || name.length === 0 || name === 'unclaimed') return;
+    const hit = widget.directorySeed.find((m) => m.name.toLowerCase() === name);
+    if (hit) {
+      void selectRoomHandler(hit.id, 'persona').catch((err: unknown) => {
+        console.error('persona-open-by-name failed:', err);
+      });
+    }
+  });
+
+  widget.addEventListener('bench-run-open', (e: Event) => {
+    const detail = (e as CustomEvent<{ roomId?: string; roomName?: string }>).detail;
+    const roomId = detail?.roomId;
+    if (typeof roomId !== 'string' || roomId.length === 0) return;
+    void (async () => {
+      try {
+        // Standing in a room requires MEMBERSHIP: join first (by name — the
+        // derived-channel law), then select. Without the name (a pre-naming
+        // room) selection alone still works when already a member.
+        if (detail.roomName !== undefined && detail.roomName.length > 0) {
+          await transport.execute(
+            buildCommandUri('room/join'),
+            JSON.stringify({ userId: senderId, room: detail.roomName }),
+          );
+        }
+        await selectRoomHandler(roomId, 'room');
+      } catch (err) {
+        console.error('bench-run-open navigation failed:', err);
+      }
+    })();
+  });
+
+  // Bookmark restore: a deep-linked URL (`/room/general`) re-selects that
+  // activity — resolved against the nav state, because `nav/select` is
+  // UUID-typed (names are display, ids are identity). The pending link waits
+  // for the first nav envelope that knows the target, fires once, clears.
+  let pendingDeepLink: { kind: 'room' | 'persona'; target: string } | null = null;
+  let focusPinned = false;
+  {
+    const m = /^\/(room|persona)\/(.+)$/.exec(window.location.pathname);
+    if (m?.[1] !== undefined && m[2] !== undefined) {
+      pendingDeepLink = {
+        kind: m[1] as 'room' | 'persona',
+        target: decodeURIComponent(m[2]),
+      };
+    }
+  }
+  const UUID_LINK = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const resolveDeepLink = (tabs: readonly { id?: string; title?: string }[]): void => {
+    if (!pendingDeepLink) return;
+    // A UUID target IS the address — select it directly, no nav lookup
+    // (solve rooms are navigable before they ever appear in a tab set).
+    if (UUID_LINK.test(pendingDeepLink.target)) {
+      const { kind, target } = pendingDeepLink;
+      void selectRoomHandler(target, kind)
+        .then(() => {
+          pendingDeepLink = null; // consumed only on SUCCESS
+        })
+        .catch(() => {
+          // Transport not up yet (page-load race) — the next nav envelope
+          // retries; the link is only consumed when the select lands.
+        });
+      return;
+    }
+    const want = pendingDeepLink.target.toLowerCase();
+    // A persona link resolves by NAME through the directory — persona tabs
+    // aren't in the nav's room set, so `/persona/kira` on a cold load fell
+    // through to the default room forever (caught live 2026-08-31 framing
+    // the learning feed). The directory seed re-polls, so an early miss
+    // retries on the next envelope like every other pending link.
+    if (pendingDeepLink.kind === 'persona') {
+      const member = widget.directorySeed.find((m) => m.name.toLowerCase() === want);
+      if (member === undefined) return; // directory not seeded yet — next envelope
+      pendingDeepLink = null;
+      void selectRoomHandler(member.id, 'persona').catch((err: unknown) => {
+        console.error(`deep link ${window.location.pathname} failed:`, err);
+      });
+      return;
+    }
+    const hit = tabs.find(
+      (t) => t.id?.toLowerCase() === want || t.title?.toLowerCase() === want,
+    );
+    if (hit?.id === undefined) return; // nav doesn't know it yet — next envelope
+    const { kind } = pendingDeepLink;
+    pendingDeepLink = null;
+    void selectRoomHandler(hit.id, kind).catch((err: unknown) => {
+      console.error(`deep link ${window.location.pathname} failed:`, err);
+    });
+  };
 
   // Settings: fetch or mutate the node's operator settings through the SAME
   // core verbs the terminal uses — `genome/sharing` (covenant consent + HF
@@ -148,7 +362,7 @@ async function main(): Promise<void> {
   const settingsHandler: SettingsHandler = async (agree?: boolean) => {
     const sharingRaw = await transport.execute(
       buildCommandUri('genome/sharing'),
-      JSON.stringify(agree === undefined ? { userId: config.senderId } : { userId: config.senderId, agree }),
+      JSON.stringify(agree === undefined ? { userId: senderId } : { userId: senderId, agree }),
     );
     const sharing = JSON.parse(sharingRaw) as {
       agreed: boolean;
@@ -159,7 +373,7 @@ async function main(): Promise<void> {
     };
     const listRaw = await transport.execute(
       buildCommandUri('genome/list'),
-      JSON.stringify({ userId: config.senderId }),
+      JSON.stringify({ userId: senderId }),
     );
     const list = JSON.parse(listRaw) as {
       genes: {
@@ -195,7 +409,40 @@ async function main(): Promise<void> {
   // predates `beforeMessageId` and its re-emit is blocked by the same
   // unexported-wire-types drift — when that regenerates, this becomes
   // `continuum.commands.execute('chat/poll', …)`.
+  let chatHistoryAbsenceLogged = false;
   const historyHandler: HistoryHandler = async (roomId, beforeMessageId) => {
+    // THE DURABLE TRANSCRIPT (chat/history, 2026-08-31): the airc daemon's
+    // own store — citizen speech AND radiated 💭/⚙ receipts, the full story
+    // of an activity. chat/poll (operator collection) remains the fallback
+    // for cores that predate the verb; rows are adapted to the one parser.
+    try {
+      const rawH = await transport.execute(
+        buildCommandUri('chat/history'),
+        JSON.stringify({ roomId, limit: 50 }),
+      );
+      const hist = JSON.parse(rawH) as {
+        messages?: readonly { id: string; senderId: string; text: string; timestamp: number }[];
+      };
+      if (hist.messages !== undefined) {
+        return hist.messages.map((m) => ({
+          id: m.id,
+          senderId: m.senderId,
+          content: { text: m.text },
+          timestamp: new Date(m.timestamp).toISOString(),
+        }));
+      }
+    } catch (err) {
+      // CLASSIFIED, never swallowed: only "this core predates the verb"
+      // falls through to chat/poll; every other failure is a real defect
+      // and propagates to the same error strip a failed poll reaches.
+      const msg = err instanceof Error ? err.message : String(err);
+      const verbAbsent = /no policy grants|unknown command|no legacy handler|not found/i.test(msg);
+      if (!verbAbsent) throw err;
+      if (!chatHistoryAbsenceLogged) {
+        chatHistoryAbsenceLogged = true;
+        console.info('chat/history not on this core — history degrades to chat/poll:', msg);
+      }
+    }
     const raw = await transport.execute(
       buildCommandUri('chat/poll'),
       JSON.stringify({ roomId, beforeMessageId, limit: 50 }),
@@ -221,7 +468,7 @@ async function main(): Promise<void> {
   const closeTabHandler: CloseTabHandler = async (target) => {
     await transport.execute(
       buildCommandUri('nav/close'),
-      JSON.stringify({ userId: config.senderId, target }),
+      JSON.stringify({ userId: senderId, target }),
     );
   };
   widget.closeTabHandler = closeTabHandler;
@@ -258,10 +505,15 @@ async function main(): Promise<void> {
 
   // The viewer is ALWAYS in the directory, synchronously — a failed roster
   // fetch must never render the operator themself as absent/offline.
+  // The viewer's row carries their REAL name (whoami's answer) — the client
+  // never re-names a person the substrate already named (the literal 'you'
+  // label survived every directory poll because the self row was kept and the
+  // directory's version filtered out: a second joel, hand-built client-side.
+  // Joel, 2026-09-01: 'are you even looking?').
   widget.directorySeed = [
     {
-      id: config.senderId,
-      name: 'you',
+      id: senderId,
+      name: myName ?? senderId.slice(0, 8),
       kind: 'human',
       active: true,
       runtime: 'interactive',
@@ -275,27 +527,66 @@ async function main(): Promise<void> {
   // resolve aliases (persona/list bounces off the Owner wildcard; core fix
   // queued), so the canonical verb is load-bearing here.
   const seedDirectory = async (): Promise<void> => {
+    // THE panel is global scope (Joel, 2026-08-31: "who all exists in this
+    // continuum and who is online — any activity"). presence/directory is the
+    // scope-wide daemon roster: every peer (humans, personas, external
+    // agents) with heartbeat-real liveness + last-seen — the same answer in
+    // every tab. Before it, only residents had a global source, so everyone
+    // else's dot was "online for the tab".
     try {
-      const raw = await transport.execute(buildCommandUri('persona/roster'), '{}');
+      const raw = await transport.execute(buildCommandUri('presence/directory'), '{}');
       const parsed = JSON.parse(raw) as {
-        citizens?: readonly { agent_name?: string; peer_id?: string; resident?: boolean }[];
+        peers?: readonly {
+          name?: string;
+          peer_id?: string;
+          kind?: string;
+          runtime?: string;
+          online?: boolean;
+          last_seen_ms?: number;
+          avatar_url?: string;
+        }[];
       };
-      const seed: RosterMemberVM[] = (parsed.citizens ?? [])
+      const seed: RosterMemberVM[] = (parsed.peers ?? [])
         .filter((c) => c.peer_id)
         .map((c) => ({
           id: c.peer_id as string,
-          name: c.agent_name ?? (c.peer_id as string).slice(0, 8),
-          kind: 'agent',
-          active: c.resident === true,
-          runtime: '',
+          name: c.name ?? (c.peer_id as string).slice(0, 8),
+          kind: c.kind === 'human' ? 'human' : 'agent',
+          active: c.online === true,
+          runtime: c.runtime ?? '',
           vitals: {},
-          lastSeenMs: 0,
+          lastSeenMs: c.last_seen_ms ?? 0,
+          ...(c.avatar_url !== undefined ? { avatarUrl: c.avatar_url } : {}),
         }));
-      const self = widget.directorySeed.filter((m) => m.kind === 'human');
-      widget.directorySeed = [...self, ...seed];
+      // The viewer stays first + always-online regardless of what the
+      // directory knows about their peer row.
+      // The directory's row for the viewer WINS over the boot-time seed (it
+      // carries the identity card's name + real recency); the hand-built row
+      // survives only until the first successful poll.
+      const dirSelf = seed.find((m) => m.id === senderId);
+      const self = dirSelf !== undefined
+        ? [{ ...dirSelf, active: true }]
+        : widget.directorySeed.filter((m) => m.id === senderId);
+      widget.directorySeed = [...self, ...seed.filter((m) => m.id !== senderId)];
+      // The directory knows the viewer's REAL name (identity card) — adopt it
+      // for call tiles instead of the local placeholder.
+      const me = (parsed.peers ?? []).find((c) => c.peer_id === senderId);
+      if (me?.name !== undefined && me.name.length > 0 && !me.name.startsWith('peer-')) {
+        widget.viewerName = me.name;
+      }
       widget.requestUpdate();
+      // A persona deep link resolves through THIS directory — retry it on
+      // every seed, not only on nav envelopes (a cold load's last nav
+      // envelope can land before the first seed does).
+      resolveDeepLink(widget.nav?.open_tabs ?? []);
     } catch (err) {
-      console.error('directory seed failed:', err);
+      // NO fallback ([[fallbacks-are-illegal-fail-loud]]; Joel: "don't add
+      // fallbacks for mistakes"): a core without this verb, or a failed read,
+      // must surface as a failure — a residents-only list would quietly lie
+      // about who is online, which is worse than an error. The next 30s poll
+      // retries; the viewer row keeps the panel from rendering the operator
+      // themself as absent.
+      console.error('presence/directory seed failed — the who-panel has no global truth this tick:', err);
     }
   };
   void seedDirectory();
@@ -313,24 +604,50 @@ async function main(): Promise<void> {
       .catch((err: unknown) => console.error(`${verb} failed:`, err));
   });
 
-  // Visible connection diagnostics — a stuck "Connecting…" with no on-screen
-  // reason is undebuggable. Surface the WS lifecycle so a blank/stuck tab tells
-  // you WHY (socket closed / connected-but-no-snapshot / connect failed).
-  const banner = document.createElement('div');
-  banner.style.cssText =
-    'position:fixed;top:0;left:0;right:0;z-index:9;padding:6px 12px;font:12px ui-monospace,monospace;background:#2a2a30;color:#cdcdd3;border-bottom:1px solid #3a3a42';
-  const setStatus = (msg: string, warn = false): void => {
-    banner.textContent = `positron: ${msg}`;
-    banner.style.background = warn ? '#4a2a2a' : '#2a2a30';
-    banner.style.color = warn ? '#f7b7b7' : '#cdcdd3';
-    if (!banner.isConnected) document.body.appendChild(banner);
+  // CONNECTION STATE IS THE CONTINUON + FAVICON, never a text banner. The old
+  // fixed bar ("positron: state feed reconnecting — … retry #19 in 8s") was the
+  // anti-pattern this replaces (Joel, 2026-08-31: the continuon was designed to
+  // indicate status ALONG with the favicon, dynamically). Humans read the orb
+  // color and the tab icon; harnesses read `<html data-feed-status>`; engineers
+  // read the console — each channel gets its own tier, none gets a banner.
+  const favicon = ((): HTMLLinkElement => {
+    const link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+    if (link) return link;
+    const fresh = document.createElement('link');
+    fresh.rel = 'icon';
+    document.head.appendChild(fresh);
+    return fresh;
+  })();
+  const faviconHref = favicon.href; // the shipped mark, restored when live
+  const FEED_TINT: Record<string, string> = {
+    connecting: '#d8a53f',
+    cached: '#d8a53f',
+    reconnecting: '#d8a53f',
+    closed: '#e5534b',
+  };
+  const setFavicon = (status: string): void => {
+    const tint = FEED_TINT[status];
+    if (tint === undefined) {
+      favicon.href = faviconHref; // live — the real mark, untinted
+      return;
+    }
+    const c = document.createElement('canvas');
+    c.width = 64;
+    c.height = 64;
+    const ctx = c.getContext('2d');
+    if (!ctx) return;
+    ctx.beginPath();
+    ctx.arc(32, 32, 22, 0, Math.PI * 2);
+    ctx.fillStyle = tint;
+    ctx.fill();
+    favicon.href = c.toDataURL('image/png');
   };
   // Stamp the feed status SYNCHRONOUSLY before any await: from this instant the
   // page always carries `<html data-feed-status>`, so outside observers (shot
   // harness, e2e) wait on the app's own signal and can never mistake a
   // still-booting page for a settled one via the generic readyState fallback.
   document.documentElement.dataset.feedStatus = 'booting';
-  setStatus(`connecting to ${config.wsUrl} …`);
+  setFavicon('connecting');
 
   // READ socket: subscribe to chat state, merge each envelope into the widget.
   // Durability + reconnection are POSITRON-inherent (StateConnection owns them,
@@ -355,12 +672,15 @@ async function main(): Promise<void> {
     // client-side twin of #280). This is the event the capture tooling waits on
     // instead of guessing with wall-clock (or worse, virtual-time) budgets.
     document.documentElement.dataset.feedStatus = status;
+    // The three tiers: orb color (humans), favicon (the tab at a glance),
+    // console (engineers — the only place the retry detail belongs).
+    widget.feedStatus = status;
+    setFavicon(status);
     if (status === 'live') {
-      banner.remove();
       gotState = true;
       return;
     }
-    setStatus(`state feed ${status}${detail ? ` — ${detail}` : ''}`, status === 'reconnecting');
+    if (detail) console.warn(`state feed ${status} — ${detail}`);
   });
   state.on(CHAT_KIND, (envelope: StateEnvelope) => {
     latest = chatStateFromEnvelope(envelope);
@@ -372,6 +692,20 @@ async function main(): Promise<void> {
   state.on(NAV_KIND, (envelope: StateEnvelope) => {
     const nav = navStateFromEnvelope(envelope);
     widget.nav = nav;
+    resolveDeepLink(nav.open_tabs ?? []);
+    // Pin the chat projection on first contact: with per-room presence
+    // emitters live (#2606), an UNPINNED projection follows whichever room's
+    // update lands next. One idempotent nav/select of the current tab arms
+    // `pinned_away_from` so only explicit selection moves the view.
+    if (!focusPinned && !pendingDeepLink) {
+      const cur = nav.open_tabs?.find((t) => t.id === nav.current_tab);
+      if (cur?.id !== undefined) {
+        focusPinned = true;
+        void selectRoomHandler(cur.id, 'room').catch(() => {
+          focusPinned = false; // transient — retry on the next nav envelope
+        });
+      }
+    }
     // The tab/window title mirrors the CURRENT activity — "continuum — cambriantech"
     // (Joel 2026-07-30; the #252 router's short-title rule, brand always lowercase).
     // App-level concern: index.ts owns the document, widgets never touch it.
@@ -415,11 +749,12 @@ async function main(): Promise<void> {
   let connectReturned = false;
   setTimeout(() => {
     if (gotState) return;
-    setStatus(
+    // Engineer-tier diagnostic (console, never a banner): a hung boot SAYS
+    // WHICH half hung. The user-facing signal is the amber orb + favicon.
+    console.warn(
       connectReturned
-        ? `connected to ${config.wsUrl} but NO room snapshot arrived in 4s — subscribe/snapshot issue`
-        : `connect() has not returned after 4s (${config.wsUrl}) — last feed status: ${lastFeedStatus} (none=hydrate never finished, connecting=socket stuck)`,
-      true,
+        ? `positron: connected to ${config.wsUrl} but NO room snapshot arrived in 4s — subscribe/snapshot issue`
+        : `positron: connect() has not returned after 4s (${config.wsUrl}) — last feed status: ${lastFeedStatus} (none=hydrate never finished, connecting=socket stuck)`,
     );
   }, 4000);
   // Connect: never throws with reconnect enabled — a dead core means cached

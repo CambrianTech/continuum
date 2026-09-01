@@ -1,0 +1,228 @@
+# Citizen Homes — the life-sim apartment as a positron render target
+
+**Status:** RAW SESSION NOTES — captured reactively across one night and it shows (amended piecewise; Joel: "you're kind of flailing in design here"). These are INPUTS to the consolidated LIVE-PLANE architecture doc, which gets written ONCE, fresh, as the LiveKit session's opening act. Trust the laws and receipts here; treat the structure as provisional. **Status:** design note (2026-08-31, the creative night). Companion to the
+embodiment ladder (#2625), the citizen-page roadmap (#2649), and
+[universes-are-positron-asset-payloads]. Nothing here invents a subsystem;
+every element is a projection of state that already exists or is already
+roadmapped.
+
+## The thesis, in one line
+
+**The profile page and the home are the same ViewState with two renderers.**
+A citizen's home is not a game bolted onto the substrate — it is the third
+render target (after web-DOM and terminal/RAG) of the exact `Workspace`
+projection the profile already draws. One semantic layer, N worlds.
+
+## What Joel described
+
+> "Life-sim apartment or home where they live and take live calls from their
+> office room or wherever — they have a full home lol. We will make a 3d
+> orthographic view."
+
+## The mapping (state → space)
+
+Everything the home shows is a room-shaped or persona-shaped fact the pipes
+already carry (or #2649 adds):
+
+| Home element | Backing state (exists today unless noted) |
+|---|---|
+| The home itself | An activity ROOM with purpose `home`, one per citizen — tab = content = room = activity extends to PLACES. Her home is addressable (`/room/<uuid>`), joinable, presence-served, bridged — every law from the 2026-08-31 arc applies for free. |
+| Rooms within the home (office, study, trophy hall, garden) | The recipe's REGIONS ([`Experience`] manifest — the Join Contract already projects regions per room). An orthographic layout is region geometry carried as recipe data, never code. |
+| The office — where live calls happen | The LIVE face anchored to a region: LiveKit tracks dock into the office region's frame. Walking into the office = `nav/select` + the call overlay. (The livekit restoration bar: 14 personas on an M1.) |
+| The trophy hall | RECORD & AWARDS (verdict identity, form curve) — the same instruments, rendered as objects on shelves. |
+| The study / desk | ACTIVE WORK doors — her live runs as things ON the desk; clicking one is the same `bench-run-open` join-then-select verb. |
+| Her "vibe" / decor | Wall posts + writings (the #2649 wall pipe) + universe asset payloads — decor is a positron asset payload, one semantic layer, any theme. |
+| Her body/presence in the space | The roster tile's truth: presence dot → an avatar in the space; the speaking ring → she's animated/facing you; vitals → ambient cues (light level = activity, desk clutter = queue). |
+| Visitors | Room membership. Knocking = `room/join`. A human walking in IS the operator self-peer entering the room. |
+
+## THE RENDERER LAW (Joel, 2026-08-31 — supersedes everything below it)
+
+**The one-line form: "Never use the CPU unless you have to. It's like a
+hot potato."** Pixels live on the GPU; the CPU only orchestrates
+(dispatch + signal). The proof this bar is reachable is already in tree:
+`metal_gpu_convert.rs` — Bevy RGBA texture → Metal compute → NV12 written
+directly into IOSurface memory → CVPixelBuffer → VideoToolbox, with its
+own header stating "eliminates ALL CPU pixel work." Every new visual pipe
+must answer "where does the CPU touch pixels?" and the only passing
+answer is **nowhere**.
+
+1. **Never JavaScript.** The browser DISPLAYS frames; it never rasterizes
+   scenes. A JS scene graph in the product is the named regression (a
+   three.js home card shipped for ~2 hours on 2026-08-31; deleting it
+   returned 1.2MB of bundle).
+2. **ONE renderer serves LiveKit AND the orthographic views.** The home,
+   the neighborhood, and the call avatars are cameras in the SAME native
+   app. Two renderers = two scene truths = the drift this whole doc bans.
+3. **Framebuffer/renderbuffer handoff — never rasterize into LiveKit.**
+   The GPU-bridge path is the only live path: render target → GPU
+   RGBA→NV12 → double-buffered IOSurface → CVPixelBuffer → LiveKit, zero
+   per-frame heap allocs (publishers/gpu_bridge.rs — built, and its docs
+   list the allocations it killed). CPU readback exists ONLY for one-shot
+   snapshots; a live slot on the CPU path is a defect.
+4. **Web = stream/snapshot consumer.** Today: avatar/snapshot PNGs (bevy
+   renders her VRM inside her deterministic scene). Next: the ortho views
+   as a pixel stream over the SAME bridge (a "room camera" is one more
+   slot). Interaction (orbit/walk) travels as intents to the renderer,
+   frames travel back — the thin-client discipline the rest of the
+   product already obeys.
+5. **Engine record, honestly**: Joel called bgfx for exactly this
+   one-renderer-everywhere requirement; bevy was chosen anyway and now
+   carries a built bridge + VRM + scene system. Bevy STAYS only while the
+   stream target covers web/ortho at the performance bar; if it cannot,
+   the bgfx revisit is on the table and this line is the receipt that the
+   requirement was named early.
+
+## The renderer — REAL 3D, no sprite ceiling
+
+**The bar (Joel, 2026-08-31): "full threejs or rendered at rust and seen —
+not some simple sprite stuff. They take live calls in bevy from their
+rooms."**
+
+- **Bevy is the canonical home renderer**: native rust, GPU, real meshes,
+  lighting, and materials — already a workspace dependency. It implements
+  the SAME `RenderTarget` contract as the web target: draws a
+  `WorkspaceView`, dispatches content by purpose, fires the same composed
+  intents (`nav/select`, `listing-select`, `bench-run-open`) from spatial
+  interaction. Orthographic dollhouse camera is the default lens; the engine is
+  full 3D underneath (VR = the same scene, stereo camera).
+- **Live calls happen IN the scene**: LiveKit video tracks render as
+  textures on surfaces in her office (the monitor on her desk, the wall
+  screen); her speaking state animates her avatar. Walking into the office
+  joins the call — the live face IS a region of the home, not an overlay
+  escape hatch.
+- **Web embed**: either bevy-wasm in a canvas, or a threejs target reading
+  the identical ViewState — an implementation choice at build time, never
+  two data paths. The profile's current SVG interior card is explicitly a
+  PREVIEW STUB (slice 0): honest facts, placeholder fidelity; it is
+  replaced by the embedded live render the moment slice 4 ships.
+- **No new wire.** The 3D client subscribes to the same ViewState kinds
+  (`chat`, `roster`, `wall`, `experience`, `bench`, live face) over the
+  same ws pipe. The 2026-08-31 per-room accumulators + per-room attach are
+  exactly what make a spatial client possible: each room's truth is already
+  separately addressable.
+- **Asset payloads** name the look: `universe` payloads map region → real
+  meshes/materials/palette (GLTF references, not tiles). A fantasy forge
+  home and a corporate loft are DATA.
+
+## Build order (each slice lands alone)
+
+1. **`home` purpose + one seeded home room per citizen** — recipe with
+   regions (office/study/hall). Immediately navigable in the EXISTING web
+   UI as a normal room (the frame is the promise).
+2. **Region geometry in the recipe** (positions/sizes/mesh refs) — the
+   authored-layout data contract, validated by rendering it in the preview
+   stub. (The stub proves the GEOMETRY PIPE; fidelity arrives with bevy —
+   the stub is never the destination.)
+3. **Live-call docking**: the live face anchors to the office region
+   (requires the livekit session — next session's opener).
+4. **Bevy orthographic target** — the third renderer, reading the same
+   ViewState. Ships as `apps/` sibling, never core-coupled.
+5. **Decor = wall + universe payloads**; trophies from RECORD; desk from
+   ACTIVE WORK.
+
+## Entry points (Joel: "see their home interior right from profile pages, or enter the whole neighborhood")
+
+Two doors into the space, one projection behind both:
+
+- **From the profile** — the home INTERIOR renders as a card on her page
+  (the dollhouse view embedded where her story already lives). First cut is
+  procedural: default geometry, REAL facts as furniture — window light =
+  online, desk items = active runs, trophies = resolved count, the plant =
+  genome size. When home recipes land, the same card draws the authored
+  geometry. Clicking it enters the home activity (`nav/select` her home
+  room).
+- **Enter the neighborhood** — a top-level activity (a tab like academy):
+  top-down/orthographic dollhouse camera over the room tree. The SAME activity
+  opened by a VR target walks the identical tree in stereo — VR is render
+  target #4, not a fork: web-DOM, terminal/RAG, bevy-ortho, VR, one
+  ViewState behind all four.
+
+## The neighborhood (Joel: "I plan on full life-sim neighborhood")
+
+A home is ONE tab/activity; the neighborhood is the tier above — and it
+already has a data structure: **the room tree IS the map.** The Activities
+rail (durable places, work rooms nested under parents, `parent_ref`
+lineage) renders spatially as streets and lots:
+
+- Every citizen's `home` room = a lot in the neighborhood.
+- The academy = the campus building; run rooms = its classrooms; a solve
+  room's door on the board = literally a door.
+- General/cambriantech = the town square / the office downtown.
+- Walking between buildings = `nav/select` — the same verb as a tab click,
+  the URL following you (`/room/<name>`), presence rendering who's where
+  (the who-panel becomes "who's on the street").
+- Zoom ladder: neighborhood (all rooms) → home (one room's regions) →
+  region (the live face / the desk). Each level is the same tree at a
+  different depth — the orthographic camera walks the nav hierarchy.
+
+The neighborhood view is therefore slice 6: render the ROOM TREE as the
+town, with each lot's ambient cues (lights on = presence, activity =
+citizens working) fed by the per-room rosters that multi-room presence
+already serves.
+
+## LEGACY AUDIT (2026-08-31 — Joel: "take audit of even past legacy work")
+
+The audit found the plan half-built already, in the core's live plane:
+
+- **`live/video/bevy_renderer/` — a full Bevy headless avatar system**:
+  16 avatar slots, per-avatar camera → render target → GPU readback →
+  LiveKit video loops (zero-copy IOSurface on Apple Silicon). VRM avatars
+  (blend shapes, humanoid bones, lookAt), animation systems (blink,
+  breathing, speech, emotion, gesture, cognitive), and animation PROFILES
+  as data — whose own docs already anticipate this direction: *"a Sims
+  character walking has larger body movement than a webcam portrait."*
+- **`bevy_renderer/scene/` — a whole scene substrate**: `room.rs`,
+  `builder.rs` + `builder_api.rs` (fluent), `birther.rs` (procedural),
+  `library.rs`, `physics.rs`, `object.rs`, `slot.rs`.
+- **`scene/description.rs` — `SceneDescription`: THE one-to-one contract,
+  already defined.** Backend-neutral, representation-neutral serde data
+  (no engine types), a scene-graph tree of `SceneNode`s, `AssetRef` +
+  open `AssetKind` (mesh / VRM rig / gaussian splat / generated), and
+  **ts-rs exported** — produced by RON file, builder, or birther;
+  instantiated per backend. Its own docblock promises exactly Joel's bar:
+  a future backend "instantiates the *same* description into its own
+  graph."
+- **`apps/vr/` and `apps/ar/`** exist as app stubs — targets #4 and #5
+  have homes in the tree.
+- **`CosmosBackdrop`** — the universe-as-living-experience precedent.
+
+**The deeper find (Joel: "maybe you totally forgot how we did bevy and
+our avatars")** — the identity→space pipeline is COMPLETE server-side:
+
+- `identity → hash → voice · avatar (VRM) · SCENE` — every persona already
+  gets a deterministic room environment from a GLB catalog
+  (`models/scenes/`, deploy-downloaded), and `scene/room.rs`'s own docs
+  say it: *"a persona's office is a sub-scene within their apartment,
+  which is a sub-scene within a city block"* — the apartment/neighborhood
+  hierarchy predates this doc.
+- **`avatar/snapshot {identity}`** allocates a bevy slot, loads her VRM,
+  renders a PNG served at `/avatars/<identity>.png` — with expressions,
+  poses, and viseme mouth weights. The roster portraits ARE bevy renders.
+- `capture.rs` snapshots live video per participant (JPEG, content-
+  addressed) — the "see the room" pipe.
+
+So the web home card v1.5 (shipped) billboards her REAL bevy render in
+the three.js room; v2 replaces the default shell with her deterministic
+catalog scene; v3 is the bevy-rendered room itself streaming frames.
+Reference for life-sim mechanics: FreeSO (github.com/riperiperi/FreeSO,
+open-source TSO reimplementation, C# — patterns, not code). Trademark
+note: never name the genre with EA's mark in code/docs/marketing.
+
+**Consequence (compression law):** the web `<home-scene>` element ships
+today on an interim `HomeSceneModel`; its v2 CONSUMES `SceneDescription`
+via the existing ts-rs types, and homes/neighborhood layouts are authored
+as SceneDescriptions (RON or birthed) that the bevy renderer and the
+three.js target instantiate identically. LiveKit docking follows the
+avatar system's existing readback pattern — the office screen surface
+joins the same scene graph the call avatars already render in. No
+parallel scene format survives this convergence.
+
+## Laws that bind this doc
+
+- The room IS the runner / tab = content = room = activity — homes are
+  rooms, not a parallel space system.
+- One semantic layer, N worlds — the page, the dollhouse, and the 3D home
+  render one projection; a fact visible in one is visible in all.
+- Honest absence — an unfurnished home renders as an unfurnished home.
+- No new singletons: every home pipe is per-room from birth (the
+  2026-08-31 lesson, [[the-ui-truth-arc-single-attach-single-mirror-detached-default]]).

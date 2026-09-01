@@ -3,7 +3,11 @@
  */
 
 import type { RustCoreIPCClientBase } from './base';
+<<<<<<<< HEAD:legacy/quarantine/continuum-core-bindings/modules/rag.ts
 import type { RagSourceRequest, RagComposeResult } from '../../../../protocol/typescript/rag';
+========
+import type { RagSourceRequest, RagComposeResult } from '../../../protocol/typescript/rag';
+>>>>>>>> origin/main:sdk/typescript/modules/rag.ts
 
 // ============================================================================
 // Mixin

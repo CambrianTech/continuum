@@ -2013,6 +2013,7 @@ impl ActionCommand for BenchmarkDispatch {
         // on the first card of a citizen-driven round.
         let driver = p.drive.unwrap_or_default();
         crate::cognition::bench_round::open_round(room.room_id.as_uuid(), spec.name, driver);
+        crate::cognition::bench_round::set_run_room_name(room.room_id.as_uuid(), &room_name);
         // The round REMEMBERS its team: driver edges (settle-advance, non-settling
         // advance, boot resume) dispatch cards that were never initially fired, and
         // without a round-level record they went out team-less (2026-08-30).
@@ -2288,12 +2289,22 @@ impl ActionCommand for BenchmarkDispatch {
                         } else {
                             String::new()
                         };
+                        // The close coaching is NOT optional decoration: the gym arm
+                        // always carried it, this arm said "watch the room for the
+                        // verdict" — passive voice — and citizens did exactly that:
+                        // wrote real patches, never said done, and every settle came
+                        // from the lapse sweeper confiscating a partial (both misses
+                        // of 2026-08-31). The verb that fires her grade is HERS.
                         format!(
                             "@{who} (to you): card {short} is a REAL {} issue (SWE-bench, a full \
                              project).{staged} I've STARTED your scored solve on it — fix the bug \
                              in `swe/{}/` (do not edit the tests); your diff is graded against the \
                              repo's held-out tests, and you get a few attempts to investigate your \
-                             own failures. Watch the room for the verdict.",
+                             own failures. When your fix is ready, YOU close it: `work/state \
+                             {short} done` — that is what fires your grade; nobody fires it for \
+                             you. Teammates each hold their OWN card in this room — a kickoff \
+                             naming someone else is not yours; {who}, card {short} is the one and \
+                             only card you work.",
                             instance.repo, instance.instance_id
                         )
                     }

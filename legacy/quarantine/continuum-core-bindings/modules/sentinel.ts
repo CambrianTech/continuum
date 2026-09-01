@@ -9,9 +9,15 @@
  */
 
 import type { RustCoreIPCClientBase } from './base';
+<<<<<<<< HEAD:legacy/quarantine/continuum-core-bindings/modules/sentinel.ts
 import type { BudgetLimits } from '../../../../protocol/typescript/sentinel/BudgetLimits';
 import type { BudgetConsumed } from '../../../../protocol/typescript/sentinel/BudgetConsumed';
 import type { PipelineCheckpoint } from '../../../../protocol/typescript/sentinel/PipelineCheckpoint';
+========
+import type { BudgetLimits } from '../../../protocol/typescript/sentinel/BudgetLimits';
+import type { BudgetConsumed } from '../../../protocol/typescript/sentinel/BudgetConsumed';
+import type { PipelineCheckpoint } from '../../../protocol/typescript/sentinel/PipelineCheckpoint';
+>>>>>>>> origin/main:sdk/typescript/modules/sentinel.ts
 
 /**
  * Sentinel execution handle

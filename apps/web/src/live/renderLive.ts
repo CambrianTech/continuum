@@ -22,8 +22,9 @@
  */
 
 import { html, nothing, type TemplateResult } from 'lit';
+import { repeat } from 'lit/directives/repeat.js';
 import type { LiveContentBody, LiveParticipantVM } from '@continuum/patterns';
-import { fireLiveCaptionsToggle, fireLiveFaceToggle, fireLiveMicToggle } from '../render/parts';
+import { fireLiveCameraToggle, fireLiveCaptionsToggle, fireLiveFaceToggle, fireLiveMediaAsk, fireLiveMicToggle, fireLiveTilePin } from '../render/parts';
 
 /** Kind glyph for a tile with no stored avatar — the honest fallback face. */
 function tileGlyph(kind: string): string {
@@ -38,8 +39,10 @@ function participantTile(p: LiveParticipantVM): TemplateResult {
   const hide = (e: Event): void => {
     (e.currentTarget as HTMLElement).remove();
   };
+
   return html`<div
     class="live-tile"
+    @click=${(e: Event) => fireLiveTilePin(e, p.id)}
     data-kind=${p.kind}
     data-speaking=${p.speaking ? '' : nothing}
     data-active=${p.active ? '' : nothing}
@@ -47,7 +50,19 @@ function participantTile(p: LiveParticipantVM): TemplateResult {
   >
     <span class="lt-glyph">${tileGlyph(p.kind)}</span>
     ${p.avatarUrl ? html`<img class="lt-img" src=${p.avatarUrl} alt="" @error=${hide} />` : nothing}
-    ${p.hasVideo ? html`<canvas class="lt-video" data-sender=${p.id}></canvas>` : nothing}
+    ${p.lkVideo
+      ? html`<video
+          class="lt-video"
+          data-lk-video=${p.id}
+          autoplay
+          playsinline
+          muted
+          disablepictureinpicture
+          controlslist="nodownload noremoteplayback"
+        ></video>`
+      : p.hasVideo
+        ? html`<canvas class="lt-video" data-sender=${p.id}></canvas>`
+        : nothing}
     <span class="lt-status" data-on=${p.active ? '' : nothing} title=${p.active ? 'online' : 'offline'}></span>
     <span class="lt-name">
       ${p.name}${p.speaking ? html`<span class="lt-wave" aria-label="speaking">🔊</span>` : nothing}
@@ -90,20 +105,67 @@ function controlBtn(opts: {
  *  rail, so focus follows actual tokens, never a timer), GRID otherwise
  *  (equal tiles). `data-composition` carries the state for CSS + tests. */
 function renderComposition(body: LiveContentBody): TemplateResult {
-  const focused = body.participants.find((p) => p.speaking);
+  // Citizen VOICES are composition-independent — hidden autoplaying sinks that
+  // must survive panel↔grid flips (they rendered only in the grid branch once,
+  // which would have muted the room the moment someone spoke).
+  const audioSinks = (body.lkAudioSenders ?? []).map(
+    (id) => html`<audio data-lk-audio=${id} autoplay></audio>`,
+  );
+  // THE COMPOSITION RULE (surveyed 2026-08-31 — Discord/Teams/Meet: grid by
+  // default, speaking highlights IN PLACE, fullscreen only on explicit pin or
+  // screenshare; Zoom's Speaker View is the one auto-stage and even that is a
+  // chosen mode; TikTok's host-fullscreen is broadcast-shaped, wrong for a
+  // room of peers): stage engages when the reader PINNED a tile (click), else
+  // while someone is actively SPEAKING (real tokens flowing). Never merely
+  // because video exists — a quiet call is a grid.
+  const focused =
+    (body.pinnedId !== undefined
+      ? body.participants.find((p) => p.id === body.pinnedId)
+      : undefined) ?? body.participants.find((p) => p.speaking);
   if (focused) {
     const rail = body.participants.filter((p) => p.id !== focused.id);
     return html`<div class="live-panel" data-composition="panel">
       <div class="live-stage">${participantTile(focused)}</div>
       ${rail.length > 0
-        ? html`<div class="live-rail">${rail.map(participantTile)}</div>`
+        ? html`<div class="live-rail">${repeat(rail, (p) => p.id, participantTile)}</div>`
         : nothing}
+      ${audioSinks}
     </div>`;
   }
   return html`<div class="live-grid" data-composition="grid" data-count=${body.participants.length}>
-    ${body.participants.map(participantTile)}
+    ${repeat(body.participants, (p) => p.id, participantTile)}
+    ${audioSinks}
   </div>`;
 }
+
+/** The staged permission card (reason before ask; recovery after deny) —
+ *  POSITRON-MEDIA-PERMISSIONS.md stage 1/3. Pure: outcomes ride composed
+ *  events, the host owns the actual getUserMedia gesture. */
+const mediaAskCard = (ask: NonNullable<LiveContentBody['mediaAsk']>): TemplateResult => {
+  const what = ask.kind === 'camera' ? 'camera' : 'microphone';
+  return html`<div class="media-ask" role="dialog" aria-label="${what} permission">
+    ${ask.denied
+      ? html`<div class="media-ask-title">${what} access is blocked</div>
+          <div class="media-ask-body">
+            Your browser remembered an earlier “no”. To turn it back on: click the
+            padlock in the address bar → Site settings → allow the ${what}, then
+            try again.
+          </div>
+          <div class="media-ask-actions">
+            <button class="media-ask-continue" @click=${(e: Event) => fireLiveMediaAsk(e, 'dismiss')}>OK</button>
+          </div>`
+      : html`<div class="media-ask-title">Use your ${what}?</div>
+          <div class="media-ask-body">
+            Citizens in this call ${ask.kind === 'camera' ? 'see you through your camera' : 'hear you through your microphone'}.
+            Your ${ask.kind === 'camera' ? 'video' : 'audio'} stays on this grid — it is never recorded
+            or sent anywhere else. Your browser will ask once and remember.
+          </div>
+          <div class="media-ask-actions">
+            <button class="media-ask-continue" @click=${(e: Event) => fireLiveMediaAsk(e, 'continue')}>Allow ${what}</button>
+            <button class="media-ask-dismiss" @click=${(e: Event) => fireLiveMediaAsk(e, 'dismiss')}>Not now</button>
+          </div>`}
+  </div>`;
+};
 
 export function renderLive(body: LiveContentBody): TemplateResult {
   const hangup = (e: Event): void => {
@@ -113,7 +175,7 @@ export function renderLive(body: LiveContentBody): TemplateResult {
     fireLiveCaptionsToggle(e);
   };
   const cc = body.controls;
-  return html`<div class="live-room" data-room=${body.roomId}>
+  return html`${body.mediaAsk !== undefined ? mediaAskCard(body.mediaAsk) : nothing}<div class="live-room" data-room=${body.roomId}>
     <div class="live-head">
       <span class="live-title"><span class="live-title-dot"></span>${body.roomName} — live</span>
       ${body.mediaPlaneLive
@@ -152,7 +214,13 @@ export function renderLive(body: LiveContentBody): TemplateResult {
         glyph: '🎥',
         label: 'camera',
         enabled: cc.cameraAvailable,
-        title: 'coming soon — camera lands with the browser media plane',
+        on: cc.cameraOn,
+        title: cc.cameraAvailable
+          ? cc.cameraOn
+            ? 'camera live — click to stop'
+            : 'start your camera'
+          : 'camera enables when the call connects',
+        onClick: cc.cameraAvailable ? (e: Event) => fireLiveCameraToggle(e) : undefined,
       })}
       ${controlBtn({
         glyph: '🖥️',

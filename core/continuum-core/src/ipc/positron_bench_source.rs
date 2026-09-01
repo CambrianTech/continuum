@@ -33,7 +33,25 @@ const SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
 const BOARD_LIMIT: usize = 20;
 
 fn row_of(card: BenchRunCard) -> BenchRunRow {
+    // A `claim-<uuid>` run id CARRIES its card — the round (run room) and the
+    // recorded solve room derive from the tracker, making every board row a
+    // navigable door instead of a dead readout (Joel, 2026-08-31: "see
+    // current runs and navigate to them").
+    let card_uuid = card
+        .run_id
+        .strip_prefix("claim-")
+        .and_then(|t| uuid::Uuid::parse_str(t).ok());
+    let round_id = card_uuid.and_then(crate::cognition::bench_round::room_for_card);
+    let activity = card_uuid.and_then(crate::cognition::bench_round::card_activity);
+    let solve_room = activity.as_ref().map(|a| a.solve_room);
+    let solve_room_name = activity
+        .as_ref()
+        .filter(|a| !a.room_name.is_empty())
+        .map(|a| a.room_name.clone());
     BenchRunRow {
+        round_id: round_id.map(|u| u.to_string()),
+        solve_room: solve_room.map(|u| u.to_string()),
+        solve_room_name,
         run_id: card.run_id,
         instance: card.instance,
         solver: card.solver,
@@ -68,6 +86,9 @@ fn live_exam_row() -> Option<BenchRunRow> {
     let now = crate::persona::trace::now_ms();
     Some(match snap {
         Some(s) => BenchRunRow {
+            round_id: None,
+            solve_room: None,
+            solve_room_name: None,
             run_id,
             instance: Some(format!("exam · last: {}", s.current_task)),
             solver: Some("cognition/eval".to_string()),
@@ -85,6 +106,9 @@ fn live_exam_row() -> Option<BenchRunRow> {
             infra_error: None,
         },
         None => BenchRunRow {
+            round_id: None,
+            solve_room: None,
+            solve_room_name: None,
             run_id,
             instance: Some("exam · provisioning".to_string()),
             solver: Some("cognition/eval".to_string()),

@@ -209,6 +209,8 @@ mod tests {
             kind: NavTargetKind::Room,
             unread: 3,
             purpose: "chat".into(),
+            parent_ref: String::new(),
+            display_label: String::new(),
         });
         nav.last_read.insert("room-a".into(), 1_700_000_000_000);
         nav.current_tab = Some("room-a".into());

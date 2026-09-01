@@ -239,13 +239,14 @@ pub struct PersonaAircRuntime {
 /// exactly as the desktop expects).
 fn persona_identity_card(
     card: &crate::persona::card::PersonaCard,
+    kind_label: &str,
 ) -> airc_core::identity::Identity {
     let mut integrations = std::collections::BTreeMap::new();
     integrations.insert(
         "continuum_persona_id".to_string(),
         card.persona_id.to_string(),
     );
-    integrations.insert("continuum_kind".to_string(), "persona".to_string());
+    integrations.insert("continuum_kind".to_string(), kind_label.to_string());
     if let Some(vrm) = card.avatar_vrm.as_deref() {
         integrations.insert("avatar_vrm".to_string(), vrm.to_string());
     }
@@ -314,6 +315,7 @@ impl PersonaAircRuntime {
     ) -> Result<Self, PersonaAircRuntimeError> {
         Self::bootstrap_as(
             crate::identity::IdentityKind::Persona,
+            None,
             persona_id,
             agent_name,
             continuum_root,
@@ -331,6 +333,9 @@ impl PersonaAircRuntime {
     /// citizen by the persona resumer or the roster.
     pub async fn bootstrap_as(
         kind: crate::identity::IdentityKind,
+        // Agent kinds REQUIRE a provider (citizens/agents/<provider>/<label>/);
+        // every other kind passes None (citizen_path enforces the contract).
+        provider: Option<&str>,
         persona_id: Uuid,
         agent_name: impl Into<String>,
         continuum_root: &Path,
@@ -345,7 +350,7 @@ impl PersonaAircRuntime {
         let home = crate::context::citizen_home_path(
             continuum_root,
             kind,
-            None,
+            provider,
             &agent_name,
         );
 
@@ -410,6 +415,15 @@ impl PersonaAircRuntime {
         // supplied id (manual tampering, a pre-Slice-1b legacy divergence),
         // the runtime keys by the ACTUAL cryptographic identity, never a
         // stale input. It fires at `debug!` — silent in the coherent case.
+        // KIND → wire labels: the heartbeat's runtime tag and the card's
+        // continuum_kind. "interactive" is the projection's one Human marker
+        // (SenderKind::from_runtime) — the operator self-peer rendering as a
+        // persona/agent was the who-panel's you-vs-joel confusion.
+        let (runtime_label, kind_label) = match kind {
+            crate::identity::IdentityKind::Human => ("interactive", "human"),
+            crate::identity::IdentityKind::Agent => ("agent", "agent"),
+            _ => ("persona", "persona"),
+        };
         let peer_id_uuid = airc.peer_id().as_uuid();
         if persona_id != peer_id_uuid {
             tracing::debug!(
@@ -532,7 +546,7 @@ impl PersonaAircRuntime {
             .unwrap_or_else(|| home.join("seed.json"));
         match crate::persona::seed::read_seed(&seed_path).await {
             Ok(seed) => {
-                let identity = persona_identity_card(&seed.card());
+                let identity = persona_identity_card(&seed.card(), kind_label);
                 match airc_arc.set_local_identity_card(identity).await {
                     Ok(()) => info!(
                         persona_id = %persona_id,
@@ -661,7 +675,7 @@ impl PersonaAircRuntime {
                     if let Err(error) = hb_airc
                         .emit_agent_heartbeat_with_coordination(
                             airc_lib::HeartbeatKind::Alive,
-                            "persona".to_string(),
+                            runtime_label.to_string(),
                             None,
                             None,
                             None,
