@@ -99,6 +99,33 @@ const REHOME_MIN_GAIN_PCT: u32 = 15;
 /// re-running that measurement against fresher receipts.
 const REHOME_SUSTAINED_TICKS: u32 = 3;
 
+/// Re-home evidence: `(live_space, plan_space, gain, worth_it)` in TOTAL
+/// token-space (window × lanes) — never the per-slot window alone.
+///
+/// Measured live 2026-09-01: the plan moved to 4 lanes × 47,426 while the
+/// running server held 2 × 57,600 — 65% more total space and two more warm
+/// slots, but the per-slot window SHRANK, so a window-only gain was negative
+/// and the relaunch never fired. Five residents thrashed two slots at
+/// hit_rate 0.0 until an operator cycled the server by hand. Lane count must
+/// be part of the evidence
+/// ([[the-same-bug-at-two-sites-is-a-missing-constraint-not-two-bugs]]).
+///
+/// Integer arithmetic that cannot overflow: u64 space on a 1M-token × 8-lane
+/// server is ~8e6; ×100 still fits comfortably.
+fn rehome_gain_evidence(
+    live_window: u32,
+    live_lanes: u32,
+    plan_window: u32,
+    plan_lanes: u32,
+) -> (u64, u64, u64, bool) {
+    let live_space = (live_window as u64).saturating_mul(live_lanes.max(1) as u64);
+    let plan_space = (plan_window as u64).saturating_mul(plan_lanes.max(1) as u64);
+    let gain = plan_space.saturating_sub(live_space);
+    let worth_it = live_space > 0
+        && gain.saturating_mul(100) >= live_space.saturating_mul(REHOME_MIN_GAIN_PCT as u64);
+    (live_space, plan_space, gain, worth_it)
+}
+
 /// Consecutive plan ticks a base-model DOWNSHIFT must persist before it is
 /// adopted. #368 (2nd occurrence, 2026-08-08): a ~6-second RAM transient at
 /// agent/solve launch collapsed the planner's budget to zero for ONE tick, the
@@ -1806,14 +1833,12 @@ impl ServingDaemonModule {
                     // "sustained" meaning sustained-NOW.
                     self.rehome_streak.store(0, Ordering::Relaxed);
                 }
-                let gain = served_ctx.saturating_sub(live.served_context_window);
-                // Relative margin: gain/live >= 15%, in integer arithmetic that cannot
-                // overflow a u32 window (`gain * 100` on a 1M-token window is ~1e8).
-                let worth_it = live.served_context_window > 0
-                    && gain.saturating_mul(100)
-                        >= live
-                            .served_context_window
-                            .saturating_mul(REHOME_MIN_GAIN_PCT);
+                let (live_space, plan_space, gain, worth_it) = rehome_gain_evidence(
+                    live.served_context_window,
+                    live.lanes,
+                    served_ctx,
+                    lanes,
+                );
                 let streak = if worth_it && cooling == 0 {
                     self.rehome_streak
                         .fetch_add(1, Ordering::Relaxed)
@@ -1852,7 +1877,7 @@ impl ServingDaemonModule {
                     // a design call on a guard written from an incident, so it is
                     // surfaced for the humans who own that history rather than
                     // quietly re-tuned by me (#332/#333).
-                    if live.served_context_window < served_ctx {
+                    if live_space < plan_space {
                         crate::probe!(
                             class = "serving.reconcile.window",
                             decision = "declined",
@@ -3971,6 +3996,32 @@ impl ServiceModule for ServingDaemonModule {
 #[cfg(test)]
 mod tests {
 
+    // what this catches (2026-09-01 live): the re-home guard measured only the
+    // per-slot window, so a plan that GREW total token-space by adding lanes
+    // while trimming per-slot (2×57,600 → 4×47,426, +65% space, +2 warm slots)
+    // computed a negative gain and never relaunched — five residents thrashed
+    // two slots at hit_rate 0.0 until an operator cycled the server by hand.
+    // The evidence currency is window × lanes.
+    #[test]
+    fn rehome_evidence_counts_lanes_not_just_per_slot_window() {
+        use super::rehome_gain_evidence;
+        // The live incident shape: more lanes, smaller per-slot, bigger total.
+        let (live, plan, gain, worth_it) = rehome_gain_evidence(57_600, 2, 47_426, 4);
+        assert_eq!(live, 115_200);
+        assert_eq!(plan, 189_704);
+        assert_eq!(gain, 74_504);
+        assert!(worth_it, "65% more total space must qualify as re-home evidence");
+        // Same total space re-sliced: not evidence (a relaunch kills in-flight turns).
+        let (_, _, _, worth_it) = rehome_gain_evidence(40_000, 2, 20_000, 4);
+        assert!(!worth_it, "re-slicing the same space is not a gain");
+        // Sub-threshold growth (<15%): not evidence.
+        let (_, _, _, worth_it) = rehome_gain_evidence(40_000, 2, 44_000, 2);
+        assert!(!worth_it, "10% is under the 15% margin");
+        // A dead lane (0 window) never qualifies — recovery is a different path.
+        let (_, _, _, worth_it) = rehome_gain_evidence(0, 1, 40_000, 2);
+        assert!(!worth_it, "live_space=0 is the recovery arm's job, not re-home");
+    }
+
     // what this catches (2026-08-15 14:13, round-killer L10 / #438 live): a plan tick
     // whose usable_bytes sample was transiently bogus named the SMALLEST candidate
     // (qwen2.5-0.5B) via the nothing-fits arm, and the reconcile swapped the READY
@@ -5137,12 +5188,11 @@ mod tests {
         let candidates =
             vec![footprint_from_parts("coder-14b", 9 * GB, plan_model_ctx, true).unwrap()];
         daemon.publish_plan(budget, &candidates);
-        let plan_window = daemon
-            .plan_tx
-            .borrow()
-            .as_ref()
-            .expect("plan published")
-            .served_context_window;
+        let (plan_window, plan_lanes) = {
+            let plan = daemon.plan_tx.borrow();
+            let plan = plan.as_ref().expect("plan published");
+            (plan.served_context_window, plan.lanes)
+        };
         let _ = daemon.serving_tx.send_replace(ServingSnapshot {
             ready_verified_at_ms: None,
             active_model: Some("coder-14b".into()),
@@ -5150,7 +5200,10 @@ mod tests {
             base_url: serving_v1_url(),
             adapters: Vec::new(),
             served_context_window: plan_window * live_pct / 100,
-            lanes: 4,
+            // Live lanes match the plan's so these fixtures isolate the WINDOW
+            // dimension of re-home evidence; the lanes dimension has its own test
+            // (rehome_evidence_counts_lanes_not_just_per_slot_window).
+            lanes: plan_lanes,
             degraded_reason: None,
             vision_ready: false,
             vision_base_url: None,
@@ -5697,12 +5750,11 @@ mod tests {
         };
         let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true).unwrap()];
         daemon.publish_plan(budget, &candidates);
-        let plan_window = daemon
-            .plan_tx
-            .borrow()
-            .as_ref()
-            .expect("plan published")
-            .served_context_window;
+        let (plan_window, plan_lanes) = {
+            let plan = daemon.plan_tx.borrow();
+            let plan = plan.as_ref().expect("plan published");
+            (plan.served_context_window, plan.lanes)
+        };
 
         // Same model + genome, but the live slot froze far below the plan.
         let _ = daemon.serving_tx.send_replace(ServingSnapshot {
@@ -5713,7 +5765,7 @@ mod tests {
             base_url: serving_v1_url(),
             adapters: Vec::new(),
             served_context_window: plan_window / 4,
-            lanes: 4,
+            lanes: plan_lanes,
             degraded_reason: None,
             vision_ready: false,
             vision_base_url: None,
@@ -5745,7 +5797,7 @@ mod tests {
             base_url: serving_v1_url(),
             adapters: Vec::new(),
             served_context_window: plan_window / 2 + 256,
-            lanes: 4,
+            lanes: plan_lanes,
             degraded_reason: None,
             vision_ready: false,
             vision_base_url: None,
