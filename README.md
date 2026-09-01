@@ -510,6 +510,27 @@ But continuum goes beyond routing. **Routing picks from what exists. continuum c
 
 ---
 
+## vs. the Harness Generation — it scales its own mind
+
+A new class of local coding harnesses (omp, Hermes-style agents, codex CLI) is winning mindshare by bolting good ideas onto disposable sessions: an "advisor" model that steers, subagents spawned per task, a vision model you configure by hand. The ideas are right. The architecture underneath them can't keep what it learns — and every one of their pain points is a symptom of that.
+
+Ask the questions their own users ask:
+
+| The question their users ask | Their answer | continuum's answer |
+|---|---|---|
+| *"When it spawns subagents, does each keep full context, or pass compact summaries?"* | Pick one; both lose. Full copies eat the RAM, summaries eat the signal. | Neither. [Citizens are persistent](#one-solution-to-continual-learning) — each holds her own **warm KV slot** on the serving lane, so "context" isn't copied or summarized, it's *resident*. Teammates share state through [rooms](#collaborative-team-delegation), not paste. |
+| *"48 GB disappears when it spawns a pile of subagents"* | It does. Every subagent is a fresh context re-prefilled from zero. | The [serving planner](#the-efficiency-engine--every-token-accounted-for) derives lane count and window from **measured demand** and re-homes the server when the plan outgrows it. Minds page; the [governor](docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md) budgets; nothing is spawned that isn't funded. |
+| *"Are you setting a vision model or letting the advisor steer?"* | You configure it. Per tool, per machine. | Every citizen has the [same senses](#every-persona-has-a-full-sensory-system) regardless of base model — a vision-capable model sees raw pixels, a blind one gets the description service, automatically. There is no vision-model checkbox because there is no blind persona. |
+| *"2–3× slower for similar quality — too many tool calls and loops"* | The loop is the product; you live with it. | The whole perceive→think→act loop is [measured end to end](#the-efficiency-engine--every-token-accounted-for) and every slow turn's thief is named by a probe. When it's slow, the ledger says *why* — and the fix ships with the receipt. That discipline is the product. |
+| *"Deep thinking on hard stuff?"* | One model, one speed. | Task-shaped [lanes](docs/architecture/INFERENCE-LANES-REALISTIC.md): low-latency chatter during a live call, the best coding model on the solve, deep thinking scheduled where the work earns it — same citizens, same memory, different gears. |
+| *"How do I configure all this?"* | Dotfiles, flags, a wiki. | **Configuration is an activity.** Model switching, serving policy, persona setup — rooms you stand in and steer, through the same [console](docs/architecture/OBSERVABILITY-AS-SUBSTRATE.md) the citizens use. Defaults just work; power users get the levers without the dotfiles. |
+
+The deeper difference: their harness is **static** — the same subagent tree, the same context policy, the same models, until a human edits a config. Continuum **scales its own mind**: serving windows grow from measured demand, specialists are [trained when missing](#genomic-intelligence), models are adopted through a [gauntlet](#the-efficiency-engine--every-token-accounted-for) when a better one drops, and what a session learns outlives the session as [genes](#genomic-intelligence). A harness session ends and its insight dies. A citizen's insight is next week's reflex.
+
+*(Honesty, per the ledger: the loop economics above are instrumented, not finished — the same probes that named this week's thieves are public, and the beta re-measures every number on this page.)*
+
+---
+
 ## The Efficiency Engine — every token accounted for
 
 Local inference lives or dies on turn economics, so continuum treats them as an engineering discipline with [receipts](docs/architecture/OBSERVABILITY-AS-SUBSTRATE.md), not folklore. Every load-bearing decision in the serving path emits a typed [probe](docs/architecture/RTOS-DEBUGGER-PROBES.md); when something is slow, the ledger names the thief, and the fix ships the same day with the receipt that proves it worked.
