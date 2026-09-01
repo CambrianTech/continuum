@@ -227,6 +227,12 @@ pub struct RecallFaculty {
     /// read per tick from the persona focus kernel
     /// ([`crate::persona::focus::registry`]) — one home for focus state.
     focus_policy: Arc<dyn crate::cognition::focus_policy::FocusPolicy>,
+    /// STICKY RENDER CACHE (rung 3): per room, the last surfaced set (ids, in
+    /// order) and its rendered block. While the set is unchanged the block is
+    /// reused byte-identical — killing the two mutation sources (re-scored
+    /// ordering, ticking age labels) the rent ledger attributed warm KV breaks
+    /// to. Tiny: N-rooms entries of a few KB each, per persona.
+    sticky: parking_lot::Mutex<std::collections::HashMap<Uuid, (Vec<Uuid>, String)>>,
 }
 
 impl RecallFaculty {
@@ -243,6 +249,7 @@ impl RecallFaculty {
             ranker: None,
             working_memory: None,
             focus_policy: Arc::new(crate::cognition::focus_policy::CalibratedConstants),
+            sticky: parking_lot::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -647,6 +654,36 @@ impl Faculty for RecallFaculty {
         // view ought to be more accommodating and ergonomic or we have failed").
         // Structural attribution only: origin variant + speaker identity + age —
         // never content inspection ([[no-hardcoded-heuristics-to-steer-cognition]]).
+        // STICKY RENDERING (mind-major spine — compression-ladder rung 3, driven
+        // by the rent ledger's FIRST verdict, 2026-09-01: warm turns break in
+        // `grounding`, and recall is that run's churner). Two byte-mutation
+        // sources hide in a re-render of the SAME memories: re-scored ordering,
+        // and the humanized ages ("16h ago" → "17h ago") that tick on every
+        // render. So the rendered block is cached per room and reused BYTE-
+        // IDENTICAL for as long as the surfaced set (ids, in order) is
+        // unchanged — the ages freeze at first render, which the frame already
+        // licenses ("They describe the PAST"). A set change (new memory
+        // surfaced, one dropped, order moved) re-renders fresh with fresh ages.
+        // Scoring, uplift, and the bid salience stay live every turn — only the
+        // BYTES the model re-reads go still.
+        if let Some((prev_ids, prev_content)) = self.sticky.lock().get(&ws.room_id) {
+            if *prev_ids == surfaced_ids {
+                let reasoning = format!(
+                    "recalled {} memor{} (sticky re-render — set unchanged, bytes frozen for KV reuse)",
+                    scored.len(),
+                    if scored.len() == 1 { "y" } else { "ies" },
+                );
+                return Some(
+                    Contribution::context(
+                        FacultyId::Recall,
+                        prev_content.clone(),
+                        top_salience,
+                        reasoning,
+                    )
+                    .trailing(),
+                );
+            }
+        }
         let now_ms = (self.clock)();
         let lines = scored
             .iter()
@@ -662,6 +699,9 @@ impl Faculty for RecallFaculty {
         // prefix per line already marks WHO/WHEN; this frames the whole block so the
         // pastness is unmissable. Not a directive about what to do — just what this IS.
         let content = format!("{RECALL_MEMORY_FRAME}\n{lines}");
+        self.sticky
+            .lock()
+            .insert(ws.room_id, (surfaced_ids, content.clone()));
         let reasoning = format!(
             "recalled {} memor{} ({}) — salience-uplifted, loop closed",
             scored.len(),
@@ -965,6 +1005,35 @@ mod tests {
             c.content
         );
         assert!(c.salience > 0.0);
+    }
+
+    // what this catches: sticky rendering (rung 3, from the rent ledger's first
+    // verdict — warm KV breaks die in the recall run). Re-contributing with the
+    // SAME surfaced set must return the byte-identical block even as the clock
+    // ticks (age labels frozen — "16h ago" must not become "17h ago" and
+    // invalidate the KV tail behind it). Admitting a NEW memory changes the set
+    // and re-renders fresh.
+    #[tokio::test]
+    async fn sticky_recall_freezes_bytes_until_the_surfaced_set_changes() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let now = 1_000_000_000u64;
+        let (persona, state, _ids) = fixture(3, now);
+        let tick = Arc::new(AtomicU64::new(now));
+        let t2 = tick.clone();
+        let faculty = RecallFaculty::new(persona, state.clone())
+            .with_clock(Arc::new(move || t2.load(Ordering::Relaxed)));
+        let ws = Workspace::new("what's the status?");
+        let first = faculty.contribute(&ws).await.expect("recall bids");
+        // The clock advances 2 hours — a naive re-render would tick every age
+        // label and mutate the block's bytes.
+        tick.store(now + 2 * 3600 * 1000, Ordering::Relaxed);
+        let second = faculty.contribute(&ws).await.expect("recall bids again");
+        assert_eq!(
+            first.content, second.content,
+            "unchanged set must re-render BYTE-IDENTICAL (ages frozen) — this is \
+             the KV stability the rent ledger attributed warm breaks to"
+        );
+        assert!(second.trailing, "sticky path preserves trailing placement");
     }
 
     // what this catches: empty store → abstain (None), not an empty bid.
