@@ -105,7 +105,7 @@ pub use provided_provider::{
 pub use ready_buffer::{DashMapReadyBuffer, ReadyBuffer};
 pub use region_telemetry::RegionTelemetry;
 pub use registry::ModuleRegistry;
-pub use runtime::Runtime;
+pub use runtime::{install_signal_shutdown, run_signal_shutdown, Runtime};
 pub use service_module::{
     CommandResult, CommandSchema, ModuleConfig, ModulePriority, ParamSchema, ServiceModule,
 };

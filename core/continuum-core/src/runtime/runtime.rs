@@ -577,21 +577,84 @@ impl Runtime {
         &self.compute
     }
 
-    /// Shutdown all modules gracefully.
-    pub async fn shutdown(&self) {
-        let modules = self.registry.list_modules();
-        info!("Shutting down {} modules...", modules.len());
-
-        for name in &modules {
-            if let Some(module) = self.registry.get_by_name(name) {
-                match module.shutdown().await {
-                    Ok(_) => info!("  {} shutdown complete", name),
-                    Err(e) => warn!("  {} shutdown error: {}", name, e),
-                }
+    /// Broadcast `load_state` to every module — the symmetric boot half of
+    /// the CBAR contract, called once after module initialization. Receipted
+    /// per node so "which modules restored state" is a boot fact, not a hope.
+    pub async fn load_all_state(&self) {
+        for name in self.registry.list_modules() {
+            if let Some(module) = self.registry.get_by_name(&name) {
+                let t = std::time::Instant::now();
+                let outcome = match module.load_state().await {
+                    Ok(()) => "ok",
+                    Err(_) => "error",
+                };
+                crate::probe!(
+                    class = "boot.load_state",
+                    module = %name,
+                    outcome = outcome,
+                    ms = t.elapsed().as_millis() as u64,
+                    "module state load"
+                );
             }
         }
+    }
 
-        info!("All modules shut down");
+    /// Shutdown all modules — PARALLEL, BOUNDED, RECEIPTED (the CBAR shape,
+    /// Joel 2026-09-02: "they all follow the same pattern, they gracefully
+    /// and quickly save and join threads"). Every module gets the SAME
+    /// contract: 2 seconds to save-and-return; a laggard is receipted as
+    /// timed-out and abandoned (its state discipline is save-on-write, so a
+    /// timeout loses nothing durable). Total wall time = the slowest module
+    /// capped at 2s — never the SUM the old sequential loop paid.
+    ///
+    /// Until 2026-09-02 nothing on the production stop path called this at
+    /// all: the SIGTERM handler killed sentinels, slept a flat 2s, and
+    /// `_exit`ed — so no module ever saved on a real stop. The handler now
+    /// runs this first ([`install_signal_shutdown`]).
+    pub async fn shutdown(&self) {
+        const PER_MODULE: std::time::Duration = std::time::Duration::from_secs(2);
+        let modules = self.registry.list_modules();
+        info!("Shutting down {} modules (parallel, 2s bound each)...", modules.len());
+        let started = std::time::Instant::now();
+        let futs = modules.iter().filter_map(|name| {
+            self.registry.get_by_name(name).map(|module| {
+                let name = name.clone();
+                async move {
+                    let t = std::time::Instant::now();
+                    // Save first, then join — each half under the bound.
+                    let saved = tokio::time::timeout(PER_MODULE, module.save_state()).await;
+                    let joined = tokio::time::timeout(PER_MODULE, module.shutdown()).await;
+                    let outcome = match (saved, joined) {
+                        (Ok(Ok(())), Ok(Ok(()))) => "ok",
+                        (Err(_), _) | (_, Err(_)) => "timeout",
+                        _ => "error",
+                    };
+                    crate::probe!(
+                        class = "shutdown.step",
+                        module = %name,
+                        outcome = outcome,
+                        ms = t.elapsed().as_millis() as u64,
+                        "module save-and-join"
+                    );
+                    (name, outcome)
+                }
+            })
+        });
+        let reports = futures::future::join_all(futs).await;
+        let slow: Vec<String> = reports
+            .iter()
+            .filter(|(_, o)| *o != "ok")
+            .map(|(n, _)| n.to_string())
+            .collect();
+        info!(
+            "All modules shut down in {}ms{}",
+            started.elapsed().as_millis(),
+            if slow.is_empty() {
+                String::new()
+            } else {
+                format!(" (non-ok: {})", slow.join(", "))
+            }
+        );
     }
 
     /// Verify all required modules are registered for the given
@@ -1256,6 +1319,25 @@ pub fn all_known_modules() -> Vec<&'static str> {
 // MODULES is the substrate's ONE source of truth — `required_modules`
 // and `all_known_modules` both derive from it. No parallel list to
 // drift against.
+
+/// The runtime the SIGNAL handlers shut down. Installed once at wiring (after
+/// modules register), read by main.rs's SIGTERM/SIGINT arms. Until 2026-09-02
+/// those arms killed sentinels, slept a flat 2s, and `_exit`ed — the graceful
+/// broadcast existed and NOTHING on the production stop path called it, so no
+/// module ever saved on a real stop ("no lifecycle at all, random bullshit").
+static SIGNAL_RUNTIME: std::sync::OnceLock<Arc<Runtime>> = std::sync::OnceLock::new();
+
+pub fn install_signal_shutdown(rt: Arc<Runtime>) {
+    let _ = SIGNAL_RUNTIME.set(rt);
+}
+
+/// Run the save-and-join broadcast from a signal handler, bounded overall —
+/// a stop must complete in seconds even if the runtime misbehaves.
+pub async fn run_signal_shutdown() {
+    if let Some(rt) = SIGNAL_RUNTIME.get() {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), rt.shutdown()).await;
+    }
+}
 
 #[cfg(test)]
 mod conditional_modules_tests {
