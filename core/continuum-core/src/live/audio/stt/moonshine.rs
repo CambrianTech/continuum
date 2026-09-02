@@ -343,18 +343,13 @@ impl MoonshineStt {
         let enc_tensor = Tensor::from_array(enc_array).map_err(|e| {
             STTError::InferenceFailed(format!("Uncached decoder encoder tensor: {e}"))
         })?;
-        // args_2 = the encoder sequence length T (encoder_hidden is [1,T,D]),
-        // for the decoder's cross-attention position arange — the same T the
-        // encoder's own args_1 consumed. Bound by NAME below, not position,
-        // so a model whose input order differs still lands correctly.
-        let enc_t = *encoder_hidden.shape.get(1).ok_or_else(|| {
-            STTError::InferenceFailed(format!(
-                "encoder_hidden has unexpected shape {:?} (want [1,T,D])",
-                encoder_hidden.shape
-            ))
-        })? as i32;
-        let seqlen_tensor = Tensor::from_array(ndarray::Array1::from_vec(vec![enc_t]).into_dyn())
-            .map_err(|e| STTError::InferenceFailed(format!("Uncached seqlen tensor: {e}")))?;
+        // args_2 = the DECODE POSITION as int32[1] (offline-verified contract:
+        // args_0 int32 tokens, args_1 f32 encoder[b,T,416], args_2 int32[1]).
+        // Uncached is the FIRST step → position 0 (empty self-attn cache); the
+        // cached loop increments it. (An earlier cut passed encoder-T here —
+        // non-crashing but the wrong RoPE offset, which would mistranscribe.)
+        let seqlen_tensor = Tensor::from_array(ndarray::Array1::from_vec(vec![0i32]).into_dyn())
+            .map_err(|e| STTError::InferenceFailed(format!("Uncached position tensor: {e}")))?;
         let mut uncached_session = model.uncached_decoder.lock();
         // Bind by declared input NAME (args_0 token, args_1 encoder, args_2 T)
         // — never positional, so the contract the model declares is the one
@@ -410,10 +405,19 @@ impl MoonshineStt {
             let enc_val: Value = Tensor::from_array(enc_array)
                 .map(|v| v.into())
                 .map_err(|e| STTError::InferenceFailed(format!("Encoder value: {e}")))?;
+            // args_2 = decode position int32[1] — the number of tokens already
+            // in the sequence (contract: token, encoder, POSITION, then 32 KV
+            // tensors). The positional zip omitted this and slid a float KV
+            // into the int32 position slot — the 'expected int32' error.
+            let pos = generated_tokens.len() as i32;
+            let pos_val: Value = Tensor::from_array(ndarray::Array1::from_vec(vec![pos]).into_dyn())
+                .map(|v| v.into())
+                .map_err(|e| STTError::InferenceFailed(format!("Position value: {e}")))?;
 
-            let mut input_values: Vec<Value> = Vec::with_capacity(2 + kv_cache.len());
+            let mut input_values: Vec<Value> = Vec::with_capacity(3 + kv_cache.len());
             input_values.push(token_val);
             input_values.push(enc_val);
+            input_values.push(pos_val);
             for ct in &kv_cache {
                 input_values.push(ct.to_value()?);
             }
