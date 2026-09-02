@@ -67,7 +67,10 @@ impl BenchmarkSpec {
     /// loader lands. This is what makes `runnable` true and `benchmark/dispatch` work for the
     /// real-project tier the frontier models fight over (Joel's target, 2026-08-10).
     pub fn swe_dataset(&self) -> Option<&'static str> {
-        if !matches!(self.name, "swe-bench-lite" | "swe-bench-verified") {
+        if !matches!(
+            self.name,
+            "swe-bench-lite" | "swe-bench-verified" | "swe-bench-verified-mini"
+        ) {
             return None;
         }
         self.source_url?
@@ -298,6 +301,31 @@ pub fn known_benchmarks() -> &'static [BenchmarkSpec] {
             tasks: 500,
             eval_set: None,
             source_url: Some("https://huggingface.co/datasets/princeton-nlp/SWE-bench_Verified"),
+        },
+        BenchmarkSpec {
+            name: "swe-bench-verified-mini",
+            description: "SWE-bench Verified-mini (MariusHobbhahn) — a 50-instance decimation of \
+                          Verified with IDENTICAL instance fields, chosen so the env footprint is \
+                          ~5GB instead of 130GB. The INNER DEV LOOP: cheap claim growth and fast \
+                          harness iteration between full Verified rounds (VIRAL-LAUNCH-PLAN.md \
+                          execution item 2; ADAPT-NOW #1 of the 2026-09 landscape sweep).",
+            grader: Grader::Python,
+            tasks: 50,
+            eval_set: None,
+            source_url: Some("https://huggingface.co/datasets/MariusHobbhahn/swe-bench-verified-mini"),
+        },
+        BenchmarkSpec {
+            name: "swe-bench-multilingual",
+            description: "SWE-bench Multilingual (MIT) — 300 instances across 9 languages, \
+                          including 43 RUST instances on which NO open model has ever been \
+                          scored (an empty board is a first-mover headline). eval_script and \
+                          log_parser ship AS DATA per instance. Catalogued ahead of its \
+                          adapter: the Rust slice needs cargo-based env staging, not the \
+                          python venv path — see VIRAL-LAUNCH-PLAN.md execution item 3.",
+            grader: Grader::Python,
+            tasks: 300,
+            eval_set: None,
+            source_url: Some("https://huggingface.co/datasets/SWE-bench/SWE-bench_Multilingual"),
         },
         BenchmarkSpec {
             name: "swe-rebench",
