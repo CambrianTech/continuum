@@ -321,8 +321,22 @@ impl RagRenderable for continuum_positron::RosterViewState {
     }
 
     fn units(&self) -> Vec<String> {
-        self.roster
-            .iter()
+        // STABLE ORDER for the mind (2026-09-01, Benchy hit_rate=0.0): this
+        // block renders at ~0.4% prompt depth, and "presence order" rotates
+        // as heartbeats land — his consecutive prompts diverged at char ~226
+        // on exactly this rotation, re-prefilling the whole ~50k tail every
+        // turn while peers cached 0.4-0.8. The browser may sort presence-first
+        // for human eyes; the MIND's copy sorts by name so the same people are
+        // the same bytes. Set parity with the screen is unchanged — only the
+        // line order is pinned ([[a-mutating-system-prompt-destroys-kv-reuse]]).
+        let mut ordered: Vec<_> = self.roster.iter().collect();
+        ordered.sort_by(|a, b| {
+            a.display_name
+                .cmp(&b.display_name)
+                .then_with(|| a.member_id.cmp(&b.member_id))
+        });
+        ordered
+            .into_iter()
             .map(|slot| {
                 // Kind and role are what make a name actionable ("who can I ask?"),
                 // so they ride the SAME unit as the name rather than a second block
