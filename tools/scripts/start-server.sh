@@ -908,12 +908,26 @@ if [ -f "$REPO_ROOT/apps/web/package.json" ] && command -v npm >/dev/null 2>&1; 
     (cd "$REPO_ROOT" && npm ci >/dev/null 2>&1 || npm install >/dev/null 2>&1) \
       || echo "  ⚠ npm install failed — desktop + eye-node unavailable (run npm ci to diagnose)" >&2
   fi
-  echo "→ building the desktop (served by the core at :\${CONTINUUM_UI_PORT:-8975})…"
-  if (cd "$REPO_ROOT" && npm run build -w @continuum/web >/dev/null 2>&1); then
-    export CONTINUUM_UI_DIST="$REPO_ROOT/apps/web/dist"
-    echo "  desktop built — continuum desktop opens it"
+  # BACKGROUNDED (2026-09-02, Joel: "reduction of shit that doesn't need to
+  # run … before the system loads"): this was a 1–2 minute SERIAL build in
+  # front of exec on EVERY boot, while a perfectly good dist from the previous
+  # generation sat on disk. The core now serves the existing dist immediately;
+  # the fresh build lands in place when it finishes (vite writes dist
+  # atomically enough for a dev reload). First boot with NO dist still waits —
+  # a blank desktop on a fresh clone would be the #291 lie.
+  export CONTINUUM_UI_DIST="$REPO_ROOT/apps/web/dist"
+  if [ ! -d "$REPO_ROOT/apps/web/dist" ]; then
+    echo "→ first boot: building the desktop (no previous dist to serve)…"
+    if (cd "$REPO_ROOT" && npm run build -w @continuum/web >/dev/null 2>&1); then
+      echo "  desktop built — continuum desktop opens it"
+    else
+      echo "  ⚠ desktop build failed — core boots headless (npm run build -w @continuum/web to diagnose)" >&2
+    fi
   else
-    echo "  ⚠ desktop build failed — core boots headless (npm run build -w @continuum/web to diagnose)" >&2
+    echo "→ desktop: serving the existing dist now; rebuilding in the background…"
+    (cd "$REPO_ROOT" && npm run build -w @continuum/web >/dev/null 2>&1 \
+      && echo "  desktop rebuild landed (reload the page for the new build)" \
+      || echo "  ⚠ background desktop rebuild failed — still serving the previous dist" >&2) &
   fi
 fi
 
