@@ -55,6 +55,21 @@ What this buys, concretely:
 - **The self-proof battery slots in.** `voice/selftest` and siblings are `After` steps —
   boot ends with the system having proven its own senses.
 
+## The lifecycle taxonomy (Joel 2026-09-02: "shut down, reboot, or shutdown-light save and restore")
+
+Three verbs, each a typed answer to *what survives the seam* — never ad-hoc flags:
+
+| Verb | Live lane | KV slots | Durable state (rounds, memories, rooms) |
+|---|---|---|---|
+| `shutdown` | dies | discarded | files remain; nothing running |
+| `reboot` | **handed off warm** (the lane-handoff marker; successor adopts or reaps) | live inside the lane | resumes all — rooms pick up where they were |
+| `shutdown-light` | dies | **saved to disk** (`--slot-save-path`; restore measured near-instant) and restored by the next start | resumes all |
+
+`reboot` is for new code (the lane outlives the core); `shutdown-light` is for
+freeing the machine while keeping the minds' warmth on disk — laptop-lid
+semantics. The boot plan's steps declare which mode(s) they run under, so the
+taxonomy is enforced by the DAG, not by remembering flags.
+
 ## Migration (strangler, one row at a time — never a big-bang rewrite)
 
 1. `continuum boot` lands with the executor + the three steps that caused this week's
