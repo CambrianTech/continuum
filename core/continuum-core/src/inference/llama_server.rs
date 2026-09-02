@@ -2328,7 +2328,7 @@ impl Drop for LlamaServerProcess {
             let pid = self.child.lock().unwrap().as_ref().and_then(|c| c.id()); // safe: same never-across-await mutex every sibling here unwraps
             crate::probe!(
                 class = "serving.lane.handoff",
-                pid = pid.map(|p| p as u64).unwrap_or(0),
+                pid = pid.map(|p| p as u64).unwrap_or(0), // safe: 0 = child already taken, the probe still records the leak
                 "live lane LEAKED for successor adoption — registry record and \
                  pidfile kept; warm weights survive the reboot seam"
             );
