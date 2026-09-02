@@ -62,13 +62,19 @@ Three verbs, each a typed answer to *what survives the seam* — never ad-hoc fl
 | Verb | Live lane | KV slots | Durable state (rounds, memories, rooms) |
 |---|---|---|---|
 | `shutdown` | dies | discarded | files remain; nothing running |
-| `reboot` | **handed off warm** (the lane-handoff marker; successor adopts or reaps) | live inside the lane | resumes all — rooms pick up where they were |
-| `shutdown-light` | dies | **saved to disk** (`--slot-save-path`; restore measured near-instant) and restored by the next start | resumes all |
+| `reboot` | dies (SAVED first) | **saved to disk fast** (`--slot-save-path`; restore measured near-instant), restored by the next start | resumes all — rooms pick up where they were |
+| `shutdown-light` | dies (saved first) | saved + restored, same as reboot | resumes all |
 
-`reboot` is for new code (the lane outlives the core); `shutdown-light` is for
-freeing the machine while keeping the minds' warmth on disk — laptop-lid
-semantics. The boot plan's steps declare which mode(s) they run under, so the
-taxonomy is enforced by the DAG, not by remembering flags.
+**NO PROCESS SURVIVES A SEAM** (Joel 2026-09-02: "Shut the mofos down — it's
+not right to battle the existing system, other than having it save state and
+shut down fast"). A first cut leaked the warm llama lane across the reboot
+seam for the successor to adopt; that is the battling-the-existing shape —
+two generations verifying each other's survivors — and it was reverted the
+same hour. Speed comes from SAVE/RESTORE, never from inheritance: the old
+system's whole job at a seam is save fast, die fast, completely. The
+remaining latency work is therefore (a) fast state save on stop, (b)
+measuring where serving-ready time actually goes on a clean start (the ~15
+minutes is assumed to be model load and has never been decomposed).
 
 ## Migration (strangler, one row at a time — never a big-bang rewrite)
 
