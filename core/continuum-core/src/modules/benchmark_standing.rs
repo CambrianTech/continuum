@@ -111,8 +111,26 @@ impl BenchmarkStandingModule {
         if !cfg.enabled {
             return Ok(false); // silent: disabled is the configured steady state
         }
-        if crate::cognition::bench_round::any_working_round() {
-            return Ok(false); // silent: a working round IS the goal state
+        // A HEALTHY working round is the goal state — hold. But a round wedged
+        // past the abandon window (dead citizens, no task boundary) must NOT
+        // block the autopilot forever (measured 2026-09-02: 3 rounds stuck
+        // ~18h, un-clearable, starving the claim-growth engine). Scan the
+        // run ledger so "healthy vs stale" is the board's own truth, not a
+        // guess. Blocking fs scan off the async worker.
+        let runs = tokio::task::spawn_blocking(|| {
+            crate::commands::benchmark::scan_run_cards(None, 200)
+                .map(|s| s.cards)
+                .unwrap_or_default() // safe: no ledger = no fresh acts = treat as clear
+        })
+        .await
+        .unwrap_or_default(); // safe: join error = same, degrade to clear
+        let facts: Vec<crate::cognition::bench_round::CardRunFacts> =
+            runs.iter().map(crate::commands::benchmark::card_run_facts).collect();
+        if !crate::cognition::bench_round::only_stale_or_no_working_rounds(
+            &facts,
+            crate::persona::trace::now_ms(),
+        ) {
+            return Ok(false); // silent: a round is healthily grinding
         }
         // Serving must be decode-ready — a dispatch into a cold lane burns the
         // round's first minutes on refusals. Short park: the tick returns and

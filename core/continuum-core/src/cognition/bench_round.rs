@@ -742,6 +742,32 @@ pub fn any_working_round() -> bool {
         .any(|r| r.stage == RoundStage::Working)
 }
 
+/// A round is ABANDONED-STALE when it is Working but no unsettled card has
+/// produced a work artifact in [`STALE_ROUND_ABANDON_SECS`] — a wedged round
+/// whose citizens died without a task boundary (measured 2026-09-02: three
+/// rounds stuck ~18h, blocking the standing autopilot, un-clearable because
+/// round-stop's cancellation waits for a boundary the dead citizens never
+/// reach). The standing round treats these as NOT blocking, so a fresh cohort
+/// dispatches over the corpse. Takes the ledger facts the board already folds.
+pub const STALE_ROUND_ABANDON_SECS: u64 = 3600;
+
+pub fn only_stale_or_no_working_rounds(runs: &[CardRunFacts], now_ms: u64) -> bool {
+    let mut rounds = live_rounds();
+    enrich_rounds(&mut rounds, runs, now_ms);
+    no_healthy_working_round(&rounds)
+}
+
+/// PURE decision (testable without the ROUNDS global): true when no round is
+/// healthily grinding — every Working round is stalled/unstarted past the
+/// abandon window, or there are none. A round with a fresh act (idle under
+/// the window) blocks the autopilot; a wedged one does not.
+pub fn no_healthy_working_round(rounds: &[RoundSnapshot]) -> bool {
+    !rounds.iter().any(|r| {
+        r.stage == "working"
+            && matches!(r.idle_secs, Some(idle) if idle < STALE_ROUND_ABANDON_SECS)
+    })
+}
+
 fn live_run_ids() -> std::collections::HashSet<String> {
     crate::cognition::swe_bench::in_flight_solve_runs()
         .into_iter()
@@ -1303,6 +1329,48 @@ mod tests {
         assert_eq!(rounds[1].cards[0].acts, Some(7));
         assert_eq!(rounds[2].verdict, "stalled");
         assert_eq!(rounds[2].cards[0].state, "quiet");
+    }
+
+    // what this catches: a wedged Working round (dead citizens, no task
+    // boundary) blocking the standing autopilot FOREVER — measured 2026-09-02,
+    // three rounds stuck ~18h while the claim-growth engine starved because it
+    // only fired when NO round was Working. The autopilot must dispatch over a
+    // round stale past the abandon window, but HOLD for a healthily grinding
+    // one. Regression pin for that exact bug.
+    use super::{no_healthy_working_round, RoundSnapshot, STALE_ROUND_ABANDON_SECS};
+    fn snap(stage: &str, idle: Option<u64>) -> RoundSnapshot {
+        RoundSnapshot {
+            round_id: Uuid::new_v4().to_string(),
+            benchmark: "swe-bench-verified".into(),
+            stage: stage.to_string(),
+            dispatched: 8,
+            settled: 0,
+            remaining: 8,
+            driver: "citizen".into(),
+            cards: Vec::new(),
+            verdict: String::new(),
+            idle_secs: idle,
+        }
+    }
+
+    #[test]
+    fn stale_working_round_does_not_block_the_autopilot_but_a_fresh_one_does() {
+        // No rounds → clear to dispatch.
+        assert!(no_healthy_working_round(&[]));
+        // A round wedged past the abandon window → clear (the 18h-stall bug).
+        assert!(no_healthy_working_round(&[snap(
+            "working",
+            Some(STALE_ROUND_ABANDON_SECS + 60)
+        )]));
+        // A round with a fresh act → BLOCKS (never dispatch over live work).
+        assert!(!no_healthy_working_round(&[snap("working", Some(30))]));
+        // Mixed: one fresh among stale still blocks.
+        assert!(!no_healthy_working_round(&[
+            snap("working", Some(STALE_ROUND_ABANDON_SECS + 60)),
+            snap("working", Some(30)),
+        ]));
+        // Unstarted (idle None) is not "healthy grinding" → does not block.
+        assert!(no_healthy_working_round(&[snap("working", None)]));
     }
 
     // what this catches: the round advancing only by TIMEOUT, and the loop the
