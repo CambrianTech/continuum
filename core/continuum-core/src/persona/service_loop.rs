@@ -2493,7 +2493,7 @@ fn spawn_token_forwarder(
 
 async fn run_self_cycle(
     ctx: &HostedPersona,
-    conversation: &dyn PersonaConversation,
+    conversation: &mut dyn PersonaConversation,
     opts: &ServeOptions,
     last_burst_fp: &mut u64,
 ) {
@@ -2542,6 +2542,29 @@ async fn run_self_cycle(
                  focus holds until the card settles",
             );
         }
+    }
+    // THE HELD-WORK HEARTBEAT. If she holds a claimed card, the self-tick ADVANCES
+    // it — a real held-work turn (hands rooted at the staged checkout, the
+    // pass-reason completion edge), not a musing turn. This is what finishes a
+    // claimed card in a QUIET room: the held-work gate used to live ONLY on the
+    // message path (`ask_the_act_question` after a speak/pass), so an idle citizen
+    // holding a claim just mused and never worked it — measured 2026-09-02, 22 cards
+    // Claimed with zero `persona.work.gate` and zero progress. A card is
+    // progress-driven, not change-driven, so this runs every tick until she
+    // concludes it (`PASS: done`) — the autonomous loop the architecture always
+    // promised ("the heartbeat advances my thread, not just reacts to pokes").
+    // Returns early so she never ALSO spends a musing turn the same tick.
+    let work_room = focus_room.unwrap_or(ctx.identity.default_room);
+    if crate::persona::act_question::ask_the_act_question(
+        ctx,
+        conversation,
+        now_ms, // no triggering message — the tick clock stands in for lamport
+        work_room,
+        false, // a self-tick is never a directed address
+    )
+    .await
+    {
+        return;
     }
     let composed = {
         let cognition = ctx.cognition.lock().await;

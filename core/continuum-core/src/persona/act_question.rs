@@ -38,13 +38,17 @@ use crate::persona::supervisor::HostedPersona;
 ///
 /// Called from BOTH turn outcomes — after she speaks, and after she passes — because
 /// holding work is what makes the question relevant, not the speak decision.
+/// Returns `true` if she held work and a held-work turn was driven this call —
+/// so a caller (the self-tick) can skip a redundant musing cycle when the
+/// heartbeat already advanced her claimed card. `false` when there was no cycle,
+/// no citizen, or no held work.
 pub(crate) async fn ask_the_act_question(
     ctx: &HostedPersona,
     conversation: &mut dyn PersonaConversation,
     lamport: u64,
     turn_room: uuid::Uuid,
     directed: bool,
-) {
+) -> bool {
     // Her cognition cycle, fetched the same way the turn loop fetches it — passing it
     // in would thread a borrow through the whole turn for one optional branch.
     let Some(cycle) =
@@ -56,7 +60,7 @@ pub(crate) async fn ask_the_act_question(
             decision = "no_cycle",
             "act-question skipped: no WorkspaceCycle registered for this citizen"
         );
-        return;
+        return false;
     };
     // THE SECOND QUESTION (BigMama's gate-conflation diagnosis,
     // verified in-file 2026-08-08; the root under Joel's "missing
@@ -411,8 +415,14 @@ pub(crate) async fn ask_the_act_question(
                             );
                         }
                     }
+                    // She held work and worked it this turn — tell the caller so
+                    // a self-tick can skip the redundant musing cycle.
+                    return true;
                 }
             }
         }
     }
+    // Reached only when she held no work (or no citizen was present) — nothing
+    // was driven this call.
+    false
 }
