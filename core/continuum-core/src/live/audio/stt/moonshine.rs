@@ -332,7 +332,8 @@ impl MoonshineStt {
         let mut current_token = BOS_TOKEN_ID;
 
         // First decode step (uncached — no KV cache input)
-        let token_input = Array2::from_shape_vec((1, 1), vec![current_token])
+        // Decoder ONNX wants int32 tokens; the loop's own logic stays i64.
+        let token_input = Array2::from_shape_vec((1, 1), vec![current_token as i32])
             .map_err(|e| STTError::InferenceFailed(format!("Token array shape: {e}")))?;
         let enc_array = Self::cache_to_array(&encoder_hidden)?;
 
@@ -371,7 +372,7 @@ impl MoonshineStt {
 
         // Subsequent decode steps (cached — with KV cache)
         for _step in 1..MAX_TOKENS {
-            let token_input = Array2::from_shape_vec((1, 1), vec![current_token])
+            let token_input = Array2::from_shape_vec((1, 1), vec![current_token as i32])
                 .map_err(|e| STTError::InferenceFailed(format!("Token array shape: {e}")))?;
             let enc_array = Self::cache_to_array(&encoder_hidden)?;
 
