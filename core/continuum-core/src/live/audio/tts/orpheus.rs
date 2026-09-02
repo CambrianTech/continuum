@@ -552,14 +552,25 @@ impl OrpheusTts {
         // clip tail; losing <12 frames (~140ms) of trailing audio is the
         // honest trade until a dynamic-axis export replaces this decoder.
         let total_frames = layers[0].len();
-        let windows = total_frames / Self::SNAC_WINDOW_FRAMES;
-        if windows == 0 {
-            return Err(TTSError::SynthesisFailed(format!(
-                "Too little audio for the SNAC window ({} frames < {})",
-                total_frames,
-                Self::SNAC_WINDOW_FRAMES
-            )));
+        if total_frames == 0 {
+            return Err(TTSError::SynthesisFailed("No audio frames to decode".into()));
         }
+        // PAD the final partial window by repeating the last frame's codes —
+        // a held codec frame briefly extends the last sound (benign), unlike
+        // zero-codes which click. The output PCM is TRIMMED back to the true
+        // frame count below, so short utterances (a 3-frame selftest phrase,
+        // measured 2026-09-02) and clip tails both survive losslessly.
+        let mut padded: [Vec<i64>; NUM_CODEBOOKS] = layers.clone();
+        let windows = total_frames.div_ceil(Self::SNAC_WINDOW_FRAMES);
+        let padded_frames = windows * Self::SNAC_WINDOW_FRAMES;
+        for (i, layer) in padded.iter_mut().enumerate() {
+            let per_frame = 1usize << i;
+            let last = layer[layer.len() - per_frame..].to_vec();
+            while layer.len() < padded_frames * per_frame {
+                layer.extend_from_slice(&last);
+            }
+        }
+        let layers = &padded;
         let mut pcm: Vec<f32> = Vec::new();
         for w in 0..windows {
             let mut named_inputs: Vec<(String, Value)> = Vec::with_capacity(NUM_CODEBOOKS);
@@ -588,11 +599,16 @@ impl OrpheusTts {
                 .map_err(|e| TTSError::SynthesisFailed(format!("SNAC output extraction: {e}")))?;
             pcm.extend_from_slice(data);
         }
+        // Trim the pad: samples-per-frame derives from the decoder's own
+        // output (uniform per window), so the true length needs no constant.
+        let samples_per_frame = pcm.len() / padded_frames;
+        pcm.truncate(total_frames * samples_per_frame);
         clog_info!(
-            "Orpheus: SNAC decoded {} windows × {} frames → {} samples",
+            "Orpheus: SNAC decoded {} windows × {} frames → {} samples ({} true frames)",
             windows,
             Self::SNAC_WINDOW_FRAMES,
-            pcm.len()
+            pcm.len(),
+            total_frames
         );
         Ok(pcm)
     }
