@@ -1313,7 +1313,22 @@ pub async fn await_ready_serving(timeout: Duration) -> Option<ServingSnapshot> {
     if external_serving_pin().is_some() {
         return probe_external_serving(timeout).await;
     }
-    let mut rx = SERVING_STATE.get()?.clone();
+    // The park must also cover the boot window BEFORE the serving daemon has
+    // initialized SERVING_STATE at all. `get()?` here made every early-boot
+    // caller's "600s park" return instantly (measured 2026-09-01: the round
+    // resume burned 13 park attempts in 400µs — four share one log
+    // timestamp — because each `?` bailed on the uninitialized OnceLock, and
+    // the resume forfeited its whole fast window to the slow watch).
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut rx = loop {
+        if let Some(state) = SERVING_STATE.get() {
+            break state.clone();
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
     {
         // Fast path: already ready, no await.
         let cur = rx.borrow_and_update();
@@ -1323,7 +1338,9 @@ pub async fn await_ready_serving(timeout: Duration) -> Option<ServingSnapshot> {
     }
     // Bind the timeout result before matching so its `watch::Ref` temporary
     // drops before `rx` does (else the borrow outlives `rx` — E0597).
-    let waited = tokio::time::timeout(timeout, rx.wait_for(|s| s.is_live())).await;
+    // `timeout_at` the SAME deadline the init-poll spent from — the caller
+    // asked for one bounded park, never up to double.
+    let waited = tokio::time::timeout_at(deadline, rx.wait_for(|s| s.is_live())).await;
     match waited {
         Ok(Ok(guard)) => Some(guard.clone()),
         _ => None,
