@@ -343,9 +343,35 @@ impl MoonshineStt {
         let enc_tensor = Tensor::from_array(enc_array).map_err(|e| {
             STTError::InferenceFailed(format!("Uncached decoder encoder tensor: {e}"))
         })?;
+        // args_2 = the encoder sequence length T (encoder_hidden is [1,T,D]),
+        // for the decoder's cross-attention position arange — the same T the
+        // encoder's own args_1 consumed. Bound by NAME below, not position,
+        // so a model whose input order differs still lands correctly.
+        let enc_t = *encoder_hidden.shape.get(1).ok_or_else(|| {
+            STTError::InferenceFailed(format!(
+                "encoder_hidden has unexpected shape {:?} (want [1,T,D])",
+                encoder_hidden.shape
+            ))
+        })? as i32;
+        let seqlen_tensor = Tensor::from_array(ndarray::Array1::from_vec(vec![enc_t]).into_dyn())
+            .map_err(|e| STTError::InferenceFailed(format!("Uncached seqlen tensor: {e}")))?;
         let mut uncached_session = model.uncached_decoder.lock();
+        // Bind by declared input NAME (args_0 token, args_1 encoder, args_2 T)
+        // — never positional, so the contract the model declares is the one
+        // we satisfy (the fragile zip is why this went unnoticed).
+        let uncached_vals: Vec<Value> = vec![
+            token_tensor.into(),
+            enc_tensor.into(),
+            seqlen_tensor.into(),
+        ];
+        let uncached_named: Vec<(String, Value)> = uncached_session
+            .inputs()
+            .iter()
+            .map(|i| i.name().to_string())
+            .zip(uncached_vals)
+            .collect();
         let uncached_out = uncached_session
-            .run(ort::inputs![token_tensor, enc_tensor])
+            .run(uncached_named)
             .map_err(|e| STTError::InferenceFailed(format!("Uncached decoder run: {e}")))?;
 
         // Logits = output[0], KV cache = output[1..]
@@ -507,6 +533,21 @@ impl SpeechToText for MoonshineStt {
             uncached_decoder.outputs().len(),
             uncached_decoder.outputs().len().saturating_sub(1)
         );
+        // AUTHORITATIVE I/O contract — read from the sessions, never guessed
+        // (each guess is a 9-min rebuild; the model file is the truth). Logs
+        // every input's name + type so args_2 etc. get bound by fact.
+        for (label, sess) in [
+            ("encoder", &encoder),
+            ("uncached_decoder", &uncached_decoder),
+            ("cached_decoder", &cached_decoder),
+        ] {
+            let names: Vec<String> = sess
+                .inputs()
+                .iter()
+                .map(|i| format!("{}:{:?}", i.name(), i.dtype()))
+                .collect();
+            clog_info!("Moonshine {label} inputs = {:?}", names);
+        }
 
         let vocab = Self::load_vocab(&model_dir)?;
 
