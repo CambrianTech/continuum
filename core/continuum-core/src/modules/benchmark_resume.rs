@@ -92,6 +92,17 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
         // re-perception happens once, never per watch tick (a failed or
         // not-yet-resident attempt un-marks itself for a later tick).
         let mut nudged: std::collections::HashSet<uuid::Uuid> = std::collections::HashSet::new();
+        // LIVENESS: the watch announces itself and each park entry. Measured
+        // 2026-09-01 (build 5a6be5b0d): the task produced ZERO output for 30+
+        // minutes — no re-says, no prewarm, no blocked probes — and there was
+        // no way to distinguish "died silently" from "parked silently" without
+        // reading source. A background task whose silence is ambiguous is a
+        // task that cannot be operated ([[launch-and-pray-is-the-defect]]).
+        crate::probe!(
+            class = "bench.round.resume_watch_started",
+            unworked = crate::cognition::bench_round::total_unworked_cards() as u64,
+            "boot resume watch running — parks announce themselves below"
+        );
         loop {
             let queued = crate::cognition::bench_round::total_unworked_cards() as u32;
             if queued > 0 {
@@ -138,6 +149,12 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
                 );
             }
             // Park 1: serving decode-verified (same primitive dispatch parks on).
+            crate::probe!(
+                class = "bench.round.resume_parking",
+                park = "serving",
+                attempt = attempt as u64,
+                "entering the serving park (a probe BEFORE the await, so a hung park is visible)"
+            );
             if crate::inference::llama_server::await_ready_serving(SERVING_PARK)
                 .await
                 .is_none()
@@ -154,6 +171,12 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
                 continue;
             }
             // Park 2: residency (a service loop, not mere registration — #455).
+            crate::probe!(
+                class = "bench.round.resume_parking",
+                park = "residency",
+                attempt = attempt as u64,
+                "entering the residency park"
+            );
             let started = std::time::Instant::now();
             let resident = loop {
                 if !registry.resident_snapshot().await.is_empty() {
