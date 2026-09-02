@@ -423,11 +423,13 @@ async fn settle_to_outcome(
                     if let Some(body) = cycle.acting() {
                         if !mutated_workspace(&body.working_memory.recent_entries()) {
                             acts_at_last_nudge = Some(acts);
+                            // Sense, not steer (2026-09-01): the receipt-absence is
+                            // the fact; the "an explanation of a fix is not the fix"
+                            // sermon accumulated dozens of copies in looping minds
+                            // and became the content of their turns.
                             body.working_memory.record_fact(
-                                "[no-deliverable] I settled by speaking, and my working \
-                                 memory holds no act of mine that changed a file. This \
-                                 task is judged by the state of the workspace, not by what \
-                                 I say about it — an explanation of a fix is not the fix.",
+                                "[no-deliverable] I settled by speaking; no act of mine \
+                                 has changed a file in this workspace yet.",
                             );
                             crate::probe!(
                                 class = "persona.settle.no_deliverable",
@@ -483,11 +485,10 @@ async fn settle_to_outcome(
                     if let Some(body) = cycle.acting() {
                         if !mutated_workspace(&body.working_memory.recent_entries()) {
                             acts_at_last_nudge = Some(acts);
+                            // Sense, not steer — same contract as the settle-path fact.
                             body.working_memory.record_fact(&format!(
-                                "[no-deliverable] I have taken {acts} actions on this task and \
-                                 my working memory holds no act of mine that changed a file. \
-                                 This task is judged by the state of the workspace, not by what \
-                                 I say about it — an explanation of a fix is not the fix."
+                                "[no-deliverable] {acts} actions taken on this task; no act \
+                                 of mine has changed a file in this workspace yet."
                             ));
                             crate::probe!(
                                 class = "persona.act.no_deliverable_yet",

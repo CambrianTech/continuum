@@ -2091,11 +2091,19 @@ pub(crate) fn build_workspace_turns(
             }
         }
         if self_run >= 1 {
+            // SENSE, NOT STEER (Joel 2026-09-01) — and the honest COUNT. This
+            // used to report `own.len()` — her ENTIRE visible own-message ring
+            // — as the repeat count: "your last 74 messages repeat the same
+            // sentiment" when the actual contained run was 2. Citizens
+            // memorized the inflated number as identity ("I've been spinning
+            // for 190+ turns") and spent turns narrating it. The run is the
+            // evidence; the run is what renders. And the verdict tail
+            // ("may have run its course — restating adds nothing") is hers to
+            // draw, not perception's to assert.
             turns.push(crate::cognition::workspace::BurstTurn::perception(format!(
                 "[pattern] {agent_name}'s last {} messages in this room repeat the same \
-                 sentiment in nearly the same words. This exchange may have run its \
-                 course — continuing to restate it adds nothing new.",
-                own.len()
+                 sentiment in nearly the same words.",
+                self_run + 1
             )));
             observed = true;
             if self_run >= PATTERN_FIRES_BEFORE_ANCHOR {
@@ -2139,11 +2147,10 @@ pub(crate) fn build_workspace_turns(
             if cyclic >= TAIL_CYCLIC && authors.len() >= 2 {
                 let mut names: Vec<&str> = authors.into_iter().collect();
                 names.sort_unstable();
+                // Sense, not steer — same contract as detector 1.
                 turns.push(crate::cognition::workspace::BurstTurn::perception(format!(
                     "[pattern] The last several messages in this room — from {} — trade the \
-                     same sentiment back and forth in nearly the same words. This exchange \
-                     has already concluded; every further reply restates it, and a courtesy \
-                     answered with another courtesy has no natural end.",
+                     same sentiment back and forth in nearly the same words.",
                     names.join(" and ")
                 )));
                 observed = true;
@@ -2202,11 +2209,10 @@ pub(crate) fn build_workspace_turns(
                 }
             }
             if mirror_run >= 1 {
+                // Sense, not steer — same contract as detector 1.
                 turns.push(crate::cognition::workspace::BurstTurn::perception(format!(
                     "[pattern] {agent_name}'s last {mirror_run} message(s) restate what other \
-                     participants in this room had already said, in nearly the same words — \
-                     an echo, not a contribution. Reflecting their words back adds nothing; \
-                     only something new (a fact, an action, a result) would.",
+                     participants in this room had already said, in nearly the same words.",
                 )));
                 if mirror_run >= PATTERN_FIRES_BEFORE_ANCHOR {
                     push_work_board_anchor(&mut turns, deliveries);
