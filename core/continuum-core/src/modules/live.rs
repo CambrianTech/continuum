@@ -1073,7 +1073,7 @@ impl ServiceModule for VoiceModule {
                 // Fuzzy match: STT drops case/punctuation and may mangle the
                 // nonce; the load-bearing words are the phrase's head. 2 of 3
                 // head words = the chain works.
-                let transcript = heard.as_ref().map(|e| e.text.clone()).unwrap_or_default();
+                let transcript = heard.as_ref().map(|e| e.text.clone()).unwrap_or_default(); // safe: no event = empty transcript = matched:false, the honest red receipt
                 let lower = transcript.to_lowercase();
                 let hits = ["continuum", "self", "test"]
                     .iter()
