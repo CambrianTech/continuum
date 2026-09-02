@@ -76,9 +76,14 @@ fn install_shutdown_handlers() {
                 tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
             {
                 sig.recv().await;
-                eprintln!("[continuum-core] SIGTERM — killing sentinel process groups");
+                eprintln!("[continuum-core] SIGTERM — save-and-join broadcast, then exit");
+                // The CBAR stop (2026-09-02): every module saves and joins in
+                // parallel under a bound — replacing a flat 2s sleep during
+                // which NOTHING saved. Sentinels last (they are children, not
+                // modules), then the fast _exit that skips llama.cpp's
+                // double-free-prone static destructors (note above).
+                continuum_core::runtime::run_signal_shutdown().await;
                 continuum_core::modules::sentinel::shutdown_all_sentinels();
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 unsafe { libc::_exit(0) };
             }
         });
@@ -89,9 +94,9 @@ fn install_shutdown_handlers() {
                 tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
             {
                 sig.recv().await;
-                eprintln!("[continuum-core] SIGINT — killing sentinel process groups");
+                eprintln!("[continuum-core] SIGINT — save-and-join broadcast, then exit");
+                continuum_core::runtime::run_signal_shutdown().await;
                 continuum_core::modules::sentinel::shutdown_all_sentinels();
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 unsafe { libc::_exit(0) };
             }
         });

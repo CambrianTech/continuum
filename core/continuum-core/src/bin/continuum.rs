@@ -74,6 +74,39 @@ async fn run() -> Result<(), String> {
             let force = args.any(|a| a == "--force");
             reboot(force).await
         }
+        // The typed boot plan (BOOT-IS-A-TYPED-PLAN.md, slice 1): deterministic
+        // runtime bring-up of an ALREADY-BUILT binary — lane adopt-or-reap,
+        // transport, core launch + #194 verify, optional Beside rails — one
+        // receipt row per step. The dev-time source build stays with
+        // `reboot`/the script until slice 2 migrates it.
+        "boot" => {
+            use continuum_core::boot_plan::Outcome;
+            let mut receipt = continuum_core::boot_plan::run_before_phase();
+            if !receipt.ok {
+                return Err("boot plan: a REQUIRED step failed (see rows above)".into());
+            }
+            let t = std::time::Instant::now();
+            let out = match launch_core(&[], LaunchSource::Installed).await {
+                Ok(pid) => match verify_deployed_build(false).await {
+                    Ok(()) => Outcome::Ok(format!("pid {pid}, #194 verified")),
+                    Err(e) => Outcome::Failed(format!("verify: {e}")),
+                },
+                Err(e) => Outcome::Failed(e),
+            };
+            let failed = matches!(out, Outcome::Failed(_));
+            receipt.push("core-launch-verify", t, out);
+            if failed {
+                return Err("boot plan: core launch/verify failed".into());
+            }
+            // Repo root (dev tree) = two up from the start script; installed
+            // users have no script and the Beside rails skip with a reason.
+            let repo_root = locate_start_script()
+                .ok()
+                .and_then(|s| s.parent().and_then(|p| p.parent()).map(|p| p.to_path_buf()));
+            continuum_core::boot_plan::run_beside_phase(&mut receipt, repo_root.as_deref());
+            println!("boot complete — {} steps receipted", receipt.steps.len());
+            Ok(())
+        }
         "stop" => stop().await,
         // The display-manager door: the core serves the built desktop itself
         // (http::desktop, always-current, browsers attach/detach freely) —
@@ -1170,10 +1203,24 @@ fn processes_named(fragment: &str) -> Vec<i32> {
 /// Unix: signal the process GROUP (negative pid) — the start script's `setsid`
 /// makes the core a group leader — then the pid itself. Windows: `taskkill /T`.
 fn kill_pid_tree(pid: i32) {
+    // FAST SHUTDOWN (Joel 2026-09-02: "make it shut down fast too"). TERM is
+    // the courtesy; the DEADLINE is the contract: 3 seconds for the process to
+    // save-and-exit, then KILL. Durable state is save-on-write by design
+    // (rounds, rooms, memories persist as they change), so a slow drain buys
+    // nothing a KILL loses — and an unbounded graceful shutdown is where
+    // stop's seconds became minutes.
     #[cfg(unix)]
     unsafe {
         libc::kill(-pid, libc::SIGTERM);
         libc::kill(pid, libc::SIGTERM);
+        for _ in 0..30 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if libc::kill(pid, 0) != 0 {
+                return; // gone — the fast path, usually well under a second
+            }
+        }
+        libc::kill(-pid, libc::SIGKILL);
+        libc::kill(pid, libc::SIGKILL);
     }
     #[cfg(windows)]
     {

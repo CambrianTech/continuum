@@ -3214,7 +3214,14 @@ pub fn start_server(
         if let Err(e) = runtime.initialize().await {
             log_error!("ipc", "server", "Runtime initialization failed: {}", e);
         }
+        // The CBAR lifecycle pair (2026-09-02), coded ONCE at the one trait +
+        // this one broadcast site: every module loads its state after init,
+        // and the SIGNAL handlers run the parallel save-and-join broadcast
+        // before exit — a stop finally saves, a boot finally loads, both
+        // receipted per node (boot.load_state / shutdown.step).
+        runtime.load_all_state().await;
     });
+    crate::runtime::install_signal_shutdown(runtime.clone());
 
     // Start periodic tick loops for modules that declare a tick_interval.
     // Replaces TypeScript's per-persona setIntervals (task polling, self-task gen, training checks).

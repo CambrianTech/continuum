@@ -308,7 +308,26 @@ pub trait ServiceModule: Send + Sync + Any {
         None
     }
 
-    /// Graceful shutdown. Release resources, flush buffers.
+    /// SAVE this node's volatile state to its durable home — the explicit half
+    /// of the CBAR contract (Joel 2026-09-02: "I can call all nodes and tell
+    /// them to save or load state"). Broadcast by [`Runtime::shutdown`] before
+    /// `shutdown()`, in parallel, under the same 2s bound. Default no-op is
+    /// honest for modules whose discipline is save-on-write; a module holding
+    /// anything volatile at stop time implements this or loses it BY CONTRACT
+    /// (never by surprise).
+    async fn save_state(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// LOAD this node's state — the symmetric half, broadcast by the runtime
+    /// after `initialize` succeeds. Default no-op; a module that saves must
+    /// load, and the boot receipt shows which nodes did.
+    async fn load_state(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Graceful shutdown. Release resources, flush buffers. Runs AFTER
+    /// `save_state` in the runtime's broadcast — save first, then join.
     async fn shutdown(&self) -> Result<(), String> {
         Ok(())
     }
