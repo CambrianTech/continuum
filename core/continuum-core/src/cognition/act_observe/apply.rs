@@ -222,11 +222,13 @@ pub async fn apply_act(
             .collect::<Vec<_>>()
             .join(", ");
         let n = bump_repeat();
+        // Sense, not steer (2026-09-01): the fact is the repeat count and
+        // where the result lives; the old "whatever I do next must be
+        // something DIFFERENT" tail was workflow steering. The short-circuit
+        // above is what actually protects the substrate.
         let nudge = format!(
             "I have now issued {names} {n} times this turn — the result is already in my \
-             working memory above, and re-running the identical call returns nothing new. \
-             Repeating it will not progress; whatever I do next must be something DIFFERENT: \
-             a different action, or an answer built from what I already have."
+             working memory above; the identical call returns nothing new."
         );
         body.working_memory.record_fact(&nudge);
         crate::probe!(

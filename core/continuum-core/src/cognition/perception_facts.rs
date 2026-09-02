@@ -90,6 +90,12 @@ impl FactPolicy {
 }
 
 /// Her OWN-SPEECH loop, cluster-detected on ring + raw turns (#134/#148).
+/// SENSE, NOT STEER (Joel 2026-09-01: "stop hardcoding workflow and let them
+/// think and decide") — the fact names what happened in one line; the old
+/// "you're circling… silence (PASS) is the honest response" imperative is
+/// gone. Measured live: the steering text dominated turns as meta-narration,
+/// got spoken, memorized, recalled, and re-triggered itself, while its own
+/// docs concede it never stopped a determined loop anyway.
 struct OwnRepetition;
 
 impl PerceptionFact for OwnRepetition {
@@ -103,7 +109,7 @@ impl PerceptionFact for OwnRepetition {
 }
 
 /// Her last utterance reproducing a TEAMMATE's message (#152) — the
-/// cross-persona axis the per-persona ring cannot see.
+/// cross-persona axis the per-persona ring cannot see. Sense, not steer.
 struct PeerEcho;
 
 impl PerceptionFact for PeerEcho {
@@ -119,6 +125,7 @@ impl PerceptionFact for PeerEcho {
 /// Her recent messages reusing ONE structural scaffold with the topic swapped
 /// (#264) — the structure axis the full-body detector above cannot see: a
 /// topic rotation drops body Jaccard below threshold while the loop continues.
+/// Sense, not steer.
 struct TemplateLoop;
 
 impl PerceptionFact for TemplateLoop {
@@ -134,7 +141,7 @@ impl PerceptionFact for TemplateLoop {
 /// The newest INBOUND message restating settled room content (#264) — the
 /// predictive member of the repetition family: fires BEFORE she replies, at
 /// the moment the echo would be born, where the retroactive pair above fire
-/// one turn too late to prevent the chorus.
+/// one turn too late to prevent the chorus. Sense, not steer.
 struct InboundRestates;
 
 impl PerceptionFact for InboundRestates {
