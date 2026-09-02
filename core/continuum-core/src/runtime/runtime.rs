@@ -581,12 +581,19 @@ impl Runtime {
     /// the CBAR contract, called once after module initialization. Receipted
     /// per node so "which modules restored state" is a boot fact, not a hope.
     pub async fn load_all_state(&self) {
-        for name in self.registry.list_modules() {
-            if let Some(module) = self.registry.get_by_name(&name) {
+        // PARALLEL fork/join — nobody waits on anyone (Joel 2026-09-02: "they
+        // all load/store state in parallel so no one waits… join/fork threads").
+        // Symmetric with `shutdown`'s save-and-join: total wall time = the
+        // slowest single concern, never the SUM. The first cut was a sequential
+        // for-loop — a boot tax that grew with every module added.
+        const PER_MODULE: std::time::Duration = std::time::Duration::from_secs(2);
+        let futs = self.registry.list_modules().into_iter().filter_map(|name| {
+            self.registry.get_by_name(&name).map(|module| async move {
                 let t = std::time::Instant::now();
-                let outcome = match module.load_state().await {
-                    Ok(()) => "ok",
-                    Err(_) => "error",
+                let outcome = match tokio::time::timeout(PER_MODULE, module.load_state()).await {
+                    Ok(Ok(())) => "ok",
+                    Ok(Err(_)) => "error",
+                    Err(_) => "timeout",
                 };
                 crate::probe!(
                     class = "boot.load_state",
@@ -595,8 +602,9 @@ impl Runtime {
                     ms = t.elapsed().as_millis() as u64,
                     "module state load"
                 );
-            }
-        }
+            })
+        });
+        futures::future::join_all(futs).await;
     }
 
     /// Shutdown all modules — PARALLEL, BOUNDED, RECEIPTED (the CBAR shape,

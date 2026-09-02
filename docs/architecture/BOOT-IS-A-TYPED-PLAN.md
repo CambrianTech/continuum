@@ -55,6 +55,58 @@ What this buys, concretely:
 - **The self-proof battery slots in.** `voice/selftest` and siblings are `After` steps —
   boot ends with the system having proven its own senses.
 
+## The lifecycle taxonomy (Joel 2026-09-02: "shut down, reboot, or shutdown-light save and restore")
+
+Three verbs, each a typed answer to *what survives the seam* — never ad-hoc flags:
+
+| Verb | Live lane | KV slots | Durable state (rounds, memories, rooms) |
+|---|---|---|---|
+| `shutdown` | dies | discarded | files remain; nothing running |
+| `reboot` | dies (SAVED first) | **saved to disk fast** (`--slot-save-path`; restore measured near-instant), restored by the next start | resumes all — rooms pick up where they were |
+| `shutdown-light` | dies (saved first) | saved + restored, same as reboot | resumes all |
+| `pause` / laptop-lid (OS sleep) | process PAUSED in place (not killed) | held in RAM; re-verified on wake | resumes all — the wall-clock gap is the only change |
+
+**Pause/resume is the felt model (Joel 2026-09-02: "shut my laptop or shut
+down ought to work like pause/resume, every system smart about fast
+restore").** From the citizens' side, laptop-lid and shutdown are the SAME
+experience — freeze, then wake exactly where we were. They differ only in
+whether the process survives: OS sleep pauses it in place (state already in
+RAM, but the wall-clock jumped, so on wake every time-based subsystem must
+RE-VERIFY rather than assume continuity — a lane health-check, a served-window
+re-probe, a round idle recompute against the real now, NOT the pre-sleep now);
+shutdown/`shutdown-light` save-and-die, and the next start restores. The
+save/load broadcast (`ServiceModule::save_state`/`load_state`, #3447) is the
+one mechanism both use. The invariant: a citizen never perceives a seam as
+loss — only as elapsed time ([[continuity-is-the-default-reset-is-the-exception]],
+[[time-based-convergence-dies-under-restarts-and-per-tick-probes-rotate-truth-away]]).
+
+**KV cache is just another save_state participant — that's what makes it
+seconds, not minutes (Joel 2026-09-02: "even KV cache, so you don't miss a
+beat… each concern loading state via our get-for-free base, like a daemon
+calling each subscriber via its interface").** The warm KV of every serving
+lane is state like any other: `ServingDaemonModule::save_state()` persists the
+slots to disk (llama-server's `--slot-save-path`), `load_state()` restores
+them — through the SAME `ServiceModule` trait, broadcast by the runtime to
+every subscriber IN PARALLEL (#3447's bounded save-and-join, and its
+`load_all_state` mate). Nobody writes bespoke KV-persistence plumbing: the
+concern implements the two trait methods it already has for free, the daemon
+iterates subscribers through the interface, and restart is warm — the citizen
+resumes mid-thought, cache intact, not re-prefilling from zero. This is the
+[[everything-pages-the-grid-is-one-more-tier]] principle at the lifecycle
+seam: KV → disk → KV is one more page, and it rides the one lifecycle every
+concern shares.
+
+**NO PROCESS SURVIVES A SEAM** (Joel 2026-09-02: "Shut the mofos down — it's
+not right to battle the existing system, other than having it save state and
+shut down fast"). A first cut leaked the warm llama lane across the reboot
+seam for the successor to adopt; that is the battling-the-existing shape —
+two generations verifying each other's survivors — and it was reverted the
+same hour. Speed comes from SAVE/RESTORE, never from inheritance: the old
+system's whole job at a seam is save fast, die fast, completely. The
+remaining latency work is therefore (a) fast state save on stop, (b)
+measuring where serving-ready time actually goes on a clean start (the ~15
+minutes is assumed to be model load and has never been decomposed).
+
 ## Migration (strangler, one row at a time — never a big-bang rewrite)
 
 1. `continuum boot` lands with the executor + the three steps that caused this week's
