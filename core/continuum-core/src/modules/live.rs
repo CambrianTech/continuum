@@ -1000,6 +1000,105 @@ impl ServiceModule for VoiceModule {
                 })))
             }
 
+            "voice/selftest" => {
+                // THE SELF-PROOF VERB (MULTIMODAL-WIRING-AND-SELF-PROOF.md §2,
+                // Joel 2026-09-02: "tested reliably, repeatedly … it can't
+                // require intervention"). One entirely server-side round trip
+                // through the SAME chain a live caller exercises: join a call
+                // as a synthetic human, speak a nonce phrase through TTS, feed
+                // the PCM through push_audio (VAD → speech-end → STT), and
+                // await OUR OWN transcription event. No browser, no bridge, no
+                // human. A regression in any link is a red receipt on a
+                // schedule instead of a debugging night ("I don't think they
+                // were hearing me", 2026-09-01).
+                let _timer = TimingGuard::new("module", "voice_selftest");
+                // A fixed synthetic call id (any uuid is a valid call key;
+                // nothing subscribes to it, so no citizen perceives the test).
+                const SELFTEST_CALL: &str = "5e1f7e57-0000-4000-8000-c0117e575e1f";
+                let nonce = uuid::Uuid::new_v4().simple().to_string()[..6].to_string();
+                let phrase = format!("continuum self test {nonce}");
+
+                let t0 = std::time::Instant::now();
+                let synthesis = crate::live::audio::tts_service::synthesize_speech_async(
+                    &phrase, None, None, None,
+                )
+                .await
+                .map_err(|e| format!("selftest TTS failed: {e}"))?;
+                let tts_ms = t0.elapsed().as_millis() as u64;
+
+                let joined = self
+                    .state
+                    .call_manager
+                    .join_call(SELFTEST_CALL, "selftest-human", "Selftest", false)
+                    .await
+                    .map_err(|e| format!("selftest join failed: {e}"))?;
+                let handle = joined.handle;
+                let mut transcripts = joined.transcription_rx;
+
+                // Feed the utterance + a 2s silence tail in 20ms frames — the
+                // silence is what trips the VAD's speech-end, same as a real
+                // caller going quiet. Lightly paced so the mixer's clock sees
+                // a plausible stream, fast enough that the verb stays snappy.
+                let t1 = std::time::Instant::now();
+                let mut pcm = synthesis.samples;
+                pcm.extend(std::iter::repeat(0i16).take(
+                    (crate::audio_constants::AUDIO_SAMPLE_RATE as usize) * 2,
+                ));
+                for chunk in pcm.chunks(320) {
+                    self.state.call_manager.push_audio(&handle, chunk.to_vec()).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                }
+
+                // Await our own transcription — the SAME broadcast a caption
+                // widget or a citizen's perception would ride.
+                let mut heard: Option<crate::live::transport::call_server::TranscriptionEvent> =
+                    None;
+                let deadline = std::time::Duration::from_secs(30);
+                let wait = tokio::time::timeout(deadline, async {
+                    loop {
+                        match transcripts.recv().await {
+                            Ok(ev) if ev.user_id == "selftest-human" => break Some(ev),
+                            Ok(_) => continue,
+                            Err(_) => break None,
+                        }
+                    }
+                })
+                .await;
+                if let Ok(Some(ev)) = wait {
+                    heard = Some(ev);
+                }
+                let stt_ms = t1.elapsed().as_millis() as u64;
+                self.state.call_manager.leave_call(&handle).await;
+
+                // Fuzzy match: STT drops case/punctuation and may mangle the
+                // nonce; the load-bearing words are the phrase's head. 2 of 3
+                // head words = the chain works.
+                let transcript = heard.as_ref().map(|e| e.text.clone()).unwrap_or_default(); // safe: no event = empty transcript = matched:false, the honest red receipt
+                let lower = transcript.to_lowercase();
+                let hits = ["continuum", "self", "test"]
+                    .iter()
+                    .filter(|w| lower.contains(**w))
+                    .count();
+                let matched = hits >= 2;
+                crate::probe!(
+                    class = "live.selftest",
+                    matched = matched,
+                    tts_ms = tts_ms,
+                    stt_ms = stt_ms,
+                    transcript = %transcript,
+                    "voice chain self-proof: TTS → call join → push_audio → VAD → STT → transcription event"
+                );
+                Ok(CommandResult::Json(serde_json::json!({
+                    "matched": matched,
+                    "phrase": phrase,
+                    "transcript": transcript,
+                    "confidence": heard.as_ref().map(|e| e.confidence),
+                    "tts_ms": tts_ms,
+                    "stt_ms": stt_ms,
+                    "synthesized_ms": synthesis.duration_ms,
+                })))
+            }
+
             "voice/poll-transcriptions" => {
                 let _timer = TimingGuard::new("module", "voice_poll_transcriptions");
                 let call_id = p
