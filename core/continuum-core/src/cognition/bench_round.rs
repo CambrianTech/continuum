@@ -591,7 +591,7 @@ pub fn record_card_assignee(card_id: Uuid, assignee: Uuid) {
 /// operator note did (the note broke a wedged round; the substrate's own
 /// kickoff must carry the same information or the hand stays in the loop).
 pub fn instance_for_card(card_id: Uuid) -> Option<String> {
-    let rounds = ROUNDS.lock().unwrap_or_else(|e| e.into_inner());
+    let rounds = ROUNDS.lock().unwrap_or_else(|e| e.into_inner()); // safe: poisoned lock = read the last state, same policy as every ROUNDS lock here
     rounds.values().find_map(|r| {
         if !r.cards.contains_key(&card_id) {
             return None;

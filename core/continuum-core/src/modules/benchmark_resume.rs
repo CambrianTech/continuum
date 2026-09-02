@@ -237,7 +237,7 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
                 // now, so the hand stays out of the loop.
                 let what = crate::cognition::bench_round::instance_for_card(next.card)
                     .map(|i| format!(" ({i}, checkout staged at swe/{i}/ in your workspace)"))
-                    .unwrap_or_default();
+                    .unwrap_or_default(); // safe: unknown instance = omit the parenthetical, the re-say still names card+owner
                 let text = format!(
                     "[resume] {who}: this round survived a core restart and your kickoff \
                      predates your window. Card {short}{what} is {who}'s — nobody \
