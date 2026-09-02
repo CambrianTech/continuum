@@ -299,13 +299,29 @@ impl MoonshineStt {
         drop(preprocess_out);
         drop(preprocess_session);
         let features_array = Self::cache_to_array(&features)?;
+        // The encoder ONNX takes TWO inputs: args_0 = features [1, T, D] and
+        // args_1 = the sequence length T as an int32 scalar tensor (its
+        // arange/strided_slice builds positional indices from it). Passing
+        // only features left args_1 missing — the whole STT chain returned
+        // empty for a full debug cycle behind a swallowed error (2026-09-02).
+        // T is the features' TIME axis: shape [1, T, D] → dims()[1].
+        let seq_len = *features_array.shape().get(1).ok_or_else(|| {
+            STTError::InferenceFailed(format!(
+                "encoder features have unexpected shape {:?} (want [1,T,D])",
+                features_array.shape()
+            ))
+        })? as i32;
 
         // ── Step 2: Encode ─ features → hidden states ────────────────────
         let features_tensor = Tensor::from_array(features_array)
             .map_err(|e| STTError::InferenceFailed(format!("Encoder input tensor: {e}")))?;
+        let seqlen_tensor = Tensor::from_array(
+            ndarray::Array1::from_vec(vec![seq_len]).into_dyn(),
+        )
+        .map_err(|e| STTError::InferenceFailed(format!("Encoder seqlen tensor: {e}")))?;
         let mut encoder_session = model.encoder.lock();
         let encoder_out = encoder_session
-            .run(ort::inputs![features_tensor])
+            .run(ort::inputs![features_tensor, seqlen_tensor])
             .map_err(|e| STTError::InferenceFailed(format!("Encoder run: {e}")))?;
         let encoder_hidden = Self::extract_f32(&encoder_out, 0)?;
         drop(encoder_out);
