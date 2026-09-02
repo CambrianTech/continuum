@@ -535,45 +535,66 @@ impl OrpheusTts {
     }
 
     /// Decode SNAC codebook layers → 24kHz PCM audio using ONNX decoder
+    /// The SNAC ONNX export's FIXED frame window for the coarse codebook
+    /// (measured 2026-09-02 from the model's own dimension error: `codes0 …
+    /// Expected: 12`). Layers scale 1×/2×/4× per SNAC's hierarchy.
+    const SNAC_WINDOW_FRAMES: usize = 12;
+
     fn snac_decode(
         session: &mut Session,
         layers: &[Vec<i64>; NUM_CODEBOOKS],
     ) -> Result<Vec<f32>, TTSError> {
-        // Build input tensors for each codebook layer: [1, seq_len]
-        let mut named_inputs: Vec<(String, Value)> = Vec::with_capacity(NUM_CODEBOOKS);
-
-        for (i, layer) in layers.iter().enumerate() {
-            let seq_len = layer.len();
-            let array = Array2::from_shape_vec((1, seq_len), layer.clone()).map_err(|e| {
-                TTSError::SynthesisFailed(format!("SNAC input layer {i} reshape: {e}"))
-            })?;
-            let value: Value = OrtTensor::from_array(array)
-                .map(|v| v.into())
-                .map_err(|e| {
-                    TTSError::SynthesisFailed(format!("SNAC input layer {i} to value: {e}"))
-                })?;
-
-            // Use model's input names (discovered at runtime)
-            let name = session.inputs()[i].name().to_string();
-            named_inputs.push((name, value));
+        // CHUNKED decode: the ONNX export takes a fixed 12-frame window (the
+        // first live utterance generated 299 frames and the decoder refused
+        // the whole strip). Feed 12-frame windows — 12/24/48 codes per layer —
+        // and concatenate PCM. The final partial window is DROPPED, not
+        // zero-padded: padding synthesizes a click of silence-codes at the
+        // clip tail; losing <12 frames (~140ms) of trailing audio is the
+        // honest trade until a dynamic-axis export replaces this decoder.
+        let total_frames = layers[0].len();
+        let windows = total_frames / Self::SNAC_WINDOW_FRAMES;
+        if windows == 0 {
+            return Err(TTSError::SynthesisFailed(format!(
+                "Too little audio for the SNAC window ({} frames < {})",
+                total_frames,
+                Self::SNAC_WINDOW_FRAMES
+            )));
         }
-
-        let outputs = session
-            .run(named_inputs)
-            .map_err(|e| TTSError::SynthesisFailed(format!("SNAC decoder run: {e}")))?;
-
-        // Extract output audio waveform (f32)
-        let (shape, data) = outputs[0]
-            .try_extract_tensor::<f32>()
-            .map_err(|e| TTSError::SynthesisFailed(format!("SNAC output extraction: {e}")))?;
-
+        let mut pcm: Vec<f32> = Vec::new();
+        for w in 0..windows {
+            let mut named_inputs: Vec<(String, Value)> = Vec::with_capacity(NUM_CODEBOOKS);
+            for (i, layer) in layers.iter().enumerate() {
+                // Layer i carries 2^i codes per frame (1/2/4 — SNAC hierarchy).
+                let per_frame = 1usize << i;
+                let start = w * Self::SNAC_WINDOW_FRAMES * per_frame;
+                let len = Self::SNAC_WINDOW_FRAMES * per_frame;
+                let chunk = layer[start..start + len].to_vec();
+                let array = Array2::from_shape_vec((1, len), chunk).map_err(|e| {
+                    TTSError::SynthesisFailed(format!("SNAC input layer {i} reshape: {e}"))
+                })?;
+                let value: Value = OrtTensor::from_array(array)
+                    .map(|v| v.into())
+                    .map_err(|e| {
+                        TTSError::SynthesisFailed(format!("SNAC input layer {i} to value: {e}"))
+                    })?;
+                let name = session.inputs()[i].name().to_string();
+                named_inputs.push((name, value));
+            }
+            let outputs = session
+                .run(named_inputs)
+                .map_err(|e| TTSError::SynthesisFailed(format!("SNAC decoder run: {e}")))?;
+            let (_shape, data) = outputs[0]
+                .try_extract_tensor::<f32>()
+                .map_err(|e| TTSError::SynthesisFailed(format!("SNAC output extraction: {e}")))?;
+            pcm.extend_from_slice(data);
+        }
         clog_info!(
-            "Orpheus: SNAC output shape: {:?} ({} samples)",
-            shape,
-            data.len()
+            "Orpheus: SNAC decoded {} windows × {} frames → {} samples",
+            windows,
+            Self::SNAC_WINDOW_FRAMES,
+            pcm.len()
         );
-
-        Ok(data.to_vec())
+        Ok(pcm)
     }
 }
 
