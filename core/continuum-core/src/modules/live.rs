@@ -1015,8 +1015,19 @@ impl ServiceModule for VoiceModule {
                 // A fixed synthetic call id (any uuid is a valid call key;
                 // nothing subscribes to it, so no citizen perceives the test).
                 const SELFTEST_CALL: &str = "5e1f7e57-0000-4000-8000-c0117e575e1f";
-                let nonce = uuid::Uuid::new_v4().simple().to_string()[..6].to_string();
-                let phrase = format!("continuum self test {nonce}");
+                // A NATURAL phrase: hex nonces are hostile to speech models
+                // (measured 2026-09-02: Orpheus emitted 256ms then stopped on
+                // 'continuum self test 075cf5') and to STT. The nonce is a
+                // WORD, picked by uuid — unpredictable enough to prove this
+                // run's audio, speakable enough to survive both directions.
+                const NONCE_WORDS: [&str; 8] = [
+                    "harbor", "velvet", "compass", "lantern",
+                    "meadow", "ember", "willow", "granite",
+                ];
+                let word = NONCE_WORDS
+                    [uuid::Uuid::new_v4().as_u128() as usize % NONCE_WORDS.len()];
+                let phrase =
+                    format!("This is the continuum self test. The magic word is {word}.");
 
                 // Per-engine leg (Joel 2026-09-02: "the TDD for this is
                 // voice <-> STT"): the same round trip proves ANY adapter —
@@ -1080,7 +1091,7 @@ impl ServiceModule for VoiceModule {
                 // head words = the chain works.
                 let transcript = heard.as_ref().map(|e| e.text.clone()).unwrap_or_default(); // safe: no event = empty transcript = matched:false, the honest red receipt
                 let lower = transcript.to_lowercase();
-                let hits = ["continuum", "self", "test"]
+                let hits = ["continuum", "self", "test", word]
                     .iter()
                     .filter(|w| lower.contains(**w))
                     .count();

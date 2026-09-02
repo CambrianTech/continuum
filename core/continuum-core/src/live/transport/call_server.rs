@@ -1191,10 +1191,21 @@ impl CallManager {
             (handle, display_name)
         };
 
-        // Step 2: Synthesize (async — runs in current tokio context)
-        let synthesis = tts_service::synthesize_speech_async(text, voice, adapter, None)
-            .await
-            .map_err(|e| format!("TTS failed: {e}"))?;
+        // Step 2: Synthesize (async — runs in current tokio context).
+        //
+        // EMOTION RIDES THE SAME SENTIMENT THE FACE USES (Stage A of
+        // VOICE-ENGINE-PLAN's native-audio ladder, Joel 2026-09-02:
+        // "intimately control the speech mannerisms"): the avatar's
+        // sub-microsecond sentiment extraction maps to Orpheus emotion tags,
+        // so voice and face express ONE state from one source — never two
+        // analyzers drifting apart. Tag injection is Orpheus-only: other
+        // engines would read the tag aloud as text.
+        let spoken_text =
+            crate::live::audio::emotion_tags::decorate_for_adapter(text, adapter);
+        let synthesis =
+            tts_service::synthesize_speech_async(&spoken_text, voice, adapter, None)
+                .await
+                .map_err(|e| format!("TTS failed: {e}"))?;
 
         let num_samples = synthesis.samples.len();
         let duration_ms = synthesis.duration_ms;
