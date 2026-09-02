@@ -95,6 +95,18 @@ Llama-family; the same graft applies to her, staged:
   overlapping" — background vs speaker vs effects as separate, precisely named facts,
   never flattened into one transcript string.
 
+**Invariant across every stage — THE TRANSCRIPT ALWAYS EXISTS (Joel 2026-09-02:
+"same goes for the model hearing directly… only problem is we need chat transcript
+either way").** Native audio-in is an ADDITIONAL path, never a replacement for STT:
+the room record, L1-L5 memory, RAG, and search all consume TEXT. So the pipeline is
+always audio → { STT → transcript (required, feeds chat/memory) , AND optionally the
+raw waveform → the model's own audio encoder for nuance }. A model that hears natively
+gets BOTH — the transcript for the record and the audio for the feeling — and the
+choice of whether to also embed raw audio is a per-model capability switch (the
+sensory-bridge doctrine), not a switch that can ever turn the transcript off. The STT
+leg is load-bearing forever; the same TTS↔STT selftest guards it whether or not a
+model also listens directly.
+
 **Stage B — the graft (the real ask):**
 - Extend Ornith's vocab with codec tokens; forge-train an audio-out head/LoRA:
   (context + her thought) → speech tokens in the SAME forward pass. Mannerisms become
