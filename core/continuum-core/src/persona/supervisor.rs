@@ -898,11 +898,19 @@ pub async fn materialize_adapters(
                 // #1650/#1651 grounding silently falls out of the live path —
                 // the persona forgets who is present / what the room is for.
                 grounding_sources: vec![
-                    // Roster — WHO is present. Enriching framing: a first-tick miss
-                    // costs one under-grounded turn, not a wrong one. Defer-tolerant
-                    // (runs off the hot path, served reprojected) once warm.
-                    crate::cognition::persona_workspace::GroundingSource::framing(roster_source)
-                        .defer_tolerant(),
+                    // Roster — WHO is present. SYNCHRONOUS (ColdStartCritical),
+                    // like workspace-map and for the same reason: the deferral
+                    // was earned by the OLD airc-fetch reader this source
+                    // replaced; the ViewState roster is a watch-channel borrow
+                    // (microseconds), and keeping the fallback meant slow turns
+                    // "timed out" into `reproject_to_now` serving a CACHED
+                    // roster from a different presence moment — Benchy's prompt
+                    // flapped between fresh and stale byte layouts at 0.4%
+                    // depth, hit_rate 0.0, and slower turns caused MORE
+                    // reprojections (measured 2026-09-01: both his captures
+                    // carried "[reprojected … held]"). A source this cheap
+                    // never gets a fallback ([[fallbacks-are-illegal-fail-loud]]).
+                    crate::cognition::persona_workspace::GroundingSource::framing(roster_source),
                     // Doctrine — WHAT the room is for: the PARTICIPATION GATE. This
                     // one stays SYNCHRONOUS (ColdStartCritical): a cold-start `None`
                     // would let the persona speak in a room it shouldn't on turn one,

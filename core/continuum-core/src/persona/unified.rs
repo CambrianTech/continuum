@@ -411,7 +411,14 @@ impl PersonaCognition {
                 // they never starve airc's recent_history or compete for
                 // grow headroom with the heavyweight engram/airc sources.
                 let (floor, min, max) = match s.source_id() {
-                    "room-roster" => (
+                    // "roster" is the LIVE id (ViewStateRagSource<RosterViewState>,
+                    // supervisor.rs); "room-roster" was the replaced airc-fetch
+                    // reader's id — kept matched so a replay of an old capture
+                    // still budgets it lightweight. Without the live arm the
+                    // roster fell to the heavyweight `_` arm and could claim up
+                    // to 60% of the window (found 2026-09-01 during the
+                    // imposter sweep).
+                    "roster" | "room-roster" => (
                         0,
                         0,
                         (context_window / ROSTER_WINDOW_FRACTION).min(per_source_max),
