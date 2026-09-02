@@ -72,10 +72,28 @@ const BENCH_FIXTURE: BenchViewState = {
     {
       round_id: '2d6decb3-1beb-5ac7-9ded-ee186c7deb7f', benchmark: 'ds-1000',
       stage: 'done', dispatched: 4, settled: 4, remaining: 0, driver: 'citizen',
+      verdict: 'done', cards: [],
     },
     {
       round_id: 'bf08832d-c7e2-5bc9-a858-5447c15ccbfe', benchmark: 'swe-bench-lite',
       stage: 'working', dispatched: 4, settled: 1, remaining: 3, driver: 'citizen',
+      // The 2026-09-01 sensor: two cards grinding, one never started — the
+      // roll-call strip and the verdict chip both exercise here.
+      verdict: 'grinding', idle_secs: 140,
+      cards: [
+        {
+          card_id: '31c00000-0000-0000-0000-000000000001',
+          instance: 'sympy__sympy-24152', assignee: 'Anwen',
+          solve_room_name: 'swe--sympy__sympy-24152--31c00000',
+          state: 'active', acts: 9, patch_bytes: 974, last_act_secs: 140,
+        },
+        {
+          card_id: '31c00000-0000-0000-0000-000000000002',
+          instance: 'django__django-11211', assignee: 'Kira',
+          solve_room_name: 'swe--django__django-11211--31c00000',
+          state: 'unstarted',
+        },
+      ],
     },
   ],
 };

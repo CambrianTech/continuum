@@ -108,6 +108,52 @@ pub struct BenchRoundRow {
     pub remaining: u32,
     /// `citizen` | `detached_solve` — who works the cards.
     pub driver: String,
+    /// Per-card rows the board renders under the round — WHAT, WHO, and how
+    /// it is going, including cards that never started (2026-09-01: those
+    /// rendered as NOTHING, making `working 0/8` for three hours of thrash
+    /// pixel-identical to a healthy grind). `default` for pre-cards wires.
+    #[serde(default)]
+    pub cards: Vec<BenchRoundCardRow>,
+    /// Glanceable health, pronounced core-side (never client arithmetic):
+    /// `unstarted` | `grinding` | `stalled` | `paused` | `done`.
+    #[serde(default)]
+    pub verdict: String,
+    /// Seconds since the newest work artifact on an unsettled card.
+    /// Absent = no artifacts yet — an absence, never `0`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[ts(optional, type = "number")]
+    pub idle_secs: Option<u64>,
+}
+
+/// One card of a round, as the board renders it. Mirrors the core's
+/// `RoundCardSnapshot` (same lossless-fold contract as run rows).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/positron/BenchRoundCardRow.ts"
+)]
+pub struct BenchRoundCardRow {
+    pub card_id: String,
+    /// Instance under test; empty until the solve activity is minted.
+    pub instance: String,
+    /// Solver name once a run names one, else the staged assignee's uuid.
+    pub assignee: String,
+    /// The solve activity's airc name — the navigable door. Empty until minted.
+    pub solve_room_name: String,
+    /// `unstarted` | run phase (`active`, `quiet`, `ungraded`, …) | terminal state.
+    pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[ts(optional, type = "number")]
+    pub acts: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[ts(optional, type = "number")]
+    pub patch_bytes: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[ts(optional, type = "number")]
+    pub last_act_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[ts(optional)]
+    pub resolved: Option<bool>,
 }
 
 /// The benchmark board — what the ACADEMY right-rail widget draws.

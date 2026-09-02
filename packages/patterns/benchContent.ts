@@ -102,6 +102,37 @@ export interface BenchRoundVM {
   readonly remaining: number;
   /** `citizen` (in the room, feeds the curriculum) | `detached_solve`. */
   readonly driver: string;
+  /** Glanceable health, pronounced core-side: `unstarted` | `grinding` |
+   *  `stalled` | `paused` | `done`. Empty on a pre-verdict wire — render
+   *  nothing, never guess (2026-09-01: `working 0/8` was pixel-identical
+   *  for three hours of thrash and a healthy grind). */
+  readonly verdict: string;
+  /** Seconds since the newest work artifact on an unsettled card;
+   *  null = no card has produced one yet (an absence, never 0). */
+  readonly idleSecs: number | null;
+  /** Per-card status, INCLUDING cards that never started — those have no
+   *  run row and previously rendered as nothing at all. */
+  readonly cards: readonly BenchRoundCardVM[];
+}
+
+/** One card of a round — WHAT, WHO, and how it is going. Cards with a live
+ *  run also appear as full run cards; this row is the roll-call that makes
+ *  the unstarted ones visible. */
+export interface BenchRoundCardVM {
+  readonly cardId: string;
+  /** Instance under test; empty until the solve activity is minted. */
+  readonly instance: string;
+  /** Solver name once a run names one, else the staged assignee's uuid
+   *  (compacted for display); empty = never staged. */
+  readonly assignee: string;
+  /** The solve activity's airc name — the navigable door; empty until minted. */
+  readonly solveRoomName: string;
+  /** `unstarted` | run phase (`active`, `quiet`, `ungraded`, …) | terminal. */
+  readonly state: string;
+  readonly acts: number | null;
+  readonly patchBytes: number | null;
+  readonly lastActSecs: number | null;
+  readonly resolved: boolean | null;
 }
 
 /** The bench board's content body. */

@@ -29,6 +29,21 @@ function roundRow(round: BenchRoundVM): TemplateResult {
   return html`<div class="bench-round" data-stage=${round.stage}>
     <span class="bench-round-name" title=${round.roundId}>${round.benchmark}</span>
     <span class="bench-round-stage${round.stage === 'working' ? ' wave-active' : ''}">${round.stage}</span>
+    ${round.verdict !== '' && round.verdict !== round.stage
+      ? html`<span
+          class="bench-round-verdict bench-verdict-${round.verdict}"
+          title=${round.verdict === 'unstarted'
+            ? 'no card has produced a work artifact yet — deliberation without a workspace is invisible to grading'
+            : round.verdict === 'stalled'
+              ? 'work exists but nothing has acted within the stall window'
+              : round.verdict === 'grinding'
+                ? `an unsettled card acted ${round.idleSecs !== null ? age(round.idleSecs) : ''} ago`
+                : round.verdict}
+          >${round.verdict}${round.verdict === 'grinding' && round.idleSecs !== null
+            ? html` <i>${age(round.idleSecs)}</i>`
+            : nothing}</span
+        >`
+      : nothing}
     <span class="bench-round-count" title="cards settled / dispatched">
       ${round.settled}/${round.dispatched}</span>
     <div class="bench-bar" role="progressbar" aria-label="round settle progress">
@@ -66,6 +81,24 @@ function emitRoundControl(e: Event, action: 'pause' | 'resume', roundId: string)
       composed: true,
     }),
   );
+}
+
+/** The cards a run row can NOT show: the ones that never started. Before this
+ *  strip they rendered as nothing at all, so `working 0/8` was pixel-identical
+ *  for three hours of thrash and a healthy grind (2026-09-01). One compact row
+ *  per unstarted card: WHAT waits and on WHOM. */
+function rollCall(round: BenchRoundVM): TemplateResult | typeof nothing {
+  const unstarted = round.cards.filter((c) => c.state === 'unstarted');
+  if (unstarted.length === 0) return nothing;
+  return html`<div class="bench-rollcall" role="group" aria-label="cards not yet started">
+    <span class="bench-rollcall-head">${unstarted.length} not started</span>
+    ${unstarted.map(
+      (c) => html`<span class="bench-rollcall-card" title=${c.solveRoomName !== '' ? c.solveRoomName : c.cardId}>
+        ${c.instance !== '' ? c.instance : c.cardId.slice(0, 8)}${c.assignee !== ''
+          ? html` <i>· ${c.assignee}</i>`
+          : nothing}</span>`,
+    )}
+  </div>`;
 }
 
 /** Compact seconds → "12s" / "3m" / "2h" — board legibility, not precision. */
@@ -175,7 +208,7 @@ export function renderBench(body: BenchContentBody, opts?: BenchRenderOptions): 
   const rounds =
     body.rounds.length > 0
       ? html`<div class="bench-rounds" role="group" aria-label="in-flight rounds">
-          ${body.rounds.map(roundRow)}
+          ${body.rounds.map((rd) => html`${roundRow(rd)}${rollCall(rd)}`)}
         </div>`
       : nothing;
   if (body.runs.length === 0) {
@@ -250,6 +283,7 @@ export function renderBench(body: BenchContentBody, opts?: BenchRenderOptions): 
     ${body.rounds.map(
       (rd) => html`<section class="bench-round-group">
         ${roundRow(rd)}
+        ${rollCall(rd)}
         ${section(runsOf(rd.rawId))}
       </section>`,
     )}

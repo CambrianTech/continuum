@@ -945,6 +945,147 @@ pub struct RoundSnapshot {
     /// Who works these cards: `citizen` (in the room, produces turns, feeds the curriculum)
     /// or `detached_solve`. Decided at dispatch, read at claim time.
     pub driver: String,
+    /// Per-card status — the row the board renders under the round. `default`
+    /// so pre-cards wires still deserialize. Filled from the tracker by
+    /// [`live_rounds`]; run facts (acts, patch, recency) merge in via
+    /// [`enrich_rounds`] wherever a run-ledger scan is in hand.
+    #[serde(default)]
+    pub cards: Vec<RoundCardSnapshot>,
+    /// Glanceable health: `unstarted` (no card has produced a single work
+    /// artifact — the shape 2026-09-01 exposed: `working 0/8` for three hours
+    /// was pixel-identical to grinding) | `grinding` (an unsettled card acted
+    /// within the stall window) | `stalled` (work exists but nothing acted
+    /// within it) | `paused` | `done`. Never derived client-side.
+    #[serde(default)]
+    pub verdict: String,
+    /// Seconds since the newest work artifact across this round's unsettled
+    /// cards. `None` = no card has ever produced one — an absence reported
+    /// as an absence, never as `0` ([[an-absence-is-an-unfinished-measurement]]).
+    #[serde(default)]
+    #[ts(optional, type = "number")]
+    pub idle_secs: Option<u64>,
+}
+
+/// One card of a round, as the board renders it: WHAT (instance), WHO
+/// (assignee), WHERE (solve room), and how it is going (state, acts, patch,
+/// recency). Tracker fields fill at [`live_rounds`]; run-ledger fields fill
+/// at [`enrich_rounds`] and stay `None` until a run exists — a card with no
+/// workspace renders honestly as `unstarted`, never as an empty "working".
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+    ts_rs::TS,
+)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/RoundCardSnapshot.ts"
+)]
+pub struct RoundCardSnapshot {
+    pub card_id: String,
+    /// Instance under test, parsed from the solve room's name
+    /// (`swe--<instance>--<card8>`). Empty until the card's activity is minted.
+    pub instance: String,
+    /// Solver NAME once a run ledger names one; else the staged assignee's
+    /// uuid. Empty = never staged to anyone (itself a finding).
+    pub assignee: String,
+    /// The solve activity's airc name — the navigable door. Empty until minted.
+    pub solve_room_name: String,
+    /// `unstarted` (no run artifact) | the run phase (`active`, `quiet`,
+    /// `ungraded`, …) while working | the terminal state once settled.
+    pub state: String,
+    #[ts(optional, type = "number")]
+    pub acts: Option<u32>,
+    #[ts(optional, type = "number")]
+    pub patch_bytes: Option<u32>,
+    /// Seconds since this card's newest work artifact. `None` = none ever.
+    #[ts(optional, type = "number")]
+    pub last_act_secs: Option<u64>,
+    #[ts(optional)]
+    pub resolved: Option<bool>,
+}
+
+/// The run-ledger facts [`enrich_rounds`] merges into a card row — a minimal
+/// projection of `commands::benchmark::BenchRunCard`, defined HERE so the
+/// dependency points commands→cognition like everything else.
+pub struct CardRunFacts {
+    pub instance: String,
+    pub solver: Option<String>,
+    pub phase: String,
+    pub acts: Option<u32>,
+    pub patch_bytes: Option<u32>,
+    pub last_activity_ms: u64,
+    pub resolved: Option<bool>,
+}
+
+/// An unsettled card silent longer than this, on a round where work HAS
+/// started, marks the round `stalled`. Acts land every 2–6 min when a citizen
+/// is actually driving a workspace; 20 min of silence is a verdict, not noise.
+const ROUND_STALL_AFTER_SECS: u64 = 1200;
+
+/// `swe--<instance>--<card8>` → `<instance>`. Empty in → empty out.
+fn instance_of_room_name(name: &str) -> &str {
+    name.strip_prefix("swe--")
+        .and_then(|rest| rest.rsplit_once("--").map(|(inst, _)| inst))
+        .unwrap_or("")
+}
+
+/// Merge run-ledger facts into round snapshots and pronounce each round's
+/// verdict. ONE fold, called by both consumers (the `benchmark/rounds`
+/// command and the positron bench emitter) so a mind and a screen can never
+/// disagree about whether a round is grinding.
+///
+/// Matching is by INSTANCE, newest run wins — two rounds sampling the same
+/// instance share history, and the newest artifact is the one that answers
+/// "is anyone on this now".
+pub fn enrich_rounds(rounds: &mut [RoundSnapshot], runs: &[CardRunFacts], now_ms: u64) {
+    for round in rounds.iter_mut() {
+        let mut newest_unsettled_act: Option<u64> = None;
+        let mut any_started = false;
+        for card in round.cards.iter_mut() {
+            let settled = !matches!(card.state.as_str(), "" | "unstarted");
+            let run = runs
+                .iter()
+                .filter(|r| !card.instance.is_empty() && r.instance == card.instance)
+                .max_by_key(|r| r.last_activity_ms);
+            let Some(run) = run else {
+                if !settled {
+                    card.state = "unstarted".to_string();
+                }
+                continue;
+            };
+            any_started = true;
+            if let Some(solver) = &run.solver {
+                card.assignee = solver.clone();
+            }
+            card.acts = run.acts;
+            card.patch_bytes = run.patch_bytes;
+            card.resolved = run.resolved;
+            let act_age = now_ms.saturating_sub(run.last_activity_ms) / 1000;
+            card.last_act_secs = Some(act_age);
+            if !settled {
+                card.state = run.phase.clone();
+                newest_unsettled_act =
+                    Some(newest_unsettled_act.map_or(act_age, |a: u64| a.min(act_age)));
+            }
+        }
+        round.idle_secs = newest_unsettled_act;
+        round.verdict = match round.stage.as_str() {
+            "paused" => "paused".to_string(),
+            "done" => "done".to_string(),
+            _ => match newest_unsettled_act {
+                None if !any_started => "unstarted".to_string(),
+                // Every card WITH a run is settled; unsettled ones never started.
+                None => "unstarted".to_string(),
+                Some(age) if age > ROUND_STALL_AFTER_SECS => "stalled".to_string(),
+                Some(_) => "grinding".to_string(),
+            },
+        };
+    }
 }
 
 /// Every round this core is tracking, in a stable order.
@@ -980,23 +1121,58 @@ pub fn live_rounds() -> Vec<RoundSnapshot> {
     let rounds = ROUNDS.lock().unwrap_or_else(|e| e.into_inner());
     let mut out: Vec<RoundSnapshot> = rounds
         .values()
-        .map(|r| RoundSnapshot {
-            round_id: r.round_id.to_string(),
-            benchmark: r.benchmark.clone(),
-            stage: match r.stage {
-                RoundStage::Working => "working",
-                RoundStage::Paused => "paused",
-                RoundStage::Done => "done",
+        .map(|r| {
+            let mut cards: Vec<RoundCardSnapshot> = r
+                .cards
+                .iter()
+                .map(|(card_id, settled)| {
+                    let activity = r.card_activities.get(card_id);
+                    let assignee = activity
+                        .map(|a| a.assignee)
+                        .or_else(|| r.card_assignees.get(card_id).copied())
+                        .map(|u| u.to_string())
+                        .unwrap_or_default();
+                    let room_name = activity
+                        .map(|a| a.room_name.clone())
+                        .unwrap_or_default();
+                    RoundCardSnapshot {
+                        card_id: card_id.to_string(),
+                        instance: instance_of_room_name(&room_name).to_string(),
+                        assignee,
+                        solve_room_name: room_name,
+                        // Terminal state from the tracker; open cards report
+                        // "unstarted" until enrich_rounds sees a run artifact.
+                        state: settled.clone().unwrap_or_else(|| "unstarted".to_string()),
+                        acts: None,
+                        patch_bytes: None,
+                        last_act_secs: None,
+                        resolved: None,
+                    }
+                })
+                .collect();
+            cards.sort_by(|a, b| a.instance.cmp(&b.instance).then(a.card_id.cmp(&b.card_id)));
+            RoundSnapshot {
+                round_id: r.round_id.to_string(),
+                benchmark: r.benchmark.clone(),
+                stage: match r.stage {
+                    RoundStage::Working => "working",
+                    RoundStage::Paused => "paused",
+                    RoundStage::Done => "done",
+                }
+                .to_string(),
+                dispatched: r.dispatched(),
+                settled: r.dispatched().saturating_sub(r.remaining()),
+                remaining: r.remaining(),
+                driver: match r.driver {
+                    WorkDriver::Citizen => "citizen",
+                    WorkDriver::DetachedSolve => "detached_solve",
+                }
+                .to_string(),
+                cards,
+                // Honest defaults until enrich_rounds runs with ledger facts.
+                verdict: String::new(),
+                idle_secs: None,
             }
-            .to_string(),
-            dispatched: r.dispatched(),
-            settled: r.dispatched().saturating_sub(r.remaining()),
-            remaining: r.remaining(),
-            driver: match r.driver {
-                WorkDriver::Citizen => "citizen",
-                WorkDriver::DetachedSolve => "detached_solve",
-            }
-            .to_string(),
         })
         .collect();
     out.sort_by(|a, b| a.round_id.cmp(&b.round_id));
@@ -1005,6 +1181,79 @@ pub fn live_rounds() -> Vec<RoundSnapshot> {
 
 #[cfg(test)]
 mod tests {
+    // what this catches: the sensor 2026-09-01 lacked — `working 0/8` was
+    // pixel-identical for three hours of workspace-less thrash and a healthy
+    // grind. The verdict must pronounce: no artifacts anywhere → `unstarted`;
+    // a recent act on an unsettled card → `grinding`; artifacts gone silent
+    // past the stall window → `stalled`; and an unstarted card must RENDER
+    // (state "unstarted"), never vanish for lack of a run ledger.
+    #[test]
+    fn round_verdict_separates_thrash_from_grind() {
+        use super::{enrich_rounds, CardRunFacts, RoundCardSnapshot, RoundSnapshot};
+        let now_ms: u64 = 10_000_000_000;
+        let card = |instance: &str| RoundCardSnapshot {
+            card_id: Uuid::new_v4().to_string(),
+            instance: instance.to_string(),
+            assignee: String::new(),
+            solve_room_name: format!("swe--{instance}--abcd1234"),
+            state: "unstarted".to_string(),
+            acts: None,
+            patch_bytes: None,
+            last_act_secs: None,
+            resolved: None,
+        };
+        let round = |cards: Vec<RoundCardSnapshot>| RoundSnapshot {
+            round_id: Uuid::new_v4().to_string(),
+            benchmark: "swe-bench-verified".into(),
+            stage: "working".into(),
+            dispatched: cards.len(),
+            settled: 0,
+            remaining: cards.len(),
+            driver: "citizen".into(),
+            cards,
+            verdict: String::new(),
+            idle_secs: None,
+        };
+        let mut rounds = vec![
+            round(vec![card("sympy__sympy-12481"), card("django__django-11211")]),
+            round(vec![card("astropy__astropy-12907")]),
+            round(vec![card("scikit__scikit-1")]),
+        ];
+        let facts = vec![
+            // Fresh act 60s ago → its round grinds.
+            CardRunFacts {
+                instance: "astropy__astropy-12907".into(),
+                solver: Some("Kira".into()),
+                phase: "active".into(),
+                acts: Some(7),
+                patch_bytes: Some(400),
+                last_activity_ms: now_ms - 60_000,
+                resolved: None,
+            },
+            // Artifact exists but silent 2h → its round stalled.
+            CardRunFacts {
+                instance: "scikit__scikit-1".into(),
+                solver: None,
+                phase: "quiet".into(),
+                acts: Some(3),
+                patch_bytes: None,
+                last_activity_ms: now_ms - 7_200_000,
+                resolved: None,
+            },
+        ];
+        enrich_rounds(&mut rounds, &facts, now_ms);
+        assert_eq!(rounds[0].verdict, "unstarted");
+        assert_eq!(rounds[0].idle_secs, None);
+        // The unstarted cards RENDER — the whole point.
+        assert!(rounds[0].cards.iter().all(|c| c.state == "unstarted"));
+        assert_eq!(rounds[1].verdict, "grinding");
+        assert_eq!(rounds[1].idle_secs, Some(60));
+        assert_eq!(rounds[1].cards[0].assignee, "Kira");
+        assert_eq!(rounds[1].cards[0].acts, Some(7));
+        assert_eq!(rounds[2].verdict, "stalled");
+        assert_eq!(rounds[2].cards[0].state, "quiet");
+    }
+
     // what this catches: the round advancing only by TIMEOUT, and the loop the
     // naive fix creates. Measured 2026-08-28 — a run can finish WITHOUT settling
     // its card (no diff, env absent, cached env would not re-point). Those emit

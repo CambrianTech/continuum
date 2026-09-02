@@ -5142,11 +5142,52 @@ impl ActionCommand for BenchmarkRounds {
         _ctx: &Ctx,
         _p: BenchmarkRoundsParams,
     ) -> Result<BenchmarkRoundsResult, CommandError> {
-        let rounds = crate::cognition::bench_round::live_rounds();
+        let mut rounds = crate::cognition::bench_round::live_rounds();
+        // Merge run-ledger facts so the row answers "is it stuck" itself
+        // (2026-09-01: `working 0/8` rendered identically for three hours of
+        // thrash and for a healthy grind — the description above promised
+        // "is it stuck" and the row could not say). Blocking fs scan off the
+        // async worker; a scan failure degrades to tracker-only rows, which
+        // is the honest board on a node with no ledger yet.
+        let runs = tokio::task::spawn_blocking(|| {
+            scan_run_cards(None, ROUNDS_ENRICH_SCAN_LIMIT)
+                .map(|s| s.cards)
+                .unwrap_or_default()
+        })
+        .await
+        .unwrap_or_default();
+        let facts: Vec<crate::cognition::bench_round::CardRunFacts> =
+            runs.iter().map(card_run_facts).collect();
+        crate::cognition::bench_round::enrich_rounds(
+            &mut rounds,
+            &facts,
+            crate::persona::trace::now_ms(),
+        );
         Ok(BenchmarkRoundsResult {
             in_flight: rounds.len(),
             rounds,
         })
+    }
+}
+
+/// How deep the rounds projection scans the run ledger for enrichment. Bounded
+/// so a node with hundreds of banked verdicts pays a bounded scan; deep enough
+/// that every in-flight round's instances are covered (a round is ≤ dozens of
+/// cards and its runs are by definition recent).
+const ROUNDS_ENRICH_SCAN_LIMIT: usize = 200;
+
+/// `BenchRunCard` → the minimal facts `bench_round::enrich_rounds` folds.
+/// ONE mapping, shared by the command above and the positron bench emitter —
+/// two hand-rolled copies would drift ([[the-same-bug-at-two-sites-is-a-missing-constraint]]).
+pub(crate) fn card_run_facts(card: &BenchRunCard) -> crate::cognition::bench_round::CardRunFacts {
+    crate::cognition::bench_round::CardRunFacts {
+        instance: card.instance.clone().unwrap_or_default(),
+        solver: card.solver.clone(),
+        phase: card.phase.clone(),
+        acts: card.acts,
+        patch_bytes: card.patch_bytes,
+        last_activity_ms: card.last_activity_ms,
+        resolved: card.resolved,
     }
 }
 
