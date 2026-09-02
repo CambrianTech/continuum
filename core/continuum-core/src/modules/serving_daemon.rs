@@ -481,6 +481,10 @@ pub struct ServingDaemonModule {
     /// what separates a real capacity change from memory jitter — see
     /// [`REHOME_SUSTAINED_TICKS`].
     rehome_streak: Arc<std::sync::atomic::AtomicU32>,
+    /// The previous tick's plan window — "sustained" requires the PLAN itself
+    /// to have stopped moving (see the streak computation for the 16-relaunch
+    /// boot staircase this kills).
+    rehome_last_plan: Arc<std::sync::atomic::AtomicU64>,
     /// L10 (#438): consecutive plan ticks wanting a DIFFERENT base model than the
     /// ready incumbent, and which model that was. A model swap re-homes every
     /// persona to different weights, so it earns the same sustained-streak bar as
@@ -649,6 +653,7 @@ impl ServingDaemonModule {
             pinned,
             lane_demand: Arc::new(std::sync::atomic::AtomicU32::new(1)),
             rehome_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            rehome_last_plan: Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX)), // MAX = first observation reads FLAT: unknown is not growth
             model_change_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             pending_model_change: Arc::new(std::sync::Mutex::new(None)),
             rehome_cooldown: Arc::new(std::sync::atomic::AtomicU32::new(0)),
@@ -1839,7 +1844,19 @@ impl ServingDaemonModule {
                     served_ctx,
                     lanes,
                 );
-                let streak = if worth_it && cooling == 0 {
+                // A STILL-CLIMBING plan is not settled (2026-09-02, the boot
+                // staircase): personas register footprints serially at boot,
+                // demand climbs in 15%+ stairs, and each stair "sustained" for
+                // 3 ticks — SIXTEEN model loads in one lane's log, each paying
+                // the full readiness ladder (the real ~15-minute boot, which
+                // was never model load: the engine loads in 1.7–6s). Sustained
+                // now ALSO requires the plan target itself to have stopped
+                // moving: growth resets the streak, so a monotone climb
+                // coalesces into ONE relaunch at its top. Steady state is
+                // unchanged — a stable plan is flat by definition.
+                let prev_plan = self.rehome_last_plan.swap(plan_space, Ordering::Relaxed);
+                let plan_flat = plan_space <= prev_plan;
+                let streak = if worth_it && cooling == 0 && plan_flat {
                     self.rehome_streak
                         .fetch_add(1, Ordering::Relaxed)
                         .saturating_add(1)
