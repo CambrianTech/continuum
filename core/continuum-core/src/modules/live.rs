@@ -1034,6 +1034,15 @@ impl ServiceModule for VoiceModule {
                 // `voice/selftest --adapter orpheus` is Orpheus's acceptance
                 // test, and the nightly battery runs one leg per engine.
                 let adapter = p.str_opt("adapter");
+                // ROUTED (Joel 2026-09-02, the VDD/WM split): the ENGINE test
+                // is a DIRECT TTS→STT round trip — deterministic, replayable,
+                // no VAD timing, no mixer clock — because "does this engine
+                // produce intelligible speech" is a property of the samples,
+                // not of the room. `--room` opts into the full call-path leg
+                // (join → push_audio → VAD → transcription broadcast) which
+                // tests the ROOM plumbing separately. Two legs, one thing each
+                // — the decomposition the flaky combined test was hiding.
+                let room_leg = p.value("room").and_then(|v| v.as_bool()).unwrap_or(false);
                 let t0 = std::time::Instant::now();
                 let synthesis = crate::live::audio::tts_service::synthesize_speech_async(
                     &phrase, None, adapter, None,
@@ -1042,74 +1051,70 @@ impl ServiceModule for VoiceModule {
                 .map_err(|e| format!("selftest TTS failed: {e}"))?;
                 let tts_ms = t0.elapsed().as_millis() as u64;
 
-                let joined = self
-                    .state
-                    .call_manager
-                    .join_call(SELFTEST_CALL, "selftest-human", "Selftest", false)
-                    .await
-                    .map_err(|e| format!("selftest join failed: {e}"))?;
-                let handle = joined.handle;
-                let mut transcripts = joined.transcription_rx;
-
-                // Feed the utterance + a 2s silence tail in 20ms frames — the
-                // silence is what trips the VAD's speech-end, same as a real
-                // caller going quiet. Lightly paced so the mixer's clock sees
-                // a plausible stream, fast enough that the verb stays snappy.
                 let t1 = std::time::Instant::now();
-                let mut pcm = synthesis.samples;
-                pcm.extend(std::iter::repeat(0i16).take(
-                    (crate::audio_constants::AUDIO_SAMPLE_RATE as usize) * 2,
-                ));
-                for chunk in pcm.chunks(320) {
-                    self.state.call_manager.push_audio(&handle, chunk.to_vec()).await;
-                    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-                }
-
-                // Await our own transcription — the SAME broadcast a caption
-                // widget or a citizen's perception would ride.
-                let mut heard: Option<crate::live::transport::call_server::TranscriptionEvent> =
-                    None;
-                let deadline = std::time::Duration::from_secs(30);
-                let wait = tokio::time::timeout(deadline, async {
-                    loop {
-                        match transcripts.recv().await {
-                            Ok(ev) if ev.user_id == "selftest-human" => break Some(ev),
-                            Ok(_) => continue,
-                            Err(_) => break None,
-                        }
+                let transcript = if room_leg {
+                    // Full room path: the SAME chain a live caller exercises.
+                    let joined = self
+                        .state
+                        .call_manager
+                        .join_call(SELFTEST_CALL, "selftest-human", "Selftest", false)
+                        .await
+                        .map_err(|e| format!("selftest join failed: {e}"))?;
+                    let handle = joined.handle;
+                    let mut transcripts = joined.transcription_rx;
+                    let mut pcm = synthesis.samples.clone();
+                    pcm.extend(std::iter::repeat(0i16).take(
+                        (crate::audio_constants::AUDIO_SAMPLE_RATE as usize) * 2,
+                    ));
+                    for chunk in pcm.chunks(320) {
+                        self.state.call_manager.push_audio(&handle, chunk.to_vec()).await;
+                        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
                     }
-                })
-                .await;
-                if let Ok(Some(ev)) = wait {
-                    heard = Some(ev);
-                }
+                    let wait = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                        loop {
+                            match transcripts.recv().await {
+                                Ok(ev) if ev.user_id == "selftest-human" => break Some(ev.text),
+                                Ok(_) => continue,
+                                Err(_) => break None,
+                            }
+                        }
+                    })
+                    .await;
+                    self.state.call_manager.leave_call(&handle).await;
+                    wait.ok().flatten().unwrap_or_default() // safe: no event = empty = red receipt
+                } else {
+                    // Engine leg: samples straight to STT. This is the TDD loop.
+                    crate::live::audio::stt_service::transcribe_speech_async(
+                        &synthesis.samples,
+                        Some("en"),
+                    )
+                    .await
+                    .map(|r| r.text)
+                    .unwrap_or_default() // safe: STT failure = empty = red receipt
+                };
                 let stt_ms = t1.elapsed().as_millis() as u64;
-                self.state.call_manager.leave_call(&handle).await;
-
-                // Fuzzy match: STT drops case/punctuation and may mangle the
-                // nonce; the load-bearing words are the phrase's head. 2 of 3
-                // head words = the chain works.
-                let transcript = heard.as_ref().map(|e| e.text.clone()).unwrap_or_default(); // safe: no event = empty transcript = matched:false, the honest red receipt
                 let lower = transcript.to_lowercase();
                 let hits = ["continuum", "self", "test", word]
                     .iter()
                     .filter(|w| lower.contains(**w))
                     .count();
                 let matched = hits >= 2;
+                let leg = if room_leg { "room" } else { "engine" };
                 crate::probe!(
                     class = "live.selftest",
                     adapter = adapter.unwrap_or("active"),
+                    leg = leg,
                     matched = matched,
                     tts_ms = tts_ms,
                     stt_ms = stt_ms,
                     transcript = %transcript,
-                    "voice chain self-proof: TTS → call join → push_audio → VAD → STT → transcription event"
+                    "voice self-proof (engine leg = direct TTS→STT; room leg = full call path)"
                 );
                 Ok(CommandResult::Json(serde_json::json!({
                     "matched": matched,
+                    "leg": leg,
                     "phrase": phrase,
                     "transcript": transcript,
-                    "confidence": heard.as_ref().map(|e| e.confidence),
                     "tts_ms": tts_ms,
                     "stt_ms": stt_ms,
                     "synthesized_ms": synthesis.duration_ms,
