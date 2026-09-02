@@ -367,21 +367,19 @@ pub(super) fn own_repetition_fact(turns: &[BurstTurn], spoken: &[String]) -> Opt
             .count();
         best = best.max(dups + 1);
     }
-    // A bare "N were nearly identical" observation fires but doesn't deter a
-    // determined weaker model (glass-boxed 2026-07-14: the fact fired true at ×3
-    // and Asha repeated the SAME message 20×). Doctrine forbids an output gate
-    // ([[no-hardcoded-heuristics-to-steer-cognition]]), so we don't censor WHAT she
-    // says — but we CAN connect the detected repetition to the PASS affordance she
-    // ALREADY has (her Silence Option prompt: "Choose PASS when … nothing new has
-    // been raised"), surfaced at the moment repetition is structurally detected. The
-    // fork (add something genuinely new, OR go silent) is hers; this only names it.
+    // SENSE, NOT STEER (Joel 2026-09-01: "stop this god damn looper hackery
+    // that's dumbing down cognition… let them think and decide"). The old
+    // wording appended "you're circling … silence (PASS) is the honest
+    // response" — a workflow steer this module's own doctrine line forbids,
+    // and one that measurably backfired: it never stopped a determined loop
+    // (2026-07-14: fired true at ×3, Asha repeated 20×) and in capable models
+    // it DOMINATED cognition — whole turns narrating "the pattern notice is
+    // firing", the scold spoken into rooms, memorized, recalled, re-triggered.
+    // The fact now states what happened, full stop. What to do about it is
+    // hers; the hard channel guards (dup-drop, tool-repeat, parrot silencer)
+    // still protect the substrate regardless of what she decides.
     (best >= NEAR_DUP_MIN_CLUSTER).then(|| {
-        format!(
-            "[repetition] {best} of your recent messages were nearly identical — you're \
-             circling, and restating what you've already said adds nothing. If you have \
-             nothing genuinely new to contribute right now, silence (PASS) is the honest \
-             response."
-        )
+        format!("[repetition] {best} of your recent messages were nearly identical.")
     })
 }
 
@@ -483,12 +481,11 @@ pub(super) fn template_loop_fact(turns: &[BurstTurn], spoken: &[String]) -> Opti
             .count();
         best = best.max(dups + 1);
     }
+    // Sense, not steer — same contract as own_repetition_fact above.
     (best >= NEAR_DUP_MIN_CLUSTER).then(|| {
         format!(
             "[template-loop] {best} of your recent messages reuse the same template with \
-             the topic swapped — a new subject inside the same scaffold is still circling, \
-             not new content. Nobody here asked for these; if nothing genuinely new has \
-             been raised, silence (PASS) is the honest response."
+             the topic swapped."
         )
     })
 }
@@ -554,9 +551,10 @@ pub(super) fn inbound_restates_fact(
         .chain(prior_own)
         .chain(prior_room)
         .any(|p| near_identical_substantial(&newest.content, p))
+        // Sense, not steer — same contract as own_repetition_fact.
         .then(|| {
             format!(
-                "[settled] {}'s newest message restates what has already been said here — nothing new has been raised. Replying to a restatement usually re-raises it; silence (PASS) is a normal response to a settled topic.",
+                "[settled] {}'s newest message restates what has already been said here.",
                 newest.author
             )
         })
@@ -627,13 +625,10 @@ pub(crate) fn draft_peer_echo(draft: &str, turns: &[BurstTurn]) -> Option<String
         .rev()
         .filter(|t| !t.is_self && !t.author.trim().is_empty())
         .find(|t| near_identical_substantial(draft, &t.content))
+        // Sense, not steer — same contract as own_repetition_fact.
         .map(|t| {
             format!(
-                "[echo] the message I just sent repeats what {} already said — an \
-                 echo, not a contribution. A real contribution is a DIFFERENT \
-                 piece: a subtask nobody has claimed, a result, or a question \
-                 they did not ask; with none of those, silence is the honest \
-                 reply.",
+                "[echo] the message I just sent repeats what {} already said.",
                 t.author
             )
         })
@@ -1273,12 +1268,16 @@ mod tests {
             fact.starts_with("[repetition] 4 of your recent messages were nearly identical"),
             "states the count: {fact}"
         );
-        // Connects the loop to her existing silence affordance (the fact fired ×3 live
-        // and the model repeated 20× anyway — surfacing PASS at the detected moment is
-        // the doctrine-safe lever, never an output gate).
+        // SENSE, NOT STEER (2026-09-01): the fact must state the count and
+        // STOP. The old "silence (PASS) is the honest response" tail was
+        // workflow steering — it never stopped a determined loop (fired ×3
+        // live, the model repeated 20× anyway) and in capable models the
+        // scold dominated whole turns as meta-narration, got spoken,
+        // memorized, recalled, and re-triggered itself. What she does with
+        // the fact is hers; this pins the imperative OUT.
         assert!(
-            fact.contains("silence (PASS)"),
-            "surfaces the PASS affordance: {fact}"
+            !fact.contains("PASS") && !fact.contains("circling"),
+            "the fact must not steer (no PASS instruction, no scolding): {fact}"
         );
 
         // PERIOD-2 CYCLE (the live blind spot that forced cluster detection):
@@ -1321,20 +1320,16 @@ mod tests {
             own("I'll create a simple text file.\n[writing test files]"),
             own("I'll create a simple text file.\n[writing test files]"),
         ];
-        // Assert the PREFIX and the affordance, not the exact sentence. The fact now also
-        // carries "you're circling … silence (PASS) is the honest response" — the same
-        // affordance this test already requires twenty lines above. Pinning the full string
-        // here made the assertion a hostage to wording, and since the test never ran (missing
-        // #[test]) the expectation silently rotted while the message deliberately improved.
-        // The count and the PASS lever are the behaviour; the prose around them is not.
+        // Assert the PREFIX and the sense-not-steer contract (2026-09-01):
+        // the count is the behaviour; there must be NO imperative around it.
         let whole = own_repetition_fact(&whole_window, &[]).expect("3 identical → a fact");
         assert!(
             whole.starts_with("[repetition] 3 of your recent messages were nearly identical"),
             "states the count: {whole}"
         );
         assert!(
-            whole.contains("silence (PASS)"),
-            "surfaces the PASS affordance in the whole-window arm too: {whole}"
+            !whole.contains("PASS") && !whole.contains("circling"),
+            "the whole-window arm must not steer either: {whole}"
         );
 
         // TWO near-identical messages (one dup each) → below the bar; a pair
