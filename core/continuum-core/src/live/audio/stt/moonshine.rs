@@ -343,12 +343,12 @@ impl MoonshineStt {
         let enc_tensor = Tensor::from_array(enc_array).map_err(|e| {
             STTError::InferenceFailed(format!("Uncached decoder encoder tensor: {e}"))
         })?;
-        // args_2 = the DECODE POSITION as int32[1] (offline-verified contract:
-        // args_0 int32 tokens, args_1 f32 encoder[b,T,416], args_2 int32[1]).
-        // Uncached is the FIRST step → position 0 (empty self-attn cache); the
-        // cached loop increments it. (An earlier cut passed encoder-T here —
-        // non-crashing but the wrong RoPE offset, which would mistranscribe.)
-        let seqlen_tensor = Tensor::from_array(ndarray::Array1::from_vec(vec![0i32]).into_dyn())
+        // args_2 = decode sequence LENGTH as int32[1] (offline-verified: args_0
+        // int32 tokens, args_1 f32 encoder[b,T,416], args_2 int32[1]). Uncached
+        // processes ONE token → length 1. It must NOT be 0: an internal
+        // arange(0) yields a {0,1} zero-element tensor CoreML refuses (measured
+        // 2026-09-02). The cached loop uses generated_tokens.len() (already ≥1).
+        let seqlen_tensor = Tensor::from_array(ndarray::Array1::from_vec(vec![1i32]).into_dyn())
             .map_err(|e| STTError::InferenceFailed(format!("Uncached position tensor: {e}")))?;
         let mut uncached_session = model.uncached_decoder.lock();
         // Bind by declared input NAME (args_0 token, args_1 encoder, args_2 T)
