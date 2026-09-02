@@ -442,7 +442,13 @@ pub async fn synthesize(
                     continue;
                 };
                 if !next.is_initialized() {
-                    continue;
+                    // Wake it: only the ACTIVE adapter initializes at boot, so
+                    // a provisioned local engine (Kokoro, 2026-09-02) sat
+                    // skippable exactly when it was needed. Bounded by the
+                    // adapter's own init; a failed wake moves on.
+                    if next.initialize().await.is_err() {
+                        continue;
+                    }
                 }
                 let re_resolved = resolve_voice_gendered(next.as_ref(), voice, gender_hint);
                 if let Ok(mut result) = next.synthesize(text, &re_resolved).await {
