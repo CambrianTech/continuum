@@ -208,6 +208,21 @@ describe('round rows (#371)', () => {
             settled: 3,
             remaining: 1,
             driver: 'citizen',
+            verdict: 'grinding',
+            idleSecs: 90,
+            cards: [
+              {
+                cardId: 'aaaa1111-0000-0000-0000-000000000000',
+                instance: 'q-77',
+                assignee: 'Kira',
+                solveRoomName: 'swe--q-77--aaaa1111',
+                state: 'unstarted',
+                acts: null,
+                patchBytes: null,
+                lastActSecs: null,
+                resolved: null,
+              },
+            ],
           },
         ],
         feedLive: true,
@@ -217,6 +232,13 @@ describe('round rows (#371)', () => {
     expect(text).toContain('ds-1000');
     expect(text).toMatch(/3\s*\/\s*4/); // flattener spaces template parts
     expect(text).toContain('citizens');
+    // the 2026-09-01 sensor: verdict chip renders, and the UNSTARTED card is
+    // VISIBLE (before the roll-call, a card with no run row rendered as
+    // nothing, so thrash was pixel-identical to grind)
+    expect(text).toContain('grinding');
+    expect(text).toContain('not started');
+    expect(text).toContain('q-77');
+    expect(text).toContain('Kira');
     // the awaiting copy still renders for the runs half — both truths shown
     expect(text).toContain('No benchmark runs');
   });

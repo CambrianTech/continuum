@@ -1753,6 +1753,64 @@ export class ChatWidget extends LitElement {
       color: var(--status-success, #4caf7d);
       background: color-mix(in srgb, var(--status-success, #4caf7d) 10%, transparent);
     }
+    /* Verdict chip — the thrash-vs-grind sensor. Same pill anatomy as the
+       stage chip; the COLOR is the signal: unstarted amber, stalled red,
+       grinding green. */
+    .bench-round-verdict {
+      text-transform: uppercase;
+      font-size: 8.5px;
+      letter-spacing: 0.12em;
+      padding: 1px 6px;
+      border-radius: 999px;
+      white-space: nowrap;
+    }
+    .bench-round-verdict i {
+      font-style: normal;
+      opacity: 0.8;
+      font-variant-numeric: tabular-nums;
+    }
+    .bench-verdict-grinding {
+      border: 1px solid color-mix(in srgb, var(--status-success, #4caf7d) 45%, transparent);
+      color: var(--status-success, #4caf7d);
+      background: color-mix(in srgb, var(--status-success, #4caf7d) 10%, transparent);
+    }
+    .bench-verdict-unstarted {
+      border: 1px solid color-mix(in srgb, var(--status-warning, #d9a032) 55%, transparent);
+      color: var(--status-warning, #d9a032);
+      background: color-mix(in srgb, var(--status-warning, #d9a032) 12%, transparent);
+    }
+    .bench-verdict-stalled {
+      border: 1px solid color-mix(in srgb, var(--status-error, #d9534f) 55%, transparent);
+      color: var(--status-error, #d9534f);
+      background: color-mix(in srgb, var(--status-error, #d9534f) 12%, transparent);
+      animation: bench-round-breathe 2.4s ease-in-out infinite;
+    }
+    /* Roll-call: the cards nobody has touched — WHAT waits, on WHOM. */
+    .bench-rollcall {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 4px 8px;
+      padding: 2px 8px 4px;
+      font-size: 9.5px;
+    }
+    .bench-rollcall-head {
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      font-size: 8.5px;
+      font-weight: 700;
+      color: var(--status-warning, #d9a032);
+      white-space: nowrap;
+    }
+    .bench-rollcall-card {
+      font-family: var(--font-mono, monospace);
+      color: var(--content-secondary);
+      white-space: nowrap;
+    }
+    .bench-rollcall-card i {
+      font-style: normal;
+      opacity: 0.75;
+    }
     .bench-round-count {
       font-variant-numeric: tabular-nums;
       font-weight: 700;

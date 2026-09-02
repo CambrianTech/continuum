@@ -202,12 +202,19 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
                     continue;
                 };
                 let short = next.card.simple().to_string()[..8].to_string();
+                // NAME the addressee. The say rides the assignee's own runtime
+                // into a SHARED room, so an unaddressed "your card" reads as
+                // anyone's — live 2026-09-01: Kira spent turns confused that
+                // "the resume message said it's mine" about Benchy's card, in
+                // a room where the ownership question was the whole blocker.
+                let who = rt.agent_name().to_string();
                 let text = format!(
-                    "[resume] This round survived a core restart and your kickoff predates \
-                     your window. Your card {short} is still yours and unworked: check \
-                     work/list for its title, claim it, work it in your workspace, and when \
-                     your patch is verified green say `work/state {short} done` — that is \
-                     what fires your grade; nobody fires it for you."
+                    "[resume] {who}: this round survived a core restart and your kickoff \
+                     predates your window. Card {short} is {who}'s — nobody else's — and \
+                     unworked: check work/list for its title, claim it, work it in your \
+                     workspace, and when your patch is verified green say \
+                     `work/state {short} done` — that is what fires your grade; nobody \
+                     fires it for you."
                 );
                 match crate::persona::airc_citizen::publish_text_in_room(
                     rt.airc(),

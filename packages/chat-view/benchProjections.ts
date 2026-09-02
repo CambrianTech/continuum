@@ -115,6 +115,23 @@ function roundVM(row: BenchRoundRow): BenchRoundVM {
     settled: row.settled,
     remaining: row.remaining,
     driver: row.driver,
+    // Pre-verdict wires fold to the honest empties — render nothing, never
+    // guess (the 2026-09-01 rule: an undifferentiated `working` is the bug).
+    verdict: row.verdict ?? '',
+    idleSecs: row.idle_secs ?? null,
+    cards: (row.cards ?? []).map((c) => ({
+      cardId: c.card_id,
+      instance: c.instance,
+      // A uuid-shaped assignee (never staged to a named solver yet) compacts
+      // like every other id on the board.
+      assignee: c.assignee.length === 36 ? compactId(c.assignee) : c.assignee,
+      solveRoomName: c.solve_room_name,
+      state: c.state,
+      acts: c.acts ?? null,
+      patchBytes: c.patch_bytes ?? null,
+      lastActSecs: c.last_act_secs ?? null,
+      resolved: c.resolved ?? null,
+    })),
   };
 }
 

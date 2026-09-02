@@ -18,11 +18,11 @@
 
 use std::time::Duration;
 
-use continuum_positron::bench::{BenchRoundRow, BenchRunRow, BenchViewState};
+use continuum_positron::bench::{BenchRoundCardRow, BenchRoundRow, BenchRunRow, BenchViewState};
 use continuum_positron::{StateBuilder, Substrate};
 
 use crate::cognition::bench_round::RoundSnapshot;
-use crate::commands::benchmark::{scan_run_cards, BenchRunCard};
+use crate::commands::benchmark::{card_run_facts, scan_run_cards, BenchRunCard};
 
 /// Emit cadence. The board is a minutes-scale instrument (acts land every
 /// 2-6 min); 5s keeps a verdict visible within a beat of landing without
@@ -31,6 +31,11 @@ const SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Rows the board carries — the newest N runs (matches the command default).
 const BOARD_LIMIT: usize = 20;
+
+/// Scan depth for round enrichment — deep enough to cover every in-flight
+/// round's instances (same bound as the `benchmark/rounds` command; the
+/// display rail still shows only [`BOARD_LIMIT`]).
+const ROUND_ENRICH_SCAN_LIMIT: usize = 200;
 
 fn row_of(card: BenchRunCard) -> BenchRunRow {
     // A `claim-<uuid>` run id CARRIES its card — the round (run room) and the
@@ -139,6 +144,23 @@ fn round_row_of(s: RoundSnapshot) -> BenchRoundRow {
         settled: s.settled as u32,
         remaining: s.remaining as u32,
         driver: s.driver,
+        cards: s
+            .cards
+            .into_iter()
+            .map(|c| BenchRoundCardRow {
+                card_id: c.card_id,
+                instance: c.instance,
+                assignee: c.assignee,
+                solve_room_name: c.solve_room_name,
+                state: c.state,
+                acts: c.acts,
+                patch_bytes: c.patch_bytes,
+                last_act_secs: c.last_act_secs,
+                resolved: c.resolved,
+            })
+            .collect(),
+        verdict: s.verdict,
+        idle_secs: s.idle_secs,
     }
 }
 
@@ -170,8 +192,12 @@ pub fn spawn_bench_emitter(
             // total belongs on the `benchmark/runs` receipt, where a caller is asking
             // "how is the benchmark going" and a silent truncation would answer wrongly.
             // If the rail ever grows a "+N more" affordance, that is what it reads.
+            // One scan serves BOTH consumers: the display rail takes the
+            // newest BOARD_LIMIT; round enrichment folds over the whole
+            // window (a round's runs are recent by definition, so the same
+            // depth the `benchmark/rounds` command scans suffices).
             let cards = tokio::task::spawn_blocking(|| {
-                scan_run_cards(None, BOARD_LIMIT)
+                scan_run_cards(None, ROUND_ENRICH_SCAN_LIMIT)
                     .map(|s| s.cards)
                     // safe: a scan error means the progress dir is absent (fresh node) or
                     // unreadable. Empty is the HONEST board for that — the module header
@@ -184,24 +210,32 @@ pub fn spawn_bench_emitter(
             // shutdown. Same answer for the same reason — publish the empty board, do
             // not propagate a panic into the emitter's own tick loop.
             .unwrap_or_default(); // safe: see the 3 lines above
+            // The round tracker's own truth (#371), with run-ledger facts
+            // merged so the scoreboard can say `unstarted`/`grinding`/
+            // `stalled` instead of an undifferentiated `working` (the SAME
+            // fold the `benchmark/rounds` command runs — one projection, two
+            // consumers, no drift).
+            let mut rounds = crate::cognition::bench_round::live_rounds();
+            let facts: Vec<crate::cognition::bench_round::CardRunFacts> =
+                cards.iter().map(card_run_facts).collect();
+            crate::cognition::bench_round::enrich_rounds(
+                &mut rounds,
+                &facts,
+                crate::persona::trace::now_ms(),
+            );
             let view = BenchViewState {
                 // The live exam leads the rail (it is the work happening NOW);
                 // ledger-scanned rows follow.
                 runs: live_exam_row()
                     .into_iter()
-                    .chain(cards.into_iter().map(row_of))
+                    .chain(cards.into_iter().take(BOARD_LIMIT).map(row_of))
                     .collect(),
-                // The round tracker's own truth (#371) — in-memory, reboot-durable,
-                // already sorted. Before this the client COUNTED run rows to fake a
-                // scoreboard; the recipe's scoreboard region renders these instead.
-                rounds: crate::cognition::bench_round::live_rounds()
-                    .into_iter()
-                    .map(round_row_of)
-                    .collect(),
+                rounds: rounds.into_iter().map(round_row_of).collect(),
                 sample_interval_ms: SAMPLE_INTERVAL.as_millis() as u64,
             };
-            // age_secs ticks every scan, which would defeat store-on-change;
-            // compare with ages zeroed so only REAL row changes publish.
+            // age_secs / last_act_secs / idle_secs tick every scan, which
+            // would defeat store-on-change; compare with ages zeroed so only
+            // REAL row changes publish.
             let comparable = |v: &BenchViewState| BenchViewState {
                 runs: v
                     .runs
@@ -211,7 +245,24 @@ pub fn spawn_bench_emitter(
                         ..r.clone()
                     })
                     .collect(),
-                rounds: v.rounds.clone(),
+                rounds: v
+                    .rounds
+                    .iter()
+                    .map(|r| BenchRoundRow {
+                        idle_secs: None,
+                        cards: r
+                            .cards
+                            .iter()
+                            .map(|c| BenchRoundCardRow {
+                                last_act_secs: None,
+                                ..c.clone()
+                            })
+                            .collect(),
+                        // verdict flips (grinding→stalled) are REAL changes —
+                        // they ride the compare and publish.
+                        ..r.clone()
+                    })
+                    .collect(),
                 sample_interval_ms: v.sample_interval_ms,
             };
             if last.as_ref().map(&comparable) == Some(comparable(&view)) {

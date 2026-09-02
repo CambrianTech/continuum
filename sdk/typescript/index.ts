@@ -80,6 +80,7 @@ export type {
   BenchViewState,
   BenchRunRow,
   BenchRoundRow,
+  BenchRoundCardRow,
   KanbanViewState,
   KanbanCardView,
   KanbanLaneView,
