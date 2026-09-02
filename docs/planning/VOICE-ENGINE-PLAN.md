@@ -54,6 +54,15 @@ the voice vision structural rather than cosmetic:
    Qwen-Omni talker heads compete for the flagship seat via the SAME selftest +
    quality bar — engines are adapters; the verb is the contract.
 
+## The room (audited 2026-09-02, Joel: "good mixers do it well")
+
+Per-observer mix-minus is SERVER-SIDE (the WS delivery loop drops the observer's own
+frames — call_server:1516); persona TTS structurally never re-enters STT (AI
+participants carry no VAD); LiveKit legs are per-participant tracks. The remaining
+proof gap: the WEB feedback loop — browser echoes received audio back as its mic
+through the worklet path, server STT transcribes it — which also pins mix-minus from
+a real browser's POV. Carded.
+
 ## The bar
 
 *A stranger's fresh install speaks with a natural, unique per-persona voice with zero
