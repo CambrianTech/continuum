@@ -63,6 +63,41 @@ proof gap: the WEB feedback loop — browser echoes received audio back as its m
 through the worklet path, server STT transcribes it — which also pins mix-minus from
 a real browser's POV. Carded.
 
+## Native audio IN the mind (Joel 2026-09-02: "build these into the Ornith models… so it wouldn't sound like text to speech")
+
+The end state is not a better TTS sidecar — it is speech and hearing as part of the
+persona's OWN forward pass. Orpheus proved the enabling mechanism ON OUR STACK today:
+a Llama-family model emitting SNAC codec tokens, decoded in-tree. Ornith is
+Llama-family; the same graft applies to her, staged:
+
+**Stage A — expressive mouth + tagged ears (buildable now):**
+- Orpheus conditioned by PersonaState → emotion tags; per-persona VOICE LoRA trained
+  on Orpheus by the forge (custom voice = her weights, not a preset — stops sounding
+  like TTS because prosody varies with her state, not a narrator's).
+- Audio-in gains an EVENTS channel beside STT: a small audio tagger + diarization so
+  perception reads "Joel said X — while a door closed, music under, second speaker
+  overlapping" — background vs speaker vs effects as separate, precisely named facts,
+  never flattened into one transcript string.
+
+**Stage B — the graft (the real ask):**
+- Extend Ornith's vocab with codec tokens; forge-train an audio-out head/LoRA:
+  (context + her thought) → speech tokens in the SAME forward pass. Mannerisms become
+  intimately cognition-coupled — hesitation, warmth, emphasis come from the state that
+  produced the sentence, because the speaking IS the thinking. Training data
+  bootstraps by distillation: her lived transcripts voiced by her Orpheus voice-LoRA
+  → (text, speech-token) pairs; later, real call audio.
+- Audio-in natively: an audio encoder (Whisper-class) through the mmproj pattern we
+  already run for vision — she embeds SOUND, not just its transcript; trained against
+  event-labeled + diarized corpora so nuance (irony in a voice, a sigh, a slammed
+  door vs a dropped cup) reaches cognition as perception, not annotation.
+
+**Stage C — full-duplex Omni lane:** streaming listen+speak on one lane; barge-in;
+the talker head as a paged expert. (The Omni-sidecar memory's end state.)
+
+Every stage holds the same bar: voice/selftest legs (TTS↔STT now; later the
+multimodal judge scoring identity/prosody/nuance), receipts on the forge alloy, and
+the genome covenant — a voice or an ear is a GENE with lineage.
+
 ## The bar
 
 *A stranger's fresh install speaks with a natural, unique per-persona voice with zero
