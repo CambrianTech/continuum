@@ -75,17 +75,8 @@ mod tests {
     #[test]
     #[ignore]
     fn voice_round_trip_tts_to_stt() {
-        // Resolve models the same way the full Kokoro test does.
-        let candidates = [
-            crate::live::audio::model_root::voice_model_path("kokoro"),
-            std::path::PathBuf::from("../../models/kokoro"),
-        ];
-        let original_cwd = std::env::current_dir().unwrap();
-        if let Some(models_dir) = candidates.into_iter().find(|p| p.is_dir()) {
-            let root = models_dir.parent().unwrap().parent().unwrap();
-            std::env::set_current_dir(root).unwrap();
-        }
-
+        // Models resolve via CONTINUUM_MODELS_DIR (portable, no CWD juggling,
+        // no OS-specific paths — set by the runner/start script on every OS).
         let phrase = "The quick brown fox jumps over the lazy dog.";
         let synth = crate::live::audio::tts_service::synthesize_speech_sync(
             phrase,
@@ -93,12 +84,11 @@ mod tests {
             Some("kokoro"),
             None,
         )
-        .expect("Kokoro synth");
+        .expect("Kokoro synth"); // safe: test asserts the pipeline; a synth error IS the failure
         assert!(synth.samples.len() > 8000, "expected real audio");
 
         let transcript = transcribe_speech_sync(&synth.samples, Some("en"))
-            .expect("STT must run end to end (no swallowed error)");
-        std::env::set_current_dir(original_cwd).unwrap();
+            .expect("STT must run end to end (no swallowed error)"); // safe: same — STT failure is the test's point
 
         let lower = transcript.text.to_lowercase();
         // Content words that must survive TTS→STT — 3 of 5 = the chain works.

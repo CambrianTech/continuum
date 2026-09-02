@@ -1042,7 +1042,7 @@ impl ServiceModule for VoiceModule {
                 // (join → push_audio → VAD → transcription broadcast) which
                 // tests the ROOM plumbing separately. Two legs, one thing each
                 // — the decomposition the flaky combined test was hiding.
-                let room_leg = p.value("room").and_then(|v| v.as_bool()).unwrap_or(false);
+                let room_leg = p.value("room").and_then(|v| v.as_bool()).unwrap_or(false); // safe: absent flag = engine leg, the default
                 let t0 = std::time::Instant::now();
                 let synthesis = crate::live::audio::tts_service::synthesize_speech_async(
                     &phrase, None, adapter, None,
@@ -1084,13 +1084,18 @@ impl ServiceModule for VoiceModule {
                     wait.ok().flatten().unwrap_or_default() // safe: no event = empty = red receipt
                 } else {
                     // Engine leg: samples straight to STT. This is the TDD loop.
-                    crate::live::audio::stt_service::transcribe_speech_async(
+                    match crate::live::audio::stt_service::transcribe_speech_async(
                         &synthesis.samples,
                         Some("en"),
                     )
                     .await
-                    .map(|r| r.text)
-                    .unwrap_or_default() // safe: STT failure = empty = red receipt
+                    {
+                        Ok(r) => r.text,
+                        // Surface the STT error into the receipt — a swallowed
+                        // error read as an empty transcript and hid the real
+                        // failure for a full debug cycle (2026-09-02).
+                        Err(e) => return Err(format!("selftest STT failed: {e}")),
+                    }
                 };
                 let stt_ms = t1.elapsed().as_millis() as u64;
                 let lower = transcript.to_lowercase();
@@ -1102,7 +1107,7 @@ impl ServiceModule for VoiceModule {
                 let leg = if room_leg { "room" } else { "engine" };
                 crate::probe!(
                     class = "live.selftest",
-                    adapter = adapter.unwrap_or("active"),
+                    adapter = adapter.unwrap_or("active"), // safe: no adapter = the active one, a display label
                     leg = leg,
                     matched = matched,
                     tts_ms = tts_ms,

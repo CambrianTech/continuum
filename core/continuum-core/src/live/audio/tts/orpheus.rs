@@ -59,6 +59,12 @@ const SOH_TOKEN: u32 = 128259;
 const EOT_TOKEN: u32 = 128009;
 /// `<custom_token_4>` — end of human turn.
 const EOH_TOKEN: u32 = 128260;
+/// `<custom_token_5>` — the reference's 3rd end token.
+const END3_TOKEN: u32 = 128261;
+/// `<custom_token_1>` — START OF AUDIO: tells the model to speak THIS text.
+/// Missing it (measured 2026-09-02 via continuum web/fetch of engine_class.py)
+/// made the model free-generate filler ("and again") instead of the prompt.
+const SOA_TOKEN: u32 = 128257;
 /// `<custom_token_2>` — end of audio: the generation stop token.
 const EOA_TOKEN: u32 = 128258;
 
@@ -71,11 +77,16 @@ const SNAC_SAMPLE_RATE: u32 = 24000;
 // context-budget-exempt: the TTS model's own audio-token architecture limit, not a text-context bound
 const MAX_AUDIO_TOKENS: usize = 2100;
 
-/// Temperature for audio token sampling (Orpheus default)
-const DEFAULT_TEMPERATURE: f64 = 0.6;
-
-/// Top-p for audio token sampling
-const DEFAULT_TOP_P: f64 = 0.95;
+/// Sampling params — the canonical canopylabs values (verified 2026-09-02 via
+/// continuum web/fetch of the reference impl: temperature=0.4, top_p=0.9,
+/// repetition_penalty=1.1). The prior 0.6/0.95/no-penalty collapsed
+/// generation early (short/empty audio) — rep-penalty is what keeps the
+/// autoregressive audio stream from stalling into an early end-token.
+const DEFAULT_TEMPERATURE: f64 = 0.4;
+const DEFAULT_TOP_P: f64 = 0.9;
+const REPEAT_PENALTY: f32 = 1.1;
+/// Rep-penalty context window (reference applies over the running generation).
+const REPEAT_LAST_N: usize = 64;
 
 // ─── Orpheus Voices ───────────────────────────────────────────────────────────
 const VOICES: &[(&str, &str, &str)] = &[
@@ -315,7 +326,8 @@ impl OrpheusTts {
         let mut ids = Vec::with_capacity(enc.get_ids().len() + 3);
         ids.push(SOH_TOKEN);
         ids.extend_from_slice(enc.get_ids());
-        ids.extend_from_slice(&[EOT_TOKEN, EOH_TOKEN]);
+        // Reference framing: [SOH] ++ text ++ [EOT, EOH, END3, SOA].
+        ids.extend_from_slice(&[EOT_TOKEN, EOH_TOKEN, END3_TOKEN, SOA_TOKEN]);
         Ok(ids)
     }
 
@@ -405,7 +417,7 @@ impl OrpheusTts {
             .map_err(|e| TTSError::SynthesisFailed(format!("GPU sync: {e}")))?;
 
         // Sample first token from last position
-        let last_logits = Self::extract_last_logits(&logits)?;
+        let last_logits = Self::penalize(&Self::extract_last_logits(&logits)?, &all_tokens)?;
         let mut next_token = logits_processor
             .sample(&last_logits)
             .map_err(|e| TTSError::SynthesisFailed(format!("Sampling: {e}")))?;
@@ -439,7 +451,7 @@ impl OrpheusTts {
                     .map_err(|e| TTSError::SynthesisFailed(format!("GPU sync: {e}")))?;
             }
 
-            let last_logits = Self::extract_last_logits(&logits)?;
+            let last_logits = Self::penalize(&Self::extract_last_logits(&logits)?, &all_tokens)?;
             next_token = logits_processor
                 .sample(&last_logits)
                 .map_err(|e| TTSError::SynthesisFailed(format!("Sampling: {e}")))?;
@@ -460,6 +472,15 @@ impl OrpheusTts {
     }
 
     /// Extract logits for the last token position from the model output
+    /// Apply repetition penalty over the trailing generation window — the
+    /// reference's 1.1 penalty is what keeps the audio stream from stalling
+    /// into an early end-token (the short-audio failure, 2026-09-02).
+    fn penalize(logits: &Tensor, context: &[u32]) -> Result<Tensor, TTSError> {
+        let start = context.len().saturating_sub(REPEAT_LAST_N);
+        candle_transformers::utils::apply_repeat_penalty(logits, REPEAT_PENALTY, &context[start..])
+            .map_err(|e| TTSError::SynthesisFailed(format!("Repeat penalty: {e}")))
+    }
+
     fn extract_last_logits(logits: &Tensor) -> Result<Tensor, TTSError> {
         let dims = logits.dims();
         let result = match dims.len() {
