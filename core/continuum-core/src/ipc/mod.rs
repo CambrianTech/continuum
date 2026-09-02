@@ -2323,6 +2323,12 @@ pub fn start_server(
         runtime.register(Arc::new(
             crate::modules::benchmark_grade::BenchmarkGradeModule::new(registry.clone()),
         ));
+        // The STANDING ROUND — benchmarks dispatch themselves when none is
+        // working (the last hand-managed act, retired 2026-09-02). Off until
+        // `benchmark/standing --enabled true`; ticks on the runtime cadence.
+        runtime.register(Arc::new(
+            crate::modules::benchmark_standing::BenchmarkStandingModule::new(registry.clone()),
+        ));
         // SubstrateGovernor — the deterministic cognitive-region scheduler daemon.
         // Schedules the ChannelDigestRegion: per live persona it pre-stages the
         // persona's current-channel digest into the SHARED digest buffer
