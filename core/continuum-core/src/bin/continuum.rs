@@ -1645,21 +1645,6 @@ async fn stop_with(keep_lanes: bool) -> Result<(), String> {
     let socket = socket_path();
     let pidfile = pidfile_for(&socket);
 
-    // FIRST, before any core is signaled: the lane-handoff marker. The core's
-    // graceful shutdown Drops its LlamaServerProcess (killer #2 of the warm
-    // lane — measured 2026-09-02, zero llama-servers after a keep-lanes stop
-    // even with the sweep below sparing them); that Drop leaks the LIVE lane
-    // only while this marker exists. The successor's adopt-or-reap rail
-    // consumes the marker unconditionally, so it lives for at most one seam.
-    if keep_lanes {
-        if let Some(marker) = continuum_core::inference::llama_server::lane_handoff_marker_path() {
-            if let Some(dir) = marker.parent() {
-                let _ = std::fs::create_dir_all(dir);
-            }
-            let _ = std::fs::write(&marker, b"reboot");
-        }
-    }
-
     let mut pidfile_core: Option<i32> = None;
     if let Ok(contents) = std::fs::read_to_string(&pidfile) {
         if let Ok(pid) = contents.trim().parse::<i32>() {

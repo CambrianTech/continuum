@@ -2294,50 +2294,8 @@ impl Default for LlamaServerProcess {
     }
 }
 
-/// The reboot handoff marker: `continuum reboot`'s stop half writes it just
-/// before signaling the core; [`LlamaServerProcess`]'s Drop leaks the LIVE
-/// lane while it exists; the successor's adopt-or-reap rail deletes it
-/// unconditionally (so a stale marker can never turn a plain `stop` into a
-/// leak — it survives at most one boot seam).
-pub fn lane_handoff_marker_path() -> Option<std::path::PathBuf> {
-    dirs::home_dir().map(|h| h.join(".continuum").join("state").join("lane-handoff"))
-}
-
-fn lane_handoff_requested() -> bool {
-    lane_handoff_marker_path()
-        .map(|p| p.exists())
-        .unwrap_or(false) // safe: no home dir = no marker = normal kill-on-drop
-}
-
 impl Drop for LlamaServerProcess {
     fn drop(&mut self) {
-        // THE WARM HANDOFF (2026-09-02). A reboot's successor should ADOPT the
-        // warm live lane instead of paying a ~15-minute model reload — but this
-        // Drop was killer #2 of that lane: the CLI-side sweep was patched to
-        // spare it, and then the core's own graceful shutdown dropped this
-        // struct and killed the child anyway (measured: zero llama-servers
-        // after a keep-lanes stop, twice). Generations never overlap (Joel:
-        // "why would a new startup fight the existing for resources?") — the
-        // old core exits COMPLETELY; the lane is a deliberately-leaked,
-        // registry-recorded resource handed across the one seam, which the
-        // successor identity-verifies and adopts or reaps. The marker is
-        // written by `continuum reboot`'s stop half just before signaling us,
-        // and consumed by the successor's adopt-or-reap rail (stale markers
-        // die there too, so a crash can't turn plain `stop` into a leak).
-        if self.is_live_lane && lane_handoff_requested() {
-            let pid = self.child.lock().unwrap().as_ref().and_then(|c| c.id()); // safe: same never-across-await mutex every sibling here unwraps
-            crate::probe!(
-                class = "serving.lane.handoff",
-                pid = pid.map(|p| p as u64).unwrap_or(0),
-                "live lane LEAKED for successor adoption — registry record and \
-                 pidfile kept; warm weights survive the reboot seam"
-            );
-            // Keep the registry record AND the pidfile: they are exactly how
-            // the successor reclaims this still-live server (or reaps it if
-            // sick). Skipping kill_child leaks the child handle — that is the
-            // point; the OS re-parents it and the successor owns its fate.
-            return;
-        }
         // Did we OWN the child we're about to kill? Capture the pid + ownership
         // before `kill_child` takes it. Ownership is the difference between a core
         // that SPAWNED its server and one that ADOPTED a persisting one
