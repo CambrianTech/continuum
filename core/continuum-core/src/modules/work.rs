@@ -773,20 +773,23 @@ pub fn env_broken_this_boot() -> &'static dashmap::DashSet<String> {
 
 pub fn spawn_env_prewarm_for_working_rounds() {
     tokio::spawn(async move {
-        let peers_root = match crate::commands::benchmark::continuum_home() {
-            Ok(h) => h.join("citizens").join("peers"),
-            Err(_) => return, // no home = nothing staged anywhere
-        };
+        // WORKING ROUNDS' instances, from the round tracker — NOT the peers'
+        // workspace directory sweep this used to run. That sweep warmed every
+        // instance EVER staged on this box (measured 2026-09-01: pytest-5221/
+        // 5227/5413/5495/5787/7324/7432 + the whole scikit/astropy graveyard,
+        // serially, DURING boot — including known-red astropy envs re-running
+        // their multi-minute uv heal ladders to the same cc failure every
+        // reboot). Leftover cruft from prior runs is not a working round; the
+        // tracker knows what is. A card whose instance the tracker cannot
+        // name yet (pre-instance-recording rounds) simply isn't pre-warmed —
+        // its env still builds at dispatch, exactly as before pre-warm existed.
         let mut names: std::collections::BTreeSet<String> = Default::default();
-        if let Ok(peers) = std::fs::read_dir(&peers_root) {
-            for peer in peers.flatten() {
-                let swe = peer.path().join("workspace").join("swe");
-                if let Ok(instances) = std::fs::read_dir(&swe) {
-                    for inst in instances.flatten() {
-                        if inst.path().is_dir() {
-                            names.insert(inst.file_name().to_string_lossy().into_owned());
-                        }
-                    }
+        for round in crate::cognition::bench_round::live_rounds() {
+            for card in round.cards {
+                if !card.instance.is_empty()
+                    && !matches!(card.state.as_str(), s if crate::cognition::bench_round::is_terminal_card_state(s))
+                {
+                    names.insert(card.instance);
                 }
             }
         }

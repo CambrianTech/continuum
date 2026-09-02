@@ -375,6 +375,21 @@ impl RagSource for RoomRosterSource {
 
         let self_peer = self.reader.self_peer_id();
 
+        // STABLE ORDER (2026-09-01, Benchy's hit_rate=0.0): this source
+        // renders at ~0.4% depth of the prompt, and it iterated presence-scan
+        // order — which rotates as heartbeats land. Two consecutive prompts
+        // diverged at char ~226 on exactly this ("Kira, Joaquin, …" vs
+        // "Atlas, Kira, Joaquin, …" order), invalidating the entire KV tail
+        // behind it every turn while peers cached 0.38–0.56. Same set of
+        // members MUST render as the same bytes: sort by (name, peer id).
+        // Membership changes still re-render — that is honest change.
+        let mut members = members;
+        members.sort_by(|a, b| {
+            a.display_name
+                .cmp(&b.display_name)
+                .then_with(|| a.peer_id.as_uuid().cmp(&b.peer_id.as_uuid()))
+        });
+
         // Authority structure (the flywheel's self-authorization ground): scan
         // the FULL roster (self included — a persona is never a human, so this
         // is equivalent, but scanning all members keeps the fact independent
