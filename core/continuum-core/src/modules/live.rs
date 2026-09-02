@@ -1018,9 +1018,14 @@ impl ServiceModule for VoiceModule {
                 let nonce = uuid::Uuid::new_v4().simple().to_string()[..6].to_string();
                 let phrase = format!("continuum self test {nonce}");
 
+                // Per-engine leg (Joel 2026-09-02: "the TDD for this is
+                // voice <-> STT"): the same round trip proves ANY adapter —
+                // `voice/selftest --adapter orpheus` is Orpheus's acceptance
+                // test, and the nightly battery runs one leg per engine.
+                let adapter = p.str_opt("adapter");
                 let t0 = std::time::Instant::now();
                 let synthesis = crate::live::audio::tts_service::synthesize_speech_async(
-                    &phrase, None, None, None,
+                    &phrase, None, adapter, None,
                 )
                 .await
                 .map_err(|e| format!("selftest TTS failed: {e}"))?;
@@ -1082,6 +1087,7 @@ impl ServiceModule for VoiceModule {
                 let matched = hits >= 2;
                 crate::probe!(
                     class = "live.selftest",
+                    adapter = adapter.unwrap_or("active"),
                     matched = matched,
                     tts_ms = tts_ms,
                     stt_ms = stt_ms,
