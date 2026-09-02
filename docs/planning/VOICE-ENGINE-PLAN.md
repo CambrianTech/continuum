@@ -54,6 +54,22 @@ the voice vision structural rather than cosmetic:
    Qwen-Omni talker heads compete for the flagship seat via the SAME selftest +
    quality bar — engines are adapters; the verb is the contract.
 
+## The body (Joel 2026-09-02: "tied into animations of face/mouth and later maybe more robotically controlled")
+
+Envelope lip-sync EXISTS today (`calculate_rms_weights` → mouth morph targets), so any
+engine's speech moves the mouth now — and sentiment already drives face + gesture from
+the same source as the voice tags (Stage A). The ladder:
+
+1. **Now**: Orpheus audio → RMS envelope → mouth openness (works by construction).
+2. **Visemes from speech TOKENS** (with Stage B, or from Orpheus's stream sooner):
+   each SNAC frame is ~12ms of articulation — a small table/learned map from the
+   coarse codebook to viseme gives phoneme-accurate mouth shapes with PERFECT sync
+   and zero audio analysis, because the sound and the mouth derive from one stream.
+3. **The control bus** (the robotics door): visemes + gestures + emotion become one
+   typed control stream — today rendered by Bevy morphs, later by actuators. The
+   positron principle applied to bodies: one semantic stream, N renderers (screen
+   avatar, robot) — and the JEPA-class world-model direction rides the same bus.
+
 ## The room (audited 2026-09-02, Joel: "good mixers do it well")
 
 Per-observer mix-minus is SERVER-SIDE (the WS delivery loop drops the observer's own
