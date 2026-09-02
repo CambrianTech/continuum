@@ -244,6 +244,11 @@ fi
 # relaunching it if so. Adopting here can only cost a relaunch the core already
 # knows how to do; reaping unconditionally costs a cold load every time.
 adopt_or_reap_llama_lanes() {
+  # Consume the reboot handoff marker UNCONDITIONALLY — the old core's Drop
+  # leaked its live lane while this existed; whether we adopt or reap below,
+  # the marker must not outlive this seam (a stale marker would turn a plain
+  # `stop` into a lane leak).
+  rm -f "$HOME/.continuum/state/lane-handoff" 2>/dev/null || true
   local pids adopted=0 reaped=0
   pids="$(pgrep -f 'llama-server' 2>/dev/null || true)"
   [ -z "$pids" ] && return 0
