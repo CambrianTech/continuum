@@ -792,6 +792,66 @@ function roomContextWidgets(vm: ChatViewModel, live?: WorkspaceLive): PanelWidge
         ],
       },
     });
+    // THE CARD BOARD, in the rail (Joel 2026-09-01: "there should be so many
+    // righthand widgets here… so as to let us know wtf is wrong"). One cell
+    // per card — including the unstarted ones, which is exactly the "wtf":
+    // a card with no run row used to render as nothing anywhere.
+    const cards = round.cards ?? [];
+    if (cards.length > 0) {
+      // Assignees arrive as persona uuids from the tracker; the room roster
+      // knows their names — resolve, fall back to the compact id.
+      const nameOf = new Map(vm.members.map((m) => [m.id, m.name]));
+      widgets.push({
+        id: 'room-round-cards',
+        kind: 'listing',
+        title: 'Cards',
+        scope: 'activity',
+        body: {
+          id: 'room-round-cards',
+          title: `Cards · ${cards.length}`,
+          cells: cards.slice(0, 16).map((c) => ({
+            id: c.card_id,
+            title: c.instance !== '' ? c.instance : c.card_id.slice(0, 8),
+            subtitle:
+              c.assignee === ''
+                ? 'unassigned'
+                : (nameOf.get(c.assignee) ?? c.assignee.slice(0, 8)),
+            badges: [
+              c.state,
+              ...(c.acts != null ? [`${c.acts} acts`] : []),
+              ...(c.patch_bytes != null ? [`${c.patch_bytes}B patch`] : []),
+              ...(c.last_act_secs != null ? [`${formatAge(c.last_act_secs)} ago`] : []),
+            ],
+          })),
+        },
+      });
+    }
+    // VERDICTS — this round's settled truth (the grade tail, visible).
+    const verdicts = (bench.runs ?? []).filter(
+      (r) => r.round_id === round.round_id && (r.resolved !== undefined || r.phase === 'failed'),
+    );
+    if (verdicts.length > 0) {
+      widgets.push({
+        id: 'room-round-verdicts',
+        kind: 'listing',
+        title: 'Verdicts',
+        scope: 'activity',
+        body: {
+          id: 'room-round-verdicts',
+          title: `Verdicts · ${verdicts.length}`,
+          cells: verdicts.slice(0, 10).map((r) => ({
+            id: r.run_id,
+            title: r.instance ?? r.run_id,
+            subtitle: r.resolved === true ? '✓ resolved' : '✗ missed',
+            badges: [
+              ...(r.fail_to_pass !== undefined ? [`f2p ${r.fail_to_pass}`] : []),
+              ...(r.pass_to_pass !== undefined ? [`p2p ${r.pass_to_pass}`] : []),
+              ...r.failed_tests.slice(0, 1),
+            ],
+          })),
+        },
+      });
+    }
   }
   const run = (bench.runs ?? []).find((r) => r.solve_room === vm.roomId);
   if (run) {
