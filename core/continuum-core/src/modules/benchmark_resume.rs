@@ -231,11 +231,18 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
                 // "the resume message said it's mine" about Benchy's card, in
                 // a room where the ownership question was the whole blocker.
                 let who = rt.agent_name().to_string();
+                // Name the INSTANCE and the staged path too — the exact facts
+                // the 2026-09-02 hand-written operator note carried when it
+                // broke a wedged round. The substrate's kickoff carries them
+                // now, so the hand stays out of the loop.
+                let what = crate::cognition::bench_round::instance_for_card(next.card)
+                    .map(|i| format!(" ({i}, checkout staged at swe/{i}/ in your workspace)"))
+                    .unwrap_or_default();
                 let text = format!(
                     "[resume] {who}: this round survived a core restart and your kickoff \
-                     predates your window. Card {short} is {who}'s — nobody else's — and \
-                     unworked: check work/list for its title, claim it, work it in your \
-                     workspace, and when your patch is verified green say \
+                     predates your window. Card {short}{what} is {who}'s — nobody \
+                     else's — and unworked: check work/get {short} for details, work it \
+                     in your workspace, and when your patch is verified green say \
                      `work/state {short} done` — that is what fires your grade; nobody \
                      fires it for you."
                 );

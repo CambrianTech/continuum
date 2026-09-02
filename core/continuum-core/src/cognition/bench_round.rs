@@ -586,6 +586,31 @@ pub fn record_card_assignee(card_id: Uuid, assignee: Uuid) {
     }
 }
 
+/// WHAT one card tests, from the staged record or the activity room name —
+/// so a re-say can name the instance the way the 2026-09-02 hand-written
+/// operator note did (the note broke a wedged round; the substrate's own
+/// kickoff must carry the same information or the hand stays in the loop).
+pub fn instance_for_card(card_id: Uuid) -> Option<String> {
+    let rounds = ROUNDS.lock().unwrap_or_else(|e| e.into_inner());
+    rounds.values().find_map(|r| {
+        if !r.cards.contains_key(&card_id) {
+            return None;
+        }
+        r.card_instances
+            .get(&card_id)
+            .cloned()
+            .filter(|i| !i.is_empty())
+            .or_else(|| {
+                r.card_activities.get(&card_id).and_then(|a| {
+                    match instance_of_room_name(&a.room_name) {
+                        "" => None,
+                        parsed => Some(parsed.to_string()),
+                    }
+                })
+            })
+    })
+}
+
 /// WHAT a card tests, recorded at dispatch staging (the dispatcher holds the
 /// instance in hand there) — see the `card_instances` field for why waiting
 /// until the solve activity mints is too late.
