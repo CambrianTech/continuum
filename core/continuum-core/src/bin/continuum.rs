@@ -1724,7 +1724,25 @@ async fn stop_with(keep_lanes: bool) -> Result<(), String> {
     // Engine children whose parent died without taking them down are invisible
     // to every tree reap above. Sweep them by OWNERSHIP — nothing is left
     // holding a port or VRAM once `stop` returns.
-    reap_owned_orphans(&[]);
+    //
+    // EXCEPT the live serving lane on the reboot path. The comment that used
+    // to say lanes were invisible to this sweep rotted when llama-server moved
+    // under ~/.continuum/bin: measured 2026-09-01/02, EVERY reboot printed
+    // "reaping orphaned llama-server — parent gone" here and then "leaving
+    // serving lane(s) up for adoption" eleven lines later, over the corpse —
+    // a ~15-minute model reload per reboot, the single biggest boot tax. The
+    // identity-verified live lane (pidfile + is_llama_server, never a reused
+    // pid) is SPARED when keep_lanes; the start rail's adopt_or_reap then
+    // health-checks and adopts the warm weights.
+    let keep: Vec<i32> = if keep_lanes {
+        continuum_core::inference::lane_registry::live_lane()
+            .map(|r| r.pid as i32)
+            .into_iter()
+            .collect()
+    } else {
+        Vec::new()
+    };
+    reap_owned_orphans(&keep);
 
     // Serving lanes are NOT descended from any core we just reaped (the daemon
     // spawns them detached) and are NOT under `~/.continuum/bin`, so neither the

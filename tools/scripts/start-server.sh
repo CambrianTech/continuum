@@ -908,13 +908,23 @@ if [ -f "$REPO_ROOT/apps/web/package.json" ] && command -v npm >/dev/null 2>&1; 
     (cd "$REPO_ROOT" && npm ci >/dev/null 2>&1 || npm install >/dev/null 2>&1) \
       || echo "  ⚠ npm install failed — desktop + eye-node unavailable (run npm ci to diagnose)" >&2
   fi
-  echo "→ building the desktop (served by the core at :\${CONTINUUM_UI_PORT:-8975})…"
-  if (cd "$REPO_ROOT" && npm run build -w @continuum/web >/dev/null 2>&1); then
-    export CONTINUUM_UI_DIST="$REPO_ROOT/apps/web/dist"
-    echo "  desktop built — continuum desktop opens it"
+  # NEVER IN FRONT (2026-09-02, Joel: "Desktop is optional… depends on core
+  # being up of course so must initiate if necessary"). The desktop is ONE
+  # optional client of a headless core — a web build has no business gating
+  # boot, fresh clone included: the core comes up NOW, and the dist lands in
+  # the background a minute later (desktop.dm.dist_missing probes the window;
+  # `continuum desktop` before it lands says the build is in flight rather
+  # than showing a broken page). This replaced a 1–2 minute SERIAL build in
+  # front of exec on EVERY boot.
+  export CONTINUUM_UI_DIST="$REPO_ROOT/apps/web/dist"
+  if [ -d "$REPO_ROOT/apps/web/dist" ]; then
+    echo "→ desktop: serving the existing dist now; rebuilding in the background…"
   else
-    echo "  ⚠ desktop build failed — core boots headless (npm run build -w @continuum/web to diagnose)" >&2
+    echo "→ desktop: no dist yet — core boots headless now; building in the background…"
   fi
+  (cd "$REPO_ROOT" && npm run build -w @continuum/web >/dev/null 2>&1 \
+    && echo "  desktop build landed (reload / continuum desktop to open it)" \
+    || echo "  ⚠ background desktop build failed — run npm run build -w @continuum/web to diagnose" >&2) &
 fi
 
 exec "$CORE_BIN" "$CONTINUUM_SOCKET"
