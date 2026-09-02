@@ -79,7 +79,7 @@ fn load_config() -> StandingConfig {
     std::fs::read_to_string(&path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+        .unwrap_or_default() // safe: absent/corrupt config = the documented OFF default, never a guess at a quantity
 }
 
 fn save_config(cfg: &StandingConfig) -> Result<(), String> {
