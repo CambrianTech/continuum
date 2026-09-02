@@ -175,6 +175,24 @@ pub trait AircCitizen:
     async fn publish_stream_chunk(&self, _chunk: &airc_lib::StreamChunk) -> Result<(), AircError> {
         Ok(())
     }
+
+    /// Write a held card's lifecycle state — the WRITE half of the work board
+    /// (the read supertraits only observe). This is what lets the deterministic
+    /// held-work settle edge conclude a card the moment she passes it "done",
+    /// through the SAME change+emit path the `work/state` verb uses, so the
+    /// owning recipe's outcome reactor fires exactly as it would for the verb.
+    /// Default is a hard error, not a silent no-op: a citizen with no
+    /// board-write capability advancing a card would be an invisible loss
+    /// ([[fallbacks-are-illegal-fail-loud]]); only the production runtime
+    /// overrides this. Recipe-general — the card may be a benchmark, a code
+    /// task, or any other activity's work item.
+    async fn advance_card_to(
+        &self,
+        _card_id: airc_lib::WorkCardId,
+        _state: airc_lib::CardState,
+    ) -> Result<(), String> {
+        Err("this citizen has no work-board write capability".to_string())
+    }
 }
 
 /// THE implementation of [`AircCitizen::subscribe_all_rooms`] over a

@@ -1275,6 +1275,19 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
     async fn publish_stream_chunk(&self, chunk: &airc_lib::StreamChunk) -> Result<(), AircError> {
         self.airc.publish_stream_chunk(chunk).await.map(|_| ())
     }
+
+    /// Route the WRITE through the ONE shared card-lifecycle path
+    /// (`work::advance_card_state`) so the change + the in-process
+    /// grade/lifecycle emit fire exactly as the `work/state` verb's do — the
+    /// held-work settle edge and the verb are one transition, not two.
+    async fn advance_card_to(
+        &self,
+        card_id: airc_lib::WorkCardId,
+        state: airc_lib::CardState,
+    ) -> Result<(), String> {
+        crate::modules::work::advance_card_state(&self.airc, card_id, state, "held-work-settle")
+            .await
+    }
 }
 
 impl Drop for PersonaAircRuntime {

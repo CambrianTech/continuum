@@ -4751,7 +4751,7 @@ async fn run_pass(
         // not a crib. [[benchmarks-are-proctored-exams-of-the-natural-living-persona]]
         if matches!(
             settled.decision,
-            crate::cognition::workspace::Decision::Pass
+            crate::cognition::workspace::Decision::Pass { .. }
         ) {
             crate::probe!(
                 class = "eval.task.declined_redrive",

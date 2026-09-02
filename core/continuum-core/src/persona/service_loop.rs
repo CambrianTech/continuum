@@ -1272,7 +1272,7 @@ async fn serve_persona_loop_inner(
                         // act is executed (→ Acted/ActUnfulfilled), never deferred.
                         unreachable!("live settle_step always permits its one act");
                     }
-                    crate::cognition::act_observe::SettleStep::Passed => {
+                    crate::cognition::act_observe::SettleStep::Passed { .. } => {
                         tracing::info!(
                             lamport = msg.lamport,
                             "persona chose silence (workspace) — substrate honors decision"
@@ -1851,8 +1851,12 @@ pub(crate) fn held_work_burst(held: &[&airc_lib::WorkCard]) -> String {
     s.push_str(
         "Your workspace holds the staged checkout (see [workspace-map] and \
          [active-work]). Continue the work with your tools — read, run, edit, \
-         test. Speak only if you have a result or a blocker to report; passing \
-         is yours to choose if you are genuinely blocked.",
+         test. When this card is finished, or you can go no further, conclude by \
+         passing with a reason on ONE line: 'PASS: done' (the work is complete \
+         and in the workspace), 'PASS: blocked — <one line why>', or \
+         'PASS: nothing' (nothing to contribute). 'PASS: done' concludes the \
+         card, so use it only when the deliverable is really written. Speak only \
+         to report a result or blocker to the room.",
     );
     s
 }
@@ -2908,9 +2912,14 @@ mod tests {
             burst.contains("psf__requests-2148"),
             "title must appear: {burst}"
         );
+        // The choice stays hers — she PASSES to conclude, and the pass carries a
+        // reason (done/blocked/nothing) the deterministic settle edge reads. A
+        // burst that loses the pass-clause becomes a command; one that loses the
+        // reason words leaves the edge unable to tell done from blocked.
+        assert!(burst.contains("PASS"), "the pass choice stays hers: {burst}");
         assert!(
-            burst.contains("passing is yours"),
-            "the choice stays hers: {burst}"
+            burst.contains("done") && burst.contains("blocked") && burst.contains("nothing"),
+            "the pass must name its three reasons for the settle edge: {burst}"
         );
     }
 

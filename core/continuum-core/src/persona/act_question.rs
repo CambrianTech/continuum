@@ -311,14 +311,92 @@ pub(crate) async fn ask_the_act_question(
                                 text.clone(),
                             );
                         }
-                        crate::cognition::act_observe::SettleStep::Passed => {
-                            crate::probe!(
-                                class = "persona.turn.work",
-                                persona = %ctx.identity.agent_name,
-                                lamport = lamport,
-                                decision = "passed",
-                                "work-turn passed — her choice, honored"
-                            );
+                        crate::cognition::act_observe::SettleStep::Passed { reason } => {
+                            // THE DETERMINISTIC COMPLETION EDGE. A pass now carries a
+                            // REASON (her own words), and the substrate ACTS on it at
+                            // the turn boundary instead of waiting on the LLM to call a
+                            // `work/state` tool (unreliable) or a 3-min sweep to notice
+                            // (Rube-Goldberg polling). Recipe-general: the held card may
+                            // be a benchmark solve, a code task, a Slack/AWS/finance
+                            // pipeline item — the edge only transitions the card; the
+                            // recipe that OWNS it reacts to WORK_CARD_STATE_CHANGED
+                            // (bench grade-on-done is one such reactor, next_unworked
+                            // another). [[activity-outcome-score-is-recipe-owned-gates-multiply-objectives-weigh]]
+                            use crate::cognition::pass_intent::{classify_pass, PassIntent};
+                            let intent = classify_pass(reason.as_deref());
+                            match intent {
+                                PassIntent::Done if held.len() == 1 => {
+                                    // Exactly one held card → her "done" is unambiguous.
+                                    // Conclude it through the ONE shared card-lifecycle
+                                    // path (same change+emit the `work/state` verb uses),
+                                    // so the owning recipe's outcome fires NOW. Quality is
+                                    // the recipe's to score — an empty deliverable grades
+                                    // an honest fail, never a substrate second-guess.
+                                    let card = held[0];
+                                    let card_id = airc_work::WorkCardId::from_uuid(
+                                        card.card_id.as_uuid(),
+                                    );
+                                    match citizen
+                                        .advance_card_to(card_id, airc_work::CardState::Closed)
+                                        .await
+                                    {
+                                        Ok(()) => crate::probe!(
+                                            class = "work.settle.deterministic",
+                                            persona = %ctx.identity.agent_name,
+                                            lamport = lamport,
+                                            card_id = %card.card_id.as_uuid(),
+                                            reason = reason.as_deref().unwrap_or(""),
+                                            "held card concluded at the turn boundary on a \
+                                             reasoned 'done' — the owning recipe's outcome \
+                                             fires now, no sweep, no tool-call dependency"
+                                        ),
+                                        Err(e) => crate::probe!(
+                                            class = "work.settle.error",
+                                            persona = %ctx.identity.agent_name,
+                                            card_id = %card.card_id.as_uuid(),
+                                            error = %e,
+                                            "reasoned 'done' but the card transition failed \
+                                             — the crash-backstop sweep still covers it"
+                                        ),
+                                    }
+                                }
+                                PassIntent::Done => {
+                                    // Several held cards, one "done" → which is done is
+                                    // ambiguous; do NOT guess. She can name one via the
+                                    // explicit work/state verb (still supported).
+                                    crate::probe!(
+                                        class = "work.settle.ambiguous",
+                                        persona = %ctx.identity.agent_name,
+                                        lamport = lamport,
+                                        held = held.len() as u64,
+                                        "reasoned 'done' with multiple held cards — cannot \
+                                         tell which; leaving all held for an explicit close"
+                                    );
+                                }
+                                PassIntent::Blocked => crate::probe!(
+                                    class = "work.blocker",
+                                    persona = %ctx.identity.agent_name,
+                                    lamport = lamport,
+                                    reason = reason.as_deref().unwrap_or(""),
+                                    "held-work turn passed BLOCKED — card stays hers; a \
+                                     candidate substrate-gap report, not a completion"
+                                ),
+                                PassIntent::Nothing => crate::probe!(
+                                    class = "work.pass.nothing",
+                                    persona = %ctx.identity.agent_name,
+                                    lamport = lamport,
+                                    "held-work turn passed with nothing to contribute — a \
+                                     substrate-gap signal ([[failures-are-substrate]])"
+                                ),
+                                PassIntent::Unclear => crate::probe!(
+                                    class = "persona.turn.work",
+                                    persona = %ctx.identity.agent_name,
+                                    lamport = lamport,
+                                    decision = "passed",
+                                    "work-turn passed with no legible reason — her choice, \
+                                     honored; nothing concluded"
+                                ),
+                            }
                         }
                         other => {
                             // Acted (results already in her working

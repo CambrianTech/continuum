@@ -118,7 +118,25 @@ pub enum Decision {
     /// Nothing worth adding this turn (the persona's own judgment, not a gate).
     /// Together with `Speak`/`RaiseUnprompted`, this is how the organism SETTLES:
     /// the absence of an `Act` bid is the mind's judgment that the work is done.
-    Pass,
+    ///
+    /// `reason` is the mind's OWN words for why it passed, captured verbatim at
+    /// the single text→decision seam (`deliberation_parse::decision_from_response`)
+    /// when she narrates her pass ("done — patch ready", "blocked: the fixture is
+    /// missing", "nothing to add") — `None` for a bare `PASS` token. A pass is an
+    /// accountable decision, not anonymous silence: the benchmark held-work edge
+    /// reads this to tell a gradeable *done* from a *blocker* from a substrate-gap
+    /// *nothing* ([[a-citizen-saying-i-have-nothing-to-contribute-is-a-substrate-gap-report]]),
+    /// and any consumer can surface WHY a turn produced no utterance.
+    Pass { reason: Option<String> },
+}
+
+impl Decision {
+    /// A bare pass with no stated reason — the anonymous silence a plain `PASS`
+    /// token or an empty generation resolves to. Convenience so the common
+    /// construction stays terse and every reasoned pass is visibly the exception.
+    pub fn pass() -> Self {
+        Decision::Pass { reason: None }
+    }
 }
 
 /// The cost of producing ONE deliberation verdict: how long the model took and
@@ -388,7 +406,7 @@ impl Contribution {
             // The mind's narration of WHY it's acting — surfaced/audited like any
             // contribution content; the calls themselves live on the decision.
             Decision::Act { intent, .. } => intent.clone(),
-            Decision::Pass => String::new(),
+            Decision::Pass { reason } => reason.clone().unwrap_or_default(),
         };
         Self {
             faculty: FacultyId::Deliberation,
@@ -2380,7 +2398,7 @@ mod tests {
                     "conditioned the reply on the recalled context",
                 )),
                 None => Some(Contribution::verdict(
-                    Decision::Pass,
+                    Decision::pass(),
                     0.5,
                     "blind — no context in the broadcast",
                 )),
@@ -2793,7 +2811,7 @@ mod tests {
         let faculties: Vec<Arc<dyn Faculty>> = vec![
             Arc::new(AbstainFaculty(FacultyId::Recall)),
             Arc::new(FixedFaculty(Contribution::verdict(
-                Decision::Pass,
+                Decision::pass(),
                 0.6,
                 "nothing worth adding",
             ))),
@@ -2804,7 +2822,7 @@ mod tests {
             1,
             "the abstaining faculty added nothing"
         );
-        assert_eq!(ws.decision(), Some(&Decision::Pass));
+        assert_eq!(ws.decision(), Some(&Decision::pass()));
     }
 
     // what this catches: a FAILED model call (a deliberation FAULT) is surfaced by
@@ -3004,7 +3022,7 @@ mod tests {
                     !ws.broadcast.is_empty(),
                     "deliberation must only fire after phase 1 assembled context"
                 );
-                Some(Contribution::verdict(Decision::Pass, 0.5, "noted"))
+                Some(Contribution::verdict(Decision::pass(), 0.5, "noted"))
             }
         }
         let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));

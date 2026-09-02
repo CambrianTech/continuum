@@ -1599,7 +1599,7 @@ mod tests {
             Some(Decision::Act { calls, intent }) => {
                 eprintln!("Ivar ACTS ({} call(s)) — intent: {intent}", calls.len())
             }
-            Some(Decision::Pass) | None => eprintln!("Ivar chose silence (PASS)."),
+            Some(Decision::Pass { .. }) | None => eprintln!("Ivar chose silence (PASS)."),
         }
         eprintln!("=================================================\n");
 

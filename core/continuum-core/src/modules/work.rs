@@ -1524,42 +1524,52 @@ impl ActionCommand for WorkState {
         let airc = persona_airc(&self.registry, ctx, "work commands")?;
         let card_id = resolve_card_id(&airc, &p.card_id).await?;
         let state = parse_state(&p.state)?;
-        airc.change_work_card_state(ChangeWorkCardState { card_id, state })
+        advance_card_state(&airc, card_id, state, "work-state-verb")
             .await
-            .map_err(|e| CommandError::Internal(e.to_string()))?;
-
-        // DIRECT emit — the delivery-proof feeder. The previous shape relied
-        // entirely on this transition's transcript echo returning through a persona
-        // subscribe stream; under #434 (post-reboot durable delivery down) that echo
-        // never arrives and finished work grades as NOTHING (measured 2026-08-17:
-        // two cards Closed, zero grades, 2 raw events in 80 min). The verb KNOWS the
-        // transition happened — it just wrote it — so it publishes in-process. The
-        // wire bridge still covers external writers (operator CLI, remote peers);
-        // `emit_card_state_changed`'s (card,state) ring makes the two feeders
-        // publish once when both fire.
-        // The CARD's room, never `current_room()` — boards are per-room and the grade
-        // subscriber refuses an event with no room. Uses the ONE room resolver
-        // (`room_holding_card`, canary's consolidation) rather than a third private scan.
-        let room_id = room_holding_card(&airc, card_id)
-            .await
-            .map(|r| r.channel.as_uuid().to_string())
-            .unwrap_or_default(); // board read failure already probed as its own abort above
-        emit_card_state_changed(
-            serde_json::json!({
-                "card_id": card_id.as_uuid().to_string(),
-                "state": serde_json::to_value(state)
-                    .unwrap_or(serde_json::Value::Null),
-                "room_id": room_id,
-            }),
-            "work-state-verb",
-        )
-        .await;
-
+            .map_err(CommandError::Internal)?;
         Ok(WorkStateResult {
             card_id: p.card_id,
             state: p.state,
         })
     }
+}
+
+/// Transition a work card's lifecycle state AND feed the grade/lifecycle
+/// subscribers in-process — the ONE place a card's state is written and
+/// announced (the compression law: `work/state` the verb, the held-work settle
+/// edge, and any future writer all call THIS, never re-implement the change +
+/// emit pair). Writing without the direct emit is the #434 delivery-hole that
+/// let finished work grade as NOTHING; the (card,state) ring in
+/// `emit_card_state_changed` makes the direct feeder and the wire echo publish
+/// exactly once when both fire, so callers may always emit.
+///
+/// `via` labels the feeder on the probe stream so two writers of the same
+/// transition are distinguishable.
+pub(crate) async fn advance_card_state(
+    airc: &Arc<Airc>,
+    card_id: WorkCardId,
+    state: CardState,
+    via: &'static str,
+) -> Result<(), String> {
+    airc.change_work_card_state(ChangeWorkCardState { card_id, state })
+        .await
+        .map_err(|e| e.to_string())?;
+    // The CARD's room, never `current_room()` — boards are per-room and the grade
+    // subscriber refuses an event with no room.
+    let room_id = room_holding_card(airc, card_id)
+        .await
+        .map(|r| r.channel.as_uuid().to_string())
+        .unwrap_or_default();
+    emit_card_state_changed(
+        serde_json::json!({
+            "card_id": card_id.as_uuid().to_string(),
+            "state": serde_json::to_value(state).unwrap_or(serde_json::Value::Null),
+            "room_id": room_id,
+        }),
+        via,
+    )
+    .await;
+    Ok(())
 }
 
 // ─────────────────────────── work/heartbeat ──────────────────────

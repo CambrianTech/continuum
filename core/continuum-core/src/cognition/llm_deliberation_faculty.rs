@@ -807,7 +807,7 @@ impl LlmDeliberationFaculty {
             "draft reproduced a perception fact she was handed — settling to silence instead \
              of speaking the prompt back into the room (#158)"
         );
-        Decision::Pass
+        Decision::pass()
     }
 
     /// She called the yield verb — settle the turn as the silence it names.
@@ -846,7 +846,7 @@ impl LlmDeliberationFaculty {
             "she yielded the turn through the structured verb — silent Pass, no room message"
         );
         Some(Contribution::verdict(
-            Decision::Pass,
+            Decision::pass(),
             0.9,
             format!("{} yielded the turn (yield_turn)", self.persona_name),
         ))
@@ -859,7 +859,13 @@ impl LlmDeliberationFaculty {
     fn verdict(&self, resp: &TextGenerationResponse, ws: &Workspace) -> Contribution {
         let decision = self.silence_a_parroted_draft(decision_from_response(&resp.text), ws);
         let (salience, reasoning) = match &decision {
-            Decision::Pass => (0.5, format!("{} chose silence (PASS)", self.persona_name)),
+            Decision::Pass { reason } => (
+                0.5,
+                match reason {
+                    Some(r) => format!("{} passed: {r}", self.persona_name),
+                    None => format!("{} chose silence (PASS)", self.persona_name),
+                },
+            ),
             _ => (
                 0.85,
                 format!(
@@ -5349,7 +5355,7 @@ mod tests {
                 .contribute(&Workspace::new("anything"))
                 .await
                 .expect("verdict");
-            assert_eq!(c.decision, Some(Decision::Pass));
+            assert_eq!(c.decision, Some(Decision::pass()));
         }
     } // mod verdicts
 }
