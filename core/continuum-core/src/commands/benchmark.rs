@@ -2190,6 +2190,14 @@ impl ActionCommand for BenchmarkDispatch {
             // WHO works this card, recorded at staging (before any solve fires) —
             // the follow-on driver and the boot resume read it (plan A4/A5).
             crate::cognition::bench_round::record_card_assignee(card_id.as_uuid(), *who_peer);
+            // WHAT it tests, same moment — the roll-call names the instance
+            // and in-flight runs join back to their card by it.
+            if let CardWork::Swe { instance } = &pc.work {
+                crate::cognition::bench_round::record_card_instance(
+                    card_id.as_uuid(),
+                    &instance.instance_id,
+                );
+            }
 
             // Directed gym card: CLAIM IT FOR HER at dispatch, under her own airc
             // identity. The detached-solve SWE arm below fires her scored solve directly

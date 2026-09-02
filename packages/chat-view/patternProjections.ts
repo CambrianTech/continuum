@@ -744,6 +744,13 @@ function chatRoomPresenceWidgets(
   return widgets;
 }
 
+/** Compact seconds → "12s" / "3m" / "2h" — rail legibility, not precision. */
+function formatAge(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  return `${Math.floor(seconds / 3600)}h`;
+}
+
 /** Run/solve room rail instruments (PAGES-IA slices 3+4): a run ROOM shows
  *  its round's lifecycle; a solve room shows its card + worker. Existing
  *  widget kinds only ([[compression]]). */
@@ -754,6 +761,11 @@ function roomContextWidgets(vm: ChatViewModel, live?: WorkspaceLive): PanelWidge
   const rounds = bench.rounds ?? [];
   const round = rounds.find((r) => r.round_id === vm.roomId);
   if (round) {
+    // The verdict is the thrash-vs-grind sensor (2026-09-01: `working 0/8`
+    // was pixel-identical for three hours of workspace-less narration and a
+    // healthy grind). Core-pronounced; empty on a pre-verdict wire → omitted.
+    const verdict = round.verdict ?? '';
+    const unstarted = (round.cards ?? []).filter((c) => c.state === 'unstarted').length;
     widgets.push({
       id: 'room-round',
       kind: 'metrics',
@@ -762,7 +774,20 @@ function roomContextWidgets(vm: ChatViewModel, live?: WorkspaceLive): PanelWidge
       body: {
         stats: [
           { label: 'STAGE', value: round.stage, tone: round.stage === 'working' ? 'accent' : 'muted' },
+          ...(verdict !== '' && verdict !== round.stage
+            ? [{
+                label: 'VERDICT',
+                value:
+                  verdict === 'grinding' && round.idle_secs != null
+                    ? `grinding · ${formatAge(round.idle_secs)}`
+                    : verdict,
+                tone: (verdict === 'grinding' ? 'good' : 'warn') as 'good' | 'warn',
+              }]
+            : []),
           { label: 'SETTLED', value: `${round.settled}/${round.dispatched}`, tone: 'good' },
+          ...(unstarted > 0
+            ? [{ label: 'NOT STARTED', value: String(unstarted), tone: 'warn' as const }]
+            : []),
           { label: 'DRIVER', value: round.driver, tone: round.driver === 'citizen' ? 'good' : 'warn' },
         ],
       },

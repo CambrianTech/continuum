@@ -168,6 +168,14 @@ pub struct BenchRound {
     /// and the boot resume know WHO works a card that has never run.
     #[serde(default)]
     card_assignees: HashMap<Uuid, Uuid>,
+    /// Card uuid → the INSTANCE it was staged for, recorded at dispatch
+    /// staging. Before this the tracker only learned WHAT a card tested when
+    /// its solve activity minted a room name — so an unstarted card's
+    /// roll-call row was blank, and an in-flight run could not join back to
+    /// its card (2026-09-01: Kira's live django-14349 run left its round
+    /// pronounced `unstarted`).
+    #[serde(default)]
+    card_instances: HashMap<Uuid, String>,
 }
 
 /// Where one card's solve LIVES: its per-instance activity room, the citizen
@@ -205,6 +213,7 @@ impl BenchRound {
             driver,
             card_activities: HashMap::new(),
             card_assignees: HashMap::new(),
+            card_instances: HashMap::new(),
             team: Vec::new(),
         }
     }
@@ -573,6 +582,17 @@ pub fn record_card_assignee(card_id: Uuid, assignee: Uuid) {
     let mut rounds = ROUNDS.lock().expect("bench rounds mutex");
     if let Some(round) = rounds.values_mut().find(|r| r.cards.contains_key(&card_id)) {
         round.card_assignees.insert(card_id, assignee);
+        persist_round_in(&rounds_state_dir(), round);
+    }
+}
+
+/// WHAT a card tests, recorded at dispatch staging (the dispatcher holds the
+/// instance in hand there) — see the `card_instances` field for why waiting
+/// until the solve activity mints is too late.
+pub fn record_card_instance(card_id: Uuid, instance: &str) {
+    let mut rounds = ROUNDS.lock().expect("bench rounds mutex");
+    if let Some(round) = rounds.values_mut().find(|r| r.cards.contains_key(&card_id)) {
+        round.card_instances.insert(card_id, instance.to_string());
         persist_round_in(&rounds_state_dir(), round);
     }
 }
@@ -1135,9 +1155,15 @@ pub fn live_rounds() -> Vec<RoundSnapshot> {
                     let room_name = activity
                         .map(|a| a.room_name.clone())
                         .unwrap_or_default();
+                    // Activity room name is the authority once minted; the
+                    // staging-time record covers every card before that.
+                    let instance = match instance_of_room_name(&room_name) {
+                        "" => r.card_instances.get(card_id).cloned().unwrap_or_default(),
+                        parsed => parsed.to_string(),
+                    };
                     RoundCardSnapshot {
                         card_id: card_id.to_string(),
-                        instance: instance_of_room_name(&room_name).to_string(),
+                        instance,
                         assignee,
                         solve_room_name: room_name,
                         // Terminal state from the tracker; open cards report
@@ -1276,6 +1302,7 @@ mod tests {
                 driver: WorkDriver::DetachedSolve,
                 card_activities: Default::default(),
                 card_assignees: cards.iter().copied().collect(),
+                card_instances: Default::default(),
                 team: Vec::new(),
             }
         }
