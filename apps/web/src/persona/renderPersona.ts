@@ -73,6 +73,78 @@ export function setMindFeed(feed: MindFeed | undefined): void {
   currentMindFeed = feed;
 }
 
+/** WHAT SHE SEES NOW — the live RAG allocation the substrate would hand her model this
+ *  instant (`persona/rag-inspect`): every grounding source, its token share of her
+ *  window, and the newest things it delivered. The mind tab's first section, because a
+ *  citizen's mind is first of all what is in front of her. */
+export interface MindSightSource {
+  readonly source: string;
+  readonly tokens: number;
+  readonly delivered: number;
+  readonly preview: string;
+}
+export interface MindSight {
+  readonly personaId: string;
+  readonly fetchedAtMs: number;
+  readonly contextWindow: number;
+  readonly totalAllocated: number;
+  readonly escalationNeeded: boolean;
+  readonly sources: readonly MindSightSource[];
+}
+let currentMindSight: MindSight | undefined;
+export function setMindSight(sight: MindSight | undefined): void {
+  currentMindSight = sight;
+}
+
+/** A deep link may name the tab (`/persona/kira/mind`); the page consumes it once. */
+let requestedTab: PersonaTab | undefined;
+let tabListener: ((tab: PersonaTab) => void) | undefined;
+/** The app mirrors the page's face into the address bar; one listener, app-owned. */
+export function onPersonaTabChange(listener: (tab: PersonaTab) => void): void {
+  tabListener = listener;
+}
+export function setRequestedPersonaTab(tab: string | undefined): void {
+  requestedTab =
+    tab !== undefined && PERSONA_TAB_IDS.includes(tab) ? (tab as PersonaTab) : undefined;
+}
+
+function sightSection(body: PersonaContentBody): TemplateResult {
+  const sight = currentMindSight?.personaId === body.personaId ? currentMindSight : undefined;
+  const pct =
+    sight === undefined
+      ? 0
+      : Math.min(100, Math.round((sight.totalAllocated / Math.max(1, sight.contextWindow)) * 100));
+  return html`<section class="p-card p-sight" id="sight">
+    <div class="p-card-head">
+      what she sees now
+      ${sight
+        ? html`<span class="p-live-chip" data-on
+            >live · ${sight.totalAllocated.toLocaleString()} / ${sight.contextWindow.toLocaleString()} tokens</span
+          >`
+        : html`<span class="p-live-chip" title="inspecting her grounding">awaiting inspection</span>`}
+      ${sight?.escalationNeeded
+        ? html`<span class="b-stat" title="her window is over budget">⚠ over budget</span>`
+        : nothing}
+    </div>
+    ${sight === undefined
+      ? html`<div class="p-empty">Reconstructing the exact grounding her model gets this instant.</div>`
+      : sight.sources.length === 0
+        ? html`<div class="p-empty">Nothing delivered — she is standing in a quiet room.</div>`
+        : html`<div class="sight-window" role="img" aria-label=${`window usage ${pct}%`}>
+              <span style=${`width:${pct}%`}></span>
+            </div>
+            <div class="sight-sources">
+              ${sight.sources.map(
+                (src) => html`<div class="sight-row">
+                  <span class="sight-source">${src.source}</span>
+                  <span class="sight-tokens">${src.tokens.toLocaleString()} tok · ${src.delivered} items</span>
+                  <span class="sight-preview">${src.preview}</span>
+                </div>`,
+              )}
+            </div>`}
+  </section>`;
+}
+
 function learningSection(body: PersonaContentBody): TemplateResult {
   const feed = currentMindFeed?.personaId === body.personaId ? currentMindFeed : undefined;
   return html`<section class="p-card p-learning" id="learning">
@@ -455,6 +527,7 @@ function writingsSection(body: PersonaContentBody): TemplateResult {
 /** Profile sub-navigation faces (PAGES-IA.md): one job per tab, the header
  *  permanent, no section on two tabs, honest empties everywhere. */
 type PersonaTab = 'overview' | 'mind' | 'genome' | 'work' | 'wall';
+const PERSONA_TAB_IDS: readonly string[] = ['overview', 'mind', 'genome', 'work', 'wall'];
 const PERSONA_TABS: readonly (readonly [PersonaTab, string])[] = [
   ['overview', 'Overview'],
   ['mind', 'Mind'],
@@ -472,7 +545,7 @@ export class PersonaPageElement extends LitElement {
   };
 
   body?: PersonaContentBody;
-  private _tab: PersonaTab = 'overview';
+  private _tab: PersonaTab = requestedTab ?? 'overview';
 
   protected override createRenderRoot(): HTMLElement {
     return this;
@@ -483,7 +556,7 @@ export class PersonaPageElement extends LitElement {
     if (!body) return html``;
     const content: Record<PersonaTab, TemplateResult> = {
       overview: html`${aboutSection(body)}${homeSection(body)}${workSection(body, 3)}${recordSection(body)}`,
-      mind: html`${brainSection(body)}${learningSection(body)}${pathwaysSection(body)}`,
+      mind: html`${sightSection(body)}${brainSection(body)}${learningSection(body)}${pathwaysSection(body)}`,
       genome: html`${genomeSection(body)}`,
       work: html`${workSection(body)}${recordSection(body)}${claimsSection(body)}`,
       wall: html`${writingsSection(body)}`,
@@ -504,6 +577,7 @@ export class PersonaPageElement extends LitElement {
             ?data-active=${this._tab === id}
             @click=${(): void => {
               this._tab = id;
+              tabListener?.(id);
             }}
           >
             ${label}
