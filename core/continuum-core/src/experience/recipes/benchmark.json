@@ -2,6 +2,7 @@
   "id": "fed332c3-383c-45bb-a205-b54b02c43916",
   "version": 1,
   "purpose": "benchmark/hard-rs",
+  "base": "academy",
   "regions": [
     {
       "name": "scoreboard",

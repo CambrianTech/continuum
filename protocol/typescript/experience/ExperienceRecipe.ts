@@ -71,4 +71,15 @@ citizens: Array<CitizenRecipe>,
 /**
  * Optional explicit composition (level-3 layout). Omitted → organic placement.
  */
-layout?: Layout, };
+layout?: Layout, 
+/**
+ * The default top-level BASE this recipe's activities root under, by what the
+ * activity IS (Joel 2026-09-03: "The academy. Think of what the word means. It's for
+ * learning. Now for other stuff: not inside academy."). The shipped bases are
+ * `academy` (learning by purpose: benchmark rounds, training, exams, curricula),
+ * `projects`, `commons`, `personal`; any room may technically root from any base
+ * path — the defaults are the ship, not a rule in code. `None` = the activity roots
+ * wherever it was spawned from. A SUB-activity's parent is always the activity
+ * that spawned it, never the base.
+ */
+base?: string, };
