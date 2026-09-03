@@ -2469,6 +2469,23 @@ async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn PersonaConve
     let Some(citizen) = conversation.stream_citizen() else {
         return false;
     };
+    // WIP = 1, enforced HERE and not by call order: a citizen who already holds a
+    // card never pulls a second, even on a tick where the held-work gate deferred
+    // (lane busy, env building). Also what keeps the board reads below to the idle.
+    match citizen.active_claims().await {
+        Ok(held) if held.is_empty() => {}
+        Ok(_) => return false,
+        Err(e) => {
+            crate::probe!(
+                class = "bench.round.pull_failed",
+                persona = %ctx.identity.agent_name,
+                error = %e.to_string(),
+                "her claims are unreadable — no pull this tick (a second card on a \
+                 misread would break WIP=1)"
+            );
+            return false;
+        }
+    }
     // ELIGIBILITY IS RESIDENCY: she pulls from the run rooms she is standing in. A
     // card is content of its room; any resident may work it.
     let resident: std::collections::HashSet<Uuid> = match citizen.subscribed_rooms().await {
@@ -5011,6 +5028,28 @@ mod tests {
     // AND the deterministic pull wiring (try_pull_next_card claims it through the
     // citizen handle — no LLM claim tool). Load-balancing + resilience follow from
     // this being pull, not push.
+    /// A Claimed card in `owner`'s hands — the minimal held-work fact.
+    fn held_card(owner: Uuid) -> airc_lib::WorkCard {
+        airc_lib::WorkCard {
+            card_id: airc_lib::WorkCardId::new(),
+            repo: airc_lib::RepoId::new("acme/continuum").expect("valid repo id"),
+            title: "a held work card".to_string(),
+            body: None,
+            priority: airc_lib::Priority::P1,
+            lane_id: None,
+            state: airc_lib::CardState::Claimed,
+            owner: Some(crate::identity::PeerId::from_uuid(owner)),
+            claim_id: None,
+            claim_expires_at_ms: None,
+            last_heartbeat_at_ms: None,
+            pull_request: None,
+            created_by: airc_core::PeerId::new(),
+            created_at_ms: 1_000_000,
+            updated_at_ms: 1_000_000,
+            reviews: None,
+        }
+    }
+
     #[tokio::test]
     async fn an_idle_member_pulls_the_next_card_off_the_shared_deck() {
         use crate::cognition::bench_round;
@@ -5048,6 +5087,19 @@ mod tests {
         assert!(
             !try_pull_next_card(&hosted, &conversation).await,
             "a card the board says is held is not pulled"
+        );
+
+        // WIP = 1: a citizen ALREADY holding a card pulls nothing, even with an Open
+        // card on her deck and the board offering it.
+        let busy = StubAircCitizen::new(peer)
+            .with_rooms(vec![round_id])
+            .with_claimable(vec![card_uuid])
+            .with_claims(vec![held_card(peer)]);
+        let conversation = ScriptedConversation::new()
+            .with_citizen(Arc::new(busy) as Arc<dyn crate::persona::airc_citizen::AircCitizen>);
+        assert!(
+            !try_pull_next_card(&hosted, &conversation).await,
+            "a citizen holding a card never pulls a second one"
         );
 
         // An idle citizen (holds nothing) pulls it through the deterministic path.

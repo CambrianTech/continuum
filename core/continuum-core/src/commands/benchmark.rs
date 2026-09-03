@@ -2266,32 +2266,14 @@ impl ActionCommand for BenchmarkDispatch {
             // imperative in its OWN message block is what actually starts work (measured
             // 2026-08-07: coalesced mid-burst it was ignored). airc.say is one event = one
             // block, so the structural condition holds by construction.
-            {
-                let kickoff = if driver == crate::cognition::bench_round::WorkDriver::Citizen {
-                    // OPEN card, room-addressed: nobody is "the" assignee — whoever is
-                    // free pulls it (the substrate claims it for an idle resident), and
-                    // the claim stages the work in HER workspace.
-                    match &pc.work {
-                        CardWork::Gym { solution_file } => format!(
-                            "card {short} is OPEN on this board — whoever is free pulls it \
-                             (the substrate claims it for you when you are idle, or \
-                             claim_task {short}). Read its body, write your solution to \
-                             `{solution_file}` in your workspace, then mark it done \
-                             (work/state {short} done). Your artifact is graded against \
-                             held-out tests."
-                        ),
-                        CardWork::Swe { instance } => format!(
-                            "card {short} is a REAL {} issue (SWE-bench, a full project) and \
-                             is OPEN on this board — whoever is free pulls it. Claiming stages \
-                             the repo in YOUR workspace at `swe/{}/`; fix the bug there (do \
-                             not edit the tests) — your diff is graded against the repo's \
-                             held-out tests. When your fix is ready, YOU close it: `work/state \
-                             {short} done` — that is what fires your grade.",
-                            instance.repo, instance.instance_id
-                        ),
-                    }
-                } else {
-                match &pc.work {
+            // Per-card, ADDRESSED kickoffs are a detached-solve round's activation path
+            // (the assignee is named, her solve is already running). A citizen-driven
+            // round gets ONE room-addressed kickoff after the loop instead — twelve
+            // per-card kickoffs cost every resident twelve inbound turns of near-
+            // duplicate noise per dispatch (measured 2026-09-03: `deferred_loop_filler`
+            // ×9 per citizen), for a deck the substrate pulls from deterministically.
+            if driver == crate::cognition::bench_round::WorkDriver::DetachedSolve {
+                let kickoff = match &pc.work {
                     CardWork::Gym { solution_file } if pre_claimed => format!(
                         "@{who} (to you): card {short} is CLAIMED FOR YOU on this board — \
                          no claim step needed. Read its body, write your solution to \
@@ -2334,7 +2316,6 @@ impl ActionCommand for BenchmarkDispatch {
                             instance.repo, instance.instance_id
                         )
                     }
-                }
                 };
                 // AUTHOR IT AS SOMEONE ELSE. A citizen's inbound stream skips messages
                 // she is recorded as having said (correct — nobody answers their own
@@ -2441,6 +2422,41 @@ impl ActionCommand for BenchmarkDispatch {
         // `work.card.state_changed` subscriber settles cards as they reach terminal
         // states and announces the END — instead of the round's fate being probe
         // archaeology ("random and directed by agent, not an ecosystem", Joel 8/16).
+        // ONE kickoff for the whole deck of a citizen-driven round, addressed to the
+        // ROOM: the deck is shared, the substrate pulls for whoever is idle, and the
+        // claim stages the work — so the message is an announcement, not an order.
+        if driver == crate::cognition::bench_round::WorkDriver::Citizen && !card_ids.is_empty() {
+            let text = format!(
+                "{} cards are OPEN on this board ({}): {}. Whoever is free pulls one — the \
+                 substrate claims it for you when you are idle (or claim_task <id>), and the \
+                 claim stages the work in YOUR workspace. Work it there; when your fix is \
+                 verified green say `work/state <id> done` — that is what fires your grade. \
+                 One card at a time; talk here when you are stuck or when you can review a \
+                 teammate's diff.",
+                card_ids.len(),
+                spec.name,
+                card_ids.join(", ")
+            );
+            match self.registry.any_live_citizen() {
+                Some(voice_rt) => {
+                    if let Err(e) = voice_rt.join_room(&room_name).await {
+                        kickoff_errors.push(format!("deck kickoff: voice join: {e}"));
+                    } else {
+                        match crate::persona::airc_citizen::publish_text_in_room(
+                            voice_rt.airc(),
+                            room.room_id.as_uuid(),
+                            &text,
+                        )
+                        .await
+                        {
+                            Ok(_) => kickoffs += 1,
+                            Err(e) => kickoff_errors.push(format!("deck kickoff: {e}")),
+                        }
+                    }
+                }
+                None => kickoff_errors.push("deck kickoff: no live citizen to voice it".into()),
+            }
+        }
         crate::cognition::bench_round::seal_round(room.room_id.as_uuid());
 
         // PRUNE (opt-in): converge the board to one live card per task for THIS
