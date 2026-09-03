@@ -1288,6 +1288,33 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
         crate::modules::work::advance_card_state(&self.airc, card_id, state, "held-work-settle")
             .await
     }
+
+    async fn claim_card(&self, card_id: airc_lib::WorkCardId) -> Result<bool, String> {
+        let ttl_ms = crate::modules::work::DEFAULT_CLAIM_TTL_MS;
+        let mut attempt = self
+            .airc
+            .claim_work_card(airc_lib::ClaimWorkCard { card_id, ttl_ms })
+            .await;
+        // Follow the card to its room if the claim landed in the wrong current
+        // room — the SAME retry the dispatch pre-claim uses (#328).
+        if matches!(
+            attempt,
+            Err(airc_lib::AircError::WorkCardNotInCurrentRoom { .. })
+        ) {
+            if let Some(retry) =
+                crate::modules::work::claim_following_card_room(&self.airc, card_id, ttl_ms).await
+            {
+                attempt = retry;
+            }
+        }
+        match attempt {
+            Ok(_) => Ok(true),
+            // A teammate pulled it first — a lost race on a shared deck is normal,
+            // not an error; the puller just tries the next card.
+            Err(airc_lib::AircError::WorkCardAlreadyClaimed { .. }) => Ok(false),
+            Err(e) => Err(e.to_string()),
+        }
+    }
 }
 
 impl Drop for PersonaAircRuntime {

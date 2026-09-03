@@ -2491,6 +2491,52 @@ fn spawn_token_forwarder(
     })
 }
 
+/// PULL the next Open card off the shared team deck for a citizen who holds no
+/// work — the kanban-pull half of team dynamics (Joel 2026-09-02: a team chooses
+/// from the deck; they don't each work a fixed pushed pile). Deterministic: the
+/// substrate claims the card when she is free, so a pull never depends on the
+/// model emitting a claim tool call. WIP-limited to one by construction — the
+/// caller only reaches here when she holds nothing workable, and once she holds
+/// the pulled card the held-work branch works it before this fires again.
+/// Returns true iff she pulled a card (now holds it).
+async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn PersonaConversation) -> bool {
+    let Some(citizen) = conversation.stream_citizen() else {
+        return false;
+    };
+    let Some(next) =
+        crate::cognition::bench_round::next_pullable_card(ctx.identity.peer_id.as_uuid())
+    else {
+        return false;
+    };
+    let card_id = airc_work::WorkCardId::from_uuid(next.card);
+    match citizen.claim_card(card_id).await {
+        Ok(true) => {
+            crate::probe!(
+                class = "bench.round.pulled",
+                persona = %ctx.identity.agent_name,
+                card_id = %next.card,
+                room = %next.run_room,
+                "pulled the next Open card off the shared team deck — kanban pull; \
+                 the held-work loop works it next tick"
+            );
+            true
+        }
+        // A teammate pulled it first — a lost race on a shared deck is normal, not
+        // a fault; she simply tries the next card on a later tick.
+        Ok(false) => false,
+        Err(e) => {
+            crate::probe!(
+                class = "bench.round.pull_failed",
+                persona = %ctx.identity.agent_name,
+                card_id = %next.card,
+                error = %e,
+                "pull (claim) failed — will retry next tick"
+            );
+            false
+        }
+    }
+}
+
 async fn run_self_cycle(
     ctx: &HostedPersona,
     conversation: &mut dyn PersonaConversation,
@@ -2570,6 +2616,16 @@ async fn run_self_cycle(
         // Engaged. Without this she works one tick, is judged "nothing new", and
         // backs off toward the rest cap — the opposite of "virtually no time between
         // contexts" while a card is in her hands. (LATENCY LAW / #the-build-order.)
+        *last_burst_fp = last_burst_fp.wrapping_add(1);
+        return;
+    }
+    // No held card to work — PULL the next Open card off the shared team deck
+    // (kanban pull, Joel 2026-09-02: a team chooses from the deck, they don't work
+    // a fixed pushed pile). Deterministic (the substrate pulls when she is free,
+    // not an LLM claim tool), WIP-limited to one by construction: once she holds
+    // the pulled card the held-work branch above works it and this branch won't
+    // fire again until it settles. Pulling IS engagement → hold the fast beat.
+    if try_pull_next_card(ctx, conversation).await {
         *last_burst_fp = last_burst_fp.wrapping_add(1);
         return;
     }
@@ -4923,6 +4979,52 @@ mod tests {
             advanced[0].1,
             CardState::Closed,
             "a reasoned 'PASS: done' concludes the card (Closed)"
+        );
+    }
+
+    // what this catches: kanban PULL — an idle team member grabs the next Open
+    // card off the shared deck (Joel 2026-09-02: a team chooses from the deck,
+    // they don't each work a fixed pushed pile). Pins next_pullable_card (an Open
+    // card in a round the peer is a member of is pullable, puller becomes assignee)
+    // AND the deterministic pull wiring (try_pull_next_card claims it through the
+    // citizen handle — no LLM claim tool). Load-balancing + resilience follow from
+    // this being pull, not push.
+    #[tokio::test]
+    async fn an_idle_member_pulls_the_next_card_off_the_shared_deck() {
+        use crate::cognition::bench_round;
+        let peer = Uuid::new_v4();
+        let round_id = Uuid::new_v4();
+        let card_uuid = Uuid::new_v4();
+        bench_round::open_round(
+            round_id,
+            "swe-bench-verified-mini",
+            bench_round::WorkDriver::Citizen,
+        );
+        bench_round::set_round_team(round_id, vec![peer]);
+        bench_round::add_card(round_id, card_uuid);
+
+        // A team member with an Open card on the board → it is pullable, and the
+        // puller becomes its assignee.
+        let next = bench_round::next_pullable_card(peer)
+            .expect("an Open card in her team round is pullable");
+        assert_eq!(next.card, card_uuid);
+        assert_eq!(next.assignee, peer, "the puller becomes the assignee");
+
+        // An idle citizen (holds nothing) pulls it through the deterministic path.
+        let hosted = hosted_with_heuristic(peer);
+        let stub = StubAircCitizen::new(peer);
+        let recorder = stub.claim_recorder();
+        let conversation = ScriptedConversation::new()
+            .with_citizen(Arc::new(stub) as Arc<dyn crate::persona::airc_citizen::AircCitizen>);
+
+        let pulled = try_pull_next_card(&hosted, &conversation).await;
+        assert!(pulled, "an idle member pulls the next Open card off the deck");
+        let claimed = recorder.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert_eq!(claimed.len(), 1, "exactly one pull, got {claimed:?}");
+        assert_eq!(
+            claimed[0].as_uuid(),
+            card_uuid,
+            "she pulled the deck's Open card"
         );
     }
 }

@@ -749,6 +749,38 @@ pub fn unworked_citizen_cards() -> Vec<NextCard> {
         .collect()
 }
 
+/// The next card a MEMBER can PULL from a shared team deck — kanban PULL, not
+/// push. The first non-terminal card, with no live run, in any Working Citizen
+/// round the peer belongs to (in its `team`, or already an assignee somewhere in
+/// it), that is NOT already assigned to a DIFFERENT member (never poach a
+/// teammate's card; Open or hers is fair game). `assignee` is the PULLER — she is
+/// claiming it. Personifies a human team: when free, you take the next card off
+/// the board rather than working a fixed pile pushed onto you (Joel 2026-09-02).
+/// Load-balances (a fast member pulls more) and is resilient (a dropped member's
+/// un-pulled cards stay in the deck for anyone).
+pub fn next_pullable_card(peer: Uuid) -> Option<NextCard> {
+    let rounds = ROUNDS.lock().expect("bench rounds mutex");
+    let live = live_run_ids();
+    rounds
+        .values()
+        .filter(|r| r.stage == RoundStage::Working && r.driver == WorkDriver::Citizen)
+        .filter(|r| r.team.contains(&peer) || r.card_assignees.values().any(|a| *a == peer))
+        .find_map(|r| {
+            r.cards
+                .iter()
+                .filter(|(_, state)| state.is_none())
+                .filter(|(c, _)| !live.contains(&format!("claim-{}", c)))
+                .filter(|(c, _)| r.card_assignees.get(*c).map_or(true, |a| *a == peer))
+                .map(|(c, _)| NextCard {
+                    card: *c,
+                    assignee: peer,
+                    run_room: r.round_id,
+                    teammates: r.team.clone(),
+                })
+                .next()
+        })
+}
+
 /// Total OPEN (non-terminal) cards across every Working round — the board-side
 /// LANE DEMAND. Queued benchmark work is demand the serving plan must see:
 /// measured live 2026-08-27, the plan converged to 1 lane after a 4-way cohort
