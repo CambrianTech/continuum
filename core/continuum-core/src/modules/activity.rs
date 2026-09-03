@@ -506,6 +506,30 @@ pub async fn spawn_activity_room(
         ),
     )?;
     let resolved_params = resolve_params(&recipe_def, params)?;
+    // WHERE IT ROOTS: an explicit parent wins (a sub-activity nests under the activity
+    // that spawned it); else the recipe's declared BASE (a benchmark round is learning →
+    // `academy`, by what it is); else nowhere in particular (the spawner's context). The
+    // base room is resolved by name WITHOUT moving the spawner's focus (airc's Keep join).
+    let parent = match parent {
+        Some(p) => Some(p),
+        None => match recipe_def.base.as_deref() {
+            Some(base) => match airc.subscribe_room(base).await {
+                Ok(room) => Some(room.channel),
+                Err(source) => {
+                    crate::probe!(
+                        class = "activity.base_unresolved",
+                        recipe = %recipe,
+                        base = %base,
+                        error = %source.to_string(),
+                        "the recipe's base room could not be resolved — the activity roots \
+                         top-level this time"
+                    );
+                    None
+                }
+            },
+            None => None,
+        },
+    };
     {
         // `join` IS room creation in airc: it derives the channel from the name,
         // subscribes this peer, and publishes presence. Reusing it keeps ONE room
@@ -938,6 +962,18 @@ mod tests {
         use super::*;
         use crate::experience::recipe::ExperienceRecipe;
         use std::collections::BTreeMap;
+
+        // what this catches: the shipped benchmark recipe declares `academy` as its base —
+        // a round is LEARNING and roots there by what it is, not by where the curator
+        // stood. Losing this line would drop every round to a flat top-level room again.
+        #[test]
+        fn the_benchmark_recipe_roots_in_the_academy() {
+            let recipe = crate::experience::recipe::ExperienceRecipe::from_json(
+                include_str!("../experience/recipes/benchmark.json"),
+            )
+            .expect("shipped recipe parses");  // test: the embedded recipe is authored JSON
+            assert_eq!(recipe.base.as_deref(), Some("academy"));
+        }
 
         fn recipe_with_params() -> ExperienceRecipe {
             ExperienceRecipe::from_json(
