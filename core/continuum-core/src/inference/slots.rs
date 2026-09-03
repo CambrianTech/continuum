@@ -35,7 +35,12 @@ use uuid::Uuid;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::paging::pool::{PagedResourcePool, PoolConfig};
+use crate::paging::pool::{PagedResourcePool, PinHandle, PoolConfig};
+
+/// A slot pinned for the duration of a turn — while held, the pool cannot evict
+/// this activity's slot, so a concurrent returner never leases (and restores into)
+/// a slot that is still decoding. RAII: dropping it releases the pin.
+pub type SlotPin = PinHandle<ActivityKey, std::sync::Arc<KvSlotLease>>;
 
 /// How a request may touch serving slots — the traffic-class policy, AS DATA
 /// (one tested map over the existing `purpose` strings, answering the
@@ -358,6 +363,16 @@ impl KvSlotPool {
             save_first,
             restore,
         })
+    }
+
+    /// Pin this activity's slot for the duration of a turn. While the returned
+    /// [`SlotPin`] is held, priced eviction skips this slot, so a concurrent
+    /// returner can never lease (and restore into) a slot that is still decoding
+    /// this turn's KV — the decoupling that forced the old restore timeout. RAII:
+    /// drop the handle to release. `None` if the activity is not resident (nothing
+    /// to protect — a caller that just leased it will always get `Some`).
+    pub fn pin(&self, key: &ActivityKey) -> Option<SlotPin> {
+        self.pool.pin(key)
     }
 
     /// Record that `key`'s page was successfully written to disk — it becomes
