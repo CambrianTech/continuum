@@ -152,9 +152,14 @@ the citizen's executor (one claim path, driver-gated); the ambient permit gates 
 musing tail. Live: a 12-card citizen round to 12 residents, no teammates — 7 distinct
 pullers across two boots (vs. the assignee-only ~3), each staged `Ready` in her own
 workspace, held cards resumed through the normal work gate after `reboot --force` with no
-re-fire. Remaining (plan `jazzy-wishing-milner`): driver/roster on the room binding, the
-tracker as a board projection on the module lifecycle, delete the re-say (40 fired this
-boot for pre-claimed legacy cards — pure compensation now).
+re-fire. Follow-ups the same day (58e75cbde, 54517c26d): the pull enforces WIP=1 itself; one
+deck kickoff per citizen round (was 12 addressed kickoffs = 12 inbound turns per resident);
+held-work freshness saved WITH the round (the ephemeral map a reboot emptied was why the
+standing autopilot minted 30 duplicate verified-mini rounds); the kickoff re-say deleted
+(40 fired on one boot for pre-claimed legacy cards — pure compensation). Measured after:
+9 distinct citizens producing work acts in a 14-minute window; throughput is lane-bound.
+Remaining (plan `jazzy-wishing-milner`): driver/roster on the room binding, the tracker as
+a board projection on the module lifecycle, re-fire scoped to DetachedSolve.
 
 **S4 — One governed serving/paging pattern.** Collapse the scattered controls (S5 in
 the findings) into a single lease/admission concern at the lowest trait — the CBAR
