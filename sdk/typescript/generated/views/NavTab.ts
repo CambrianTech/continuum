@@ -49,4 +49,12 @@ parent_ref: string,
  * Display labels humanize; URIs address; UUIDs identify — three jobs,
  * never conflated (Joel, 2026-08-30).
  */
-display_label: string, };
+display_label: string, 
+/**
+ * Whether the citizen has this activity OPEN — selected it at least once
+ * (`nav/select`) and not closed it (`nav/close`) — as opposed to merely
+ * present in the room set. The rail lists the SET; the tab strip renders
+ * only the opened ones (caught live 2026-09-03: 49 identical tabs, one per
+ * room the daemon knew). The current tab is always opened.
+ */
+opened: boolean, };

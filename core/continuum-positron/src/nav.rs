@@ -106,6 +106,13 @@ pub struct NavTab {
     /// never conflated (Joel, 2026-08-30).
     #[serde(default)]
     pub display_label: String,
+    /// Whether the citizen has this activity OPEN — selected it at least once
+    /// (`nav/select`) and not closed it (`nav/close`) — as opposed to merely
+    /// present in the room set. The rail lists the SET; the tab strip renders
+    /// only the opened ones (caught live 2026-09-03: 49 identical tabs, one per
+    /// room the daemon knew). The current tab is always opened.
+    #[serde(default)]
+    pub opened: bool,
 }
 
 /// A pinned quick-nav target — the citizen's bookmarks (rooms, content,
@@ -211,6 +218,7 @@ mod tests {
             purpose: "chat".into(),
             parent_ref: String::new(),
             display_label: String::new(),
+            opened: true,
         });
         nav.last_read.insert("room-a".into(), 1_700_000_000_000);
         nav.current_tab = Some("room-a".into());

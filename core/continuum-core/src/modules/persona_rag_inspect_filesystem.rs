@@ -42,6 +42,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use uuid::Uuid;
 
 use crate::ai::adapter::AIProviderAdapter;
 use crate::context::citizens_kind_dir;
@@ -99,6 +100,33 @@ impl FilesystemPersonaResolver {
             .map_err(|e| format!("read_seed at {}: {e}", seed_path.display()))
     }
 
+    /// The on-disk agent name for a persona id — a scan of the citizen seeds
+    /// (`citizens/personas/<name>/seed.json`), the ONE layout `seed_path_for`
+    /// reads. Fails loud naming the id when no seed carries it.
+    pub async fn agent_name_for_id(continuum_root: &Path, id: Uuid) -> Result<String, String> {
+        let dir = citizens_kind_dir(continuum_root, IdentityKind::Persona);
+        let mut entries = tokio::fs::read_dir(&dir)
+            .await
+            .map_err(|e| format!("read citizens dir {}: {e}", dir.display()))?;
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|e| format!("scan citizens dir {}: {e}", dir.display()))?
+        {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let Ok(seed) = read_seed(&seed_path_for(continuum_root, &name)).await else {
+                continue; // not a citizen dir (no seed) — skip, never fail the scan
+            };
+            if seed.persona_id() == id {
+                return Ok(name);
+            }
+        }
+        Err(format!(
+            "no persona seed under {} carries id {id}",
+            dir.display()
+        ))
+    }
+
     /// Compute the airc home for a persona — exposed for tests +
     /// the production demo binary that needs the same path.
     ///
@@ -116,7 +144,16 @@ impl FilesystemPersonaResolver {
 
 #[async_trait]
 impl PersonaResolver for FilesystemPersonaResolver {
-    async fn resolve(&self, name: &str) -> Result<PersonaResolution, String> {
+    async fn resolve(&self, name_or_id: &str) -> Result<PersonaResolution, String> {
+        // A peer id is as good an address as a name: every page that holds a
+        // citizen holds her id (the directory seed, a roster row, a card owner),
+        // and the mind page inspects by it (caught live 2026-09-03 — the web had
+        // to map id→name itself). The name stays the on-disk key.
+        let name = match Uuid::parse_str(name_or_id.trim()) {
+            Ok(id) => Self::agent_name_for_id(&self.continuum_root, id).await?,
+            Err(_) => name_or_id.to_string(),
+        };
+        let name = name.as_str();
         let seed = Self::read_persona_seed(&self.continuum_root, name).await?;
         let persona_id = seed.persona_id();
 
@@ -182,6 +219,29 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let json = serde_json::to_string_pretty(seed).unwrap();
         std::fs::write(path, json).unwrap();
+    }
+
+    // what this catches: the mind page addresses a citizen by her PEER ID; the
+    // resolver must find her seed by id, not only by the on-disk name.
+    #[tokio::test]
+    async fn a_persona_id_resolves_to_its_on_disk_agent_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let persona_id = Uuid::from_u128(0xBEEF);
+        let seed = PersonaSeedFile::V1 {
+            persona_id,
+            agent_name: "Kira".to_string(),
+            created_at_ms: 1_700_000_000_000,
+            avatar_vrm: None,
+        };
+        write_seed_file(tmp.path(), "Kira", &seed);
+        let name = FilesystemPersonaResolver::agent_name_for_id(tmp.path(), persona_id)
+            .await
+            .unwrap();
+        assert_eq!(name, "Kira");
+        let err = FilesystemPersonaResolver::agent_name_for_id(tmp.path(), Uuid::from_u128(1))
+            .await
+            .unwrap_err();
+        assert!(err.contains("carries id"), "{err}");
     }
 
     // ── read_persona_seed (no airc daemon required) ─────────────

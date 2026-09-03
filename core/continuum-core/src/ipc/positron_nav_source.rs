@@ -77,6 +77,9 @@ pub struct NavActivity {
     /// The last-read cursor for this activity's room (ms/lamport), when it is
     /// a room. `None` for activities with no read cursor.
     pub last_read: Option<i64>,
+    /// The citizen has this activity open (selected, not closed) — the tab
+    /// strip's membership test; the rail lists every activity regardless.
+    pub opened: bool,
 }
 
 /// The citizen's raw nav facts, re-read from authority on each change. The
@@ -137,6 +140,7 @@ pub fn project_nav(user: Uuid, snap: NavSnapshot) -> NavViewState {
                     purpose: a.purpose,
                     parent_ref,
                     display_label,
+                    opened: a.opened,
                 }
             }
         })
@@ -172,11 +176,13 @@ pub fn project_nav(user: Uuid, snap: NavSnapshot) -> NavViewState {
 struct CitizenNav {
     /// The current tab (the last `nav/select`).
     current: Option<(String, NavTargetKind)>,
-    /// The citizen's OPEN non-room activities, in open order. Selecting a
-    /// persona OPENS a tab (activity == room == tab — a durable member of
-    /// the set, not a transient content overlay); selecting another persona
-    /// adds a SECOND tab, never replaces the first. Rooms don't live here —
-    /// the room-set fold carries them. A `nav/close` verb removes entries.
+    /// The citizen's OPEN activities, in open order — every `nav/select`
+    /// target of any kind, until `nav/close`. A persona select OPENS a tab
+    /// (activity == room == tab — a durable member of the set, not a transient
+    /// content overlay); a room select marks that room opened so the tab strip
+    /// can render the citizen's tabs rather than the whole room set. Only the
+    /// non-room entries surface as EXTRA tabs; rooms already come from the
+    /// room-set fold and merely read `opened`.
     open: Vec<(String, NavTargetKind)>,
 }
 
@@ -202,13 +208,29 @@ impl NavFocus {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&user)
-            .map(|n| n.open.clone())
+            .map(|n| {
+                n.open
+                    .iter()
+                    .filter(|(_, kind)| *kind != NavTargetKind::Room)
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default()
+    }
+
+    /// Whether the citizen has `target` open (selected and not since closed),
+    /// whatever its kind — the tab strip's membership test.
+    pub fn is_open(&self, user: Uuid, target: &str) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&user)
+            .is_some_and(|n| n.open.iter().any(|(t, _)| t == target))
     }
 
     /// Set the citizen's current tab (+ its activity kind), returning the
     /// PREVIOUS focus (the activity being left — when it's a room, the
-    /// `markRead` sibling advances its cursor). A non-room select also OPENS
+    /// `markRead` sibling advances its cursor). Every select also OPENS
     /// the activity: it joins the citizen's tab set if not already there.
     pub fn focus(
         &self,
@@ -218,7 +240,7 @@ impl NavFocus {
     ) -> Option<(String, NavTargetKind)> {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let nav = inner.entry(user).or_default();
-        if kind != NavTargetKind::Room && !nav.open.iter().any(|(t, _)| *t == target) {
+        if !nav.open.iter().any(|(t, _)| *t == target) {
             nav.open.push((target.clone(), kind.clone()));
         }
         nav.current.replace((target, kind))
@@ -476,6 +498,14 @@ impl NavReader for ChannelBookmarksNavReader {
         // sync, and the staged digest is the sync-side truth it already has.)
         let digests = global_channel_digest_buffer();
         let rooms = self.rooms.borrow().clone();
+        let focus_store = global_nav_focus();
+        let focus = focus_store.current(user);
+        // Before any select, the first room stands in as current — and is the
+        // one opened tab, so a fresh citizen sees one tab, never zero.
+        let current = focus
+            .as_ref()
+            .map(|(target, _)| target.clone())
+            .or_else(|| rooms.keys().next().map(|r| r.to_string()));
         let activities = rooms
             .iter()
             .map(|(room, title)| {
@@ -510,17 +540,15 @@ impl NavReader for ChannelBookmarksNavReader {
                     purpose: self.purpose.purpose_for(*room),
                     parent: self.purpose.parent_for(*room).map(|p| p.to_string()),
                     last_read: Some(last as i64),
+                    opened: current.as_deref() == Some(room.to_string().as_str())
+                        || focus_store.is_open(user, &room.to_string()),
                 }
             })
             .collect();
         let mut activities: Vec<NavActivity> = activities;
         // Current = the citizen's EXPLICIT focus (the `nav/select` write —
         // surfaced verbatim: what the citizen selected is the truth, even if
-        // the fold hasn't observed that room yet). Before any select, the
-        // first room stands in — the honest pre-focus view for a fresh
-        // citizen, unchanged from the pre-nav/select behavior.
-        let focus_store = global_nav_focus();
-        let focus = focus_store.current(user);
+        // the fold hasn't observed that room yet).
         // EVERY open non-room activity surfaces as its OWN tab (`activity ==
         // room == tab`): selecting a persona OPENED a durable tab, and opening
         // a second persona adds a SECOND tab — never a swap (glass-boxed live
@@ -545,11 +573,9 @@ impl NavReader for ChannelBookmarksNavReader {
                 purpose: "persona".to_string(),
                 last_read: None,
                 parent: None,
+                opened: true, // it is here BECAUSE it was opened
             });
         }
-        let current = focus
-            .map(|(target, _)| target)
-            .or_else(|| rooms.keys().next().map(|r| r.to_string()));
         NavSnapshot {
             current,
             activities,
@@ -751,6 +777,40 @@ mod tests {
         assert_eq!(view.open_tabs[0].parent_ref, academy.to_string());
     }
 
+    // what this catches: the strip's membership — a selected ROOM reads opened
+    // (and is remembered until closed) yet never surfaces as an EXTRA tab, which
+    // would duplicate the room-set fold's row (49 identical tabs, live 2026-09-03).
+    #[test]
+    fn a_room_select_opens_the_tab_without_duplicating_the_room_set_row() {
+        let focus = NavFocus::default();
+        let user = Uuid::new_v4();
+        let room = Uuid::new_v4().to_string();
+        let persona = Uuid::new_v4().to_string();
+        assert!(!focus.is_open(user, &room));
+        focus.focus(user, room.clone(), NavTargetKind::Room);
+        focus.focus(user, persona.clone(), NavTargetKind::Persona);
+        assert!(focus.is_open(user, &room));
+        assert!(focus.is_open(user, &persona));
+        let extra = focus.open_activities(user);
+        assert_eq!(extra, vec![(persona.clone(), NavTargetKind::Persona)]);
+        focus.close(user, &room);
+        assert!(!focus.is_open(user, &room));
+        let snap = NavSnapshot {
+            current: Some(room.clone()),
+            activities: vec![room_opened(&room, true), room_opened(&persona, false)],
+            bookmarks: vec![],
+        };
+        let view = project_nav(user, snap);
+        assert!(view.open_tabs[0].opened);
+        assert!(!view.open_tabs[1].opened);
+    }
+
+    fn room_opened(id: &str, opened: bool) -> NavActivity {
+        let mut a = room(id, "r", 0, 0);
+        a.opened = opened;
+        a
+    }
+
     struct StubNav(NavSnapshot);
     impl NavReader for StubNav {
         fn nav_snapshot(&self, _user: Uuid) -> NavSnapshot {
@@ -767,6 +827,7 @@ mod tests {
             purpose: "chat".into(),
             last_read: Some(last_read),
             parent: None,
+            opened: false,
         }
     }
 

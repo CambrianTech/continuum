@@ -183,6 +183,31 @@ export class DomSurface implements Surface<DomViewSpec, DomAction> {
       console.error(`[page-error] ${String(err).slice(0, 400)}`);
     });
     await page.goto(opts.url, { waitUntil: 'networkidle' });
+    // networkidle is not "at rest": an app that routes on a websocket envelope
+    // (a deep link resolving once the nav state arrives) is still repainting
+    // after the network goes quiet — caught live 2026-09-03 as a frame of the
+    // landing room with the deep-linked page already in the structure. Wait
+    // for the DOM to stop mutating (a quiet window, bounded) before observing.
+    await page.evaluate(
+      ({ quietMs, capMs }) =>
+        new Promise<void>((resolve) => {
+          let timer = window.setTimeout(resolve, quietMs);
+          const cap = window.setTimeout(() => {
+            observer.disconnect();
+            resolve();
+          }, capMs);
+          const observer = new MutationObserver(() => {
+            window.clearTimeout(timer);
+            timer = window.setTimeout(() => {
+              observer.disconnect();
+              window.clearTimeout(cap);
+              resolve();
+            }, quietMs);
+          });
+          observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+        }),
+      { quietMs: 600, capMs: 5000 },
+    );
     return new DomSurface(browser, page);
   }
 
