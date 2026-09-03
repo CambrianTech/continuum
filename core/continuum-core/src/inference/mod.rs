@@ -60,6 +60,7 @@ pub mod model_commands;
 pub mod ort_providers;
 pub mod placement_capture;
 pub mod recipe_budget;
+pub mod request_body;
 pub mod serving_guard;
 pub mod throughput_expectation;
 pub mod turn_admission;
