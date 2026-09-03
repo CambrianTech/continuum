@@ -196,6 +196,11 @@ pub struct PersonaAircRuntime {
     /// `[[no-fallbacks-ever]]`, never declaring a silently-
     /// unaddressable persona ready.
     command_pump: Option<crate::persona::command_inbound_pump::PersonaCommandInboundPump>,
+    /// The substrate command executor, kept so this citizen's OWN deterministic acts
+    /// (the kanban pull's claim) ride the same command path her tool calls do —
+    /// `work/claim` stages her workspace and honors the room's driver; a raw airc
+    /// claim bypassed both. `None` only before the pump is installed (boot ordering).
+    executor: Option<Arc<crate::runtime::command_executor::CommandExecutor>>,
     /// The airc `Alive` heartbeat pump (`start_agent_heartbeat`). A persona is
     /// only PRESENT in another citizen's `room_roster` while it emits `Alive`
     /// heartbeats — airc's `active_agents` reduces heartbeat events, NOT `say()`
@@ -499,6 +504,7 @@ impl PersonaAircRuntime {
                     agent_name: agent_name.clone(),
                     source,
                 })?;
+        let executor_for_acts = Arc::clone(&executor);
         let command_pump = crate::persona::command_inbound_pump::PersonaCommandInboundPump::spawn(
             persona_id,
             Arc::clone(&airc_arc),
@@ -963,6 +969,7 @@ impl PersonaAircRuntime {
             membership_epoch: tokio::sync::watch::channel(0u64).0,
             inbound_handle: None,
             command_pump: Some(command_pump),
+            executor: Some(executor_for_acts),
             heartbeat,
             identity_republish,
             source,
@@ -1035,6 +1042,7 @@ impl PersonaAircRuntime {
             // automatically; this seam is for tests + demo binaries
             // that want fine-grained control.
             command_pump: None,
+            executor: None,
             // Presence is opt-out here for the same reason as the command pump:
             // `from_attached` is sync and `start_agent_heartbeat` is async. The
             // live `bootstrap` path always starts the pump; test/demo callers
@@ -1071,6 +1079,7 @@ impl PersonaAircRuntime {
                     agent_name: self.agent_name.clone(),
                     source,
                 })?;
+        self.executor = Some(Arc::clone(&executor));
         let pump = crate::persona::command_inbound_pump::PersonaCommandInboundPump::spawn(
             self.persona_id,
             Arc::clone(&self.airc),
@@ -1274,6 +1283,84 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
     /// #170: delegate to airc-lib's ephemeral stream-chunk publish.
     async fn publish_stream_chunk(&self, chunk: &airc_lib::StreamChunk) -> Result<(), AircError> {
         self.airc.publish_stream_chunk(chunk).await.map(|_| ())
+    }
+
+    /// Route the WRITE through the ONE shared card-lifecycle path
+    /// (`work::advance_card_state`) so the change + the in-process
+    /// grade/lifecycle emit fire exactly as the `work/state` verb's do — the
+    /// held-work settle edge and the verb are one transition, not two.
+    async fn advance_card_to(
+        &self,
+        card_id: airc_lib::WorkCardId,
+        state: airc_lib::CardState,
+    ) -> Result<(), String> {
+        crate::modules::work::advance_card_state(&self.airc, card_id, state, "held-work-settle")
+            .await
+    }
+
+    async fn claim_card(&self, card_id: airc_lib::WorkCardId) -> Result<bool, String> {
+        // ONE claim path. The pull rides `work/claim` as this citizen — the same
+        // verb her tool call would use — so the on-claim staging and the room's
+        // driver gate apply to a pulled card exactly as to a claimed one. Before
+        // this, the pull called airc's claim directly and a pulled card was never
+        // staged for the puller (2026-09-03).
+        let Some(executor) = self.executor.as_ref() else {
+            return Err(
+                "no command executor installed on this runtime yet — the pull must ride \
+                 `work/claim` (boot ordering: install_command_pump precedes hosting)"
+                    .to_string(),
+            );
+        };
+        let caller = crate::routing::CallerIdentity::airc(crate::identity::PeerId::from_uuid(
+            self.persona_id,
+        ));
+        let params = serde_json::json!({ "card_id": card_id.as_uuid().to_string() });
+        match executor
+            .execute_with_caller("work/claim", params, Some(caller))
+            .await
+        {
+            Ok(_) => Ok(true),
+            // A teammate pulled it first — `work/claim` refuses contention as
+            // `Denied`, which the typed dispatch renders as `<name>: [denied] …`. A
+            // lost race on a shared deck is normal, not an error; she tries the next.
+            Err(e) if e.contains("[denied]") => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn subscribed_rooms(&self) -> Result<Vec<Uuid>, AircError> {
+        let set = self.airc.subscription_set().await?;
+        Ok(set
+            .all()
+            .map(|sub| sub.as_room().channel.as_uuid())
+            .collect())
+    }
+
+    async fn claimable_cards_in(&self, room: Uuid, now_ms: u64) -> Result<Vec<Uuid>, AircError> {
+        let board = crate::persona::room_board_source::RoomBoardReader::work_board(
+            self.airc.as_ref(),
+            Some(room),
+        )
+        .await?;
+        let me = self.airc.peer_id();
+        Ok(board
+            .cards
+            .iter()
+            .filter(|c| crate::persona::card_holder::claimable_now(c, now_ms))
+            // A review card is never offered to the owner of the card it reviews:
+            // the reviewer is the fresh pair of eyes by construction.
+            .filter(|c| {
+                c.reviews.map_or(true, |parent| {
+                    board
+                        .cards
+                        .iter()
+                        .find(|p| p.card_id == parent)
+                        .and_then(|p| p.owner)
+                        != Some(me)
+                })
+            })
+            .map(|c| c.card_id.as_uuid())
+            .collect())
     }
 }
 

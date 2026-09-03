@@ -38,13 +38,17 @@ use crate::persona::supervisor::HostedPersona;
 ///
 /// Called from BOTH turn outcomes — after she speaks, and after she passes — because
 /// holding work is what makes the question relevant, not the speak decision.
+/// Returns `true` if she held work and a held-work turn was driven this call —
+/// so a caller (the self-tick) can skip a redundant musing cycle when the
+/// heartbeat already advanced her claimed card. `false` when there was no cycle,
+/// no citizen, or no held work.
 pub(crate) async fn ask_the_act_question(
     ctx: &HostedPersona,
     conversation: &mut dyn PersonaConversation,
     lamport: u64,
     turn_room: uuid::Uuid,
     directed: bool,
-) {
+) -> bool {
     // Her cognition cycle, fetched the same way the turn loop fetches it — passing it
     // in would thread a borrow through the whole turn for one optional branch.
     let Some(cycle) =
@@ -56,7 +60,7 @@ pub(crate) async fn ask_the_act_question(
             decision = "no_cycle",
             "act-question skipped: no WorkspaceCycle registered for this citizen"
         );
-        return;
+        return false;
     };
     // THE SECOND QUESTION (BigMama's gate-conflation diagnosis,
     // verified in-file 2026-08-08; the root under Joel's "missing
@@ -138,6 +142,18 @@ pub(crate) async fn ask_the_act_question(
             );
             {
                 if !held.is_empty() {
+                    // Stamp held-work freshness for EACH card she is about to work,
+                    // so the round verdict + the standing autopilot can see Citizen
+                    // progress (which leaves no detached-solve ledger entry). Without
+                    // this the round reads "unstarted" while she works and the
+                    // autopilot piles up duplicate rounds (A / #the-9-1-night-audit).
+                    let worked_at = crate::persona::trace::now_ms();
+                    for c in &held {
+                        crate::cognition::bench_round::record_card_worked(
+                            c.card_id.as_uuid(),
+                            worked_at,
+                        );
+                    }
                     let burst_text = held_work_burst(&held);
                     // The producer's CONTEXT half, kept before the burst is
                     // moved into the driver — one construction, so the
@@ -176,11 +192,26 @@ pub(crate) async fn ask_the_act_question(
                     // EVERY exit — #312: after a flask solve, Anwen's live
                     // self was still reading the exam repo hours later.
                     // Non-bench cards resolve to None and nothing moves.
-                    let card_workspace =
+                    // A REVIEW card roots her hands in the OWNER's checkout (the fix
+                    // under review lives there); any other held card resolves to her
+                    // own staged instance as before.
+                    let review_workspace = held
+                        .iter()
+                        .filter_map(|c| crate::commands::benchmark::parse_review_title(&c.title))
+                        .find_map(|instance| {
+                            let copies = crate::persona::staged_workspace::owners_of(&instance);
+                            copies
+                                .iter()
+                                .find(|c| c.has_work)
+                                .or_else(|| copies.first())
+                                .map(|c| c.path.clone())
+                        });
+                    let card_workspace = review_workspace.or_else(|| {
                         crate::persona::staged_workspace::workspace_for_held_cards(
                             &ctx.identity.peer_id.as_uuid(),
                             held.iter().map(|c| c.title.as_str()),
-                        );
+                        )
+                    });
                     let work_hands = match &card_workspace {
                         Some(ws) => {
                             let hands =
@@ -311,14 +342,91 @@ pub(crate) async fn ask_the_act_question(
                                 text.clone(),
                             );
                         }
-                        crate::cognition::act_observe::SettleStep::Passed => {
-                            crate::probe!(
-                                class = "persona.turn.work",
-                                persona = %ctx.identity.agent_name,
-                                lamport = lamport,
-                                decision = "passed",
-                                "work-turn passed — her choice, honored"
-                            );
+                        crate::cognition::act_observe::SettleStep::Passed { reason } => {
+                            // THE DETERMINISTIC COMPLETION EDGE. A pass now carries a
+                            // REASON (her own words), and the substrate ACTS on it at
+                            // the turn boundary instead of waiting on the LLM to call a
+                            // `work/state` tool (unreliable) or a 3-min sweep to notice
+                            // (Rube-Goldberg polling). Recipe-general: the held card may
+                            // be a benchmark solve, a code task, a Slack/AWS/finance
+                            // pipeline item — the edge only transitions the card; the
+                            // recipe that OWNS it reacts to WORK_CARD_STATE_CHANGED
+                            // (bench grade-on-done is one such reactor, next_unworked
+                            // another). [[activity-outcome-score-is-recipe-owned-gates-multiply-objectives-weigh]]
+                            use crate::cognition::pass_intent::{
+                                classify_pass, conclude_from_pass, ConcludeAction,
+                            };
+                            let held_ids: Vec<uuid::Uuid> =
+                                held.iter().map(|c| c.card_id.as_uuid()).collect();
+                            let intent = classify_pass(reason.as_deref());
+                            // The DECISION is a pure, exhaustively-tested function
+                            // (`conclude_from_pass`); this arm only EXECUTES it — so the
+                            // logic under test is the logic that runs (compression).
+                            match conclude_from_pass(&held_ids, intent) {
+                                ConcludeAction::Close(id) => {
+                                    // One held card + a reasoned 'done' → conclude it
+                                    // through the ONE shared card-lifecycle path (same
+                                    // change+emit the `work/state` verb uses), so the
+                                    // owning recipe's outcome fires NOW. Quality is the
+                                    // recipe's to score — an empty deliverable grades an
+                                    // honest fail, never a substrate second-guess.
+                                    let card_id = airc_work::WorkCardId::from_uuid(id);
+                                    match citizen
+                                        .advance_card_to(card_id, airc_work::CardState::Closed)
+                                        .await
+                                    {
+                                        Ok(()) => crate::probe!(
+                                            class = "work.settle.deterministic",
+                                            persona = %ctx.identity.agent_name,
+                                            lamport = lamport,
+                                            card_id = %id,
+                                            reason = reason.as_deref().unwrap_or(""),  // unwrap_or: no reason given = empty field on the probe
+                                            "held card concluded at the turn boundary on a \
+                                             reasoned 'done' — the owning recipe's outcome \
+                                             fires now, no sweep, no tool-call dependency"
+                                        ),
+                                        Err(e) => crate::probe!(
+                                            class = "work.settle.error",
+                                            persona = %ctx.identity.agent_name,
+                                            card_id = %id,
+                                            error = %e,
+                                            "reasoned 'done' but the card transition failed \
+                                             — the crash-backstop sweep still covers it"
+                                        ),
+                                    }
+                                }
+                                ConcludeAction::Ambiguous => crate::probe!(
+                                    class = "work.settle.ambiguous",
+                                    persona = %ctx.identity.agent_name,
+                                    lamport = lamport,
+                                    held = held.len() as u64,
+                                    "reasoned 'done' with multiple held cards — cannot \
+                                     tell which; leaving all held for an explicit close"
+                                ),
+                                ConcludeAction::Blocked => crate::probe!(
+                                    class = "work.blocker",
+                                    persona = %ctx.identity.agent_name,
+                                    lamport = lamport,
+                                    reason = reason.as_deref().unwrap_or(""),  // unwrap_or: no reason given = empty field on the probe
+                                    "held-work turn passed BLOCKED — card stays hers; a \
+                                     candidate substrate-gap report, not a completion"
+                                ),
+                                ConcludeAction::Nothing => crate::probe!(
+                                    class = "work.pass.nothing",
+                                    persona = %ctx.identity.agent_name,
+                                    lamport = lamport,
+                                    "held-work turn passed with nothing to contribute — a \
+                                     substrate-gap signal ([[failures-are-substrate]])"
+                                ),
+                                ConcludeAction::Hold => crate::probe!(
+                                    class = "persona.turn.work",
+                                    persona = %ctx.identity.agent_name,
+                                    lamport = lamport,
+                                    decision = "passed",
+                                    "work-turn passed with no legible completion — her \
+                                     choice, honored; nothing concluded"
+                                ),
+                            }
                         }
                         other => {
                             // Acted (results already in her working
@@ -333,8 +441,14 @@ pub(crate) async fn ask_the_act_question(
                             );
                         }
                     }
+                    // She held work and worked it this turn — tell the caller so
+                    // a self-tick can skip the redundant musing cycle.
+                    return true;
                 }
             }
         }
     }
+    // Reached only when she held no work (or no citizen was present) — nothing
+    // was driven this call.
+    false
 }

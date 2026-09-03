@@ -54,6 +54,78 @@ the voice vision structural rather than cosmetic:
    Qwen-Omni talker heads compete for the flagship seat via the SAME selftest +
    quality bar — engines are adapters; the verb is the contract.
 
+## The body (Joel 2026-09-02: "tied into animations of face/mouth and later maybe more robotically controlled")
+
+Envelope lip-sync EXISTS today (`calculate_rms_weights` → mouth morph targets), so any
+engine's speech moves the mouth now — and sentiment already drives face + gesture from
+the same source as the voice tags (Stage A). The ladder:
+
+1. **Now**: Orpheus audio → RMS envelope → mouth openness (works by construction).
+2. **Visemes from speech TOKENS** (with Stage B, or from Orpheus's stream sooner):
+   each SNAC frame is ~12ms of articulation — a small table/learned map from the
+   coarse codebook to viseme gives phoneme-accurate mouth shapes with PERFECT sync
+   and zero audio analysis, because the sound and the mouth derive from one stream.
+3. **The control bus** (the robotics door): visemes + gestures + emotion become one
+   typed control stream — today rendered by Bevy morphs, later by actuators. The
+   positron principle applied to bodies: one semantic stream, N renderers (screen
+   avatar, robot) — and the JEPA-class world-model direction rides the same bus.
+
+## The room (audited 2026-09-02, Joel: "good mixers do it well")
+
+Per-observer mix-minus is SERVER-SIDE (the WS delivery loop drops the observer's own
+frames — call_server:1516); persona TTS structurally never re-enters STT (AI
+participants carry no VAD); LiveKit legs are per-participant tracks. The remaining
+proof gap: the WEB feedback loop — browser echoes received audio back as its mic
+through the worklet path, server STT transcribes it — which also pins mix-minus from
+a real browser's POV. Carded.
+
+## Native audio IN the mind (Joel 2026-09-02: "build these into the Ornith models… so it wouldn't sound like text to speech")
+
+The end state is not a better TTS sidecar — it is speech and hearing as part of the
+persona's OWN forward pass. Orpheus proved the enabling mechanism ON OUR STACK today:
+a Llama-family model emitting SNAC codec tokens, decoded in-tree. Ornith is
+Llama-family; the same graft applies to her, staged:
+
+**Stage A — expressive mouth + tagged ears (buildable now):**
+- Orpheus conditioned by PersonaState → emotion tags; per-persona VOICE LoRA trained
+  on Orpheus by the forge (custom voice = her weights, not a preset — stops sounding
+  like TTS because prosody varies with her state, not a narrator's).
+- Audio-in gains an EVENTS channel beside STT: a small audio tagger + diarization so
+  perception reads "Joel said X — while a door closed, music under, second speaker
+  overlapping" — background vs speaker vs effects as separate, precisely named facts,
+  never flattened into one transcript string.
+
+**Invariant across every stage — THE TRANSCRIPT ALWAYS EXISTS (Joel 2026-09-02:
+"same goes for the model hearing directly… only problem is we need chat transcript
+either way").** Native audio-in is an ADDITIONAL path, never a replacement for STT:
+the room record, L1-L5 memory, RAG, and search all consume TEXT. So the pipeline is
+always audio → { STT → transcript (required, feeds chat/memory) , AND optionally the
+raw waveform → the model's own audio encoder for nuance }. A model that hears natively
+gets BOTH — the transcript for the record and the audio for the feeling — and the
+choice of whether to also embed raw audio is a per-model capability switch (the
+sensory-bridge doctrine), not a switch that can ever turn the transcript off. The STT
+leg is load-bearing forever; the same TTS↔STT selftest guards it whether or not a
+model also listens directly.
+
+**Stage B — the graft (the real ask):**
+- Extend Ornith's vocab with codec tokens; forge-train an audio-out head/LoRA:
+  (context + her thought) → speech tokens in the SAME forward pass. Mannerisms become
+  intimately cognition-coupled — hesitation, warmth, emphasis come from the state that
+  produced the sentence, because the speaking IS the thinking. Training data
+  bootstraps by distillation: her lived transcripts voiced by her Orpheus voice-LoRA
+  → (text, speech-token) pairs; later, real call audio.
+- Audio-in natively: an audio encoder (Whisper-class) through the mmproj pattern we
+  already run for vision — she embeds SOUND, not just its transcript; trained against
+  event-labeled + diarized corpora so nuance (irony in a voice, a sigh, a slammed
+  door vs a dropped cup) reaches cognition as perception, not annotation.
+
+**Stage C — full-duplex Omni lane:** streaming listen+speak on one lane; barge-in;
+the talker head as a paged expert. (The Omni-sidecar memory's end state.)
+
+Every stage holds the same bar: voice/selftest legs (TTS↔STT now; later the
+multimodal judge scoring identity/prosody/nuance), receipts on the forge alloy, and
+the genome covenant — a voice or an ear is a GENE with lineage.
+
 ## The bar
 
 *A stranger's fresh install speaks with a natural, unique per-persona voice with zero

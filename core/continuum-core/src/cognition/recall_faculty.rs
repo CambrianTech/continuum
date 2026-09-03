@@ -1560,7 +1560,7 @@ mod tests {
                     ))
                 }
                 None => Some(Contribution::verdict(
-                    Decision::Pass,
+                    Decision::pass(),
                     0.4,
                     "no memory surfaced — nothing to ground a reply on",
                 )),

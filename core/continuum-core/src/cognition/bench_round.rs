@@ -176,6 +176,29 @@ pub struct BenchRound {
     /// pronounced `unstarted`).
     #[serde(default)]
     card_instances: HashMap<Uuid, String>,
+    /// Card uuid → epoch-ms of the LATEST held-work turn a citizen drove on it. The
+    /// freshness signal a CITIZEN-driven card emits, which the detached-solve run
+    /// ledger never sees. DURABLE (save-on-write with the round) since 2026-09-03:
+    /// it used to be a process-global map that a reboot emptied, so every citizen
+    /// round read "unstarted" after a restart and the standing autopilot minted a
+    /// duplicate round per tick (30 duplicate verified-mini rounds measured). Resume
+    /// is read-the-saved-state, never re-derive.
+    #[serde(default)]
+    card_last_act_ms: HashMap<Uuid, u64>,
+    /// THE REVIEW GATE (team-recipe Arm 2, 2026-09-03): when set, an owner's `done`
+    /// on a card of this round becomes `review` + a sibling review card that a
+    /// NON-owner pulls; only the reviewer's `done` closes the parent (and fires its
+    /// grade). The one structural intervention the literature found moved SWE
+    /// scores — a fresh-context, execution-grounded verdict — as recipe DATA.
+    #[serde(default)]
+    review_gate: bool,
+    /// Review card → the parent card it reviews. A review card is round work (it is
+    /// pullable) but not a round CARD (it never counts toward the round's remaining).
+    #[serde(default)]
+    review_cards: HashMap<Uuid, Uuid>,
+    /// Parents whose review passed — their next `done` goes through.
+    #[serde(default)]
+    reviews_passed: std::collections::HashSet<Uuid>,
 }
 
 /// Where one card's solve LIVES: its per-instance activity room, the citizen
@@ -214,6 +237,10 @@ impl BenchRound {
             card_activities: HashMap::new(),
             card_assignees: HashMap::new(),
             card_instances: HashMap::new(),
+            card_last_act_ms: HashMap::new(),
+            review_gate: false,
+            review_cards: HashMap::new(),
+            reviews_passed: Default::default(),
             team: Vec::new(),
         }
     }
@@ -266,6 +293,28 @@ impl BenchRound {
 /// answers from the reloaded round.
 static ROUNDS: LazyLock<Mutex<HashMap<Uuid, BenchRound>>> =
     LazyLock::new(|| Mutex::new(load_rounds_in(&rounds_state_dir())));
+
+/// Stamp that a citizen drove a held-work turn on `card_id` at `now_ms` — called
+/// from the held-work turn boundary so `enrich_rounds` can see Citizen progress.
+/// Persisted with the round: freshness survives the seam. A card outside any live
+/// round records nothing (there is no round to read it back for).
+pub fn record_card_worked(card_id: Uuid, now_ms: u64) {
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every ROUNDS lock
+    if let Some(round) = rounds.values_mut().find(|r| r.cards.contains_key(&card_id)) {
+        round.card_last_act_ms.insert(card_id, now_ms);
+        persist_round_in(&rounds_state_dir(), round);
+    }
+}
+
+/// The epoch-ms of the latest held-work turn on `card_id`, if any — the Citizen
+/// freshness [`enrich_rounds`] merges beside the detached run ledger.
+pub fn card_last_act_ms(card_id: Uuid) -> Option<u64> {
+    ROUNDS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())  // poisoned lock = read the last state, same policy as every ROUNDS lock
+        .values()
+        .find_map(|r| r.card_last_act_ms.get(&card_id).copied())
+}
 
 /// Where in-flight rounds persist — one JSON file per round, removed at Done. The same
 /// durable-state family as the airc attach cursor (`~/.continuum/state`): tiny, per-key,
@@ -374,7 +423,7 @@ pub fn reap_orphaned_rounds() -> Vec<(String, usize)> {
             expired.iter().map(|(b, _)| b).collect();
         ROUNDS
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
+            .unwrap_or_else(|p| p.into_inner())  // poisoned lock = read the last state, same policy as every ROUNDS lock
             .retain(|_, r| r.stage != RoundStage::Working || !dead.contains(&r.benchmark));
     }
     expired
@@ -434,7 +483,7 @@ fn reap_with_ttl(dir: &Path, ttl: std::time::Duration) -> Vec<(String, usize)> {
 ///
 /// Idempotent by round id: re-opening a live round leaves it untouched.
 pub fn open_round(round_id: Uuid, benchmark: &str, driver: WorkDriver) {
-    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every ROUNDS lock
     let round = rounds
         .entry(round_id)
         .or_insert_with(|| BenchRound::new(round_id, benchmark, &[], driver));
@@ -449,7 +498,7 @@ pub fn open_round(round_id: Uuid, benchmark: &str, driver: WorkDriver) {
 /// [`open_round`]) — the presence emitter's adoption list reads it so the
 /// RUN room, not just its solve children, projects presence + transcript.
 pub fn set_run_room_name(round_id: Uuid, name: &str) {
-    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every ROUNDS lock
     if let Some(round) = rounds.get_mut(&round_id) {
         round.run_room_name = name.to_string();
         persist_round_in(&rounds_state_dir(), round);
@@ -457,11 +506,63 @@ pub fn set_run_room_name(round_id: Uuid, name: &str) {
 }
 
 pub fn set_round_team(round_id: Uuid, team: Vec<Uuid>) {
-    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every ROUNDS lock
     if let Some(r) = rounds.get_mut(&round_id) {
         r.team = team;
         persist_round_in(&rounds_state_dir(), r);
     }
+}
+
+/// Turn the round's REVIEW GATE on (dispatch calls it right after [`open_round`]).
+pub fn set_review_gate(round_id: Uuid, on: bool) {
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every ROUNDS lock
+    if let Some(r) = rounds.get_mut(&round_id) {
+        r.review_gate = on;
+        persist_round_in(&rounds_state_dir(), r);
+    }
+}
+
+/// Must an owner's `done` on `card` go through review first? True iff the card's
+/// round is gated and no review has passed for it yet.
+pub fn review_required(card: Uuid) -> bool {
+    ROUNDS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())  // poisoned lock = read the last state, same policy as every ROUNDS lock
+        .values()
+        .find(|r| r.cards.contains_key(&card))
+        .is_some_and(|r| r.review_gate && !r.reviews_passed.contains(&card))
+}
+
+/// Record the sibling review card of `parent` (posted by the gate). Returns the
+/// round id it joined, or `None` when the parent is in no live round.
+pub fn register_review_card(parent: Uuid, review: Uuid) -> Option<Uuid> {
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every ROUNDS lock
+    let r = rounds.values_mut().find(|r| r.cards.contains_key(&parent))?;
+    r.review_cards.insert(review, parent);
+    persist_round_in(&rounds_state_dir(), r);
+    Some(r.round_id)
+}
+
+/// The parent a review card reviews, if `card` is a live review card.
+pub fn review_parent(card: Uuid) -> Option<Uuid> {
+    ROUNDS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())  // poisoned lock = read the last state, same policy as every ROUNDS lock
+        .values()
+        .find_map(|r| r.review_cards.get(&card).copied())
+}
+
+/// The reviewer's verdict landed: the review card retires; a pass unlocks the
+/// parent's `done`. Returns the parent.
+pub fn settle_review_card(review: Uuid, passed: bool) -> Option<Uuid> {
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every ROUNDS lock
+    let r = rounds.values_mut().find(|r| r.review_cards.contains_key(&review))?;
+    let parent = r.review_cards.remove(&review)?;
+    if passed {
+        r.reviews_passed.insert(parent);
+    }
+    persist_round_in(&rounds_state_dir(), r);
+    Some(parent)
 }
 
 /// Add a freshly posted card to an open round. Unknown round = no-op (dispatch always
@@ -469,7 +570,7 @@ pub fn set_round_team(round_id: Uuid, team: Vec<Uuid>) {
 pub fn add_card(round_id: Uuid, card_id: Uuid) {
     if let Some(r) = ROUNDS
         .lock()
-        .unwrap_or_else(|p| p.into_inner())
+        .unwrap_or_else(|p| p.into_inner())  // poisoned lock = read the last state, same policy as every ROUNDS lock
         .get_mut(&round_id)
     {
         r.cards.entry(card_id).or_insert(None);
@@ -482,7 +583,7 @@ pub fn add_card(round_id: Uuid, card_id: Uuid) {
 /// skipped / already on board) stages and immediately ends — an honest empty round,
 /// never a map entry that no event can ever settle.
 pub fn seal_round(round_id: Uuid) {
-    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every ROUNDS lock
     let Some(round) = rounds.get(&round_id) else {
         return;
     };
@@ -525,7 +626,7 @@ pub fn seal_round(round_id: Uuid) {
 pub fn room_for_card(card_id: Uuid) -> Option<Uuid> {
     ROUNDS
         .lock()
-        .unwrap_or_else(|p| p.into_inner())
+        .unwrap_or_else(|p| p.into_inner())  // poisoned lock = read the last state, same policy as every ROUNDS lock
         .values()
         .find(|r| r.cards.contains_key(&card_id))
         .map(|r| r.round_id)
@@ -687,43 +788,63 @@ pub fn next_unworked_per_round() -> Vec<NextCard> {
         .collect()
 }
 
-/// Every unworked card of every Working CITIZEN-driven round — the cards whose
-/// driver is the citizens' own perception, not a detached dispatch. The boot
-/// resume RE-SAYS their kickoffs into the run room (through the assignee's own
-/// subscribed runtime), because a reload leaves the original kickoffs buried
-/// beyond every window: found live 2026-09-01, a lite round sat 'working, 4
-/// remaining' a full day while its four assignees idled beside their own
-/// unworked cards ([[bench-rounds-die-at-perception-run-rooms-are-deaf]]).
-/// One entry per card (not first-only): re-perception addresses every
-/// assignee, unlike the one-at-a-time detached dispatch.
-pub fn unworked_citizen_cards() -> Vec<NextCard> {
+
+/// The next card a MEMBER can PULL from a shared team deck — kanban PULL, not
+/// push. The first non-terminal card, with no live run, in any Working Citizen
+/// round the peer belongs to (in its `team`, or already an assignee somewhere in
+/// it), that is NOT already assigned to a DIFFERENT member (never poach a
+/// teammate's card; Open or hers is fair game). `assignee` is the PULLER — she is
+/// claiming it. Personifies a human team: when free, you take the next card off
+/// the board rather than working a fixed pile pushed onto you (Joel 2026-09-02).
+/// Load-balances (a fast member pulls more) and is resilient (a dropped member's
+/// un-pulled cards stay in the deck for anyone).
+pub fn pullable_cards(
+    peer: Uuid,
+    resident_rooms: &std::collections::HashSet<Uuid>,
+) -> Vec<NextCard> {
     let rounds = ROUNDS.lock().expect("bench rounds mutex");
-    rounds
+    let live = live_run_ids();
+    // THE FULLEST DECK DRAINS FIRST: rounds ordered by remaining cards (desc), so a
+    // fresh 12-card round is worked ahead of an old round's last stragglers. Map
+    // order starved a new round entirely (measured: 9 pulls to the older round, 0 to
+    // the new one in 20 min).
+    let mut ordered: Vec<&BenchRound> = rounds
         .values()
         .filter(|r| r.stage == RoundStage::Working && r.driver == WorkDriver::Citizen)
+        .collect();
+    ordered.sort_by(|a, b| b.remaining().cmp(&a.remaining()).then(a.round_id.cmp(&b.round_id)));
+    ordered
+        .into_iter()
+        // ELIGIBILITY IS RESIDENCY. She may pull from any run room she is standing in
+        // — the round's `team` (really its reviewer set, empty unless `--teammates`)
+        // and the dispatch-time assignee were the gate that locked 7 of 12 residents
+        // out of a "shared" deck for months (2026-09-03). A card is room content; a
+        // resident works it. The `run_room` IS the round id.
+        .filter(|r| resident_rooms.contains(&r.round_id))
         .flat_map(|r| {
-            let run_room = r.round_id;
-            r.cards
-                .iter()
-                .filter(|(_, state)| state.is_none())
-                .filter_map(move |(card, _)| {
-                    r.card_assignees.get(card).map(|assignee| NextCard {
-                        card: *card,
-                        assignee: *assignee,
-                        run_room,
-                        teammates: r.team.clone(),
-                    })
+            // Review cards FIRST: a fix waiting on a verdict is the round's critical
+            // path, and a reviewer costs a short read, not a solve.
+            r.review_cards
+                .keys()
+                .copied()
+                .chain(
+                    r.cards
+                        .iter()
+                        .filter(|(_, state)| state.is_none())
+                        .filter(|(c, _)| !live.contains(&format!("claim-{}", c)))
+                        .map(|(c, _)| *c),
+                )
+                .map(|c| NextCard {
+                    card: c,
+                    assignee: peer,
+                    run_room: r.round_id,
+                    teammates: r.team.clone(),
                 })
                 .collect::<Vec<_>>()
         })
         .collect()
 }
 
-/// Total OPEN (non-terminal) cards across every Working round — the board-side
-/// LANE DEMAND. Queued benchmark work is demand the serving plan must see:
-/// measured live 2026-08-27, the plan converged to 1 lane after a 4-way cohort
-/// settled (demand = the boot persona floor, blind to the board), and 17
-/// workable cards then crawled serially behind all room-life on one slot.
 pub fn total_unworked_cards() -> usize {
     let rounds = ROUNDS.lock().expect("bench rounds mutex");
     rounds
@@ -740,6 +861,48 @@ pub fn any_working_round() -> bool {
         .expect("bench rounds mutex")
         .values()
         .any(|r| r.stage == RoundStage::Working)
+}
+
+/// A round is ABANDONED-STALE when it is Working but no unsettled card has
+/// produced a work artifact in [`STALE_ROUND_ABANDON_SECS`] — a wedged round
+/// whose citizens died without a task boundary (measured 2026-09-02: three
+/// rounds stuck ~18h, blocking the standing autopilot, un-clearable because
+/// round-stop's cancellation waits for a boundary the dead citizens never
+/// reach). The standing round treats these as NOT blocking, so a fresh cohort
+/// dispatches over the corpse. Takes the ledger facts the board already folds.
+pub const STALE_ROUND_ABANDON_SECS: u64 = 3600;
+
+pub fn only_stale_or_no_working_rounds(runs: &[CardRunFacts], now_ms: u64) -> bool {
+    let mut rounds = live_rounds();
+    enrich_rounds(&mut rounds, runs, now_ms);
+    no_healthy_working_round(&rounds)
+}
+
+/// How many cards across live rounds are `unstarted` — never worked, no run
+/// artifact, no held-work turn. The standing autopilot's BACKLOG guard: with a
+/// deep backlog, dispatching another round just deepens the pile (measured
+/// 2026-09-02: the autopilot reached 30+ rounds / 111 unstarted while 4 citizens
+/// worked). Complements the working-round gate — that holds while a round is
+/// being worked; this holds while there is unworked work already waiting.
+pub fn unworked_backlog(runs: &[CardRunFacts], now_ms: u64) -> usize {
+    let mut rounds = live_rounds();
+    enrich_rounds(&mut rounds, runs, now_ms);
+    rounds
+        .iter()
+        .flat_map(|r| r.cards.iter())
+        .filter(|c| c.state == "unstarted")
+        .count()
+}
+
+/// PURE decision (testable without the ROUNDS global): true when no round is
+/// healthily grinding — every Working round is stalled/unstarted past the
+/// abandon window, or there are none. A round with a fresh act (idle under
+/// the window) blocks the autopilot; a wedged one does not.
+pub fn no_healthy_working_round(rounds: &[RoundSnapshot]) -> bool {
+    !rounds.iter().any(|r| {
+        r.stage == "working"
+            && matches!(r.idle_secs, Some(idle) if idle < STALE_ROUND_ABANDON_SECS)
+    })
 }
 
 fn live_run_ids() -> std::collections::HashSet<String> {
@@ -791,7 +954,7 @@ fn first_unworked_excluding(
 /// Operator hold: flip a Working round to Paused (persisted). Returns false
 /// when the round is unknown or already terminal.
 pub fn pause_round(round_id: Uuid) -> bool {
-    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every ROUNDS lock
     match rounds.get_mut(&round_id) {
         Some(r) if r.stage == RoundStage::Working => {
             r.stage = RoundStage::Paused;
@@ -812,7 +975,7 @@ pub fn pause_round(round_id: Uuid) -> bool {
 /// of waiting for the next settle edge.
 pub fn resume_round(round_id: Uuid) -> Option<NextCard> {
     let live = live_run_ids();
-    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every ROUNDS lock
     let r = rounds.get_mut(&round_id)?;
     match r.stage {
         RoundStage::Paused => {
@@ -849,7 +1012,7 @@ pub fn resume_round(round_id: Uuid) -> Option<NextCard> {
 pub fn driver_for_card(card_id: Uuid) -> WorkDriver {
     ROUNDS
         .lock()
-        .unwrap_or_else(|p| p.into_inner())
+        .unwrap_or_else(|p| p.into_inner())  // poisoned lock = read the last state, same policy as every ROUNDS lock
         .values()
         .find(|r| r.cards.contains_key(&card_id))
         .map(|r| r.driver)
@@ -892,7 +1055,7 @@ pub fn observe_card_event(payload: &Value) {
         return;
     };
 
-    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every ROUNDS lock
     // A card belongs to at most one round: dispatch's idempotence gate refuses a second
     // live card per task, and card uuids are minted per card. First match is THE match.
     let Some(round) = rounds.values_mut().find(|r| r.cards.contains_key(&card)) else {
@@ -1052,6 +1215,26 @@ pub struct RoundCardSnapshot {
     pub last_act_secs: Option<u64>,
     #[ts(optional)]
     pub resolved: Option<bool>,
+    /// BOARD truth (the durable record): the card's column right now —
+    /// `open|claimed|in_progress|blocked|review|merged|closed`. Empty when the
+    /// board could not be read.
+    #[serde(default)]
+    pub board_state: String,
+    /// Who holds it on the board (display name, else short id). Empty = nobody.
+    #[serde(default)]
+    pub owner: String,
+    /// Board timestamps — the experiment axes: time-to-claim and time-to-settle
+    /// read from these, never from a process clock that a reboot resets.
+    #[ts(optional, type = "number")]
+    #[serde(default)]
+    pub created_at_ms: Option<u64>,
+    #[ts(optional, type = "number")]
+    #[serde(default)]
+    pub updated_at_ms: Option<u64>,
+    /// When the verdict file was written (`SweVerdict::graded_at_ms`).
+    #[ts(optional, type = "number")]
+    #[serde(default)]
+    pub graded_at_ms: Option<u64>,
 }
 
 /// The run-ledger facts [`enrich_rounds`] merges into a card row — a minimal
@@ -1098,8 +1281,28 @@ pub fn enrich_rounds(rounds: &mut [RoundSnapshot], runs: &[CardRunFacts], now_ms
                 .filter(|r| !card.instance.is_empty() && r.instance == card.instance)
                 .max_by_key(|r| r.last_activity_ms);
             let Some(run) = run else {
+                // No detached-solve ledger entry — but a CITIZEN-driven card
+                // leaves no ledger, so fall back to the held-work freshness the
+                // turn boundary stamps. A recent held-work turn makes the card
+                // read "working" (not "unstarted") and feeds the round's idle
+                // clock, so the standing autopilot sees the round is being worked
+                // and holds instead of piling up duplicates.
                 if !settled {
-                    card.state = "unstarted".to_string();
+                    let held_act = card
+                        .card_id
+                        .parse::<Uuid>()
+                        .ok()
+                        .and_then(card_last_act_ms);
+                    if let Some(act_ms) = held_act {
+                        any_started = true;
+                        let act_age = now_ms.saturating_sub(act_ms) / 1000;
+                        card.last_act_secs = Some(act_age);
+                        card.state = "working".to_string();
+                        newest_unsettled_act =
+                            Some(newest_unsettled_act.map_or(act_age, |a: u64| a.min(act_age)));
+                    } else {
+                        card.state = "unstarted".to_string();
+                    }
                 }
                 continue;
             };
@@ -1198,6 +1401,11 @@ pub fn live_rounds() -> Vec<RoundSnapshot> {
                         patch_bytes: None,
                         last_act_secs: None,
                         resolved: None,
+                        board_state: String::new(),
+                        owner: String::new(),
+                        created_at_ms: None,
+                        updated_at_ms: None,
+                        graded_at_ms: None,
                     }
                 })
                 .collect();
@@ -1252,6 +1460,11 @@ mod tests {
             patch_bytes: None,
             last_act_secs: None,
             resolved: None,
+            board_state: String::new(),
+            owner: String::new(),
+            created_at_ms: None,
+            updated_at_ms: None,
+            graded_at_ms: None,
         };
         let round = |cards: Vec<RoundCardSnapshot>| RoundSnapshot {
             round_id: Uuid::new_v4().to_string(),
@@ -1305,6 +1518,159 @@ mod tests {
         assert_eq!(rounds[2].cards[0].state, "quiet");
     }
 
+    // what this catches: A CITIZEN-driven card leaves NO detached-solve ledger
+    // entry, so before the held-work freshness signal the round read "unstarted"
+    // while she was actively working it — and the standing autopilot, seeing no
+    // working round, piled up duplicate rounds (measured 2026-09-02: 21 rounds,
+    // 53 unstarted, 4 citizens). This pins that a held-work turn makes the round
+    // read "working"/"grinding" from the ephemeral CARD_LAST_ACT signal alone
+    // (empty run ledger), so the autopilot HOLDS instead of over-dispatching.
+    // what this catches: the review gate's state machine on the tracker — a gated
+    // card requires review until a review card registered for it settles as PASSED;
+    // a rejected review leaves it required; review cards appear on the pull deck
+    // ahead of Open cards and never count toward the round's remaining.
+    #[test]
+    fn a_gated_card_requires_review_until_its_review_card_passes() {
+        let round_id = Uuid::new_v4();
+        let card = Uuid::new_v4();
+        open_round(round_id, "swe-bench-verified", WorkDriver::Citizen);
+        add_card(round_id, card);
+        assert!(!review_required(card), "no gate, no review");
+        set_review_gate(round_id, true);
+        assert!(review_required(card));
+
+        let review = Uuid::new_v4();
+        assert_eq!(register_review_card(card, review), Some(round_id));
+        assert_eq!(review_parent(review), Some(card));
+        let resident: std::collections::HashSet<Uuid> = [round_id].into_iter().collect();
+        let deck = pullable_cards(Uuid::new_v4(), &resident);
+        assert_eq!(deck[0].card, review, "the review card leads the deck");
+        assert_eq!(
+            ROUNDS.lock().unwrap().get(&round_id).unwrap().remaining(),  // test: the round was opened above
+            1,
+            "a review card is not a round card"
+        );
+
+        assert_eq!(settle_review_card(review, false), Some(card));
+        assert!(review_required(card), "a rejection keeps the gate shut");
+        let again = Uuid::new_v4();
+        register_review_card(card, again);
+        assert_eq!(settle_review_card(again, true), Some(card));
+        assert!(!review_required(card), "a pass opens the gate for the parent's done");
+        ROUNDS.lock().unwrap().remove(&round_id);  // test: cleanup of the round opened above
+    }
+
+    #[test]
+    fn a_citizen_held_work_turn_makes_the_round_read_working() {
+        use super::{
+            card_last_act_ms, enrich_rounds, no_healthy_working_round, record_card_worked,
+            RoundCardSnapshot, RoundSnapshot,
+        };
+        let now_ms: u64 = 20_000_000_000;
+        let card_uuid = Uuid::new_v4();
+        // She drove a held-work turn 30s ago — no run-ledger fact exists.
+        // Freshness lives ON THE ROUND (durable): a card outside any round has none,
+        // a card in a live round remembers its latest held-work turn.
+        let stray = Uuid::new_v4();
+        record_card_worked(stray, now_ms);
+        assert_eq!(card_last_act_ms(stray), None, "no round, nowhere to keep freshness");
+        let round_id = Uuid::new_v4();
+        open_round(round_id, "swe-bench-verified", WorkDriver::Citizen);
+        add_card(round_id, card_uuid);
+        record_card_worked(card_uuid, now_ms - 30_000);
+        assert_eq!(card_last_act_ms(card_uuid), Some(now_ms - 30_000));
+
+        let mut rounds = vec![RoundSnapshot {
+            round_id: Uuid::new_v4().to_string(),
+            benchmark: "swe-bench-verified".into(),
+            stage: "working".into(),
+            dispatched: 1,
+            settled: 0,
+            remaining: 1,
+            driver: "citizen".into(),
+            cards: vec![RoundCardSnapshot {
+                card_id: card_uuid.to_string(),
+                instance: "django__django-12273".into(),
+                assignee: String::new(),
+                solve_room_name: String::new(),
+                state: "unstarted".into(),
+                acts: None,
+                patch_bytes: None,
+                last_act_secs: None,
+                resolved: None,
+                board_state: String::new(),
+                owner: String::new(),
+                created_at_ms: None,
+                updated_at_ms: None,
+                graded_at_ms: None,
+            }],
+            verdict: String::new(),
+            idle_secs: None,
+        }];
+        // EMPTY run ledger — the detached-solve facts a Citizen card never produces.
+        enrich_rounds(&mut rounds, &[], now_ms);
+
+        assert_eq!(
+            rounds[0].cards[0].state, "working",
+            "held-work makes the card read working, not a false 'unstarted'"
+        );
+        assert_eq!(
+            rounds[0].idle_secs,
+            Some(30),
+            "the round's idle clock reflects her held-work turn"
+        );
+        assert_eq!(
+            rounds[0].verdict, "grinding",
+            "the round is visibly being worked"
+        );
+        assert!(
+            !no_healthy_working_round(&rounds),
+            "a freshly held-worked round is a healthy working round — the autopilot HOLDS"
+        );
+    }
+
+    // what this catches: a wedged Working round (dead citizens, no task
+    // boundary) blocking the standing autopilot FOREVER — measured 2026-09-02,
+    // three rounds stuck ~18h while the claim-growth engine starved because it
+    // only fired when NO round was Working. The autopilot must dispatch over a
+    // round stale past the abandon window, but HOLD for a healthily grinding
+    // one. Regression pin for that exact bug.
+    use super::{no_healthy_working_round, RoundSnapshot, STALE_ROUND_ABANDON_SECS};
+    fn snap(stage: &str, idle: Option<u64>) -> RoundSnapshot {
+        RoundSnapshot {
+            round_id: Uuid::new_v4().to_string(),
+            benchmark: "swe-bench-verified".into(),
+            stage: stage.to_string(),
+            dispatched: 8,
+            settled: 0,
+            remaining: 8,
+            driver: "citizen".into(),
+            cards: Vec::new(),
+            verdict: String::new(),
+            idle_secs: idle,
+        }
+    }
+
+    #[test]
+    fn stale_working_round_does_not_block_the_autopilot_but_a_fresh_one_does() {
+        // No rounds → clear to dispatch.
+        assert!(no_healthy_working_round(&[]));
+        // A round wedged past the abandon window → clear (the 18h-stall bug).
+        assert!(no_healthy_working_round(&[snap(
+            "working",
+            Some(STALE_ROUND_ABANDON_SECS + 60)
+        )]));
+        // A round with a fresh act → BLOCKS (never dispatch over live work).
+        assert!(!no_healthy_working_round(&[snap("working", Some(30))]));
+        // Mixed: one fresh among stale still blocks.
+        assert!(!no_healthy_working_round(&[
+            snap("working", Some(STALE_ROUND_ABANDON_SECS + 60)),
+            snap("working", Some(30)),
+        ]));
+        // Unstarted (idle None) is not "healthy grinding" → does not block.
+        assert!(no_healthy_working_round(&[snap("working", None)]));
+    }
+
     // what this catches: the round advancing only by TIMEOUT, and the loop the
     // naive fix creates. Measured 2026-08-28 — a run can finish WITHOUT settling
     // its card (no diff, env absent, cached env would not re-point). Those emit
@@ -1328,6 +1694,10 @@ mod tests {
                 card_activities: Default::default(),
                 card_assignees: cards.iter().copied().collect(),
                 card_instances: Default::default(),
+                card_last_act_ms: HashMap::new(),
+            review_gate: false,
+            review_cards: HashMap::new(),
+            reviews_passed: Default::default(),
                 team: Vec::new(),
             }
         }
@@ -1519,7 +1889,7 @@ mod tests {
         );
         seal_round(round_id);
         assert_eq!(driver_for_card(first), WorkDriver::Citizen);
-        ROUNDS.lock().unwrap().remove(&round_id);
+        ROUNDS.lock().unwrap().remove(&round_id);  // test: cleanup of the round opened above
     }
 
     // what this catches: the default biting the wrong way — INVERTED 2026-08-31
@@ -1567,7 +1937,7 @@ mod tests {
             next.as_ref().is_some_and(|n| ids.contains(&n.card)),
             "a WORKING round with no live run must kick its first unworked card: {next:?}"
         );
-        ROUNDS.lock().unwrap().remove(&round_id);
+        ROUNDS.lock().unwrap().remove(&round_id);  // test: cleanup of the round opened above
     }
 
     // what this catches: the END transition firing more than once. All-settled must yield
@@ -1630,7 +2000,7 @@ mod tests {
             "settled is reported, never left to subtraction — an absence must not become a guess"
         );
 
-        ROUNDS.lock().unwrap().remove(&round_id);
+        ROUNDS.lock().unwrap().remove(&round_id);  // test: cleanup of the round opened above
     }
 
     // what this catches: a duplicate terminal event double-counting a card. The bridge

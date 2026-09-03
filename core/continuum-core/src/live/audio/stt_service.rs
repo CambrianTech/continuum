@@ -58,3 +58,48 @@ pub fn transcribe_speech_sync(
 pub fn is_ready() -> bool {
     stt::is_initialized()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// THE voice TDD loop, runnable WITHOUT the core (Joel 2026-09-02: stop
+    /// rebooting the 35B to test a 62M ONNX model). Synthesize a phrase with
+    /// Kokoro, transcribe it back with the active STT (Moonshine), assert the
+    /// words survive the round trip. Iterates in `cargo test` in seconds — the
+    /// running Ornith lane, benchmarks, and citizens are never touched.
+    ///
+    /// Run: `cargo test -p continuum-core --features metal,accelerate \
+    ///       -- --ignored voice_round_trip` (needs the model files on disk +
+    /// CONTINUUM_MODELS_DIR, same as the Kokoro full-path test).
+    #[test]
+    #[ignore]
+    fn voice_round_trip_tts_to_stt() {
+        // Models resolve via CONTINUUM_MODELS_DIR (portable, no CWD juggling,
+        // no OS-specific paths — set by the runner/start script on every OS).
+        let phrase = "The quick brown fox jumps over the lazy dog.";
+        let synth = crate::live::audio::tts_service::synthesize_speech_sync(
+            phrase,
+            Some("af"),
+            Some("kokoro"),
+            None,
+        )
+        .expect("Kokoro synth"); // safe: test asserts the pipeline; a synth error IS the failure
+        assert!(synth.samples.len() > 8000, "expected real audio");
+
+        let transcript = transcribe_speech_sync(&synth.samples, Some("en"))
+            .expect("STT must run end to end (no swallowed error)"); // safe: same — STT failure is the test's point
+
+        let lower = transcript.text.to_lowercase();
+        // Content words that must survive TTS→STT — 3 of 5 = the chain works.
+        let hits = ["quick", "brown", "fox", "lazy", "dog"]
+            .iter()
+            .filter(|w| lower.contains(**w))
+            .count();
+        assert!(
+            hits >= 3,
+            "round trip lost the phrase: got {:?} (hits={hits})",
+            transcript.text
+        );
+    }
+}

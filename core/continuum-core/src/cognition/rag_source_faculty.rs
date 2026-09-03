@@ -508,7 +508,7 @@ mod tests {
                         "conditioned on the bridged doctrine grounding",
                     )),
                     None => Some(Contribution::verdict(
-                        Decision::Pass,
+                        Decision::pass(),
                         0.4,
                         "no doctrine in the broadcast",
                     )),

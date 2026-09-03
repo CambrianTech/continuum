@@ -810,6 +810,13 @@ pub struct BenchmarkDispatchParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub drive: Option<crate::cognition::bench_round::WorkDriver>,
+    /// The round's STANDING RULES — published as the run room's operating doctrine
+    /// so every resident sees it in her grounding on every turn (the `[Room
+    /// operating doctrine]` block), not as a message that scrolls out of view.
+    /// This is where a recipe puts role prompts and the collaboration nudge
+    /// ("others are working cards on this board — say what you found when it
+    /// helps them"). Omit for the control arm: no doctrine, no nudge.
+    pub doctrine: Option<String>,
     /// Stage the round even though serving is NOT decode-verified (#442).
     ///
     /// Off by default, and the default is the point: dispatch refuses to post cards no
@@ -820,6 +827,10 @@ pub struct BenchmarkDispatchParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub force: Option<bool>,
+    /// THE REVIEW GATE: an owner's `done` becomes `review` + a sibling review card a
+    /// NON-owner pulls; only the reviewer's `done` closes the card and fires its
+    /// grade. Off = the control arm (a citizen's own `done` grades directly).
+    pub review_gate: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -964,6 +975,38 @@ pub(crate) fn dispatch_card_title(bench: &str, task_id: &str, prompt: &str) -> S
     format!("{} {gist}{ellipsis}", dispatch_card_key(bench, task_id))
 }
 
+/// Parse `[bench <name>] <task>: <gist>` — the exact shape [`dispatch_card_title`]
+/// writes — into `(bench_name, task_id)`. `None` for any non-bench title, so a normal
+/// work card is neither graded nor staged. ONE parser beside the ONE writer: the grade
+/// edge (`benchmark_grade`) and the on-claim staging (`card_staging`) both read this.
+pub(crate) fn parse_card_title(title: &str) -> Option<(String, String)> {
+    let rest = title.strip_prefix("[bench ")?;
+    let (bench, after) = rest.split_once("] ")?;
+    let task = after.split(':').next()?.trim();
+    if bench.trim().is_empty() || task.is_empty() {
+        return None;
+    }
+    Some((bench.trim().to_string(), task.to_string()))
+}
+
+/// A review card's title: `[review <parent8>] <instance>: …` — ONE writer
+/// ([`crate::modules::work::open_review_card`]), one parser, beside the bench one.
+pub(crate) fn review_card_title(parent: uuid::Uuid, instance: &str, owner: &str) -> String {
+    format!(
+        "[review {}] {instance}: review {owner}'s fix",
+        &parent.simple().to_string()[..8]
+    )
+}
+
+/// Parse a review card's title into the INSTANCE it reviews. `None` for any other
+/// title, so a normal work card is never mistaken for a review.
+pub(crate) fn parse_review_title(title: &str) -> Option<String> {
+    let rest = title.strip_prefix("[review ")?;
+    let (_, after) = rest.split_once("] ")?;
+    let instance = after.split(':').next()?.trim();
+    (!instance.is_empty()).then(|| instance.to_string())
+}
+
 /// Compose the card BODY: the full prompt plus a definition of done a citizen
 /// can act on with her own hands. Grading inputs that must stay held out
 /// (`expect`, the harness `test`) are deliberately NOT written to the card —
@@ -1086,6 +1129,12 @@ pub struct RecipeDispatch {
     /// any explicit `teammates`; the assignee is never their own reviewer.
     #[serde(default)]
     pub reviewers: Option<u32>,
+    /// Standing rules for the run room (see `BenchmarkDispatchParams::doctrine`).
+    #[serde(default)]
+    pub doctrine: Option<String>,
+    /// The review gate (see `BenchmarkDispatchParams::review_gate`).
+    #[serde(default)]
+    pub review_gate: Option<bool>,
 }
 
 /// Resolve the citizens a directed dispatch addresses — GENERALIZED for any repo user's
@@ -1459,6 +1508,8 @@ impl ActionCommand for BenchmarkDispatch {
                 let sub = BenchmarkDispatchParams {
                     name: Some(d.benchmark.clone()),
                     recipe: None,
+                    doctrine: d.doctrine.clone().or_else(|| p.doctrine.clone()),
+                    review_gate: d.review_gate.or(p.review_gate),
                     teammates: if team.is_empty() {
                         p.teammates.clone()
                     } else {
@@ -1521,9 +1572,10 @@ impl ActionCommand for BenchmarkDispatch {
         enum CardWork {
             /// Gym: write a solution file; DoD is a compile/test shell.
             Gym { solution_file: String },
-            /// SWE: the pulled instance. Dispatch STAGES it into the directed assignee's
-            /// workspace/swe/<instance> so her claim auto-fires the scored solve (#346's
-            /// dispatch_staged_swe_solve) — the loop closes with nobody in it.
+            /// SWE: the pulled instance. The CLAIM stages it into the claimer's
+            /// workspace/swe/<instance> (`card_staging`); a detached-solve round stages
+            /// its directed assignee at dispatch through the same function and fires
+            /// her solve (#346) — the loop closes with nobody in it.
             Swe {
                 instance: Box<crate::cognition::swe_bench::SweInstance>,
             },
@@ -1702,7 +1754,7 @@ impl ActionCommand for BenchmarkDispatch {
                 .collect::<Result<_, CommandError>>()?
         };
 
-        let requested = p.assignees.clone().unwrap_or_default();
+        let requested = p.assignees.clone().unwrap_or_default();  // unwrap_or: unreadable = empty, the report shows the tracker's view
         if requested.iter().any(|a| a.trim().is_empty()) {
             return Err(CommandError::Invalid(
                 "assignees contains an empty name — every kickoff must address a real citizen"
@@ -1846,6 +1898,14 @@ impl ActionCommand for BenchmarkDispatch {
             "team".to_string(),
             serde_json::json!(roster.iter().map(|(who, _)| who).collect::<Vec<_>>()),
         );
+        run_params.insert("driver".to_string(), serde_json::json!(p.drive.unwrap_or_default()));  // unwrap_or: no driver named = the recipe default (citizen)
+        if let Some(doctrine) = &p.doctrine {
+            run_params.insert("doctrine".to_string(), serde_json::json!(doctrine));
+        }
+        run_params.insert(
+            "review_gate".to_string(),
+            serde_json::json!(p.review_gate.unwrap_or(false)),  // unwrap_or: gate not named = off, the control arm
+        );
         let room = crate::modules::activity::spawn_activity_room(
             &airc,
             &room_name,
@@ -1854,6 +1914,26 @@ impl ActionCommand for BenchmarkDispatch {
             &run_params,
         )
         .await?;
+        // The round's standing rules, published as the run room's operating doctrine
+        // RIGHT HERE while the curator's current room is still the freshly spawned run
+        // (spawn_activity_room leaves the pointer there). Rendered verbatim into every
+        // resident's grounding as `[Room operating doctrine]` — the reminder that
+        // survives the window, unlike a kickoff message.
+        if let Some(doctrine) = &p.doctrine {
+            airc.publish_room_doctrine(
+                doctrine.clone(),
+                format!("round-{}", room.room_id.as_uuid().simple()),
+            )
+            .await
+            .map_err(|e| CommandError::Internal(format!("doctrine publish: {e}")))?;
+            crate::probe!(
+                class = "bench.round.doctrine_published",
+                room = %room.room_id.as_uuid(),
+                chars = doctrine.len() as u64,
+                "the round's standing rules are on the run room's doctrine — every \
+                 resident grounds on them each turn"
+            );
+        }
 
         // Move every assignee INTO the run — a citizen who is not subscribed never sees the
         // board, the kickoff, or the peers working beside her. This is the members[] half
@@ -1964,7 +2044,7 @@ impl ActionCommand for BenchmarkDispatch {
         // hyphenated uuid, so the round's membership set must too (the 8-char `card_ids`
         // shorts are the human/CLI handle, not the identity).
         let mut card_uuids: Vec<uuid::Uuid> = Vec::new();
-        let mut skipped_needs_setup = 0u32;
+        let skipped_needs_setup = 0u32; // setup runs at the claim edge now (card_staging)
         let mut skipped_known_red = 0u32;
         let mut skipped_already_on_board = 0u32;
         let mut kickoffs = 0u32;
@@ -2039,9 +2119,12 @@ impl ActionCommand for BenchmarkDispatch {
         // asks the round who drives. Registering after the loop (as this did) left that
         // window answering with the default, which would silently fire the detached solver
         // on the first card of a citizen-driven round.
-        let driver = p.drive.unwrap_or_default();
+        let driver = p.drive.unwrap_or_default();  // unwrap_or: unreadable = empty, the report shows the tracker's view
         crate::cognition::bench_round::open_round(room.room_id.as_uuid(), spec.name, driver);
         crate::cognition::bench_round::set_run_room_name(room.room_id.as_uuid(), &room_name);
+        if p.review_gate.unwrap_or(false) {  // unwrap_or: gate not named = off, the control arm
+            crate::cognition::bench_round::set_review_gate(room.room_id.as_uuid(), true);
+        }
         // The round REMEMBERS its team: driver edges (settle-advance, non-settling
         // advance, boot resume) dispatch cards that were never initially fired, and
         // without a round-level record they went out team-less (2026-08-30).
@@ -2052,11 +2135,11 @@ impl ActionCommand for BenchmarkDispatch {
             );
         }
         for pc in prepared.into_iter().take(take) {
-            // A gym setup_shell card is prepared IN THE ASSIGNEE'S WORKSPACE at
-            // dispatch, below (same contract as SWE checkout staging) — the early
-            // unconditional skip that used to live here reported the entire ds-1000
-            // maiden dispatch as `skipped_needs_setup: 4` (2026-08-22): the eval
-            // path always ran setup_shell, but no card-dispatch orchestration did.
+            // A gym setup_shell card is prepared in the CLAIMER's workspace at claim
+            // time (`card_staging`, 2026-09-03) — the early unconditional skip that
+            // used to live here reported the entire ds-1000 maiden dispatch as
+            // `skipped_needs_setup: 4` (2026-08-22): the eval path always ran
+            // setup_shell, but no card-dispatch orchestration did.
 
             // IDEMPOTENCE: this exact task already has a live card. Re-dispatching
             // would post a duplicate, and duplicates are not free — two citizens
@@ -2076,61 +2159,16 @@ impl ActionCommand for BenchmarkDispatch {
             // The directed assignee (round-robin over the RESOLVED live roster). Always a
             // real online citizen — resolve_dispatch_roster guaranteed a non-empty roster
             // or errored. Her peer_id rides along, so SWE staging needs no second name
-            // lookup (and can never silently no-stage on an unknown name). A SWE card stages
-            // into HER workspace before it is claimable, so her claim auto-fires the scored
-            // solve (#346 dispatch_staged_swe_solve).
+            // lookup (and can never silently no-stage on an unknown name). Under a
+            // DETACHED-SOLVE round she is staged and pre-claimed below and her solve
+            // fires (#346); under a CITIZEN round she is only the kickoff's voice
+            // exclusion — the card posts OPEN and whoever pulls it is staged at claim.
             let (who, who_peer) = &roster[card_ids.len() % roster.len()];
 
             // STAGE the SWE checkout into the assignee's workspace/swe/<instance> BEFORE the
             // card is claimable, so `work/claim` finds it and launches the solve. Reuses the
             // proven swe_bench::clone_at (fast from the local mirror). Best-effort: a stage
             // failure is REPORTED and the card still posts — the loop never half-breaks.
-            // GYM setup: run the task's setup_shell in the assignee's workspace NOW,
-            // so the card she claims already has its context/grader staged. Adapter
-            // setups are idempotent (mkdir -p + overwrite-decode), so a re-dispatch
-            // re-stages harmlessly. Failure is REPORTED and the card is withheld —
-            // posting a card whose grader never staged manufactures a permanent
-            // infra-zero wearing a capability face.
-            if let Some(setup) = pc.setup_shell.as_deref() {
-                let ok = match stage_home.as_ref() {
-                    Some(home) => {
-                        let ws = crate::identity::citizen_peer_dir(
-                            home,
-                            crate::identity::PeerId::from_uuid(*who_peer),
-                        )
-                        .join("workspace");
-                        let _ = std::fs::create_dir_all(&ws);
-                        match tokio::process::Command::new("sh")
-                            .arg("-c")
-                            .arg(setup)
-                            .current_dir(&ws)
-                            .output()
-                            .await
-                        {
-                            Ok(out) if out.status.success() => true,
-                            Ok(out) => {
-                                let head: String = pc.title.chars().take(48).collect();
-                                kickoff_errors.push(format!(
-                                    "setup {head}: {}",
-                                    String::from_utf8_lossy(&out.stderr).trim()
-                                ));
-                                false
-                            }
-                            Err(e) => {
-                                kickoff_errors.push(format!("setup spawn: {e}"));
-                                false
-                            }
-                        }
-                    }
-                    None => false,
-                };
-                if !ok {
-                    skipped_needs_setup += 1;
-                    continue;
-                }
-            }
-
-            let mut staged_ok = false;
             // THE COVERAGE GATE (the cheap half of `benchmark/validate`). If THIS
             // box has already PROVEN this instance's (repo, era) env class red,
             // do not spend a citizen's hours and a grader's slot discovering the
@@ -2161,47 +2199,35 @@ impl ActionCommand for BenchmarkDispatch {
                 }
             }
 
-            if let (CardWork::Swe { instance }, Some(home)) = (&pc.work, stage_home.as_ref()) {
-                let dir = crate::identity::citizen_peer_dir(
-                    home,
-                    crate::identity::PeerId::from_uuid(*who_peer),
-                )
-                .join("workspace")
-                .join("swe")
-                .join(&instance.instance_id);
-                if dir.join(".git").exists() {
-                    staged_ok = true; // already staged (a prior claim / dispatch)
-                    // Self-heal pre-shield checkouts: clone_at shields NEW trees, but a
-                    // checkout staged before the shield existed stays exposed forever
-                    // without this — the 76-tree hand backfill of 2026-08-22, automated.
-                    crate::cognition::swe_bench::shield_workspace_excludes(&dir);
-                } else if let Err(e) = crate::cognition::swe_bench::clone_at(instance, &dir).await {
-                    kickoff_errors.push(format!("stage {}: {e}", instance.instance_id));
-                } else {
-                    staged_ok = true;
+            // STAGING MOVED TO THE CLAIM EDGE (2026-09-03, the pull inversion). A
+            // citizen-driven round stages NOTHING here: whoever PULLS the card is
+            // staged for it by `work/claim` → `card_staging::stage_for_claimer`, so any
+            // resident can work any Open card and a rebooted citizen who re-reads the
+            // board is staged exactly like a first claimer. Only a DETACHED-SOLVE round
+            // still stages its directed assignee here — the SAME function — because
+            // the solve below fires without a claim from her.
+            let staged_ok = if driver == crate::cognition::bench_round::WorkDriver::DetachedSolve
+            {
+                match stage_home.as_ref() {
+                    Some(home) => match crate::modules::card_staging::stage_for_claimer(
+                        home,
+                        *who_peer,
+                        &pc.title,
+                    )
+                    .await
+                    {
+                        crate::modules::card_staging::Staging::Ready { .. }
+                        | crate::modules::card_staging::Staging::Ordinary => true,
+                        crate::modules::card_staging::Staging::Failed { stage, error } => {
+                            kickoff_errors.push(format!("stage {}: {stage}: {error}", pc.title));
+                            false
+                        }
+                    },
+                    None => false,
                 }
-                // Build the per-instance venv NOW (with pytest + the repo installed) so her
-                // HANDS have a working `pytest`/`python` the moment she starts — not only at
-                // grade time. Without this the solve's `code/shell pytest` hits the system
-                // interpreter and she loops trying to install pytest into it (glass-boxed
-                // 2026-08-11 from Anon's astropy turn). ensure_env is idempotent and cached, so
-                // the later grade reuses this exact venv. Best-effort: a build failure is
-                // reported but the card still posts — the loop never half-breaks.
-                if staged_ok {
-                    if let Err(e) = crate::cognition::swe_bench::ensure_env(instance, &dir).await {
-                        kickoff_errors.push(format!("env {}: {e}", instance.instance_id));
-                        // A solve against an unbuildable env can ONLY void: she spends a
-                        // full attempt (24 acts, live: pytest-5413 twice on 2026-08-12)
-                        // in a workspace whose grade is a known-in-advance env fault —
-                        // no verdict, no lesson (the failure is the env's, not hers).
-                        // The card still posts (claimable once the env heals); the
-                        // SCORED solve does not fire (Joel: "why run broken code
-                        // knowing she's gonna struggle and fall").
-                        staged_ok = false;
-                    }
-                }
-            }
-
+            } else {
+                false
+            };
             let mut req = CreateWorkCard::new(repo.clone(), pc.title, Priority::P2);
             req.body = Some(pc.body);
             let card_id = airc
@@ -2217,7 +2243,9 @@ impl ActionCommand for BenchmarkDispatch {
             crate::cognition::bench_round::add_card(room.room_id.as_uuid(), card_id.as_uuid());
             // WHO works this card, recorded at staging (before any solve fires) —
             // the follow-on driver and the boot resume read it (plan A4/A5).
-            crate::cognition::bench_round::record_card_assignee(card_id.as_uuid(), *who_peer);
+            if driver == crate::cognition::bench_round::WorkDriver::DetachedSolve {
+                crate::cognition::bench_round::record_card_assignee(card_id.as_uuid(), *who_peer);
+            }
             // WHAT it tests, same moment — the roll-call names the instance
             // and in-flight runs join back to their card by it.
             if let CardWork::Swe { instance } = &pc.work {
@@ -2257,8 +2285,14 @@ impl ActionCommand for BenchmarkDispatch {
             // detached round could never reach Done and every boot reaped it
             // (mapped 2026-08-26). Claimed-by-the-assignee is what lets the
             // grade path close the card and the round complete.
-            let pre_claim_this = matches!(pc.work, CardWork::Gym { .. })
-                || (matches!(pc.work, CardWork::Swe { .. }) && staged_ok);
+            // PRE-CLAIM only for a detached-solve round: its solve fires for the
+            // directed assignee below, so the claim must already be hers. A
+            // citizen-driven round posts its cards OPEN — that is what makes the deck
+            // a deck. (Before 2026-09-03 every card, both drivers, was pre-claimed for
+            // its round-robin assignee: a push wearing a pull's clothes.)
+            let pre_claim_this = driver == crate::cognition::bench_round::WorkDriver::DetachedSolve
+                && staged_ok
+                && matches!(pc.work, CardWork::Swe { .. });
             if pre_claim_this {
                 match self.registry.get(*who_peer) {
                     Some(rt) => {
@@ -2300,7 +2334,13 @@ impl ActionCommand for BenchmarkDispatch {
             // imperative in its OWN message block is what actually starts work (measured
             // 2026-08-07: coalesced mid-burst it was ignored). airc.say is one event = one
             // block, so the structural condition holds by construction.
-            {
+            // Per-card, ADDRESSED kickoffs are a detached-solve round's activation path
+            // (the assignee is named, her solve is already running). A citizen-driven
+            // round gets ONE room-addressed kickoff after the loop instead — twelve
+            // per-card kickoffs cost every resident twelve inbound turns of near-
+            // duplicate noise per dispatch (measured 2026-09-03: `deferred_loop_filler`
+            // ×9 per citizen), for a deck the substrate pulls from deterministically.
+            if driver == crate::cognition::bench_round::WorkDriver::DetachedSolve {
                 let kickoff = match &pc.work {
                     CardWork::Gym { solution_file } if pre_claimed => format!(
                         "@{who} (to you): card {short} is CLAIMED FOR YOU on this board — \
@@ -2450,6 +2490,41 @@ impl ActionCommand for BenchmarkDispatch {
         // `work.card.state_changed` subscriber settles cards as they reach terminal
         // states and announces the END — instead of the round's fate being probe
         // archaeology ("random and directed by agent, not an ecosystem", Joel 8/16).
+        // ONE kickoff for the whole deck of a citizen-driven round, addressed to the
+        // ROOM: the deck is shared, the substrate pulls for whoever is idle, and the
+        // claim stages the work — so the message is an announcement, not an order.
+        if driver == crate::cognition::bench_round::WorkDriver::Citizen && !card_ids.is_empty() {
+            let text = format!(
+                "{} cards are OPEN on this board ({}): {}. Whoever is free pulls one — the \
+                 substrate claims it for you when you are idle (or claim_task <id>), and the \
+                 claim stages the work in YOUR workspace. Work it there; when your fix is \
+                 verified green say `work/state <id> done` — that is what fires your grade. \
+                 One card at a time; talk here when you are stuck or when you can review a \
+                 teammate's diff.",
+                card_ids.len(),
+                spec.name,
+                card_ids.join(", ")
+            );
+            match self.registry.any_live_citizen() {
+                Some(voice_rt) => {
+                    if let Err(e) = voice_rt.join_room(&room_name).await {
+                        kickoff_errors.push(format!("deck kickoff: voice join: {e}"));
+                    } else {
+                        match crate::persona::airc_citizen::publish_text_in_room(
+                            voice_rt.airc(),
+                            room.room_id.as_uuid(),
+                            &text,
+                        )
+                        .await
+                        {
+                            Ok(_) => kickoffs += 1,
+                            Err(e) => kickoff_errors.push(format!("deck kickoff: {e}")),
+                        }
+                    }
+                }
+                None => kickoff_errors.push("deck kickoff: no live citizen to voice it".into()),
+            }
+        }
         crate::cognition::bench_round::seal_round(room.room_id.as_uuid());
 
         // PRUNE (opt-in): converge the board to one live card per task for THIS
@@ -4522,7 +4597,7 @@ impl BenchmarkPlatformFingerprint {
                     .take(8)
                     .collect()
             })
-            .unwrap_or_default();
+            .unwrap_or_default();  // unwrap_or: unreadable = empty, the report shows the tracker's view
         Self {
             machine_class,
             os: std::env::consts::OS.into(),
@@ -5191,7 +5266,7 @@ impl ActionCommand for BenchmarkRounds {
                 .unwrap_or_default()
         })
         .await
-        .unwrap_or_default();
+        .unwrap_or_default();  // unwrap_or: unreadable = empty, the report shows the tracker's view
         let facts: Vec<crate::cognition::bench_round::CardRunFacts> =
             runs.iter().map(card_run_facts).collect();
         crate::cognition::bench_round::enrich_rounds(
@@ -5199,10 +5274,80 @@ impl ActionCommand for BenchmarkRounds {
             &facts,
             crate::persona::trace::now_ms(),
         );
+        enrich_rounds_from_board_and_verdicts(&mut rounds).await;
         Ok(BenchmarkRoundsResult {
             in_flight: rounds.len(),
             rounds,
         })
+    }
+}
+
+/// BOARD TRUTH + VERDICT FILES onto the round report — the durable records, read at
+/// report time (the round tracker knows the deck; the board knows who holds what and
+/// when; the verdict file knows the grade and when). This is what makes a round's
+/// time-to-claim, time-to-settle and resolve rate readable by a stranger after any
+/// number of reboots. Best-effort: an unreadable board leaves the tracker's view.
+pub(crate) async fn enrich_rounds_from_board_and_verdicts(
+    rounds: &mut [crate::cognition::bench_round::RoundSnapshot],
+) {
+    let registry = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global();
+    let reader = registry.as_ref().and_then(|reg| reg.any_live_citizen());
+    for round in rounds.iter_mut() {
+        // Verdicts: keyed by instance, independent of the board.
+        for card in round.cards.iter_mut() {
+            if card.instance.is_empty() {
+                continue;
+            }
+            if let Some(v) = crate::cognition::swe_bench::read_verdict(&card.instance) {
+                card.resolved = Some(v.resolved);
+                card.graded_at_ms = (v.graded_at_ms > 0).then_some(v.graded_at_ms);
+            }
+        }
+        let Some(rt) = reader.as_ref() else {
+            continue;
+        };
+        let Ok(room_id) = round.round_id.parse::<uuid::Uuid>() else {
+            continue;
+        };
+        let Ok(set) = rt.airc().subscription_set().await else {
+            continue;
+        };
+        let Some(room) = set
+            .all()
+            .map(|sub| sub.as_room())
+            .find(|r| r.channel.as_uuid() == room_id)
+        else {
+            continue; // the reader is not resident in this run room — tracker view stands
+        };
+        let Ok(board) = rt.airc().work_board_in(&room).await else {
+            continue;
+        };
+        let board = board.snapshot();
+        for card in round.cards.iter_mut() {
+            let Some(bc) = board
+                .cards
+                .iter()
+                .find(|c| c.card_id.as_uuid().to_string() == card.card_id)
+            else {
+                continue;
+            };
+            card.board_state = serde_json::to_value(bc.state)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default();  // unwrap_or: unreadable = empty, the report shows the tracker's view
+            card.owner = bc
+                .owner
+                .map(|o| {
+                    registry
+                        .as_ref()
+                        .and_then(|reg| reg.get(o.as_uuid()))
+                        .map(|rt| rt.agent_name().to_string())
+                        .unwrap_or_else(|| o.as_uuid().to_string()[..8].to_string())  // unwrap_or: no live runtime for the owner = her short id, still addressable
+                })
+                .unwrap_or_default();  // unwrap_or: unreadable = empty, the report shows the tracker's view
+            card.created_at_ms = Some(bc.created_at_ms);
+            card.updated_at_ms = Some(bc.updated_at_ms);
+        }
     }
 }
 

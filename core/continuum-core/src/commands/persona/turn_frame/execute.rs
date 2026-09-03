@@ -293,7 +293,9 @@ fn settle_step_to_json(
         SettleStep::ActUnfulfilled { calls, intent } => serde_json::json!({
             "outcome": "actUnfulfilled", "intent": intent, "calls": calls.len(),
         }),
-        SettleStep::Passed => serde_json::json!({ "outcome": "passed" }),
+        SettleStep::Passed { reason } => serde_json::json!({
+            "outcome": "passed", "reason": reason,
+        }),
         // The model call FAILED — surface it LOUD and NAMED, never as a serene
         // `passed` ([[fallbacks-are-illegal-fail-loud]]). The sweep harness reads
         // this to tell an infra failure (timeout / 5xx / a serving lane refusing an
@@ -480,7 +482,7 @@ mod tests {
         assert_eq!(spoke["metrics"]["tokensPerSecond"], 14.0);
 
         // No metrics ⇒ no metrics key (never a fabricated zero-cost row).
-        let passed = settle_step_to_json(&SettleStep::Passed, None);
+        let passed = settle_step_to_json(&SettleStep::Passed { reason: None }, None);
         assert_eq!(passed["outcome"], "passed");
         assert!(
             passed.get("metrics").is_none(),

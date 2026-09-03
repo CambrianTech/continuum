@@ -62,7 +62,7 @@ impl SettleOutcome {
     /// Zeroed metrics/acts because none accrued meaningfully. `TurnMetrics: Default`.
     pub fn infra_failure(room: uuid::Uuid, cause: impl Into<String>) -> Self {
         Self {
-            decision: Decision::Pass,
+            decision: Decision::pass(),
             spoken: None,
             acts: 0,
             world_state: String::new(),
@@ -97,7 +97,10 @@ pub enum SettleStep {
         intent: String,
     },
     /// She chose silence (`Pass`) — honored as a turn that produces no utterance.
-    Passed,
+    /// `reason` carries her OWN words for why (from `Decision::Pass`), so the
+    /// held-work edge can tell a gradeable *done* from a *blocker* from a
+    /// substrate-gap *nothing*; `None` for a bare pass.
+    Passed { reason: Option<String> },
     /// She reached for an act that could NOT be carried out (no hands / executor
     /// error). No utterance; the intent rides along for honest logging/grading.
     ActUnfulfilled {
@@ -143,7 +146,7 @@ impl SettleStep {
                 SettleStep::Spoke(text)
             }
             Decision::Act { calls, intent } => SettleStep::Acted { calls, intent },
-            Decision::Pass => SettleStep::Passed,
+            Decision::Pass { reason } => SettleStep::Passed { reason },
         };
         (step, metrics)
     }
@@ -207,14 +210,23 @@ mod tests {
         ));
         assert!(matches!(step, SettleStep::Acted { .. }));
 
-        // Pass → Passed (chosen silence, honored).
-        let (step, _) = SettleStep::from_settled(outcome_with(Decision::Pass, None));
-        assert!(matches!(step, SettleStep::Passed));
+        // Pass → Passed (chosen silence, honored) — reason carried through.
+        let (step, _) = SettleStep::from_settled(outcome_with(Decision::pass(), None));
+        assert!(matches!(step, SettleStep::Passed { reason: None }));
+
+        // A reasoned pass carries her words through the projection.
+        let (step, _) = SettleStep::from_settled(outcome_with(
+            Decision::Pass {
+                reason: Some("done — patch ready".into()),
+            },
+            None,
+        ));
+        assert!(matches!(step, SettleStep::Passed { reason: Some(r) } if r == "done — patch ready"));
 
         // inference_error present → InferenceFailed, REGARDLESS of decision — a
         // failed model is never a chosen silence.
         let (step, _) = SettleStep::from_settled(outcome_with(
-            Decision::Pass,
+            Decision::pass(),
             Some("lane refused model".into()),
         ));
         assert!(

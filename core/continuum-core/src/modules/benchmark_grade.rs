@@ -35,18 +35,7 @@ fn is_terminal(state: &str) -> bool {
     crate::cognition::bench_round::is_terminal_card_state(state)
 }
 
-/// Parse `[bench <name>] <instance>: <gist>` — the exact shape `dispatch_card_title`
-/// writes — into `(bench_name, instance_id)`. `None` for any non-bench title, so a normal
-/// work card silently isn't graded.
-fn parse_bench_title(title: &str) -> Option<(String, String)> {
-    let rest = title.strip_prefix("[bench ")?;
-    let (bench, after) = rest.split_once("] ")?;
-    let instance = after.split(':').next()?.trim();
-    if bench.trim().is_empty() || instance.is_empty() {
-        return None;
-    }
-    Some((bench.trim().to_string(), instance.to_string()))
-}
+use crate::commands::benchmark::parse_card_title as parse_bench_title;
 
 /// The grade-on-done subscriber. Holds a persona-airc registry so it can author the grade
 /// through a live citizen — whoever this machine has online (never a hardcoded name), the
@@ -510,6 +499,24 @@ async fn grade_gym_card(
 /// are still lapsed next tick.
 const SWEEP_MAX_CLOSES_PER_TICK: usize = 3;
 
+/// How long after a claim LAPSES a still-resident owner is presumed to be
+/// mid-resume rather than done-and-gone. A reboot lapses every lease at once and
+/// the resume machinery renews them on the claim cadence (TTL/3); within this
+/// window a resident owner may still be catching up, so her artifact is left to
+/// her. Beyond it, a lapsed claim on a resident owner means she is NOT renewing =
+/// NOT actively working the card (an actively-worked card stays `Held`), so her
+/// done-but-unclosed artifact must be graded, not stranded forever. Sized well
+/// above a worst-case reboot+resume (the 35B lane's build+load alone is ~10min)
+/// and far below the multi-hour wedge this un-strands (measured 2026-09-02:
+/// rounds stalled ~20h with artifacts present, owner resident, never graded).
+const RESIDENT_OWNER_GRACE_MS: u64 = 30 * 60 * 1000;
+
+/// A resident owner with a LAPSED claim is presumed "still working" only inside
+/// the post-lapse resume window. Pure so the boundary is unit-testable.
+fn resident_owner_still_working(lapsed_for_ms: u64) -> bool {
+    lapsed_for_ms < RESIDENT_OWNER_GRACE_MS
+}
+
 /// The sweep decision, pure so the truth table is unit-testable: a bench card is
 /// auto-closeable exactly when a person CLAIMED it, their lease LAPSED (work session
 /// died — `card_holder::hold_of`, the one lease predicate, #357), and their hands left
@@ -621,24 +628,37 @@ async fn sweep_lapsed_bench_cards(
             ) {
                 continue;
             }
-            // A RESIDENT owner is not a dead session. The sweep exists as the
-            // dead-session fallback — but a reboot lapses every lease while the
-            // resume machinery is bringing the owner back, and confiscating her
+            // A RESIDENT owner is not a dead session — but only for a BOUNDED
+            // window after the claim lapses. A reboot lapses every lease while the
+            // resume machinery brings the owner back, and confiscating her
             // half-done work in that window grades a MISS she was still earning
             // (measured 2026-08-31: both of the day's misses were exactly this —
             // reboot → lease lapsed → swept mid-resume, "a few attempts" never
-            // happened). If her runtime is online, the card stays hers: she can
-            // finish and say done, and if her session truly dies later the lease
-            // stays lapsed and the next tick sweeps it.
-            if registry.get(owner.as_uuid()).is_some() {
+            // happened). BUT deferring FOREVER strands done-but-unclosed work: a
+            // resident owner who wrote the patch and let the claim lapse without
+            // saying `done` never returns to it, so the card rots and the round
+            // never finishes (measured 2026-09-02: rounds stalled ~20h with
+            // artifacts present, owner resident, ungraded — the pileup of
+            // unstarted standing rounds traced straight here). An actively-worked
+            // card keeps its claim `Held` via the TTL/3 renewal cadence, so a
+            // LAPSED claim past the resume window means she is NOT working it.
+            // Within the grace: hers to finish. Past it: grade her artifact.
+            let lapsed_for_ms = card
+                .claim_expires_at_ms
+                .map(|e| now_ms.saturating_sub(e))
+                .unwrap_or(u64::MAX); // no expiry recorded = not renewing = gradeable
+            if registry.get(owner.as_uuid()).is_some()
+                && resident_owner_still_working(lapsed_for_ms)
+            {
                 crate::probe!(
                     class = "benchmark_grade.sweep_deferred_owner_online",
                     card_id = %card.card_id.as_uuid(),
                     owner = %owner.as_uuid(),
                     bench = %bench,
                     instance = %instance,
-                    "lapsed claim with artifact, but the owner is RESIDENT — not a dead \
-                     session, not confiscated"
+                    lapsed_ms = lapsed_for_ms,
+                    "lapsed claim with artifact, owner RESIDENT and within the resume \
+                     grace — left to her, not confiscated"
                 );
                 continue;
             }
@@ -741,6 +761,26 @@ mod tests {
         assert!(!sweep_ready(&CardState::Open, Hold::Unclaimed, true));
         assert!(!sweep_ready(&CardState::Closed, Hold::Lapsed, true));
         assert!(!sweep_ready(&CardState::Merged, Hold::Lapsed, true));
+    }
+
+    // what this catches: the resident-owner defer is BOUNDED to the resume
+    // window, so done-but-unclosed work stops stranding rounds forever. regression
+    // for the 2026-09-02 stall: rounds wedged ~20h with an artifact present and a
+    // resident owner whose claim had lapsed hours earlier — the sweep deferred
+    // every tick because the owner was resident, so the round never finished and
+    // standing rounds piled up unstarted. Inside the grace she is left alone;
+    // just past it her artifact grades.
+    #[test]
+    fn resident_owner_defer_is_bounded_to_the_resume_window() {
+        // fresh lapse (mid-reboot-resume) → still hers, not confiscated
+        assert!(resident_owner_still_working(0));
+        assert!(resident_owner_still_working(RESIDENT_OWNER_GRACE_MS - 1));
+        // past the window → not renewing = not working → gradeable
+        assert!(!resident_owner_still_working(RESIDENT_OWNER_GRACE_MS));
+        // the measured 20h wedge is decisively past the window
+        assert!(!resident_owner_still_working(20 * 60 * 60 * 1000));
+        // the window must clear a worst-case 35B reboot+resume (~10min) with margin
+        assert!(RESIDENT_OWNER_GRACE_MS >= 15 * 60 * 1000);
     }
 
     // what this catches: only terminal states fire the grade. An in_progress/review

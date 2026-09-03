@@ -76,6 +76,7 @@ pub mod llm_deliberation_faculty;
 pub mod memory_consolidation_region;
 pub mod model_resolver;
 pub mod parroted_perception;
+pub mod pass_intent;
 pub mod perception_facts;
 pub mod persona_tools;
 pub mod persona_workspace;

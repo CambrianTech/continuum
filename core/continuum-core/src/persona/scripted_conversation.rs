@@ -75,6 +75,11 @@ pub struct ScriptedConversation {
     /// When set, `next_message` returns Err if called before `prime`
     /// — mirrors `AircPersonaConversation`'s caller-primes contract.
     require_prime: bool,
+    /// The citizen `stream_citizen()` hands back — `None` by default (most
+    /// tests don't drive the citizen handle). A held-work test seeds a
+    /// `StubAircCitizen::with_claims` so the act-question can read her claims
+    /// and record her card transitions.
+    citizen: Option<std::sync::Arc<dyn crate::persona::airc_citizen::AircCitizen>>,
 }
 
 impl Default for ScriptedConversation {
@@ -94,7 +99,19 @@ impl ScriptedConversation {
             primed: AtomicUsize::new(0),
             prime_result: Mutex::new(Ok(())),
             require_prime: false,
+            citizen: None,
         }
+    }
+
+    /// Hand `stream_citizen()` this citizen — for tests that drive the held-work
+    /// act-question (which reads `active_claims` and calls `advance_card_to`
+    /// through the citizen handle).
+    pub fn with_citizen(
+        mut self,
+        citizen: std::sync::Arc<dyn crate::persona::airc_citizen::AircCitizen>,
+    ) -> Self {
+        self.citizen = Some(citizen);
+        self
     }
 
     /// Replace the queued events. Each entry is what `next_message`
@@ -201,6 +218,12 @@ impl PersonaConversation for ScriptedConversation {
     async fn say_in(&self, room_id: Uuid, text: &str) -> Result<(), String> {
         self.said.lock().unwrap().push((room_id, text.to_string()));
         Ok(())
+    }
+
+    fn stream_citizen(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::persona::airc_citizen::AircCitizen>> {
+        self.citizen.clone()
     }
 }
 

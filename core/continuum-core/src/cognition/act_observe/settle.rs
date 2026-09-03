@@ -546,10 +546,10 @@ async fn settle_to_outcome(
                     touched_paths: touched,
                 };
             }
-            SettleStep::Passed => {
+            SettleStep::Passed { reason } => {
                 return SettleOutcome {
                     room: room_id,
-                    decision: Decision::Pass,
+                    decision: Decision::Pass { reason },
                     spoken: None,
                     acts,
                     world_state: burst.rendered.clone(),
@@ -587,7 +587,7 @@ async fn settle_to_outcome(
                 }
                 return SettleOutcome {
                     room: room_id,
-                    decision: Decision::Pass,
+                    decision: Decision::pass(),
                     spoken: None,
                     acts,
                     world_state: burst.rendered.clone(),
@@ -881,7 +881,8 @@ pub async fn settle_step(
             }
             SettleStep::Spoke(text)
         }
-        Some(Decision::Pass) | None => SettleStep::Passed,
+        Some(Decision::Pass { reason }) => SettleStep::Passed { reason },
+        None => SettleStep::Passed { reason: None },
     };
     (step, metrics)
 }

@@ -104,6 +104,26 @@ regrade sweep ☐, demo capture ☐, one open-board number ☐.
 
 **Gate 5: HN draft + first-comment + X thread reviewed by Joel before any button.**
 
+## The speed board (2026-09-02 — MTPLX sets the Apple-Silicon narrative bar)
+
+[MTPLX](https://github.com/youssofal/MTPLX) (1.9k stars, MLX + native multi-token
+prediction): 1.6–2.24× decode speedups, 23 tok/s on a dense 9B on a 16GB M4 mini.
+Different layer (a single-request runtime vs a mind system) — but it owns the speed
+story on our hardware, so our numbers must be published beside it, honestly framed:
+
+| Metric | Ours (measured 2026-09-02) | The bar |
+|---|---|---|
+| Decode tok/s per stream | ~11.4 median (Ornith-35B-A3B, 4 concurrent minds, long ctx) | Publish AGGREGATE (~45 tok/s across 4 streams) + per-stream, both labeled |
+| Decode multiplier | none (ngram spec measured OFF at 2% acceptance; MTP needs a trained draft head Ornith lacks) | Forge work item: train an MTP head for Ornith — the MTPLX Forge parallel, on OUR factory |
+| Model load | **1.7–6.1s** (engine receipt) | Already excellent — the story was wrong, publish it |
+| Boot → serving-ready | was ~15 min: 16 relaunches from the plan chasing boot's demand staircase | Plan-flat gate shipped; target < 60s warm |
+| Stop | was: flat 2s sleep, nothing saved | Parallel bounded save-and-join shipped; target < 3s receipted |
+| Act loop (perceive→think→act) | 47–65s warm | Nobody else reports this at all — our category |
+
+The honest frame: MTPLX accelerates one request; we run a SOCIETY — publish both
+truths, adopt their class of decode win via the forge (draft-head training), and keep
+the metrics nobody else has (persistence, $0, time-to-act, KV-follows-mind).
+
 ## Execution order (from tonight)
 
 1. ☐ **Regrade sweep** of banked Verified/Lite verdicts on the current harness (gate 1).

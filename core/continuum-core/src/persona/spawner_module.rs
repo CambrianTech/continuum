@@ -453,6 +453,10 @@ pub async fn bootstrap_planned(
     let mut bootstrapped: Vec<(RoleId, PersonaInstanceInfo, String, ServingParams)> =
         Vec::with_capacity(required);
 
+    // PHASE 1 — draw every identity from the provider. Sequential because the
+    // provider hands out one identity at a time (`&mut`), but this is CHEAP: the
+    // cost is `bootstrap_one` below, not `next_persona`.
+    let mut intents: Vec<PersonaIdentityIntent> = Vec::with_capacity(required);
     for (slot_index, desired) in plan.iter().enumerate() {
         let intent: PersonaIdentityIntent = provider
             .next_persona()
@@ -468,16 +472,31 @@ pub async fn bootstrap_planned(
                 provided: slot_index,
                 required,
             })?;
+        intents.push(intent);
+    }
 
-        let info = instance_manager
-            .bootstrap_one(&intent)
-            .await
-            .map_err(|source| BootstrapPlannedError::AircBootstrap {
-                slot_index,
-                role: desired.role,
-                source,
-            })?;
+    // PHASE 2 — bootstrap ALL personas CONCURRENTLY (fork/join). The airc keypair
+    // ceremony + room join + seed are INDEPENDENT per persona, so a serial loop
+    // paid ~minutes PER citizen: measured 2026-09-03, ~7-minute gaps between
+    // successive citizens on a reboot, so the last of N idled 30+ minutes with
+    // `resident=0` and no turns — the slow-restart Joel called out ("reboot needs
+    // work… always think of parallel", the CBAR pthreads/lambdas fork-join shape).
+    // Now the restart's bootstrap cost is the SLOWEST SINGLE persona, not their
+    // sum. `bootstrap_one` takes `&self`, so concurrent calls share no mutable
+    // state; each writes its own per-persona identity dir + seed.
+    let infos = futures::future::join_all(
+        intents
+            .iter()
+            .map(|intent| instance_manager.bootstrap_one(intent)),
+    )
+    .await;
 
+    for (slot_index, (desired, info_res)) in plan.iter().zip(infos).enumerate() {
+        let info = info_res.map_err(|source| BootstrapPlannedError::AircBootstrap {
+            slot_index,
+            role: desired.role,
+            source,
+        })?;
         bootstrapped.push((
             desired.role,
             info,

@@ -27,6 +27,20 @@ pub fn decision_from_response(text: &str) -> Decision {
     // text becomes a Speak decision, so every consumer of the decision gets clean
     // text. An only-`<think>` response cleans to empty → Pass (silence), matching
     // the "only thinking → don't speak" behavior.
+    // RAW-first pass check (before `clean_response`). Its speaker-label stripper
+    // (`^[A-Z][A-Za-z\s]+:\s*`) eats a LEADING "PASS: " as if it were a name — so
+    // "PASS: done" would otherwise clean to "done" and read as a Speak, losing
+    // both the pass AND its reason. A leading silence token on the RAW text is
+    // unambiguously a turn-pass (its first word IS the token), while "Verdict:
+    // PASS" does NOT lead with the token and is untouched. This is what lets a
+    // citizen conclude a held card with the natural "PASS: done" / "PASS: blocked
+    // — <why>" form the held-work burst asks for.
+    let raw_trimmed = text.trim();
+    if starts_with_silence_token(raw_trimmed) {
+        return Decision::Pass {
+            reason: pass_reason(raw_trimmed),
+        };
+    }
     let cleaned = clean_response(text);
     let trimmed = cleaned.text.trim();
     probe_label_stripped_into_silence(text, trimmed);
@@ -36,11 +50,42 @@ pub fn decision_from_response(text: &str) -> Decision {
         || declares_silence_token(trimmed)
         || is_narrated_pass(trimmed)
     {
-        Decision::Pass
+        // A pass is accountable: keep the mind's OWN words for WHY it passed, so a
+        // downstream reader (the benchmark held-work edge; any gap detector) can
+        // tell a gradeable *done* from a *blocker* from a *nothing*. A bare `PASS`
+        // token or an empty generation carries no reason (`None`); a narrated pass
+        // ("done — patch ready", "blocked: …", "nothing to add") keeps the
+        // narration with any leading silence token stripped.
+        Decision::Pass {
+            reason: pass_reason(trimmed),
+        }
     } else {
         Decision::Speak {
             text: trimmed.to_string(),
         }
+    }
+}
+
+/// The mind's own words for why it passed, extracted from the cleaned generation:
+/// the narration with a leading silence token (and its trailing `:`/`-`/`.`
+/// punctuation) removed. Empty or bare-token generations carry no reason.
+fn pass_reason(trimmed: &str) -> Option<String> {
+    if trimmed.is_empty() || looks_like_silence_token(trimmed) {
+        return None; // bare PASS / empty → anonymous silence, no stated reason
+    }
+    // Strip a leading silence token so "PASS: done" yields "done", not "PASS: done".
+    let upper = trimmed.to_uppercase();
+    let body = if upper.starts_with(SILENCE_TOKEN) {
+        trimmed[SILENCE_TOKEN.len()..]
+            .trim_start_matches([':', '-', '.', ' ', '—'])
+            .trim()
+    } else {
+        trimmed
+    };
+    if body.is_empty() {
+        None
+    } else {
+        Some(body.to_string())
     }
 }
 
@@ -252,23 +297,55 @@ mod tests {
     // contract, reused from prompt_assembly.
     #[test]
     fn decision_parsing_maps_pass_and_speak() {
-        assert_eq!(decision_from_response("PASS"), Decision::Pass);
-        assert_eq!(decision_from_response("  PASS.  "), Decision::Pass);
-        assert_eq!(decision_from_response(""), Decision::Pass);
-        // Small models leak trailing prose after PASS — must still be silence,
-        // not a message that literally says "PASS ...".
-        assert_eq!(
+        // A bare token / empty generation → anonymous silence, no reason.
+        assert_eq!(decision_from_response("PASS"), Decision::pass());
+        assert_eq!(decision_from_response("  PASS.  "), Decision::pass());
+        assert_eq!(decision_from_response(""), Decision::pass());
+        // Small models leak trailing prose after PASS — still silence, and now
+        // that trailing prose is CAPTURED as the pass reason (a pass is
+        // accountable, not anonymous), with the leading token stripped.
+        assert!(matches!(
             decision_from_response("PASS — nothing to add here"),
-            Decision::Pass
-        );
-        assert_eq!(
+            Decision::Pass { reason: Some(r) } if r == "nothing to add here"
+        ));
+        assert!(matches!(
             decision_from_response("PASS.\nI'll stay quiet"),
-            Decision::Pass
-        );
+            Decision::Pass { reason: Some(r) } if r == "I'll stay quiet"
+        ));
         match decision_from_response("Let's ship the deploy fix now.") {
             Decision::Speak { text } => assert!(text.contains("ship the deploy")),
             other => panic!("expected Speak, got {other:?}"),
         }
+    }
+
+    // what this catches: the pass-reason capture that makes the held-work settle
+    // edge able to tell a gradeable 'done' from a 'blocked' from a 'nothing'. A
+    // regression that dropped the reason would send every reasoned pass back to
+    // anonymous silence and the edge could never conclude a card deterministically.
+    #[test]
+    fn a_reasoned_pass_keeps_her_words() {
+        // The natural conclusion form the held-work burst asks for. `clean_response`
+        // would strip a leading "PASS: " as a speaker label, so this pins the
+        // raw-first pass check that keeps it a reasoned pass, not a Speak "done".
+        assert!(matches!(
+            decision_from_response("PASS: done — patch ready"),
+            Decision::Pass { reason: Some(r) } if r == "done — patch ready"
+        ));
+        assert!(matches!(
+            decision_from_response("PASS: blocked - the fixture is missing"),
+            Decision::Pass { reason: Some(r) } if r.contains("blocked")
+        ));
+        // A recognized narrated closure still passes and keeps her words.
+        assert!(matches!(
+            decision_from_response("I'll pass my turn — nothing to add"),
+            Decision::Pass { reason: Some(r) } if r.contains("nothing")
+        ));
+        // "Verdict: PASS ..." is an ANSWER of PASS, NOT a turn-pass — the raw
+        // check must not steal it (the #349 minefield stays intact).
+        assert!(!matches!(
+            decision_from_response("Verdict: the guard holds"),
+            Decision::Pass { .. }
+        ));
     }
 
     // what this catches: qwen3.5 chain-of-thought tags leaking into the spoken
@@ -294,7 +371,7 @@ mod tests {
         // An ONLY-thinking response (no answer) cleans to empty → silence.
         assert_eq!(
             decision_from_response("<think>I won't answer this</think>"),
-            Decision::Pass
+            Decision::pass()
         );
     }
 
@@ -348,9 +425,8 @@ mod tests {
              please let me know! Otherwise, PASS.",
             "I've been repeating myself without adding value. Otherwise, PASS",
         ] {
-            assert_eq!(
-                decision_from_response(live),
-                Decision::Pass,
+            assert!(
+                matches!(decision_from_response(live), Decision::Pass { .. }),
                 "must silence: {live:?}"
             );
         }
@@ -439,7 +515,10 @@ mod tests {
             "To avoid further repetition, I'll continue to pass unless there's something \
              specific you'd like me to address or if new information emerges.",
         ] {
-            assert_eq!(decision_from_response(live), Decision::Pass, "must silence: {live:?}");
+            assert!(
+                matches!(decision_from_response(live), Decision::Pass { .. }),
+                "must silence: {live:?}"
+            );
         }
         // Substance stays Speak: transitive pass, declining work, peer advice,
         // fenced code, and long real answers that end in a pass phrase.
@@ -471,9 +550,8 @@ mod tests {
              have any modifications in mind, please let me know! Otherwise, I'll remain \
              silent (PASS) for now.",
         ] {
-            assert_eq!(
-                decision_from_response(drift),
-                Decision::Pass,
+            assert!(
+                matches!(decision_from_response(drift), Decision::Pass { .. }),
                 "must silence: {drift:?}"
             );
         }
@@ -493,7 +571,10 @@ mod tests {
             over_old_cap.len() > 500,
             "regression fixture must exceed the old cap"
         );
-        assert_eq!(decision_from_response(over_old_cap), Decision::Pass);
+        assert!(matches!(
+            decision_from_response(over_old_cap),
+            Decision::Pass { .. }
+        ));
         // Two-tier regression (live 2026-08-01, the cap arms race's second
         // escapee): VERBATIM 714-char turn — strong closure mid-message,
         // wake-briefing parrot appended after it, 14 chars over the 700 cap.
@@ -514,7 +595,10 @@ mod tests {
             over_new_cap.len() > 700,
             "regression fixture must exceed the tier-2 cap"
         );
-        assert_eq!(decision_from_response(over_new_cap), Decision::Pass);
+        assert!(matches!(
+            decision_from_response(over_new_cap),
+            Decision::Pass { .. }
+        ));
         // Length fail-open: a long substantive message ending in a pass phrase
         // keeps speaking.
         let long = format!(

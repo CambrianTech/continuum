@@ -1910,8 +1910,20 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
             // treated as "window OK" so a probe error never spuriously relaunches.
             let window_ok = match ctrl.served_context_window().await {
                 Ok(served) => {
-                    served == 0
-                        || target.context_window <= served.saturating_add(WINDOW_RELAUNCH_TOLERANCE)
+                    // Tolerance is a PERCENTAGE of the served window, floored at the
+                    // flat minimum — never a bare flat count. A flat 512 is 0.35% of a
+                    // 147k lane, so the boot plan's normal drift (it re-computes against
+                    // live memory, which climbs ~7% once the old core frees its share:
+                    // measured 2026-09-03, 147712 → 158107) tripped a RELAUNCH — a full
+                    // ~7-10 min 35B reload on EVERY reboot, the dominant "resume is slow"
+                    // cost. A warm lane at 88% of the ideal window NOW beats a cold ideal
+                    // one in 10 minutes; the runtime re-home (streak-debounced) still
+                    // grows it later if a bigger window's gain actually persists. A
+                    // genuinely starved lane (2048 vs a 31k plan) still relaunches:
+                    // 31k ≫ 2048 × 1.125. served 0 / probe-err stays "OK" (no spurious
+                    // relaunch), unchanged.
+                    let tolerance = WINDOW_RELAUNCH_TOLERANCE.max(served / 8);
+                    served == 0 || target.context_window <= served.saturating_add(tolerance)
                 }
                 Err(e) => {
                     // Deliberate: a probe error must not spuriously relaunch a healthy
@@ -3893,6 +3905,36 @@ mod tests {
             ctrl.serves.load(Ordering::SeqCst),
             1,
             "exactly one relaunch to the larger window"
+        );
+    }
+
+    // what this catches: THE 2026-09-03 SLOW-RESUME defect — a warm lane REAPED for a
+    // trivial window drift. On reboot the boot plan re-computes the window against live
+    // memory, which climbs ~7% once the old core frees its share (measured 147712 →
+    // 158107). A flat 512-token tolerance (0.35% of a 147k lane) tripped a full ~7-10
+    // min 35B RELAUNCH on EVERY restart — the dominant "resume is slow" cost. Tolerance
+    // is now a percentage (max(512, served/8) ≈ 12.5%), so a warm lane within ~12.5% of
+    // the target is ADOPTED (warm-now beats cold-in-10-min); a genuinely starved lane
+    // (the 2× case above) still relaunches, and the runtime re-home grows a persistent
+    // gain later.
+    #[tokio::test]
+    async fn a_small_window_drift_adopts_the_warm_lane_not_a_slow_reload() {
+        // Owned + decode-healthy, serving 147712; the boot plan drifted to 158107 (~7%).
+        let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
+            .owned()
+            .with_served_window(147_712);
+        let mut t = target("coder-14b");
+        t.context_window = 158_107;
+        let outcome = ensure_model_serving(&ctrl, &t, false).await;
+        assert_eq!(
+            outcome,
+            EnsureOutcome::AlreadyServing,
+            "a ~7% window drift must ADOPT the warm lane, not reload it; got {outcome:?}"
+        );
+        assert_eq!(
+            ctrl.serves.load(Ordering::SeqCst),
+            0,
+            "zero relaunches — the warm 35B lane is reused, not reloaded"
         );
     }
 

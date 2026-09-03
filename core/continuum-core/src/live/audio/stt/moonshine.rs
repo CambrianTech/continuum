@@ -299,13 +299,29 @@ impl MoonshineStt {
         drop(preprocess_out);
         drop(preprocess_session);
         let features_array = Self::cache_to_array(&features)?;
+        // The encoder ONNX takes TWO inputs: args_0 = features [1, T, D] and
+        // args_1 = the sequence length T as an int32 scalar tensor (its
+        // arange/strided_slice builds positional indices from it). Passing
+        // only features left args_1 missing — the whole STT chain returned
+        // empty for a full debug cycle behind a swallowed error (2026-09-02).
+        // T is the features' TIME axis: shape [1, T, D] → dims()[1].
+        let seq_len = *features_array.shape().get(1).ok_or_else(|| {
+            STTError::InferenceFailed(format!(
+                "encoder features have unexpected shape {:?} (want [1,T,D])",
+                features_array.shape()
+            ))
+        })? as i32;
 
         // ── Step 2: Encode ─ features → hidden states ────────────────────
         let features_tensor = Tensor::from_array(features_array)
             .map_err(|e| STTError::InferenceFailed(format!("Encoder input tensor: {e}")))?;
+        let seqlen_tensor = Tensor::from_array(
+            ndarray::Array1::from_vec(vec![seq_len]).into_dyn(),
+        )
+        .map_err(|e| STTError::InferenceFailed(format!("Encoder seqlen tensor: {e}")))?;
         let mut encoder_session = model.encoder.lock();
         let encoder_out = encoder_session
-            .run(ort::inputs![features_tensor])
+            .run(ort::inputs![features_tensor, seqlen_tensor])
             .map_err(|e| STTError::InferenceFailed(format!("Encoder run: {e}")))?;
         let encoder_hidden = Self::extract_f32(&encoder_out, 0)?;
         drop(encoder_out);
@@ -316,7 +332,8 @@ impl MoonshineStt {
         let mut current_token = BOS_TOKEN_ID;
 
         // First decode step (uncached — no KV cache input)
-        let token_input = Array2::from_shape_vec((1, 1), vec![current_token])
+        // Decoder ONNX wants int32 tokens; the loop's own logic stays i64.
+        let token_input = Array2::from_shape_vec((1, 1), vec![current_token as i32])
             .map_err(|e| STTError::InferenceFailed(format!("Token array shape: {e}")))?;
         let enc_array = Self::cache_to_array(&encoder_hidden)?;
 
@@ -326,9 +343,30 @@ impl MoonshineStt {
         let enc_tensor = Tensor::from_array(enc_array).map_err(|e| {
             STTError::InferenceFailed(format!("Uncached decoder encoder tensor: {e}"))
         })?;
+        // args_2 = decode sequence LENGTH as int32[1] (offline-verified: args_0
+        // int32 tokens, args_1 f32 encoder[b,T,416], args_2 int32[1]). Uncached
+        // processes ONE token → length 1. It must NOT be 0: an internal
+        // arange(0) yields a {0,1} zero-element tensor CoreML refuses (measured
+        // 2026-09-02). The cached loop uses generated_tokens.len() (already ≥1).
+        let seqlen_tensor = Tensor::from_array(ndarray::Array1::from_vec(vec![1i32]).into_dyn())
+            .map_err(|e| STTError::InferenceFailed(format!("Uncached position tensor: {e}")))?;
         let mut uncached_session = model.uncached_decoder.lock();
+        // Bind by declared input NAME (args_0 token, args_1 encoder, args_2 T)
+        // — never positional, so the contract the model declares is the one
+        // we satisfy (the fragile zip is why this went unnoticed).
+        let uncached_vals: Vec<Value> = vec![
+            token_tensor.into(),
+            enc_tensor.into(),
+            seqlen_tensor.into(),
+        ];
+        let uncached_named: Vec<(String, Value)> = uncached_session
+            .inputs()
+            .iter()
+            .map(|i| i.name().to_string())
+            .zip(uncached_vals)
+            .collect();
         let uncached_out = uncached_session
-            .run(ort::inputs![token_tensor, enc_tensor])
+            .run(uncached_named)
             .map_err(|e| STTError::InferenceFailed(format!("Uncached decoder run: {e}")))?;
 
         // Logits = output[0], KV cache = output[1..]
@@ -355,7 +393,7 @@ impl MoonshineStt {
 
         // Subsequent decode steps (cached — with KV cache)
         for _step in 1..MAX_TOKENS {
-            let token_input = Array2::from_shape_vec((1, 1), vec![current_token])
+            let token_input = Array2::from_shape_vec((1, 1), vec![current_token as i32])
                 .map_err(|e| STTError::InferenceFailed(format!("Token array shape: {e}")))?;
             let enc_array = Self::cache_to_array(&encoder_hidden)?;
 
@@ -367,10 +405,19 @@ impl MoonshineStt {
             let enc_val: Value = Tensor::from_array(enc_array)
                 .map(|v| v.into())
                 .map_err(|e| STTError::InferenceFailed(format!("Encoder value: {e}")))?;
+            // args_2 = decode position int32[1] — the number of tokens already
+            // in the sequence (contract: token, encoder, POSITION, then 32 KV
+            // tensors). The positional zip omitted this and slid a float KV
+            // into the int32 position slot — the 'expected int32' error.
+            let pos = generated_tokens.len() as i32;
+            let pos_val: Value = Tensor::from_array(ndarray::Array1::from_vec(vec![pos]).into_dyn())
+                .map(|v| v.into())
+                .map_err(|e| STTError::InferenceFailed(format!("Position value: {e}")))?;
 
-            let mut input_values: Vec<Value> = Vec::with_capacity(2 + kv_cache.len());
+            let mut input_values: Vec<Value> = Vec::with_capacity(3 + kv_cache.len());
             input_values.push(token_val);
             input_values.push(enc_val);
+            input_values.push(pos_val);
             for ct in &kv_cache {
                 input_values.push(ct.to_value()?);
             }
@@ -490,6 +537,21 @@ impl SpeechToText for MoonshineStt {
             uncached_decoder.outputs().len(),
             uncached_decoder.outputs().len().saturating_sub(1)
         );
+        // AUTHORITATIVE I/O contract — read from the sessions, never guessed
+        // (each guess is a 9-min rebuild; the model file is the truth). Logs
+        // every input's name + type so args_2 etc. get bound by fact.
+        for (label, sess) in [
+            ("encoder", &encoder),
+            ("uncached_decoder", &uncached_decoder),
+            ("cached_decoder", &cached_decoder),
+        ] {
+            let names: Vec<String> = sess
+                .inputs()
+                .iter()
+                .map(|i| format!("{}:{:?}", i.name(), i.dtype()))
+                .collect();
+            clog_info!("Moonshine {label} inputs = {:?}", names);
+        }
 
         let vocab = Self::load_vocab(&model_dir)?;
 

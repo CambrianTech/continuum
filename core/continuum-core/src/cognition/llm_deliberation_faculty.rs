@@ -766,7 +766,7 @@ impl LlmDeliberationFaculty {
             0.9,
             format!("{} chose to act", self.persona_name),
         )
-        .with_metrics(metrics_from(resp))
+        .with_metrics(metrics_from(&self.persona_name, resp))
         // #210: carry the verbatim generation so the glass box can attribute a fumbled
         // tool envelope to the model, not the parser. The Act's `intent` is only the
         // model's `<think>` reasoning; the raw text is the actual emitted call bytes.
@@ -807,7 +807,7 @@ impl LlmDeliberationFaculty {
             "draft reproduced a perception fact she was handed — settling to silence instead \
              of speaking the prompt back into the room (#158)"
         );
-        Decision::Pass
+        Decision::pass()
     }
 
     /// She called the yield verb — settle the turn as the silence it names.
@@ -846,7 +846,7 @@ impl LlmDeliberationFaculty {
             "she yielded the turn through the structured verb — silent Pass, no room message"
         );
         Some(Contribution::verdict(
-            Decision::Pass,
+            Decision::pass(),
             0.9,
             format!("{} yielded the turn (yield_turn)", self.persona_name),
         ))
@@ -859,7 +859,13 @@ impl LlmDeliberationFaculty {
     fn verdict(&self, resp: &TextGenerationResponse, ws: &Workspace) -> Contribution {
         let decision = self.silence_a_parroted_draft(decision_from_response(&resp.text), ws);
         let (salience, reasoning) = match &decision {
-            Decision::Pass => (0.5, format!("{} chose silence (PASS)", self.persona_name)),
+            Decision::Pass { reason } => (
+                0.5,
+                match reason {
+                    Some(r) => format!("{} passed: {r}", self.persona_name),
+                    None => format!("{} chose silence (PASS)", self.persona_name),
+                },
+            ),
             _ => (
                 0.85,
                 format!(
@@ -869,7 +875,7 @@ impl LlmDeliberationFaculty {
             ),
         };
         Contribution::verdict(decision, salience, reasoning)
-            .with_metrics(metrics_from(resp))
+            .with_metrics(metrics_from(&self.persona_name, resp))
             // #210: for a Speak, the raw text IS the artifact (the `<<!DOCTYPE` HTML she
             // wrote to the room / a file); carrying it verbatim lets the glass box show a
             // leading-char fumble is the model's, distinct from the parsed decision.
@@ -2442,6 +2448,9 @@ impl Faculty for LlmDeliberationFaculty {
             let _lane =
                 crate::cognition::resource_admission::acquire_serving_lane(ws.directed_at_self)
                     .await;
+            // HER task-positive system is engaged from here: the per-citizen boredom gate
+            // (dreams) reads this stamp, never a room wake.
+            crate::cognition::activity_gate::persona_engaged(self.persona_id);
             crate::probe!(
                 class = "delib.gate.lane_acquired",
                 persona = %self.persona_name,
@@ -2873,7 +2882,7 @@ fn segment_map(system: &str, messages: &[ChatMessage]) -> Vec<(&'static str, u32
 /// the same path as the decision, and the settle loop folds it into the per-task
 /// total. Token counts are 0 when the gateway omitted `usage` (older endpoints);
 /// `latency_ms` is always present (the adapter times every request).
-fn metrics_from(resp: &TextGenerationResponse) -> crate::cognition::workspace::TurnMetrics {
+fn metrics_from(persona: &str, resp: &TextGenerationResponse) -> crate::cognition::workspace::TurnMetrics {
     // The lane's PREFILL-vs-DECODE split (llama-server `timings`), when present:
     // cache_n/prompt_n is the KV-cache hit/miss, prompt_ms/predicted_ms the
     // wall-clock split that lets the harness see where Metal time actually goes.
@@ -2912,6 +2921,7 @@ fn metrics_from(resp: &TextGenerationResponse) -> crate::cognition::workspace::T
     if t.is_some() {
         crate::probe!(
             class = "delib.generate.cache",
+            persona = %persona,
             cached_tokens = m.cached_tokens,
             prefill_tokens = m.prefill_tokens,
             // The ratio the humans and the citizens both read. 1.0 = fully warm prefix;
@@ -5349,7 +5359,7 @@ mod tests {
                 .contribute(&Workspace::new("anything"))
                 .await
                 .expect("verdict");
-            assert_eq!(c.decision, Some(Decision::Pass));
+            assert_eq!(c.decision, Some(Decision::pass()));
         }
     } // mod verdicts
 }

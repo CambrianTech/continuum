@@ -175,6 +175,56 @@ pub trait AircCitizen:
     async fn publish_stream_chunk(&self, _chunk: &airc_lib::StreamChunk) -> Result<(), AircError> {
         Ok(())
     }
+
+    /// Write a held card's lifecycle state — the WRITE half of the work board
+    /// (the read supertraits only observe). This is what lets the deterministic
+    /// held-work settle edge conclude a card the moment she passes it "done",
+    /// through the SAME change+emit path the `work/state` verb uses, so the
+    /// owning recipe's outcome reactor fires exactly as it would for the verb.
+    /// Default is a hard error, not a silent no-op: a citizen with no
+    /// board-write capability advancing a card would be an invisible loss
+    /// ([[fallbacks-are-illegal-fail-loud]]); only the production runtime
+    /// overrides this. Recipe-general — the card may be a benchmark, a code
+    /// task, or any other activity's work item.
+    async fn advance_card_to(
+        &self,
+        _card_id: airc_lib::WorkCardId,
+        _state: airc_lib::CardState,
+    ) -> Result<(), String> {
+        Err("this citizen has no work-board write capability".to_string())
+    }
+
+    /// PULL a card off the shared team deck — claim it as this citizen so her
+    /// held-work loop then works it. Kanban pull (an idle member grabs the next
+    /// Open card) rather than push (a fixed pile pre-assigned at dispatch). The
+    /// claim is deterministic (the substrate pulls when she is free), NOT an LLM
+    /// tool call, so it can't be skipped. Default errors (no board-write
+    /// capability); the real runtime routes through airc's claim path. Returns
+    /// `Ok(false)` when the card was already taken by a teammate (a lost race is
+    /// normal on a shared deck — try the next one), `Ok(true)` when SHE now holds
+    /// it.
+    async fn claim_card(&self, _card_id: airc_lib::WorkCardId) -> Result<bool, String> {
+        Err("this citizen has no work-board write capability".to_string())
+    }
+
+    /// The rooms this citizen is RESIDENT in (her durable subscription set). This is
+    /// the pull-eligibility source: a card is content of the room it was posted in,
+    /// and a resident may pull it — never a dispatch-time team or assignee list.
+    /// Default is an empty set (a citizen standing nowhere pulls nothing), which is
+    /// honest for read-only stand-ins; the production runtime reads airc.
+    async fn subscribed_rooms(&self) -> Result<Vec<Uuid>, AircError> {
+        Ok(Vec::new())
+    }
+
+    /// The cards on `room`'s board that are takeable RIGHT NOW (Open, or held on a
+    /// lapsed lease) per the ONE claimability decision
+    /// ([`crate::persona::card_holder::claimable_now`]). The pull reads THIS, not the
+    /// round tracker: the tracker never records a claim, so without board truth every
+    /// idle resident would retry the first already-claimed card forever. Default is
+    /// empty (nothing offered); the production runtime folds the room's board.
+    async fn claimable_cards_in(&self, _room: Uuid, _now_ms: u64) -> Result<Vec<Uuid>, AircError> {
+        Ok(Vec::new())
+    }
 }
 
 /// THE implementation of [`AircCitizen::subscribe_all_rooms`] over a
@@ -307,6 +357,23 @@ pub(crate) async fn room_name_by_id(room_id: Uuid) -> Option<String> {
 /// — no Option, no expect, no silent substitution.
 pub struct StubAircCitizen {
     peer_id: Uuid,
+    /// Rooms the stub reports as resident in (see [`AircCitizen::subscribed_rooms`]).
+    rooms: Vec<Uuid>,
+    /// Cards the stub reports as claimable on ANY room's board
+    /// (see [`AircCitizen::claimable_cards_in`]).
+    claimable: Vec<Uuid>,
+    /// Cards this stub reports as its active claims — empty by default. A test
+    /// that exercises the held-work path seeds one so `active_claims()` returns
+    /// held work (the held-work gate fires only on a Claimed/InProgress card).
+    held: Vec<airc_lib::WorkCard>,
+    /// Records every `advance_card_to` call so a test can assert the held-work
+    /// completion edge concluded the right card with the right state — the
+    /// WRITE half the read supertraits can't observe. Shared `Arc` so the test
+    /// holds a clone and reads it after driving the turn.
+    advanced: std::sync::Arc<std::sync::Mutex<Vec<(airc_lib::WorkCardId, airc_lib::CardState)>>>,
+    /// Records every `claim_card` (pull) call — the kanban-pull half, so a test
+    /// can assert an idle citizen pulled the right Open card off the deck.
+    claimed: std::sync::Arc<std::sync::Mutex<Vec<airc_lib::WorkCardId>>>,
 }
 
 impl StubAircCitizen {
@@ -314,7 +381,48 @@ impl StubAircCitizen {
     /// match the `PersonaInstanceInfo::peer_id` on the same hosted
     /// persona so cognition's self-filter behaves consistently.
     pub fn new(peer_id: Uuid) -> Self {
-        Self { peer_id }
+        Self {
+            peer_id,
+            rooms: Vec::new(),
+            claimable: Vec::new(),
+            held: Vec::new(),
+            advanced: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            claimed: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        }
+    }
+
+    /// A handle to the `claim_card` (pull) recording — clone before moving the
+    /// stub behind an `Arc<dyn AircCitizen>`, then read which cards she pulled.
+    pub fn claim_recorder(&self) -> std::sync::Arc<std::sync::Mutex<Vec<airc_lib::WorkCardId>>> {
+        self.claimed.clone()
+    }
+
+    /// Seed the cards this stub reports as active claims — so the held-work
+    /// gate sees held work.
+    pub fn with_claims(mut self, cards: Vec<airc_lib::WorkCard>) -> Self {
+        self.held = cards;
+        self
+    }
+
+    /// Stand this stub in `rooms` — what [`AircCitizen::subscribed_rooms`] reports.
+    pub fn with_rooms(mut self, rooms: Vec<Uuid>) -> Self {
+        self.rooms = rooms;
+        self
+    }
+
+    /// Offer `cards` as claimable on every room's board
+    /// (what [`AircCitizen::claimable_cards_in`] reports).
+    pub fn with_claimable(mut self, cards: Vec<Uuid>) -> Self {
+        self.claimable = cards;
+        self
+    }
+
+    /// A handle to the `advance_card_to` recording — clone before moving the
+    /// stub behind an `Arc<dyn AircCitizen>`, then read after driving the turn.
+    pub fn advance_recorder(
+        &self,
+    ) -> std::sync::Arc<std::sync::Mutex<Vec<(airc_lib::WorkCardId, airc_lib::CardState)>>> {
+        self.advanced.clone()
     }
 
     /// Convenience: a `runtime_lookup` closure for
@@ -373,9 +481,9 @@ impl crate::persona::room_doctrine_source::AircDoctrineReader for StubAircCitize
 #[async_trait]
 impl crate::persona::active_work_source::AircWorkReader for StubAircCitizen {
     async fn active_claims(&self) -> Result<Vec<airc_lib::WorkCard>, AircError> {
-        // No daemon in tests → no claimed work. Cognition runs through cleanly
-        // with no [active-work] grounding block.
-        Ok(vec![])
+        // Default: no daemon → no claimed work. A test may seed `with_claims` to
+        // exercise the held-work path.
+        Ok(self.held.clone())
     }
 }
 
@@ -449,6 +557,36 @@ impl AircCitizen for StubAircCitizen {
              service-loop tests should reply through StubConversation, \
              not through the citizen handle"
         );
+    }
+
+    /// Record the transition instead of hitting a daemon, so a test can assert
+    /// the held-work completion edge concluded the right card.
+    async fn advance_card_to(
+        &self,
+        card_id: airc_lib::WorkCardId,
+        state: airc_lib::CardState,
+    ) -> Result<(), String> {
+        self.advanced
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push((card_id, state));
+        Ok(())
+    }
+
+    async fn claim_card(&self, card_id: airc_lib::WorkCardId) -> Result<bool, String> {
+        self.claimed
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(card_id);
+        Ok(true)
+    }
+
+    async fn subscribed_rooms(&self) -> Result<Vec<Uuid>, AircError> {
+        Ok(self.rooms.clone())
+    }
+
+    async fn claimable_cards_in(&self, _room: Uuid, _now_ms: u64) -> Result<Vec<Uuid>, AircError> {
+        Ok(self.claimable.clone())
     }
 }
 
