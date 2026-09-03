@@ -810,6 +810,13 @@ pub struct BenchmarkDispatchParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub drive: Option<crate::cognition::bench_round::WorkDriver>,
+    /// The round's STANDING RULES — published as the run room's operating doctrine
+    /// so every resident sees it in her grounding on every turn (the `[Room
+    /// operating doctrine]` block), not as a message that scrolls out of view.
+    /// This is where a recipe puts role prompts and the collaboration nudge
+    /// ("others are working cards on this board — say what you found when it
+    /// helps them"). Omit for the control arm: no doctrine, no nudge.
+    pub doctrine: Option<String>,
     /// Stage the round even though serving is NOT decode-verified (#442).
     ///
     /// Off by default, and the default is the point: dispatch refuses to post cards no
@@ -1100,6 +1107,9 @@ pub struct RecipeDispatch {
     /// any explicit `teammates`; the assignee is never their own reviewer.
     #[serde(default)]
     pub reviewers: Option<u32>,
+    /// Standing rules for the run room (see `BenchmarkDispatchParams::doctrine`).
+    #[serde(default)]
+    pub doctrine: Option<String>,
 }
 
 /// Resolve the citizens a directed dispatch addresses — GENERALIZED for any repo user's
@@ -1473,6 +1483,7 @@ impl ActionCommand for BenchmarkDispatch {
                 let sub = BenchmarkDispatchParams {
                     name: Some(d.benchmark.clone()),
                     recipe: None,
+                    doctrine: d.doctrine.clone().or_else(|| p.doctrine.clone()),
                     teammates: if team.is_empty() {
                         p.teammates.clone()
                     } else {
@@ -1861,6 +1872,10 @@ impl ActionCommand for BenchmarkDispatch {
             "team".to_string(),
             serde_json::json!(roster.iter().map(|(who, _)| who).collect::<Vec<_>>()),
         );
+        run_params.insert("driver".to_string(), serde_json::json!(p.drive.unwrap_or_default()));
+        if let Some(doctrine) = &p.doctrine {
+            run_params.insert("doctrine".to_string(), serde_json::json!(doctrine));
+        }
         let room = crate::modules::activity::spawn_activity_room(
             &airc,
             &room_name,
@@ -1869,6 +1884,26 @@ impl ActionCommand for BenchmarkDispatch {
             &run_params,
         )
         .await?;
+        // The round's standing rules, published as the run room's operating doctrine
+        // RIGHT HERE while the curator's current room is still the freshly spawned run
+        // (spawn_activity_room leaves the pointer there). Rendered verbatim into every
+        // resident's grounding as `[Room operating doctrine]` — the reminder that
+        // survives the window, unlike a kickoff message.
+        if let Some(doctrine) = &p.doctrine {
+            airc.publish_room_doctrine(
+                doctrine.clone(),
+                format!("round-{}", room.room_id.as_uuid().simple()),
+            )
+            .await
+            .map_err(|e| CommandError::Internal(format!("doctrine publish: {e}")))?;
+            crate::probe!(
+                class = "bench.round.doctrine_published",
+                room = %room.room_id.as_uuid(),
+                chars = doctrine.len() as u64,
+                "the round's standing rules are on the run room's doctrine — every \
+                 resident grounds on them each turn"
+            );
+        }
 
         // Move every assignee INTO the run — a citizen who is not subscribed never sees the
         // board, the kickoff, or the peers working beside her. This is the members[] half
@@ -5206,10 +5241,80 @@ impl ActionCommand for BenchmarkRounds {
             &facts,
             crate::persona::trace::now_ms(),
         );
+        enrich_rounds_from_board_and_verdicts(&mut rounds).await;
         Ok(BenchmarkRoundsResult {
             in_flight: rounds.len(),
             rounds,
         })
+    }
+}
+
+/// BOARD TRUTH + VERDICT FILES onto the round report — the durable records, read at
+/// report time (the round tracker knows the deck; the board knows who holds what and
+/// when; the verdict file knows the grade and when). This is what makes a round's
+/// time-to-claim, time-to-settle and resolve rate readable by a stranger after any
+/// number of reboots. Best-effort: an unreadable board leaves the tracker's view.
+pub(crate) async fn enrich_rounds_from_board_and_verdicts(
+    rounds: &mut [crate::cognition::bench_round::RoundSnapshot],
+) {
+    let registry = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global();
+    let reader = registry.as_ref().and_then(|reg| reg.any_live_citizen());
+    for round in rounds.iter_mut() {
+        // Verdicts: keyed by instance, independent of the board.
+        for card in round.cards.iter_mut() {
+            if card.instance.is_empty() {
+                continue;
+            }
+            if let Some(v) = crate::cognition::swe_bench::read_verdict(&card.instance) {
+                card.resolved = Some(v.resolved);
+                card.graded_at_ms = (v.graded_at_ms > 0).then_some(v.graded_at_ms);
+            }
+        }
+        let Some(rt) = reader.as_ref() else {
+            continue;
+        };
+        let Ok(room_id) = round.round_id.parse::<uuid::Uuid>() else {
+            continue;
+        };
+        let Ok(set) = rt.airc().subscription_set().await else {
+            continue;
+        };
+        let Some(room) = set
+            .all()
+            .map(|sub| sub.as_room())
+            .find(|r| r.channel.as_uuid() == room_id)
+        else {
+            continue; // the reader is not resident in this run room — tracker view stands
+        };
+        let Ok(board) = rt.airc().work_board_in(&room).await else {
+            continue;
+        };
+        let board = board.snapshot();
+        for card in round.cards.iter_mut() {
+            let Some(bc) = board
+                .cards
+                .iter()
+                .find(|c| c.card_id.as_uuid().to_string() == card.card_id)
+            else {
+                continue;
+            };
+            card.board_state = serde_json::to_value(bc.state)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default();
+            card.owner = bc
+                .owner
+                .map(|o| {
+                    registry
+                        .as_ref()
+                        .and_then(|reg| reg.get(o.as_uuid()))
+                        .map(|rt| rt.agent_name().to_string())
+                        .unwrap_or_else(|| o.as_uuid().to_string()[..8].to_string())
+                })
+                .unwrap_or_default();
+            card.created_at_ms = Some(bc.created_at_ms);
+            card.updated_at_ms = Some(bc.updated_at_ms);
+        }
     }
 }
 

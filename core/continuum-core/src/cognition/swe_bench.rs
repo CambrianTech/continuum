@@ -197,6 +197,9 @@ pub struct SweVerdict {
     /// test_arguments and test_unit" is what a human reviewer would say (Joel,
     /// 2026-08-08: "you or any human could tell him what's wrong — or the grader").
     /// This is what the experience stream and the room verdict carry forward.
+    /// Epoch-ms when this verdict was recorded — the experiment's settle clock.
+    #[serde(default)]
+    pub graded_at_ms: u64,
     #[serde(default)]
     pub failed_tests: Vec<String>,
     /// The failing FAIL_TO_PASS run's OUTPUT tail (capped) — the assertion diff a
@@ -534,6 +537,7 @@ pub fn record_verdict(verdict: &SweVerdict, is_gold: bool) -> Result<Option<Path
     // identical banked patch moved p2p 0/40 -> 40/40 (2026-08-28).
     let mut verdict = verdict.clone();
     verdict.harness_build = env!("CONTINUUM_BUILD_GIT_SHA").to_string();
+    verdict.graded_at_ms = crate::persona::trace::now_ms();
     verdict.served_model = crate::inference::llama_server::current_serving()
         .active_model
         .unwrap_or_default(); // unwrap_or: nothing serving at grade time = honest empty, never a guess
@@ -3510,6 +3514,7 @@ mod tests {
         );
         let stamped = serde_json::to_string(&SweVerdict {
             harness_build: env!("CONTINUUM_BUILD_GIT_SHA").to_string(),
+            graded_at_ms: 0,
             ..v.clone()
         })
         .unwrap();

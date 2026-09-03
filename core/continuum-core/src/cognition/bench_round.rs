@@ -1130,6 +1130,26 @@ pub struct RoundCardSnapshot {
     pub last_act_secs: Option<u64>,
     #[ts(optional)]
     pub resolved: Option<bool>,
+    /// BOARD truth (the durable record): the card's column right now —
+    /// `open|claimed|in_progress|blocked|review|merged|closed`. Empty when the
+    /// board could not be read.
+    #[serde(default)]
+    pub board_state: String,
+    /// Who holds it on the board (display name, else short id). Empty = nobody.
+    #[serde(default)]
+    pub owner: String,
+    /// Board timestamps — the experiment axes: time-to-claim and time-to-settle
+    /// read from these, never from a process clock that a reboot resets.
+    #[ts(optional, type = "number")]
+    #[serde(default)]
+    pub created_at_ms: Option<u64>,
+    #[ts(optional, type = "number")]
+    #[serde(default)]
+    pub updated_at_ms: Option<u64>,
+    /// When the verdict file was written (`SweVerdict::graded_at_ms`).
+    #[ts(optional, type = "number")]
+    #[serde(default)]
+    pub graded_at_ms: Option<u64>,
 }
 
 /// The run-ledger facts [`enrich_rounds`] merges into a card row — a minimal
@@ -1296,6 +1316,11 @@ pub fn live_rounds() -> Vec<RoundSnapshot> {
                         patch_bytes: None,
                         last_act_secs: None,
                         resolved: None,
+                        board_state: String::new(),
+                        owner: String::new(),
+                        created_at_ms: None,
+                        updated_at_ms: None,
+                        graded_at_ms: None,
                     }
                 })
                 .collect();
@@ -1350,6 +1375,11 @@ mod tests {
             patch_bytes: None,
             last_act_secs: None,
             resolved: None,
+            board_state: String::new(),
+            owner: String::new(),
+            created_at_ms: None,
+            updated_at_ms: None,
+            graded_at_ms: None,
         };
         let round = |cards: Vec<RoundCardSnapshot>| RoundSnapshot {
             round_id: Uuid::new_v4().to_string(),
@@ -1448,6 +1478,11 @@ mod tests {
                 patch_bytes: None,
                 last_act_secs: None,
                 resolved: None,
+                board_state: String::new(),
+                owner: String::new(),
+                created_at_ms: None,
+                updated_at_ms: None,
+                graded_at_ms: None,
             }],
             verdict: String::new(),
             idle_secs: None,
