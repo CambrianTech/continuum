@@ -216,6 +216,20 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
             // membership is needed. Once per card per boot; the say is
             // perception, and repeating it every watch tick would be the
             // room-join flood shape.
+            // Per-assignee held-card ids, fetched once, so we can SKIP re-saying a
+            // kickoff for a card she ALREADY holds. The self-tick held-work loop
+            // (act_question, #the-9-1-night-audit) now works every held (Claimed)
+            // card automatically — no room message needed. Re-saying anyway floods
+            // cognition (measured 2026-09-02: 30+ rounds x ~4 cards = 100+ messages
+            // on reboot, 22 prefills / 1 productive held-work turn) and STARVES the
+            // very held-work it means to enable. So re-say is now ONLY for a card
+            // she has LOST (lapsed to Open, or never re-claimed), which the held-work
+            // loop cannot pick up because it isn't in her claims.
+            use crate::persona::active_work_source::AircWorkReader as _;
+            let mut held_by_assignee: std::collections::HashMap<
+                uuid::Uuid,
+                std::collections::HashSet<uuid::Uuid>,
+            > = std::collections::HashMap::new();
             for next in crate::cognition::bench_round::unworked_citizen_cards() {
                 if !nudged.insert(next.card) {
                     continue;
@@ -224,6 +238,28 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
                     nudged.remove(&next.card); // not resident yet — retry a later tick
                     continue;
                 };
+                if !held_by_assignee.contains_key(&next.assignee) {
+                    let held: std::collections::HashSet<uuid::Uuid> = rt
+                        .active_claims()
+                        .await
+                        .map(|cards| cards.iter().map(|c| c.card_id.as_uuid()).collect())
+                        .unwrap_or_default(); // safe: unreadable claims = treat as none held, fall through to re-say (correct direction: a re-say is recoverable, a missed one strands)
+                    held_by_assignee.insert(next.assignee, held);
+                }
+                if held_by_assignee
+                    .get(&next.assignee)
+                    .is_some_and(|h| h.contains(&next.card))
+                {
+                    nudged.remove(&next.card); // not a real nudge — leave it re-sayable if the claim later lapses
+                    crate::probe!(
+                        class = "bench.round.resume_held",
+                        card_id = %next.card,
+                        assignee = %next.assignee,
+                        "card still held after reboot — the held-work loop works it; \
+                         no re-say (no reboot kickoff flood)"
+                    );
+                    continue;
+                }
                 let short = next.card.simple().to_string()[..8].to_string();
                 // NAME the addressee. The say rides the assignee's own runtime
                 // into a SHARED room, so an unaddressed "your card" reads as
