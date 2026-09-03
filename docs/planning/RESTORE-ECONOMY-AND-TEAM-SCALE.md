@@ -74,8 +74,21 @@ findings (measured 2026-09-03, a REBOOT of ~10 resuming citizens):
   - `warmup()` is a NO-OP for the OpenAI adapter (ruled out as a cost).
   - Also: `materialize_adapters` builds adapters in a serial loop (`build_adapter`
     awaits ready serving each) — parallelize it too once decode-ready is fast.
+  - ✅ DONE (partial): the adopt-vs-relaunch window check used a FLAT 512-token
+    tolerance (0.35% of a 147k lane), so the boot plan's normal drift tripped a full
+    35B RELAUNCH. Made it a PERCENTAGE (max(512, served/8) ≈ 12.5%), commit
+    `56a7ff90b`. Measured: reboot-resume ~11 min → **~3.5 min** (turns at t+213s
+    after core-answered; minds rehydrated with full history).
+  - ⛔ REMAINING (the near-instant layer): the boot plan WINDOW CLIMBS IN STEPS
+    during boot (measured 2026-09-03: 74752 → 124160 → 147968), each big jump a
+    relaunch (2 partial reloads), because the plan starts from a conservative
+    boot-floor window and grows as it verifies live memory. Fix: SEED the boot plan
+    window (and lanes) from the SURVIVING lane's known-good served window on a
+    reboot-adopt, so the plan doesn't climb to a value the running lane already has —
+    one load, or pure adopt. That closes 3.5 min → seconds.
   Acceptance: a reboot with N resuming citizens resumes turns in SECONDS (adopted
-  lane instantly decode-ready), not minutes; `persona/spawn` seats fast too.
+  lane instantly decode-ready, no step-climb relaunches), not minutes; `persona/spawn`
+  seats fast too.
 
 **S2 — >lane residency via rotation (the restore economy core).** A residency
 governor that admits N > lanes personas and rotates them: the least-recently-active
