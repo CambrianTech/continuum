@@ -176,6 +176,15 @@ pub struct BenchRound {
     /// pronounced `unstarted`).
     #[serde(default)]
     card_instances: HashMap<Uuid, String>,
+    /// Card uuid → epoch-ms of the LATEST held-work turn a citizen drove on it. The
+    /// freshness signal a CITIZEN-driven card emits, which the detached-solve run
+    /// ledger never sees. DURABLE (save-on-write with the round) since 2026-09-03:
+    /// it used to be a process-global map that a reboot emptied, so every citizen
+    /// round read "unstarted" after a restart and the standing autopilot minted a
+    /// duplicate round per tick (30 duplicate verified-mini rounds measured). Resume
+    /// is read-the-saved-state, never re-derive.
+    #[serde(default)]
+    card_last_act_ms: HashMap<Uuid, u64>,
 }
 
 /// Where one card's solve LIVES: its per-instance activity room, the citizen
@@ -214,6 +223,7 @@ impl BenchRound {
             card_activities: HashMap::new(),
             card_assignees: HashMap::new(),
             card_instances: HashMap::new(),
+            card_last_act_ms: HashMap::new(),
             team: Vec::new(),
         }
     }
@@ -267,34 +277,26 @@ impl BenchRound {
 static ROUNDS: LazyLock<Mutex<HashMap<Uuid, BenchRound>>> =
     LazyLock::new(|| Mutex::new(load_rounds_in(&rounds_state_dir())));
 
-/// Per-card wall-clock (epoch ms) of the LATEST held-work turn a citizen drove on
-/// it — the freshness signal a CITIZEN-driven card emits, which the detached-solve
-/// run ledger never sees. EPHEMERAL (in-memory, not persisted): freshness is a
-/// live property and correctly resets on reboot, where the resume re-establishes
-/// it. Without this, a Citizen round reads "unstarted" while she is actively
-/// working it, so the standing autopilot judges no round is working and piles up
-/// duplicate rounds (measured 2026-09-02: 21 rounds, 53 unstarted, 4 citizens).
-/// [[activity-outcome-score-is-recipe-owned-gates-multiply-objectives-weigh]]
-static CARD_LAST_ACT: LazyLock<Mutex<HashMap<Uuid, u64>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
 /// Stamp that a citizen drove a held-work turn on `card_id` at `now_ms` — called
 /// from the held-work turn boundary so `enrich_rounds` can see Citizen progress.
+/// Persisted with the round: freshness survives the seam. A card outside any live
+/// round records nothing (there is no round to read it back for).
 pub fn record_card_worked(card_id: Uuid, now_ms: u64) {
-    CARD_LAST_ACT
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .insert(card_id, now_ms);
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(round) = rounds.values_mut().find(|r| r.cards.contains_key(&card_id)) {
+        round.card_last_act_ms.insert(card_id, now_ms);
+        persist_round_in(&rounds_state_dir(), round);
+    }
 }
 
 /// The epoch-ms of the latest held-work turn on `card_id`, if any — the Citizen
 /// freshness [`enrich_rounds`] merges beside the detached run ledger.
 pub fn card_last_act_ms(card_id: Uuid) -> Option<u64> {
-    CARD_LAST_ACT
+    ROUNDS
         .lock()
         .unwrap_or_else(|p| p.into_inner())
-        .get(&card_id)
-        .copied()
+        .values()
+        .find_map(|r| r.card_last_act_ms.get(&card_id).copied())
 }
 
 /// Where in-flight rounds persist — one JSON file per round, removed at Done. The same
@@ -717,37 +719,6 @@ pub fn next_unworked_per_round() -> Vec<NextCard> {
         .collect()
 }
 
-/// Every unworked card of every Working CITIZEN-driven round — the cards whose
-/// driver is the citizens' own perception, not a detached dispatch. The boot
-/// resume RE-SAYS their kickoffs into the run room (through the assignee's own
-/// subscribed runtime), because a reload leaves the original kickoffs buried
-/// beyond every window: found live 2026-09-01, a lite round sat 'working, 4
-/// remaining' a full day while its four assignees idled beside their own
-/// unworked cards ([[bench-rounds-die-at-perception-run-rooms-are-deaf]]).
-/// One entry per card (not first-only): re-perception addresses every
-/// assignee, unlike the one-at-a-time detached dispatch.
-pub fn unworked_citizen_cards() -> Vec<NextCard> {
-    let rounds = ROUNDS.lock().expect("bench rounds mutex");
-    rounds
-        .values()
-        .filter(|r| r.stage == RoundStage::Working && r.driver == WorkDriver::Citizen)
-        .flat_map(|r| {
-            let run_room = r.round_id;
-            r.cards
-                .iter()
-                .filter(|(_, state)| state.is_none())
-                .filter_map(move |(card, _)| {
-                    r.card_assignees.get(card).map(|assignee| NextCard {
-                        card: *card,
-                        assignee: *assignee,
-                        run_room,
-                        teammates: r.team.clone(),
-                    })
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect()
-}
 
 /// The next card a MEMBER can PULL from a shared team deck — kanban PULL, not
 /// push. The first non-terminal card, with no live run, in any Working Citizen
@@ -1448,6 +1419,14 @@ mod tests {
         let now_ms: u64 = 20_000_000_000;
         let card_uuid = Uuid::new_v4();
         // She drove a held-work turn 30s ago — no run-ledger fact exists.
+        // Freshness lives ON THE ROUND (durable): a card outside any round has none,
+        // a card in a live round remembers its latest held-work turn.
+        let stray = Uuid::new_v4();
+        record_card_worked(stray, now_ms);
+        assert_eq!(card_last_act_ms(stray), None, "no round, nowhere to keep freshness");
+        let round_id = Uuid::new_v4();
+        open_round(round_id, "swe-bench-verified", WorkDriver::Citizen);
+        add_card(round_id, card_uuid);
         record_card_worked(card_uuid, now_ms - 30_000);
         assert_eq!(card_last_act_ms(card_uuid), Some(now_ms - 30_000));
 
@@ -1560,6 +1539,7 @@ mod tests {
                 card_activities: Default::default(),
                 card_assignees: cards.iter().copied().collect(),
                 card_instances: Default::default(),
+                card_last_act_ms: HashMap::new(),
                 team: Vec::new(),
             }
         }

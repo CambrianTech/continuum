@@ -88,10 +88,6 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
         let regime_id = uuid::Uuid::from_u128(0xBE7C_11A6_2026_0827);
         let mut demand_lease: Option<(u64, u32)> = None;
         let mut attempt: u32 = 0;
-        // Cards whose citizen-round kickoff was already re-said this boot —
-        // re-perception happens once, never per watch tick (a failed or
-        // not-yet-resident attempt un-marks itself for a later tick).
-        let mut nudged: std::collections::HashSet<uuid::Uuid> = std::collections::HashSet::new();
         // LIVENESS: the watch announces itself and each park entry. Measured
         // 2026-09-01 (build 5a6be5b0d): the task produced ZERO output for 30+
         // minutes — no re-says, no prewarm, no blocked probes — and there was
@@ -207,106 +203,13 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
             if attempt == 1 {
                 crate::modules::work::spawn_env_prewarm_for_working_rounds();
             }
-            // CITIZEN-driven rounds resume by RE-PERCEPTION, not dispatch: a
-            // reload buries the original kickoffs beyond every window, and the
-            // assignees then idle beside their own unworked cards (live
-            // 2026-09-01: a lite round 'working, 4 remaining' for a full day).
-            // Re-say the kickoff through the ASSIGNEE'S OWN runtime — she is
-            // subscribed to the run room by construction, so no operator-scope
-            // membership is needed. Once per card per boot; the say is
-            // perception, and repeating it every watch tick would be the
-            // room-join flood shape.
-            // Per-assignee held-card ids, fetched once, so we can SKIP re-saying a
-            // kickoff for a card she ALREADY holds. The self-tick held-work loop
-            // (act_question, #the-9-1-night-audit) now works every held (Claimed)
-            // card automatically — no room message needed. Re-saying anyway floods
-            // cognition (measured 2026-09-02: 30+ rounds x ~4 cards = 100+ messages
-            // on reboot, 22 prefills / 1 productive held-work turn) and STARVES the
-            // very held-work it means to enable. So re-say is now ONLY for a card
-            // she has LOST (lapsed to Open, or never re-claimed), which the held-work
-            // loop cannot pick up because it isn't in her claims.
-            use crate::persona::active_work_source::AircWorkReader as _;
-            let mut held_by_assignee: std::collections::HashMap<
-                uuid::Uuid,
-                std::collections::HashSet<uuid::Uuid>,
-            > = std::collections::HashMap::new();
-            for next in crate::cognition::bench_round::unworked_citizen_cards() {
-                if !nudged.insert(next.card) {
-                    continue;
-                }
-                let Some(rt) = registry.get(next.assignee) else {
-                    nudged.remove(&next.card); // not resident yet — retry a later tick
-                    continue;
-                };
-                if !held_by_assignee.contains_key(&next.assignee) {
-                    let held: std::collections::HashSet<uuid::Uuid> = rt
-                        .active_claims()
-                        .await
-                        .map(|cards| cards.iter().map(|c| c.card_id.as_uuid()).collect())
-                        .unwrap_or_default(); // safe: unreadable claims = treat as none held, fall through to re-say (correct direction: a re-say is recoverable, a missed one strands)
-                    held_by_assignee.insert(next.assignee, held);
-                }
-                if held_by_assignee
-                    .get(&next.assignee)
-                    .is_some_and(|h| h.contains(&next.card))
-                {
-                    nudged.remove(&next.card); // not a real nudge — leave it re-sayable if the claim later lapses
-                    crate::probe!(
-                        class = "bench.round.resume_held",
-                        card_id = %next.card,
-                        assignee = %next.assignee,
-                        "card still held after reboot — the held-work loop works it; \
-                         no re-say (no reboot kickoff flood)"
-                    );
-                    continue;
-                }
-                let short = next.card.simple().to_string()[..8].to_string();
-                // NAME the addressee. The say rides the assignee's own runtime
-                // into a SHARED room, so an unaddressed "your card" reads as
-                // anyone's — live 2026-09-01: Kira spent turns confused that
-                // "the resume message said it's mine" about Benchy's card, in
-                // a room where the ownership question was the whole blocker.
-                let who = rt.agent_name().to_string();
-                // Name the INSTANCE and the staged path too — the exact facts
-                // the 2026-09-02 hand-written operator note carried when it
-                // broke a wedged round. The substrate's kickoff carries them
-                // now, so the hand stays out of the loop.
-                let what = crate::cognition::bench_round::instance_for_card(next.card)
-                    .map(|i| format!(" ({i}, checkout staged at swe/{i}/ in your workspace)"))
-                    .unwrap_or_default(); // safe: unknown instance = omit the parenthetical, the re-say still names card+owner
-                let text = format!(
-                    "[resume] {who}: this round survived a core restart and your kickoff \
-                     predates your window. Card {short}{what} is {who}'s — nobody \
-                     else's — and unworked: check work/get {short} for details, work it \
-                     in your workspace, and when your patch is verified green say \
-                     `work/state {short} done` — that is what fires your grade; nobody \
-                     fires it for you."
-                );
-                match crate::persona::airc_citizen::publish_text_in_room(
-                    rt.airc(),
-                    next.run_room,
-                    &text,
-                )
-                .await
-                {
-                    Ok(_) => crate::probe!(
-                        class = "bench.round.kickoff_resaid",
-                        card_id = %next.card,
-                        assignee = %next.assignee,
-                        room = %next.run_room,
-                        "citizen-round kickoff re-said after reload — re-perception, not dispatch"
-                    ),
-                    Err(e) => {
-                        nudged.remove(&next.card); // say failed — retry a later tick
-                        crate::probe!(
-                            class = "bench.round.kickoff_resay_failed",
-                            card_id = %next.card,
-                            error = %e,
-                            "kickoff re-say failed — will retry on a later watch tick"
-                        );
-                    }
-                }
-            }
+            // CITIZEN-driven rounds need NO re-say (deleted 2026-09-03). A card is
+            // content of its room: a resident who holds it works it on her held-work
+            // turn, and a card nobody holds (never claimed, or a lapsed lease) is
+            // PULLED by the next idle resident off the board — the organic path
+            // (`service_loop::try_pull_next_card`, board-truth claimability). The
+            // re-say was compensation for the push model's assignee-only gate, and
+            // measured as a flood: 40 kickoffs re-said into legacy rooms on one boot.
             let due = crate::cognition::bench_round::next_unworked_per_round();
             if due.is_empty() {
                 if !crate::cognition::bench_round::any_working_round() {
