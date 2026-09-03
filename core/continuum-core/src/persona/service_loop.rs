@@ -2564,6 +2564,13 @@ async fn run_self_cycle(
     )
     .await
     {
+        // She WORKED her claim this tick — that is engagement, so the caller must
+        // keep her at the fast beat, not rest her. The caller reads BeatOutcome from
+        // whether `last_burst_fp` changed; bump it so a work turn always counts as
+        // Engaged. Without this she works one tick, is judged "nothing new", and
+        // backs off toward the rest cap — the opposite of "virtually no time between
+        // contexts" while a card is in her hands. (LATENCY LAW / #the-build-order.)
+        *last_burst_fp = last_burst_fp.wrapping_add(1);
         return;
     }
     let composed = {
@@ -4792,6 +4799,45 @@ mod tests {
             next_beat_after(BeatOutcome::Engaged, cap, engaged, cap),
             engaged,
             "life in the room returns her to the engaged beat immediately"
+        );
+    }
+
+    // what this catches: the LATENCY LAW for held work. A citizen advancing her
+    // OWN claimed card on every self-tick must stay at the engaged beat — working
+    // IS engagement. `run_self_cycle` signals this by bumping `last_burst_fp` on a
+    // held-work turn so the loop reads BeatOutcome::Engaged (never NothingNew).
+    // Regression for the measured 766s/791s gaps (2026-09-02): before the bump, a
+    // held-work turn changed no fingerprint, was judged "nothing new", and backed
+    // off toward the 240s cap — a citizen worked one tick then slept ~13 min. This
+    // pins that a run of work turns holds the fast beat, while the same run of
+    // fruitless musings would have saturated at the cap.
+    #[test]
+    fn a_citizen_working_her_claim_never_backs_off() {
+        use std::time::Duration;
+        let engaged = Duration::from_millis(SELF_TICK_MS);
+        let cap = Duration::from_millis(SELF_TICK_REST_CAP_MS);
+
+        // 50 consecutive held-work turns (each Engaged, as the last_burst_fp bump
+        // guarantees) keep her at the fast beat — no drift toward rest.
+        let mut beat = engaged;
+        for _ in 0..50 {
+            beat = next_beat_after(BeatOutcome::Engaged, beat, engaged, cap);
+        }
+        assert_eq!(
+            beat, engaged,
+            "a citizen who works her card every tick stays at the engaged beat — \
+             virtually no time between contexts while a card is in her hands"
+        );
+
+        // Contrast: had held work been (mis)reported as NothingNew, the SAME run
+        // would have rested to the cap — the exact bug the fp bump fixes.
+        let mut drifted = engaged;
+        for _ in 0..50 {
+            drifted = next_beat_after(BeatOutcome::NothingNew, drifted, engaged, cap);
+        }
+        assert_eq!(
+            drifted, cap,
+            "the pre-fix path (nothing-new) would have slept her at the cap between work turns"
         );
     }
 }
