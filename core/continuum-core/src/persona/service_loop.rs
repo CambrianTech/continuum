@@ -441,6 +441,10 @@ async fn serve_persona_loop_inner(
     // [[benchmark-is-a-governor-preemption-lease]]
     // [[first-class-citizens-even-during-benchmarks]]
     loop {
+        // HER turn boundary: idle while parked at the wake select, engaged from the
+        // moment a wake is taken until the loop returns here. This is the only
+        // input the per-citizen boredom gate (dreams) reads besides a measured hold.
+        crate::cognition::activity_gate::persona_idle(ctx.identity.peer_id.as_uuid());
         let wake = tokio::select! {
             ev = next_event(conversation, &mut outcome) => match ev {
                 Some(m) => Wake::Msg(m),
@@ -448,6 +452,9 @@ async fn serve_persona_loop_inner(
             },
             _ = tokio::time::sleep(next_beat) => Wake::Tick,
         };
+        if !matches!(wake, Wake::Stop) {
+            crate::cognition::activity_gate::persona_engaged(ctx.identity.peer_id.as_uuid());
+        }
         // QUIESCE HONORS ITS OWN CONTRACT (Joel, 2026-08-30: "I could call
         // them up or dm — just want to make sure we're not into singular
         // activity mode again"). The lease's documented promise is "skips

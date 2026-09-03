@@ -153,9 +153,22 @@ pub fn produce(
     tokio::spawn(async move {
         let classifier = CLASSIFIER.get_or_init(DomainClassifier::new);
         let Some(plan) = plan(classifier, &prompt, &completion) else {
-            // Gated out — a trivial/low-substance turn not worth training on.
+            crate::probe!(
+                class = "training.example.skipped",
+                persona = %persona_name,
+                prompt_chars = prompt.len() as u64,
+                completion_chars = completion.len() as u64,
+                "live turn below the training-quality floor — not buffered"
+            );
             return;
         };
+        crate::probe!(
+            class = "training.example.produced",
+            persona = %persona_name,
+            domain = %plan.trait_kind,
+            quality = plan.quality as f64,
+            "live turn buffered as a training example (L2)"
+        );
 
         // One submit path, N experience sources — the live turn is the "live-turn"
         // provenance into the shared flywheel entry.

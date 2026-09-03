@@ -50,6 +50,14 @@
     "budget": {
       "default": "4h",
       "doc": "wall-clock ceiling per attempt"
+    },
+    "driver": {
+      "default": "citizen",
+      "doc": "who works the cards: citizen (her own held-work turns in the room) or detached_solve (a forked solver per card)"
+    },
+    "doctrine": {
+      "default": "",
+      "doc": "the round's standing rules, published as the run room's operating doctrine (role prompts, the collaboration nudge); empty = none (the control arm)"
     }
   },
   "layout": {

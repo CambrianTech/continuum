@@ -30,10 +30,11 @@
 //! re-dreamable, evicted first, never contended.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
+use std::sync::{LazyLock, OnceLock};
 use std::time::Duration;
 
 use tokio::sync::watch;
+use uuid::Uuid;
 
 /// Sustained-idle threshold before boredom ARISES. A hysteresis cadence (like a
 /// monitor tick), not a behavior heuristic: entry is deliberately lazy so a
@@ -239,6 +240,128 @@ pub fn spawn_activity_gate() {
     });
 }
 
+
+// ── PER-CITIZEN boredom (2026-09-03) ────────────────────────────────────────────
+//
+// The organism gate above is ONE state for the whole process: `inflight > 0`
+// anywhere means Active everywhere. Measured with 12 citizens working a deck:
+// 749 dreams cancelled mid-pass by SOMEONE ELSE'S activity vs 4 consolidations in
+// six hours — continual learning was not switched off, it was starved by a gate
+// scoped too broadly ([[a-design-fork-is-usually-a-guard-scoped-too-broadly]]).
+// A mind's default-mode network fails to arise while ITS OWN task-positive
+// systems are engaged, not while a colleague's are. So a dream now waits on the
+// citizen's OWN engagement (stamped at her turn boundaries by the service loop)
+// plus the one genuinely global input — a measured hold, the exam lease that
+// quiets everything. Same asymmetric hysteresis: exit instantly on her activity,
+// enter only after [`BOREDOM_AFTER`] of her sustained idle.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PersonaActivity {
+    /// She is inside a turn (inbound or self-tick) right now.
+    pub engaged: bool,
+    /// Epoch-ms of the last engagement change.
+    pub since_ms: u64,
+}
+
+static PERSONAS: LazyLock<dashmap::DashMap<Uuid, watch::Sender<PersonaActivity>>> =
+    LazyLock::new(dashmap::DashMap::new);
+
+fn persona_tx(peer: Uuid) -> watch::Sender<PersonaActivity> {
+    PERSONAS
+        .entry(peer)
+        .or_insert_with(|| {
+            watch::channel(PersonaActivity { engaged: false, since_ms: now_ms() }).0
+        })
+        .clone()
+}
+
+/// Stamp `peer` engaged (a turn began). Idempotent; publishes only on change.
+pub fn persona_engaged(peer: Uuid) {
+    set_persona(peer, true);
+}
+
+/// Stamp `peer` idle (her turn ended, the loop is back at its wake select).
+pub fn persona_idle(peer: Uuid) {
+    set_persona(peer, false);
+}
+
+fn set_persona(peer: Uuid, engaged: bool) {
+    let tx = persona_tx(peer);
+    let cur = *tx.borrow();
+    if cur.engaged != engaged {
+        let _ = tx.send(PersonaActivity { engaged, since_ms: now_ms() });
+    }
+}
+
+/// Her current activity (idle-since is `since_ms` when not engaged).
+pub fn persona_activity(peer: Uuid) -> PersonaActivity {
+    *persona_tx(peer).borrow()
+}
+
+/// PURE: is `peer` bored at `now` — idle for [`BOREDOM_AFTER`] with no measured
+/// hold on the box?
+pub fn persona_bored(activity: PersonaActivity, hold_active: bool, now: u64) -> bool {
+    !hold_active
+        && !activity.engaged
+        && now.saturating_sub(activity.since_ms) >= BOREDOM_AFTER.as_millis() as u64
+}
+
+/// Park until `peer` has been idle for [`BOREDOM_AFTER`] and no measured hold is
+/// active. Event-driven: parks on her engagement watch and the hold watch; the
+/// only timer is the sustained-idle threshold itself, restarted on any change.
+pub async fn wait_for_boredom_of(peer: Uuid) {
+    if !GATE_LIVE.load(Ordering::Acquire) {
+        return; // gate not running: permissive — the hold-defer seams still guard
+    }
+    let tx = persona_tx(peer);
+    let mut rx = tx.subscribe();
+    let mut hold_rx = crate::inference::measured_hold::subscribe();
+    loop {
+        let activity = *rx.borrow();
+        let hold_active = hold_rx.borrow().is_some();
+        let now = now_ms();
+        if persona_bored(activity, hold_active, now) {
+            return;
+        }
+        if activity.engaged || hold_active {
+            tokio::select! {
+                r = rx.changed() => { if r.is_err() { return; } }
+                r = hold_rx.changed() => { if r.is_err() { return; } }
+            }
+            continue;
+        }
+        let remaining = BOREDOM_AFTER
+            .as_millis()
+            .saturating_sub(now.saturating_sub(activity.since_ms) as u128) as u64;
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_millis(remaining.max(1))) => {}
+            r = rx.changed() => { if r.is_err() { return; } }
+            r = hold_rx.changed() => { if r.is_err() { return; } }
+        }
+    }
+}
+
+/// Resolve when `peer` becomes engaged (her own turn) or a measured hold starts —
+/// the wakeful demand that cancels HER dream. Never resolves on a colleague's
+/// activity, and never spuriously (a dead publisher parks forever).
+pub async fn wait_for_engagement_of(peer: Uuid) {
+    if !GATE_LIVE.load(Ordering::Acquire) {
+        std::future::pending::<()>().await;
+    }
+    let tx = persona_tx(peer);
+    let mut rx = tx.subscribe();
+    let mut hold_rx = crate::inference::measured_hold::subscribe();
+    loop {
+        if rx.borrow().engaged || hold_rx.borrow().is_some() {
+            return;
+        }
+        tokio::select! {
+            r = rx.changed() => { if r.is_err() { std::future::pending::<()>().await; } }
+            r = hold_rx.changed() => { if r.is_err() { std::future::pending::<()>().await; } }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,6 +371,21 @@ mod tests {
     // a short gap); the directed linger keeps a conversation's inter-turn gaps
     // active. Regression guard for #2561's contract before any consumer relies
     // on it.
+    // what this catches: the scope of the gate. A citizen's boredom depends on HER
+    // idle and the box's measured hold — never on `inflight` elsewhere. Before
+    // 2026-09-03 a colleague's work cancelled every dream (749 paged out / 4 done).
+    #[test]
+    fn a_citizens_boredom_is_her_own_idle_not_the_organisms() {
+        let t0 = 10_000_000u64;
+        let idle_long = PersonaActivity { engaged: false, since_ms: t0 - 100_000 };
+        let idle_short = PersonaActivity { engaged: false, since_ms: t0 - 10_000 };
+        let busy = PersonaActivity { engaged: true, since_ms: t0 - 100_000 };
+        assert!(persona_bored(idle_long, false, t0));
+        assert!(!persona_bored(idle_short, false, t0), "sustained idle, not a pause");
+        assert!(!persona_bored(busy, false, t0), "her own turn is wakefulness");
+        assert!(!persona_bored(idle_long, true, t0), "a measured hold quiets everyone");
+    }
+
     #[test]
     fn boredom_arises_slowly_and_dies_instantly() {
         let t0 = 1_000_000u64;
