@@ -327,15 +327,23 @@ impl AircRagSource {
         // tiny budgets still render a sentence and huge ones don't let one
         // essay crowd the window.
         let per_turn_cap = (budget / 8).clamp(48, 256);
+        let units = Self::collapse_work_receipts(digest);
         let mut keep: Vec<(usize, Option<String>)> = Vec::new();
         let mut tokens_used: u32 = 0;
         let mut newest_kept = true;
-        for (idx, el) in digest.elements.iter().enumerate().rev() {
-            let Some(text) = el.text() else { continue };
+        for unit in units.iter().rev() {
+            let idx = unit.last_idx;
+            let text: &str = match unit.collapsed.as_deref() {
+                Some(t) => t,
+                None => match digest.elements[idx].text() {
+                    Some(t) => t,
+                    None => continue,
+                },
+            };
             let full = estimate_tokens(text);
             let cap = if newest_kept { budget } else { per_turn_cap };
             let (cost, trimmed) = if full <= cap {
-                (full, None)
+                (full, unit.collapsed.clone())
             } else {
                 let head = head_to_tokens(text, cap);
                 let head_cost = estimate_tokens(&head).saturating_add(2); // marker
@@ -362,6 +370,89 @@ impl AircRagSource {
             })
             .collect();
         (items, tokens_used, read_through)
+    }
+
+    /// COLLAPSE, DON'T CLIP — work receipts. A working citizen radiates one
+    /// `💭 thought` + `⚙ verb ✓/✗` receipt per act batch into the room (so
+    /// roommates see live work). Grounded verbatim, a run room's window is 140
+    /// receipts and no conversation: every citizen reads everyone's "I've been
+    /// going in circles" and says it back (12 citizens, live 2026-09-03 — the
+    /// loop was the WINDOW). A consecutive run of receipts from ONE author
+    /// collapses to a single unit: her latest thought + a tally of what she
+    /// did. The run's last element anchors the unit (read-through cursor,
+    /// unread flag); chat lines break runs and stay verbatim.
+    fn collapse_work_receipts(digest: &ChannelDigest) -> Vec<PackUnit> {
+        let mut units: Vec<PackUnit> = Vec::new();
+        let mut run: Vec<usize> = Vec::new();
+        let mut run_sender: Option<uuid::Uuid> = None;
+        let flush = |run: &mut Vec<usize>, units: &mut Vec<PackUnit>| {
+            if run.is_empty() {
+                return;
+            }
+            let last_idx = *run.last().unwrap_or(&0); // unwrap_or: guarded by is_empty above
+            let collapsed = if run.len() == 1 {
+                None
+            } else {
+                Some(Self::collapsed_receipt_text(
+                    run.iter().filter_map(|i| digest.elements[*i].text()),
+                    run.len(),
+                ))
+            };
+            units.push(PackUnit { last_idx, collapsed });
+            run.clear();
+        };
+        for (idx, el) in digest.elements.iter().enumerate() {
+            let is_receipt = el.text().is_some_and(is_work_receipt);
+            let sender = el.sender_id();
+            if is_receipt && (run.is_empty() || run_sender == Some(sender)) {
+                run.push(idx);
+                run_sender = Some(sender);
+                continue;
+            }
+            flush(&mut run, &mut units);
+            if is_receipt {
+                run.push(idx);
+                run_sender = Some(sender);
+            } else {
+                units.push(PackUnit { last_idx: idx, collapsed: None });
+                run_sender = None;
+            }
+        }
+        flush(&mut run, &mut units);
+        units
+    }
+
+    /// The collapsed text of a receipt run: the newest `💭` line, then a tally
+    /// of every `⚙ verb mark` across the run (`⚙ code/shell ✓×4 · code/github/issue-create ✗×2`).
+    fn collapsed_receipt_text<'a>(texts: impl Iterator<Item = &'a str>, batches: usize) -> String {
+        let mut last_thought: Option<&str> = None;
+        let mut tally: Vec<(String, usize)> = Vec::new();
+        for text in texts {
+            for line in text.lines() {
+                let line = line.trim();
+                if line.starts_with("💭") {
+                    last_thought = Some(line);
+                } else if let Some(rest) = line.strip_prefix("⚙") {
+                    let mut parts = rest.split_whitespace();
+                    let verb = parts.next().unwrap_or("?"); // unwrap_or: a bare marker still tallies as unknown
+                    let mark = parts.last().unwrap_or("·"); // unwrap_or: a verb without a mark tallies as neutral
+                    let key = format!("{verb} {mark}");
+                    match tally.iter_mut().find(|(k, _)| *k == key) {
+                        Some((_, n)) => *n += 1,
+                        None => tally.push((key, 1)),
+                    }
+                }
+            }
+        }
+        let acts: Vec<String> = tally
+            .iter()
+            .map(|(k, n)| if *n > 1 { format!("{k}×{n}") } else { k.clone() })
+            .collect();
+        format!(
+            "{} · ⚙ {batches} act batches: {}",
+            last_thought.unwrap_or("💭 (working)"), // unwrap_or: a run of bare act lines has no thought to lead with
+            if acts.is_empty() { "(no receipts)".to_string() } else { acts.join(" · ") }
+        )
     }
 
     fn format_item(
@@ -404,6 +495,21 @@ impl AircRagSource {
             resolution_used: resolution,
         }
     }
+}
+
+/// One packable unit of the window: a message, or a collapsed run of work receipts.
+struct PackUnit {
+    /// The element that anchors the unit (the run's newest; the read-through cursor).
+    last_idx: usize,
+    /// The collapsed text when the unit is a receipt run of two or more; `None`
+    /// packs the element's own text.
+    collapsed: Option<String>,
+}
+
+/// A radiated work receipt (`act_observe::apply`): leads with `💭` or `⚙`.
+fn is_work_receipt(text: &str) -> bool {
+    let t = text.trim_start();
+    t.starts_with("💭") || t.starts_with("⚙")
 }
 
 #[async_trait]
@@ -901,6 +1007,46 @@ mod tests {
             "budget honored: {}",
             delivery.tokens_used
         );
+    }
+
+    fn receipt_from(room: RoomId, peer: PeerId, thought: &str, act: &str, lamport: u64) -> TranscriptEvent {
+        let mut ev = event_in(room, Some(&format!("💭 {thought}\n⚙ {act}")), lamport);
+        ev.peer_id = peer;
+        ev
+    }
+
+    // what this catches: THE LOOP WAS THE WINDOW (2026-09-03) — a run of one
+    // author's work receipts collapses to ONE unit (her newest thought + an act
+    // tally) instead of N verbatim "I've been going in circles" lines; a chat
+    // line breaks the run and stays verbatim; the newest receipt anchors the unit.
+    #[tokio::test]
+    async fn a_run_of_work_receipts_collapses_to_the_latest_thought_plus_a_tally() {
+        let room = RoomId::new();
+        let atlas = PeerId::new();
+        let mut events = vec![event_in(room, Some("OPERATOR: card 678b8f5c is yours"), 1)];
+        for l in 2..=5 {
+            events.push(receipt_from(room, atlas, &format!("thought {l}"), "code/shell ls ✓", l));
+        }
+        events.push(receipt_from(room, atlas, "thought six", "code/github/issue-create  ✗", 6));
+        events.push(event_in(room, Some("Kira: Atlas, stop filing issues"), 7));
+        let reader = Arc::new(StubReader::new(events));
+        let (source, _) = isolated_source(reader);
+        let delivery = source
+            .deliver(&ctx_in(room), 4_000, ResolutionPreference::Raw)
+            .await;
+        assert_eq!(
+            delivery.items.len(),
+            3,
+            "operator line + ONE collapsed run + Kira: {:?}",
+            delivery.items.iter().map(|i| i.content.clone()).collect::<Vec<_>>()
+        );
+        let run = &delivery.items[1].content;
+        assert!(run.starts_with("💭 thought six"), "newest thought leads: {run:?}");
+        assert!(run.contains("5 act batches"), "batch count: {run:?}");
+        assert!(run.contains("code/shell ✓×4"), "tally: {run:?}");
+        assert!(run.contains("code/github/issue-create ✗"), "tally: {run:?}");
+        assert!(!run.contains("thought 2"), "older thoughts folded away: {run:?}");
+        assert!(delivery.items[2].content.starts_with("Kira:"));
     }
 
     // what this catches: THE DEAF-PERSONA FIX — when the turn's ctx has no airc_room

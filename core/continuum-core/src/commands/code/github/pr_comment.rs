@@ -34,10 +34,11 @@ crate::action_command! {
     pub struct CodeGithubPrComment { state: Arc<CodeState> }
     name: "code/github/pr-comment",
     access: AiSafe,
-    native: true,
+    native: false, // reachable BY NAME; never pushed into every turn (placeholder-issue spam, 2026-09-03)
     params: GithubPrCommentParams,
     output: GithubPrCommentResult,
     run(this, ctx, p) => {
+        super::require_operator(ctx, "code/github/pr-comment")?;
         if p.body.trim().is_empty() {
             return Err(CommandError::Invalid("code/github/pr-comment: 'body' is required".into()));
         }

@@ -36,10 +36,11 @@ crate::action_command! {
     pub struct CodeGithubIssueCreate { state: Arc<CodeState> }
     name: "code/github/issue-create",
     access: AiSafe,
-    native: true,
+    native: false, // reachable BY NAME; never pushed into every turn (placeholder-issue spam, 2026-09-03)
     params: GithubIssueCreateParams,
     output: GithubIssueCreateResult,
     run(this, ctx, p) => {
+        super::require_operator(ctx, "code/github/issue-create")?;
         if p.title.trim().is_empty() {
             return Err(CommandError::Invalid("code/github/issue-create: 'title' is required".into()));
         }
