@@ -120,6 +120,10 @@ export interface ListingCell {
   readonly count?: number;
   /** Optional grouping/category key (the "bookmarked menus + categories" axis). */
   readonly group?: string;
+  /** Optional: the viewer has this item OPEN (a nav tab they selected and have
+   *  not closed). A tab strip renders only opened cells; a rail lists them all.
+   *  Absent = not opened. */
+  readonly opened?: boolean;
   /** Optional hierarchical parent — the `id` of another cell in the SAME
    *  listing this one nests under (an activity room under its parent room,
    *  #2632 rail tree). A target orders children after their parent and

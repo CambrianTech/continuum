@@ -157,6 +157,9 @@ export function roomsListingFromNav(nav: NavViewState, focusedRoomId: string): L
         title: tab.display_label !== '' ? tab.display_label : tab.title,
         status: tab.id === focusedRoomId ? 'active' : 'idle',
         group: tab.kind,
+        // The strip's membership: opened by the citizen (nav truth), never
+        // "every room the daemon knows" (49 identical tabs, live 2026-09-03).
+        ...(tab.opened || tab.id === focusedRoomId ? { opened: true } : {}),
         ...(tab.parent_ref !== '' ? { parent: tab.parent_ref } : {}),
         // The room's recipe-defined activity purpose, carried verbatim as the
         // description line ([[room-purpose-is-per-recipe-not-an-enum]]).

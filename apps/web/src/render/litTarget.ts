@@ -161,6 +161,10 @@ export const webTarget: RenderTarget<TemplateResult> = {
     // The focused room is the ACTIVE nav cell — with the live room set the
     // listing carries every room, so cells[0] is arbitrary order, not focus.
     const room = ws.nav.cells.find((c) => c.status === 'active') ?? ws.nav.cells[0];
+    // The strip is the citizen's OPEN tabs; the rail is the whole set. A
+    // listing that predates `opened` (single-cell roomsListing) is all open.
+    const anyOpened = ws.nav.cells.some((c) => c.opened === true);
+    const openTabs = anyOpened ? ws.nav.cells.filter((c) => c.opened === true) : ws.nav.cells;
     const roster = rosterOf(ws);
     const memberCount = roster?.cells.length ?? 0;
     const activeCount = roster?.cells.filter((c) => c.status === 'active').length ?? 0;
@@ -172,9 +176,9 @@ export const webTarget: RenderTarget<TemplateResult> = {
         </aside>
         ${resizeHandle('who')}
         <section class="center" aria-label="focused activity">
-          ${ws.nav.cells.length > 0
+          ${openTabs.length > 0
             ? html`<div class="tab-bar" role="tablist" aria-label="open activities">
-                ${ws.nav.cells.map(navTab)}
+                ${openTabs.map(navTab)}
               </div>`
             : nothing}
           <header class="room">
