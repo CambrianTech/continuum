@@ -142,6 +142,18 @@ pub(crate) async fn ask_the_act_question(
             );
             {
                 if !held.is_empty() {
+                    // Stamp held-work freshness for EACH card she is about to work,
+                    // so the round verdict + the standing autopilot can see Citizen
+                    // progress (which leaves no detached-solve ledger entry). Without
+                    // this the round reads "unstarted" while she works and the
+                    // autopilot piles up duplicate rounds (A / #the-9-1-night-audit).
+                    let worked_at = crate::persona::trace::now_ms();
+                    for c in &held {
+                        crate::cognition::bench_round::record_card_worked(
+                            c.card_id.as_uuid(),
+                            worked_at,
+                        );
+                    }
                     let burst_text = held_work_burst(&held);
                     // The producer's CONTEXT half, kept before the burst is
                     // moved into the driver — one construction, so the

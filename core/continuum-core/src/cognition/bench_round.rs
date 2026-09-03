@@ -267,6 +267,36 @@ impl BenchRound {
 static ROUNDS: LazyLock<Mutex<HashMap<Uuid, BenchRound>>> =
     LazyLock::new(|| Mutex::new(load_rounds_in(&rounds_state_dir())));
 
+/// Per-card wall-clock (epoch ms) of the LATEST held-work turn a citizen drove on
+/// it — the freshness signal a CITIZEN-driven card emits, which the detached-solve
+/// run ledger never sees. EPHEMERAL (in-memory, not persisted): freshness is a
+/// live property and correctly resets on reboot, where the resume re-establishes
+/// it. Without this, a Citizen round reads "unstarted" while she is actively
+/// working it, so the standing autopilot judges no round is working and piles up
+/// duplicate rounds (measured 2026-09-02: 21 rounds, 53 unstarted, 4 citizens).
+/// [[activity-outcome-score-is-recipe-owned-gates-multiply-objectives-weigh]]
+static CARD_LAST_ACT: LazyLock<Mutex<HashMap<Uuid, u64>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Stamp that a citizen drove a held-work turn on `card_id` at `now_ms` — called
+/// from the held-work turn boundary so `enrich_rounds` can see Citizen progress.
+pub fn record_card_worked(card_id: Uuid, now_ms: u64) {
+    CARD_LAST_ACT
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(card_id, now_ms);
+}
+
+/// The epoch-ms of the latest held-work turn on `card_id`, if any — the Citizen
+/// freshness [`enrich_rounds`] merges beside the detached run ledger.
+pub fn card_last_act_ms(card_id: Uuid) -> Option<u64> {
+    CARD_LAST_ACT
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(&card_id)
+        .copied()
+}
+
 /// Where in-flight rounds persist — one JSON file per round, removed at Done. The same
 /// durable-state family as the airc attach cursor (`~/.continuum/state`): tiny, per-key,
 /// self-evicting at terminal state, so the directory only ever holds in-flight rounds.
@@ -1124,8 +1154,28 @@ pub fn enrich_rounds(rounds: &mut [RoundSnapshot], runs: &[CardRunFacts], now_ms
                 .filter(|r| !card.instance.is_empty() && r.instance == card.instance)
                 .max_by_key(|r| r.last_activity_ms);
             let Some(run) = run else {
+                // No detached-solve ledger entry — but a CITIZEN-driven card
+                // leaves no ledger, so fall back to the held-work freshness the
+                // turn boundary stamps. A recent held-work turn makes the card
+                // read "working" (not "unstarted") and feeds the round's idle
+                // clock, so the standing autopilot sees the round is being worked
+                // and holds instead of piling up duplicates.
                 if !settled {
-                    card.state = "unstarted".to_string();
+                    let held_act = card
+                        .card_id
+                        .parse::<Uuid>()
+                        .ok()
+                        .and_then(card_last_act_ms);
+                    if let Some(act_ms) = held_act {
+                        any_started = true;
+                        let act_age = now_ms.saturating_sub(act_ms) / 1000;
+                        card.last_act_secs = Some(act_age);
+                        card.state = "working".to_string();
+                        newest_unsettled_act =
+                            Some(newest_unsettled_act.map_or(act_age, |a: u64| a.min(act_age)));
+                    } else {
+                        card.state = "unstarted".to_string();
+                    }
                 }
                 continue;
             };
@@ -1329,6 +1379,69 @@ mod tests {
         assert_eq!(rounds[1].cards[0].acts, Some(7));
         assert_eq!(rounds[2].verdict, "stalled");
         assert_eq!(rounds[2].cards[0].state, "quiet");
+    }
+
+    // what this catches: A CITIZEN-driven card leaves NO detached-solve ledger
+    // entry, so before the held-work freshness signal the round read "unstarted"
+    // while she was actively working it — and the standing autopilot, seeing no
+    // working round, piled up duplicate rounds (measured 2026-09-02: 21 rounds,
+    // 53 unstarted, 4 citizens). This pins that a held-work turn makes the round
+    // read "working"/"grinding" from the ephemeral CARD_LAST_ACT signal alone
+    // (empty run ledger), so the autopilot HOLDS instead of over-dispatching.
+    #[test]
+    fn a_citizen_held_work_turn_makes_the_round_read_working() {
+        use super::{
+            card_last_act_ms, enrich_rounds, no_healthy_working_round, record_card_worked,
+            RoundCardSnapshot, RoundSnapshot,
+        };
+        let now_ms: u64 = 20_000_000_000;
+        let card_uuid = Uuid::new_v4();
+        // She drove a held-work turn 30s ago — no run-ledger fact exists.
+        record_card_worked(card_uuid, now_ms - 30_000);
+        assert_eq!(card_last_act_ms(card_uuid), Some(now_ms - 30_000));
+
+        let mut rounds = vec![RoundSnapshot {
+            round_id: Uuid::new_v4().to_string(),
+            benchmark: "swe-bench-verified".into(),
+            stage: "working".into(),
+            dispatched: 1,
+            settled: 0,
+            remaining: 1,
+            driver: "citizen".into(),
+            cards: vec![RoundCardSnapshot {
+                card_id: card_uuid.to_string(),
+                instance: "django__django-12273".into(),
+                assignee: String::new(),
+                solve_room_name: String::new(),
+                state: "unstarted".into(),
+                acts: None,
+                patch_bytes: None,
+                last_act_secs: None,
+                resolved: None,
+            }],
+            verdict: String::new(),
+            idle_secs: None,
+        }];
+        // EMPTY run ledger — the detached-solve facts a Citizen card never produces.
+        enrich_rounds(&mut rounds, &[], now_ms);
+
+        assert_eq!(
+            rounds[0].cards[0].state, "working",
+            "held-work makes the card read working, not a false 'unstarted'"
+        );
+        assert_eq!(
+            rounds[0].idle_secs,
+            Some(30),
+            "the round's idle clock reflects her held-work turn"
+        );
+        assert_eq!(
+            rounds[0].verdict, "grinding",
+            "the round is visibly being worked"
+        );
+        assert!(
+            !no_healthy_working_round(&rounds),
+            "a freshly held-worked round is a healthy working round — the autopilot HOLDS"
+        );
     }
 
     // what this catches: a wedged Working round (dead citizens, no task
