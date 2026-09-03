@@ -1917,29 +1917,6 @@ impl ActionCommand for BenchmarkDispatch {
             &run_params,
         )
         .await?;
-        // The OPERATOR observes every activity on this node: her self-peer subscribes to
-        // the run room without moving her focus, so the desktop's nav and transcript
-        // reach it. Before this the run room lived only in citizens' scopes and the
-        // human could not navigate to it (Joel 2026-09-03).
-        match crate::persona::operator_peer::operator_airc() {
-            Some(op) => {
-                if let Err(e) = op.subscribe_room(&room_name).await {
-                    crate::probe!(
-                        class = "bench.round.operator_subscribe_failed",
-                        room = %room_name,
-                        error = %e.to_string(),
-                        "operator self-peer could not subscribe to the run room — the desktop \
-                         will not list it until room/join"
-                    );
-                }
-            }
-            None => crate::probe!(
-                class = "bench.round.operator_subscribe_failed",
-                room = %room_name,
-                error = "no operator self-peer online",
-                "operator self-peer offline — the run room is not observable from the desktop"
-            ),
-        }
         // The round's standing rules, published as the run room's operating doctrine
         // RIGHT HERE while the curator's current room is still the freshly spawned run
         // (spawn_activity_room leaves the pointer there). Rendered verbatim into every
