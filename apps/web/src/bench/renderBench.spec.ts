@@ -79,9 +79,6 @@ const REAL_HOUR: BenchContentBody = {
       patchBytes: 0,
       verdict: {
         resolved: false,
-        owner: '',
-        boardState: '',
-        gradedAtMs: null,
         f2pPassed: 0,
         f2pTotal: 2,
         p2pPassed: 30,
@@ -104,9 +101,6 @@ const REAL_HOUR: BenchContentBody = {
       patchBytes: 2003,
       verdict: {
         resolved: false,
-        owner: '',
-        boardState: '',
-        gradedAtMs: null,
         f2pPassed: 0,
         f2pTotal: 1,
         p2pPassed: 0,
