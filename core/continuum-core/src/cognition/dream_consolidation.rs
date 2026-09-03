@@ -820,6 +820,28 @@ impl DreamConsolidationRegion {
             // the half-formed dream is discarded, and it is CHEAP to discard:
             // dreams are the lowest-priced resident in the paging economy,
             // re-dreamable from the same engrams on the next bored window.
+            //
+            // BOREDOM FIRST, THEN THE RACE. The wait used to live inside `dream_pass`,
+            // so the cancel arm below was armed while the pass was still parked on her
+            // gate — mid-turn the cancel won instantly, the in-flight slot cleared, and
+            // the region re-spawned every tick (measured 2026-09-03: 22 `paged_out` per
+            // citizen at an exact 30s cadence, zero consolidations). A dream arises
+            // only in her sustained idle; only THEN can wakefulness cancel it.
+            {
+                let a = crate::cognition::activity_gate::persona_activity(persona_id);
+                if !crate::cognition::activity_gate::persona_bored(
+                    a,
+                    crate::inference::measured_hold::subscribe().borrow().is_some(),
+                    crate::persona::trace::now_ms(),
+                ) {
+                    crate::probe!(
+                        class = "dream.awaiting_boredom",
+                        persona = %persona_id,
+                        "dream pass parked on HER activity gate — arises only in her sustained idle"
+                    );
+                }
+            }
+            crate::cognition::activity_gate::wait_for_boredom_of(persona_id).await;
             tokio::select! {
                 _ = dream_pass(
                     reflector,
@@ -1034,21 +1056,7 @@ async fn dream_pass(
     // subsumes the old hold-park AND adds what it never had: in-flight turns and
     // directed-conversation linger. The dream state does not ARISE while the
     // organism is engaged; nothing is minted, nothing queues, nothing holds.
-    {
-        let a = crate::cognition::activity_gate::persona_activity(persona_id);
-        if !crate::cognition::activity_gate::persona_bored(
-            a,
-            crate::inference::measured_hold::subscribe().borrow().is_some(),
-            crate::persona::trace::now_ms(),
-        ) {
-            crate::probe!(
-                class = "dream.awaiting_boredom",
-                persona = %persona_id,
-                "dream pass parked on HER activity gate — arises only in her sustained idle"
-            );
-        }
-    }
-    crate::cognition::activity_gate::wait_for_boredom_of(persona_id).await;
+
     // #175 budget-at-assembly: derive the observation budget from the LIVE served
     // per-slot window (the single source of truth, same the deliberation clamp reads)
     // so a dream cluster is composed WITHIN the slot and can never overflow it →
