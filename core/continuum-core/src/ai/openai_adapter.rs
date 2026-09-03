@@ -808,6 +808,14 @@ impl OpenAICompatibleAdapter {
     }
 }
 
+/// How long a KV restore waits for its physical slot to free before giving up and
+/// letting the turn re-prefill cold. Sized to outlast a real generation on the slot
+/// (benchmark decodes run tens of seconds), NOT the 10s a wedged-server probe wants:
+/// the returner blocks on this slot regardless (its completion is pinned to the same
+/// id_slot), so waiting for the deferred restore to land costs no extra wall-clock and
+/// turns a ~35s cold re-prefill into a ~0.1s warm resume. See [`kv_page_action_at`].
+const KV_RESTORE_SLOT_WAIT: std::time::Duration = std::time::Duration::from_secs(90);
+
 /// The free-function body of [`OpenAICompatibleAdapter::kv_page_action`], so the
 /// spawned [`warm_ahead`](AIProviderAdapter::warm_ahead) task (which cannot hold
 /// `&self`) drives the SAME seam as the pin-time backstop — one page protocol,
@@ -821,10 +829,30 @@ async fn kv_page_action_at(
 ) -> bool {
     let url = format!("{}/slots/{}?action={}", root.trim_end_matches('/'), slot, action);
     let filename = crate::inference::slots::page_filename(key);
+    // RESTORE waits for the physical slot to free; SAVE/ERASE do not.
+    //
+    // A save is read-only and runs at the inter-batch boundary even mid-generation
+    // (fork 878db9784), so 10s is ample — a longer wait would only ever mean a wedged
+    // server. A RESTORE, though, correctly DEFERS on the fork while the slot is still
+    // running the evictee's decode (it mutates KV that decode reads), and re-runs the
+    // instant that slot releases (callback_on_release -> pop_deferred_task, now bound
+    // to the slot). The returner is going to block on this physical slot REGARDLESS —
+    // its own completion is pinned to the same id_slot and defers behind the same
+    // decode — so abandoning the restore at 10s bought nothing but a guaranteed cold
+    // re-prefill (measured 2026-09-03: 27/27 restores failed status=0 this way). Wait
+    // long enough to catch a real turn finishing (benchmark decodes run tens of
+    // seconds), so the deferred restore actually lands and the returner resumes warm
+    // (~0.1s) instead of re-prefilling (~35s). A genuinely wedged server is caught by
+    // the request-level watchdog, not by starving this switch.
+    let timeout = if action == "restore" {
+        KV_RESTORE_SLOT_WAIT
+    } else {
+        std::time::Duration::from_secs(10)
+    };
     let started = std::time::Instant::now();
     let resp = client
         .post(&url)
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(timeout)
         .json(&json!({ "filename": filename }))
         .send()
         .await;
