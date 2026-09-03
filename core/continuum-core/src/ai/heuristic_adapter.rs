@@ -118,6 +118,13 @@ pub struct HeuristicInferenceAdapter {
     /// Same shape for `generate_text` — counts substrate-side hot-path
     /// inference calls so tests can assert per-turn counts.
     generate_observer: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
+    /// If Some, `generate_text` returns THIS text verbatim instead of the
+    /// hash-echo heuristic — so a test can drive a real cognition cycle to a
+    /// SPECIFIC decision (e.g. "PASS: done" to exercise the held-work completion
+    /// edge end-to-end). The heuristic echo is a Speak shape and can't express a
+    /// reasoned pass; this makes the deterministic adapter able to produce any
+    /// decision the parser recognizes.
+    canned_response: Option<String>,
 }
 
 impl HeuristicInferenceAdapter {
@@ -152,6 +159,14 @@ impl HeuristicInferenceAdapter {
         counter: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     ) -> Self {
         self.warmup_observer = Some(counter);
+        self
+    }
+
+    /// Return `text` verbatim from every `generate_text` instead of the
+    /// hash-echo — lets a test drive a real cognition cycle to a chosen
+    /// decision (e.g. `"PASS: done"` for the held-work completion edge).
+    pub fn with_canned_response(mut self, text: impl Into<String>) -> Self {
+        self.canned_response = Some(text.into());
         self
     }
 
@@ -387,7 +402,10 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
             .model
             .clone()
             .unwrap_or_else(|| HEURISTIC_DEFAULT_MODEL.to_string());
-        let text = Self::build_response_text(&request);
+        let text = self
+            .canned_response
+            .clone()
+            .unwrap_or_else(|| Self::build_response_text(&request));
 
         // Token accounting: input = system + all message text;
         // output = response text. Same chars/4 heuristic the rest

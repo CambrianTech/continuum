@@ -325,6 +325,15 @@ pub(crate) async fn room_name_by_id(room_id: Uuid) -> Option<String> {
 /// — no Option, no expect, no silent substitution.
 pub struct StubAircCitizen {
     peer_id: Uuid,
+    /// Cards this stub reports as its active claims — empty by default. A test
+    /// that exercises the held-work path seeds one so `active_claims()` returns
+    /// held work (the held-work gate fires only on a Claimed/InProgress card).
+    held: Vec<airc_lib::WorkCard>,
+    /// Records every `advance_card_to` call so a test can assert the held-work
+    /// completion edge concluded the right card with the right state — the
+    /// WRITE half the read supertraits can't observe. Shared `Arc` so the test
+    /// holds a clone and reads it after driving the turn.
+    advanced: std::sync::Arc<std::sync::Mutex<Vec<(airc_lib::WorkCardId, airc_lib::CardState)>>>,
 }
 
 impl StubAircCitizen {
@@ -332,7 +341,26 @@ impl StubAircCitizen {
     /// match the `PersonaInstanceInfo::peer_id` on the same hosted
     /// persona so cognition's self-filter behaves consistently.
     pub fn new(peer_id: Uuid) -> Self {
-        Self { peer_id }
+        Self {
+            peer_id,
+            held: Vec::new(),
+            advanced: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Seed the cards this stub reports as active claims — so the held-work
+    /// gate sees held work.
+    pub fn with_claims(mut self, cards: Vec<airc_lib::WorkCard>) -> Self {
+        self.held = cards;
+        self
+    }
+
+    /// A handle to the `advance_card_to` recording — clone before moving the
+    /// stub behind an `Arc<dyn AircCitizen>`, then read after driving the turn.
+    pub fn advance_recorder(
+        &self,
+    ) -> std::sync::Arc<std::sync::Mutex<Vec<(airc_lib::WorkCardId, airc_lib::CardState)>>> {
+        self.advanced.clone()
     }
 
     /// Convenience: a `runtime_lookup` closure for
@@ -391,9 +419,9 @@ impl crate::persona::room_doctrine_source::AircDoctrineReader for StubAircCitize
 #[async_trait]
 impl crate::persona::active_work_source::AircWorkReader for StubAircCitizen {
     async fn active_claims(&self) -> Result<Vec<airc_lib::WorkCard>, AircError> {
-        // No daemon in tests → no claimed work. Cognition runs through cleanly
-        // with no [active-work] grounding block.
-        Ok(vec![])
+        // Default: no daemon → no claimed work. A test may seed `with_claims` to
+        // exercise the held-work path.
+        Ok(self.held.clone())
     }
 }
 
@@ -467,6 +495,20 @@ impl AircCitizen for StubAircCitizen {
              service-loop tests should reply through StubConversation, \
              not through the citizen handle"
         );
+    }
+
+    /// Record the transition instead of hitting a daemon, so a test can assert
+    /// the held-work completion edge concluded the right card.
+    async fn advance_card_to(
+        &self,
+        card_id: airc_lib::WorkCardId,
+        state: airc_lib::CardState,
+    ) -> Result<(), String> {
+        self.advanced
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push((card_id, state));
+        Ok(())
     }
 }
 

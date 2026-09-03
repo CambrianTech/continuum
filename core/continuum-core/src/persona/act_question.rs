@@ -326,20 +326,24 @@ pub(crate) async fn ask_the_act_question(
                             // recipe that OWNS it reacts to WORK_CARD_STATE_CHANGED
                             // (bench grade-on-done is one such reactor, next_unworked
                             // another). [[activity-outcome-score-is-recipe-owned-gates-multiply-objectives-weigh]]
-                            use crate::cognition::pass_intent::{classify_pass, PassIntent};
+                            use crate::cognition::pass_intent::{
+                                classify_pass, conclude_from_pass, ConcludeAction,
+                            };
+                            let held_ids: Vec<uuid::Uuid> =
+                                held.iter().map(|c| c.card_id.as_uuid()).collect();
                             let intent = classify_pass(reason.as_deref());
-                            match intent {
-                                PassIntent::Done if held.len() == 1 => {
-                                    // Exactly one held card → her "done" is unambiguous.
-                                    // Conclude it through the ONE shared card-lifecycle
-                                    // path (same change+emit the `work/state` verb uses),
-                                    // so the owning recipe's outcome fires NOW. Quality is
-                                    // the recipe's to score — an empty deliverable grades
-                                    // an honest fail, never a substrate second-guess.
-                                    let card = held[0];
-                                    let card_id = airc_work::WorkCardId::from_uuid(
-                                        card.card_id.as_uuid(),
-                                    );
+                            // The DECISION is a pure, exhaustively-tested function
+                            // (`conclude_from_pass`); this arm only EXECUTES it — so the
+                            // logic under test is the logic that runs (compression).
+                            match conclude_from_pass(&held_ids, intent) {
+                                ConcludeAction::Close(id) => {
+                                    // One held card + a reasoned 'done' → conclude it
+                                    // through the ONE shared card-lifecycle path (same
+                                    // change+emit the `work/state` verb uses), so the
+                                    // owning recipe's outcome fires NOW. Quality is the
+                                    // recipe's to score — an empty deliverable grades an
+                                    // honest fail, never a substrate second-guess.
+                                    let card_id = airc_work::WorkCardId::from_uuid(id);
                                     match citizen
                                         .advance_card_to(card_id, airc_work::CardState::Closed)
                                         .await
@@ -348,7 +352,7 @@ pub(crate) async fn ask_the_act_question(
                                             class = "work.settle.deterministic",
                                             persona = %ctx.identity.agent_name,
                                             lamport = lamport,
-                                            card_id = %card.card_id.as_uuid(),
+                                            card_id = %id,
                                             reason = reason.as_deref().unwrap_or(""),
                                             "held card concluded at the turn boundary on a \
                                              reasoned 'done' — the owning recipe's outcome \
@@ -357,27 +361,22 @@ pub(crate) async fn ask_the_act_question(
                                         Err(e) => crate::probe!(
                                             class = "work.settle.error",
                                             persona = %ctx.identity.agent_name,
-                                            card_id = %card.card_id.as_uuid(),
+                                            card_id = %id,
                                             error = %e,
                                             "reasoned 'done' but the card transition failed \
                                              — the crash-backstop sweep still covers it"
                                         ),
                                     }
                                 }
-                                PassIntent::Done => {
-                                    // Several held cards, one "done" → which is done is
-                                    // ambiguous; do NOT guess. She can name one via the
-                                    // explicit work/state verb (still supported).
-                                    crate::probe!(
-                                        class = "work.settle.ambiguous",
-                                        persona = %ctx.identity.agent_name,
-                                        lamport = lamport,
-                                        held = held.len() as u64,
-                                        "reasoned 'done' with multiple held cards — cannot \
-                                         tell which; leaving all held for an explicit close"
-                                    );
-                                }
-                                PassIntent::Blocked => crate::probe!(
+                                ConcludeAction::Ambiguous => crate::probe!(
+                                    class = "work.settle.ambiguous",
+                                    persona = %ctx.identity.agent_name,
+                                    lamport = lamport,
+                                    held = held.len() as u64,
+                                    "reasoned 'done' with multiple held cards — cannot \
+                                     tell which; leaving all held for an explicit close"
+                                ),
+                                ConcludeAction::Blocked => crate::probe!(
                                     class = "work.blocker",
                                     persona = %ctx.identity.agent_name,
                                     lamport = lamport,
@@ -385,20 +384,20 @@ pub(crate) async fn ask_the_act_question(
                                     "held-work turn passed BLOCKED — card stays hers; a \
                                      candidate substrate-gap report, not a completion"
                                 ),
-                                PassIntent::Nothing => crate::probe!(
+                                ConcludeAction::Nothing => crate::probe!(
                                     class = "work.pass.nothing",
                                     persona = %ctx.identity.agent_name,
                                     lamport = lamport,
                                     "held-work turn passed with nothing to contribute — a \
                                      substrate-gap signal ([[failures-are-substrate]])"
                                 ),
-                                PassIntent::Unclear => crate::probe!(
+                                ConcludeAction::Hold => crate::probe!(
                                     class = "persona.turn.work",
                                     persona = %ctx.identity.agent_name,
                                     lamport = lamport,
                                     decision = "passed",
-                                    "work-turn passed with no legible reason — her choice, \
-                                     honored; nothing concluded"
+                                    "work-turn passed with no legible completion — her \
+                                     choice, honored; nothing concluded"
                                 ),
                             }
                         }

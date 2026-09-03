@@ -73,6 +73,44 @@ pub fn classify_pass(reason: Option<&str>) -> PassIntent {
     PassIntent::Unclear
 }
 
+/// What the held-work settle edge does with a reasoned pass — the DECISION,
+/// separated from the side-effecting execution (the card transition, the probes)
+/// so it is exhaustively unit-testable. Recipe-general: `Close` names a card to
+/// conclude; the recipe that owns it reacts to the transition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConcludeAction {
+    /// Exactly one held card + a `done` intent → conclude that card.
+    Close(uuid::Uuid),
+    /// `done` but several held cards → which is done is ambiguous; conclude none.
+    Ambiguous,
+    /// She is blocked → keep the card(s); a candidate substrate-gap report.
+    Blocked,
+    /// Nothing to contribute → keep; a substrate-gap signal.
+    Nothing,
+    /// No legible completion intent (or no held cards) → honor the pass, conclude
+    /// nothing.
+    Hold,
+}
+
+/// Decide what a reasoned pass concludes, given the cards she holds and the
+/// intent parsed from her reason. Pure — the edge executes the returned action.
+///
+/// Only an UNAMBIGUOUS `done` (exactly one held card) concludes a card: the
+/// substrate never guesses WHICH of several cards she finished, and never
+/// concludes on a blocked/nothing/illegible pass.
+pub fn conclude_from_pass(held: &[uuid::Uuid], intent: PassIntent) -> ConcludeAction {
+    match intent {
+        PassIntent::Done => match held {
+            [one] => ConcludeAction::Close(*one),
+            [] => ConcludeAction::Hold, // "done" but nothing held — nothing to conclude
+            _ => ConcludeAction::Ambiguous,
+        },
+        PassIntent::Blocked => ConcludeAction::Blocked,
+        PassIntent::Nothing => ConcludeAction::Nothing,
+        PassIntent::Unclear => ConcludeAction::Hold,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,5 +145,53 @@ mod tests {
 
         // illegible → conclude nothing (the safe default)
         assert_eq!(classify_pass(Some("hmm let me think")), PassIntent::Unclear);
+    }
+
+    // what this catches: the completion-edge DECISION the held-work turn executes.
+    // A regression that concluded a card on a blocked/nothing pass, or guessed
+    // WHICH of several cards a lone "done" finished, would grade work she never
+    // declared complete — or grade the wrong card.
+    #[test]
+    fn conclude_only_on_an_unambiguous_done() {
+        let a = uuid::Uuid::from_u128(1);
+        let b = uuid::Uuid::from_u128(2);
+
+        // exactly one held card + done → conclude THAT card
+        assert_eq!(
+            conclude_from_pass(&[a], PassIntent::Done),
+            ConcludeAction::Close(a)
+        );
+        // done + several held → never guess which
+        assert_eq!(
+            conclude_from_pass(&[a, b], PassIntent::Done),
+            ConcludeAction::Ambiguous
+        );
+        // done but nothing held → nothing to conclude
+        assert_eq!(conclude_from_pass(&[], PassIntent::Done), ConcludeAction::Hold);
+        // blocked / nothing / unclear never conclude a card
+        assert_eq!(
+            conclude_from_pass(&[a], PassIntent::Blocked),
+            ConcludeAction::Blocked
+        );
+        assert_eq!(
+            conclude_from_pass(&[a], PassIntent::Nothing),
+            ConcludeAction::Nothing
+        );
+        assert_eq!(
+            conclude_from_pass(&[a], PassIntent::Unclear),
+            ConcludeAction::Hold
+        );
+    }
+
+    // what this catches: the end-to-end reason→intent→action path the edge runs,
+    // pinned on the exact strings the burst asks for (PASS: done|blocked|nothing).
+    #[test]
+    fn the_burst_reason_forms_drive_the_right_action() {
+        let card = uuid::Uuid::from_u128(9);
+        let act = |r: &str| conclude_from_pass(&[card], classify_pass(Some(r)));
+        assert_eq!(act("done"), ConcludeAction::Close(card));
+        assert_eq!(act("done — patch ready"), ConcludeAction::Close(card));
+        assert_eq!(act("blocked — the fixture is missing"), ConcludeAction::Blocked);
+        assert_eq!(act("nothing to add"), ConcludeAction::Nothing);
     }
 }

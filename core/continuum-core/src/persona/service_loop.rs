@@ -4840,4 +4840,89 @@ mod tests {
             "the pre-fix path (nothing-new) would have slept her at the cap between work turns"
         );
     }
+
+    // what this catches: the END-TO-END held-work completion edge, no reboot, no
+    // live model. A citizen holding a Claimed card, driven to settle on a canned
+    // "PASS: done", concludes THAT card via advance_card_to(Closed). This pins the
+    // whole chain the self-tick heartbeat runs: held claim → held-work burst →
+    // drive_to_settle → deliberation_parse (raw-first "PASS:" → reasoned pass) →
+    // SettleStep::Passed{reason} → conclude_from_pass → advance_card_to. Every seam
+    // this session touched, wired together, deterministic.
+    #[tokio::test]
+    async fn held_work_turn_concludes_the_card_on_pass_done() {
+        use airc_work::{CardState, Priority, RepoId, WorkCardId};
+        let persona_peer = Uuid::new_v4();
+        let hosted = hosted_with_heuristic(persona_peer);
+
+        // Register her cognition cycle in the global registry the act-question
+        // reads, wired to a canned adapter that answers "PASS: done" — so the
+        // drive settles on a reasoned pass, not the heuristic echo (a Speak).
+        let recall_meta =
+            Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
+        let admission =
+            Arc::new(crate::persona::admission_state::AdmissionState::new(recall_meta));
+        let cfg = crate::cognition::persona_workspace::PersonaBrainConfig {
+            persona_id: persona_peer,
+            persona_name: "Paige".to_string(),
+            system_prompt: "You are Paige.".to_string(),
+            admission,
+            adapter: Arc::new(HeuristicInferenceAdapter::new().with_canned_response("PASS: done")),
+            capacity: None,
+            grounding_sources: Vec::new(),
+            embedder: None,
+            tool_executor: None,
+            context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
+            defer_recall: false,
+            defer_grounding: false,
+            suppress_recall: false,
+        };
+        crate::cognition::persona_workspace::global().register_from_cfg(cfg);
+
+        // One held (Claimed) card in her hands. A NON-bench title so the
+        // act-question resolves no staged checkout (no hands re-root needed).
+        let card = airc_lib::WorkCard {
+            card_id: WorkCardId::new(),
+            repo: RepoId::new("acme/continuum").expect("valid repo id"),
+            title: "a held work card".to_string(),
+            body: None,
+            priority: Priority::P1,
+            lane_id: None,
+            state: CardState::Claimed,
+            owner: Some(crate::identity::PeerId::from_uuid(persona_peer)),
+            claim_id: None,
+            claim_expires_at_ms: None,
+            last_heartbeat_at_ms: None,
+            pull_request: None,
+            created_by: airc_core::PeerId::new(),
+            created_at_ms: 1_000_000,
+            updated_at_ms: 1_000_000,
+            reviews: None,
+        };
+        let card_id = card.card_id;
+        let stub = StubAircCitizen::new(persona_peer).with_claims(vec![card]);
+        let recorder = stub.advance_recorder();
+        let mut conversation = ScriptedConversation::new()
+            .with_citizen(Arc::new(stub) as Arc<dyn crate::persona::airc_citizen::AircCitizen>);
+
+        // A non-nil room (the burst witness refuses nil).
+        let room = Uuid::from_u128(0xABCD);
+        let drove = crate::persona::act_question::ask_the_act_question(
+            &hosted,
+            &mut conversation,
+            1,
+            room,
+            false,
+        )
+        .await;
+
+        assert!(drove, "she held a card, so a held-work turn must have been driven");
+        let advanced = recorder.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert_eq!(advanced.len(), 1, "exactly one card transition, got {advanced:?}");
+        assert_eq!(advanced[0].0, card_id, "the HELD card is the one concluded");
+        assert_eq!(
+            advanced[0].1,
+            CardState::Closed,
+            "a reasoned 'PASS: done' concludes the card (Closed)"
+        );
+    }
 }
