@@ -30,4 +30,23 @@ state: string, acts?: number, patch_bytes?: number,
 /**
  * Seconds since this card's newest work artifact. `None` = none ever.
  */
-last_act_secs?: number, resolved?: boolean, };
+last_act_secs?: number, resolved?: boolean, 
+/**
+ * BOARD truth (the durable record): the card's column right now —
+ * `open|claimed|in_progress|blocked|review|merged|closed`. Empty when the
+ * board could not be read.
+ */
+board_state: string, 
+/**
+ * Who holds it on the board (display name, else short id). Empty = nobody.
+ */
+owner: string, 
+/**
+ * Board timestamps — the experiment axes: time-to-claim and time-to-settle
+ * read from these, never from a process clock that a reboot resets.
+ */
+created_at_ms?: number, updated_at_ms?: number, 
+/**
+ * When the verdict file was written (`SweVerdict::graded_at_ms`).
+ */
+graded_at_ms?: number, };

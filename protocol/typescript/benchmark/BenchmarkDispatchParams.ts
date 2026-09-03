@@ -119,6 +119,15 @@ prune: boolean | null,
  */
 drive?: WorkDriver, 
 /**
+ * The round's STANDING RULES — published as the run room's operating doctrine
+ * so every resident sees it in her grounding on every turn (the `[Room
+ * operating doctrine]` block), not as a message that scrolls out of view.
+ * This is where a recipe puts role prompts and the collaboration nudge
+ * ("others are working cards on this board — say what you found when it
+ * helps them"). Omit for the control arm: no doctrine, no nudge.
+ */
+doctrine: string | null, 
+/**
  * Stage the round even though serving is NOT decode-verified (#442).
  *
  * Off by default, and the default is the point: dispatch refuses to post cards no
