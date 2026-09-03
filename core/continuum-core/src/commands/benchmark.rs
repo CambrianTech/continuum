@@ -1906,14 +1906,14 @@ impl ActionCommand for BenchmarkDispatch {
             "review_gate".to_string(),
             serde_json::json!(p.review_gate.unwrap_or(false)),  // unwrap_or: gate not named = off, the control arm
         );
-        // The run room is a CHILD of whatever room the curator stands in — the tree is
-        // dynamic, built from the binding's `parent` at spawn; no room name is a rule here.
-        let parent_room = airc.current_room().await.ok().map(|r| r.channel);
+        // WHERE THE ROUND ROOTS is the spawn seam's decision, for every recipe: the
+        // benchmark recipe declares `base: academy` (a round is learning, by what it is),
+        // so no parent is named here.
         let room = crate::modules::activity::spawn_activity_room(
             &airc,
             &room_name,
             &bench_recipe,
-            parent_room,
+            None,
             &run_params,
         )
         .await?;
