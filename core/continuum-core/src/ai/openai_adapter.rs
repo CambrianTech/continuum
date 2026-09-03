@@ -16,7 +16,6 @@
 //! - Pricing
 
 use async_trait::async_trait;
-use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::time::Instant;
@@ -31,8 +30,8 @@ use super::adapter::{
 use super::openai_endpoints::OpenAiBase;
 use super::registry_bridge::models_for_provider_via_registry;
 use super::types::{
-    ActiveAdapterRequest, ChatMessage, ContentPart, EmbeddingInput, EmbeddingRequest,
-    EmbeddingResponse, FinishReason, GenerationTiming, HealthState, HealthStatus, MessageContent,
+    ActiveAdapterRequest, ContentPart, EmbeddingInput, EmbeddingRequest, EmbeddingResponse,
+    FinishReason, GenerationTiming, HealthState, HealthStatus,
     ModelInfo, TextGenerationRequest, TextGenerationResponse, ToolCall, UsageMetrics,
 };
 
@@ -1070,7 +1069,7 @@ pub(crate) fn extract_reasoning(
 
 
 // The SSE wire types + stream consumer live in `crate::inference::sse_stream` (S3b decompose).
-use crate::inference::sse_stream::{warn_if_decode_collapsed, OpenAITimings, OpenAIUsage, StreamToolAccum};
+use crate::inference::sse_stream::warn_if_decode_collapsed;
 
 #[async_trait]
 impl AIProviderAdapter for OpenAICompatibleAdapter {
@@ -2190,7 +2189,7 @@ mod tests {
     use crate::inference::lane_send::PRE_STREAM_HEADER_TIMEOUT_SECS;
     use crate::inference::sse_stream::{OpenAIStreamChunk, STREAM_IDLE_TIMEOUT_SECS};
 
-    use crate::ai::types::ImageInput;
+    use crate::ai::types::{ChatMessage, ImageInput, MessageContent};
 
     mod prefill_progress_is_liveness {
         use super::*;

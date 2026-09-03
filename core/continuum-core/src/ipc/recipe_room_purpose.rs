@@ -94,7 +94,8 @@ pub trait RoomRecipeReader: Send + Sync {
 /// exactly one answer per room, process-wide ([[compression]]).
 #[derive(Clone, Default)]
 pub struct RecipeRoomPurpose {
-    index: Arc<RwLock<HashMap<Uuid, String>>>,
+    /// room → (purpose, the binding's parent activity).
+    index: Arc<RwLock<HashMap<Uuid, (String, Option<Uuid>)>>>,
 }
 
 impl RecipeRoomPurpose {
@@ -104,9 +105,9 @@ impl RecipeRoomPurpose {
 
     /// Record a room's resolved purpose. Idempotent; last write wins, which is
     /// what a re-bind means.
-    fn set(&self, room_id: Uuid, purpose: String) {
+    fn set(&self, room_id: Uuid, purpose: String, parent: Option<Uuid>) {
         let mut index = self.index.write().unwrap_or_else(|e| e.into_inner());
-        index.insert(room_id, purpose);
+        index.insert(room_id, (purpose, parent));
     }
 
     /// Resolve one room's binding through `reader` and fold it in. Returns the
@@ -116,6 +117,7 @@ impl RecipeRoomPurpose {
     /// stream — the seam is a total function, so the only choice is between a
     /// LOUD default and a silent one.
     pub async fn refresh(&self, room_id: Uuid, reader: &dyn RoomRecipeReader) -> String {
+        let mut parent: Option<Uuid> = None;
         let purpose = match reader.recipe_posts(room_id).await {
             Err(error) => {
                 crate::probe!(
@@ -129,7 +131,10 @@ impl RecipeRoomPurpose {
                 UNBOUND_PURPOSE.to_string()
             }
             Ok(posts) => match project_binding(&posts) {
-                Ok(Some(binding)) => binding.recipe,
+                Ok(Some(binding)) => {
+                    parent = binding.parent.map(|p| p.as_uuid());
+                    binding.recipe
+                }
                 Ok(None) => UNBOUND_PURPOSE.to_string(),
                 Err(error) => {
                     crate::probe!(
@@ -143,7 +148,7 @@ impl RecipeRoomPurpose {
                 }
             },
         };
-        self.set(room_id, purpose.clone());
+        self.set(room_id, purpose.clone(), parent);
         purpose
     }
 }
@@ -154,8 +159,16 @@ impl RoomPurposeSource for RecipeRoomPurpose {
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .get(&room_id)
-            .cloned()
+            .map(|(purpose, _)| purpose.clone())
             .unwrap_or_else(|| UNBOUND_PURPOSE.to_string())
+    }
+
+    fn parent_for(&self, room_id: Uuid) -> Option<Uuid> {
+        self.index
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&room_id)
+            .and_then(|(_, parent)| *parent)
     }
 }
 
