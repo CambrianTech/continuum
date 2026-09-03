@@ -758,34 +758,37 @@ pub fn unworked_citizen_cards() -> Vec<NextCard> {
 /// the board rather than working a fixed pile pushed onto you (Joel 2026-09-02).
 /// Load-balances (a fast member pulls more) and is resilient (a dropped member's
 /// un-pulled cards stay in the deck for anyone).
-pub fn next_pullable_card(peer: Uuid) -> Option<NextCard> {
+pub fn pullable_cards(
+    peer: Uuid,
+    resident_rooms: &std::collections::HashSet<Uuid>,
+) -> Vec<NextCard> {
     let rounds = ROUNDS.lock().expect("bench rounds mutex");
     let live = live_run_ids();
     rounds
         .values()
         .filter(|r| r.stage == RoundStage::Working && r.driver == WorkDriver::Citizen)
-        .filter(|r| r.team.contains(&peer) || r.card_assignees.values().any(|a| *a == peer))
-        .find_map(|r| {
+        // ELIGIBILITY IS RESIDENCY. She may pull from any run room she is standing in
+        // — the round's `team` (really its reviewer set, empty unless `--teammates`)
+        // and the dispatch-time assignee were the gate that locked 7 of 12 residents
+        // out of a "shared" deck for months (2026-09-03). A card is room content; a
+        // resident works it. The `run_room` IS the round id.
+        .filter(|r| resident_rooms.contains(&r.round_id))
+        .flat_map(|r| {
             r.cards
                 .iter()
                 .filter(|(_, state)| state.is_none())
                 .filter(|(c, _)| !live.contains(&format!("claim-{}", c)))
-                .filter(|(c, _)| r.card_assignees.get(*c).map_or(true, |a| *a == peer))
                 .map(|(c, _)| NextCard {
                     card: *c,
                     assignee: peer,
                     run_room: r.round_id,
                     teammates: r.team.clone(),
                 })
-                .next()
+                .collect::<Vec<_>>()
         })
+        .collect()
 }
 
-/// Total OPEN (non-terminal) cards across every Working round — the board-side
-/// LANE DEMAND. Queued benchmark work is demand the serving plan must see:
-/// measured live 2026-08-27, the plan converged to 1 lane after a 4-way cohort
-/// settled (demand = the boot persona floor, blind to the board), and 17
-/// workable cards then crawled serially behind all room-life on one slot.
 pub fn total_unworked_cards() -> usize {
     let rounds = ROUNDS.lock().expect("bench rounds mutex");
     rounds

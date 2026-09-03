@@ -206,6 +206,25 @@ pub trait AircCitizen:
     async fn claim_card(&self, _card_id: airc_lib::WorkCardId) -> Result<bool, String> {
         Err("this citizen has no work-board write capability".to_string())
     }
+
+    /// The rooms this citizen is RESIDENT in (her durable subscription set). This is
+    /// the pull-eligibility source: a card is content of the room it was posted in,
+    /// and a resident may pull it — never a dispatch-time team or assignee list.
+    /// Default is an empty set (a citizen standing nowhere pulls nothing), which is
+    /// honest for read-only stand-ins; the production runtime reads airc.
+    async fn subscribed_rooms(&self) -> Result<Vec<Uuid>, AircError> {
+        Ok(Vec::new())
+    }
+
+    /// The cards on `room`'s board that are takeable RIGHT NOW (Open, or held on a
+    /// lapsed lease) per the ONE claimability decision
+    /// ([`crate::persona::card_holder::claimable_now`]). The pull reads THIS, not the
+    /// round tracker: the tracker never records a claim, so without board truth every
+    /// idle resident would retry the first already-claimed card forever. Default is
+    /// empty (nothing offered); the production runtime folds the room's board.
+    async fn claimable_cards_in(&self, _room: Uuid, _now_ms: u64) -> Result<Vec<Uuid>, AircError> {
+        Ok(Vec::new())
+    }
 }
 
 /// THE implementation of [`AircCitizen::subscribe_all_rooms`] over a
@@ -338,6 +357,11 @@ pub(crate) async fn room_name_by_id(room_id: Uuid) -> Option<String> {
 /// — no Option, no expect, no silent substitution.
 pub struct StubAircCitizen {
     peer_id: Uuid,
+    /// Rooms the stub reports as resident in (see [`AircCitizen::subscribed_rooms`]).
+    rooms: Vec<Uuid>,
+    /// Cards the stub reports as claimable on ANY room's board
+    /// (see [`AircCitizen::claimable_cards_in`]).
+    claimable: Vec<Uuid>,
     /// Cards this stub reports as its active claims — empty by default. A test
     /// that exercises the held-work path seeds one so `active_claims()` returns
     /// held work (the held-work gate fires only on a Claimed/InProgress card).
@@ -359,6 +383,8 @@ impl StubAircCitizen {
     pub fn new(peer_id: Uuid) -> Self {
         Self {
             peer_id,
+            rooms: Vec::new(),
+            claimable: Vec::new(),
             held: Vec::new(),
             advanced: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             claimed: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -375,6 +401,19 @@ impl StubAircCitizen {
     /// gate sees held work.
     pub fn with_claims(mut self, cards: Vec<airc_lib::WorkCard>) -> Self {
         self.held = cards;
+        self
+    }
+
+    /// Stand this stub in `rooms` — what [`AircCitizen::subscribed_rooms`] reports.
+    pub fn with_rooms(mut self, rooms: Vec<Uuid>) -> Self {
+        self.rooms = rooms;
+        self
+    }
+
+    /// Offer `cards` as claimable on every room's board
+    /// (what [`AircCitizen::claimable_cards_in`] reports).
+    pub fn with_claimable(mut self, cards: Vec<Uuid>) -> Self {
+        self.claimable = cards;
         self
     }
 
@@ -540,6 +579,14 @@ impl AircCitizen for StubAircCitizen {
             .unwrap_or_else(|p| p.into_inner())
             .push(card_id);
         Ok(true)
+    }
+
+    async fn subscribed_rooms(&self) -> Result<Vec<Uuid>, AircError> {
+        Ok(self.rooms.clone())
+    }
+
+    async fn claimable_cards_in(&self, _room: Uuid, _now_ms: u64) -> Result<Vec<Uuid>, AircError> {
+        Ok(self.claimable.clone())
     }
 }
 

@@ -513,75 +513,41 @@ async fn serve_persona_loop_inner(
                 // Directed turns still bypass entirely (they were named). Self-tick and
                 // ambient replies share the same ambient pool — both are lowest-priority
                 // non-directed work competing for the same lanes.
-                let _self_tick_permit =
-                    match crate::cognition::resource_admission::try_hold_ambient_turn() {
-                        Some(permit) => permit,
-                        None => {
-                            // A YIELD IS NOT A REST — do NOT compound the beat here.
-                            //
-                            // The backoff below (after a real cycle) is earned: she THOUGHT,
-                            // the room had nothing new, so she rests deeper. A yield is the
-                            // opposite — she never ran. A peer held the single ambient slot,
-                            // she learned nothing, and there is nothing to rest ON.
-                            //
-                            // Compounding it built a STARVATION RATCHET, measured live
-                            // 2026-08-17 on this box: the ambient pool was a hardcoded 1 and 24
-                            // hosted citizens, so ~23 yield on every beat. At 1.5× per yield
-                            // a citizen crosses 15s → the 240s `rest_cap` in ~8 yields — 16×
-                            // slower — and STAYS there, because the only two resets are a
-                            // successful self-cycle (which the ratchet now denies her) and an
-                            // inbound Msg. Transient contention became permanent slowness, and
-                            // it deepened as the roster grew: measured ONE self-tick across 24
-                            // citizens in 40 minutes, on a lane that was healthy and decoding
-                            // the whole time.
-                            //
-                            // Leaving the beat UNCHANGED is the minimal correct rule: her
-                            // cadence stays whatever her own history earned, contention can no
-                            // longer slow her, and the identity-derived `phase` still keeps the
-                            // retries desynced so no herd forms. Yielding stays cheap — the
-                            // permit is a non-blocking try and perception work all happens
-                            // inside `run_self_cycle`, below this gate.
-                            next_beat = next_beat_after(
-                                BeatOutcome::YieldedNoSlot,
-                                next_beat,
-                                engaged_beat,
-                                rest_cap,
-                            );
-                            // Make the yield VISIBLE, at ≤1 row/min for the whole process.
-                            // Without this the yield path emits nothing, so a window with
-                            // zero `persona.selftick.*` reads identically whether one citizen
-                            // is mid-turn holding the only lane or the roster is dead —
-                            // resolving that took a manual /slots curl on 2026-08-17. Per-yield
-                            // rows would be ~92/min at this roster size and would drown the
-                            // stream (#399), so the admission gate rate-limits and only the
-                            // winner of its compare-exchange reports.
-                            if let Some(yields) =
-                                crate::cognition::resource_admission::take_ambient_yield_report(
-                                    std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .map(|d| d.as_millis() as u64)
-                                        .unwrap_or(0),
-                                )
-                            {
-                                crate::probe!(
-                                    class = "persona.selftick.starved",
-                                    yields_since_last_report = yields,
-                                    total_yields =
-                                        crate::cognition::resource_admission::ambient_yields(),
-                                    "ambient turns yielded — the pool was full. NOT a fault: \
-                                     this is what contention looks like when citizens outnumber \
-                                     non-directed lanes. Rate-limited to ≤1 row/min."
-                                );
-                            }
-                            continue;
-                        }
-                    };
                 let before = last_burst_fp;
-                run_self_cycle(ctx, conversation, &opts, &mut last_burst_fp).await;
-                drop(_self_tick_permit);
+                // DETERMINISTIC WORK FIRST, THEN INFERENCE. The cycle runs the held-work
+                // act question (which takes its OWN serving lane through the delib gate)
+                // and the kanban pull (no inference at all) before it ever asks for an
+                // ambient permit — that permit caps only the musing tail. Until
+                // 2026-09-03 the permit was taken HERE, before anything ran, so with 12
+                // citizens on a lanes-1 ambient pool nine of them yielded every tick and
+                // never reached the pull (measured live: 31 yields in 10 minutes, 3 of 12
+                // residents working an Open deck of 12).
+                let starved = run_self_cycle(ctx, conversation, &opts, &mut last_burst_fp).await;
+                if starved {
+                    if let Some(yields) =
+                        crate::cognition::resource_admission::take_ambient_yield_report(
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis() as u64)
+                                .unwrap_or(0),
+                        )
+                    {
+                        crate::probe!(
+                            class = "persona.selftick.starved",
+                            yields_since_last_report = yields,
+                            total_yields =
+                                crate::cognition::resource_admission::ambient_yields(),
+                            "ambient MUSING yielded — the pool was full. NOT a fault: this is \
+                             what contention looks like when citizens outnumber non-directed \
+                             lanes; held work and the pull already ran. Rate-limited to ≤1 row/min."
+                        );
+                    }
+                }
                 next_beat = next_beat_after(
                     if last_burst_fp != before {
                         BeatOutcome::Engaged
+                    } else if starved {
+                        BeatOutcome::YieldedNoSlot
                     } else {
                         BeatOutcome::NothingNew
                     },
@@ -2503,9 +2469,54 @@ async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn PersonaConve
     let Some(citizen) = conversation.stream_citizen() else {
         return false;
     };
-    let Some(next) =
-        crate::cognition::bench_round::next_pullable_card(ctx.identity.peer_id.as_uuid())
-    else {
+    // ELIGIBILITY IS RESIDENCY: she pulls from the run rooms she is standing in. A
+    // card is content of its room; any resident may work it.
+    let resident: std::collections::HashSet<Uuid> = match citizen.subscribed_rooms().await {
+        Ok(rooms) => rooms.into_iter().collect(),
+        Err(e) => {
+            crate::probe!(
+                class = "bench.round.pull_failed",
+                persona = %ctx.identity.agent_name,
+                error = %e.to_string(),
+                "her subscription set is unreadable — no pull this tick"
+            );
+            return false;
+        }
+    };
+    let candidates =
+        crate::cognition::bench_round::pullable_cards(ctx.identity.peer_id.as_uuid(), &resident);
+    if candidates.is_empty() {
+        return false;
+    }
+    // BOARD TRUTH decides what is takeable: the round tracker knows the deck, the
+    // board knows who holds what. One board read per run room per self-tick.
+    let now_ms = crate::persona::trace::now_ms();
+    let mut claimable_by_room: std::collections::HashMap<Uuid, std::collections::HashSet<Uuid>> =
+        std::collections::HashMap::new();
+    let mut next = None;
+    for cand in candidates {
+        if !claimable_by_room.contains_key(&cand.run_room) {
+            let open = match citizen.claimable_cards_in(cand.run_room, now_ms).await {
+                Ok(cards) => cards.into_iter().collect(),
+                Err(e) => {
+                    crate::probe!(
+                        class = "bench.round.pull_failed",
+                        persona = %ctx.identity.agent_name,
+                        room = %cand.run_room,
+                        error = %e.to_string(),
+                        "the run room's board is unreadable — no pull from it this tick"
+                    );
+                    std::collections::HashSet::new()
+                }
+            };
+            claimable_by_room.insert(cand.run_room, open);
+        }
+        if claimable_by_room[&cand.run_room].contains(&cand.card) {
+            next = Some(cand);
+            break;
+        }
+    }
+    let Some(next) = next else {
         return false;
     };
     let card_id = airc_work::WorkCardId::from_uuid(next.card);
@@ -2537,12 +2548,15 @@ async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn PersonaConve
     }
 }
 
+/// One intrinsic heartbeat. Returns `true` iff the cycle's INFERENCE tail (the
+/// musing turn) was starved of an ambient permit — the deterministic head (held-work
+/// act question, kanban pull) always runs.
 async fn run_self_cycle(
     ctx: &HostedPersona,
     conversation: &mut dyn PersonaConversation,
     opts: &ServeOptions,
     last_burst_fp: &mut u64,
-) {
+) -> bool {
     let now_ms = (opts.now_ms)();
     // FOCUS (2026-08-22): a self-cycle with no triggering message binds to the
     // room of her FRESHEST LIVE CLAIM when she holds one, else her home room.
@@ -2617,7 +2631,7 @@ async fn run_self_cycle(
         // backs off toward the rest cap — the opposite of "virtually no time between
         // contexts" while a card is in her hands. (LATENCY LAW / #the-build-order.)
         *last_burst_fp = last_burst_fp.wrapping_add(1);
-        return;
+        return false;
     }
     // No held card to work — PULL the next Open card off the shared team deck
     // (kanban pull, Joel 2026-09-02: a team chooses from the deck, they don't work
@@ -2627,8 +2641,15 @@ async fn run_self_cycle(
     // fire again until it settles. Pulling IS engagement → hold the fast beat.
     if try_pull_next_card(ctx, conversation).await {
         *last_burst_fp = last_burst_fp.wrapping_add(1);
-        return;
+        return false;
     }
+    // Only the MUSING tail below is ambient inference: it pays for an ambient permit
+    // (lanes-1 pool, keeps the GPU for live speakers and held work). Nothing above
+    // needed one.
+    let Some(_ambient_permit) = crate::cognition::resource_admission::try_hold_ambient_turn()
+    else {
+        return true;
+    };
     let composed = {
         let cognition = ctx.cognition.lock().await;
         // Passing None here is what made idle ticks blind to the board (#331 / #127).
@@ -2654,7 +2675,7 @@ async fn run_self_cycle(
     // heartbeat advances my thread, not just reacts to pokes). See burst_fingerprint.
     let fp = burst_fingerprint(&deliveries, &ctx.identity.peer_id.to_string());
     if fp == *last_burst_fp {
-        return; // nothing NEW to attend to (no external change, no work progress) → sleep
+        return false; // nothing NEW to attend to (no external change, no work progress) → sleep
     }
     *last_burst_fp = fp;
     // Structured turns (own posts attributed as self → assistant, peers → user),
@@ -2702,7 +2723,7 @@ async fn run_self_cycle(
     let Some(cycle) =
         crate::cognition::persona_workspace::global().get(&ctx.identity.peer_id.as_uuid())
     else {
-        return; // no cycle registered (shouldn't happen) — nothing to run
+        return false; // no cycle registered (shouldn't happen) — nothing to run
     };
     // Addressing PERCEPTION, not a silence directive. The old framing asserted "no one
     // addressed you just now" unconditionally and told her to "stay silent (PASS)" —
@@ -2765,7 +2786,7 @@ async fn run_self_cycle(
             addressed,
             "self-tick wake held by a self-set mute — back to sleep (interrupt floor honored)"
         );
-        return;
+        return false;
     }
     // The self-initiated framing (formerly an `[Self-initiated moment…]` text
     // preamble concatenated onto the burst) now rides `TurnFraming::self_thread`
@@ -2860,7 +2881,7 @@ async fn run_self_cycle(
             "no lane is live — skipping this self-tick rather than deliberating into a \
              guaranteed refusal (serving transition, not a persona fault)"
         );
-        return;
+        return false;
     }
     let forwarder =
         spawn_token_forwarder(tok_rx, None, ctx.identity.agent_name.clone(), None, None);
@@ -2882,14 +2903,14 @@ async fn run_self_cycle(
             // message path has). A decision whose text is just {"tool_call":…} is an
             // un-acted call, not a contribution — stay silent.
             if crate::ai::json_in_prompt_tools::parse_tool_call(&text).is_some() {
-                return;
+                return false;
             }
             // A self-cycle answers no one — the audience is the room the tick
             // ran IN (her claim's focus room when working, else her default) —
             // the same room the cycle framed its context against.
             if let Err(e) = conversation.say_in(tick_room, &text).await {
                 tracing::warn!(persona = %ctx.identity.agent_name, error = %e, "self-cycle say failed");
-                return;
+                return false;
             }
             // #148: self-tick utterances are self-history too — the live
             // repeat loops are mostly idle-tick re-announcements, and the
@@ -2937,6 +2958,7 @@ async fn run_self_cycle(
         // unreachable (live always permits its one act). Passed → sleep.
         _ => {}
     }
+    false
 }
 
 /// Helper: pull the next event from the conversation, handling the
@@ -5000,19 +5022,38 @@ mod tests {
             "swe-bench-verified-mini",
             bench_round::WorkDriver::Citizen,
         );
-        bench_round::set_round_team(round_id, vec![peer]);
+        // NO team, NO assignee: she is merely RESIDENT in the run room. That alone
+        // makes the deck hers to pull from — the months-old team/assignee gate that
+        // locked 7 of 12 residents out of a "shared" deck is what this pins shut.
         bench_round::add_card(round_id, card_uuid);
 
-        // A team member with an Open card on the board → it is pullable, and the
-        // puller becomes its assignee.
-        let next = bench_round::next_pullable_card(peer)
-            .expect("an Open card in her team round is pullable");
-        assert_eq!(next.card, card_uuid);
-        assert_eq!(next.assignee, peer, "the puller becomes the assignee");
+        let resident: std::collections::HashSet<Uuid> = [round_id].into_iter().collect();
+        let deck = bench_round::pullable_cards(peer, &resident);
+        assert_eq!(deck.len(), 1, "the run room's one Open card is on her deck");
+        assert_eq!(deck[0].card, card_uuid);
+        assert_eq!(deck[0].assignee, peer, "the puller becomes the assignee");
+        assert!(
+            bench_round::pullable_cards(peer, &Default::default()).is_empty(),
+            "a citizen standing in no run room pulls nothing — residency is the gate"
+        );
+
+        // BOARD TRUTH: the same card, already held by a teammate on the board (the
+        // stub offers nothing as claimable), is NOT pulled — no retry storm on a
+        // card someone else holds.
+        let hosted = hosted_with_heuristic(peer);
+        let held_elsewhere = StubAircCitizen::new(peer).with_rooms(vec![round_id]);
+        let conversation = ScriptedConversation::new().with_citizen(
+            Arc::new(held_elsewhere) as Arc<dyn crate::persona::airc_citizen::AircCitizen>,
+        );
+        assert!(
+            !try_pull_next_card(&hosted, &conversation).await,
+            "a card the board says is held is not pulled"
+        );
 
         // An idle citizen (holds nothing) pulls it through the deterministic path.
-        let hosted = hosted_with_heuristic(peer);
-        let stub = StubAircCitizen::new(peer);
+        let stub = StubAircCitizen::new(peer)
+            .with_rooms(vec![round_id])
+            .with_claimable(vec![card_uuid]);
         let recorder = stub.claim_recorder();
         let conversation = ScriptedConversation::new()
             .with_citizen(Arc::new(stub) as Arc<dyn crate::persona::airc_citizen::AircCitizen>);

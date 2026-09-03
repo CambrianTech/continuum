@@ -964,6 +964,20 @@ pub(crate) fn dispatch_card_title(bench: &str, task_id: &str, prompt: &str) -> S
     format!("{} {gist}{ellipsis}", dispatch_card_key(bench, task_id))
 }
 
+/// Parse `[bench <name>] <task>: <gist>` — the exact shape [`dispatch_card_title`]
+/// writes — into `(bench_name, task_id)`. `None` for any non-bench title, so a normal
+/// work card is neither graded nor staged. ONE parser beside the ONE writer: the grade
+/// edge (`benchmark_grade`) and the on-claim staging (`card_staging`) both read this.
+pub(crate) fn parse_card_title(title: &str) -> Option<(String, String)> {
+    let rest = title.strip_prefix("[bench ")?;
+    let (bench, after) = rest.split_once("] ")?;
+    let task = after.split(':').next()?.trim();
+    if bench.trim().is_empty() || task.is_empty() {
+        return None;
+    }
+    Some((bench.trim().to_string(), task.to_string()))
+}
+
 /// Compose the card BODY: the full prompt plus a definition of done a citizen
 /// can act on with her own hands. Grading inputs that must stay held out
 /// (`expect`, the harness `test`) are deliberately NOT written to the card —
@@ -1521,9 +1535,10 @@ impl ActionCommand for BenchmarkDispatch {
         enum CardWork {
             /// Gym: write a solution file; DoD is a compile/test shell.
             Gym { solution_file: String },
-            /// SWE: the pulled instance. Dispatch STAGES it into the directed assignee's
-            /// workspace/swe/<instance> so her claim auto-fires the scored solve (#346's
-            /// dispatch_staged_swe_solve) — the loop closes with nobody in it.
+            /// SWE: the pulled instance. The CLAIM stages it into the claimer's
+            /// workspace/swe/<instance> (`card_staging`); a detached-solve round stages
+            /// its directed assignee at dispatch through the same function and fires
+            /// her solve (#346) — the loop closes with nobody in it.
             Swe {
                 instance: Box<crate::cognition::swe_bench::SweInstance>,
             },
@@ -1964,7 +1979,7 @@ impl ActionCommand for BenchmarkDispatch {
         // hyphenated uuid, so the round's membership set must too (the 8-char `card_ids`
         // shorts are the human/CLI handle, not the identity).
         let mut card_uuids: Vec<uuid::Uuid> = Vec::new();
-        let mut skipped_needs_setup = 0u32;
+        let skipped_needs_setup = 0u32; // setup runs at the claim edge now (card_staging)
         let mut skipped_known_red = 0u32;
         let mut skipped_already_on_board = 0u32;
         let mut kickoffs = 0u32;
@@ -2052,11 +2067,11 @@ impl ActionCommand for BenchmarkDispatch {
             );
         }
         for pc in prepared.into_iter().take(take) {
-            // A gym setup_shell card is prepared IN THE ASSIGNEE'S WORKSPACE at
-            // dispatch, below (same contract as SWE checkout staging) — the early
-            // unconditional skip that used to live here reported the entire ds-1000
-            // maiden dispatch as `skipped_needs_setup: 4` (2026-08-22): the eval
-            // path always ran setup_shell, but no card-dispatch orchestration did.
+            // A gym setup_shell card is prepared in the CLAIMER's workspace at claim
+            // time (`card_staging`, 2026-09-03) — the early unconditional skip that
+            // used to live here reported the entire ds-1000 maiden dispatch as
+            // `skipped_needs_setup: 4` (2026-08-22): the eval path always ran
+            // setup_shell, but no card-dispatch orchestration did.
 
             // IDEMPOTENCE: this exact task already has a live card. Re-dispatching
             // would post a duplicate, and duplicates are not free — two citizens
@@ -2076,61 +2091,16 @@ impl ActionCommand for BenchmarkDispatch {
             // The directed assignee (round-robin over the RESOLVED live roster). Always a
             // real online citizen — resolve_dispatch_roster guaranteed a non-empty roster
             // or errored. Her peer_id rides along, so SWE staging needs no second name
-            // lookup (and can never silently no-stage on an unknown name). A SWE card stages
-            // into HER workspace before it is claimable, so her claim auto-fires the scored
-            // solve (#346 dispatch_staged_swe_solve).
+            // lookup (and can never silently no-stage on an unknown name). Under a
+            // DETACHED-SOLVE round she is staged and pre-claimed below and her solve
+            // fires (#346); under a CITIZEN round she is only the kickoff's voice
+            // exclusion — the card posts OPEN and whoever pulls it is staged at claim.
             let (who, who_peer) = &roster[card_ids.len() % roster.len()];
 
             // STAGE the SWE checkout into the assignee's workspace/swe/<instance> BEFORE the
             // card is claimable, so `work/claim` finds it and launches the solve. Reuses the
             // proven swe_bench::clone_at (fast from the local mirror). Best-effort: a stage
             // failure is REPORTED and the card still posts — the loop never half-breaks.
-            // GYM setup: run the task's setup_shell in the assignee's workspace NOW,
-            // so the card she claims already has its context/grader staged. Adapter
-            // setups are idempotent (mkdir -p + overwrite-decode), so a re-dispatch
-            // re-stages harmlessly. Failure is REPORTED and the card is withheld —
-            // posting a card whose grader never staged manufactures a permanent
-            // infra-zero wearing a capability face.
-            if let Some(setup) = pc.setup_shell.as_deref() {
-                let ok = match stage_home.as_ref() {
-                    Some(home) => {
-                        let ws = crate::identity::citizen_peer_dir(
-                            home,
-                            crate::identity::PeerId::from_uuid(*who_peer),
-                        )
-                        .join("workspace");
-                        let _ = std::fs::create_dir_all(&ws);
-                        match tokio::process::Command::new("sh")
-                            .arg("-c")
-                            .arg(setup)
-                            .current_dir(&ws)
-                            .output()
-                            .await
-                        {
-                            Ok(out) if out.status.success() => true,
-                            Ok(out) => {
-                                let head: String = pc.title.chars().take(48).collect();
-                                kickoff_errors.push(format!(
-                                    "setup {head}: {}",
-                                    String::from_utf8_lossy(&out.stderr).trim()
-                                ));
-                                false
-                            }
-                            Err(e) => {
-                                kickoff_errors.push(format!("setup spawn: {e}"));
-                                false
-                            }
-                        }
-                    }
-                    None => false,
-                };
-                if !ok {
-                    skipped_needs_setup += 1;
-                    continue;
-                }
-            }
-
-            let mut staged_ok = false;
             // THE COVERAGE GATE (the cheap half of `benchmark/validate`). If THIS
             // box has already PROVEN this instance's (repo, era) env class red,
             // do not spend a citizen's hours and a grader's slot discovering the
@@ -2161,47 +2131,35 @@ impl ActionCommand for BenchmarkDispatch {
                 }
             }
 
-            if let (CardWork::Swe { instance }, Some(home)) = (&pc.work, stage_home.as_ref()) {
-                let dir = crate::identity::citizen_peer_dir(
-                    home,
-                    crate::identity::PeerId::from_uuid(*who_peer),
-                )
-                .join("workspace")
-                .join("swe")
-                .join(&instance.instance_id);
-                if dir.join(".git").exists() {
-                    staged_ok = true; // already staged (a prior claim / dispatch)
-                    // Self-heal pre-shield checkouts: clone_at shields NEW trees, but a
-                    // checkout staged before the shield existed stays exposed forever
-                    // without this — the 76-tree hand backfill of 2026-08-22, automated.
-                    crate::cognition::swe_bench::shield_workspace_excludes(&dir);
-                } else if let Err(e) = crate::cognition::swe_bench::clone_at(instance, &dir).await {
-                    kickoff_errors.push(format!("stage {}: {e}", instance.instance_id));
-                } else {
-                    staged_ok = true;
+            // STAGING MOVED TO THE CLAIM EDGE (2026-09-03, the pull inversion). A
+            // citizen-driven round stages NOTHING here: whoever PULLS the card is
+            // staged for it by `work/claim` → `card_staging::stage_for_claimer`, so any
+            // resident can work any Open card and a rebooted citizen who re-reads the
+            // board is staged exactly like a first claimer. Only a DETACHED-SOLVE round
+            // still stages its directed assignee here — the SAME function — because
+            // the solve below fires without a claim from her.
+            let staged_ok = if driver == crate::cognition::bench_round::WorkDriver::DetachedSolve
+            {
+                match stage_home.as_ref() {
+                    Some(home) => match crate::modules::card_staging::stage_for_claimer(
+                        home,
+                        *who_peer,
+                        &pc.title,
+                    )
+                    .await
+                    {
+                        crate::modules::card_staging::Staging::Ready { .. }
+                        | crate::modules::card_staging::Staging::Ordinary => true,
+                        crate::modules::card_staging::Staging::Failed { stage, error } => {
+                            kickoff_errors.push(format!("stage {}: {stage}: {error}", pc.title));
+                            false
+                        }
+                    },
+                    None => false,
                 }
-                // Build the per-instance venv NOW (with pytest + the repo installed) so her
-                // HANDS have a working `pytest`/`python` the moment she starts — not only at
-                // grade time. Without this the solve's `code/shell pytest` hits the system
-                // interpreter and she loops trying to install pytest into it (glass-boxed
-                // 2026-08-11 from Anon's astropy turn). ensure_env is idempotent and cached, so
-                // the later grade reuses this exact venv. Best-effort: a build failure is
-                // reported but the card still posts — the loop never half-breaks.
-                if staged_ok {
-                    if let Err(e) = crate::cognition::swe_bench::ensure_env(instance, &dir).await {
-                        kickoff_errors.push(format!("env {}: {e}", instance.instance_id));
-                        // A solve against an unbuildable env can ONLY void: she spends a
-                        // full attempt (24 acts, live: pytest-5413 twice on 2026-08-12)
-                        // in a workspace whose grade is a known-in-advance env fault —
-                        // no verdict, no lesson (the failure is the env's, not hers).
-                        // The card still posts (claimable once the env heals); the
-                        // SCORED solve does not fire (Joel: "why run broken code
-                        // knowing she's gonna struggle and fall").
-                        staged_ok = false;
-                    }
-                }
-            }
-
+            } else {
+                false
+            };
             let mut req = CreateWorkCard::new(repo.clone(), pc.title, Priority::P2);
             req.body = Some(pc.body);
             let card_id = airc
@@ -2217,7 +2175,9 @@ impl ActionCommand for BenchmarkDispatch {
             crate::cognition::bench_round::add_card(room.room_id.as_uuid(), card_id.as_uuid());
             // WHO works this card, recorded at staging (before any solve fires) —
             // the follow-on driver and the boot resume read it (plan A4/A5).
-            crate::cognition::bench_round::record_card_assignee(card_id.as_uuid(), *who_peer);
+            if driver == crate::cognition::bench_round::WorkDriver::DetachedSolve {
+                crate::cognition::bench_round::record_card_assignee(card_id.as_uuid(), *who_peer);
+            }
             // WHAT it tests, same moment — the roll-call names the instance
             // and in-flight runs join back to their card by it.
             if let CardWork::Swe { instance } = &pc.work {
@@ -2257,8 +2217,14 @@ impl ActionCommand for BenchmarkDispatch {
             // detached round could never reach Done and every boot reaped it
             // (mapped 2026-08-26). Claimed-by-the-assignee is what lets the
             // grade path close the card and the round complete.
-            let pre_claim_this = matches!(pc.work, CardWork::Gym { .. })
-                || (matches!(pc.work, CardWork::Swe { .. }) && staged_ok);
+            // PRE-CLAIM only for a detached-solve round: its solve fires for the
+            // directed assignee below, so the claim must already be hers. A
+            // citizen-driven round posts its cards OPEN — that is what makes the deck
+            // a deck. (Before 2026-09-03 every card, both drivers, was pre-claimed for
+            // its round-robin assignee: a push wearing a pull's clothes.)
+            let pre_claim_this = driver == crate::cognition::bench_round::WorkDriver::DetachedSolve
+                && staged_ok
+                && matches!(pc.work, CardWork::Swe { .. });
             if pre_claim_this {
                 match self.registry.get(*who_peer) {
                     Some(rt) => {
@@ -2301,7 +2267,31 @@ impl ActionCommand for BenchmarkDispatch {
             // 2026-08-07: coalesced mid-burst it was ignored). airc.say is one event = one
             // block, so the structural condition holds by construction.
             {
-                let kickoff = match &pc.work {
+                let kickoff = if driver == crate::cognition::bench_round::WorkDriver::Citizen {
+                    // OPEN card, room-addressed: nobody is "the" assignee — whoever is
+                    // free pulls it (the substrate claims it for an idle resident), and
+                    // the claim stages the work in HER workspace.
+                    match &pc.work {
+                        CardWork::Gym { solution_file } => format!(
+                            "card {short} is OPEN on this board — whoever is free pulls it \
+                             (the substrate claims it for you when you are idle, or \
+                             claim_task {short}). Read its body, write your solution to \
+                             `{solution_file}` in your workspace, then mark it done \
+                             (work/state {short} done). Your artifact is graded against \
+                             held-out tests."
+                        ),
+                        CardWork::Swe { instance } => format!(
+                            "card {short} is a REAL {} issue (SWE-bench, a full project) and \
+                             is OPEN on this board — whoever is free pulls it. Claiming stages \
+                             the repo in YOUR workspace at `swe/{}/`; fix the bug there (do \
+                             not edit the tests) — your diff is graded against the repo's \
+                             held-out tests. When your fix is ready, YOU close it: `work/state \
+                             {short} done` — that is what fires your grade.",
+                            instance.repo, instance.instance_id
+                        ),
+                    }
+                } else {
+                match &pc.work {
                     CardWork::Gym { solution_file } if pre_claimed => format!(
                         "@{who} (to you): card {short} is CLAIMED FOR YOU on this board — \
                          no claim step needed. Read its body, write your solution to \
@@ -2344,6 +2334,7 @@ impl ActionCommand for BenchmarkDispatch {
                             instance.repo, instance.instance_id
                         )
                     }
+                }
                 };
                 // AUTHOR IT AS SOMEONE ELSE. A citizen's inbound stream skips messages
                 // she is recorded as having said (correct — nobody answers their own

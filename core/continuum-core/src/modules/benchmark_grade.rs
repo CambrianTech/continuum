@@ -35,18 +35,7 @@ fn is_terminal(state: &str) -> bool {
     crate::cognition::bench_round::is_terminal_card_state(state)
 }
 
-/// Parse `[bench <name>] <instance>: <gist>` — the exact shape `dispatch_card_title`
-/// writes — into `(bench_name, instance_id)`. `None` for any non-bench title, so a normal
-/// work card silently isn't graded.
-fn parse_bench_title(title: &str) -> Option<(String, String)> {
-    let rest = title.strip_prefix("[bench ")?;
-    let (bench, after) = rest.split_once("] ")?;
-    let instance = after.split(':').next()?.trim();
-    if bench.trim().is_empty() || instance.is_empty() {
-        return None;
-    }
-    Some((bench.trim().to_string(), instance.to_string()))
-}
+use crate::commands::benchmark::parse_card_title as parse_bench_title;
 
 /// The grade-on-done subscriber. Holds a persona-airc registry so it can author the grade
 /// through a live citizen — whoever this machine has online (never a hardcoded name), the

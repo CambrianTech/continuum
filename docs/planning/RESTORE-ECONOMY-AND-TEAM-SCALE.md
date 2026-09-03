@@ -135,6 +135,27 @@ defer → permit → lease+pin → save/restore, houses the S3 fix as an RAII gu
 `serving_guard` (model-residency readiness), `request_body` (JSON assembly), `sse_parse`
 (streaming token extraction), leaving a thin retry/orchestration shell.
 
+**S3c — The months-old dispatch/resume bug: PULL, not push (✅ shipped 2026-09-03).**
+Measured root: only ~4–5 of 12 residents ever worked a dispatched round. Four couplings,
+all at the dispatch edge: (1) `next_pullable_card` gated on the round's `team` (really the
+reviewer set, empty unless `--teammates`) ∪ dispatch-time assignees; (2) dispatch PRE-CLAIMED
+every card for its round-robin assignee and STAGED the checkout into HER workspace, so a
+card pulled by anyone else pointed at someone else's repo; (3) the round tracker never
+records a claim, so a free pull would retry the first taken card forever; (4) the self-tick
+took an AMBIENT inference permit before running anything, so on a lanes-1 pool nine of
+twelve yielded every tick and never reached the pull (31 yields / 10 min). Fix, in ONE
+place each: eligibility = room residency (`pullable_cards`); the CLAIM stages the claimer's
+workspace per the card's recipe (`modules/card_staging.rs`, two callers: `work/claim` and a
+detached-solve dispatch); the pull reads claimability from the board
+(`AircCitizen::claimable_cards_in` → `claimable_now`); the pull rides `work/claim` through
+the citizen's executor (one claim path, driver-gated); the ambient permit gates only the
+musing tail. Live: a 12-card citizen round to 12 residents, no teammates — 7 distinct
+pullers across two boots (vs. the assignee-only ~3), each staged `Ready` in her own
+workspace, held cards resumed through the normal work gate after `reboot --force` with no
+re-fire. Remaining (plan `jazzy-wishing-milner`): driver/roster on the room binding, the
+tracker as a board projection on the module lifecycle, delete the re-say (40 fired this
+boot for pre-claimed legacy cards — pure compensation now).
+
 **S4 — One governed serving/paging pattern.** Collapse the scattered controls (S5 in
 the findings) into a single lease/admission concern at the lowest trait — the CBAR
 "code it once" move. New concerns inherit governed concurrency + paging.

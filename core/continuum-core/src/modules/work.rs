@@ -369,14 +369,24 @@ fn parse_state(s: &str) -> Result<CardState, CommandError> {
 /// SUBSCRIBED to, so this widens no visibility — it only stops discarding what
 /// the caller can already see.
 pub(crate) async fn room_holding_card(airc: &Arc<Airc>, card_id: WorkCardId) -> Option<airc_lib::Room> {
+    card_in_subscribed_rooms(airc, card_id).await.map(|(room, _)| room)
+}
+
+/// The card AND the subscribed room whose board holds it — the one walk behind
+/// [`room_holding_card`], kept whole for callers that need the card's own fields
+/// (its title is what on-claim staging resolves the recipe from).
+pub(crate) async fn card_in_subscribed_rooms(
+    airc: &Arc<Airc>,
+    card_id: WorkCardId,
+) -> Option<(airc_lib::Room, airc_lib::WorkCard)> {
     let set = airc.subscription_set().await.ok()?;
     for sub in set.all() {
         let room = sub.as_room();
         let Ok(board) = airc.work_board_in(&room).await else {
             continue;
         };
-        if board.snapshot().cards.iter().any(|c| c.card_id == card_id) {
-            return Some(room);
+        if let Some(card) = board.snapshot().cards.iter().find(|c| c.card_id == card_id) {
+            return Some((room, card.clone()));
         }
     }
     None
@@ -606,63 +616,89 @@ impl ActionCommand for WorkClaim {
                 });
             }
         };
-        // CLAIM → WORK SESSION (#346 front half): claiming a staged SWE card IS the
-        // start of the work, never an announcement of intent. The gate-conflation
-        // arc (2026-08-08, BigMama + M5) proved these minds act reliably inside a
-        // work session and stall on room ticks — so the claim fires the session.
-        // Eligibility is structural, decoded from our own staging shape: the
-        // CLAIMER's own `citizens/peers/<her>/workspace/swe/<instance>` checkout
-        // whose directory name appears in the card title (`benchmark/swe-setup`
-        // staged it for exactly her). Detached + scored + workspace-deliverable,
-        // so the #2167 autograde carries settle → verdict → experience stream with
-        // nobody in the loop. Best-effort: a dispatch failure never voids the
-        // claim — the claim is hers either way, and the probe says what happened.
+        // ON-CLAIM STAGING (the pull inversion, 2026-09-03): the CLAIMER's workspace is
+        // prepared per the card's recipe HERE — whoever pulls a card gets its work where
+        // her hands are. ONE seam serves a pulled card, a tool-call claim, and a
+        // detached-solve round's directed assignee (`benchmark/dispatch` calls the same
+        // function before firing her solve). Then the room's DRIVER decides what fires:
+        // a citizen-driven round leaves the card to her held-work loop; a detached-solve
+        // round starts her scored solve (#346 — claiming IS the start of the work) IN
+        // THE CARD'S OWN ROOM (#425: boards are per-room, so the card's activity is the
+        // room whose board holds it). Best-effort past the claim: the claim is hers
+        // either way, and the probes say what happened. A card we cannot place gets NO
+        // detached fallback — inventing invisible work is the failure #425 removed.
         if let Some(caller) = ctx.caller.as_ref() {
-            // IN THE CARD'S OWN ROOM (#425). This used to pass `None` and say so — the
-            // claim verb carries no activity, so a claim-fired solve ran where nobody
-            // could see it: no act receipts (`apply_act` skips a nil room by design), no
-            // peer, no human, no ViewState. Measured before this fix: 13,209 roomless
-            // turns across the 25 newest trace files, 35% of one citizen's cognition.
-            //
-            // The room was never actually unknown — boards are PER-ROOM, so the card's
-            // activity is the room whose board holds it, and the wrong-room claim retry
-            // right above already resolves exactly that. It is now ONE resolver
-            // ([`room_holding_card`]) with two consumers instead of a scan here and a
-            // shrug there. A card we cannot place gets NO detached fallback: it says so
-            // on the probe and the claim still stands, because inventing invisible work
-            // is what this fix removes.
-            match room_holding_card(&airc, card_id).await {
-                Some(room) => {
-                    dispatch_staged_swe_solve(
-                        ctx,
-                        &airc,
-                        StagedSolveDispatch {
-                            claimer: caller.peer_id,
-                            card: card_id,
-                            room: room.channel,
-                            // An organic claim REJOINS the card's recorded team (gap 3) —
-                            // the round record is the continuity source, same as rooms.
-                            teammates: crate::cognition::bench_round::card_activity(
-                                card_id.as_uuid(),
+            match card_in_subscribed_rooms(&airc, card_id).await {
+                Some((room, card)) => {
+                    use crate::cognition::bench_round::WorkDriver;
+                    use crate::modules::card_staging::Staging;
+                    let staging = match crate::commands::benchmark::continuum_home() {
+                        Ok(home) => {
+                            crate::modules::card_staging::stage_for_claimer(
+                                &home,
+                                caller.peer_id.as_uuid(),
+                                &card.title,
                             )
-                            .map(|act| {
-                                act.teammates
-                                    .iter()
-                                    .map(|t| crate::identity::PeerId::from_uuid(*t))
-                                    .collect()
-                            })
-                            .unwrap_or_default(), // unwrap_or: card outside any round = solo
-                        },
-                    )
-                    .await;
+                            .await
+                        }
+                        Err(e) => Staging::Failed { stage: "home", error: e.to_string() },
+                    };
+                    let driver =
+                        crate::cognition::bench_round::driver_for_card(card_id.as_uuid());
+                    match (driver, &staging) {
+                        (WorkDriver::Citizen, _) => crate::probe!(
+                            class = "work.claim.held",
+                            card_id = %short8(card_id.as_uuid()),
+                            claimer = %short8(caller.peer_id.as_uuid()),
+                            staging = ?staging,
+                            "citizen-driven round — the card is hers to work in her own \
+                             loop; nothing detached fires"
+                        ),
+                        (WorkDriver::DetachedSolve, Staging::Failed { stage, error }) => {
+                            crate::probe!(
+                                class = "work.claim.solve_withheld",
+                                card_id = %short8(card_id.as_uuid()),
+                                claimer = %short8(caller.peer_id.as_uuid()),
+                                stage = stage,
+                                error = %error,
+                                "detached solve NOT fired on an unstaged workspace — the \
+                                 claim stands; a solve into a known wall is an env fault \
+                                 wearing a capability face"
+                            )
+                        }
+                        (WorkDriver::DetachedSolve, _) => {
+                            dispatch_staged_swe_solve(
+                                ctx,
+                                &airc,
+                                StagedSolveDispatch {
+                                    claimer: caller.peer_id,
+                                    card: card_id,
+                                    room: room.channel,
+                                    // An organic claim REJOINS the card's recorded team
+                                    // (gap 3) — the round record is the continuity source.
+                                    teammates: crate::cognition::bench_round::card_activity(
+                                        card_id.as_uuid(),
+                                    )
+                                    .map(|act| {
+                                        act.teammates
+                                            .iter()
+                                            .map(|t| crate::identity::PeerId::from_uuid(*t))
+                                            .collect()
+                                    })
+                                    .unwrap_or_default(), // unwrap_or: card outside any round = solo
+                                },
+                            )
+                            .await;
+                        }
+                    }
                 }
                 None => crate::probe!(
                     class = "work.claim.unplaceable_card",
                     card_id = %short8(card_id.as_uuid()),
                     claimer = %short8(caller.peer_id.as_uuid()),
                     "claimed a card no subscribed room's board holds — the claim STANDS, \
-                     but no solve fires: work whose activity we cannot name is work no \
-                     room can see (#425)"
+                     but nothing is staged and no solve fires: work whose activity we \
+                     cannot name is work no room can see (#425)"
                 ),
             }
         }
