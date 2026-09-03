@@ -305,7 +305,12 @@ async function main(): Promise<void> {
     // UUID (identity); the nav state supplies the short name (display) when
     // it knows the tab. replaceState: navigation-in-place, not history spam.
     const known = widget.nav?.open_tabs?.find((t) => t.id === target);
-    const short = known?.title ? known.title.toLowerCase() : target;
+    // A persona's short name is in the directory seed before her tab exists
+    // (the select that OPENS the tab is this very call) — else the bar read
+    // `/persona/<uuid>/mind` on a cold deep link (frame, 2026-09-03).
+    const seeded =
+      kind === 'persona' ? widget.directorySeed.find((m) => m.id === target)?.name : undefined;
+    const short = known?.title ? known.title.toLowerCase() : (seeded?.toLowerCase() ?? target);
     const tab = kind === 'persona' ? personaTab : undefined;
     window.history.replaceState(
       null,
