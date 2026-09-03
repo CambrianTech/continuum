@@ -78,27 +78,6 @@ pub async fn ensure_operator_peer(
                     "operator self-peer could not join general — the human speaks nowhere by default until room/join"
                 );
             }
-            // THE HUMAN OBSERVES EVERY ACTIVITY ON THIS NODE. Subscribe (without moving
-            // her focus) to every live activity room the tracker knows — run rooms and
-            // their solve rooms — so a reboot, or a round dispatched before this boot,
-            // never leaves the desktop blind to work in flight (Joel 2026-09-03: "if it's
-            // an airc room you should be able to observe… active benchmark rooms don't
-            // even show up"). New rooms subscribe at their spawn seam.
-            let mut subscribed = 0u64;
-            let mut failed = 0u64;
-            for (_, name) in crate::cognition::bench_round::activity_rooms() {
-                match rt.airc().subscribe_room(&name).await {
-                    Ok(_) => subscribed += 1,
-                    Err(_) => failed += 1,
-                }
-            }
-            crate::probe!(
-                class = "operator.peer.activity_rooms_subscribed",
-                subscribed,
-                failed,
-                "operator self-peer subscribed to the live activity rooms — the desktop can \
-                 navigate to work in flight"
-            );
             let _ = OPERATOR.set(rt);
         }
         Err(e) => {
