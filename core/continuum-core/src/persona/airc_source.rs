@@ -377,48 +377,45 @@ impl AircRagSource {
     /// roommates see live work). Grounded verbatim, a run room's window is 140
     /// receipts and no conversation: every citizen reads everyone's "I've been
     /// going in circles" and says it back (12 citizens, live 2026-09-03 — the
-    /// loop was the WINDOW). A consecutive run of receipts from ONE author
-    /// collapses to a single unit: her latest thought + a tally of what she
-    /// did. The run's last element anchors the unit (read-through cursor,
-    /// unread flag); chat lines break runs and stay verbatim.
+    /// loop was the WINDOW). Twelve workers interleave, so receipts are never
+    /// consecutive per author (measured after the first cut: 168 items, still
+    /// one per receipt). The unit is therefore PER AUTHOR ACROSS THE WINDOW:
+    /// all of one author's receipts fold into a single line — her newest
+    /// thought + a tally of what she ran — anchored at her newest receipt
+    /// (read-through cursor, unread flag). One line per teammate; chat lines
+    /// stay verbatim in place.
     fn collapse_work_receipts(digest: &ChannelDigest) -> Vec<PackUnit> {
-        let mut units: Vec<PackUnit> = Vec::new();
-        let mut run: Vec<usize> = Vec::new();
-        let mut run_sender: Option<uuid::Uuid> = None;
-        let flush = |run: &mut Vec<usize>, units: &mut Vec<PackUnit>| {
-            if run.is_empty() {
-                return;
+        use std::collections::HashMap;
+        // author → (newest receipt idx, every receipt idx in order)
+        let mut by_author: HashMap<uuid::Uuid, (usize, Vec<usize>)> = HashMap::new();
+        for (idx, el) in digest.elements.iter().enumerate() {
+            if el.text().is_some_and(is_work_receipt) {
+                let entry = by_author.entry(el.sender_id()).or_insert((idx, Vec::new()));
+                entry.0 = idx;
+                entry.1.push(idx);
             }
-            let last_idx = *run.last().unwrap_or(&0); // unwrap_or: guarded by is_empty above
-            let collapsed = if run.len() == 1 {
+        }
+        let mut units: Vec<PackUnit> = Vec::new();
+        for (idx, el) in digest.elements.iter().enumerate() {
+            let is_receipt = el.text().is_some_and(is_work_receipt);
+            if !is_receipt {
+                units.push(PackUnit { last_idx: idx, collapsed: None });
+                continue;
+            }
+            let Some((newest, all)) = by_author.get(&el.sender_id()) else { continue };
+            if *newest != idx {
+                continue; // an older receipt of hers — folded into her newest
+            }
+            let collapsed = if all.len() == 1 {
                 None
             } else {
                 Some(Self::collapsed_receipt_text(
-                    run.iter().filter_map(|i| digest.elements[*i].text()),
-                    run.len(),
+                    all.iter().filter_map(|i| digest.elements[*i].text()),
+                    all.len(),
                 ))
             };
-            units.push(PackUnit { last_idx, collapsed });
-            run.clear();
-        };
-        for (idx, el) in digest.elements.iter().enumerate() {
-            let is_receipt = el.text().is_some_and(is_work_receipt);
-            let sender = el.sender_id();
-            if is_receipt && (run.is_empty() || run_sender == Some(sender)) {
-                run.push(idx);
-                run_sender = Some(sender);
-                continue;
-            }
-            flush(&mut run, &mut units);
-            if is_receipt {
-                run.push(idx);
-                run_sender = Some(sender);
-            } else {
-                units.push(PackUnit { last_idx: idx, collapsed: None });
-                run_sender = None;
-            }
+            units.push(PackUnit { last_idx: idx, collapsed });
         }
-        flush(&mut run, &mut units);
         units
     }
 
@@ -1023,12 +1020,15 @@ mod tests {
     async fn a_run_of_work_receipts_collapses_to_the_latest_thought_plus_a_tally() {
         let room = RoomId::new();
         let atlas = PeerId::new();
+        let lorcan = PeerId::new();
         let mut events = vec![event_in(room, Some("OPERATOR: card 678b8f5c is yours"), 1)];
         for l in 2..=5 {
             events.push(receipt_from(room, atlas, &format!("thought {l}"), "code/shell ls ✓", l));
+            // twelve workers interleave: another author's receipt between each of Atlas's
+            events.push(receipt_from(room, lorcan, &format!("lorcan {l}"), "code/read x ✓", l + 100));
         }
-        events.push(receipt_from(room, atlas, "thought six", "code/github/issue-create  ✗", 6));
-        events.push(event_in(room, Some("Kira: Atlas, stop filing issues"), 7));
+        events.push(receipt_from(room, atlas, "thought six", "code/github/issue-create  ✗", 200));
+        events.push(event_in(room, Some("Kira: Atlas, stop filing issues"), 201));
         let reader = Arc::new(StubReader::new(events));
         let (source, _) = isolated_source(reader);
         let delivery = source
@@ -1036,17 +1036,20 @@ mod tests {
             .await;
         assert_eq!(
             delivery.items.len(),
-            3,
-            "operator line + ONE collapsed run + Kira: {:?}",
+            4,
+            "operator line + ONE unit per working author (Lorcan, Atlas) + Kira: {:?}",
             delivery.items.iter().map(|i| i.content.clone()).collect::<Vec<_>>()
         );
-        let run = &delivery.items[1].content;
+        let lorcan_unit = &delivery.items[1].content;
+        assert!(lorcan_unit.starts_with("💭 lorcan 5"), "Lorcan's newest leads: {lorcan_unit:?}");
+        assert!(lorcan_unit.contains("code/read ✓×4"), "{lorcan_unit:?}");
+        let run = &delivery.items[2].content;
         assert!(run.starts_with("💭 thought six"), "newest thought leads: {run:?}");
         assert!(run.contains("5 act batches"), "batch count: {run:?}");
         assert!(run.contains("code/shell ✓×4"), "tally: {run:?}");
         assert!(run.contains("code/github/issue-create ✗"), "tally: {run:?}");
         assert!(!run.contains("thought 2"), "older thoughts folded away: {run:?}");
-        assert!(delivery.items[2].content.starts_with("Kira:"));
+        assert!(delivery.items[3].content.starts_with("Kira:"));
     }
 
     // what this catches: THE DEAF-PERSONA FIX — when the turn's ctx has no airc_room
