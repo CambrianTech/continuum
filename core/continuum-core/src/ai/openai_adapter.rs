@@ -701,16 +701,20 @@ impl OpenAICompatibleAdapter {
         }
     }
 
-    async fn slot_for_activity(
+    /// Ensure this server's KV slot pool exists — probe `/props` once, install via
+    /// `ensure_pool` — and return it. DISCOVERY only: the lease + pin + KV paging live
+    /// in [`crate::inference::turn_admission::admit_turn`], which takes this pool. (Was
+    /// `slot_for_activity`, which also leased; split so the permit-first + pin ordering
+    /// lives in one place.)
+    async fn ensure_slot_pool(
         &self,
-        key: crate::inference::slots::ActivityKey,
-    ) -> Option<crate::inference::slots::SlotPaging> {
+    ) -> Option<std::sync::Arc<crate::inference::slots::KvSlotPool>> {
         let root = self.endpoints().root().to_string();
         let dir = crate::inference::slots::directory();
         // Fast path: this server's state already known (process-global directory —
         // every adapter instance talking to the same server shares ONE assignment).
         match dir.get(&root) {
-            Some(Some(pool)) => return pool.lease_paged(key).await,
+            Some(Some(pool)) => return Some(pool),
             Some(None) => return None, // latched unsupported
             None => {}                 // never probed — probe below
         }
@@ -790,91 +794,11 @@ impl OpenAICompatibleAdapter {
             n_slots,
             "slot affinity enabled — activities lease llama-server slots (props-discovered)"
         );
-        pool.lease_paged(key).await
-    }
-
-    /// Execute one KV page action against the server (`/slots/{id}?action=save|restore`)
-    /// — the restore economy's context switch, ordered on the slot exactly like the
-    /// inference it brackets. Measured ~0.1s at 20k tokens; the 10s cap is for a
-    /// wedged server, not a slow page. Returns success; failures probe loudly and the
-    /// turn proceeds as a plain prefill — slower, never wrong.
-    async fn kv_page_action(
-        &self,
-        slot: u32,
-        key: &crate::inference::slots::ActivityKey,
-        action: &str,
-    ) -> bool {
-        kv_page_action_at(&self.client, self.endpoints().root(), slot, key, action).await
+        Some(pool)
     }
 }
 
-/// How long a KV restore waits for its physical slot to free before giving up and
-/// letting the turn re-prefill cold. Sized to outlast a real generation on the slot
-/// (benchmark decodes run tens of seconds), NOT the 10s a wedged-server probe wants:
-/// the returner blocks on this slot regardless (its completion is pinned to the same
-/// id_slot), so waiting for the deferred restore to land costs no extra wall-clock and
-/// turns a ~35s cold re-prefill into a ~0.1s warm resume. See [`kv_page_action_at`].
-const KV_RESTORE_SLOT_WAIT: std::time::Duration = std::time::Duration::from_secs(90);
 
-/// The free-function body of [`OpenAICompatibleAdapter::kv_page_action`], so the
-/// spawned [`warm_ahead`](AIProviderAdapter::warm_ahead) task (which cannot hold
-/// `&self`) drives the SAME seam as the pin-time backstop — one page protocol,
-/// two schedulers.
-async fn kv_page_action_at(
-    client: &reqwest::Client,
-    root: &str,
-    slot: u32,
-    key: &crate::inference::slots::ActivityKey,
-    action: &str,
-) -> bool {
-    let url = format!("{}/slots/{}?action={}", root.trim_end_matches('/'), slot, action);
-    let filename = crate::inference::slots::page_filename(key);
-    // RESTORE waits for the physical slot to free; SAVE/ERASE do not.
-    //
-    // A save is read-only and runs at the inter-batch boundary even mid-generation
-    // (fork 878db9784), so 10s is ample — a longer wait would only ever mean a wedged
-    // server. A RESTORE, though, correctly DEFERS on the fork while the slot is still
-    // running the evictee's decode (it mutates KV that decode reads), and re-runs the
-    // instant that slot releases (callback_on_release -> pop_deferred_task, now bound
-    // to the slot). The returner is going to block on this physical slot REGARDLESS —
-    // its own completion is pinned to the same id_slot and defers behind the same
-    // decode — so abandoning the restore at 10s bought nothing but a guaranteed cold
-    // re-prefill (measured 2026-09-03: 27/27 restores failed status=0 this way). Wait
-    // long enough to catch a real turn finishing (benchmark decodes run tens of
-    // seconds), so the deferred restore actually lands and the returner resumes warm
-    // (~0.1s) instead of re-prefilling (~35s). A genuinely wedged server is caught by
-    // the request-level watchdog, not by starving this switch.
-    let timeout = if action == "restore" {
-        KV_RESTORE_SLOT_WAIT
-    } else {
-        std::time::Duration::from_secs(10)
-    };
-    let started = std::time::Instant::now();
-    let resp = client
-        .post(&url)
-        .timeout(timeout)
-        .json(&json!({ "filename": filename }))
-        .send()
-        .await;
-    let ok = matches!(&resp, Ok(r) if r.status().is_success());
-    let status = resp
-        .as_ref()
-        .map(|r| r.status().as_u16())
-        .unwrap_or(0); // 0 = transport error, distinguished from any HTTP status
-    crate::probe!(
-        class = "inference.kv_page.action",
-        action = %action,
-        slot = slot as u64,
-        persona = %key.persona,
-        room = %key.room,
-        ok,
-        status = status as u64,
-        ms = started.elapsed().as_millis() as u64,
-        "KV page context switch — save pages the evictee's state out, restore pages \
-         the returner's state in (~0.1s measured; a miss means this turn re-prefills)",
-    );
-    ok
-}
 
 impl OpenAICompatibleAdapter {
     pub(crate) async fn probe_lora_catalog(&self) -> Result<(), String> {
@@ -1767,11 +1691,11 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 return; // every slot pinned — the pin-time path will retry
             };
             if let Some(prev) = pg.save_first {
-                if kv_page_action_at(&client, &root, pg.slot, &prev, "save").await {
+                if crate::inference::turn_admission::kv_page_action(&client, &root, pg.slot, &prev, "save").await {
                     pool.note_saved(prev);
                 }
             }
-            if pg.restore && !kv_page_action_at(&client, &root, pg.slot, &key, "restore").await {
+            if pg.restore && !crate::inference::turn_admission::kv_page_action(&client, &root, pg.slot, &key, "restore").await {
                 pool.note_page_lost(&key);
             }
             crate::probe!(
@@ -2124,6 +2048,13 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // silently, others reject — so they leave the flag false and the field
         // is omitted. llama-server inherits the same protection DMR had: the
         // forged 4B loops its `<think>` block to the token budget without it.
+        //
+        // Held for the WHOLE turn: the concurrency permit + slot pin, as one RAII
+        // guard bound HERE at function scope so it lives across the generation below
+        // and releases both on drop. Assigned by turn admission inside the block (or,
+        // for a non-llamacpp provider, by the permit-only fallback after it). This is
+        // the scope that made the old inline permit/pin fragile — now it's one value.
+        let mut _admission: Option<crate::inference::turn_admission::TurnAdmission> = None;
         if self.config.llamacpp_sampling_extensions {
             if let Some(obj) = body.as_object_mut() {
                 apply_llamacpp_sampling_knobs(obj, &request);
@@ -2225,77 +2156,57 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                         .to_string(),
                 );
             }
+            // Estimate this activity's prompt size once — the eviction price basis
+            // AND the overshoot-alarm input below (chars/4, deliberately conservative).
+            let approx_tokens = body
+                .get("messages")
+                .and_then(|m| m.as_array())
+                .map(|msgs| {
+                    msgs.iter()
+                        .filter_map(|m| m.get("content").and_then(|c| c.as_str()))
+                        .map(|c| c.len() / 4)
+                        .sum::<usize>()
+                })
+                .unwrap_or(0) as u64;
+            // TURN ADMISSION (event-driven, no timeout) — permit-first, then lease+pin
+            // this activity's slot and page its KV onto a now-free slot. The returned
+            // guard holds the permit + slot pin for the WHOLE generation (bound into
+            // `_admission` at function scope above). A Turn that cannot name both
+            // (persona, room) halves passes `None` and stays unpinned. Non-Turn traffic
+            // takes the permit only and lands on the scratch slot below.
+            let turn_key = match class {
+                crate::inference::slots::SlotClass::Turn => request
+                    .persona_id
+                    .as_deref()
+                    .and_then(|p| uuid::Uuid::parse_str(p).ok())
+                    .zip(
+                        request
+                            .room_id
+                            .as_deref()
+                            .and_then(|r| uuid::Uuid::parse_str(r).ok()),
+                    )
+                    .and_then(|(p, r)| crate::inference::slots::ActivityKey::new(p, r)),
+                _ => None,
+            };
+            let root = self.endpoints().root().to_string();
+            // Discovery: install this server's slot pool on first use (probes /props).
+            // Only a Turn needs it; non-Turn takes the permit and lands on scratch.
+            let pool = if turn_key.is_some() {
+                self.ensure_slot_pool().await
+            } else {
+                None
+            };
+            let adm = crate::inference::turn_admission::admit_turn(
+                &self.concurrency,
+                turn_key,
+                pool,
+                &self.client,
+                &root,
+                approx_tokens,
+            )
+            .await;
             let placement: Option<u32> = match class {
-                crate::inference::slots::SlotClass::Turn => {
-                    // The typed activity key: (persona, room) as UUID structs — never
-                    // a formatted string (guarded by
-                    // `no_string_composite_id_keys_in_serving`). A Turn that cannot
-                    // name BOTH halves goes unpinned (and the probe says so).
-                    let key = request
-                        .persona_id
-                        .as_deref()
-                        .and_then(|p| uuid::Uuid::parse_str(p).ok())
-                        .zip(
-                            request
-                                .room_id
-                                .as_deref()
-                                .and_then(|r| uuid::Uuid::parse_str(r).ok()),
-                        )
-                        .and_then(|(p, r)| crate::inference::slots::ActivityKey::new(p, r));
-                    match key {
-                        Some(k) => {
-                            let paging = self.slot_for_activity(k).await;
-                            if let Some(pg) = paging {
-                                // THE CONTEXT SWITCH (restore economy): page the
-                                // evictee's registers out, page the returner's in —
-                                // both ordered on this slot exactly like the
-                                // inference they bracket, so nothing else waits.
-                                let root = self.endpoints().root().to_string();
-                                let pool = match crate::inference::slots::directory().get(&root) {
-                                    Some(Some(pool)) => Some(pool),
-                                    _ => None,
-                                };
-                                if let Some(prev) = pg.save_first {
-                                    if self.kv_page_action(pg.slot, &prev, "save").await {
-                                        if let Some(pool) = pool.as_ref() {
-                                            pool.note_saved(prev);
-                                        }
-                                    }
-                                }
-                                if pg.restore
-                                    && !self.kv_page_action(pg.slot, &k, "restore").await
-                                {
-                                    // Dead page (geometry swept, file missing): stop
-                                    // offering it; this turn re-prefills plainly.
-                                    if let Some(pool) = pool.as_ref() {
-                                        pool.note_page_lost(&k);
-                                    }
-                                }
-                                // Price basis for the eviction policy (B5): this
-                                // activity's current prompt size, the same chars/4
-                                // estimate the overshoot alarm uses — comparable
-                                // across slots, which is all eviction needs.
-                                let approx_tokens = body
-                                    .get("messages")
-                                    .and_then(|m| m.as_array())
-                                    .map(|msgs| {
-                                        msgs.iter()
-                                            .filter_map(|m| {
-                                                m.get("content").and_then(|c| c.as_str())
-                                            })
-                                            .map(|c| c.len() / 4)
-                                            .sum::<usize>()
-                                    })
-                                    .unwrap_or(0) as u64; // 0 = no usage block in the reply; the estimate only prices eviction, never budgets
-                                if let Some(pool) = pool.as_ref() {
-                                    pool.note_tail(&k, approx_tokens);
-                                }
-                            }
-                            paging.map(|pg| pg.slot)
-                        }
-                        None => None,
-                    }
-                }
+                crate::inference::slots::SlotClass::Turn => adm.slot(),
                 _ => {
                     // Non-Turn: the scratch slot when this server reserved one. When
                     // it did not (≤2 slots), stay unpinned AND drop cache_prompt so
@@ -2309,6 +2220,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                     scratch
                 }
             };
+            _admission = Some(adm);
             // GLASS BOX (KV-reuse 0% hunt 2026-08-26): the whole cache-reuse win
             // rides on placement. Report class + room so a cached:0 streak names
             // WHICH activity thrashed — or which class strayed off scratch.
@@ -2540,34 +2452,23 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 .unwrap_or(false)
         );
 
-        // Acquire concurrency slot. For DMR (1 slot) this serializes
-        // requests so the idle watchdog measures actual streaming liveness,
-        // not "time waiting for the previous persona's forward pass." For
-        // non-DMR providers (64 slots) this is effectively a no-op. Acquire
-        // can't fail here — the semaphore is never closed over the adapter's
-        // lifetime.
-        let queue_start = Instant::now();
-        crate::probe!(
-            class = "inference.request.permit_wait",
-            "at the concurrency gate"
-        );
-        let _permit = self
-            .concurrency
-            .clone()
-            .acquire_owned()
-            .await
-            .expect("adapter semaphore never closed");
-        crate::probe!(
-            class = "inference.request.permit_acquired",
-            queued_ms = queue_start.elapsed().as_millis() as u64,
-            "past the concurrency gate — next stop is the HTTP send"
-        );
-        let queued_ms = queue_start.elapsed().as_millis();
-        if queued_ms > 100 {
-            clog_info!(
-                "concurrency gate waited {}ms before POST to {}",
-                queued_ms,
-                self.config.provider_id
+        // Concurrency permit. Turn admission above already took it (permit-FIRST,
+        // before leasing) on the llamacpp/slot path. Any other provider has no slots
+        // to pin, so take the permit here — the gate still applies (a no-op for cloud's
+        // large semaphore), held in `_admission` to the end of generation exactly like
+        // the slot path. Acquire can't fail: the semaphore is never closed.
+        if _admission.is_none() {
+            let root = self.endpoints().root().to_string();
+            _admission = Some(
+                crate::inference::turn_admission::admit_turn(
+                    &self.concurrency,
+                    None,
+                    None,
+                    &self.client,
+                    &root,
+                    0,
+                )
+                .await,
             );
         }
 
