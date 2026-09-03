@@ -787,6 +787,22 @@ pub fn only_stale_or_no_working_rounds(runs: &[CardRunFacts], now_ms: u64) -> bo
     no_healthy_working_round(&rounds)
 }
 
+/// How many cards across live rounds are `unstarted` — never worked, no run
+/// artifact, no held-work turn. The standing autopilot's BACKLOG guard: with a
+/// deep backlog, dispatching another round just deepens the pile (measured
+/// 2026-09-02: the autopilot reached 30+ rounds / 111 unstarted while 4 citizens
+/// worked). Complements the working-round gate — that holds while a round is
+/// being worked; this holds while there is unworked work already waiting.
+pub fn unworked_backlog(runs: &[CardRunFacts], now_ms: u64) -> usize {
+    let mut rounds = live_rounds();
+    enrich_rounds(&mut rounds, runs, now_ms);
+    rounds
+        .iter()
+        .flat_map(|r| r.cards.iter())
+        .filter(|c| c.state == "unstarted")
+        .count()
+}
+
 /// PURE decision (testable without the ROUNDS global): true when no round is
 /// healthily grinding — every Working round is stalled/unstarted past the
 /// abandon window, or there are none. A round with a fresh act (idle under

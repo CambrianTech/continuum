@@ -156,6 +156,28 @@ impl BenchmarkStandingModule {
             return Ok(false);
         }
         let assignees: Vec<String> = residents.iter().map(|(name, _)| name.clone()).collect();
+        // BACKLOG GUARD: if there are already more unworked (unstarted) cards in
+        // flight than there are citizens to work them, the team is saturated —
+        // dispatching another round just deepens the pile (measured 2026-09-02:
+        // the autopilot reached 30+ rounds / 111 unstarted while 4 citizens
+        // worked one card each at a time). The working-round gate above holds
+        // while a round is being worked; this holds while unworked work already
+        // waits. Together they keep "benchmarks run themselves" from becoming
+        // "benchmarks dispatch themselves into a pile."
+        let backlog = crate::cognition::bench_round::unworked_backlog(
+            &facts,
+            crate::persona::trace::now_ms(),
+        );
+        if backlog > residents.len() {
+            crate::probe!(
+                class = "bench.standing.skipped",
+                reason = "backlog",
+                backlog = backlog as u64,
+                citizens = residents.len() as u64,
+                "standing round: unworked backlog exceeds the team — holding until it drains"
+            );
+            return Ok(false);
+        }
         let Some(executor) = self.executor_slot.cloned() else {
             crate::probe!(
                 class = "bench.standing.skipped",
