@@ -97,11 +97,43 @@ slot lease already in `inference/slots.rs`. Held-work drives the rotation (whoev
 due to work pages in). Acceptance: 10 personas cycle through 5 lanes, each getting
 turns, no citizen starved > a bounded window.
 
-**S3 — Fork paging concurrency (un-FIFO).** In the vendored fork: let read-only slot
-SAVES run without serializing behind each other / behind decode (a reader path), and
-pipeline save(evictee)+restore(returner) for a switch. Gated by S0. TDD in the fork's
-`test_slot_save.py` (extend the live-slot test). Acceptance: aggregate switch
-throughput scales with lanes, not 1/task-thread.
+**S3 — Restore-into-busy-slot (the 27/27 fail).** ✅ PARTIALLY SHIPPED 2026-09-03.
+Measured root cause (not the FIFO guess): SLOT_SAVE/RESTORE/ERASE set only
+`slot_action.id_slot`, leaving `task.id_slot = -1`, while `pop_deferred_task` (fired
+from `callback_on_release` when a slot finishes) matches on `task.id_slot` — so a
+deferred restore was invisible to its own slot's release and a competing slot-pinned
+completion got popped ahead of it (cold prefill). Plus the Rust client abandoned the
+restore at a flat 10s.
+  - ✅ DONE: bind `task.id_slot = id_slot` on all three page-ops (fork `0a637ba22`,
+    TDD `test_deferred_restore_is_bound_to_its_slot`); Rust restore waits for the slot
+    (`KV_RESTORE_SLOT_WAIT=90s`) instead of abandoning at 10s (core `a9ec64fbf`).
+  - Measured live at frontier scale (12 personas / 5 lanes, verified run 2026-09-03):
+    restores **0/27 → 55/67 ok=true (82%)**, `watchdog_kills=0`. Residual: 8 timeouts
+    (decodes > 90s) + a few transient 503s.
+  - ⛔ THE DEFINITIVE FIX (tech debt, deferred 2026-09-03 by Joel: "check in and get
+    working then decompose as follow up"): make it **event-driven, delete the timeout**.
+    Root cause is a decoupling — the Rust pool evicts a persona's lease while that
+    persona is STILL decoding on the physical slot, so the returner is handed a busy
+    slot and must wait. Both primitives already exist: the `Semaphore(lanes)` decode
+    permit (`openai_adapter` ~2554) and `PagedResourcePool::pin` (eviction already skips
+    pinned). The fix: **acquire the permit BEFORE leasing** (permit-first — an
+    event-driven wait that wakes on release, already there) and **pin the leased slot
+    for the permit's duration** (so eviction skips actively-decoding slots). Then a
+    returner ALWAYS leases an unpinned/non-decoding slot → restore lands in ~0.1s, no
+    defer, no timeout, no clobber; `KV_RESTORE_SLOT_WAIT` is deleted. Deadlock-free
+    (acquire permit before pinning, so no pin is ever held while awaiting a permit);
+    concurrency becomes exactly the physical lane count. Care items: `_permit` lifetime
+    across the stream, and threading the `PinHandle` out of the placement match — both
+    reasons this is a careful pass, not a mid-turn edit. Respect the deferral invariant
+    (`openai_adapter` ~2186: parked Background/Probe must hold NOTHING before the permit).
+
+**S3b — Decompose `openai_adapter.rs` (tech debt, Joel 2026-09-03: "everything was
+crammed into one file").** `generate_stream` is ~1362 lines (1996–3358). Carve into
+modules, each green + behaviour-identical (pure refactor, NO behaviour change so a
+regression is bisectable from the S3 event-driven fix): `turn_admission` (class →
+defer → permit → lease+pin → save/restore, houses the S3 fix as an RAII guard),
+`serving_guard` (model-residency readiness), `request_body` (JSON assembly), `sse_parse`
+(streaming token extraction), leaving a thin retry/orchestration shell.
 
 **S4 — One governed serving/paging pattern.** Collapse the scattered controls (S5 in
 the findings) into a single lease/admission concern at the lowest trait — the CBAR
