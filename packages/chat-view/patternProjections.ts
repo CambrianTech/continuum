@@ -812,12 +812,16 @@ function roomContextWidgets(vm: ChatViewModel, live?: WorkspaceLive): PanelWidge
           cells: cards.slice(0, 16).map((c) => ({
             id: c.card_id,
             title: c.instance !== '' ? c.instance : c.card_id.slice(0, 8),
+            // BOARD truth first: who HOLDS the card (seen live 2026-09-03: a round nine
+            // citizens were working read "unassigned" from the tracker's assignee).
             subtitle:
-              c.assignee === ''
-                ? 'unassigned'
-                : (nameOf.get(c.assignee) ?? c.assignee.slice(0, 8)),
+              (c.owner ?? '') !== ''
+                ? c.owner
+                : c.assignee === ''
+                  ? 'unassigned'
+                  : (nameOf.get(c.assignee) ?? c.assignee.slice(0, 8)),
             badges: [
-              c.state,
+              (c.board_state ?? '') !== '' && c.state === 'unstarted' ? c.board_state : c.state,
               ...(c.acts != null ? [`${c.acts} acts`] : []),
               ...(c.patch_bytes != null ? [`${c.patch_bytes}B patch`] : []),
               ...(c.last_act_secs != null ? [`${formatAge(c.last_act_secs)} ago`] : []),

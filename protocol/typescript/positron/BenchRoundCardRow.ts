@@ -20,4 +20,17 @@ solve_room_name: string,
 /**
  * `unstarted` | run phase (`active`, `quiet`, `ungraded`, …) | terminal state.
  */
-state: string, acts?: number, patch_bytes?: number, last_act_secs?: number, resolved?: boolean, };
+state: string, acts?: number, patch_bytes?: number, last_act_secs?: number, resolved?: boolean, 
+/**
+ * BOARD truth: who holds the card right now (display name; empty = nobody).
+ */
+owner: string, 
+/**
+ * BOARD truth: the card's column (`open|claimed|in_progress|review|closed|…`);
+ * empty when the board could not be read.
+ */
+board_state: string, 
+/**
+ * When the verdict was recorded — the settle clock for time-to-resolve.
+ */
+graded_at_ms?: number, };

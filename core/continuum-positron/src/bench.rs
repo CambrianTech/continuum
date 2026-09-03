@@ -154,6 +154,17 @@ pub struct BenchRoundCardRow {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     #[ts(optional)]
     pub resolved: Option<bool>,
+    /// BOARD truth: who holds the card right now (display name; empty = nobody).
+    #[serde(default)]
+    pub owner: String,
+    /// BOARD truth: the card's column (`open|claimed|in_progress|review|closed|…`);
+    /// empty when the board could not be read.
+    #[serde(default)]
+    pub board_state: String,
+    /// When the verdict was recorded — the settle clock for time-to-resolve.
+    #[ts(optional, type = "number")]
+    #[serde(default)]
+    pub graded_at_ms: Option<u64>,
 }
 
 /// The benchmark board — what the ACADEMY right-rail widget draws.

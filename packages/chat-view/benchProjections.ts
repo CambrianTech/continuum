@@ -131,6 +131,9 @@ function roundVM(row: BenchRoundRow): BenchRoundVM {
       patchBytes: c.patch_bytes ?? null,
       lastActSecs: c.last_act_secs ?? null,
       resolved: c.resolved ?? null,
+      owner: c.owner ?? '',
+      boardState: c.board_state ?? '',
+      gradedAtMs: c.graded_at_ms ?? null,
     })),
   };
 }

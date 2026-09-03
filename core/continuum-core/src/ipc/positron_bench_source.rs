@@ -157,6 +157,9 @@ fn round_row_of(s: RoundSnapshot) -> BenchRoundRow {
                 patch_bytes: c.patch_bytes,
                 last_act_secs: c.last_act_secs,
                 resolved: c.resolved,
+                owner: c.owner,
+                board_state: c.board_state,
+                graded_at_ms: c.graded_at_ms,
             })
             .collect(),
         verdict: s.verdict,
@@ -223,6 +226,10 @@ pub fn spawn_bench_emitter(
                 &facts,
                 crate::persona::trace::now_ms(),
             );
+            // BOARD TRUTH on the rail (2026-09-03, seen live): the tracker said "NOT
+            // STARTED / unassigned" for a round nine citizens held on the board. ONE
+            // enrichment for the report verb and the view state — never two answers.
+            crate::commands::benchmark::enrich_rounds_from_board_and_verdicts(&mut rounds).await;
             let view = BenchViewState {
                 // The live exam leads the rail (it is the work happening NOW);
                 // ledger-scanned rows follow.
