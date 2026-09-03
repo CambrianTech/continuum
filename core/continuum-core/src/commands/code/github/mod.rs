@@ -32,6 +32,25 @@ pub mod pr_comment;
 pub mod pr_create;
 
 use issue_create::CodeGithubIssueCreate;
+
+/// GitHub verbs act on an EXTERNAL service under the OPERATOR's `gh` identity.
+/// A citizen (an airc caller) may not file issues, open PRs, or comment as the
+/// operator: 114 "placeholder" issues landed on the repo on 2026-09-03 because
+/// the verbs were offered to every turn and looping citizens used them to
+/// "avoid an unused tool". Until a room recipe can GRANT a citizen GitHub
+/// authorship in her own name, the verbs refuse airc callers loudly — the
+/// refusal names the rule, so a citizen learns the boundary instead of a 500.
+pub(crate) fn require_operator(ctx: &crate::sdk_codegen::Ctx, verb: &str) -> Result<(), CommandError> {
+    use crate::routing::auth_policy::CallerSource;
+    match ctx.caller.as_ref().map(|c| &c.source) {
+        Some(CallerSource::Airc) => Err(CommandError::Invalid(format!(
+            "{verb}: GitHub verbs act under the operator's identity and are not available to \
+             citizens in this room. Do the work in your checkout (code/read, code/edit, \
+             code/shell, git) and report in the room; an offered tool is never a must-use."
+        ))),
+        _ => Ok(()),
+    }
+}
 use pr_comment::CodeGithubPrComment;
 use pr_create::CodeGithubPrCreate;
 
@@ -88,16 +107,33 @@ pub fn command_objects(state: Arc<CodeState>) -> Vec<Arc<dyn DynCommand>> {
 mod tests {
     use crate::sdk_codegen::ActionCommand;
 
-    // what this catches: the wire names mirror the file paths (the routing keys), and each
-    // is offered natively (a native-call model can only emit calls for OFFERED tools, so a
-    // non-native collaboration verb would be unusable by her — the whole point is she can
-    // participate in PR/issue workflow).
+    // what this catches: the wire names mirror the file paths (the routing keys), and
+    // NONE is pushed into every turn's native offer — a tool-call model treats an offered
+    // tool as a must-use (114 placeholder issues on 2026-09-03). They stay reachable BY
+    // NAME through commands/list + commands/help for a caller allowed to use them.
     #[test]
-    fn github_command_names_mirror_path_and_are_native() {
+    fn github_command_names_mirror_path_and_are_not_native() {
         use super::*;
         assert_eq!(pr_create::CodeGithubPrCreate::NAME, "code/github/pr-create");
         assert_eq!(pr_comment::CodeGithubPrComment::NAME, "code/github/pr-comment");
         assert_eq!(issue_create::CodeGithubIssueCreate::NAME, "code/github/issue-create");
-        assert!(pr_create::CodeGithubPrCreate::NATIVE, "PR create must be offered to be usable");
+        assert!(!pr_create::CodeGithubPrCreate::NATIVE);
+        assert!(!issue_create::CodeGithubIssueCreate::NATIVE);
+        assert!(!pr_comment::CodeGithubPrComment::NATIVE);
+    }
+
+    // what this catches: a citizen (airc caller) is refused with the rule named; the
+    // operator (local caller, or no caller — the CLI) passes.
+    #[test]
+    fn github_verbs_refuse_citizens_and_admit_the_operator() {
+        use super::*;
+        use crate::routing::CallerIdentity;
+        let mut ctx = crate::sdk_codegen::Ctx::default();
+        assert!(require_operator(&ctx, "code/github/issue-create").is_ok());
+        ctx.caller = Some(CallerIdentity::local(crate::identity::PeerId::new()));
+        assert!(require_operator(&ctx, "code/github/issue-create").is_ok());
+        ctx.caller = Some(CallerIdentity::airc(crate::identity::PeerId::new()));
+        let err = require_operator(&ctx, "code/github/issue-create").unwrap_err();
+        assert!(err.to_string().contains("not available to citizens"), "{err}");
     }
 }
