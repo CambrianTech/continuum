@@ -71,6 +71,9 @@ pub struct NavActivity {
     /// The activity purpose the room-purpose seam resolved ("chat", "foundry",
     /// …). Empty = unresolved — honest unknown.
     pub purpose: String,
+    /// The binding's parent activity (`RoomPurposeSource::parent_for`) — the generic
+    /// nesting every recipe gets; the bench-specific solve→run lineage is layered on top.
+    pub parent: Option<String>,
     /// The last-read cursor for this activity's room (ms/lamport), when it is
     /// a room. `None` for activities with no read cursor.
     pub last_read: Option<i64>,
@@ -117,7 +120,15 @@ pub fn project_nav(user: Uuid, snap: NavSnapshot) -> NavViewState {
                 // the same record (instance · assignee name resolved by the
                 // renderer's roster); the raw room id keeps its identity job
                 // in `id` and retreats from the reading line.
-                let (parent_ref, display_label) = activity_lineage(&a.id, &a.title);
+                let (lineage_parent, display_label) = activity_lineage(&a.id, &a.title);
+                // The bench solve→run lineage first (it also names the tab); else the
+                // binding's own parent — a run room nests under the room it was
+                // dispatched from, a pipeline under its project, generically.
+                let parent_ref = if lineage_parent.is_empty() {
+                    a.parent.clone().unwrap_or_default()  // unwrap_or: no parent = a top-level activity
+                } else {
+                    lineage_parent
+                };
                 NavTab {
                     id: a.id,
                     title: a.title,
@@ -497,6 +508,7 @@ impl NavReader for ChannelBookmarksNavReader {
                     // The recipe-defined activity nature, resolved through the
                     // ONE purpose seam — the tab's description/facet line.
                     purpose: self.purpose.purpose_for(*room),
+                    parent: self.purpose.parent_for(*room).map(|p| p.to_string()),
                     last_read: Some(last as i64),
                 }
             })
@@ -532,6 +544,7 @@ impl NavReader for ChannelBookmarksNavReader {
                 unread: 0,
                 purpose: "persona".to_string(),
                 last_read: None,
+                parent: None,
             });
         }
         let current = focus
@@ -722,6 +735,22 @@ mod tests {
 
     /// A canned reader — returns a fixed snapshot, the nav analogue of the
     /// kanban `StubReader`.
+    // what this catches: nesting is GENERIC — an activity whose binding names a parent
+    // nests under it in the nav even when it is not a bench solve room. Before
+    // 2026-09-03 only solve rooms nested (under their run room, via the bench tracker);
+    // a dispatched run room was a flat top-level tab, or absent (Joel: "active benchmark
+    // rooms don't even show up… not under the base academy room").
+    #[test]
+    fn a_bound_activity_nests_under_its_binding_parent() {
+        let academy = Uuid::new_v4();
+        let run = Uuid::new_v4();
+        let mut a = room(&run.to_string(), "bench-swe-bench-verified-1", 0, 0);
+        a.parent = Some(academy.to_string());
+        let snap = NavSnapshot { current: None, activities: vec![a], bookmarks: vec![] };
+        let view = project_nav(Uuid::new_v4(), snap);
+        assert_eq!(view.open_tabs[0].parent_ref, academy.to_string());
+    }
+
     struct StubNav(NavSnapshot);
     impl NavReader for StubNav {
         fn nav_snapshot(&self, _user: Uuid) -> NavSnapshot {
@@ -737,6 +766,7 @@ mod tests {
             unread,
             purpose: "chat".into(),
             last_read: Some(last_read),
+            parent: None,
         }
     }
 
