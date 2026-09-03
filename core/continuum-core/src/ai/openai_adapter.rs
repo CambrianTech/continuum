@@ -206,122 +206,7 @@ fn served_ctx_by_root() -> &'static dashmap::DashMap<String, u32> {
     CTX.get_or_init(dashmap::DashMap::new)
 }
 
-/// Why a generation was refused when the requested model is not guaranteed resident, said
-/// in the words the caller needs to act on. THREE distinct situations reach this point and
-/// only one of them is a fault:
-///
-/// | snapshot | meaning | caller should |
-/// |---|---|---|
-/// | never reconciled | core is still starting; nobody has looked yet | retry |
-/// | reconciled, `active_model == None` | a lane is being torn down / rebuilt | retry |
-/// | `active_model == Some(other)` | a DIFFERENT model is resident | NOT retry |
-///
-/// Both retry-able cases used to print the fault sentence. The cost is measured twice:
-/// 116 false alarms over three days from the startup case (#350), and then — after that
-/// split shipped — three citizens taking the same fault sentence 59 seconds into a #175
-/// wedge self-heal that completed normally. `ServingSnapshot::empty()` is published by the
-/// daemon on EVERY teardown (no servable plan, a re-home, a wedge relaunch), so `<none>` is
-/// the ordinary appearance of a lane in transition, not evidence of breakage.
-///
-/// Pure by construction: takes the snapshot and the latch as arguments rather than reading
-/// the process-global `SERVING_STATE`/`FIRST_RECONCILE`, so all three branches are testable
-/// without a set-once global that would make test order load-bearing
-/// ([[a-process-global-read-inside-a-decision-makes-tests-order-dependent]]).
-/// Does `snap` GUARANTEE that the local single-resident gateway will answer as `model`?
-///
-/// The gateway serves ONE resident model and answers every request as that model whatever
-/// the request's `model` field says, so "guaranteed" means the daemon has PUBLISHED that
-/// this exact model is the live one — on the main lane, or on the verified #106 vision
-/// sidecar (whose `/props` the daemon checked before publishing `vision_ready`).
-///
-/// One predicate, two readers: the pre-flight guard below and the post-wait re-check. Written
-/// out once so the two can never drift into disagreeing about what "serving our model" means.
-fn snapshot_guarantees(
-    snap: &crate::inference::llama_server::ServingSnapshot,
-    model: &str,
-) -> bool {
-    snap.ready
-        && (snap.active_model.as_deref() == Some(model)
-            || (snap.vision_ready && snap.vision_model.as_deref() == Some(model)))
-}
-
-/// Is refusing POINTLESS to wait out — i.e. has the daemon SETTLED on a different model?
-///
-/// A failed guarantee is one of two very different situations, and only one of them is
-/// terminal:
-///
-/// - **Settled mismatch** — some other model is ready and active. The daemon has made its
-///   choice; waiting cannot change it, and residency arbitration is the serving layer's job
-///   (#109), never a generate's. Refuse immediately and loudly.
-/// - **Transition** — no model is resident (`empty()`, published on EVERY teardown: no
-///   servable plan, a re-home, a #175 wedge relaunch), or a lane is up but not yet decode-
-///   ready. Nothing has failed; the lane is simply mid-flight and comes back on its own.
-///
-/// Measured 2026-08-07: a wedge self-heal flipped the snapshot not-ready at +374s and the
-/// daemon republished ready at +436s — a 62-second window. Three citizens' turns landed
-/// inside it and were refused outright, 9 seconds before the lane came back. The self-tick
-/// readiness gate (#350) cannot cover this: it reads the snapshot BEFORE a deliberation that
-/// takes tens of seconds, so a teardown starting mid-deliberation always outruns it. The gate
-/// stops a turn that was doomed at its start; this stops one that was overtaken in flight.
-fn settled_on_another_model(snap: &crate::inference::llama_server::ServingSnapshot) -> bool {
-    snap.is_live()
-}
-
-fn unguaranteed_model_refusal(
-    provider: &str,
-    model: &str,
-    snap: &crate::inference::llama_server::ServingSnapshot,
-    served_before: bool,
-) -> String {
-    if !served_before {
-        return format!(
-            "{provider}: serving daemon has not completed its first reconcile yet (core is \
-             still starting) — model '{model}' cannot be guaranteed until it does. This is \
-             STARTUP, not a serving fault: it clears on its own, typically within seconds, \
-             and the caller should retry rather than treat the lane as broken."
-        );
-    }
-    let Some(active) = snap.active_model.as_deref() else {
-        return format!(
-            "{provider}: no model is resident right now (the serving daemon is between \
-             lanes — a re-home or a self-healing relaunch), so model '{model}' cannot be \
-             guaranteed. This is a serving TRANSITION, not a fault: it clears when the next \
-             reconcile publishes a ready lane, and the caller should retry rather than \
-             treat the lane as broken."
-        );
-    };
-    format!(
-        "{provider}: model '{model}' is not the active served model (serving: {active}, \
-         ready: {}); the serving daemon owns which single model is resident — refusing to \
-         generate against an unguaranteed model",
-        snap.ready
-    )
-}
-
-/// #175 overflow backstop: does this request body's PROMPT ALONE meet/exceed the served
-/// per-slot window? Returns `Some(estimated_prompt_tokens)` when it does — the
-/// unambiguous overflow that (with context-shift off) 500s AND poisons the slot for
-/// every later request, so the caller must refuse to send rather than take the shared
-/// lane down. `served_window == 0` (window unknown, e.g. mid-relaunch) → `None` (never
-/// block on an unknown budget). Estimate is chars/4 — the same conservative heuristic as
-/// the `serving.ctx_overshoot` alarm; we only trip on prompt-alone-overflows so a
-/// legitimately-budgeted request (which always leaves reply headroom) is never blocked.
-fn prompt_alone_overflows_served(body: &serde_json::Value, served_window: u32) -> Option<usize> {
-    if served_window == 0 {
-        return None;
-    }
-    let prompt_tokens = body
-        .get("messages")
-        .and_then(|m| m.as_array())
-        .map(|msgs| {
-            msgs.iter()
-                .filter_map(|m| m.get("content").and_then(|c| c.as_str()))
-                .map(|c| c.len() / 4)
-                .sum::<usize>()
-        })
-        .unwrap_or(0);
-    (prompt_tokens >= served_window as usize).then_some(prompt_tokens)
-}
+// Serving-guard predicates live in `crate::inference::serving_guard` (S3b decompose).
 
 /// Apply the llama.cpp-native sampling knobs to a request body. Pure (no `self`,
 /// no I/O) so the wire contract is unit-testable and lives in ONE place —
@@ -1445,28 +1330,8 @@ struct OpenAITimings {
 /// total-request timeout that killed legitimately-long generations.
 const STREAM_IDLE_TIMEOUT_SECS: u64 = 90;
 
-/// Bound on the wait for response HEADERS after POSTing a generation — the
-/// pre-stream twin of [`STREAM_IDLE_TIMEOUT_SECS`]. Covers the hung-prefill /
-/// poisoned-backend case where the server accepts and never answers; sized for
-/// a worst-case full-window prefill queued behind co-tenants (minutes), because
-/// its job is releasing ETERNAL holds, not policing slow ones.
-const PRE_STREAM_HEADER_TIMEOUT_SECS: u64 = 300;
-
-/// A local single-resident lane can be RELAUNCHED out from under an in-flight POST —
-/// grow-back (#214), a genome page-in, or memory pressure all bounce the llama-server
-/// process, and the published serving snapshot can lag at `ready=true` for the ~seconds
-/// the socket is actually refused (the pre-flight guard trusts the `watch` snapshot; the
-/// socket is the ground truth, and a watch channel is inherently slightly behind the
-/// process). A `connect` error is therefore "the lane is mid-relaunch", not "the lane is
-/// gone": the connection never opened, so nothing was streamed to the sink, and
-/// re-sending the SAME lane/model is idempotent — resilience, NOT a fallback
-/// ([[fallbacks-are-illegal-fail-loud]]). Retry the connect with linear backoff
-/// (1s, 2s, … ≈ 21s total) to ride out a relaunch, then fail loud if it never returns.
-/// Scoped to the local resident lane — remote endpoints don't relaunch under us.
-/// Glass-boxed 2026-07-20: one legitimate grow-back relaunch zeroed hard-rs 0/8, every
-/// task `Connection refused (os error 61)` to :58057 mid-eval.
-const LANE_RELAUNCH_CONNECT_RETRIES: u32 = 6;
-const LANE_RELAUNCH_RETRY_BASE: std::time::Duration = std::time::Duration::from_secs(1);
+// Lane-send constants live in `crate::inference::lane_send` (S3b decompose).
+use crate::inference::lane_send::PRE_STREAM_HEADER_TIMEOUT_SECS;
 
 /// Warn LOUD when a call's measured decode rate collapses far below the catalog
 /// row's expectation (#441, Joel 2026-08-15: "we need very good tok/sec or it's a
@@ -2472,274 +2337,22 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             );
         }
 
-        // Pre-flight the single-resident gateway: GUARANTEE our model is the one
-        // actually serving before we trust a generation. The local gateway
-        // (llama-server) serves ONE resident model, fixed at process launch, and
-        // answers EVERY request as that model regardless of the request's `model`
-        // field — so generating while a DIFFERENT model (or none) is live silently
-        // returns the wrong brain (the bug that would haunt us). Crucially,
-        // switching the served model is a *process relaunch* the
-        // ServingDaemonModule owns (Contract A `inference::llama_server`); an
-        // adapter must NEVER drive that load from inside a generate — relaunching
-        // would kill the GPU-warm server out from under every other persona on the
-        // shared gateway. So this guard is READ-ONLY: consult the daemon's
-        // published serving snapshot (a `watch` borrow, no probe) and refuse to
-        // generate unless OUR model is the READY, ACTIVE one. A mismatch is a loud
-        // failure naming the cause, never a silent wrong-model answer
-        // ([[fallbacks-are-illegal-fail-loud]]). Bringing the right model up — and
-        // cross-persona residency arbitration on the shared gateway — is the
-        // serving layer's job (#109), not this gate.
-        // A dedicated lane (eval's EphemeralServingLane) is its OWN authority:
-        // launched with exactly this model and confirmed HTTP-ready at spawn, so
-        // the GLOBAL serving snapshot (which only knows the living persona lane) is
-        // the wrong thing to consult. Skip the guard for a lane we own.
-        if self.config.single_resident_model && !self.dedicated_lane {
-            let snap = crate::inference::llama_server::current_serving();
-            // The snapshot guarantees TWO residencies: the main lane's active
-            // model, and (when published) the verified vision endpoint's model —
-            // the #106 sidecar lane beside a text-only mind. A request for the
-            // sidecar's model is exactly as guaranteed as one for the active
-            // model (the daemon verified its `/props` before publishing), and
-            // `endpoints_for_model` routes it to `vision_base_url`.
-            let mut snap = snap;
-            if !snapshot_guarantees(&snap, model) && !settled_on_another_model(&snap) {
-                // A TRANSITION, not a fault — wait it out instead of failing the turn.
-                // `await_ready_serving` is the daemon's own readiness signal (the same
-                // `watch` it publishes): a push, not a poll, so this returns the instant the
-                // relaunch lands and costs nothing while it waits. It is the mechanism the
-                // boot gate, the eval lane, the embedder and the genome teacher all already
-                // wait on; this seam was the one that refused instead.
-                //
-                // Budget is `DEFAULT_SERVING_WAIT` (= READY_TIMEOUT + 30s) on purpose: it is
-                // DERIVED from the spawner's own load budget, so this can never declare a
-                // failure before the daemon has exhausted its legitimate window to produce a
-                // lane. Fail LOUD, not FAST. Bounded, so a lane that never returns still ends
-                // as a named refusal rather than a hung generate.
-                let started = std::time::Instant::now();
-                let settled = crate::inference::llama_server::await_ready_serving(
-                    crate::inference::llama_server::DEFAULT_SERVING_WAIT,
-                )
-                .await;
-                if let Some(s) = settled {
-                    snap = s;
-                }
-                // Carry the daemon's own stated degradation on the probe: an
-                // unresolved wait with NO reason is "polling slop" a reader must go
-                // spelunking to explain, while `degraded=` names the killer in the
-                // stream itself (2026-08-15: every turn of a round waited here for
-                // 120s each while serving/status knew the exact cause — a failed
-                // decode smoke-probe — and nothing surfaced it).
-                let degraded = snap.degraded_reason.as_deref().unwrap_or("");
-                crate::probe!(
-                    class = "inference.awaiting_serving_transition",
-                    provider = self.config.provider_id.as_str(),
-                    wanted = model,
-                    waited_ms = started.elapsed().as_millis() as u64,
-                    served_before = crate::inference::llama_server::has_reconciled(),
-                    resolved = snapshot_guarantees(&snap, model),
-                    degraded = &degraded[..degraded.len().min(200)],
-                    "no lane was resident at pre-flight (serving transition) — waited on the \
-                     daemon's readiness signal rather than failing the turn"
-                );
-            }
-            if !snapshot_guarantees(&snap, model) {
-                return Err(unguaranteed_model_refusal(
-                    &self.config.name,
-                    model,
-                    &snap,
-                    crate::inference::llama_server::has_reconciled(),
-                ));
-            }
-            // #175 universal overflow backstop: REFUSE (never send) a prompt that alone
-            // exceeds the served per-slot window. With context-shift OFF the server 500s
-            // "Compute error" on overflow AND the fault POISONS the slot, so every LATER
-            // request 500s too — one oversized prompt from ANY caller (a persona turn, a
-            // dream distillation, an eval) takes the whole shared lane down until a
-            // restart (the wedge storm this task chased). The persona deliberation path
-            // already fits its prompt to the live window; this is the chokepoint backstop
-            // for the ~10 OTHER callers that build their own prompts (dream_consolidation,
-            // check_redundancy, validate_response, …), which the persona-scoped overshoot
-            // WARN below never covered. A refused request fails LOUD naming the caller and
-            // never reaches llama_decode, so the slot stays healthy. Threshold is PROMPT
-            // ALONE ≥ window (unambiguous — no room for even the prompt, let alone a
-            // reply), so a legitimately-budgeted request is never blocked. chars/4 is the
-            // same conservative estimate the overshoot alarm uses.
-            // [[fallbacks-are-illegal-fail-loud]] [[llama-compute-error-wedge-is-per-slot-context-overflow]]
-            if let Some(prompt_tokens) =
-                prompt_alone_overflows_served(&body, snap.served_context_window)
-            {
-                return Err(format!(
-                    "{}: refusing to generate — prompt ~{} tokens ≥ the served per-slot \
-                     window of {} (caller: {}). Sending it would 500 and POISON the shared \
-                     slot for every later request; fit the prompt to the served window (#175).",
-                    self.config.name,
-                    prompt_tokens,
-                    snap.served_context_window,
-                    request.persona_id.as_deref().unwrap_or("non-persona"),
-                ));
-            }
-        }
+        // Pre-flight the single-resident gateway (the serving guard, now its own module:
+        // `inference::serving_guard`). Refuses when the lane cannot guarantee `model` or
+        // the prompt alone overflows the served slot (#175).
+        crate::inference::serving_guard::guard_resident_model(
+            &self.config,
+            self.dedicated_lane,
+            model,
+            &body,
+            request.persona_id.as_deref().unwrap_or("non-persona"),  // unwrap_or: no persona = a non-persona caller in the refusal text
+        )
+        .await?;
 
-        // A CONNECT error to a local resident lane means the lane is mid-relaunch, not
-        // gone (see LANE_RELAUNCH_CONNECT_RETRIES) — the connection never opened so
-        // nothing streamed, and re-sending the same lane is idempotent. Ride it out with
-        // bounded linear backoff, then fail loud. `request_builder` carries no body yet
-        // (`.json` is applied per attempt below), so `try_clone` always succeeds.
-        // Shared budget for BOTH mid-relaunch signatures (connection refused = nothing
-        // listening yet; 503 = listening but still loading). One counter, so the total
-        // time this call can spend waiting on a relaunching lane stays bounded.
-        let mut relaunch_retries: u32 = 0;
-        let response = loop {
-            let send_start = Instant::now();
-            let attempt_builder = request_builder
-                .try_clone()
-                .expect("bodyless request builder is always cloneable");
-            // BOUNDED pre-first-byte wait: a poisoned lane can accept the request
-            // and never return headers (hung prefill) — with no bound here, the
-            // caller's ServingLanePermit is held FOREVER and one wedged call
-            // starves the whole roster's admission (glass-boxed 2026-07-23: the
-            // eternal `nondirected_waiting` park). The stream idle-watchdog only
-            // arms AFTER headers; this is its pre-stream twin. Generous (prefill
-            // of a full window on a busy co-tenant lane is minutes, not seconds)
-            // but FINITE — RTOS rule: every hold is bounded.
-            let sent = tokio::time::timeout(
-                std::time::Duration::from_secs(PRE_STREAM_HEADER_TIMEOUT_SECS),
-                attempt_builder.json(&body).send(),
-            )
-            .await
-            .map_err(|_| {
-                format!(
-                    "{}: no response headers for {}s after POST — lane accepted the                      request and went silent (hung prefill / poisoned backend);                      releasing the lane instead of holding it forever",
-                    self.config.name, PRE_STREAM_HEADER_TIMEOUT_SECS
-                )
-            })?;
-            match sent {
-                // A relaunching lane refuses the connection only while nothing is
-                // LISTENING. Once the new process binds, it accepts and answers
-                // 503 while it mmaps weights and warms the backend — the SAME
-                // mid-relaunch state one layer up, with a completely different
-                // signature. Observed live 2026-08-07: a re-home grew the window
-                // 16384 → 27136 → 32768, and during the respawn three citizens
-                // took `503 {"error":{"message":"Loading model..."}}` as a hard
-                // `selftick.inference_failed` while the published snapshot still
-                // said `ready` (it is a cached claim — see ServingSnapshot::ready).
-                //
-                // 503 from a SINGLE-RESIDENT local lane means "not available yet"
-                // by definition, so the status alone is the signal — no sniffing
-                // the body text for "Loading model"
-                // ([[a-string-matcher-for-a-semantic-judgement-means-a-channel-is-missing]]:
-                // the HTTP status IS the structured channel). Shares the connect
-                // arm's retry budget, because both are the same wait for the same
-                // lane and the total hold must stay bounded.
-                Ok(resp)
-                    if resp.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE
-                        && self.config.single_resident_model
-                        && relaunch_retries < LANE_RELAUNCH_CONNECT_RETRIES =>
-                {
-                    relaunch_retries += 1;
-                    let backoff = LANE_RELAUNCH_RETRY_BASE * relaunch_retries;
-                    crate::probe!(
-                        class = "inference.lane_relaunch_retry",
-                        provider = self.config.provider_id.as_str(),
-                        attempt = relaunch_retries,
-                        backoff_ms = backoff.as_millis() as u64,
-                        reason = "503_loading",
-                        "local lane is up but still loading (503, mid-relaunch) — retrying the \
-                         same lane",
-                    );
-                    tokio::time::sleep(backoff).await;
-                    continue;
-                }
-                Ok(resp) => break resp,
-                Err(e)
-                    if e.is_connect()
-                        && self.config.single_resident_model
-                        && relaunch_retries < LANE_RELAUNCH_CONNECT_RETRIES =>
-                {
-                    relaunch_retries += 1;
-                    let backoff = LANE_RELAUNCH_RETRY_BASE * relaunch_retries;
-                    crate::probe!(
-                        class = "inference.lane_relaunch_retry",
-                        provider = self.config.provider_id.as_str(),
-                        attempt = relaunch_retries,
-                        backoff_ms = backoff.as_millis() as u64,
-                        reason = "connect_refused",
-                        "local lane refused the connection (mid-relaunch) — retrying the same lane",
-                    );
-                    tokio::time::sleep(backoff).await;
-                    continue;
-                }
-                Err(e) => {
-                    // reqwest::Error's top-level Display often collapses the
-                    // real cause (timeout vs connect vs body-write) into a
-                    // generic "error sending request" string. Walk the error
-                    // source chain so the log shows the actual terminal
-                    // reason — critical for debugging stalls where the
-                    // outer message alone is useless.
-                    let mut chain: Vec<String> = vec![e.to_string()];
-                    let mut cur: &dyn std::error::Error = &e;
-                    while let Some(src) = cur.source() {
-                        chain.push(src.to_string());
-                        cur = src;
-                    }
-                    return Err(format!(
-                        "{} POST failed after {}ms{}: {} (kind: timeout={}, connect={}, request={}, body={})",
-                        self.config.name,
-                        send_start.elapsed().as_millis(),
-                        if relaunch_retries > 0 {
-                            format!(
-                                " ({relaunch_retries} mid-relaunch retries exhausted — lane never came back)"
-                            )
-                        } else {
-                            String::new()
-                        },
-                        chain.join(" -> "),
-                        e.is_timeout(),
-                        e.is_connect(),
-                        e.is_request(),
-                        e.is_body()
-                    ));
-                }
-            }
-        };
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            // Classify ONCE, here, where the status code and the raw body still
-            // exist. Downstream this is still carried as a String (the trait's
-            // error type has not moved yet — that is the threading commit), so
-            // the CLASSIFICATION is emitted as a probe rather than lost: an
-            // operator reading the receipt now sees WHICH kind of failure this
-            // was, and for an overflow, both token counts.
-            //
-            // Why that matters: settle.rs retries every fault blind, which is
-            // right for a transient wedge (#386, ~2/3 recover) and useless for
-            // ContextExceeded — same prompt, same slot, same 400, forever.
-            // Until the type reaches settle, this probe is the only place the
-            // difference is visible at all.
-            let classified = crate::ai::inference_error::InferenceError::from_http(
-                status.as_u16(),
-                &body,
-            );
-            let (requested, available) = match &classified {
-                crate::ai::inference_error::InferenceError::ContextExceeded {
-                    requested,
-                    available,
-                } => (*requested, *available),
-                _ => (0, 0),
-            };
-            crate::probe!(
-                class = "ai.request.rejected",
-                provider = %self.config.name,
-                status = status.as_u16(),
-                retryable_unchanged = classified.is_retryable_unchanged(),
-                requested_tokens = requested,
-                available_tokens = available,
-                "backend rejected the request — classified at the seam"
-            );
-            return Err(format!("{} returned {}: {}", self.config.name, status, body));
-        }
+        // POST through the lane with the mid-relaunch retry (`inference::lane_send`).
+        let response =
+            crate::inference::lane_send::send_with_lane_retry(&self.config, request_builder, &body)
+                .await?;
 
         // Consume the SSE stream: every token reaches `sink` the INSTANT it arrives.
         // Liveness is the per-token idle watchdog ([`STREAM_IDLE_TIMEOUT_SECS`]) —
@@ -3506,6 +3119,7 @@ fn parse_embedding_usage(body: &Value) -> UsageMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inference::serving_guard::{settled_on_another_model, snapshot_guarantees, unguaranteed_model_refusal};
 
     use crate::ai::types::ImageInput;
 
@@ -3871,26 +3485,6 @@ mod tests {
     // unambiguous prompt-alone overflow (a budgeted request that leaves reply headroom
     // is never blocked), and NEVER when the window is unknown (0) so a mid-relaunch
     // snapshot can't wrongly block cognition.
-    #[test]
-    fn refuses_only_when_prompt_alone_overflows_the_served_slot() {
-        let body = |chars: usize| serde_json::json!({ "messages": [{ "role": "user", "content": "x".repeat(chars) }] });
-        // ~12000 tokens (48000 chars / 4) vs a 8000-token slot → refuse, report the est.
-        assert_eq!(
-            prompt_alone_overflows_served(&body(48_000), 8_000),
-            Some(12_000),
-            "prompt alone over the window must be refused"
-        );
-        // ~4000 tokens vs an 8000 slot → fits (room for the prompt + a reply) → allow.
-        assert_eq!(prompt_alone_overflows_served(&body(16_000), 8_000), None);
-        // Window unknown (mid-relaunch) → never block, whatever the prompt size.
-        assert_eq!(prompt_alone_overflows_served(&body(48_000), 0), None);
-        // No messages array → nothing to overflow.
-        assert_eq!(
-            prompt_alone_overflows_served(&serde_json::json!({}), 8_000),
-            None
-        );
-    }
-
     // what this catches: a well-formed <think>…</think> (unsloth/llama.cpp today) is
     // SEPARATED — reasoning captured, the answer after </think> is the clean text.
     // This is the leak Asha hit: without it the whole think block reached the room.
