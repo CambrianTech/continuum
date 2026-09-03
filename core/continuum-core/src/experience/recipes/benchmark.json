@@ -58,6 +58,10 @@
     "doctrine": {
       "default": "",
       "doc": "the round's standing rules, published as the run room's operating doctrine (role prompts, the collaboration nudge); empty = none (the control arm)"
+    },
+    "review_gate": {
+      "default": false,
+      "doc": "when true an owner's done becomes review + a sibling review card a non-owner pulls; only the reviewer's done closes the card and fires its grade"
     }
   },
   "layout": {

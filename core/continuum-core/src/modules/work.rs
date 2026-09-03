@@ -1560,12 +1560,14 @@ impl ActionCommand for WorkState {
         let airc = persona_airc(&self.registry, ctx, "work commands")?;
         let card_id = resolve_card_id(&airc, &p.card_id).await?;
         let state = parse_state(&p.state)?;
-        advance_card_state(&airc, card_id, state, "work-state-verb")
+        let landed = advance_card_state_effective(&airc, card_id, state, "work-state-verb")
             .await
             .map_err(CommandError::Internal)?;
         Ok(WorkStateResult {
             card_id: p.card_id,
-            state: p.state,
+            // The state that LANDED: under the review gate an owner's `done` reads
+            // back as `review` — she must see that her card now waits on a reviewer.
+            state: state_str(&landed).to_string(),
         })
     }
 }
@@ -1582,6 +1584,122 @@ impl ActionCommand for WorkState {
 /// `via` labels the feeder on the probe stream so two writers of the same
 /// transition are distinguishable.
 pub(crate) async fn advance_card_state(
+    airc: &Arc<Airc>,
+    card_id: WorkCardId,
+    state: CardState,
+    via: &'static str,
+) -> Result<(), String> {
+    advance_card_state_effective(airc, card_id, state, via).await.map(|_| ())
+}
+
+/// The state-advance seam WITH the review gate (team-recipe Arm 2, 2026-09-03).
+/// Returns the state that actually landed:
+/// - a verdict on a REVIEW card: `done` = pass → the review retires and the PARENT
+///   closes (its grade fires); `blocked` = send back → the review retires and the
+///   parent returns to `in_progress` (the reviewer's critique is already in the room);
+/// - an owner's `done` on a GATED parent → `review` + a sibling review card is
+///   posted for a non-owner to pull;
+/// - everything else advances as asked.
+/// One seam for the `work/state` verb and the deterministic held-work settle, so
+/// the gate cannot be bypassed by either.
+pub(crate) async fn advance_card_state_effective(
+    airc: &Arc<Airc>,
+    card_id: WorkCardId,
+    state: CardState,
+    via: &'static str,
+) -> Result<CardState, String> {
+    use crate::cognition::bench_round as round;
+    let finishing = matches!(state, CardState::Closed | CardState::Merged);
+    if let Some(parent) = round::review_parent(card_id.as_uuid()) {
+        if finishing || state == CardState::Blocked {
+            let passed = finishing;
+            round::settle_review_card(card_id.as_uuid(), passed);
+            raw_advance(airc, card_id, CardState::Closed, via).await?;
+            let parent_id = WorkCardId::from_uuid(parent);
+            let next = if passed { CardState::Closed } else { CardState::InProgress };
+            crate::probe!(
+                class = "work.review.verdict",
+                review = %short8(card_id.as_uuid()),
+                parent = %short8(parent),
+                passed,
+                "reviewer's verdict — a pass closes the parent (grade fires), a send-back \
+                 returns it to in_progress"
+            );
+            raw_advance(airc, parent_id, next, via).await?;
+            return Ok(next);
+        }
+    }
+    if finishing && round::review_required(card_id.as_uuid()) {
+        raw_advance(airc, card_id, CardState::Review, via).await?;
+        match open_review_card(airc, card_id).await {
+            Ok(review) => crate::probe!(
+                class = "work.review.opened",
+                parent = %short8(card_id.as_uuid()),
+                review = %short8(review.as_uuid()),
+                "owner's done became review — a sibling review card is on the deck for a \
+                 non-owner; only the reviewer's done closes this card"
+            ),
+            Err(e) => crate::probe!(
+                class = "work.review.open_failed",
+                parent = %short8(card_id.as_uuid()),
+                error = %e,
+                "the card is in review but no review card could be posted — the next \
+                 done retries the gate"
+            ),
+        }
+        return Ok(CardState::Review);
+    }
+    raw_advance(airc, card_id, state, via).await?;
+    Ok(state)
+}
+
+/// Post the sibling review card for `parent` into the parent's own room, as the
+/// caller's identity. The card BODY carries the reviewer's role prompt — recipe
+/// data on the card, never a code branch in cognition.
+async fn open_review_card(airc: &Arc<Airc>, parent: WorkCardId) -> Result<WorkCardId, String> {
+    let (room, card) = card_in_subscribed_rooms(airc, parent)
+        .await
+        .ok_or_else(|| "parent card is on no subscribed room's board".to_string())?;
+    let (_, instance) = crate::commands::benchmark::parse_card_title(&card.title)
+        .ok_or_else(|| "parent is not a bench card".to_string())?;
+    let owner = card
+        .owner
+        .and_then(|o| {
+            crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+                .and_then(|reg| reg.get(o.as_uuid()))
+                .map(|rt| rt.agent_name().to_string())
+        })
+        .unwrap_or_else(|| "the owner".to_string());
+    let title = crate::commands::benchmark::review_card_title(parent.as_uuid(), &instance, &owner);
+    let p8 = parent.as_uuid().simple().to_string()[..8].to_string();
+    let body = format!(
+        "Review {owner}'s fix for `{instance}` (card {p8}). You are the fresh pair of \
+         eyes: READ-ONLY. Do not edit their tree.\n\n\
+         Their checkout is {owner}'s workspace at `swe/{instance}/` — your hands are rooted \
+         there for this card. Run `git diff` to see the change; run the repo's tests for the \
+         issue.\n\n\
+         Judge the diff against the card's definition of done: does it fix the CAUSE with \
+         the smallest edit, without touching the tests, and do the tests pass?\n\n\
+         Verdict, with evidence — every claim cites a file:line or a test result:\n\
+         - PASS: say `work/state <this card's id> done` — that closes {owner}'s card and \
+         fires the grade.\n\
+         - SEND BACK: say what must change (cited), then `work/state <this card's id> \
+         blocked` — the card returns to {owner} in progress.\n\
+         Report gaps, not style."
+    );
+    // The card lands in the airc handle's CURRENT room — make that the parent's room
+    // (the same focus move the claim path makes when a card sits elsewhere).
+    airc.join(&room.name).await.map_err(|e| e.to_string())?;
+    let mut req = CreateWorkCard::new(card.repo.clone(), title, Priority::P1).reviewing(parent);
+    req.body = Some(body);
+    let review = airc.create_work_card(req).await.map_err(|e| e.to_string())?;
+    crate::cognition::bench_round::register_review_card(parent.as_uuid(), review.as_uuid())
+        .ok_or_else(|| "parent left its round before the review was registered".to_string())?;
+    Ok(review)
+}
+
+/// The raw advance + the bus event — what [`advance_card_state`] was before the gate.
+async fn raw_advance(
     airc: &Arc<Airc>,
     card_id: WorkCardId,
     state: CardState,

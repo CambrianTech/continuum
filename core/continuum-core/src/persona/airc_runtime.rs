@@ -1342,10 +1342,23 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
             Some(room),
         )
         .await?;
+        let me = self.airc.peer_id();
         Ok(board
             .cards
             .iter()
             .filter(|c| crate::persona::card_holder::claimable_now(c, now_ms))
+            // A review card is never offered to the owner of the card it reviews:
+            // the reviewer is the fresh pair of eyes by construction.
+            .filter(|c| {
+                c.reviews.map_or(true, |parent| {
+                    board
+                        .cards
+                        .iter()
+                        .find(|p| p.card_id == parent)
+                        .and_then(|p| p.owner)
+                        != Some(me)
+                })
+            })
             .map(|c| c.card_id.as_uuid())
             .collect())
     }

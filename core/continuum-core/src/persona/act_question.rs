@@ -192,11 +192,26 @@ pub(crate) async fn ask_the_act_question(
                     // EVERY exit — #312: after a flask solve, Anwen's live
                     // self was still reading the exam repo hours later.
                     // Non-bench cards resolve to None and nothing moves.
-                    let card_workspace =
+                    // A REVIEW card roots her hands in the OWNER's checkout (the fix
+                    // under review lives there); any other held card resolves to her
+                    // own staged instance as before.
+                    let review_workspace = held
+                        .iter()
+                        .filter_map(|c| crate::commands::benchmark::parse_review_title(&c.title))
+                        .find_map(|instance| {
+                            let copies = crate::persona::staged_workspace::owners_of(&instance);
+                            copies
+                                .iter()
+                                .find(|c| c.has_work)
+                                .or_else(|| copies.first())
+                                .map(|c| c.path.clone())
+                        });
+                    let card_workspace = review_workspace.or_else(|| {
                         crate::persona::staged_workspace::workspace_for_held_cards(
                             &ctx.identity.peer_id.as_uuid(),
                             held.iter().map(|c| c.title.as_str()),
-                        );
+                        )
+                    });
                     let work_hands = match &card_workspace {
                         Some(ws) => {
                             let hands =

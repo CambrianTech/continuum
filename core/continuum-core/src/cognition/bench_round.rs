@@ -185,6 +185,20 @@ pub struct BenchRound {
     /// is read-the-saved-state, never re-derive.
     #[serde(default)]
     card_last_act_ms: HashMap<Uuid, u64>,
+    /// THE REVIEW GATE (team-recipe Arm 2, 2026-09-03): when set, an owner's `done`
+    /// on a card of this round becomes `review` + a sibling review card that a
+    /// NON-owner pulls; only the reviewer's `done` closes the parent (and fires its
+    /// grade). The one structural intervention the literature found moved SWE
+    /// scores — a fresh-context, execution-grounded verdict — as recipe DATA.
+    #[serde(default)]
+    review_gate: bool,
+    /// Review card → the parent card it reviews. A review card is round work (it is
+    /// pullable) but not a round CARD (it never counts toward the round's remaining).
+    #[serde(default)]
+    review_cards: HashMap<Uuid, Uuid>,
+    /// Parents whose review passed — their next `done` goes through.
+    #[serde(default)]
+    reviews_passed: std::collections::HashSet<Uuid>,
 }
 
 /// Where one card's solve LIVES: its per-instance activity room, the citizen
@@ -224,6 +238,9 @@ impl BenchRound {
             card_assignees: HashMap::new(),
             card_instances: HashMap::new(),
             card_last_act_ms: HashMap::new(),
+            review_gate: false,
+            review_cards: HashMap::new(),
+            reviews_passed: Default::default(),
             team: Vec::new(),
         }
     }
@@ -496,6 +513,58 @@ pub fn set_round_team(round_id: Uuid, team: Vec<Uuid>) {
     }
 }
 
+/// Turn the round's REVIEW GATE on (dispatch calls it right after [`open_round`]).
+pub fn set_review_gate(round_id: Uuid, on: bool) {
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(r) = rounds.get_mut(&round_id) {
+        r.review_gate = on;
+        persist_round_in(&rounds_state_dir(), r);
+    }
+}
+
+/// Must an owner's `done` on `card` go through review first? True iff the card's
+/// round is gated and no review has passed for it yet.
+pub fn review_required(card: Uuid) -> bool {
+    ROUNDS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .values()
+        .find(|r| r.cards.contains_key(&card))
+        .is_some_and(|r| r.review_gate && !r.reviews_passed.contains(&card))
+}
+
+/// Record the sibling review card of `parent` (posted by the gate). Returns the
+/// round id it joined, or `None` when the parent is in no live round.
+pub fn register_review_card(parent: Uuid, review: Uuid) -> Option<Uuid> {
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());
+    let r = rounds.values_mut().find(|r| r.cards.contains_key(&parent))?;
+    r.review_cards.insert(review, parent);
+    persist_round_in(&rounds_state_dir(), r);
+    Some(r.round_id)
+}
+
+/// The parent a review card reviews, if `card` is a live review card.
+pub fn review_parent(card: Uuid) -> Option<Uuid> {
+    ROUNDS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .values()
+        .find_map(|r| r.review_cards.get(&card).copied())
+}
+
+/// The reviewer's verdict landed: the review card retires; a pass unlocks the
+/// parent's `done`. Returns the parent.
+pub fn settle_review_card(review: Uuid, passed: bool) -> Option<Uuid> {
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());
+    let r = rounds.values_mut().find(|r| r.review_cards.contains_key(&review))?;
+    let parent = r.review_cards.remove(&review)?;
+    if passed {
+        r.reviews_passed.insert(parent);
+    }
+    persist_round_in(&rounds_state_dir(), r);
+    Some(parent)
+}
+
 /// Add a freshly posted card to an open round. Unknown round = no-op (dispatch always
 /// opens first; a card that arrives without one is not part of a tracked round).
 pub fn add_card(round_id: Uuid, card_id: Uuid) {
@@ -745,12 +814,20 @@ pub fn pullable_cards(
         // resident works it. The `run_room` IS the round id.
         .filter(|r| resident_rooms.contains(&r.round_id))
         .flat_map(|r| {
-            r.cards
-                .iter()
-                .filter(|(_, state)| state.is_none())
-                .filter(|(c, _)| !live.contains(&format!("claim-{}", c)))
-                .map(|(c, _)| NextCard {
-                    card: *c,
+            // Review cards FIRST: a fix waiting on a verdict is the round's critical
+            // path, and a reviewer costs a short read, not a solve.
+            r.review_cards
+                .keys()
+                .copied()
+                .chain(
+                    r.cards
+                        .iter()
+                        .filter(|(_, state)| state.is_none())
+                        .filter(|(c, _)| !live.contains(&format!("claim-{}", c)))
+                        .map(|(c, _)| *c),
+                )
+                .map(|c| NextCard {
+                    card: c,
                     assignee: peer,
                     run_room: r.round_id,
                     teammates: r.team.clone(),
@@ -1440,6 +1517,41 @@ mod tests {
     // 53 unstarted, 4 citizens). This pins that a held-work turn makes the round
     // read "working"/"grinding" from the ephemeral CARD_LAST_ACT signal alone
     // (empty run ledger), so the autopilot HOLDS instead of over-dispatching.
+    // what this catches: the review gate's state machine on the tracker — a gated
+    // card requires review until a review card registered for it settles as PASSED;
+    // a rejected review leaves it required; review cards appear on the pull deck
+    // ahead of Open cards and never count toward the round's remaining.
+    #[test]
+    fn a_gated_card_requires_review_until_its_review_card_passes() {
+        let round_id = Uuid::new_v4();
+        let card = Uuid::new_v4();
+        open_round(round_id, "swe-bench-verified", WorkDriver::Citizen);
+        add_card(round_id, card);
+        assert!(!review_required(card), "no gate, no review");
+        set_review_gate(round_id, true);
+        assert!(review_required(card));
+
+        let review = Uuid::new_v4();
+        assert_eq!(register_review_card(card, review), Some(round_id));
+        assert_eq!(review_parent(review), Some(card));
+        let resident: std::collections::HashSet<Uuid> = [round_id].into_iter().collect();
+        let deck = pullable_cards(Uuid::new_v4(), &resident);
+        assert_eq!(deck[0].card, review, "the review card leads the deck");
+        assert_eq!(
+            ROUNDS.lock().unwrap().get(&round_id).unwrap().remaining(),
+            1,
+            "a review card is not a round card"
+        );
+
+        assert_eq!(settle_review_card(review, false), Some(card));
+        assert!(review_required(card), "a rejection keeps the gate shut");
+        let again = Uuid::new_v4();
+        register_review_card(card, again);
+        assert_eq!(settle_review_card(again, true), Some(card));
+        assert!(!review_required(card), "a pass opens the gate for the parent's done");
+        ROUNDS.lock().unwrap().remove(&round_id);
+    }
+
     #[test]
     fn a_citizen_held_work_turn_makes_the_round_read_working() {
         use super::{
@@ -1575,6 +1687,9 @@ mod tests {
                 card_assignees: cards.iter().copied().collect(),
                 card_instances: Default::default(),
                 card_last_act_ms: HashMap::new(),
+            review_gate: false,
+            review_cards: HashMap::new(),
+            reviews_passed: Default::default(),
                 team: Vec::new(),
             }
         }

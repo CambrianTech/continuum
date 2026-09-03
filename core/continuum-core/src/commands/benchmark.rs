@@ -827,6 +827,10 @@ pub struct BenchmarkDispatchParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub force: Option<bool>,
+    /// THE REVIEW GATE: an owner's `done` becomes `review` + a sibling review card a
+    /// NON-owner pulls; only the reviewer's `done` closes the card and fires its
+    /// grade. Off = the control arm (a citizen's own `done` grades directly).
+    pub review_gate: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -985,6 +989,24 @@ pub(crate) fn parse_card_title(title: &str) -> Option<(String, String)> {
     Some((bench.trim().to_string(), task.to_string()))
 }
 
+/// A review card's title: `[review <parent8>] <instance>: …` — ONE writer
+/// ([`crate::modules::work::open_review_card`]), one parser, beside the bench one.
+pub(crate) fn review_card_title(parent: uuid::Uuid, instance: &str, owner: &str) -> String {
+    format!(
+        "[review {}] {instance}: review {owner}'s fix",
+        &parent.simple().to_string()[..8]
+    )
+}
+
+/// Parse a review card's title into the INSTANCE it reviews. `None` for any other
+/// title, so a normal work card is never mistaken for a review.
+pub(crate) fn parse_review_title(title: &str) -> Option<String> {
+    let rest = title.strip_prefix("[review ")?;
+    let (_, after) = rest.split_once("] ")?;
+    let instance = after.split(':').next()?.trim();
+    (!instance.is_empty()).then(|| instance.to_string())
+}
+
 /// Compose the card BODY: the full prompt plus a definition of done a citizen
 /// can act on with her own hands. Grading inputs that must stay held out
 /// (`expect`, the harness `test`) are deliberately NOT written to the card —
@@ -1110,6 +1132,9 @@ pub struct RecipeDispatch {
     /// Standing rules for the run room (see `BenchmarkDispatchParams::doctrine`).
     #[serde(default)]
     pub doctrine: Option<String>,
+    /// The review gate (see `BenchmarkDispatchParams::review_gate`).
+    #[serde(default)]
+    pub review_gate: Option<bool>,
 }
 
 /// Resolve the citizens a directed dispatch addresses — GENERALIZED for any repo user's
@@ -1484,6 +1509,7 @@ impl ActionCommand for BenchmarkDispatch {
                     name: Some(d.benchmark.clone()),
                     recipe: None,
                     doctrine: d.doctrine.clone().or_else(|| p.doctrine.clone()),
+                    review_gate: d.review_gate.or(p.review_gate),
                     teammates: if team.is_empty() {
                         p.teammates.clone()
                     } else {
@@ -1876,6 +1902,10 @@ impl ActionCommand for BenchmarkDispatch {
         if let Some(doctrine) = &p.doctrine {
             run_params.insert("doctrine".to_string(), serde_json::json!(doctrine));
         }
+        run_params.insert(
+            "review_gate".to_string(),
+            serde_json::json!(p.review_gate.unwrap_or(false)),
+        );
         let room = crate::modules::activity::spawn_activity_room(
             &airc,
             &room_name,
@@ -2092,6 +2122,9 @@ impl ActionCommand for BenchmarkDispatch {
         let driver = p.drive.unwrap_or_default();
         crate::cognition::bench_round::open_round(room.room_id.as_uuid(), spec.name, driver);
         crate::cognition::bench_round::set_run_room_name(room.room_id.as_uuid(), &room_name);
+        if p.review_gate.unwrap_or(false) {
+            crate::cognition::bench_round::set_review_gate(room.room_id.as_uuid(), true);
+        }
         // The round REMEMBERS its team: driver edges (settle-advance, non-settling
         // advance, boot resume) dispatch cards that were never initially fired, and
         // without a round-level record they went out team-less (2026-08-30).

@@ -136,4 +136,10 @@ doctrine: string | null,
  * `start --force` (#420) — and it announces itself in the log rather than passing
  * silently, since a gate that can be skipped without a trace is not a gate.
  */
-force?: boolean, };
+force?: boolean, 
+/**
+ * THE REVIEW GATE: an owner's `done` becomes `review` + a sibling review card a
+ * NON-owner pulls; only the reviewer's `done` closes the card and fires its
+ * grade. Off = the control arm (a citizen's own `done` grades directly).
+ */
+review_gate: boolean | null, };
