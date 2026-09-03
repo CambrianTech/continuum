@@ -50,22 +50,36 @@ use tokenizers::Tokenizer;
 const AUDIO_TOKEN_OFFSET: u32 = 128266; // <custom_token_10>
 const CODEBOOK_SIZE: u32 = 4096;
 const NUM_CODEBOOKS: usize = 3;
+// context-budget-exempt: a vocabulary token id / codec frame geometry of the Orpheus
+// audio protocol, fixed by the model's tokenizer — not a prompt or context size.
 const TOKENS_PER_FRAME: usize = 7;
 /// Full audio-token span: one 4096 band per frame position.
 const AUDIO_TOKEN_SPAN: u32 = TOKENS_PER_FRAME as u32 * CODEBOOK_SIZE; // 28672
 /// `<custom_token_3>` — start of the human turn.
+// context-budget-exempt: a vocabulary token id / codec frame geometry of the Orpheus
+// audio protocol, fixed by the model's tokenizer — not a prompt or context size.
 const SOH_TOKEN: u32 = 128259;
 /// Llama-3 `<|eot_id|>` — closes the text.
+// context-budget-exempt: a vocabulary token id / codec frame geometry of the Orpheus
+// audio protocol, fixed by the model's tokenizer — not a prompt or context size.
 const EOT_TOKEN: u32 = 128009;
 /// `<custom_token_4>` — end of human turn.
+// context-budget-exempt: a vocabulary token id / codec frame geometry of the Orpheus
+// audio protocol, fixed by the model's tokenizer — not a prompt or context size.
 const EOH_TOKEN: u32 = 128260;
 /// `<custom_token_5>` — the reference's 3rd end token.
+// context-budget-exempt: a vocabulary token id / codec frame geometry of the Orpheus
+// audio protocol, fixed by the model's tokenizer — not a prompt or context size.
 const END3_TOKEN: u32 = 128261;
 /// `<custom_token_1>` — START OF AUDIO: tells the model to speak THIS text.
 /// Missing it (measured 2026-09-02 via continuum web/fetch of engine_class.py)
 /// made the model free-generate filler ("and again") instead of the prompt.
+// context-budget-exempt: a vocabulary token id / codec frame geometry of the Orpheus
+// audio protocol, fixed by the model's tokenizer — not a prompt or context size.
 const SOA_TOKEN: u32 = 128257;
 /// `<custom_token_2>` — end of audio: the generation stop token.
+// context-budget-exempt: a vocabulary token id / codec frame geometry of the Orpheus
+// audio protocol, fixed by the model's tokenizer — not a prompt or context size.
 const EOA_TOKEN: u32 = 128258;
 
 /// SNAC native sample rate — Orpheus generates 24kHz audio
@@ -559,6 +573,8 @@ impl OrpheusTts {
     /// The SNAC ONNX export's FIXED frame window for the coarse codebook
     /// (measured 2026-09-02 from the model's own dimension error: `codes0 …
     /// Expected: 12`). Layers scale 1×/2×/4× per SNAC's hierarchy.
+    // context-budget-exempt: a vocabulary token id / codec frame geometry of the Orpheus
+    // audio protocol, fixed by the model's tokenizer — not a prompt or context size.
     const SNAC_WINDOW_FRAMES: usize = 12;
 
     fn snac_decode(

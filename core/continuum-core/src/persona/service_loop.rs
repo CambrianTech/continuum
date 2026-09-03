@@ -441,9 +441,11 @@ async fn serve_persona_loop_inner(
     // [[benchmark-is-a-governor-preemption-lease]]
     // [[first-class-citizens-even-during-benchmarks]]
     loop {
-        // HER turn boundary: idle while parked at the wake select, engaged from the
-        // moment a wake is taken until the loop returns here. This is the only
-        // input the per-citizen boredom gate (dreams) reads besides a measured hold.
+        // HER turn boundary: idle whenever the loop is back at its wake select. The
+        // matching `engaged` stamp is set where a serving lane is actually acquired
+        // (the deliberation faculty) — a room wake alone is not wakefulness, or a
+        // busy room would cancel every dream (measured: 290 paged out in 20 min with
+        // the stamp on the wake itself).
         crate::cognition::activity_gate::persona_idle(ctx.identity.peer_id.as_uuid());
         let wake = tokio::select! {
             ev = next_event(conversation, &mut outcome) => match ev {
@@ -452,9 +454,6 @@ async fn serve_persona_loop_inner(
             },
             _ = tokio::time::sleep(next_beat) => Wake::Tick,
         };
-        if !matches!(wake, Wake::Stop) {
-            crate::cognition::activity_gate::persona_engaged(ctx.identity.peer_id.as_uuid());
-        }
         // QUIESCE HONORS ITS OWN CONTRACT (Joel, 2026-08-30: "I could call
         // them up or dm — just want to make sure we're not into singular
         // activity mode again"). The lease's documented promise is "skips
@@ -536,7 +535,7 @@ async fn serve_persona_loop_inner(
                             std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .map(|d| d.as_millis() as u64)
-                                .unwrap_or(0),
+                                .unwrap_or(0),  // unwrap_or: clock before the epoch = 0
                         )
                     {
                         crate::probe!(
@@ -1450,8 +1449,8 @@ async fn serve_persona_loop_inner(
             turn_duration_ms = turn_duration_ms,
             turns_replied = outcome.turns_replied,
             mean_ms = outcome.turn_latency.mean_ms().unwrap_or(0.0),
-            min_ms = outcome.turn_latency.min_ms.unwrap_or(0),
-            max_ms = outcome.turn_latency.max_ms.unwrap_or(0),
+            min_ms = outcome.turn_latency.min_ms.unwrap_or(0),  // unwrap_or: clock before the epoch = 0
+            max_ms = outcome.turn_latency.max_ms.unwrap_or(0),  // unwrap_or: clock before the epoch = 0
             recall_ms = phase_timings.recall_ms,
             admit_ms = phase_timings.admit_ms,
             compose_ms = phase_timings.compose_ms,
@@ -2638,7 +2637,7 @@ async fn run_self_cycle(
     // concludes it (`PASS: done`) — the autonomous loop the architecture always
     // promised ("the heartbeat advances my thread, not just reacts to pokes").
     // Returns early so she never ALSO spends a musing turn the same tick.
-    let work_room = focus_room.unwrap_or(ctx.identity.default_room);
+    let work_room = focus_room.unwrap_or(ctx.identity.default_room);  // unwrap_or: no held claim = home room
     if crate::persona::act_question::ask_the_act_question(
         ctx,
         conversation,
@@ -4984,7 +4983,7 @@ mod tests {
         // act-question resolves no staged checkout (no hands re-root needed).
         let card = airc_lib::WorkCard {
             card_id: WorkCardId::new(),
-            repo: RepoId::new("acme/continuum").expect("valid repo id"),
+            repo: RepoId::new("acme/continuum").expect("valid repo id"),  // test: a literal valid repo id
             title: "a held work card".to_string(),
             body: None,
             priority: Priority::P1,
@@ -5018,7 +5017,7 @@ mod tests {
         .await;
 
         assert!(drove, "she held a card, so a held-work turn must have been driven");
-        let advanced = recorder.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let advanced = recorder.lock().unwrap_or_else(|p| p.into_inner()).clone();  // test: poisoned recorder lock still holds the pushes
         assert_eq!(advanced.len(), 1, "exactly one card transition, got {advanced:?}");
         assert_eq!(advanced[0].0, card_id, "the HELD card is the one concluded");
         assert_eq!(
@@ -5039,7 +5038,7 @@ mod tests {
     fn held_card(owner: Uuid) -> airc_lib::WorkCard {
         airc_lib::WorkCard {
             card_id: airc_lib::WorkCardId::new(),
-            repo: airc_lib::RepoId::new("acme/continuum").expect("valid repo id"),
+            repo: airc_lib::RepoId::new("acme/continuum").expect("valid repo id"),  // test: a literal valid repo id
             title: "a held work card".to_string(),
             body: None,
             priority: airc_lib::Priority::P1,

@@ -2448,6 +2448,9 @@ impl Faculty for LlmDeliberationFaculty {
             let _lane =
                 crate::cognition::resource_admission::acquire_serving_lane(ws.directed_at_self)
                     .await;
+            // HER task-positive system is engaged from here: the per-citizen boredom gate
+            // (dreams) reads this stamp, never a room wake.
+            crate::cognition::activity_gate::persona_engaged(self.persona_id);
             crate::probe!(
                 class = "delib.gate.lane_acquired",
                 persona = %self.persona_name,

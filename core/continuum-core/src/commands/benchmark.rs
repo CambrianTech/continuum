@@ -1754,7 +1754,7 @@ impl ActionCommand for BenchmarkDispatch {
                 .collect::<Result<_, CommandError>>()?
         };
 
-        let requested = p.assignees.clone().unwrap_or_default();
+        let requested = p.assignees.clone().unwrap_or_default();  // unwrap_or: unreadable = empty, the report shows the tracker's view
         if requested.iter().any(|a| a.trim().is_empty()) {
             return Err(CommandError::Invalid(
                 "assignees contains an empty name — every kickoff must address a real citizen"
@@ -1898,13 +1898,13 @@ impl ActionCommand for BenchmarkDispatch {
             "team".to_string(),
             serde_json::json!(roster.iter().map(|(who, _)| who).collect::<Vec<_>>()),
         );
-        run_params.insert("driver".to_string(), serde_json::json!(p.drive.unwrap_or_default()));
+        run_params.insert("driver".to_string(), serde_json::json!(p.drive.unwrap_or_default()));  // unwrap_or: no driver named = the recipe default (citizen)
         if let Some(doctrine) = &p.doctrine {
             run_params.insert("doctrine".to_string(), serde_json::json!(doctrine));
         }
         run_params.insert(
             "review_gate".to_string(),
-            serde_json::json!(p.review_gate.unwrap_or(false)),
+            serde_json::json!(p.review_gate.unwrap_or(false)),  // unwrap_or: gate not named = off, the control arm
         );
         let room = crate::modules::activity::spawn_activity_room(
             &airc,
@@ -2119,10 +2119,10 @@ impl ActionCommand for BenchmarkDispatch {
         // asks the round who drives. Registering after the loop (as this did) left that
         // window answering with the default, which would silently fire the detached solver
         // on the first card of a citizen-driven round.
-        let driver = p.drive.unwrap_or_default();
+        let driver = p.drive.unwrap_or_default();  // unwrap_or: unreadable = empty, the report shows the tracker's view
         crate::cognition::bench_round::open_round(room.room_id.as_uuid(), spec.name, driver);
         crate::cognition::bench_round::set_run_room_name(room.room_id.as_uuid(), &room_name);
-        if p.review_gate.unwrap_or(false) {
+        if p.review_gate.unwrap_or(false) {  // unwrap_or: gate not named = off, the control arm
             crate::cognition::bench_round::set_review_gate(room.room_id.as_uuid(), true);
         }
         // The round REMEMBERS its team: driver edges (settle-advance, non-settling
@@ -4597,7 +4597,7 @@ impl BenchmarkPlatformFingerprint {
                     .take(8)
                     .collect()
             })
-            .unwrap_or_default();
+            .unwrap_or_default();  // unwrap_or: unreadable = empty, the report shows the tracker's view
         Self {
             machine_class,
             os: std::env::consts::OS.into(),
@@ -5266,7 +5266,7 @@ impl ActionCommand for BenchmarkRounds {
                 .unwrap_or_default()
         })
         .await
-        .unwrap_or_default();
+        .unwrap_or_default();  // unwrap_or: unreadable = empty, the report shows the tracker's view
         let facts: Vec<crate::cognition::bench_round::CardRunFacts> =
             runs.iter().map(card_run_facts).collect();
         crate::cognition::bench_round::enrich_rounds(
@@ -5334,7 +5334,7 @@ pub(crate) async fn enrich_rounds_from_board_and_verdicts(
             card.board_state = serde_json::to_value(bc.state)
                 .ok()
                 .and_then(|v| v.as_str().map(str::to_string))
-                .unwrap_or_default();
+                .unwrap_or_default();  // unwrap_or: unreadable = empty, the report shows the tracker's view
             card.owner = bc
                 .owner
                 .map(|o| {
@@ -5342,9 +5342,9 @@ pub(crate) async fn enrich_rounds_from_board_and_verdicts(
                         .as_ref()
                         .and_then(|reg| reg.get(o.as_uuid()))
                         .map(|rt| rt.agent_name().to_string())
-                        .unwrap_or_else(|| o.as_uuid().to_string()[..8].to_string())
+                        .unwrap_or_else(|| o.as_uuid().to_string()[..8].to_string())  // unwrap_or: no live runtime for the owner = her short id, still addressable
                 })
-                .unwrap_or_default();
+                .unwrap_or_default();  // unwrap_or: unreadable = empty, the report shows the tracker's view
             card.created_at_ms = Some(bc.created_at_ms);
             card.updated_at_ms = Some(bc.updated_at_ms);
         }

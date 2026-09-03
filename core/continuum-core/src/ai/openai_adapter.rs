@@ -2167,7 +2167,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                         .map(|c| c.len() / 4)
                         .sum::<usize>()
                 })
-                .unwrap_or(0) as u64;
+                .unwrap_or(0) as u64;  // unwrap_or: unknown size = 0 tokens, the price basis floor
             // TURN ADMISSION (event-driven, no timeout) — permit-first, then lease+pin
             // this activity's slot and page its KV onto a now-free slot. The returned
             // guard holds the permit + slot pin for the WHOLE generation (bound into

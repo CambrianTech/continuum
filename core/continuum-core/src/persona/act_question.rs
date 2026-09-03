@@ -380,7 +380,7 @@ pub(crate) async fn ask_the_act_question(
                                             persona = %ctx.identity.agent_name,
                                             lamport = lamport,
                                             card_id = %id,
-                                            reason = reason.as_deref().unwrap_or(""),
+                                            reason = reason.as_deref().unwrap_or(""),  // unwrap_or: no reason given = empty field on the probe
                                             "held card concluded at the turn boundary on a \
                                              reasoned 'done' — the owning recipe's outcome \
                                              fires now, no sweep, no tool-call dependency"
@@ -407,7 +407,7 @@ pub(crate) async fn ask_the_act_question(
                                     class = "work.blocker",
                                     persona = %ctx.identity.agent_name,
                                     lamport = lamport,
-                                    reason = reason.as_deref().unwrap_or(""),
+                                    reason = reason.as_deref().unwrap_or(""),  // unwrap_or: no reason given = empty field on the probe
                                     "held-work turn passed BLOCKED — card stays hers; a \
                                      candidate substrate-gap report, not a completion"
                                 ),

@@ -1669,7 +1669,7 @@ async fn open_review_card(airc: &Arc<Airc>, parent: WorkCardId) -> Result<WorkCa
                 .and_then(|reg| reg.get(o.as_uuid()))
                 .map(|rt| rt.agent_name().to_string())
         })
-        .unwrap_or_else(|| "the owner".to_string());
+        .unwrap_or_else(|| "the owner".to_string());  // unwrap_or: owner not resident = a neutral name in the review body
     let title = crate::commands::benchmark::review_card_title(parent.as_uuid(), &instance, &owner);
     let p8 = parent.as_uuid().simple().to_string()[..8].to_string();
     let body = format!(
@@ -1713,11 +1713,11 @@ async fn raw_advance(
     let room_id = room_holding_card(airc, card_id)
         .await
         .map(|r| r.channel.as_uuid().to_string())
-        .unwrap_or_default();
+        .unwrap_or_default();  // unwrap_or: a card we cannot place carries an empty room on the bus
     emit_card_state_changed(
         serde_json::json!({
             "card_id": card_id.as_uuid().to_string(),
-            "state": serde_json::to_value(state).unwrap_or(serde_json::Value::Null),
+            "state": serde_json::to_value(state).unwrap_or(serde_json::Value::Null),  // unwrap_or: an unserializable state = null on the bus, never a panic on the verb
             "room_id": room_id,
         }),
         via,

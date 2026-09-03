@@ -72,7 +72,7 @@ pub async fn admit_turn(
         .clone()
         .acquire_owned()
         .await
-        .expect("adapter semaphore never closed");
+        .expect("adapter semaphore never closed");  // expect: the semaphore lives as long as the adapter, never closed
 
     let mut slot = None;
     let mut _pin = None;
@@ -168,12 +168,12 @@ mod tests {
         let pool = Arc::new(KvSlotPool::new("test://admit", 1)); // ONE citizen slot
         let sem = Arc::new(Semaphore::new(1));
         let client = reqwest::Client::new();
-        let a = ActivityKey::new(Uuid::from_u128(1), Uuid::from_u128(2)).unwrap();
-        let b = ActivityKey::new(Uuid::from_u128(3), Uuid::from_u128(4)).unwrap();
+        let a = ActivityKey::new(Uuid::from_u128(1), Uuid::from_u128(2)).unwrap();  // test: non-nil ids
+        let b = ActivityKey::new(Uuid::from_u128(3), Uuid::from_u128(4)).unwrap();  // test: non-nil ids
 
         // A is admitted: holds the permit and pins the one slot.
         let adm_a = admit_turn(&sem, Some(a), Some(pool.clone()), &client, "test://admit", 100).await;
-        let slot_a = adm_a.slot().expect("A leased the slot");
+        let slot_a = adm_a.slot().expect("A leased the slot");  // test: a 1-slot pool leases to the first admission
 
         // B tries to lease while A is pinned — eviction must skip the pinned slot, so
         // B cannot take slot_a (the pool has no other slot to give).

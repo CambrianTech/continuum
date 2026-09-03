@@ -109,7 +109,7 @@ async fn resolve_step(bench: &str, task: &str) -> Result<Step, String> {
         let t: crate::cognition::eval::EvalTask = serde_json::from_str(line.trim())
             .map_err(|e| format!("{origin} line {}: malformed EvalTask: {e}", n + 1))?;
         if t.id == task {
-            return Ok(t.setup_shell.map(Step::Shell).unwrap_or(Step::Nothing));
+            return Ok(t.setup_shell.map(Step::Shell).unwrap_or(Step::Nothing));  // unwrap_or: a task without setup_shell stages nothing
         }
     }
     Err(format!("task '{task}' not in gym '{reference}'"))
@@ -197,7 +197,7 @@ mod tests {
     // impossible. Uses a gym-shaped shell step so no dataset or mirror is needed.
     #[tokio::test]
     async fn a_claimer_who_was_never_the_assignee_is_staged_in_her_own_workspace() {
-        let home = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();  // test: temp dir creation
         let claimer = Uuid::new_v4();
         let workspace = crate::identity::citizen_peer_dir(
             home.path(),
@@ -217,7 +217,7 @@ mod tests {
     // card by a loose title parse.
     #[tokio::test]
     async fn a_plain_work_card_stages_as_ordinary() {
-        let home = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();  // test: temp dir creation
         let staged = stage_for_claimer(home.path(), Uuid::new_v4(), "Fix the login redirect").await;
         assert_eq!(staged, Staging::Ordinary);
     }
@@ -227,7 +227,7 @@ mod tests {
     // unstaged workspace) and never Ordinary (which would hide a recipe defect).
     #[tokio::test]
     async fn a_failing_setup_shell_reports_failed_not_ready() {
-        let home = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();  // test: temp dir creation
         let staged = stage_shell(&home.path().join("ws"), "echo boom >&2; exit 3").await;
         assert_eq!(
             staged,

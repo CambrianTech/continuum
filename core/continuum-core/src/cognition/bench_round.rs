@@ -299,7 +299,7 @@ static ROUNDS: LazyLock<Mutex<HashMap<Uuid, BenchRound>>> =
 /// Persisted with the round: freshness survives the seam. A card outside any live
 /// round records nothing (there is no round to read it back for).
 pub fn record_card_worked(card_id: Uuid, now_ms: u64) {
-    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every ROUNDS lock
     if let Some(round) = rounds.values_mut().find(|r| r.cards.contains_key(&card_id)) {
         round.card_last_act_ms.insert(card_id, now_ms);
         persist_round_in(&rounds_state_dir(), round);
@@ -311,7 +311,7 @@ pub fn record_card_worked(card_id: Uuid, now_ms: u64) {
 pub fn card_last_act_ms(card_id: Uuid) -> Option<u64> {
     ROUNDS
         .lock()
-        .unwrap_or_else(|p| p.into_inner())
+        .unwrap_or_else(|p| p.into_inner())  // poisoned lock = read the last state, same policy as every ROUNDS lock
         .values()
         .find_map(|r| r.card_last_act_ms.get(&card_id).copied())
 }
@@ -423,7 +423,7 @@ pub fn reap_orphaned_rounds() -> Vec<(String, usize)> {
             expired.iter().map(|(b, _)| b).collect();
         ROUNDS
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
+            .unwrap_or_else(|p| p.into_inner())  // poisoned lock = read the last state, same policy as every ROUNDS lock
             .retain(|_, r| r.stage != RoundStage::Working || !dead.contains(&r.benchmark));
     }
     expired
@@ -483,7 +483,7 @@ fn reap_with_ttl(dir: &Path, ttl: std::time::Duration) -> Vec<(String, usize)> {
 ///
 /// Idempotent by round id: re-opening a live round leaves it untouched.
 pub fn open_round(round_id: Uuid, benchmark: &str, driver: WorkDriver) {
-    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every ROUNDS lock
     let round = rounds
         .entry(round_id)
         .or_insert_with(|| BenchRound::new(round_id, benchmark, &[], driver));
@@ -498,7 +498,7 @@ pub fn open_round(round_id: Uuid, benchmark: &str, driver: WorkDriver) {
 /// [`open_round`]) — the presence emitter's adoption list reads it so the
 /// RUN room, not just its solve children, projects presence + transcript.
 pub fn set_run_room_name(round_id: Uuid, name: &str) {
-    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every ROUNDS lock
     if let Some(round) = rounds.get_mut(&round_id) {
         round.run_room_name = name.to_string();
         persist_round_in(&rounds_state_dir(), round);
@@ -506,7 +506,7 @@ pub fn set_run_room_name(round_id: Uuid, name: &str) {
 }
 
 pub fn set_round_team(round_id: Uuid, team: Vec<Uuid>) {
-    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every ROUNDS lock
     if let Some(r) = rounds.get_mut(&round_id) {
         r.team = team;
         persist_round_in(&rounds_state_dir(), r);
@@ -515,7 +515,7 @@ pub fn set_round_team(round_id: Uuid, team: Vec<Uuid>) {
 
 /// Turn the round's REVIEW GATE on (dispatch calls it right after [`open_round`]).
 pub fn set_review_gate(round_id: Uuid, on: bool) {
-    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every ROUNDS lock
     if let Some(r) = rounds.get_mut(&round_id) {
         r.review_gate = on;
         persist_round_in(&rounds_state_dir(), r);
@@ -527,7 +527,7 @@ pub fn set_review_gate(round_id: Uuid, on: bool) {
 pub fn review_required(card: Uuid) -> bool {
     ROUNDS
         .lock()
-        .unwrap_or_else(|p| p.into_inner())
+        .unwrap_or_else(|p| p.into_inner())  // poisoned lock = read the last state, same policy as every ROUNDS lock
         .values()
         .find(|r| r.cards.contains_key(&card))
         .is_some_and(|r| r.review_gate && !r.reviews_passed.contains(&card))
@@ -536,7 +536,7 @@ pub fn review_required(card: Uuid) -> bool {
 /// Record the sibling review card of `parent` (posted by the gate). Returns the
 /// round id it joined, or `None` when the parent is in no live round.
 pub fn register_review_card(parent: Uuid, review: Uuid) -> Option<Uuid> {
-    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every ROUNDS lock
     let r = rounds.values_mut().find(|r| r.cards.contains_key(&parent))?;
     r.review_cards.insert(review, parent);
     persist_round_in(&rounds_state_dir(), r);
@@ -547,7 +547,7 @@ pub fn register_review_card(parent: Uuid, review: Uuid) -> Option<Uuid> {
 pub fn review_parent(card: Uuid) -> Option<Uuid> {
     ROUNDS
         .lock()
-        .unwrap_or_else(|p| p.into_inner())
+        .unwrap_or_else(|p| p.into_inner())  // poisoned lock = read the last state, same policy as every ROUNDS lock
         .values()
         .find_map(|r| r.review_cards.get(&card).copied())
 }
@@ -555,7 +555,7 @@ pub fn review_parent(card: Uuid) -> Option<Uuid> {
 /// The reviewer's verdict landed: the review card retires; a pass unlocks the
 /// parent's `done`. Returns the parent.
 pub fn settle_review_card(review: Uuid, passed: bool) -> Option<Uuid> {
-    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every ROUNDS lock
     let r = rounds.values_mut().find(|r| r.review_cards.contains_key(&review))?;
     let parent = r.review_cards.remove(&review)?;
     if passed {
@@ -570,7 +570,7 @@ pub fn settle_review_card(review: Uuid, passed: bool) -> Option<Uuid> {
 pub fn add_card(round_id: Uuid, card_id: Uuid) {
     if let Some(r) = ROUNDS
         .lock()
-        .unwrap_or_else(|p| p.into_inner())
+        .unwrap_or_else(|p| p.into_inner())  // poisoned lock = read the last state, same policy as every ROUNDS lock
         .get_mut(&round_id)
     {
         r.cards.entry(card_id).or_insert(None);
@@ -583,7 +583,7 @@ pub fn add_card(round_id: Uuid, card_id: Uuid) {
 /// skipped / already on board) stages and immediately ends — an honest empty round,
 /// never a map entry that no event can ever settle.
 pub fn seal_round(round_id: Uuid) {
-    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every ROUNDS lock
     let Some(round) = rounds.get(&round_id) else {
         return;
     };
@@ -626,7 +626,7 @@ pub fn seal_round(round_id: Uuid) {
 pub fn room_for_card(card_id: Uuid) -> Option<Uuid> {
     ROUNDS
         .lock()
-        .unwrap_or_else(|p| p.into_inner())
+        .unwrap_or_else(|p| p.into_inner())  // poisoned lock = read the last state, same policy as every ROUNDS lock
         .values()
         .find(|r| r.cards.contains_key(&card_id))
         .map(|r| r.round_id)
@@ -804,9 +804,17 @@ pub fn pullable_cards(
 ) -> Vec<NextCard> {
     let rounds = ROUNDS.lock().expect("bench rounds mutex");
     let live = live_run_ids();
-    rounds
+    // THE FULLEST DECK DRAINS FIRST: rounds ordered by remaining cards (desc), so a
+    // fresh 12-card round is worked ahead of an old round's last stragglers. Map
+    // order starved a new round entirely (measured: 9 pulls to the older round, 0 to
+    // the new one in 20 min).
+    let mut ordered: Vec<&BenchRound> = rounds
         .values()
         .filter(|r| r.stage == RoundStage::Working && r.driver == WorkDriver::Citizen)
+        .collect();
+    ordered.sort_by(|a, b| b.remaining().cmp(&a.remaining()).then(a.round_id.cmp(&b.round_id)));
+    ordered
+        .into_iter()
         // ELIGIBILITY IS RESIDENCY. She may pull from any run room she is standing in
         // — the round's `team` (really its reviewer set, empty unless `--teammates`)
         // and the dispatch-time assignee were the gate that locked 7 of 12 residents
@@ -946,7 +954,7 @@ fn first_unworked_excluding(
 /// Operator hold: flip a Working round to Paused (persisted). Returns false
 /// when the round is unknown or already terminal.
 pub fn pause_round(round_id: Uuid) -> bool {
-    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every ROUNDS lock
     match rounds.get_mut(&round_id) {
         Some(r) if r.stage == RoundStage::Working => {
             r.stage = RoundStage::Paused;
@@ -967,7 +975,7 @@ pub fn pause_round(round_id: Uuid) -> bool {
 /// of waiting for the next settle edge.
 pub fn resume_round(round_id: Uuid) -> Option<NextCard> {
     let live = live_run_ids();
-    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every ROUNDS lock
     let r = rounds.get_mut(&round_id)?;
     match r.stage {
         RoundStage::Paused => {
@@ -1004,7 +1012,7 @@ pub fn resume_round(round_id: Uuid) -> Option<NextCard> {
 pub fn driver_for_card(card_id: Uuid) -> WorkDriver {
     ROUNDS
         .lock()
-        .unwrap_or_else(|p| p.into_inner())
+        .unwrap_or_else(|p| p.into_inner())  // poisoned lock = read the last state, same policy as every ROUNDS lock
         .values()
         .find(|r| r.cards.contains_key(&card_id))
         .map(|r| r.driver)
@@ -1047,7 +1055,7 @@ pub fn observe_card_event(payload: &Value) {
         return;
     };
 
-    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());
+    let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every ROUNDS lock
     // A card belongs to at most one round: dispatch's idempotence gate refuses a second
     // live card per task, and card uuids are minted per card. First match is THE match.
     let Some(round) = rounds.values_mut().find(|r| r.cards.contains_key(&card)) else {
@@ -1538,7 +1546,7 @@ mod tests {
         let deck = pullable_cards(Uuid::new_v4(), &resident);
         assert_eq!(deck[0].card, review, "the review card leads the deck");
         assert_eq!(
-            ROUNDS.lock().unwrap().get(&round_id).unwrap().remaining(),
+            ROUNDS.lock().unwrap().get(&round_id).unwrap().remaining(),  // test: the round was opened above
             1,
             "a review card is not a round card"
         );
@@ -1549,7 +1557,7 @@ mod tests {
         register_review_card(card, again);
         assert_eq!(settle_review_card(again, true), Some(card));
         assert!(!review_required(card), "a pass opens the gate for the parent's done");
-        ROUNDS.lock().unwrap().remove(&round_id);
+        ROUNDS.lock().unwrap().remove(&round_id);  // test: cleanup of the round opened above
     }
 
     #[test]
@@ -1881,7 +1889,7 @@ mod tests {
         );
         seal_round(round_id);
         assert_eq!(driver_for_card(first), WorkDriver::Citizen);
-        ROUNDS.lock().unwrap().remove(&round_id);
+        ROUNDS.lock().unwrap().remove(&round_id);  // test: cleanup of the round opened above
     }
 
     // what this catches: the default biting the wrong way — INVERTED 2026-08-31
@@ -1929,7 +1937,7 @@ mod tests {
             next.as_ref().is_some_and(|n| ids.contains(&n.card)),
             "a WORKING round with no live run must kick its first unworked card: {next:?}"
         );
-        ROUNDS.lock().unwrap().remove(&round_id);
+        ROUNDS.lock().unwrap().remove(&round_id);  // test: cleanup of the round opened above
     }
 
     // what this catches: the END transition firing more than once. All-settled must yield
@@ -1992,7 +2000,7 @@ mod tests {
             "settled is reported, never left to subtraction — an absence must not become a guess"
         );
 
-        ROUNDS.lock().unwrap().remove(&round_id);
+        ROUNDS.lock().unwrap().remove(&round_id);  // test: cleanup of the round opened above
     }
 
     // what this catches: a duplicate terminal event double-counting a card. The bridge
