@@ -22,6 +22,8 @@ workshop, plain). No client computes truth; no page is a special case.
 /personas/kira/mind                       what she sees now: grounding, doctrine, working set
 /personas/kira/mind/engrams               her memory, by recall key; dreams consolidated
 /personas/kira/learning                   examples buffered, buckets, adapters, grades credited
+/personas/kira/explore                    her EMBODIED view: the 3-D sim of where she stands
+/neighborhood                             the grid: every persona on every node, walkable
 /core                                     the serving core: lanes, demand, throughput, dreams
 /core/lanes/3                             one lane: who holds it, prefill/decode, KV pages
 ```
@@ -31,6 +33,19 @@ activity's base comes from its recipe — `academy` for learning by purpose), ne
 names in code. The path segments are the room directory's names; ids resolve the same
 routes (`/room/<uuid>` is the same page as its path).
 
+## The 3-D world is one more universe, not one more page (Joel 9/3)
+
+`/personas/kira/explore` and `/neighborhood` render the SAME view states the flat pages
+render — presence directory, roster, room bindings, her sight — as a walkable world (Sims /
+Second Life, literally): a persona is an avatar standing in the room she is resident in, her
+held card is what she is working at, her sight is what she is looking at, the room tree is
+the map, and other nodes on the grid are the neighborhood beyond the fence. No world-only
+truth: everything visible in the world is visible on the flat page and vice versa, because
+both are projections of one semantic layer. Trek is the console skin for the engineering
+areas (core, lanes, academy); the sim is the skin for people and places. Each is an asset
+payload ([[universes-are-positron-asset-payloads-one-semantic-layer-n-worlds]]); the
+embodiment work rides the avatar plan (JEPA-class world models over VLA).
+
 ## What each page is made of (nothing new)
 
 | Page | View state(s) already in Rust | Verb a citizen can call today |
@@ -39,6 +54,7 @@ routes (`/room/<uuid>` is the same page as its path).
 | round / card | Bench + Kanban + Roster + Chat | `benchmark/rounds`, `work/get` |
 | persona profile | Roster + presence directory + genome | `persona/roster`, `presence/directory`, `genome/list` |
 | persona mind | the RAG allocation + deliveries | `persona/rag-inspect` |
+| persona explore / neighborhood | presence directory + roster + room bindings + sight, rendered as a world | `presence/directory`, `persona/roster`, `persona/rag-inspect` |
 | persona learning | training-trigger buckets + verdicts | `genome/training-trigger/status` |
 | core | Serving + metrics | `serving/*`, `ai/report` |
 

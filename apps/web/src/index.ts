@@ -27,7 +27,12 @@ import {
   type StateEnvelope,
 } from '@continuum/sdk-typescript';
 import { resolveConfig } from './config';
-import { setMindFeed } from './persona/renderPersona';
+import {
+  onPersonaTabChange,
+  setMindFeed,
+  setMindSight,
+  setRequestedPersonaTab,
+} from './persona/renderPersona';
 import {
   ChatWidget,
   type CloseTabHandler,
@@ -229,12 +234,59 @@ async function main(): Promise<void> {
     } catch (err) {
       console.error('mind feed poll failed:', err);
     }
+    // WHAT SHE SEES NOW: the exact grounding her model would get this instant.
+    // `persona/rag-inspect` resolves by NAME today (an id misses the seed
+    // path); the directory seed maps her id back to it.
+    const personaName = widget.directorySeed.find((m) => m.id === personaId)?.name;
+    if (personaName === undefined) return; // directory not seeded yet — next poll
+    try {
+      const raw = await transport.execute(
+        buildCommandUri('persona/rag-inspect'),
+        JSON.stringify({ persona: personaName }),
+      );
+      const parsed = JSON.parse(raw) as {
+        contextWindow?: number;
+        totalAllocated?: number;
+        escalationNeeded?: boolean;
+        deliveries?: readonly {
+          sourceId?: string;
+          source?: string;
+          tokensUsed?: number;
+          items?: readonly { contentPreview?: string; content?: string }[];
+        }[];
+      };
+      const sources = (parsed.deliveries ?? []).map((d) => {
+        const id = d.sourceId ?? d.source ?? '?';
+        const items = d.items ?? [];
+        const newest = items[items.length - 1];
+        return {
+          source: id,
+          // Tokens she actually receives from this source (the allocation is a
+          // budget and reads null for an unbudgeted source — caught live as "0 tok").
+          tokens: d.tokensUsed ?? 0,
+          delivered: items.length,
+          preview: (newest?.contentPreview ?? newest?.content ?? '').slice(0, 160),
+        };
+      });
+      setMindSight({
+        personaId,
+        fetchedAtMs: Date.now(),
+        contextWindow: parsed.contextWindow ?? 0,
+        totalAllocated: parsed.totalAllocated ?? 0,
+        escalationNeeded: parsed.escalationNeeded ?? false,
+        sources,
+      });
+      widget.mindRevision = Date.now();
+    } catch (err) {
+      console.error('mind sight poll failed:', err);
+    }
   };
   const focusMind = (personaId: string | undefined): void => {
     if (mindTimer !== undefined) clearInterval(mindTimer);
     mindTimer = undefined;
     if (personaId === undefined) {
       setMindFeed(undefined);
+      setMindSight(undefined);
       return;
     }
     void pollMind(personaId);
@@ -254,7 +306,12 @@ async function main(): Promise<void> {
     // it knows the tab. replaceState: navigation-in-place, not history spam.
     const known = widget.nav?.open_tabs?.find((t) => t.id === target);
     const short = known?.title ? known.title.toLowerCase() : target;
-    window.history.replaceState(null, '', `/${kind}/${encodeURIComponent(short)}`);
+    const tab = kind === 'persona' ? personaTab : undefined;
+    window.history.replaceState(
+      null,
+      '',
+      `/${kind}/${encodeURIComponent(short)}${tab !== undefined ? `/${tab}` : ''}`,
+    );
   };
   widget.selectRoomHandler = selectRoomHandler;
 
@@ -300,14 +357,28 @@ async function main(): Promise<void> {
   // UUID-typed (names are display, ids are identity). The pending link waits
   // for the first nav envelope that knows the target, fires once, clears.
   let pendingDeepLink: { kind: 'room' | 'persona'; target: string } | null = null;
+  // The persona page's current face, mirrored into the address bar
+  // (`/persona/kira/mind`) — set by the deep link, then by tab clicks.
+  let personaTab: string | undefined;
+  onPersonaTabChange((tab) => {
+    personaTab = tab;
+    const m = /^\/persona\/([^/]+)/.exec(window.location.pathname);
+    if (m?.[1] !== undefined) window.history.replaceState(null, '', `/persona/${m[1]}/${tab}`);
+  });
   let focusPinned = false;
   {
-    const m = /^\/(room|persona)\/(.+)$/.exec(window.location.pathname);
+    // `/persona/<name>/<tab>` — the path names the page AND its face
+    // (docs/architecture/URI-ADDRESSED-DESKTOP.md): `/persona/kira/mind` opens her mind.
+    const m = /^\/(room|persona)\/([^/]+)(?:\/([a-z]+))?$/.exec(window.location.pathname);
     if (m?.[1] !== undefined && m[2] !== undefined) {
       pendingDeepLink = {
         kind: m[1] as 'room' | 'persona',
         target: decodeURIComponent(m[2]),
       };
+      if (m[1] === 'persona') {
+        setRequestedPersonaTab(m[3]);
+        personaTab = m[3];
+      }
     }
   }
   const UUID_LINK = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -317,6 +388,7 @@ async function main(): Promise<void> {
     // (solve rooms are navigable before they ever appear in a tab set).
     if (UUID_LINK.test(pendingDeepLink.target)) {
       const { kind, target } = pendingDeepLink;
+      focusPinned = true;
       void selectRoomHandler(target, kind)
         .then(() => {
           pendingDeepLink = null; // consumed only on SUCCESS
@@ -324,6 +396,7 @@ async function main(): Promise<void> {
         .catch(() => {
           // Transport not up yet (page-load race) — the next nav envelope
           // retries; the link is only consumed when the select lands.
+          focusPinned = false;
         });
       return;
     }
@@ -337,7 +410,13 @@ async function main(): Promise<void> {
       const member = widget.directorySeed.find((m) => m.name.toLowerCase() === want);
       if (member === undefined) return; // directory not seeded yet — next envelope
       pendingDeepLink = null;
+      // The link IS the explicit selection: pin before selecting, or the same
+      // envelope's focus pin selects the daemon's current tab right behind it
+      // (caught live 2026-09-03: `/persona/kira/mind` rendered, then the
+      // academy landed on top of it).
+      focusPinned = true;
       void selectRoomHandler(member.id, 'persona').catch((err: unknown) => {
+        focusPinned = false;
         console.error(`deep link ${window.location.pathname} failed:`, err);
       });
       return;
@@ -348,7 +427,9 @@ async function main(): Promise<void> {
     if (hit?.id === undefined) return; // nav doesn't know it yet — next envelope
     const { kind } = pendingDeepLink;
     pendingDeepLink = null;
+    focusPinned = true;
     void selectRoomHandler(hit.id, kind).catch((err: unknown) => {
+      focusPinned = false;
       console.error(`deep link ${window.location.pathname} failed:`, err);
     });
   };

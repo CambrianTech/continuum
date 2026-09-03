@@ -3709,6 +3709,57 @@ export class ChatWidget extends LitElement {
       font-style: italic;
       padding: var(--spacing-sm) 0;
     }
+    /* WHAT SHE SEES NOW — her window as a gauge, one row per grounding source. */
+    .sight-window {
+      height: 6px;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.04);
+      overflow: hidden;
+      margin-bottom: var(--spacing-sm);
+    }
+    .sight-window > span {
+      display: block;
+      height: 100%;
+      background: var(--status-online);
+      box-shadow: 0 0 8px rgba(0, 255, 136, 0.45);
+      transition: width 600ms ease;
+    }
+    .sight-sources {
+      display: grid;
+      gap: 6px;
+    }
+    .sight-row {
+      display: grid;
+      grid-template-columns: 7rem 10rem minmax(0, 1fr);
+      gap: var(--spacing-sm);
+      align-items: baseline;
+      font-size: 12px;
+    }
+    .sight-source {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--status-online);
+    }
+    .sight-tokens {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--content-secondary);
+      font-variant-numeric: tabular-nums;
+    }
+    .sight-preview {
+      color: var(--content-primary);
+      opacity: 0.85;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    @media (max-width: 720px) {
+      .sight-row { grid-template-columns: 1fr; gap: 2px; }
+      .sight-preview { white-space: normal; }
+    }
     .p-facts {
       display: flex;
       flex-wrap: wrap;
