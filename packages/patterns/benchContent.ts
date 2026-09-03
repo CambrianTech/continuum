@@ -133,6 +133,11 @@ export interface BenchRoundCardVM {
   readonly patchBytes: number | null;
   readonly lastActSecs: number | null;
   readonly resolved: boolean | null;
+  /** BOARD truth: who holds the card now (display name; '' = nobody). */
+  readonly owner: string;
+  /** BOARD truth: the card's column ('' when the board was unreadable). */
+  readonly boardState: string;
+  readonly gradedAtMs: number | null;
 }
 
 /** The bench board's content body. */

@@ -19,7 +19,7 @@
  */
 
 import { html, nothing, type TemplateResult } from 'lit';
-import type { BenchContentBody, BenchRoundVM, BenchRunVM, BenchVerdictVM } from '@continuum/patterns';
+import type { BenchContentBody, BenchRoundCardVM, BenchRoundVM, BenchRunVM, BenchVerdictVM } from '@continuum/patterns';
 
 /** One in-flight ROUND row — the tracker's own lifecycle truth (#371), not a
  *  client-side count over run rows. settled/dispatched IS the round's progress. */
@@ -87,18 +87,45 @@ function emitRoundControl(e: Event, action: 'pause' | 'resume', roundId: string)
  *  strip they rendered as nothing at all, so `working 0/8` was pixel-identical
  *  for three hours of thrash and a healthy grind (2026-09-01). One compact row
  *  per unstarted card: WHAT waits and on WHOM. */
+const HELD_COLUMNS = new Set(['claimed', 'in_progress', 'review']);
+
+/** BOARD truth wins over the tracker: a card the board shows CLAIMED / IN PROGRESS /
+ *  REVIEW is in someone's hands even when the tracker (which never records a claim)
+ *  still says "unstarted". Seen live 2026-09-03: a round nine citizens were working
+ *  rendered as "12 not started · unassigned". */
+function inHands(c: BenchRoundCardVM): boolean {
+  return HELD_COLUMNS.has(c.boardState);
+}
+
+function whoHolds(c: BenchRoundCardVM): string {
+  return c.owner !== '' ? c.owner : c.assignee;
+}
+
 function rollCall(round: BenchRoundVM): TemplateResult | typeof nothing {
-  const unstarted = round.cards.filter((c) => c.state === 'unstarted');
-  if (unstarted.length === 0) return nothing;
-  return html`<div class="bench-rollcall" role="group" aria-label="cards not yet started">
-    <span class="bench-rollcall-head">${unstarted.length} not started</span>
-    ${unstarted.map(
-      (c) => html`<span class="bench-rollcall-card" title=${c.solveRoomName !== '' ? c.solveRoomName : c.cardId}>
-        ${c.instance !== '' ? c.instance : c.cardId.slice(0, 8)}${c.assignee !== ''
-          ? html` <i>· ${c.assignee}</i>`
-          : nothing}</span>`,
-    )}
-  </div>`;
+  const held = round.cards.filter((c) => c.state === 'unstarted' && inHands(c));
+  const unstarted = round.cards.filter((c) => c.state === 'unstarted' && !inHands(c));
+  if (held.length === 0 && unstarted.length === 0) return nothing;
+  return html`${held.length > 0
+      ? html`<div class="bench-rollcall" role="group" aria-label="cards in hands">
+          <span class="bench-rollcall-head">${held.length} in hands</span>
+          ${held.map(
+            (c) => html`<span class="bench-rollcall-card" title=${c.boardState}>
+              ${c.instance !== '' ? c.instance : c.cardId.slice(0, 8)} <i>· ${whoHolds(c)}</i>
+              ${c.lastActSecs !== null ? html`<small>${age(c.lastActSecs)}</small>` : nothing}</span>`,
+          )}
+        </div>`
+      : nothing}
+    ${unstarted.length > 0
+      ? html`<div class="bench-rollcall" role="group" aria-label="cards not yet started">
+          <span class="bench-rollcall-head">${unstarted.length} not started</span>
+          ${unstarted.map(
+            (c) => html`<span class="bench-rollcall-card" title=${c.solveRoomName !== '' ? c.solveRoomName : c.cardId}>
+              ${c.instance !== '' ? c.instance : c.cardId.slice(0, 8)}${whoHolds(c) !== ''
+                ? html` <i>· ${whoHolds(c)}</i>`
+                : nothing}</span>`,
+          )}
+        </div>`
+      : nothing}`;
 }
 
 /** Compact seconds → "12s" / "3m" / "2h" — board legibility, not precision. */
