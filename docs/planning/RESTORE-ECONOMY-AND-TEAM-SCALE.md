@@ -57,9 +57,25 @@ save ms, restore ms, FIFO wait (queued behind another slot op / decode), re-pref
 if the restore missed. Land the numbers in this doc. Do not build S3 before S0 says
 serial paging is actually the cost (the "measure before leaning" discipline).
 
-**S1 — Fast birthing.** Mint+seat a citizen in ~seconds: batch/parallelize the
-keypair ceremony, seat the service loop first, defer avatar/card cosmetics. Acceptance:
-`persona/spawn --count=8` reaches 8 resident-or-ready in < ~30s.
+**S1 — Fast birthing / fast RESUME.** Mint+seat a citizen in ~seconds. Layered
+findings (measured 2026-09-03, a REBOOT of ~10 resuming citizens):
+  - ✅ DONE: persona bootstrap was SERIAL (`bootstrap_planned` ran the keypair
+    ceremony + seed one persona at a time); parallelized via join_all (commit
+    `7c8683332`). Cut resume from ~60 min (serial) to ~11 min (validated live).
+  - ⛔ THE DOMINANT COST (not yet fixed): hosting is gated on
+    `await_ready_serving` (decode-ready), and that took **~10 min** post-reboot —
+    serving reported `ready=true` at t+1min but decode-ready only at t+11min, and
+    service loops (turns) don't spawn until then. This is the real "resume is slow."
+    The lane was ADOPTED (left up across the reboot — it was decoding seconds
+    before), so decode-ready should be NEAR-INSTANT, not 10 min. Chase: why an
+    adopted lane re-verifies decode-readiness so slowly (a slow decode-probe? the
+    mmproj `vision=false` churn keeping the serving daemon re-reconciling and never
+    settling? a teardown+reload instead of a true adopt?). This is the S1 headline.
+  - `warmup()` is a NO-OP for the OpenAI adapter (ruled out as a cost).
+  - Also: `materialize_adapters` builds adapters in a serial loop (`build_adapter`
+    awaits ready serving each) — parallelize it too once decode-ready is fast.
+  Acceptance: a reboot with N resuming citizens resumes turns in SECONDS (adopted
+  lane instantly decode-ready), not minutes; `persona/spawn` seats fast too.
 
 **S2 — >lane residency via rotation (the restore economy core).** A residency
 governor that admits N > lanes personas and rotates them: the least-recently-active
