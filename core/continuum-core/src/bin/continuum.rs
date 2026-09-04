@@ -52,13 +52,16 @@ async fn main() {
 async fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     let first = args.next().ok_or_else(usage)?;
+    // Every CLI run from inside a repo records that checkout for the core
+    // (repo-card staging reads it); the first deploy after #3706 would otherwise
+    // start with an empty registry until the next `start`/`reboot`.
+    record_repo_checkout();
     match first.as_str() {
         "-h" | "--help" | "help" => {
             eprintln!("{}", usage());
             Ok(())
         }
         "start" => {
-            record_repo_checkout();
             // Collect once: `args.any(..)` consumes the iterator, so reading a
             // second flag off it afterwards would silently always be false.
             let flags: Vec<String> = args.collect();
@@ -72,7 +75,6 @@ async fn run() -> Result<(), String> {
             start(flags.iter().any(|a| a == "--force")).await
         }
         "reboot" | "restart" => {
-            record_repo_checkout();
             let force = args.any(|a| a == "--force");
             reboot(force).await
         }

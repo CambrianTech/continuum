@@ -61,7 +61,16 @@ const DMR_DOWN_WARN_THRESHOLD_TICKS: u64 = 6;
 /// the gateway. Deliberately SHORT: a cold large GGUF will not finish loading
 /// in this window, and we do NOT want boot to block on it — that case hands off
 /// to the reactive watcher below ([[fallbacks-are-illegal-fail-loud]], task #71).
-const GATEWAY_FAST_PATH_WAIT: Duration = Duration::from_secs(8);
+// MEASURED 2026-09-04 on all three hosts (M5 8.1 s, 5090 host 10.1 s, Intel 8.0 s
+// of ai_provider init): on a cold boot the local server is NEVER ready inside
+// this window — the serving daemon launches it AFTER module init — so the wait
+// was a fixed ~8 s tax on the PRE-BIND path of every boot on every machine,
+// and the gateway registered through the reactive watcher anyway. Zero = "is
+// it ready right now" (a surviving server on a warm reboot still takes the fast
+// path); the cold boot hands off to the watcher immediately. A citizen's first
+// select can miss the gateway for the watcher's few hundred ms — she boots,
+// catches up, and grounds for far longer than that before her first turn.
+const GATEWAY_FAST_PATH_WAIT: Duration = Duration::ZERO;
 
 // (GATEWAY_REACTIVE_CAP retired with the one-shot watcher: the persistent
 // gateway-sync task, card ed3661c4, follows the serving snapshot for the life

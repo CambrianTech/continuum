@@ -66,6 +66,15 @@ use airc_lib::{Airc, AircError, DEFAULT_HEARTBEAT_INTERVAL};
 /// migrates a living citizen.
 pub const CITIZEN_COMMONS_ROOM: &str = "academy";
 
+/// airc's OWN generic lobby — not continuum's commons.
+///
+/// Named rather than spelled inline because the distinction is the whole
+/// point: `#general` is where a bare airc scope lands when nothing tells it
+/// otherwise, and continuum always has something to say
+/// ([`CITIZEN_COMMONS_ROOM`]). A literal `"general"` in continuum code reads
+/// like a choice; nine times in ten it is the absence of one.
+pub const AIRC_LOBBY_ROOM: &str = "general";
+
 /// Abort-on-drop guard for the continuum-owned heartbeat pump (#260): keeps
 /// the airc `HeartbeatTask` teardown contract — dropping the runtime aborts
 /// the pump so a torn-down persona ages out of the roster within the
@@ -1046,6 +1055,21 @@ impl PersonaAircRuntime {
     /// turns — every per-run room was born deaf).
     pub async fn join_room(&self, name: &str) -> Result<(), AircError> {
         self.airc.join(name).await?;
+        self.membership_epoch.send_modify(|e| *e += 1);
+        Ok(())
+    }
+
+    /// Belong to `name` WITHOUT moving the focus — the citizen's verb, where
+    /// [`join_room`](Self::join_room) is the operator's.
+    ///
+    /// `Airc::join` is subscribe AND focus; this is subscribe alone. Use it for
+    /// a room this peer should receive and be able to speak in, when some OTHER
+    /// room is the one its short-shape commands (and its work cards) belong to.
+    /// Bumps the same membership epoch as `join_room`, because a subscription
+    /// change is a membership change however the focus lands — routing that off
+    /// this epoch must not care which verb moved it.
+    pub async fn subscribe_room(&self, name: &str) -> Result<(), AircError> {
+        self.airc.subscribe_room(name).await?;
         self.membership_epoch.send_modify(|e| *e += 1);
         Ok(())
     }

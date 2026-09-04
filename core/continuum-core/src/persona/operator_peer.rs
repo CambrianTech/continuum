@@ -65,18 +65,81 @@ pub async fn ensure_operator_peer(
                 peer_id = %rt.airc().peer_id(),
                 "operator self-peer online — room-scoped verbs now act as the human, not a denial (#27)"
             );
-            // The human belongs in the commons by default. Without this join the
-            // operator's chat/send to general was store+live-fed but the daemon
-            // refused the say ("this scope is not subscribed") — the human could
-            // see the room and still not be heard in it (caught live 2026-08-31,
-            // the DM-during-benchmark acid test). Idempotent; failure is loud
-            // but non-fatal — room/join remains the manual path.
-            if let Err(e) = rt.join_room("general").await {
+            // The human belongs in the CITIZENS' commons by default, and stays
+            // reachable in airc's lobby.
+            //
+            // This was `join_room("general")` — a hardcoded literal, and the
+            // wrong room. `Airc::join` is subscribe AND focus, so the operator
+            // self-peer's DEFAULT room became airc's generic lobby while every
+            // citizen on the same node lands in `CITIZEN_COMMONS_ROOM` (see
+            // `PersonaAircRuntime::bootstrap_as`). The human stood in a
+            // different room from every citizen on their own machine.
+            //
+            // Two consequences, both silent. Room-scoped verbs invoked without a
+            // persona resolved a room no citizen boards from; and `work/create`
+            // publishes to the handle's current room and returns only a
+            // `card_id`, so every operator-filed card landed on that board with
+            // nothing in the result able to say so. Measured 2026-09-04
+            // (IntelMac, 2,000 events): 47 `card_created` in `#academy` from
+            // four publishers, 3 in `#general` — all three this node's operator
+            // peer. A card filed that way and not also announced in chat simply
+            // does not exist for anyone else: no error, no empty result.
+            //
+            // ORDER IS LOAD-BEARING. `subscribe_room` joins without promoting,
+            // so the lobby stays speakable — that was the point of the original
+            // join (2026-08-31, the DM-during-benchmark acid test: the operator
+            // could SEE a room and still not be heard in it) — without becoming
+            // the focus. The `join_room` after it promotes the commons. On a
+            // FRESH scope the first subscription seeds the default and the join
+            // then corrects it; on an ESTABLISHED scope whose default drifted to
+            // the lobby, the join repairs it in place on the next boot. That
+            // self-heal is deliberate: a fix every existing install has to run
+            // by hand is not a fix.
+            //
+            // Both failures are loud and non-fatal, and the resolved room is
+            // probed below either way — a wrong room must be visible in the boot
+            // receipt rather than inferred later from where the cards went.
+            if let Err(e) = rt
+                .subscribe_room(crate::persona::airc_runtime::AIRC_LOBBY_ROOM)
+                .await
+            {
+                crate::probe!(
+                    class = "operator.peer.lobby_subscribe_failed",
+                    error = %e.to_string(),
+                    "operator self-peer could not subscribe the airc lobby — the human cannot be heard in #general until room/join"
+                );
+            }
+            if let Err(e) = rt
+                .join_room(crate::persona::airc_runtime::CITIZEN_COMMONS_ROOM)
+                .await
+            {
                 crate::probe!(
                     class = "operator.peer.commons_join_failed",
                     error = %e.to_string(),
-                    "operator self-peer could not join general — the human speaks nowhere by default until room/join"
+                    "operator self-peer could not join the citizens' commons — operator cards and room-scoped verbs land wherever the focus already was"
                 );
+            }
+            // WHERE THE HUMAN ACTUALLY ENDED UP. The bug this replaces was
+            // invisible precisely because nothing ever stated the resolved room;
+            // it had to be reconstructed from card_created room ids across two
+            // thousand events on another machine. One probe closes that.
+            match rt
+                .airc()
+                .current_room_landing_in(crate::persona::airc_runtime::CITIZEN_COMMONS_ROOM)
+                .await
+            {
+                Ok(room) => crate::probe!(
+                    class = "operator.peer.room",
+                    room = %room.name,
+                    channel = %room.channel,
+                    commons = %crate::persona::airc_runtime::CITIZEN_COMMONS_ROOM,
+                    "operator self-peer default room — operator cards and room-scoped verbs land HERE"
+                ),
+                Err(e) => crate::probe!(
+                    class = "operator.peer.room_unresolved",
+                    error = %e.to_string(),
+                    "operator self-peer default room could not be read — where operator cards land is UNKNOWN, not general"
+                ),
             }
             let _ = OPERATOR.set(rt);
         }

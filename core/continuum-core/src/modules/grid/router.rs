@@ -35,12 +35,20 @@
 
 use super::node::{GridNode, NodeCapability, TrustLevel};
 use super::registry::NodeRegistry;
-use crate::capacity::eligibility::{eligible, Offer, Requirement};
+use crate::capacity::eligibility::{
+    eligible, Capability, CapabilitySet, Offer, Requirement, WorkShape,
+};
 
 /// Params key by which a caller declares the floor a job cannot run below.
 ///
 /// Megabytes, to match the unit the node registry already advertises in.
 pub const PARAM_REQUIRES_VRAM_MB: &str = "requiresVramMb";
+
+/// Params key by which a caller declares the CLASS of work, not its size.
+///
+/// Optional: absent means `llm-inference`, which is what this path has always
+/// assumed. See [`requirement_from`].
+pub const PARAM_REQUIRES_CAPABILITY: &str = "requiresCapability";
 
 fn mb_to_bytes(mb: u64) -> u64 {
     mb.saturating_mul(1024 * 1024)
@@ -58,8 +66,23 @@ fn requirement_from(params: &serde_json::Value) -> Requirement {
         .get(PARAM_REQUIRES_VRAM_MB)
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(0);
+    // Absent class => llm-inference: the class this whole path was written for,
+    // so an undeclared job routes EXACTLY as it did before the class axis
+    // existed. Defaulting to anything else would silently re-route live traffic
+    // on a change whose point is expressiveness, not new behaviour.
+    let capability = params
+        .get(PARAM_REQUIRES_CAPABILITY)
+        .and_then(serde_json::Value::as_str)
+        .map(Capability::new)
+        .unwrap_or_else(Capability::llm_inference);
     Requirement {
         min_bytes: mb_to_bytes(mb),
+        // This router picks ONE node, so it never reads the shape; it must still
+        // state it, and LatencyCoupled is the honest default because it promises
+        // nothing. Claiming divisibility on a job that has not said so is how a
+        // scheduler ends up scattering a forward pass across a LAN.
+        shape: WorkShape::LatencyCoupled,
+        capability,
     }
 }
 
@@ -73,7 +96,47 @@ fn offer_of(node: &GridNode) -> Offer {
     Offer {
         advertised_bytes: bytes,
         node_total_bytes: bytes,
+        capabilities: classes_of(node),
     }
+}
+
+/// The work CLASSES a node's advertised capabilities imply.
+///
+/// ONE mapping, in one function, so the work-class vocabulary
+/// ([`Capability`]) and the registry's resource-kind vocabulary
+/// ([`NodeCapability`]) cannot drift apart in two places.
+///
+/// **Honest limit, and it is the same shape as the VRAM one in the module doc.**
+/// The registry says what RESOURCE a node has (`compute`, `inference`), never
+/// what CLASS of work it will serve. So a node with a GPU reads as offering
+/// `llm-inference` - which is exactly what this path already assumed, hence no
+/// behaviour change - and `vision-cnn` is at present unclaimable by ANY node.
+/// Not because no node can do it: because no node can SAY it.
+///
+/// Inventing the claim here (e.g. "a small GPU must mean vision") would be the
+/// substrate guessing on the node's behalf, which is the class of error this
+/// gate exists to refuse - and it would put a hardcoded size-tier rule in the
+/// one place that is supposed to have none. Making it claimable is a registry
+/// change: an additive classes field on the advertisement, filled in by the NODE
+/// from what it can actually run.
+fn classes_of(node: &GridNode) -> CapabilitySet {
+    let mut caps = Vec::new();
+    for c in &node.capabilities {
+        match c {
+            NodeCapability::Compute { .. } | NodeCapability::Inference { .. } => {
+                caps.push(Capability::llm_inference())
+            }
+            // Real capabilities, but not classes of dispatchable work: storage is
+            // where artifacts live, training and forge are their own lanes with
+            // their own gates. Listed explicitly rather than caught by a wildcard
+            // so a NEW variant fails to compile here and gets a decision, instead
+            // of silently defaulting to "offers nothing".
+            NodeCapability::Storage { .. }
+            | NodeCapability::Training { .. }
+            | NodeCapability::Forge { .. } => {}
+        }
+    }
+    CapabilitySet::new(caps)
 }
 
 /// Routing decision for a command.
@@ -200,11 +263,19 @@ impl GridRouter {
     /// that exempts the local node is a gate with a hole shaped like us.
     fn local_is_eligible(&self, requirement: &Requirement) -> bool {
         let bytes = mb_to_bytes(self.local_vram_mb);
+        // Same derivation a peer gets: a GPU here means llm-inference here, and
+        // no GPU claims nothing rather than claiming everything.
+        let capabilities = if self.local_has_gpu {
+            CapabilitySet::new([Capability::llm_inference()])
+        } else {
+            CapabilitySet::default()
+        };
         eligible(
             requirement,
             &Offer {
                 advertised_bytes: bytes,
                 node_total_bytes: bytes,
+                capabilities,
             },
         )
         .is_eligible()
