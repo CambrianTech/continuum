@@ -667,10 +667,10 @@ impl ActionCommand for WorkClaim {
                     use crate::modules::card_staging::Staging;
                     let staging = match crate::commands::benchmark::continuum_home() {
                         Ok(home) => {
-                            crate::modules::card_staging::stage_for_claimer(
+                            crate::modules::card_staging::stage_for_card(
                                 &home,
                                 caller.peer_id.as_uuid(),
-                                &card.title,
+                                &card,
                             )
                             .await
                         }

@@ -58,6 +58,72 @@ enum Step {
 }
 
 /// Stage `title`'s work into the workspace of `claimer` under `home`.
+/// Stage for a claimed CARD: a benchmark card stages by its title recipe (below);
+/// any other card of a repo this node has a checkout of gets airc's per-card
+/// worktree (`airc_lib::work_worktree`, #1377 — the same one the CLI gives an
+/// agent), so a citizen with no cwd can pull a continuum card and root her hands
+/// there. A repo this node never checked out stages as Ordinary, said in a probe.
+pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCard) -> Staging {
+    if crate::commands::benchmark::parse_card_title(&card.title).is_some() {
+        return stage_for_claimer(home, claimer, &card.title).await;
+    }
+    let repo = card.repo.to_string();
+    if let Some(existing) = airc_lib::work_worktree::worktree_path_for(card.card_id).filter(|p| p.join(".git").exists()) {
+        return Staging::Ready { path: existing };
+    }
+    let Some(clone) = crate::modules::repo_registry::path_for(&repo) else {
+        crate::probe!(
+            class = "work.claim.repo_unstaged",
+            claimer = %claimer,
+            repo = %repo,
+            "repo card claimed but this node has no recorded checkout of the repo — hands stay home"
+        );
+        return Staging::Ordinary;
+    };
+    let short = airc_lib::work_worktree::short_id(card.card_id);
+    let slug: String = card
+        .title
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .take(6)
+        .collect::<Vec<_>>()
+        .join("-");
+    let branch = format!("{short}/{slug}");
+    let started = std::time::Instant::now();
+    let spec_card = card.card_id;
+    let clone_for_spawn = clone.clone();
+    let branch_for_spawn = branch.clone();
+    let outcome = tokio::task::spawn_blocking(move || {
+        airc_lib::work_worktree::ensure_worktree(&airc_lib::work_worktree::WorktreeSpec {
+            card_id: spec_card,
+            clone_path: &clone_for_spawn,
+            branch: &branch_for_spawn,
+            start_point: None,
+        })
+        .map(|o| o.path().to_path_buf())
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("worktree task panicked: {e}"))); // unwrap_or_else: a panicked blocking task is a staging failure, never a crash
+    let staged = match outcome {
+        Ok(path) => Staging::Ready { path },
+        Err(error) => Staging::Failed { stage: "worktree", error },
+    };
+    crate::probe!(
+        class = "work.claim.staged",
+        claimer = %claimer,
+        bench = "repo",
+        task = %repo,
+        outcome = ?staged,
+        ms = started.elapsed().as_millis() as u64,
+        "on-claim staging — a repo card gets airc's per-card worktree"
+    );
+    staged
+}
+
 pub async fn stage_for_claimer(home: &Path, claimer: Uuid, title: &str) -> Staging {
     let Some((bench, task)) = crate::commands::benchmark::parse_card_title(title) else {
         return Staging::Ordinary;
