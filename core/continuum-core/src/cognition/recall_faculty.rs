@@ -40,7 +40,7 @@ use async_trait::async_trait;
 use futures_util::future::{join, join_all};
 use uuid::Uuid;
 
-use super::embedding::{cosine_similarity, EmbeddingProvider};
+use super::embedding::EmbeddingProvider;
 use super::working_memory::WorkingMemory;
 use super::workspace::{Contribution, Faculty, FacultyId, Workspace};
 use crate::persona::admission_state::AdmissionState;

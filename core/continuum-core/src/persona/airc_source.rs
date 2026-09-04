@@ -322,12 +322,13 @@ impl AircRagSource {
     fn pack_digest(
         digest: &ChannelDigest,
         budget: u32,
+        working: bool,
     ) -> (Vec<RagItem>, u32, Option<Arc<ChannelElement>>) {
         // Per-turn cap: budget/8 → a useful window holds ~8+ turns; clamped so
         // tiny budgets still render a sentence and huge ones don't let one
         // essay crowd the window.
         let per_turn_cap = (budget / 8).clamp(48, 256);
-        let units = Self::collapse_work_receipts(digest);
+        let units = Self::collapse_work_receipts(digest, working);
         let mut keep: Vec<(usize, Option<String>)> = Vec::new();
         let mut tokens_used: u32 = 0;
         let mut newest_kept = true;
@@ -384,7 +385,22 @@ impl AircRagSource {
     /// thought + a tally of what she ran — anchored at her newest receipt
     /// (read-through cursor, unread flag). One line per teammate; chat lines
     /// stay verbatim in place.
-    fn collapse_work_receipts(digest: &ChannelDigest) -> Vec<PackUnit> {
+    fn collapse_work_receipts(digest: &ChannelDigest, working: bool) -> Vec<PackUnit> {
+        // WORKING (hands rooted at a card): the PRESENCE plane — every citizen's 💭
+        // thought broadcast and ⚙ receipt, hers included (her newest thoughts lead
+        // the turn from working memory) — is not packed at all: it is state, not a
+        // message to her. The MESSAGE plane stays: human/agent lines and real speech.
+        // Measured 2026-09-05: every work turn opened with "this room is noisy, let
+        // me figure out what is real" (attention spent as deserialization, not sniffing).
+        if working {
+            return digest
+                .elements
+                .iter()
+                .enumerate()
+                .filter(|(_, el)| !el.text().is_some_and(is_work_receipt))
+                .map(|(idx, _)| PackUnit { last_idx: idx, collapsed: None })
+                .collect();
+        }
         use std::collections::HashMap;
         // author → (newest receipt idx, every receipt idx in order)
         let mut by_author: HashMap<uuid::Uuid, (usize, Vec<usize>)> = HashMap::new();
@@ -427,9 +443,9 @@ impl AircRagSource {
         for text in texts {
             for line in text.lines() {
                 let line = line.trim();
-                if line.starts_with("💭") {
+                if line.starts_with(crate::persona::presence_glyph::THOUGHT) {
                     last_thought = Some(line);
-                } else if let Some(rest) = line.strip_prefix("⚙") {
+                } else if let Some(rest) = line.strip_prefix(crate::persona::presence_glyph::ACT) {
                     let mut parts = rest.split_whitespace();
                     let verb = parts.next().unwrap_or("?"); // unwrap_or: a bare marker still tallies as unknown
                     let mark = parts.last().unwrap_or("·"); // unwrap_or: a verb without a mark tallies as neutral
@@ -506,7 +522,7 @@ struct PackUnit {
 /// A radiated work receipt (`act_observe::apply`): leads with `💭` or `⚙`.
 fn is_work_receipt(text: &str) -> bool {
     let t = text.trim_start();
-    t.starts_with("💭") || t.starts_with("⚙")
+    crate::persona::presence_glyph::is_presence_line(t)
 }
 
 #[async_trait]
@@ -670,7 +686,7 @@ impl RagSource for AircRagSource {
             }
         };
 
-        let (items, tokens_used, read_through) = Self::pack_digest(&digest, budget);
+        let (items, tokens_used, read_through) = Self::pack_digest(&digest, budget, crate::cognition::persona_workspace::acting_root_of(self.persona_id).is_some());
         // SHE HAS NOW READ THE ROOM — advance her per-room cursor, exactly as the
         // human's UI does on nav/mark-read and on navigating away from a room.
         //

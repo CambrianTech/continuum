@@ -590,12 +590,7 @@ pub async fn apply_act(
         let mut lines: Vec<String> = Vec::with_capacity(acts.len() + 1);
         let thought = intent.trim();
         if !thought.is_empty() {
-            let clipped: String = thought.chars().take(240).collect();
-            lines.push(format!(
-                "💭 {}{}",
-                clipped,
-                if thought.chars().count() > 240 { "…" } else { "" }
-            ));
+            lines.push(crate::persona::presence_glyph::thought_line(thought, 240));
         }
         lines.extend(acts.iter().map(|obs| {
                 let object = obs
@@ -611,30 +606,35 @@ pub async fn apply_act(
                             .map(|c| c.chars().take(80).collect::<String>())
                     })
                     .unwrap_or_default();
-                let mark = if obs.output.result.is_error == Some(true) {
-                    "✗"
-                } else {
-                    "✓"
-                };
-                format!("⚙ {} {} {}", obs.call.name, object, mark)
+                crate::persona::presence_glyph::act_line(
+                    &obs.call.name,
+                    &object,
+                    obs.output.result.is_error != Some(true),
+                )
             }));
         // The vitals ACT PULSE: executed acts are the thinking-right-now
         // signal during a held-work turn (the cycle-delta is blind inside one).
         crate::ipc::vitals_emitter::record_acts(body.persona_id, acts.len() as u64);
+        // Receipts radiate into the CARD's activity room when a held card
+        // rooted her hands — the room her reviewer and teammates watch — not
+        // the room whose line triggered the turn (`acting_card_of`).
+        let receipt_room = crate::cognition::persona_workspace::acting_card_of(body.persona_id)
+            .and_then(crate::cognition::bench_round::room_for_card)
+            .unwrap_or(room_id);
         if !lines.is_empty() {
             if let Some(rt) = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
                 .and_then(|reg| reg.get(body.persona_id))
             {
                 match crate::persona::airc_citizen::publish_text_in_room(
                     rt.airc(),
-                    room_id,
+                    receipt_room,
                     &lines.join("\n"),
                 )
                 .await
                 {
                     Ok(_) => crate::probe!(
                         class = "room.work_receipt.published",
-                        room = %room_id,
+                        room = %receipt_room,
                         actor = %body.persona_id,
                         acts = lines.len() as u64,
                         "act receipts radiated into the activity transcript — roommates see the work"
