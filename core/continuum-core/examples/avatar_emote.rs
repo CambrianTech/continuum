@@ -47,8 +47,12 @@ fn parse_emotion(s: &str) -> Result<Emotion, String> {
 }
 
 fn main() -> Result<(), String> {
-    let identity = std::env::args().nth(1).unwrap_or_else(|| "asha".to_string());
-    let emotion_arg = std::env::args().nth(2).unwrap_or_else(|| "happy".to_string());
+    let identity = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "asha".to_string());
+    let emotion_arg = std::env::args()
+        .nth(2)
+        .unwrap_or_else(|| "happy".to_string());
     let emotion = parse_emotion(&emotion_arg)?;
 
     let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -152,7 +156,10 @@ fn main() -> Result<(), String> {
         println!(
             "   ✅ emoting is wired — {emotion:?} moved the face {margin:.1}× the breathing floor"
         );
-        println!("   authoritative proof → {}/neutral.png vs {emotion_arg}.png", out_dir.display());
+        println!(
+            "   authoritative proof → {}/neutral.png vs {emotion_arg}.png",
+            out_dir.display()
+        );
         Ok(())
     } else {
         Err(format!(
@@ -251,14 +258,18 @@ fn infer_dims(frame: &RgbaFrame) -> Result<(u32, u32), String> {
     if (w * h) as usize == pixels {
         Ok((w, h))
     } else {
-        Err(format!("cannot determine frame dims: {} bytes", frame.data.len()))
+        Err(format!(
+            "cannot determine frame dims: {} bytes",
+            frame.data.len()
+        ))
     }
 }
 
 fn save_png(rgba: &[u8], w: u32, h: u32, path: &std::path::Path) -> Result<(), String> {
     let img = image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_raw(w, h, rgba.to_vec())
         .ok_or("invalid frame dimensions for image buffer")?;
-    img.save(path).map_err(|e| format!("save {}: {e}", path.display()))
+    img.save(path)
+        .map_err(|e| format!("save {}: {e}", path.display()))
 }
 
 fn dirs_home() -> std::path::PathBuf {

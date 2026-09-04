@@ -20,7 +20,10 @@ use crate::model_registry::discovery::{discover_all, DiscoveredModel, ProviderCo
 /// The providers to query. Each carries its base URL + key + any static models
 /// for providers without a listing endpoint (e.g. Anthropic).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/model_registry/ModelsDiscoverParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/model_registry/ModelsDiscoverParams.ts"
+)]
 pub struct ModelsDiscoverParams {
     /// Provider configs to query. `ProviderConfig` is an internal IPC shape, so
     /// this command accepts it as opaque JSON on the wire and deserializes it in
@@ -33,7 +36,10 @@ pub struct ModelsDiscoverParams {
 
 /// The discovered model listing across all queried providers.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/model_registry/ModelsDiscoverResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/model_registry/ModelsDiscoverResult.ts"
+)]
 pub struct ModelsDiscoverResult {
     pub models: Vec<DiscoveredModel>,
     #[ts(type = "number")]

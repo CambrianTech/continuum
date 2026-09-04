@@ -27,12 +27,12 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use ts_rs::TS;
 
+use crate::ai::adapter::AIProviderAdapter;
 use crate::cognition::gym_grader::CodeVerifier;
 use crate::cognition::resolution::{resolve, Resolved};
 use crate::cognition::resolution_compute::{
     ComputeDepthDrafter, ComputeDepthLadder, FacultyDraftBackend,
 };
-use crate::ai::adapter::AIProviderAdapter;
 use crate::cognition::will::Will;
 use crate::inference::llama_server::PROVIDER_ID;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
@@ -86,16 +86,19 @@ pub struct ResolutionBenchParams {
     /// reflexive floor and full. Default 4. This is the climb's resolution, not a
     /// serving-capacity constant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub steps: Option<u32>,
     /// The reflexive floor budget (tokens) — the cheapest draft. Small enough that a
     /// long solution truncates here (so the verifier escalates), large enough for a
     /// complete short answer. Default 160. The benchmark's independent variable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub min_tokens: Option<u32>,
     /// The full-resolution budget (tokens) — the deepest draft. Default 2048.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub max_tokens: Option<u32>,
     /// Fire-and-poll (#86): a multi-generation run can outlast an IPC timeout. `true`
@@ -202,12 +205,15 @@ impl ResolutionBench {
         // Fresh adapter to the resident llama-server (from_registry carries the 58057
         // default base_url). No dedicated-lane override: we WANT the resident serving
         // snapshot to accept these generations against the live model.
-        let mut adapter = crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(PROVIDER_ID);
+        let mut adapter =
+            crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(PROVIDER_ID);
         if let Some(m) = p.model_id.as_ref() {
             adapter = adapter.with_default_model(m.clone());
         }
         adapter.initialize().await.map_err(|e| {
-            CommandError::Internal(format!("resolution-bench adapter failed to initialize: {e}"))
+            CommandError::Internal(format!(
+                "resolution-bench adapter failed to initialize: {e}"
+            ))
         })?;
         let adapter: Arc<dyn crate::ai::adapter::AIProviderAdapter> = Arc::new(adapter);
 
@@ -251,14 +257,12 @@ impl ResolutionBench {
                         task.id
                     )))
                 }
-                Err(_) => {
-                    return Err(CommandError::Internal(format!(
-                        "resolution-bench '{}' exceeded {}s — the draft lane is too slow or wedged; \
+                Err(_) => return Err(CommandError::Internal(format!(
+                    "resolution-bench '{}' exceeded {}s — the draft lane is too slow or wedged; \
                          releasing the fleet quiesce lease",
-                        task.id,
-                        PER_TASK_TIMEOUT.as_secs()
-                    )))
-                }
+                    task.id,
+                    PER_TASK_TIMEOUT.as_secs()
+                ))),
             };
             let latency_ms = t0.elapsed().as_millis() as u64;
 

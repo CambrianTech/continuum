@@ -80,6 +80,9 @@ mod tests {
         let p = voice_model_path("piper/en_US-libritts_r-medium.onnx");
         assert!(p.ends_with("piper/en_US-libritts_r-medium.onnx"));
         // The root is non-empty and the rel is appended, not the bare literal.
-        assert_ne!(p, PathBuf::from("models/piper/en_US-libritts_r-medium.onnx"));
+        assert_ne!(
+            p,
+            PathBuf::from("models/piper/en_US-libritts_r-medium.onnx")
+        );
     }
 }

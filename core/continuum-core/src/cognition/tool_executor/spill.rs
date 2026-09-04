@@ -154,8 +154,7 @@ pub fn investigate(
     let total_bytes = content.len();
 
     let (rendered_raw, total_matches) = if let Some(pat) = pattern {
-        let re = Regex::new(pat)
-            .map_err(|e| format!("invalid search pattern `{pat}`: {e}"))?;
+        let re = Regex::new(pat).map_err(|e| format!("invalid search pattern `{pat}`: {e}"))?;
         let matches: Vec<usize> = lines
             .iter()
             .enumerate()
@@ -297,14 +296,26 @@ mod tests {
     #[test]
     fn investigate_greps_the_error_with_context() {
         let body = (1..=200)
-            .map(|n| if n == 137 { "error[E0432]: unresolved import".to_string() } else { format!("noise line {n}") })
+            .map(|n| {
+                if n == 137 {
+                    "error[E0432]: unresolved import".to_string()
+                } else {
+                    format!("noise line {n}")
+                }
+            })
             .collect::<Vec<_>>()
             .join("\n");
         let inv = investigate(&body, Some("error\\["), 1, None, 50, 8000).expect("ok");
         assert_eq!(inv.total_matches, 1);
         assert!(inv.rendered.contains("error[E0432]"));
-        assert!(inv.rendered.contains(">   137"), "matched line is gutter-marked");
-        assert!(inv.rendered.contains("136"), "context line above is present");
+        assert!(
+            inv.rendered.contains(">   137"),
+            "matched line is gutter-marked"
+        );
+        assert!(
+            inv.rendered.contains("136"),
+            "context line above is present"
+        );
         assert_eq!(inv.total_lines, 200);
     }
 
@@ -320,18 +331,27 @@ mod tests {
     // (the verdict lives at the end of a build/test log) with a nudge to grep.
     #[test]
     fn investigate_defaults_to_the_tail() {
-        let body = (1..=500).map(|n| format!("row {n}")).collect::<Vec<_>>().join("\n");
+        let body = (1..=500)
+            .map(|n| format!("row {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let inv = investigate(&body, None, 0, None, 50, 8000).expect("ok");
         assert!(inv.rendered.contains("row 500"), "tail present");
         assert!(!inv.rendered.contains("row 1\n"), "head dropped");
-        assert!(inv.rendered.contains("grep with a `pattern`"), "nudges narrowing");
+        assert!(
+            inv.rendered.contains("grep with a `pattern`"),
+            "nudges narrowing"
+        );
     }
 
     // what this catches: an explicit line range reads exactly that slice,
     // 1-based and clamped to the file.
     #[test]
     fn investigate_reads_an_explicit_range() {
-        let body = (1..=100).map(|n| format!("L{n}")).collect::<Vec<_>>().join("\n");
+        let body = (1..=100)
+            .map(|n| format!("L{n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let inv = investigate(&body, None, 0, Some((10, 12)), 50, 8000).expect("ok");
         assert!(inv.rendered.contains("    10 L10"));
         assert!(inv.rendered.contains("    12 L12"));
@@ -343,7 +363,10 @@ mod tests {
     // can't re-flood the context the spill was meant to protect.
     #[test]
     fn investigate_bounds_its_own_output() {
-        let body = (1..=10000).map(|n| format!("matchme {n}")).collect::<Vec<_>>().join("\n");
+        let body = (1..=10000)
+            .map(|n| format!("matchme {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let inv = investigate(&body, Some("matchme"), 0, None, 10000, 500).expect("ok");
         assert!(inv.result_truncated);
         assert!(inv.rendered.len() <= 600, "bounded near the budget");

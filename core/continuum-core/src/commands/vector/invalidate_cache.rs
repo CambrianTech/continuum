@@ -5,9 +5,7 @@ use std::sync::Arc;
 use crate::modules::data::{DataState, VectorCacheInvalidation};
 
 /// Params for `vector/invalidate-cache`.
-#[derive(
-    Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,

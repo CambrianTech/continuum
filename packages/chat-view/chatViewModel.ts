@@ -94,6 +94,8 @@ export interface MessageRowVM {
   /** Wall-clock time-of-day (UTC `HH:MM`) — deterministic across machines. */
   readonly time: string;
   readonly runtime: string;
+  /** Citizens whose inbound stream admitted this line as a turn — "heard by N". */
+  readonly heardBy?: number;
   /** The digest tier for an over-threshold body ([[perception-resolution-contract]]):
    *  head + mechanical tail summary (+ repetition histogram). Absent = the full
    *  tier — render `content` verbatim. `content` always carries the untouched
@@ -244,6 +246,7 @@ function messageVM(msg: ChatMessageView): MessageRowVM {
     content: msg.content,
     time: formatTimeOfDay(msg.timestamp),
     runtime: msg.provenance.runtime,
+    heardBy: msg.heard_by?.length ?? 0,
     ...(digest ? { digest } : {}),
   };
 }

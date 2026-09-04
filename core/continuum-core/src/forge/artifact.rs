@@ -80,7 +80,10 @@ pub struct HardwareProfile {
 /// `publish_model.py` as the source of truth for what gets published.
 /// Never authored by hand.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/forge/ForgeArtifact.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/forge/ForgeArtifact.ts"
+)]
 pub struct ForgeArtifact {
     //--- Identity ----------------------------------------------------------
     /// Stable artifact id (different from recipe id — one recipe can

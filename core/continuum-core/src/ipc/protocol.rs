@@ -56,8 +56,7 @@ impl InboxMessageRequest {
 
         Ok(InboxMessage {
             id: Uuid::parse_str(&self.id).map_err(|e| format!("invalid id: {e}"))?,
-            room_id: Uuid::parse_str(&self.room_id)
-                .map_err(|e| format!("invalid room_id: {e}"))?,
+            room_id: Uuid::parse_str(&self.room_id).map_err(|e| format!("invalid room_id: {e}"))?,
             sender_id: Uuid::parse_str(&self.sender_id)
                 .map_err(|e| format!("invalid sender_id: {e}"))?,
             sender_name: self.sender_name.clone(),
@@ -72,9 +71,7 @@ impl InboxMessageRequest {
             voice_session_id: self
                 .voice_session_id
                 .as_deref()
-                .map(|s| {
-                    Uuid::parse_str(s).map_err(|e| format!("invalid voice_session_id: {e}"))
-                })
+                .map(|s| Uuid::parse_str(s).map_err(|e| format!("invalid voice_session_id: {e}")))
                 .transpose()?,
         })
     }

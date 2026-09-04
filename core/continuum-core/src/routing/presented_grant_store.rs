@@ -78,7 +78,10 @@ mod tests {
     #[test]
     fn holds_presents_and_supersedes_per_target() {
         let store = InMemoryPresentedGrantStore::new();
-        assert!(store.grant_for(peer(1)).is_none(), "unknown target → nothing to present");
+        assert!(
+            store.grant_for(peer(1)).is_none(),
+            "unknown target → nothing to present"
+        );
 
         store.insert(peer(1), "grant-v1".to_string());
         store.insert(peer(2), "other".to_string());

@@ -42,7 +42,9 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::watch;
 use uuid::Uuid;
 
-use crate::ipc::positron_source::{AircPresenceUpdate, CHAT_FOCUSED, CHAT_POSTED, PRESENCE_UPDATED};
+use crate::ipc::positron_source::{
+    AircPresenceUpdate, CHAT_FOCUSED, CHAT_POSTED, PRESENCE_UPDATED,
+};
 use crate::runtime::MessageBus;
 
 /// The bus signal that a citizen's nav state changed (a tab opened/closed, a
@@ -69,9 +71,15 @@ pub struct NavActivity {
     /// The activity purpose the room-purpose seam resolved ("chat", "foundry",
     /// …). Empty = unresolved — honest unknown.
     pub purpose: String,
+    /// The binding's parent activity (`RoomPurposeSource::parent_for`) — the generic
+    /// nesting every recipe gets; the bench-specific solve→run lineage is layered on top.
+    pub parent: Option<String>,
     /// The last-read cursor for this activity's room (ms/lamport), when it is
     /// a room. `None` for activities with no read cursor.
     pub last_read: Option<i64>,
+    /// The citizen has this activity open (selected, not closed) — the tab
+    /// strip's membership test; the rail lists every activity regardless.
+    pub opened: bool,
 }
 
 /// The citizen's raw nav facts, re-read from authority on each change. The
@@ -107,7 +115,34 @@ pub fn project_nav(user: Uuid, snap: NavSnapshot) -> NavViewState {
             if let Some(ts) = a.last_read {
                 last_read.insert(a.id.clone(), ts);
             }
-            NavTab { id: a.id, title: a.title, kind: a.kind, unread: a.unread, purpose: a.purpose }
+            {
+                // The tree half of #2632: a solve room nests under its run
+                // room — the round tracker already RECORDS the lineage
+                // (CardActivity.solve_room ↔ round_id), so parenthood is a
+                // lookup, never new state. The humanized label derives from
+                // the same record (instance · assignee name resolved by the
+                // renderer's roster); the raw room id keeps its identity job
+                // in `id` and retreats from the reading line.
+                let (lineage_parent, display_label) = activity_lineage(&a.id, &a.title);
+                // The bench solve→run lineage first (it also names the tab); else the
+                // binding's own parent — a run room nests under the room it was
+                // dispatched from, a pipeline under its project, generically.
+                let parent_ref = if lineage_parent.is_empty() {
+                    a.parent.clone().unwrap_or_default()  // unwrap_or: no parent = a top-level activity
+                } else {
+                    lineage_parent
+                };
+                NavTab {
+                    id: a.id,
+                    title: a.title,
+                    kind: a.kind,
+                    unread: a.unread,
+                    purpose: a.purpose,
+                    parent_ref,
+                    display_label,
+                    opened: a.opened,
+                }
+            }
         })
         .collect();
     NavViewState {
@@ -141,11 +176,13 @@ pub fn project_nav(user: Uuid, snap: NavSnapshot) -> NavViewState {
 struct CitizenNav {
     /// The current tab (the last `nav/select`).
     current: Option<(String, NavTargetKind)>,
-    /// The citizen's OPEN non-room activities, in open order. Selecting a
-    /// persona OPENS a tab (activity == room == tab — a durable member of
-    /// the set, not a transient content overlay); selecting another persona
-    /// adds a SECOND tab, never replaces the first. Rooms don't live here —
-    /// the room-set fold carries them. A `nav/close` verb removes entries.
+    /// The citizen's OPEN activities, in open order — every `nav/select`
+    /// target of any kind, until `nav/close`. A persona select OPENS a tab
+    /// (activity == room == tab — a durable member of the set, not a transient
+    /// content overlay); a room select marks that room opened so the tab strip
+    /// can render the citizen's tabs rather than the whole room set. Only the
+    /// non-room entries surface as EXTRA tabs; rooms already come from the
+    /// room-set fold and merely read `opened`.
     open: Vec<(String, NavTargetKind)>,
 }
 
@@ -171,13 +208,29 @@ impl NavFocus {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&user)
-            .map(|n| n.open.clone())
+            .map(|n| {
+                n.open
+                    .iter()
+                    .filter(|(_, kind)| *kind != NavTargetKind::Room)
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default()
+    }
+
+    /// Whether the citizen has `target` open (selected and not since closed),
+    /// whatever its kind — the tab strip's membership test.
+    pub fn is_open(&self, user: Uuid, target: &str) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&user)
+            .is_some_and(|n| n.open.iter().any(|(t, _)| t == target))
     }
 
     /// Set the citizen's current tab (+ its activity kind), returning the
     /// PREVIOUS focus (the activity being left — when it's a room, the
-    /// `markRead` sibling advances its cursor). A non-room select also OPENS
+    /// `markRead` sibling advances its cursor). Every select also OPENS
     /// the activity: it joins the citizen's tab set if not already there.
     pub fn focus(
         &self,
@@ -187,7 +240,7 @@ impl NavFocus {
     ) -> Option<(String, NavTargetKind)> {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let nav = inner.entry(user).or_default();
-        if kind != NavTargetKind::Room && !nav.open.iter().any(|(t, _)| *t == target) {
+        if !nav.open.iter().any(|(t, _)| *t == target) {
             nav.open.push((target.clone(), kind.clone()));
         }
         nav.current.replace((target, kind))
@@ -286,11 +339,11 @@ pub fn spawn_room_set_fold(
                 Ok(event) => {
                     let observed: Option<(Uuid, Option<String>)> = if event.name == PRESENCE_UPDATED
                     {
-                        serde_json::from_value::<AircPresenceUpdate>(event.payload.clone())
+                        AircPresenceUpdate::deserialize(&*event.payload)
                             .ok()
                             .map(|p| (p.room_id, Some(p.room_name)))
                     } else if event.name == CHAT_POSTED {
-                        serde_json::from_value::<ChatPostedRoom>(event.payload.clone())
+                        ChatPostedRoom::deserialize(&*event.payload)
                             .ok()
                             .map(|p| (p.room_id, None))
                     } else {
@@ -361,7 +414,7 @@ pub fn spawn_member_set_fold(
                         continue;
                     }
                     if let Ok(update) =
-                        serde_json::from_value::<AircPresenceUpdate>(event.payload.clone())
+                        AircPresenceUpdate::deserialize(&*event.payload)
                     {
                         tx.send_if_modified(|set| {
                             let mut changed = false;
@@ -408,7 +461,11 @@ pub struct ChannelBookmarksNavReader {
 
 impl ChannelBookmarksNavReader {
     pub fn new(rooms: watch::Receiver<RoomSet>, members: watch::Receiver<MemberSet>) -> Self {
-        Self { rooms, members, purpose: crate::ipc::room_purpose::default_source() }
+        Self {
+            rooms,
+            members,
+            purpose: crate::ipc::room_purpose::default_source(),
+        }
     }
 
     /// A reader over a FIXED room set — test/fixture construction (no fold
@@ -422,24 +479,43 @@ impl ChannelBookmarksNavReader {
     pub fn fixed_with_members(rooms: Vec<(Uuid, String)>, members: Vec<(Uuid, String)>) -> Self {
         let (_rtx, rrx) = watch::channel(rooms.into_iter().collect::<RoomSet>());
         let (_mtx, mrx) = watch::channel(members.into_iter().collect::<MemberSet>());
-        Self { rooms: rrx, members: mrx, purpose: crate::ipc::room_purpose::default_source() }
+        Self {
+            rooms: rrx,
+            members: mrx,
+            purpose: crate::ipc::room_purpose::default_source(),
+        }
     }
 }
 
 impl NavReader for ChannelBookmarksNavReader {
     fn nav_snapshot(&self, user: Uuid) -> NavSnapshot {
-        use crate::cognition::channel_substrate::{
-            global_channel_bookmarks, global_channel_digest_buffer,
-        };
+        use crate::cognition::channel_substrate::global_channel_digest_buffer;
         use crate::runtime::ready_buffer::ReadyBuffer;
-        let bookmarks = global_channel_bookmarks();
+        // The cursor comes off the STAGED DIGEST, not a separate store: a digest
+        // carries the exact `bookmark` it split on, so the projection and the
+        // reader's window agree by construction. (The durable cursor itself is
+        // airc's `runtime_cursor`, read async at build time; this projection is
+        // sync, and the staged digest is the sync-side truth it already has.)
         let digests = global_channel_digest_buffer();
         let rooms = self.rooms.borrow().clone();
+        let focus_store = global_nav_focus();
+        let focus = focus_store.current(user);
+        // Before any select, the first room stands in as current — and is the
+        // one opened tab, so a fresh citizen sees one tab, never zero.
+        let current = focus
+            .as_ref()
+            .map(|(target, _)| target.clone())
+            .or_else(|| rooms.keys().next().map(|r| r.to_string()));
         let activities = rooms
             .iter()
             .map(|(room, title)| {
-                // REAL cursor — the same (user, room) mark advance()/markRead writes.
-                let last = bookmarks.last_read(user, *room);
+                // REAL cursor — the split point of the digest this citizen was
+                // last built. No staged digest → 0 (nothing known yet), the same
+                // honest "no info" the unread branch below reports.
+                let last = digests
+                    .peek(&(user, *room))
+                    .map(|d| d.bookmark)
+                    .unwrap_or(0);
                 // REAL unread from the pre-staged digest when one is staged for
                 // this (citizen, room); no staged digest → no unread info yet (an
                 // honestly-absent badge, never a fabricated "all read").
@@ -462,18 +538,17 @@ impl NavReader for ChannelBookmarksNavReader {
                     // The recipe-defined activity nature, resolved through the
                     // ONE purpose seam — the tab's description/facet line.
                     purpose: self.purpose.purpose_for(*room),
+                    parent: self.purpose.parent_for(*room).map(|p| p.to_string()),
                     last_read: Some(last as i64),
+                    opened: current.as_deref() == Some(room.to_string().as_str())
+                        || focus_store.is_open(user, &room.to_string()),
                 }
             })
             .collect();
         let mut activities: Vec<NavActivity> = activities;
         // Current = the citizen's EXPLICIT focus (the `nav/select` write —
         // surfaced verbatim: what the citizen selected is the truth, even if
-        // the fold hasn't observed that room yet). Before any select, the
-        // first room stands in — the honest pre-focus view for a fresh
-        // citizen, unchanged from the pre-nav/select behavior.
-        let focus_store = global_nav_focus();
-        let focus = focus_store.current(user);
+        // the fold hasn't observed that room yet).
         // EVERY open non-room activity surfaces as its OWN tab (`activity ==
         // room == tab`): selecting a persona OPENED a durable tab, and opening
         // a second persona adds a SECOND tab — never a swap (glass-boxed live
@@ -497,12 +572,15 @@ impl NavReader for ChannelBookmarksNavReader {
                 unread: 0,
                 purpose: "persona".to_string(),
                 last_read: None,
+                parent: None,
+                opened: true, // it is here BECAUSE it was opened
             });
         }
-        let current = focus
-            .map(|(target, _)| target)
-            .or_else(|| rooms.keys().next().map(|r| r.to_string()));
-        NavSnapshot { current, activities, bookmarks: Vec::new() }
+        NavSnapshot {
+            current,
+            activities,
+            bookmarks: Vec::new(),
+        }
     }
 }
 
@@ -604,7 +682,12 @@ impl NavProjectorRegistry {
         per_user: Arc<PerUserSubstrates>,
         reader: Arc<dyn NavReader>,
     ) -> Self {
-        Self { bus, per_user, reader, spawned: Mutex::new(HashSet::new()) }
+        Self {
+            bus,
+            per_user,
+            reader,
+            spawned: Mutex::new(HashSet::new()),
+        }
     }
 
     /// Ensure `citizen`'s nav projector is running. Must be called from within
@@ -612,7 +695,10 @@ impl NavProjectorRegistry {
     /// registry lock is unrecoverable state corruption, so it panics loud
     /// rather than double-spawning.
     pub fn ensure(&self, citizen: Uuid) {
-        let mut spawned = self.spawned.lock().expect("nav projector registry lock poisoned");
+        let mut spawned = self
+            .spawned
+            .lock()
+            .expect("nav projector registry lock poisoned");
         if !spawned.insert(citizen) {
             return;
         }
@@ -627,12 +713,104 @@ impl NavProjectorRegistry {
     }
 }
 
+
+/// The activity's tree position + humanized reading-line label (#2632 slice a).
+///
+/// Pure lookup over records the substrate already keeps: a room that hosts a
+/// tracked solve card nests under its round's run room, labeled
+/// `<instance> · <assignee-short>`. Anything untracked stays top-level with
+/// its own title — honest flat, never an invented hierarchy.
+fn activity_lineage(room_ref: &str, title: &str) -> (String, String) {
+    let Ok(room) = uuid::Uuid::parse_str(room_ref) else {
+        return (String::new(), String::new());
+    };
+    let Some(act) = crate::cognition::bench_round::team_for_room(room) else {
+        return (String::new(), String::new());
+    };
+    let Some(run_room) = crate::cognition::bench_round::run_room_for_solve(room) else {
+        return (String::new(), String::new());
+    };
+    // `swe--<instance>--<card8>` → `<instance>`; an unconventional name keeps
+    // its title (label stays honest, never lossy).
+    let instance = title
+        .strip_prefix("swe--")
+        .and_then(|rest| rest.rsplit_once("--").map(|(i, _)| i))
+        .unwrap_or(title);
+    // Outsider-readable (Joel, 2026-08-31: "I don't really even comprehend
+    // what those rooms are"): `repo__repo-1234` reads as its issue half
+    // (`pylint-7114`), and the assignee is her NAME when the registry knows
+    // her — a hex prefix labels nothing for a human.
+    let short_instance = instance.rsplit_once("__").map(|(_, tail)| tail).unwrap_or(instance);
+    let who = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+        .map(|reg| reg.roster_snapshot())
+        .and_then(|snap| {
+            snap.into_iter()
+                .find(|(_, peer)| *peer == act.assignee)
+                .map(|(name, _)| name)
+        })
+        .unwrap_or_else(|| act.assignee.to_string()[..8].to_string());
+    (
+        run_room.to_string(),
+        format!("{short_instance} · {who}"),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// A canned reader — returns a fixed snapshot, the nav analogue of the
     /// kanban `StubReader`.
+    // what this catches: nesting is GENERIC — an activity whose binding names a parent
+    // nests under it in the nav even when it is not a bench solve room. Before
+    // 2026-09-03 only solve rooms nested (under their run room, via the bench tracker);
+    // a dispatched run room was a flat top-level tab, or absent (Joel: "active benchmark
+    // rooms don't even show up… not under the base academy room").
+    #[test]
+    fn a_bound_activity_nests_under_its_binding_parent() {
+        let academy = Uuid::new_v4();
+        let run = Uuid::new_v4();
+        let mut a = room(&run.to_string(), "bench-swe-bench-verified-1", 0, 0);
+        a.parent = Some(academy.to_string());
+        let snap = NavSnapshot { current: None, activities: vec![a], bookmarks: vec![] };
+        let view = project_nav(Uuid::new_v4(), snap);
+        assert_eq!(view.open_tabs[0].parent_ref, academy.to_string());
+    }
+
+    // what this catches: the strip's membership — a selected ROOM reads opened
+    // (and is remembered until closed) yet never surfaces as an EXTRA tab, which
+    // would duplicate the room-set fold's row (49 identical tabs, live 2026-09-03).
+    #[test]
+    fn a_room_select_opens_the_tab_without_duplicating_the_room_set_row() {
+        let focus = NavFocus::default();
+        let user = Uuid::new_v4();
+        let room = Uuid::new_v4().to_string();
+        let persona = Uuid::new_v4().to_string();
+        assert!(!focus.is_open(user, &room));
+        focus.focus(user, room.clone(), NavTargetKind::Room);
+        focus.focus(user, persona.clone(), NavTargetKind::Persona);
+        assert!(focus.is_open(user, &room));
+        assert!(focus.is_open(user, &persona));
+        let extra = focus.open_activities(user);
+        assert_eq!(extra, vec![(persona.clone(), NavTargetKind::Persona)]);
+        focus.close(user, &room);
+        assert!(!focus.is_open(user, &room));
+        let snap = NavSnapshot {
+            current: Some(room.clone()),
+            activities: vec![room_opened(&room, true), room_opened(&persona, false)],
+            bookmarks: vec![],
+        };
+        let view = project_nav(user, snap);
+        assert!(view.open_tabs[0].opened);
+        assert!(!view.open_tabs[1].opened);
+    }
+
+    fn room_opened(id: &str, opened: bool) -> NavActivity {
+        let mut a = room(id, "r", 0, 0);
+        a.opened = opened;
+        a
+    }
+
     struct StubNav(NavSnapshot);
     impl NavReader for StubNav {
         fn nav_snapshot(&self, _user: Uuid) -> NavSnapshot {
@@ -648,6 +826,8 @@ mod tests {
             unread,
             purpose: "chat".into(),
             last_read: Some(last_read),
+            parent: None,
+            opened: false,
         }
     }
 
@@ -679,18 +859,29 @@ mod tests {
         assert_eq!(view.bookmarks.len(), 1);
     }
 
-    // what this catches: the LIVE reader reads the real ChannelBookmarks cursor
-    // — advancing the mark the persona's grounding uses (its markRead write path)
-    // is exactly what the nav's last_read reflects. The dual-consumer atom: one
-    // (user, room) mark, read by both the persona and the nav view.
+    // what this catches: the LIVE reader surfaces the SAME split point the
+    // citizen's own window was built at — the digest's `bookmark`. One value, two
+    // consumers (her perception and the nav view), so they cannot disagree. The
+    // durable cursor behind it is airc's `runtime_cursor`; the staged digest is
+    // what this sync projection can see of it.
     #[test]
     fn live_reader_reflects_the_real_shared_bookmark() {
-        use crate::cognition::channel_substrate::global_channel_bookmarks;
-        // Unique ids so the process-global bookmark store can't collide with
-        // another test advancing a different (user, room).
+        use crate::cognition::channel_substrate::global_channel_digest_buffer;
+        use crate::runtime::ready_buffer::ReadyBuffer;
+        // Unique ids so the process-global digest buffer can't collide with
+        // another test staging a different (user, room).
         let asha = Uuid::from_u128(0xa54a_u128);
         let room = Uuid::from_u128(0x9e21_u128);
-        global_channel_bookmarks().advance(asha, room, 42);
+        global_channel_digest_buffer().publish(
+            (asha, room),
+            std::sync::Arc::new(crate::cognition::channel_digest::ChannelDigest {
+                room_id: room,
+                persona_id: asha,
+                bookmark: 42,
+                elements: Vec::new(),
+                unread_start: 0,
+            }),
+        );
         let reader = ChannelBookmarksNavReader::fixed(vec![(room, "General".into())]);
         let snap = reader.nav_snapshot(asha);
         let view = project_nav(asha, snap);
@@ -704,7 +895,10 @@ mod tests {
     // view (no fabricated default tab), and the reader seam drives it.
     #[test]
     fn empty_snapshot_projects_honest_empty_nav() {
-        let view = project_nav(Uuid::from_u128(9), StubNav(NavSnapshot::default()).nav_snapshot(Uuid::from_u128(9)));
+        let view = project_nav(
+            Uuid::from_u128(9),
+            StubNav(NavSnapshot::default()).nav_snapshot(Uuid::from_u128(9)),
+        );
         assert!(view.current_tab.is_none());
         assert!(view.open_tabs.is_empty());
         assert!(view.last_read.is_empty());
@@ -719,9 +913,15 @@ mod tests {
     fn room_set_fold_registers_names_and_skips_noops() {
         let room = Uuid::from_u128(0xf00d);
         let mut set = RoomSet::new();
-        assert!(fold_observed_room(&mut set, room, None), "first sighting registers");
+        assert!(
+            fold_observed_room(&mut set, room, None),
+            "first sighting registers"
+        );
         assert_eq!(set.get(&room).map(String::as_str), Some(""));
-        assert!(!fold_observed_room(&mut set, room, None), "repeat chat = no-op");
+        assert!(
+            !fold_observed_room(&mut set, room, None),
+            "repeat chat = no-op"
+        );
         assert!(
             fold_observed_room(&mut set, room, Some("general".into())),
             "presence names the room"
@@ -753,7 +953,10 @@ mod tests {
         // would collide with a parallel test's write.
         let room_a = Uuid::from_u128(0x50a);
         let room_b = Uuid::from_u128(0x50b);
-        let rooms = vec![(room_a, "General".to_string()), (room_b, "Code".to_string())];
+        let rooms = vec![
+            (room_a, "General".to_string()),
+            (room_b, "Code".to_string()),
+        ];
         let reader = ChannelBookmarksNavReader::fixed(rooms.clone());
 
         let fresh = Uuid::from_u128(0x50f1);
@@ -798,7 +1001,10 @@ mod tests {
         assert_eq!(persona_tab.purpose, "persona");
         assert_eq!(persona_tab.unread, 0);
         // The room tab is still there — a persona tab ADDS, never displaces.
-        assert!(snap.activities.iter().any(|a| a.kind == NavTargetKind::Room));
+        assert!(snap
+            .activities
+            .iter()
+            .any(|a| a.kind == NavTargetKind::Room));
     }
 
     // what this catches: a persona focus whose name the fold hasn't observed
@@ -817,7 +1023,10 @@ mod tests {
             .iter()
             .find(|a| a.kind == NavTargetKind::Persona)
             .expect("persona tab surfaced");
-        assert_eq!(tab.title, stranger.to_string().chars().take(8).collect::<String>());
+        assert_eq!(
+            tab.title,
+            stranger.to_string().chars().take(8).collect::<String>()
+        );
     }
 
     // what this catches: a room the fold has seen but presence hasn't named
@@ -864,6 +1073,9 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        assert!(seen, "the citizen's nav view materialized in their per-user substrate");
+        assert!(
+            seen,
+            "the citizen's nav view materialized in their per-user substrate"
+        );
     }
 }

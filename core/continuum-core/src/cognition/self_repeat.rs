@@ -119,12 +119,20 @@ mod tests {
         let repeat = "When my genome is about to be evicted under pressure, I think it is \
                       best to gracefully yield rather than negotiate to stay, so the system \
                       keeps optimal performance and I re-page once resources return.";
-        assert!(is_self_repeat(repeat, &[prior.to_string()], SELF_REPEAT_THRESHOLD));
+        assert!(is_self_repeat(
+            repeat,
+            &[prior.to_string()],
+            SELF_REPEAT_THRESHOLD
+        ));
 
         // A genuinely new point (different content) → not a repeat.
         let new_point = "Actually, the harder question is whether the room should get a vote \
                          before any one persona's genome is paged out — a fairness quorum.";
-        assert!(!is_self_repeat(new_point, &[prior.to_string()], SELF_REPEAT_THRESHOLD));
+        assert!(!is_self_repeat(
+            new_point,
+            &[prior.to_string()],
+            SELF_REPEAT_THRESHOLD
+        ));
 
         // No prior output → never a repeat.
         assert!(!is_self_repeat(repeat, &[], SELF_REPEAT_THRESHOLD));
@@ -166,7 +174,10 @@ mod tests {
     // what this catches: similarity is bounded, symmetric, and 1.0 for identical text.
     #[test]
     fn similarity_is_bounded_and_identical_is_one() {
-        assert_eq!(text_similarity("hello there world", "hello there world"), 1.0);
+        assert_eq!(
+            text_similarity("hello there world", "hello there world"),
+            1.0
+        );
         assert_eq!(text_similarity("", "anything"), 0.0);
         let s = text_similarity("the quick brown fox", "the lazy brown dog");
         assert!((0.0..=1.0).contains(&s) && s > 0.0 && s < 1.0);

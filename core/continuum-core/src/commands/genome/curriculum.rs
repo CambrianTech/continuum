@@ -45,9 +45,9 @@ use crate::cognition::eval::EvalTask;
 use crate::cognition::experience::{
     salient_teach_set, ErrorSalience, ExperienceRecord, ExperienceSource, SalienceDetector,
 };
-use serde_json::{json, Value};
 use crate::cognition::inference_session::resolve_model;
 use crate::sdk_codegen::CommandError;
+use serde_json::{json, Value};
 
 /// Turn a persona's salient lived episodes into a validated training corpus. The
 /// generalized efferent organ: one seam, driven the same way whether the input is a
@@ -322,6 +322,7 @@ mod tests {
     fn eval_task(id: &str, with_test: bool) -> EvalTask {
         EvalTask {
             id: id.to_string(),
+            max_acts: None,
             prompt: "write a function that reverses a string".to_string(),
             expect: String::new(),
             test: with_test.then(|| "assert_eq!(rev(\"ab\"), \"ba\");".to_string()),
@@ -341,11 +342,18 @@ mod tests {
         ExperienceRecord {
             task: eval_task(id, with_test),
             ok,
-            grade: if ok { "tests passed".into() } else { "error[E0308]".into() },
+            grade: if ok {
+                "tests passed".into()
+            } else {
+                "error[E0308]".into()
+            },
             answer: String::new(),
             world_state: String::new(),
             acts: 1,
             source: crate::cognition::experience::ExperienceSource::Eval,
+            teammates: Vec::new(),
+            team_role: None,
+            room: Some(uuid::Uuid::from_u128(7)),
         }
     }
 
@@ -360,14 +368,18 @@ mod tests {
     fn remediation_selects_only_salient_testable_failures() {
         let synth = RemediationSynthesizer::new();
         let batch = [
-            record("failed-testable", false, true),   // keep
-            record("passed", true, true),             // drop: no gap
+            record("failed-testable", false, true),    // keep
+            record("passed", true, true),              // drop: no gap
             record("failed-untestable", false, false), // drop: can't validate
         ];
 
         let tasks = synth.select(&batch);
 
-        assert_eq!(tasks.len(), 1, "only the failed, test-graded task feeds remediation");
+        assert_eq!(
+            tasks.len(),
+            1,
+            "only the failed, test-graded task feeds remediation"
+        );
         assert_eq!(tasks[0].id, "failed-testable");
     }
 
@@ -403,13 +415,19 @@ mod tests {
     #[test]
     fn expansion_examples_teaches_received_lessons_and_skips_lived() {
         let received = ExperienceRecord {
-            task: EvalTask { prompt: "continuum".to_string(), ..EvalTask::default() },
+            task: EvalTask {
+                prompt: "continuum".to_string(),
+                ..EvalTask::default()
+            },
             ok: true,
             grade: "received lesson from BigMama".to_string(),
             answer: "the call room IS the airc room — never mint a rogue call_id".to_string(),
             world_state: String::new(),
             acts: 0,
             source: ExperienceSource::Received,
+            teammates: Vec::new(),
+            team_role: None,
+            room: Some(uuid::Uuid::from_u128(7)),
         };
         // A lived turn is salient-untestable too, but not directly teachable — LLM path.
         let lived = ExperienceRecord {
@@ -420,6 +438,9 @@ mod tests {
             world_state: String::new(),
             acts: 8,
             source: ExperienceSource::Lived,
+            teammates: Vec::new(),
+            team_role: None,
+            room: Some(uuid::Uuid::from_u128(7)),
         };
         // An empty received lesson has nothing to teach.
         let empty_received = ExperienceRecord {
@@ -428,31 +449,54 @@ mod tests {
         };
 
         let examples = expansion_examples(&[received, lived, empty_received]);
-        assert_eq!(examples.len(), 1, "only the non-empty received lesson is directly teachable");
+        assert_eq!(
+            examples.len(),
+            1,
+            "only the non-empty received lesson is directly teachable"
+        );
 
         let msgs = examples[0]["messages"].as_array().expect("messages array");
         assert_eq!(msgs[0]["role"], "user");
-        assert!(msgs[0]["content"].as_str().unwrap().contains("continuum"), "the topic frames the lesson");
+        assert!(
+            msgs[0]["content"].as_str().unwrap().contains("continuum"),
+            "the topic frames the lesson"
+        );
         assert_eq!(msgs[1]["role"], "assistant");
         assert!(
-            msgs[1]["content"].as_str().unwrap().contains("call room IS the airc room"),
+            msgs[1]["content"]
+                .as_str()
+                .unwrap()
+                .contains("call room IS the airc room"),
             "the lesson content is the trained-in knowledge"
         );
 
-        assert!(expansion_examples(&[]).is_empty(), "empty in → empty out (no gap is a legitimate outcome)");
+        assert!(
+            expansion_examples(&[]).is_empty(),
+            "empty in → empty out (no gap is a legitimate outcome)"
+        );
     }
 
     /// Build a lived ExperienceRecord directly (the from_lived_turn shape without a
     /// SettleOutcome): a stimulus she faced, a salience-carrying grade, ok toggled.
     fn lived_record(stimulus: &str, ok: bool) -> ExperienceRecord {
         ExperienceRecord {
-            task: EvalTask { prompt: stimulus.to_string(), ..EvalTask::default() },
+            task: EvalTask {
+                prompt: stimulus.to_string(),
+                ..EvalTask::default()
+            },
             ok,
-            grade: if ok { "lived turn: settled".into() } else { "lived turn: did not converge".into() },
+            grade: if ok {
+                "lived turn: settled".into()
+            } else {
+                "lived turn: did not converge".into()
+            },
             answer: "half-finished attempt".to_string(),
             world_state: String::new(),
             acts: 8,
             source: ExperienceSource::Lived,
+            teammates: Vec::new(),
+            team_role: None,
+            room: Some(uuid::Uuid::from_u128(7)),
         }
     }
 
@@ -470,21 +514,31 @@ mod tests {
         let failed_lived = lived_record("how does build_workspace_cycle settle a turn?", false);
         let clean_lived = lived_record("say hi to the room", true); // ok → not salient → drop
         let empty_stimulus = lived_record("   ", false); // salient but nothing to re-pose → drop
-        // A received lesson is untestable+salient but NOT lived — it has its own direct path
-        // (expansion_examples), never the teacher.
+                                                         // A received lesson is untestable+salient but NOT lived — it has its own direct path
+                                                         // (expansion_examples), never the teacher.
         let received = ExperienceRecord {
-            task: EvalTask { prompt: "continuum".to_string(), ..EvalTask::default() },
+            task: EvalTask {
+                prompt: "continuum".to_string(),
+                ..EvalTask::default()
+            },
             ok: true,
             grade: "received lesson from BigMama".into(),
             answer: "the call room IS the airc room".into(),
             world_state: String::new(),
             acts: 0,
             source: ExperienceSource::Received,
+            teammates: Vec::new(),
+            team_role: None,
+            room: Some(uuid::Uuid::from_u128(7)),
         };
 
         let stimuli = synth.select(&[failed_lived, clean_lived, empty_stimulus, received]);
 
-        assert_eq!(stimuli.len(), 1, "only the salient lived turn with a real stimulus is selected");
+        assert_eq!(
+            stimuli.len(),
+            1,
+            "only the salient lived turn with a real stimulus is selected"
+        );
         assert_eq!(stimuli[0], "how does build_workspace_cycle settle a turn?");
     }
 
@@ -494,7 +548,10 @@ mod tests {
     #[test]
     fn lived_expansion_empty_when_nothing_salient_and_lived() {
         let synth = LivedExpansionSynthesizer::new();
-        let batch = [lived_record("all good", true), lived_record("also fine", true)];
+        let batch = [
+            lived_record("all good", true),
+            lived_record("also fine", true),
+        ];
         assert!(
             synth.select(&batch).is_empty(),
             "no salient lived failure → nothing to re-teach → empty (no teacher spin-up)"

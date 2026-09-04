@@ -22,6 +22,14 @@ pub trait RoomPurposeSource: Send + Sync {
     /// default (`"chat"`), never a fabricated or panicking value; a room the resolver
     /// has never seen is simply a plain chat room until its recipe says otherwise.
     fn purpose_for(&self, room_id: Uuid) -> String;
+
+    /// The activity this room was spawned UNDER (the binding's `parent`), if any —
+    /// what lets a navigator nest a run room under the room it was dispatched from
+    /// instead of listing every activity flat. Default `None`: a source that only
+    /// knows purposes nests nothing.
+    fn parent_for(&self, _room_id: Uuid) -> Option<Uuid> {
+        None
+    }
 }
 
 /// The default until the room→recipe store exists: every room is a chat room. Honest,

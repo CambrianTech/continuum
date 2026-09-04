@@ -7,16 +7,16 @@ export type BudgetLimits = {
 /**
  * e.g. 3600 (1 hour)
  */
-maxTimeSecs: number | undefined, 
+maxTimeSecs?: number | undefined, 
 /**
  * e.g. 5.00
  */
-maxCostUsd: number | null, 
+maxCostUsd?: number, 
 /**
  * e.g. 1_000_000
  */
-maxTokens: number | undefined, 
+maxTokens?: number | undefined, 
 /**
  * Full pipeline loop iterations (NOT agent turns)
  */
-maxIterations: number | null, };
+maxIterations?: number, };

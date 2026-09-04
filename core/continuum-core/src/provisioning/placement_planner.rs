@@ -30,7 +30,10 @@ use crate::model_registry::types::Model;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlacementResolution {
     /// Fits this node's serving budget — the recommended experience, served HERE.
-    LocalRecommended { budget_bytes: u64, weights_bytes: u64 },
+    LocalRecommended {
+        budget_bytes: u64,
+        weights_bytes: u64,
+    },
     /// No artifact on disk yet — resolve by PROVISIONING it, to the COLD tier when
     /// this box has one (big models / MoE expert sets belong on the offload drive),
     /// else the system drive. "Not here yet", never "can't run".
@@ -43,14 +46,23 @@ pub enum PlacementResolution {
     /// not by shrinking. Preferred over grid/degrade when a cold tier exists — local
     /// frontier intelligence, no cloud. (Prefer-grid-if-a-peer-serves-it-whole-faster
     /// is a throughput-policy follow-up, not this slice.)
-    MoePaged { vram_budget_bytes: u64, weights_bytes: u64 },
+    MoePaged {
+        vram_budget_bytes: u64,
+        weights_bytes: u64,
+    },
     /// Too big for THIS node's budget → resolve to a grid node that fits. The grid is
     /// a resolution field: too-big-HERE becomes served-THERE, not excluded.
-    GridRouted { local_budget_bytes: u64, weights_bytes: u64 },
+    GridRouted {
+        local_budget_bytes: u64,
+        weights_bytes: u64,
+    },
     /// Doesn't fit locally AND no grid node fits → degrade to a smaller variant /
     /// cloud. The FLOOR — still an answer (the caller owns the smaller-variant / cloud
     /// choice), never an exclusion.
-    Degraded { local_budget_bytes: u64, weights_bytes: u64 },
+    Degraded {
+        local_budget_bytes: u64,
+        weights_bytes: u64,
+    },
 }
 
 /// PURE resolution — the testable core. Feeds on an already-resolved footprint
@@ -159,9 +171,13 @@ pub fn select_grid_peer(snapshot: &GridSnapshot, footprint: &ModelFootprint) -> 
                 usable_bytes: p.capacity.gpu_free_bytes_live,
                 perf_cores: 1,
             };
-            plan_serving(host, std::slice::from_ref(footprint), ServingDemand::new(1, None))
-                .map(|plan| plan.fits_on_gpu)
-                .unwrap_or(false)
+            plan_serving(
+                host,
+                std::slice::from_ref(footprint),
+                ServingDemand::new(1, None),
+            )
+            .map(|plan| plan.fits_on_gpu)
+            .unwrap_or(false)
         })
         .max_by_key(|p| p.capacity.gpu_free_bytes_live)
         .map(|p| p.peer)
@@ -236,7 +252,10 @@ mod tests {
     fn fitting_model_resolves_local_recommended() {
         let p = discrete(32, 30, true);
         let r = resolve_from_footprint(&p, Some(&footprint(10)), false, false);
-        assert!(matches!(r, PlacementResolution::LocalRecommended { .. }), "got {r:?}");
+        assert!(
+            matches!(r, PlacementResolution::LocalRecommended { .. }),
+            "got {r:?}"
+        );
     }
 
     // what this catches: THE NEVER-EXCLUDE INVARIANT. A model too big for THIS node
@@ -248,10 +267,16 @@ mod tests {
         let huge = footprint(80); // 80 GiB weights — cannot fit locally
 
         let with_grid = resolve_from_footprint(&p, Some(&huge), false, true);
-        assert!(matches!(with_grid, PlacementResolution::GridRouted { .. }), "got {with_grid:?}");
+        assert!(
+            matches!(with_grid, PlacementResolution::GridRouted { .. }),
+            "got {with_grid:?}"
+        );
 
         let solo = resolve_from_footprint(&p, Some(&huge), false, false);
-        assert!(matches!(solo, PlacementResolution::Degraded { .. }), "got {solo:?}");
+        assert!(
+            matches!(solo, PlacementResolution::Degraded { .. }),
+            "got {solo:?}"
+        );
         // The invariant: BOTH are answers. Neither errors, panics, or "excludes".
     }
 
@@ -269,7 +294,9 @@ mod tests {
         let no_cold = discrete(8, 6, false);
         assert_eq!(
             resolve_from_footprint(&no_cold, None, false, false),
-            PlacementResolution::NeedsProvisioning { to_cold_tier: false }
+            PlacementResolution::NeedsProvisioning {
+                to_cold_tier: false
+            }
         );
     }
 
@@ -363,7 +390,10 @@ mod tests {
             local,
             peers: vec![peer(1, 20, true), peer(2, 20, true)],
         };
-        assert!(!grid_has_fit(&pooled, &fp), "two 20GiB peers must NOT fit a 40GiB model — never a pool");
+        assert!(
+            !grid_has_fit(&pooled, &fp),
+            "two 20GiB peers must NOT fit a 40GiB model — never a pool"
+        );
 
         // One reachable peer with room fits.
         let has_big = GridSnapshot {

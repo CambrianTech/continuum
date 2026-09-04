@@ -24,7 +24,7 @@ fn default_max_results() -> usize {
 )]
 pub struct MemoryMultiLayerRecallParams {
     /// Which persona's corpus to recall from.
-    pub persona_id: String,
+    pub persona_id: crate::identity::PersonaRef,
     /// The semantic query. Absent ⇒ the semantic layer degrades to non-semantic recall.
     #[serde(default)]
     #[ts(optional)]

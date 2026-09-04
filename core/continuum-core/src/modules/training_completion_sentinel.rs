@@ -169,8 +169,9 @@ impl TrainingCompletionSentinel {
             };
 
             let params = CognitionEvalParams {
+            temperature: None, // sentinel measures her as she LIVES — lived sampling
                 run_id: None,
-                persona_id: job.persona_id.to_string(),
+                persona_id: crate::identity::PersonaRef::new(job.persona_id.to_string()),
                 gene: Some(EvalGene {
                     name: job.trait_kind.clone(),
                     path: path_str.clone(),
@@ -194,6 +195,7 @@ impl TrainingCompletionSentinel {
                 // #207: L3 auto-eval measures LIFT (base vs gene in one fork), which is
                 // reproducible regardless of recall; keep memories intact (default).
                 suppress_recall: None,
+            help: None, // solo arm — help is a declared per-round condition, never a default
                 note: Some(format!(
                     "L3 auto-eval (gene={}, base={}, provider={})",
                     job.trait_kind, job.base_model, job.handle.provider_id
@@ -211,7 +213,11 @@ impl TrainingCompletionSentinel {
                 }
             };
 
-            let result = match conn.commands().execute_value("cognition/eval", params).await {
+            let result = match conn
+                .commands()
+                .execute_value("cognition/eval", params)
+                .await
+            {
                 Ok(v) => v,
                 Err(e) => {
                     tracing::warn!(
@@ -253,8 +259,7 @@ impl TrainingCompletionSentinel {
 
             // lift > 0: page the gene into the LIVE cycle. A wait-free atomic genome
             // swap — the persona's next generation runs base + this layer.
-            let Some(cycle) =
-                crate::cognition::persona_workspace::global().get(&job.persona_id)
+            let Some(cycle) = crate::cognition::persona_workspace::global().get(&job.persona_id)
             else {
                 // De-spawned between train start and completion — don't adopt into a
                 // ghost. Fail loud; the next time she's live + retrained the loop runs.
@@ -269,10 +274,31 @@ impl TrainingCompletionSentinel {
 
             cycle.page_in(vec![ActiveAdapterRequest {
                 name: job.trait_kind.clone(),
-                path: path_str,
+                path: path_str.clone(),
                 domain: job.trait_kind.clone(),
                 scale: 1.0,
             }]);
+
+            // STAMP the signature into the sidecar at the same moment the gene
+            // becomes live — adoption is the one event where the gene's path,
+            // its minted signature, and its measured worth are all in hand.
+            // Best-effort: a failed stamp warns; the gene serves either way and
+            // routes by fallback until the next adoption re-stamps.
+            if let Some(sig) = job.signature.clone() {
+                match crate::genome::signature::signature_store_path() {
+                    Ok(store) => {
+                        if let Err(e) = crate::genome::signature::SignatureStore::stamp_at(
+                            &store, &path_str, sig,
+                        ) {
+                            tracing::warn!(gene = %path_str, error = %e,
+                                "adopted gene's signature failed to stamp — routes by fallback");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "signature store path unresolvable — signature not stamped");
+                    }
+                }
+            }
 
             tracing::info!(
                 persona = %job.persona_id,

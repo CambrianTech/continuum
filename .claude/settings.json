@@ -2,7 +2,7 @@
   "extraKnownMarketplaces": {
     "continuum-local-tools": {
       "source": {
-        "source": "local",
+        "source": "directory",
         "path": "tools/plugins"
       }
     }

@@ -29,11 +29,11 @@ pub use discovery_state::{AircDiscovery, DiscoveryFailure, PartialDiscovery};
 pub use client::{AircQueueClient, CliAircQueueClient};
 #[allow(deprecated)]
 pub use daemon_endpoint::default_socket_path_in;
+pub use daemon_transport::{AircDaemonClient, DaemonAircEventTransport};
 pub use discovery::{
     discover_airc_socket, discover_default_channel, discover_default_room_name, discover_peer_id,
     DiscoveryError,
 };
-pub use daemon_transport::{AircDaemonClient, DaemonAircEventTransport};
 pub use event_transport::{AircEventTransport, StoreAircEventTransport};
 pub use inbound_attach::spawn_daemon_attach;
 pub use process::{AircCommandRunner, AircInvocation, TokioAircCommandRunner};

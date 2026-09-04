@@ -78,7 +78,8 @@ async fn custodian_daemon_boots_serves_health_and_shuts_down_gracefully() {
         .expect("spawn forge-custodian");
 
     // Poll /health via the REAL client until the daemon is up (or time out).
-    let client = ForgeCustodianHttp::with_base_url(format!("http://{addr}"), reqwest::Client::new());
+    let client =
+        ForgeCustodianHttp::with_base_url(format!("http://{addr}"), reqwest::Client::new());
     let deadline = Instant::now() + Duration::from_secs(15);
     let health = loop {
         match client.health().await {
@@ -122,7 +123,9 @@ async fn custodian_daemon_boots_serves_health_and_shuts_down_gracefully() {
     let status = loop {
         match child.try_wait().expect("try_wait") {
             Some(s) => break s,
-            None if Instant::now() < exit_deadline => std::thread::sleep(Duration::from_millis(100)),
+            None if Instant::now() < exit_deadline => {
+                std::thread::sleep(Duration::from_millis(100))
+            }
             None => {
                 let _ = child.kill();
                 panic!("custodian did not exit within 5s of SIGTERM (graceful shutdown stuck)");

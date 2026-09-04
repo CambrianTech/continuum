@@ -21,7 +21,7 @@ use crate::sdk_codegen::CommandError;
 )]
 pub struct MemoryAppendMemoryParams {
     /// Which persona's corpus to append to.
-    pub persona_id: String,
+    pub persona_id: crate::identity::PersonaRef,
     /// The memory (with optional precomputed embedding) to append.
     pub memory: CorpusMemory,
 }

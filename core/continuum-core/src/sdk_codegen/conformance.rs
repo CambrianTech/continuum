@@ -167,7 +167,11 @@ fn required_fields(schema: &serde_json::Value) -> Vec<String> {
     schema
         .get("required")
         .and_then(|r| r.as_array())
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default()
 }
 

@@ -20,7 +20,10 @@ use crate::modules::cognition::CognitionState;
 use crate::sdk_codegen::CommandError;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/DreamNowParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/DreamNowParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct DreamNowParams {
     /// Persona whose dream pass is being forced.
@@ -32,7 +35,10 @@ pub struct DreamNowParams {
 /// (results land through `admit_reflection` + the `hippocampus.supersede` /
 /// `persona.dream.pass_complete` probes); this is the launch verdict.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/DreamNowResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/DreamNowResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct DreamNowResult {
     /// True when a dream pass launched (or decay ran) — the region found the

@@ -20,7 +20,10 @@ use crate::tool_parsing::ToolNameCodec;
 
 /// The canonical tool names to register (e.g. `["code/write", "code/read"]`).
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/tool_parsing/ToolRegisterParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/tool_parsing/ToolRegisterParams.ts"
+)]
 pub struct ToolRegisterParams {
     /// Canonical, slash-namespaced tool names to add to the codec's table.
     pub tools: Vec<String>,
@@ -28,7 +31,10 @@ pub struct ToolRegisterParams {
 
 /// How many names were registered in this call, and the codec's running total.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/tool_parsing/ToolRegistrationReport.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/tool_parsing/ToolRegistrationReport.ts"
+)]
 pub struct ToolRegistrationReport {
     /// Number of names supplied in this call.
     pub registered: u32,

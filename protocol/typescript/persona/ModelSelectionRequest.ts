@@ -9,4 +9,11 @@ export type ModelSelectionRequest = { persona_id: string,
  * Values: "code", "debug", "analysis", "creative", "art", "writing",
  *         "support", "help", "social", "facts", "knowledge", "expertise"
  */
-task_domain?: string, };
+task_domain?: string, 
+/**
+ * Optional free-text NEED ("refactor rust async code") — embedded by the
+ * command layer and matched by DISTANCE against each gene's minted
+ * signature (rung 0). Falls back to `task_domain`'s text when absent; when
+ * neither is present rung 0 is skipped and the keyword tiers answer.
+ */
+need?: string, };

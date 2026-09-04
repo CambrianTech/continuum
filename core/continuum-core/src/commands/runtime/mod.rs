@@ -23,7 +23,10 @@ pub mod metrics;
     Debug, Clone, Default, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema,
 )]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/runtime/RuntimeQueryParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/runtime/RuntimeQueryParams.ts"
+)]
 pub struct RuntimeQueryParams {}
 
 /// The `runtime/*` introspection commands as typed self-routing objects, each

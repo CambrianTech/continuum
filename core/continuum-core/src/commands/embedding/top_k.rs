@@ -15,7 +15,10 @@ fn default_k() -> usize {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/embedding/TopKParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/embedding/TopKParams.ts"
+)]
 pub struct TopKParams {
     /// Query embedding.
     pub query: Vec<f32>,
@@ -32,7 +35,10 @@ pub struct TopKParams {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/embedding/TopKHit.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/embedding/TopKHit.ts"
+)]
 pub struct TopKHit {
     /// Index of the target in the input `targets` array.
     pub index: usize,
@@ -42,7 +48,10 @@ pub struct TopKHit {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/embedding/TopKResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/embedding/TopKResult.ts"
+)]
 pub struct TopKResult {
     /// Matches above `threshold`, sorted by similarity descending, capped at `k`.
     pub results: Vec<TopKHit>,

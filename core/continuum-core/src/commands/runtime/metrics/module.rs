@@ -6,7 +6,10 @@ use crate::runtime::ModuleStats;
 /// Params for `runtime/metrics/module`: the module to query.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/runtime/RuntimeMetricsModuleParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/runtime/RuntimeMetricsModuleParams.ts"
+)]
 pub struct RuntimeMetricsModuleParams {
     /// The registered module name (e.g. `"ai_provider"`, `"data"`).
     pub module: String,

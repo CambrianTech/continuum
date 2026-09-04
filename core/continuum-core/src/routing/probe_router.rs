@@ -197,6 +197,15 @@ where
     S: Subscriber + for<'lookup> LookupSpan<'lookup>,
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+        // ZERO-COST GATE (2026-08-23 serialization audit): callsite field sets
+        // are static metadata — asking whether `probe_class` exists allocates
+        // nothing. Without this, EVERY tracing event in the process and its
+        // dependency crates paid a full visitor walk (a String per field into a
+        // HashMap) in this layer, then discarded it. The span path got exactly
+        // this fix in PR #1541 R2; the event path never did.
+        if event.metadata().fields().field("probe_class").is_none() {
+            return;
+        }
         let mut visitor = ProbeEventVisitor::default();
         event.record(&mut visitor);
 
@@ -350,7 +359,10 @@ mod tests {
             let event = rx.try_recv().expect("subscriber must receive event");
             assert_eq!(event.class, "latency");
             assert_eq!(event.message.as_deref(), Some("turn complete"));
-            assert!(event.uri_chain.is_empty(), "no instrumented span → empty chain");
+            assert!(
+                event.uri_chain.is_empty(),
+                "no instrumented span → empty chain"
+            );
         });
     }
 
@@ -375,7 +387,10 @@ mod tests {
             // are stored unquoted. The Debug-recorded form would show
             // surrounding quotes; the substrate intentionally keeps
             // the original string content here.
-            assert_eq!(event.fields.get("action").map(String::as_str), Some("evict-lora"));
+            assert_eq!(
+                event.fields.get("action").map(String::as_str),
+                Some("evict-lora")
+            );
             assert_eq!(
                 event.fields.get("target").map(String::as_str),
                 Some("typescript-expertise")
@@ -455,7 +470,10 @@ mod tests {
                 .try_recv()
                 .expect("subscribed listener must receive the timing event");
             assert_eq!(event.class, "timing");
-            assert_eq!(event.fields.get("seam").map(String::as_str), Some("test_phase"));
+            assert_eq!(
+                event.fields.get("seam").map(String::as_str),
+                Some("test_phase")
+            );
             // duration_ms is always set on timing events
             assert!(
                 event.fields.contains_key("duration_ms"),
@@ -478,9 +496,8 @@ mod tests {
             async fn produces() -> i32 {
                 42
             }
-            let _result: i32 = runtime.block_on(async {
-                crate::time_probe!("async_test_phase", produces())
-            });
+            let _result: i32 =
+                runtime.block_on(async { crate::time_probe!("async_test_phase", produces()) });
             let event = rx.try_recv().expect("subscriber must receive timing event");
             assert_eq!(event.class, "timing");
             assert_eq!(
@@ -519,7 +536,10 @@ mod tests {
             // A normal `tracing::info!` has no `probe_class` field;
             // the router must ignore it.
             tracing::info!(some_field = "value", "regular log message");
-            assert!(rx.try_recv().is_err(), "non-probe events must not reach probe subscribers");
+            assert!(
+                rx.try_recv().is_err(),
+                "non-probe events must not reach probe subscribers"
+            );
         });
     }
 

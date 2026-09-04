@@ -10,7 +10,6 @@
 //! OUTSIDER replicate our numbers against their own `/v1` without our stack. Operational
 //! benchmarking is Rust; the replication convenience is the lone edge script.
 
-use crate::cognition::learning_policy::LearningPolicy;
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -34,6 +33,10 @@ pub enum Grader {
     /// tree against a `UiCheck` spec. Live today via cognition/eval's `perception_grade` — the
     /// functional web-dev tier (`webdev-rs`).
     Perception,
+    /// Held-out expected-answer substring (case-insensitive) — cognition/eval's `expect`
+    /// grade. Live today for the input-side vision tier (`vision-qa`: SEE an image with
+    /// vision/look, answer objectively).
+    Answer,
 }
 
 /// One known benchmark collection — mirrors a `model_registry::ModelSpec` row.
@@ -63,7 +66,10 @@ impl BenchmarkSpec {
     /// loader lands. This is what makes `runnable` true and `benchmark/dispatch` work for the
     /// real-project tier the frontier models fight over (Joel's target, 2026-08-10).
     pub fn swe_dataset(&self) -> Option<&'static str> {
-        if !matches!(self.name, "swe-bench-lite" | "swe-bench-verified") {
+        if !matches!(
+            self.name,
+            "swe-bench-lite" | "swe-bench-verified" | "swe-bench-verified-mini"
+        ) {
             return None;
         }
         self.source_url?
@@ -131,6 +137,16 @@ pub fn known_benchmarks() -> &'static [BenchmarkSpec] {
             source_url: None,
         },
         BenchmarkSpec {
+            name: "vision-qa",
+            description: "Vision-QA — OUR input-side vision benchmark: SEE a generated image \
+                          (vision/look through her real sensory bridge) and answer an objective \
+                          question — 16 contamination-free tasks, held-out substring oracle.",
+            grader: Grader::Answer,
+            tasks: 16,
+            eval_set: Some("vision-qa"),
+            source_url: None,
+        },
+        BenchmarkSpec {
             name: "coder-write-eval",
             description: "Coder write gym — 30 single-function Rust tasks with held-out test \
                           assertions, rustc compile+run graded. The KANBAN benchmark: dispatched \
@@ -160,6 +176,87 @@ pub fn known_benchmarks() -> &'static [BenchmarkSpec] {
             tasks: 3,
             eval_set: Some("tool-bugfix-rs.jsonl"),
             source_url: None,
+        },
+        BenchmarkSpec {
+            name: "super-masked",
+            description: "SUPER-Masked (AI2, EMNLP'24) — 152 checkpointed sub-scenarios of \
+                          'make a real research repo run': clone at commit, wrangle the env, \
+                          execute the prior-work scaffold, produce the answer JSON. Graded by \
+                          upstream's own evaluate() (float epsilon 1e-2) ported verbatim; \
+                          landmark partial-credit deferred and DECLARED in every receipt. \
+                          Fetch first (`benchmark/fetch --benchmark super-masked`).",
+            grader: Grader::Python,
+            tasks: 152,
+            eval_set: Some("super-masked.jsonl"),
+            source_url: Some("https://huggingface.co/datasets/allenai/super"),
+        },
+        BenchmarkSpec {
+            name: "algotune",
+            description: "AlgoTune (NeurIPS'25) — 150+ 'beat the reference library' tasks \
+                          (SciPy/NumPy/sklearn/CVXPY): structurally contamination-proof (no \
+                          hidden answers — the reference is public and the task is to be \
+                          FASTER, correctness-gated by the task's own checker on held-out \
+                          seeds). Harness: warmup + min-of-10, machine-relative calibration; \
+                          pass = parity, score = speedup (in the dod receipt). Fetch first \
+                          (`benchmark/fetch --benchmark algotune`).",
+            grader: Grader::Python,
+            tasks: 154,
+            eval_set: Some("algotune.jsonl"),
+            source_url: Some("https://github.com/oripress/AlgoTune"),
+        },
+        BenchmarkSpec {
+            name: "mirrorcode",
+            description: "MirrorCode (Epoch AI × METR) — reimplement an ENTIRE program \
+                          (Unix utils, format tools, a C preprocessor, a CAS subset, a \
+                          scripting-language CLI) from observable behavior only: 26 public \
+                          target programs, one task each, graded by exact stdout/stderr/\
+                          exit-code match over the FULL recorded case set (visible cases + \
+                          hidden anti-hardcoding duals; 100% required, upstream's own bar). \
+                          Frontier 2026-08: Claude Fable 5 64%, GPT-5.6 Sol 20% \
+                          (epoch.ai/benchmarks/mirrorcode, Go/Ada targets, 10B-token \
+                          attempts). OUR run is a DECLARED VARIANT, internal signal only: \
+                          Rust target language, expected outputs staged in place of the \
+                          reference binary, our own act budget — and the whole oracle \
+                          (hidden duals included) is public upstream, so contamination is \
+                          assumed. Fetch first (`benchmark/fetch --benchmark mirrorcode`).",
+            grader: Grader::Rust,
+            tasks: 26,
+            eval_set: Some("mirrorcode.jsonl"),
+            source_url: Some("https://github.com/epoch-research/MirrorCode"),
+        },
+        BenchmarkSpec {
+            name: "ds-1000",
+            description: "DS-1000 (XLang/HKU, ICML'23) — 1,000 data-science problems over \
+                          Pandas/NumPy/SciPy/sklearn/Matplotlib/PyTorch/TF, graded by the \
+                          OFFICIAL execution oracle (her solution.py substituted at the \
+                          [insert] marker of each row's code_context and RUN, 120s cap). \
+                          Tier-1 pick of the 2026-08-22 landscape sweep: execution-graded, \
+                          local, seconds/task. Fetch first (`benchmark/fetch --benchmark \
+                          ds-1000`) — that converts the HF rows onto the gym rails.",
+            grader: Grader::Python,
+            tasks: 1000,
+            eval_set: Some("ds-1000.jsonl"),
+            source_url: Some("https://huggingface.co/datasets/xlangai/DS-1000"),
+        },
+        BenchmarkSpec {
+            name: "terminal-bench",
+            description: "Terminal-Bench 2.1 (Stanford × Laude Institute) — 89 real terminal \
+                          tasks from the Harbor registry (compile a COBOL modernization, \
+                          recover a WAL-corrupted db, configure nginx), each graded by its \
+                          own pytest oracle over the FINAL workspace state, with the task's \
+                          own verifier timeout. The frontier's agentic mid-rung: TB 2.1 \
+                          harness+model pairs score 74–84% (Fable 5 + Claude Code 83.8%); \
+                          TB 3.0 'Frontier Bench' ceilings at 34.4% (GPT-5.6 Sol). Docker-skip \
+                          policy: tasks whose initial state is BUILT inside their container \
+                          image (compiles, generated data, cloned repos, multi-stage/compose \
+                          topologies) cannot be reproduced as plain file staging and are \
+                          excluded as COUNTED, named skips in the fetch receipt — 53 of 89 \
+                          convert on the 2026-08-23 registry. Fetch first (`benchmark/fetch \
+                          --benchmark terminal-bench`).",
+            grader: Grader::Python,
+            tasks: 89,
+            eval_set: Some("terminal-bench.jsonl"),
+            source_url: Some("https://github.com/harbor-framework/terminal-bench-2-1"),
         },
         BenchmarkSpec {
             name: "humaneval",
@@ -195,13 +292,71 @@ pub fn known_benchmarks() -> &'static [BenchmarkSpec] {
         },
         BenchmarkSpec {
             name: "swe-bench-verified",
-            description: "SWE-bench Verified — the 500 human-validated instances (OpenAI). The current \
-                          agentic headline the frontier labs report; solution = a repo patch that passes \
-                          the real test suite. Official swebench Docker scorer.",
+            description: "SWE-bench Verified — the 500 human-validated instances (OpenAI). SATURATED \
+                          as a frontier signal (Opus 5 at 97.0%, seven models ≥95%, vals.ai 2026-08-19) \
+                          — keep as a floor/sanity check, never a headline. Solution = a repo patch \
+                          that passes the real test suite.",
             grader: Grader::Python,
             tasks: 500,
             eval_set: None,
             source_url: Some("https://huggingface.co/datasets/princeton-nlp/SWE-bench_Verified"),
+        },
+        BenchmarkSpec {
+            name: "swe-bench-verified-mini",
+            description: "SWE-bench Verified-mini (MariusHobbhahn) — a 50-instance decimation of \
+                          Verified with IDENTICAL instance fields, chosen so the env footprint is \
+                          ~5GB instead of 130GB. The INNER DEV LOOP: cheap claim growth and fast \
+                          harness iteration between full Verified rounds (VIRAL-LAUNCH-PLAN.md \
+                          execution item 2; ADAPT-NOW #1 of the 2026-09 landscape sweep).",
+            grader: Grader::Python,
+            tasks: 50,
+            eval_set: None,
+            source_url: Some("https://huggingface.co/datasets/MariusHobbhahn/swe-bench-verified-mini"),
+        },
+        BenchmarkSpec {
+            name: "swe-bench-multilingual",
+            description: "SWE-bench Multilingual (MIT) — 300 instances across 9 languages, \
+                          including 43 RUST instances on which NO open model has ever been \
+                          scored (an empty board is a first-mover headline). eval_script and \
+                          log_parser ship AS DATA per instance. Catalogued ahead of its \
+                          adapter: the Rust slice needs cargo-based env staging, not the \
+                          python venv path — see VIRAL-LAUNCH-PLAN.md execution item 3.",
+            grader: Grader::Python,
+            tasks: 300,
+            eval_set: None,
+            source_url: Some("https://huggingface.co/datasets/SWE-bench/SWE-bench_Multilingual"),
+        },
+        BenchmarkSpec {
+            name: "swe-rebench",
+            description: "SWE-rebench (Nebius) — continuously-mined real GitHub issue→PR tasks, \
+                          CONTAMINATION-PROOF BY CONSTRUCTION: rolling time-windows mean only \
+                          instances newer than a model's cutoff count. Frontier mid-2026: Fable 5 \
+                          64.5%, Opus 5 63.4% on the May–Jul window. Same instance schema as \
+                          SWE-bench (list-shaped F2P/P2P normalized by the tolerant mapper); full \
+                          test split 21,336 instances — an HONEST run selects a window newer than \
+                          the model's training cutoff via each instance's created_at and says so \
+                          in the receipt. Tier-1 pick of the 2026-08-23 frontier-landscape sweep \
+                          (docs/planning/FRONTIER-BENCHMARK-LANDSCAPE-2026-08.md).",
+            grader: Grader::Python,
+            tasks: 21336,
+            eval_set: None,
+            source_url: Some("https://huggingface.co/datasets/nebius/SWE-rebench"),
+        },
+        BenchmarkSpec {
+            name: "swe-bench-pro",
+            description: "SWE-bench Pro (Scale AI) — the Verified successor: 731 public instances \
+                          (of 1,865) across 41 professional repos, long-horizon multi-file issues, \
+                          copyleft/held-out contamination barrier. Frontier mid-2026: 46–61% \
+                          (Gemini 3.1 Pro 46.1%, Opus 4.6 51.9%, GPT-5.4 59.1%) — frontier-HARD. \
+                          MULTI-LANGUAGE repos (js/go/py — `repo_language` per row): python \
+                          instances grade through the existing era-venv runners today; other \
+                          languages need their runner seam before their rows grade (#383's \
+                          repo→runner map is the extension point, expressed as data). Tier-1 pick \
+                          of the 2026-08-23 landscape sweep.",
+            grader: Grader::Python,
+            tasks: 731,
+            eval_set: None,
+            source_url: Some("https://huggingface.co/datasets/ScaleAI/SWE-bench_Pro"),
         },
         BenchmarkSpec {
             name: "bigcodebench",
@@ -311,16 +466,6 @@ pub fn known_benchmarks() -> &'static [BenchmarkSpec] {
             tasks: 750,
             eval_set: None,
             source_url: Some("https://github.com/StonyBrookNLP/appworld"),
-        },
-        BenchmarkSpec {
-            name: "terminal-bench",
-            description: "Terminal-Bench — end-to-end tasks completed in a real terminal (build, debug, \
-                          configure, script). Graded by outcome checks; plays directly to code/shell + \
-                          the recovery loop.",
-            grader: Grader::Python,
-            tasks: 100,
-            eval_set: None,
-            source_url: Some("https://github.com/laude-institute/terminal-bench"),
         },
     ]
 }
@@ -447,6 +592,7 @@ pub struct BenchmarkRecordParams {
     pub output_tokens: Option<u32>,
     /// Wall-clock seconds for the run (feeds cost-per-resolved-task).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub wall_seconds: Option<u32>,
     /// Free-text context (instrument caveats, instance list, capture dir).
@@ -532,7 +678,6 @@ impl ActionCommand for BenchmarkRecord {
 }
 crate::register_stateless_command!(BenchmarkRecord);
 
-
 // ───────────────────────── benchmark/dispatch ─────────────────────
 //
 // #346 (Joel, 2026-08-07): benchmarks delivered as WORK CARDS — measured for
@@ -550,9 +695,35 @@ crate::register_stateless_command!(BenchmarkRecord);
 )]
 pub struct BenchmarkDispatchParams {
     /// The benchmark name (see `benchmark/list`), e.g. `tool-bugfix-rs`.
-    pub name: String,
+    /// Optional when `recipe` is given (the recipe's rows carry the names).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub name: Option<String>,
+    /// Execute a stored RECIPE by name instead of hand-assembled flags: a row
+    /// in the `benchmark_recipes` collection (author with `data/create`)
+    /// carrying the model to serve and the dispatches to fire. Dispatch pins
+    /// the model (fit-gated), awaits lane readiness, then fires every entry —
+    /// the whole experiment is two commands: `reboot` + `dispatch --recipe X`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub recipe: Option<String>,
+    /// Parameters for a TEMPLATE recipe: every `{key}` placeholder in the
+    /// row's string fields is substituted from this map before execution, so
+    /// one recipe ("challenge: candidate takes the incumbent's misses") serves
+    /// every model — the model is an ARGUMENT, never data baked into the row.
+    /// Unresolved placeholders fail loud, naming the missing key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "Record<string, string>")]
+    pub params: Option<std::collections::BTreeMap<String, String>>,
+    /// TEAM solve: citizen display names joined to every dispatched card's
+    /// solve room beside its claimer, each charged to cross-review before
+    /// submit (#team-proof gap 1). Recipe entries may override per dispatch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub teammates: Option<Vec<String>>,
     /// How many tasks (from the top) to post as cards. Omit for all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub limit: Option<u32>,
     /// Board repo key the cards land under, e.g. `CambrianTech/continuum`.
@@ -580,6 +751,85 @@ pub struct BenchmarkDispatchParams {
     /// leads swe-bench-lite). Ignored for gym-class benchmarks.
     #[serde(default)]
     pub instances: Option<Vec<String>>,
+    /// Deterministic RANDOM SAMPLE: take this many instances chosen by `seed`
+    /// instead of the dataset head. `(dataset, seed, sample)` fully determines
+    /// the list on every machine — the flag pair IS the replication recipe, so
+    /// publish both alongside the score. Combines with `limit` (sample wins),
+    /// refused alongside explicit `instances`. SWE-class benchmarks only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub sample: Option<u32>,
+    /// RNG seed for `sample` (default 0). Same LCG as the generated gyms — no
+    /// platform rand, byte-stable selection forever.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub seed: Option<u64>,
+    /// The room this run lives in. Omit to get a FRESH one per run, named
+    /// `bench-<benchmark>-<epoch>`.
+    ///
+    /// **A run is an activity, and an activity is a room.** Before this existed,
+    /// dispatch had no way to say where — so every suite, every run, forever, piled
+    /// into whichever room the curator happened to be standing in. Measured on one
+    /// 37-minute window of that pile: 136 cards with 66 already CLOSED and still
+    /// resident, and 5,336 of 5,345 inbound events discarded as bookkeeping —
+    /// ~48 wake-ups per minute per citizen, of which NINE in 37 minutes were
+    /// something a mind could actually read. Claim heartbeats scale as
+    /// `O(claims × citizens)`, so the more work a citizen held, the less capacity
+    /// it had to do any of it.
+    ///
+    /// A fresh room per run makes the run's board its OWN denominator, lets the
+    /// round END, and puts the assignees somewhere they can hear each other. Pass
+    /// an explicit name to join an existing run (it must already exist — dispatch
+    /// spawns a room it names, and never silently adopts a stranger's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub room: Option<String>,
+    /// Also CLOSE this benchmark's redundant duplicate cards, converging the board
+    /// to one live card per task. Off by default — a dispatch that silently closed
+    /// cards would be a surprising verb.
+    ///
+    /// A card someone is genuinely working (a live claim) is never closed; if two
+    /// citizens hold the SAME task, both are kept and the contention is reported
+    /// rather than resolved by cancelling one of them. Pair with `limit=0` to prune
+    /// without dispatching anything new.
+    #[serde(default)]
+    pub prune: Option<bool>,
+    /// Who works this round's cards: `detached_solve` (default) or `citizen`.
+    ///
+    /// - `detached_solve` — a forked copy of the citizen solves each card through
+    ///   `agent/solve`, with an exclusive warm slot. Proven; it produced our one SWE
+    ///   pass. It also produces no room turn, so the round teaches nobody (#456).
+    /// - `citizen` — nothing detached fires. The kickoff drives her to claim, and she
+    ///   works the card on her own held-work turn: hands rooted at the staged checkout,
+    ///   acts radiating into the run room, and the turn feeding the training producer.
+    ///
+    /// The score and the learning are both the objective, and only `citizen` can
+    /// deliver the second one — but it depends on the kickoff→claim hop that used to
+    /// stall rounds, so it is opt-in until that hop is proven under residency.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub drive: Option<crate::cognition::bench_round::WorkDriver>,
+    /// The round's STANDING RULES — published as the run room's operating doctrine
+    /// so every resident sees it in her grounding on every turn (the `[Room
+    /// operating doctrine]` block), not as a message that scrolls out of view.
+    /// This is where a recipe puts role prompts and the collaboration nudge
+    /// ("others are working cards on this board — say what you found when it
+    /// helps them"). Omit for the control arm: no doctrine, no nudge.
+    pub doctrine: Option<String>,
+    /// Stage the round even though serving is NOT decode-verified (#442).
+    ///
+    /// Off by default, and the default is the point: dispatch refuses to post cards no
+    /// citizen can work, because a round staged into a dead lane looks dispatched and is
+    /// inert (#455). This is the explicit operator override — same contract as
+    /// `start --force` (#420) — and it announces itself in the log rather than passing
+    /// silently, since a gate that can be skipped without a trace is not a gate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub force: Option<bool>,
+    /// THE REVIEW GATE: an owner's `done` becomes `review` + a sibling review card a
+    /// NON-owner pulls; only the reviewer's `done` closes the card and fires its
+    /// grade. Off = the control arm (a citizen's own `done` grades directly).
+    pub review_gate: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -589,6 +839,13 @@ pub struct BenchmarkDispatchParams {
 )]
 pub struct BenchmarkDispatchResult {
     pub benchmark: String,
+    /// The room this run lives in — where its board, its kickoffs and its citizens are.
+    /// Returned so the caller never has to guess where the work went.
+    pub room: String,
+    /// That room's airc channel id — the TYPE, not a uuid-shaped string. See
+    /// `ActivitySpawnResult::room_id`; this field is that value passed through.
+    #[ts(type = "string")]
+    pub room_id: airc_core::RoomId,
     /// Cards actually posted to the board.
     #[ts(type = "number")]
     pub dispatched: u32,
@@ -600,6 +857,35 @@ pub struct BenchmarkDispatchResult {
     /// full coverage is the lie this field exists to prevent.
     #[ts(type = "number")]
     pub skipped_needs_setup: u32,
+    /// Instances withheld because THIS box already proved their (repo, era) env
+    /// class red via `benchmark/validate`. Reported, never silent — the operator
+    /// must see that the round is smaller than requested and WHY (the named wall
+    /// rides in `kickoff_errors`).
+    #[serde(default)]
+    pub skipped_known_red: u32,
+    /// Tasks NOT dispatched because a LIVE card for that exact task is already on
+    /// the board (same `[bench <name>] <task_id>:` key, in any non-terminal state).
+    /// Dispatch is idempotent per task: re-running it tops the board up to one card
+    /// per task instead of posting a second copy.
+    ///
+    /// Why this exists: without it, every re-dispatch re-posted the dataset head as
+    /// brand-new cards. Measured on the live board 2026-08-13 — 124 bench cards for
+    /// 51 distinct tasks, `sympy__sympy-24152` alone holding 15 copies, with two
+    /// citizens solving the SAME instance in parallel. That wastes scarce lanes and
+    /// leaves the pass rate with no honest denominator.
+    #[ts(type = "number")]
+    pub skipped_already_on_board: u32,
+    /// Redundant duplicate cards CLOSED by this call (only when `prune` was set).
+    /// Cards under a live claim are never counted here because they are never
+    /// closed — see `contended_tasks`.
+    #[ts(type = "number")]
+    pub pruned_duplicates: u32,
+    /// Tasks where MORE THAN ONE citizen holds a live claim on a duplicate card.
+    /// The prune leaves all of them alone: cancelling one would destroy real
+    /// in-flight work, so this is surfaced as a coordination fact for the room to
+    /// settle rather than resolved silently.
+    #[ts(type = "number")]
+    pub contended_tasks: u32,
     /// Addressed kickoff messages actually delivered (one per dispatched card —
     /// every card is directed at a live citizen). A kickoff that failed to send is
     /// reported via `kickoff_errors`, never silently counted as delivered.
@@ -617,13 +903,107 @@ pub struct BenchmarkDispatchResult {
     pub kickoff_errors: Vec<String>,
 }
 
+/// The IDENTITY of a benchmark card: which task of which benchmark it is.
+///
+/// This is the ONE definition of "same task" on the board, and it is a strict
+/// prefix of the rendered title — so the key a dispatch computes and the key
+/// parsed back off a live card can never drift (pinned by
+/// `a_rendered_title_yields_back_its_own_key`). `dispatch_card_title` builds on
+/// it rather than re-forming the marker, per the compression rule: one logical
+/// decision, one place.
+pub(crate) fn dispatch_card_key(bench: &str, task_id: &str) -> String {
+    format!("[bench {bench}] {task_id}:")
+}
+
+/// Recover the identity key from a rendered card title, or `None` when the
+/// title is not a benchmark card at all (a hand-written card on the same board
+/// must never collide with a task key). Reads the prefix through the FIRST `:`
+/// after the `]` marker — a gist containing colons cannot widen the key.
+pub(crate) fn bench_card_key(title: &str) -> Option<&str> {
+    if !title.starts_with("[bench ") {
+        return None;
+    }
+    let marker_end = title.find("] ")? + 2;
+    let colon = title[marker_end..].find(':')? + marker_end;
+    Some(&title[..=colon])
+}
+
+/// Which of a task's duplicate cards to CLOSE, and whether the duplication is
+/// contended. Pure over the claim states so the rule is testable without a
+/// board — the caller maps the returned indices back to cards.
+///
+/// The rule, in priority order:
+///  • A card someone is genuinely ON (`Hold::Held`) is NEVER closed. Duplicates
+///    are board litter; an in-flight claim is a citizen's work, and destroying
+///    it to tidy up would cost more than the duplication does.
+///  • If no card is held, keep the FIRST and close the rest — they are
+///    interchangeable, so the choice only has to be deterministic.
+///  • If MORE THAN ONE card is held, every held card is kept and the caller is
+///    told (`contended`). Two citizens really are on the same task; that is a
+///    coordination fact for them to settle, not something a prune should
+///    silently resolve by cancelling someone.
+fn duplicates_to_close(holds: &[crate::persona::card_holder::Hold]) -> (Vec<usize>, bool) {
+    use crate::persona::card_holder::Hold;
+    if holds.len() <= 1 {
+        return (Vec::new(), false);
+    }
+    let held: Vec<usize> = holds
+        .iter()
+        .enumerate()
+        .filter(|(_, h)| matches!(h, Hold::Held))
+        .map(|(i, _)| i)
+        .collect();
+    let to_close = if held.is_empty() {
+        (1..holds.len()).collect()
+    } else {
+        (0..holds.len()).filter(|i| !held.contains(i)).collect()
+    };
+    (to_close, held.len() > 1)
+}
+
 /// Compose the card TITLE for one benchmark task. `[bench <name>]` is the
 /// machine-findable marker the (future) grading sentinel keys on; the rest is
 /// for the citizen scanning the board.
 pub(crate) fn dispatch_card_title(bench: &str, task_id: &str, prompt: &str) -> String {
     let gist: String = prompt.chars().take(60).collect();
-    let ellipsis = if prompt.chars().count() > 60 { "…" } else { "" };
-    format!("[bench {bench}] {task_id}: {gist}{ellipsis}")
+    let ellipsis = if prompt.chars().count() > 60 {
+        "…"
+    } else {
+        ""
+    };
+    format!("{} {gist}{ellipsis}", dispatch_card_key(bench, task_id))
+}
+
+/// Parse `[bench <name>] <task>: <gist>` — the exact shape [`dispatch_card_title`]
+/// writes — into `(bench_name, task_id)`. `None` for any non-bench title, so a normal
+/// work card is neither graded nor staged. ONE parser beside the ONE writer: the grade
+/// edge (`benchmark_grade`) and the on-claim staging (`card_staging`) both read this.
+pub(crate) fn parse_card_title(title: &str) -> Option<(String, String)> {
+    let rest = title.strip_prefix("[bench ")?;
+    let (bench, after) = rest.split_once("] ")?;
+    let task = after.split(':').next()?.trim();
+    if bench.trim().is_empty() || task.is_empty() {
+        return None;
+    }
+    Some((bench.trim().to_string(), task.to_string()))
+}
+
+/// A review card's title: `[review <parent8>] <instance>: …` — ONE writer
+/// ([`crate::modules::work::open_review_card`]), one parser, beside the bench one.
+pub(crate) fn review_card_title(parent: uuid::Uuid, instance: &str, owner: &str) -> String {
+    format!(
+        "[review {}] {instance}: review {owner}'s fix",
+        &parent.simple().to_string()[..8]
+    )
+}
+
+/// Parse a review card's title into the INSTANCE it reviews. `None` for any other
+/// title, so a normal work card is never mistaken for a review.
+pub(crate) fn parse_review_title(title: &str) -> Option<String> {
+    let rest = title.strip_prefix("[review ")?;
+    let (_, after) = rest.split_once("] ")?;
+    let instance = after.split(':').next()?.trim();
+    (!instance.is_empty()).then(|| instance.to_string())
 }
 
 /// Compose the card BODY: the full prompt plus a definition of done a citizen
@@ -633,7 +1013,11 @@ pub(crate) fn dispatch_card_title(bench: &str, task_id: &str, prompt: &str) -> S
 /// `dod_shell` are legitimately visible: real work has a visible definition
 /// of done.
 pub(crate) fn dispatch_card_body(bench: &str, t: &crate::cognition::eval::EvalTask) -> String {
-    let mut body = format!("benchmark: {bench}\ntask: {}\n\n{}\n", t.id, t.prompt.trim());
+    let mut body = format!(
+        "benchmark: {bench}\ntask: {}\n\n{}\n",
+        t.id,
+        t.prompt.trim()
+    );
     if let Some(f) = &t.solution_file {
         body.push_str(&format!(
             "\nWrite your solution to `{f}` in your workspace (code/write)."
@@ -670,11 +1054,12 @@ pub(crate) fn dispatch_swe_card_body(
     };
     format!(
         "benchmark: {bench}\ninstance: {}\nrepo: {} @ {}\n\n{}\n\n\
-         This is a REAL open-source issue. When you CLAIM this card, the repo is already \
-         staged in your workspace at `swe/{}/` (checked out at the buggy commit) and your \
-         scored solve starts automatically — fix the bug IN PLACE in that checkout. Definition \
-         of done: these tests pass — {}. Your DIFF is graded against the repo's held-out test \
-         suite; do not edit the tests.",
+         This is a REAL open-source issue. When you CLAIM this card, the repo is staged in \
+         your workspace at `swe/{}/` (checked out at the buggy commit), and while you hold the \
+         card your hands (files, shell) are rooted AT that repo's root: paths are repo-relative \
+         and `ls` lists the repo itself. Nothing starts by itself — you fix the bug IN PLACE with \
+         your tools, then run the tests. Definition of done: these tests pass — {}. Your DIFF is \
+         graded against the repo's held-out test suite; do not edit the tests.",
         i.instance_id,
         i.repo,
         i.base_commit,
@@ -689,33 +1074,153 @@ pub(crate) fn dispatch_swe_card_body(
 /// as any other work; nothing about the turn is exam-shaped.
 pub struct BenchmarkDispatch {
     pub registry: crate::persona::PersonaAircRuntimeRegistry,
+    /// Late-bound substrate executor (ChatModule pattern) — the recipe path
+    /// composes `data/list` (load the recipe row) and `serving/pin` (re-home
+    /// the lane, with pin.rs's full fit-gating) as COMMANDS, the universal
+    /// primitive, never cross-module state threading.
+    pub executor_slot: std::sync::Arc<
+        crate::runtime::LateBound<crate::runtime::command_executor::CommandExecutor>,
+    >,
+}
+
+/// A stored EXPERIMENT — one row in the `benchmark_recipes` collection,
+/// authored through the data layer (`data/create`), executed by
+/// `benchmark/dispatch --recipe <name>`. DATA, not code: fields grow
+/// (serde-tolerant) without touching this file, and the sophistication lives
+/// in the row — which model to serve, which dispatches to fire, and later
+/// caps, condition labels, team shapes. Nothing model-specific is ever
+/// hardcoded here; serving behavior comes from the model's own catalog row.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BenchmarkRecipe {
+    /// The name `--recipe` selects.
+    pub name: String,
+    /// One line of intent, shown when listing/erroring.
+    #[serde(default)]
+    pub description: String,
+    /// Model this run must be SERVING before any card fires. `None` = run on
+    /// whatever is live. `Some` = dispatch pins it (fit-gated by serving/pin)
+    /// and awaits lane readiness before the first card.
+    #[serde(default)]
+    pub model_id: Option<String>,
+    /// The dispatches to fire, in order — one experiment may span datasets.
+    pub dispatches: Vec<RecipeDispatch>,
+}
+
+/// One dispatch inside a recipe: a benchmark plus the exact instances.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecipeDispatch {
+    /// Benchmark name (see `benchmark/list`).
+    pub benchmark: String,
+    /// Exact instance ids. Empty = the dataset head up to `limit`.
+    #[serde(default)]
+    pub instances: Vec<String>,
+    /// Optional per-dispatch card cap.
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// TEAM solve (#team-proof gap 1): citizens joined to each card's solve
+    /// room beside the claimer, carrying the cross-review charge. Names, like
+    /// `assignees`; non-resident names are skipped with a probe.
+    #[serde(default)]
+    pub teammates: Vec<String>,
+    /// ROLE-shaped team (recipe = content-type + RULES, #371): how many live
+    /// residents to enroll as reviewers per card, resolved against the roster
+    /// AT DISPATCH — a recipe that names citizens is brittle across machines;
+    /// a recipe that names ROLES ships anywhere. Resolved reviewers merge with
+    /// any explicit `teammates`; the assignee is never their own reviewer.
+    #[serde(default)]
+    pub reviewers: Option<u32>,
+    /// Standing rules for the run room (see `BenchmarkDispatchParams::doctrine`).
+    #[serde(default)]
+    pub doctrine: Option<String>,
+    /// The review gate (see `BenchmarkDispatchParams::review_gate`).
+    #[serde(default)]
+    pub review_gate: Option<bool>,
 }
 
 /// Resolve the citizens a directed dispatch addresses — GENERALIZED for any repo user's
-/// roster, never our specific names. Pure over the live snapshot so it is unit-testable
+/// roster, never our specific names. Pure over the snapshots so it is unit-testable
 /// without a running airc daemon (a real `PersonaSlot` needs one); the wrapper in `run`
-/// just feeds `registry.roster_snapshot()` in.
+/// feeds `registry.resident_snapshot()` and `registry.roster_snapshot()` in.
 ///
-/// - `requested` empty → the WHOLE live roster (whoever THIS machine spawned). This is the
-///   "dispatch to my citizens, whoever they are" default: a fresh clone runs
-///   `benchmark/dispatch --name=…` with no `--assignees` and it targets their own online
+/// - `requested` empty → the WHOLE RESIDENT roster (whoever THIS machine has in the room).
+///   This is the "dispatch to my citizens, whoever they are" default: a fresh clone runs
+///   `benchmark/dispatch --name=…` with no `--assignees` and it targets their own resident
 ///   citizens. Directed dispatch is what actuates (a silent card does not — measured
-///   2026-08-07), so defaulting to the live roster keeps the loop autonomous everywhere.
-/// - `requested` non-empty → every name MUST resolve to a live citizen; an unknown name
-///   FAILS LOUD listing who is online (never silently addresses a ghost that never claims,
-///   and never silently skips SWE staging). Order is preserved for a stable round-robin.
-/// - roster empty → `Denied` (nobody online — `persona/spawn` first; the fix is a citizen,
-///   not an invented identity).
+///   2026-08-07), so defaulting to the resident roster keeps the loop autonomous everywhere.
+/// - `requested` non-empty → every name MUST resolve to a RESIDENT citizen; anything else
+///   FAILS LOUD listing who is resident (never silently addresses a citizen who cannot
+///   hear, and never silently skips SWE staging). Order is preserved for round-robin.
+/// - nobody resident → `Denied`, and the message distinguishes "not spawned" (fix:
+///   `persona/spawn`) from "spawned but not hosted yet" (fix: wait — see below).
+/// Seconds since the epoch — the only impurity `default_run_room_name` needs, kept out
+/// of it so the name itself is a pure function with a real unit test.
+fn epoch_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// The room a run lands in when the caller names none: `bench-<benchmark>-<epoch>`.
+///
+/// Named for the ACTIVITY and stamped so it is THIS run — the naming rule
+/// `activity/spawn` documents, and the reason it matters here specifically: a room named
+/// for a SUBSYSTEM (`#academy`, `#benchmarks`) never finishes, so it reads as a permanent
+/// place and quietly becomes the room every run reuses forever. That is precisely the
+/// 136-card pile this parameter exists to end.
+///
+/// Flattened with `-` rather than the `academy/bench/<run>` path form the design of record
+/// uses, because airc channel names accept only `[a-z0-9_-]` (`ChannelName::new` rejects
+/// `/`). The tree is a naming convention waiting on a channel-name grammar, not something
+/// this function can invent unilaterally.
+fn default_run_room_name(benchmark: &str, epoch_secs: u64) -> String {
+    let slug: String = benchmark
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    format!("bench-{slug}-{epoch_secs}")
+}
+
+/// `live` is the RESIDENT snapshot (service loop attached and running), NOT the registered
+/// roster — `registered` is passed alongside it purely so a refusal can tell the operator
+/// WHICH of the two states they are in. That distinction is the whole point:
+///
+/// - registered ∧ ¬resident → she exists but has no perception stream. Hosting is waiting
+///   on something (usually a serving lane proving it can decode, #363). Work staged now is
+///   posted into an empty room and never worked.
+/// - ¬registered → nobody spawned her. The fix is `persona/spawn`, a different action.
+///
+/// Measured 2026-08-18: dispatching against the REGISTERED roster in the first state
+/// reported `dispatched: 2, kickoffs: 2, kickoff_errors: []` and produced zero turns.
 fn resolve_dispatch_roster(
     live: &[(String, uuid::Uuid)],
+    registered: &[(String, uuid::Uuid)],
     requested: &[String],
 ) -> Result<Vec<(String, uuid::Uuid)>, CommandError> {
     if live.is_empty() {
-        return Err(CommandError::Denied(
-            "no citizens are online to work the cards — spawn a persona (persona/spawn) \
-             first, then dispatch."
-                .to_string(),
-        ));
+        if registered.is_empty() {
+            return Err(CommandError::Denied(
+                "no citizens are online to work the cards — spawn a persona (persona/spawn) \
+                 first, then dispatch."
+                    .to_string(),
+            ));
+        }
+        let names: Vec<&str> = registered.iter().map(|(n, _)| n.as_str()).collect();
+        return Err(CommandError::Denied(format!(
+            "citizen(s) [{}] are registered but NOT RESIDENT — no service loop, so no \
+             perception stream, so nothing dispatched here would be heard. Hosting is \
+             normally waiting on the serving lane to prove it can decode; watch \
+             `inference.lane_relaunch_retry` and `persona.inbound.subscribe_opened`, and \
+             re-dispatch once `persona/roster` reports resident_count > 0. Staging a round \
+             into this window posts cards nobody can see.",
+            names.join(", "),
+        )));
     }
     if requested.is_empty() {
         return Ok(live.to_vec());
@@ -730,14 +1235,203 @@ fn resolve_dispatch_roster(
     }
     if !unknown.is_empty() {
         let online: Vec<&str> = live.iter().map(|(n, _)| n.as_str()).collect();
+        // Name the registered-but-not-resident case separately: "not online" reads as a
+        // typo, and sending an operator hunting for a misspelling when the real answer is
+        // "she is here but not hosted yet" is the same lie in a smaller box.
+        let not_resident: Vec<&str> = unknown
+            .iter()
+            .filter(|n| registered.iter().any(|(r, _)| r == *n))
+            .map(|s| s.as_str())
+            .collect();
+        let residency_note = if not_resident.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " NOTE: [{}] are registered but not resident — they exist, they just have \
+                 no service loop yet (hosting is likely waiting on a serving lane). That \
+                 is a wait, not a typo.",
+                not_resident.join(", ")
+            )
+        };
         return Err(CommandError::Invalid(format!(
-            "assignee(s) not online: {}. Citizens currently online: [{}]. Pass names from \
-             that list, or omit --assignees to dispatch to all of them.",
+            "assignee(s) not resident: {}. Citizens resident right now: [{}]. Pass names \
+             from that list, or omit --assignees to dispatch to all of them.{}",
             unknown.join(", "),
             online.join(", "),
+            residency_note,
         )));
     }
     Ok(resolved)
+}
+
+impl BenchmarkDispatch {
+    /// The substrate executor, or a loud error naming the wiring gap — never a
+    /// silent no-op (the slot is installed by `install_executor_on_all` at boot).
+    fn executor(
+        &self,
+    ) -> Result<std::sync::Arc<crate::runtime::command_executor::CommandExecutor>, CommandError>
+    {
+        self.executor_slot.get().cloned().ok_or_else(|| {
+            CommandError::Internal(
+                "command executor not installed on benchmark/dispatch — boot wiring gap".into(),
+            )
+        })
+    }
+
+    /// Load a recipe row from the `benchmark_recipes` collection via `data/list`
+    /// — the recipe is DATA authored with `data/create`, never code.
+    async fn load_recipe(
+        &self,
+        name: &str,
+        params: &std::collections::BTreeMap<String, String>,
+    ) -> Result<BenchmarkRecipe, CommandError> {
+        let exec = self.executor()?;
+        let out = exec
+            .execute(
+                "data/list",
+                serde_json::json!({
+                    "collection": "benchmark_recipes",
+                    "filter": { "name": name },
+                    "limit": 1,
+                }),
+            )
+            .await
+            .map_err(|e| CommandError::Internal(format!("data/list failed: {e}")))?;
+        let crate::runtime::CommandResult::Json(v) = out else {
+            return Err(CommandError::Internal(
+                "data/list returned a non-JSON result".into(),
+            ));
+        };
+        let item = v
+            .get("items")
+            .and_then(|i| i.as_array())
+            .and_then(|a| a.first())
+            .cloned()
+            .ok_or_else(|| {
+                CommandError::NotFound(format!(
+                    "no recipe named '{name}' in `benchmark_recipes` — author one with \
+                     data/create (fields: name, description, model_id?, dispatches: \
+                     [{{benchmark, instances[], limit?}}])"
+                ))
+            })?;
+        // The ORM returns the entity ENVELOPE ({collection, id, data: {…}});
+        // the recipe fields live under `data`. Tolerate both shapes so a raw
+        // row (tests, future stores) parses identically.
+        let item = item.get("data").cloned().unwrap_or(item); // unwrap_or: raw (non-enveloped) rows parse as themselves
+        let item = Self::instantiate_recipe(item, params)?;
+        serde_json::from_value::<BenchmarkRecipe>(item).map_err(|e| {
+            CommandError::Invalid(format!(
+                "recipe '{name}' exists but does not parse as a BenchmarkRecipe: {e}"
+            ))
+        })
+    }
+
+    /// TEMPLATE → INSTANCE: substitute `{key}` placeholders in every string of
+    /// the recipe row from the caller's params (the recipe-doctrine split — a
+    /// recipe is a reusable template; the invocation supplies the specifics).
+    /// Pure so it is unit-testable; unresolved placeholders are a loud error
+    /// naming the key, never a silently-literal "{model}" reaching dispatch.
+    fn instantiate_recipe(
+        mut row: serde_json::Value,
+        params: &std::collections::BTreeMap<String, String>,
+    ) -> Result<serde_json::Value, CommandError> {
+        fn walk(
+            v: &mut serde_json::Value,
+            params: &std::collections::BTreeMap<String, String>,
+            missing: &mut Vec<String>,
+        ) {
+            match v {
+                serde_json::Value::String(s) => {
+                    if s.contains('{') {
+                        let mut out = s.clone();
+                        for (k, val) in params {
+                            out = out.replace(&format!("{{{k}}}"), val);
+                        }
+                        if let (Some(a), Some(b)) = (out.find('{'), out.find('}')) {
+                            if a < b {
+                                missing.push(out[a + 1..b].to_string());
+                            }
+                        }
+                        *s = out;
+                    }
+                }
+                serde_json::Value::Array(a) => a.iter_mut().for_each(|x| walk(x, params, missing)),
+                serde_json::Value::Object(o) => {
+                    o.values_mut().for_each(|x| walk(x, params, missing))
+                }
+                _ => {}
+            }
+        }
+        let mut missing = Vec::new();
+        walk(&mut row, params, &mut missing);
+        if missing.is_empty() {
+            Ok(row)
+        } else {
+            missing.sort();
+            missing.dedup();
+            Err(CommandError::Invalid(format!(
+                "recipe placeholders unresolved: {{{}}} — pass them via --params",
+                missing.join("}, {")
+            )))
+        }
+    }
+
+    /// Bring the lane to the recipe's model BEFORE any card fires: pin via the
+    /// `serving/pin` COMMAND (its fit-gate refuses loud), then await readiness
+    /// on the daemon's own snapshot — bounded, probed, never a silent hang.
+    /// The lane's readiness smoke probe doubles as the first-request warmup
+    /// models with a serving contract require.
+    async fn ensure_recipe_model(&self, recipe: &BenchmarkRecipe) -> Result<(), CommandError> {
+        let Some(model_id) = recipe.model_id.as_deref() else {
+            return Ok(()); // recipe runs on whatever is live
+        };
+        let live = crate::inference::llama_server::current_serving();
+        if live.ready && live.active_model.as_deref() == Some(model_id) {
+            return Ok(());
+        }
+        let exec = self.executor()?;
+        exec.execute("serving/pin", serde_json::json!({ "model_id": model_id }))
+            .await
+            .map_err(|e| {
+                CommandError::Denied(format!(
+                    "recipe names model '{model_id}' but serving/pin refused: {e}"
+                ))
+            })?;
+        // Await the swap. Generous bound: a cold multi-shard load is minutes.
+        const RECIPE_SERVE_DEADLINE: std::time::Duration =
+            std::time::Duration::from_secs(15 * 60);
+        let started = std::time::Instant::now();
+        loop {
+            if let Some(s) = crate::inference::llama_server::await_ready_serving(
+                std::time::Duration::from_secs(30),
+            )
+            .await
+            {
+                if s.ready && s.active_model.as_deref() == Some(model_id) {
+                    crate::probe!(
+                        class = "benchmark.recipe.model_ready",
+                        model = model_id,
+                        waited_ms = started.elapsed().as_millis() as u64,
+                        "recipe's model is serving — dispatch proceeds"
+                    );
+                    return Ok(());
+                }
+            }
+            if started.elapsed() > RECIPE_SERVE_DEADLINE {
+                return Err(CommandError::Internal(format!(
+                    "pinned '{model_id}' but it did not become the ready served model within \
+                     {}s — check serving/status and the lane log",
+                    RECIPE_SERVE_DEADLINE.as_secs()
+                )));
+            }
+            crate::probe!(
+                class = "benchmark.recipe.awaiting_model",
+                model = model_id,
+                waited_ms = started.elapsed().as_millis() as u64,
+                "recipe model not ready yet — still awaiting the lane swap"
+            );
+        }
+    }
 }
 
 #[async_trait]
@@ -763,13 +1457,110 @@ impl ActionCommand for BenchmarkDispatch {
         use crate::modules::work::curator_airc;
         use airc_lib::{CreateWorkCard, Priority, RepoId};
 
+        // ── RECIPE PATH: the whole experiment by name ──────────────────────
+        // `--recipe X` loads a `benchmark_recipes` row (data, not code), pins
+        // the model it names (fit-gated by serving/pin), awaits lane readiness,
+        // then fires every dispatch entry through THIS SAME verb. The design
+        // from the start: two primitives, commands composing commands.
+        if let Some(recipe_name) = p.recipe.clone() {
+            if p.name.is_some() || p.instances.is_some() {
+                return Err(CommandError::Invalid(
+                    "pass either --recipe OR --name/--instances — the recipe row carries                      its own dispatches"
+                        .into(),
+                ));
+            }
+            let recipe = self
+                .load_recipe(&recipe_name, &p.params.clone().unwrap_or_default()) // unwrap_or: absent params = empty map, placeholders then fail loud by name
+                .await?;
+            self.ensure_recipe_model(&recipe).await?;
+            let mut agg: Option<BenchmarkDispatchResult> = None;
+            for d in &recipe.dispatches {
+                // ROLE → NAMES, at dispatch (recipe = content-type + RULES, #371):
+                // `reviewers: N` resolves against the LIVE resident roster here, so
+                // the recipe ships without citizen names. Merged with any explicit
+                // `teammates`; a reviewer who lands as a card's assignee is skipped
+                // per-card downstream (never their own reviewer). Short rosters
+                // degrade loudly, never silently.
+                let mut team: Vec<String> = d.teammates.clone();
+                if let Some(n) = d.reviewers.filter(|n| *n > 0) {
+                    let picked: Vec<String> = match crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global() {
+                        Some(reg) => reg
+                            .resident_snapshot()
+                            .await
+                            .into_iter()
+                            .map(|(name, _)| name)
+                            .filter(|name| !team.contains(name))
+                            .take(n as usize)
+                            .collect(),
+                        None => Vec::new(),
+                    };
+                    if (picked.len() as u32) < n {
+                        crate::probe!(
+                            class = "recipe.reviewers.short",
+                            benchmark = %d.benchmark,
+                            wanted = n as u64,
+                            resolved = picked.len() as u64,
+                            "recipe asked for more reviewers than the roster holds — team degrades, loudly"
+                        );
+                    }
+                    team.extend(picked);
+                }
+                let sub = BenchmarkDispatchParams {
+                    name: Some(d.benchmark.clone()),
+                    recipe: None,
+                    doctrine: d.doctrine.clone().or_else(|| p.doctrine.clone()),
+                    review_gate: d.review_gate.or(p.review_gate),
+                    teammates: if team.is_empty() {
+                        p.teammates.clone()
+                    } else {
+                        Some(team)
+                    },
+                    instances: if d.instances.is_empty() {
+                        None
+                    } else {
+                        Some(d.instances.clone())
+                    },
+                    limit: d.limit.or(p.limit),
+                    ..p.clone()
+                };
+                let r = Box::pin(self.run(ctx, sub)).await?;
+                agg = Some(match agg.take() {
+                    None => r,
+                    Some(mut a) => {
+                        a.dispatched += r.dispatched;
+                        a.card_ids.extend(r.card_ids);
+                        a.skipped_needs_setup += r.skipped_needs_setup;
+                        a.skipped_known_red += r.skipped_known_red;
+                        a.skipped_already_on_board += r.skipped_already_on_board;
+                        a.pruned_duplicates += r.pruned_duplicates;
+                        a.contended_tasks += r.contended_tasks;
+                        a.kickoffs += r.kickoffs;
+                        a.solves_fired += r.solves_fired;
+                        a.kickoff_errors.extend(r.kickoff_errors);
+                        a.benchmark = format!("recipe:{recipe_name}");
+                        a
+                    }
+                });
+            }
+            return agg.ok_or_else(|| {
+                CommandError::Invalid(format!(
+                    "recipe '{recipe_name}' has no dispatches — author at least one"
+                ))
+            });
+        }
+        let name = p.name.clone().ok_or_else(|| {
+            CommandError::Invalid(
+                "pass --name <benchmark> (see benchmark/list) or --recipe <name>".into(),
+            )
+        })?;
+
         let spec = known_benchmarks()
             .iter()
-            .find(|b| b.name == p.name)
+            .find(|b| b.name == name)
             .ok_or_else(|| {
                 CommandError::Invalid(format!(
                     "unknown benchmark '{}' — see benchmark/list",
-                    p.name
+                    name
                 ))
             })?;
         // Two shapes of dispatchable benchmark, ONE card loop below. A `PreparedCard`
@@ -781,9 +1572,10 @@ impl ActionCommand for BenchmarkDispatch {
         enum CardWork {
             /// Gym: write a solution file; DoD is a compile/test shell.
             Gym { solution_file: String },
-            /// SWE: the pulled instance. Dispatch STAGES it into the directed assignee's
-            /// workspace/swe/<instance> so her claim auto-fires the scored solve (#346's
-            /// dispatch_staged_swe_solve) — the loop closes with nobody in it.
+            /// SWE: the pulled instance. The CLAIM stages it into the claimer's
+            /// workspace/swe/<instance> (`card_staging`); a detached-solve round stages
+            /// its directed assignee at dispatch through the same function and fires
+            /// her solve (#346) — the loop closes with nobody in it.
             Swe {
                 instance: Box<crate::cognition::swe_bench::SweInstance>,
             },
@@ -794,6 +1586,10 @@ impl ActionCommand for BenchmarkDispatch {
             work: CardWork,
             /// Gym-only: a task needing a workspace re-break the card can't orchestrate yet.
             needs_setup: bool,
+            /// The gym task's workspace-preparation shell, staged into the ASSIGNEE's
+            /// workspace at dispatch (same contract as SWE checkout staging below) --
+            /// idempotent by adapter convention (mkdir -p + overwrite-decode).
+            setup_shell: Option<String>,
         }
 
         let prepared: Vec<PreparedCard> = if let Some(dataset) = spec.swe_dataset() {
@@ -806,13 +1602,44 @@ impl ActionCommand for BenchmarkDispatch {
                 .map_err(|e| {
                     CommandError::Internal(format!("swe dataset '{dataset}' load failed: {e}"))
                 })?;
+            // Deterministic sample: (dataset, seed, n) → the same list on every
+            // machine. Fisher-Yates over the dataset order with the shared LCG —
+            // the command IS the replication recipe (no operator-side scripts).
+            if let Some(n) = p.sample.filter(|n| *n > 0) {
+                if p.instances.as_ref().is_some_and(|w| !w.is_empty()) {
+                    return Err(CommandError::Invalid(
+                        "pass either `sample` (seeded random) or `instances` (explicit list),                          not both — they are competing selection recipes"
+                            .into(),
+                    ));
+                }
+                let n = (n as usize).min(instances.len());
+                let mut rng = crate::cognition::gym_rng::Lcg::new(p.seed.unwrap_or(0)); // documented default seed: 0 is part of the replication contract, not a guess
+                for i in 0..n {
+                    let j = i + rng.next(instances.len() - i);
+                    instances.swap(i, j);
+                }
+                instances.truncate(n);
+                let list: Vec<&str> =
+                    instances.iter().map(|i| i.instance_id.as_str()).collect();
+                tracing::info!(
+                    probe_class = "benchmark.dispatch.sample",
+                    dataset,
+                    n,
+                    seed = p.seed.unwrap_or(0), // same documented default as the draw above
+                    instances = ?list,
+                    "seeded sample selected — publish (dataset, seed, n) with the score"
+                );
+            }
             // Caller-targeted instances win over dataset order — select by substring (so a
             // short id resolves) and preserve the CALLER's ordering, fail loud on a miss so a
             // typo never silently dispatches the wrong (or whole) set.
             if let Some(wanted) = p.instances.as_ref().filter(|w| !w.is_empty()) {
                 let mut picked: Vec<crate::cognition::swe_bench::SweInstance> = Vec::new();
                 for want in wanted {
-                    match instances.iter().position(|i| i.instance_id.contains(want.as_str())) {
+                    match instances
+                        .iter()
+                        .position(|i| i.instance_id.contains(want.as_str()))
+                    {
                         Some(idx) => picked.push(instances.remove(idx)),
                         None => {
                             return Err(CommandError::Invalid(format!(
@@ -823,12 +1650,60 @@ impl ActionCommand for BenchmarkDispatch {
                 }
                 instances = picked;
             }
+            // ENV PRE-WARM (background): a cold native build (scikit's cython,
+            // matplotlib's freetype) mid-round burns a solve attempt on an ENV
+            // failure and reads as a model miss. Build every instance's env
+            // AHEAD of the driver, in REVERSE card order so the warmer and the
+            // solver approach from opposite ends (ensure_env itself holds the
+            // per-instance lock, so even a meeting in the middle is safe).
+            // Fire-and-forget: a prewarm failure is probed — the SAME failure
+            // the solve would hit, surfaced hours earlier and attributable.
+            {
+                let mut warm = instances.clone();
+                warm.reverse();
+                tokio::spawn(async move {
+                    for inst in warm {
+                        let checkout =
+                            match crate::cognition::swe_bench::ensure_grade_checkout(&inst).await {
+                                Ok(dir) => dir,
+                                Err(e) => {
+                                    crate::probe!(
+                                        class = "benchmark.env.prewarm_failed",
+                                        instance = %inst.instance_id,
+                                        stage = "checkout",
+                                        error = %e,
+                                        "env pre-warm could not stage a checkout — the solve \
+                                         will hit this same wall; this is an ENV failure, not \
+                                         a model result"
+                                    );
+                                    continue;
+                                }
+                            };
+                        match crate::cognition::swe_bench::ensure_env(&inst, &checkout).await {
+                            Ok(_) => crate::probe!(
+                                class = "benchmark.env.prewarmed",
+                                instance = %inst.instance_id,
+                                "env ready ahead of the driver"
+                            ),
+                            Err(e) => crate::probe!(
+                                class = "benchmark.env.prewarm_failed",
+                                instance = %inst.instance_id,
+                                stage = "env",
+                                error = %e,
+                                "env pre-warm FAILED — the solve will hit this same wall; \
+                                 an ENV failure, never a model result"
+                            ),
+                        }
+                    }
+                });
+            }
             instances
                 .into_iter()
                 .map(|i| PreparedCard {
                     title: dispatch_card_title(spec.name, &i.instance_id, &i.problem_statement),
                     body: dispatch_swe_card_body(spec.name, &i),
                     needs_setup: false,
+                    setup_shell: None,
                     work: CardWork::Swe {
                         instance: Box::new(i),
                     },
@@ -839,7 +1714,7 @@ impl ActionCommand for BenchmarkDispatch {
                 CommandError::Invalid(format!(
                     "benchmark '{}' has no runnable eval_set yet — it is catalogued but its \
                      task collection hasn't been pulled/committed (see benchmark/list `runnable`)",
-                    p.name
+                    name
                 ))
             })?;
             // Same fail-loud task loading as cognition/eval: the committed gym resolves
@@ -851,71 +1726,330 @@ impl ActionCommand for BenchmarkDispatch {
                 .map(|(i, l)| (i + 1, l.trim()))
                 .filter(|(_, l)| !l.is_empty())
                 .map(|(n, l)| {
-                    let t: EvalTask = serde_json::from_str(l).map_err(|e| {
+                    let mut t: EvalTask = serde_json::from_str(l).map_err(|e| {
                         CommandError::Invalid(format!("{origin} line {n}: malformed EvalTask: {e}"))
                     })?;
-                    let solution_file =
-                        t.solution_file.clone().unwrap_or_else(|| format!("{}.rs", t.id));
+                    // Title gist comes from the AUTHORED prompt: require_hands_for_code
+                    // prepends the same write-and-verify preamble to every code task, and a
+                    // board of 12 cards all titled "Implement the following, and VERIFY…"
+                    // is unscannable for the citizen AND breaks dispatch_card_key parsing.
+                    let headline = t.prompt.clone();
+                    // THE artifact rule — the same normalization cognition/eval applies at
+                    // load. Before this, the card body named NO file (the gym rows carry no
+                    // solution_file) while the grade read the derived one: the citizen was
+                    // graded against a path she was never told. One derivation, both readers.
+                    t.require_hands_for_code();
+                    let solution_file = t
+                        .solution_file
+                        .clone()
+                        .unwrap_or_else(|| format!("{}.rs", t.id));
                     Ok(PreparedCard {
-                        title: dispatch_card_title(spec.name, &t.id, &t.prompt),
+                        title: dispatch_card_title(spec.name, &t.id, &headline),
                         body: dispatch_card_body(spec.name, &t),
                         needs_setup: t.setup_shell.is_some(),
+                        setup_shell: t.setup_shell.clone(),
                         work: CardWork::Gym { solution_file },
                     })
                 })
                 .collect::<Result<_, CommandError>>()?
         };
 
-        // Curator seed: a persona dispatching through her toolbelt authors as herself;
-        // the operator with no self-peer (#27) authors through a live citizen (benchmarks
-        // ARE their work). See `curator_airc`.
-        let airc = curator_airc(&self.registry, ctx, "benchmark/dispatch")?;
-
-        // Repo: caller-supplied, else the repo the board already uses. No
-        // baked-in default — an empty board with no repo argument is a real
-        // question only the operator can answer.
-        let repo_key = match p.repo {
-            Some(r) => r,
-            None => {
-                let board = airc
-                    .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
-                    .await
-                    .map_err(|e| CommandError::Internal(format!("board read: {e}")))?
-                    .snapshot();
-                board
-                    .cards
-                    .first()
-                    .map(|c| c.repo.as_str().to_string())
-                    .ok_or_else(|| {
-                        CommandError::Invalid(
-                            "board is empty and no `repo` was given — pass repo=<owner/name> \
-                             so the cards land under a real board key"
-                                .to_string(),
-                        )
-                    })?
-            }
-        };
-        let repo = RepoId::new(repo_key)
-            .map_err(|e| CommandError::Invalid(format!("invalid repo: {e:?}")))?;
-
-        let requested = p.assignees.unwrap_or_default();
+        let requested = p.assignees.clone().unwrap_or_default();  // unwrap_or: unreadable = empty, the report shows the tracker's view
         if requested.iter().any(|a| a.trim().is_empty()) {
             return Err(CommandError::Invalid(
                 "assignees contains an empty name — every kickoff must address a real citizen"
                     .to_string(),
             ));
         }
+        // #442 (roster half) + #412 + #455: a dispatch fired inside the post-boot resume
+        // window used to find an EMPTY roster and refuse instantly — so the operator
+        // hand-rolled a sleep-loop around dispatch (run by hand twice on 2026-08-17; a
+        // runbook line is a design defect). The serving half of #442 already parks
+        // (`await_ready_serving` below); the roster half parks the same way, bounded.
+        //
+        // #455 is what this loop keys on NOW: RESIDENCY, not registration. Waiting for the
+        // roster to be non-empty released the wait ~10 minutes too early (#412) — citizens
+        // are registered, presence-pumping and renewing claims long before the supervisor
+        // attaches a service loop, so the old condition cleared while nobody could hear a
+        // thing. Measured 2026-08-18: roster listed 2, `subscribe_opened` was 0, a whole
+        // round went onto the board and produced zero turns.
+        //
+        // An unknown NAME against a RESIDENT roster still fails fast — that error means a
+        // typo, never a resume in progress.
+        const ROSTER_RESUME_WAIT: std::time::Duration = std::time::Duration::from_secs(180);
+        const ROSTER_RESUME_POLL: std::time::Duration = std::time::Duration::from_secs(5);
+        let wait_started = std::time::Instant::now();
+        let mut resident = self.registry.resident_snapshot().await;
+        while resident.is_empty() && wait_started.elapsed() < ROSTER_RESUME_WAIT {
+            tracing::info!(
+                waited_s = wait_started.elapsed().as_secs(),
+                registered = self.registry.roster_snapshot().len(),
+                probe_class = "benchmark.dispatch.awaiting_residency",
+                "dispatch: no RESIDENT citizen yet (registered != in the room, #412/#455) \
+                 — waiting for a service loop rather than staging into an empty room"
+            );
+            tokio::time::sleep(ROSTER_RESUME_POLL).await;
+            resident = self.registry.resident_snapshot().await;
+        }
+
+        // Curator seed — resolved AFTER the residency park on purpose. It authors
+        // through a live citizen when the operator has no self-peer (#27), and it
+        // used to run BEFORE the park, so a dispatch fired inside the post-boot
+        // window refused instantly with "none are online" while the 180s wait that
+        // exists precisely for that window sat unreachable 30 lines below
+        // (measured live 2026-08-26). Order: wait for a citizen, then author.
+        let airc = curator_airc(&self.registry, ctx, "benchmark/dispatch")?;
+
         // Resolve the dispatch roster against THIS machine's live citizens (never our
         // names): empty request → the whole live roster; explicit names → validated or
         // fail-loud. This is the generalization for all repo users — dispatch targets the
         // citizens they actually spawned, whoever those are.
-        let roster = resolve_dispatch_roster(&self.registry.roster_snapshot(), &requested)?;
+        //
+        // Resolved BEFORE the room exists because the roster decides WHO gets moved into
+        // it: a run room nobody is standing in is the other half of the bug this verb is
+        // fixing ("old rooms flooded, or ones with nothing").
+        let roster =
+            resolve_dispatch_roster(&resident, &self.registry.roster_snapshot(), &requested)?;
+        // TEAM roster (#team-proof gap 1): resolved against the SAME resident
+        // snapshot, but LENIENTLY — a non-resident teammate shrinks the team
+        // (probed), it never refuses the dispatch the way a bad assignee does:
+        // the claimer's solve is the accountable unit, the team is the amplifier.
+        let teammates: Vec<crate::identity::PeerId> = p
+            .teammates
+            .clone()
+            .unwrap_or_default() // unwrap_or: no teammates named = solo dispatch, the default
+            .iter()
+            .filter_map(|name| {
+                let hit = resident
+                    .iter()
+                    .find(|(n, _)| n.eq_ignore_ascii_case(name))
+                    .map(|(_, id)| crate::identity::PeerId::from_uuid(*id));
+                if hit.is_none() {
+                    crate::probe!(
+                        class = "benchmark.team.mate_not_resident",
+                        mate = %name,
+                        "named teammate not resident — team shrinks, dispatch proceeds"
+                    );
+                }
+                hit
+            })
+            .collect();
+
+        // Repo hint, read from the board the curator is standing in RIGHT NOW — before we
+        // move her, and ONLY when the caller named no repo. The run room is fresh, so its
+        // board is empty and cannot answer "what repo key do cards use here"; the room she
+        // came from can. Keeps `repo` optional exactly as before, and is the ONLY thing the
+        // old room still contributes to a run.
+        let repo_hint = match &p.repo {
+            Some(_) => None,
+            None => airc
+                .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
+                .await
+                .ok()
+                .and_then(|b| {
+                    b.snapshot()
+                        .cards
+                        .first()
+                        .map(|c| c.repo.as_str().to_string())
+                }),
+        };
+
+        // ── THE RUN'S OWN ROOM ────────────────────────────────────────────────────
+        // A benchmark run is an ACTIVITY, and an activity is a ROOM. Spawned through the
+        // same `activity/spawn` path a citizen uses, so the room carries its recipe binding
+        // and projects as a benchmark rather than a plain chat — a hand-made room would
+        // carry neither ([[benchmarks-must-be-positronic-activities-not-a-parallel-subsystem]]).
+        //
+        // The `join` inside also MOVES the curator's current-room pointer, which is exactly
+        // what makes the rest of this function land in the run room: the board read, every
+        // `create_work_card`, and every kickoff `say` are all current-room operations. That
+        // pointer move is a documented gap for other callers (activity.rs) and the mechanism
+        // for this one.
+        let room_name = match &p.room {
+            Some(r) => r.trim().to_string(),
+            None => default_run_room_name(spec.name, epoch_secs()),
+        };
+        // The room binds to the SHIPPED benchmark recipe's declared purpose,
+        // resolved from its constant — never a re-typed string. The old literal
+        // here was "benchmark" while the recipe declares "benchmark/hard-rs",
+        // so every run room resolved to no manifest and rendered as plain chat
+        // (#431 — the scoreboard region was the whole point of the recipe).
+        let bench_recipe = crate::experience::source::RecipeExperienceSource::shipped_purpose(
+            crate::experience::source::shipped::BENCHMARK_HARD_RS,
+        )
+        .ok_or_else(|| {
+            CommandError::Internal(
+                "shipped benchmark recipe missing from the embedded set — \
+                 build-time authoring bug"
+                    .into(),
+            )
+        })?;
+        // The run's REAL targeting rides the binding (#433): suite is the
+        // resolved spec's name, instances the caller's explicit selection,
+        // team the resolved roster. Anything not set here (budget) stays at
+        // the recipe's declared default — the binding is the room's honest
+        // self-description, readable through the same pipe as everything else.
+        let mut run_params = std::collections::BTreeMap::new();
+        run_params.insert("suite".to_string(), serde_json::json!(spec.name));
+        if let Some(instances) = &p.instances {
+            run_params.insert("instances".to_string(), serde_json::json!(instances));
+        }
+        run_params.insert(
+            "team".to_string(),
+            serde_json::json!(roster.iter().map(|(who, _)| who).collect::<Vec<_>>()),
+        );
+        run_params.insert("driver".to_string(), serde_json::json!(p.drive.unwrap_or_default()));  // unwrap_or: no driver named = the recipe default (citizen)
+        if let Some(doctrine) = &p.doctrine {
+            run_params.insert("doctrine".to_string(), serde_json::json!(doctrine));
+        }
+        run_params.insert(
+            "review_gate".to_string(),
+            serde_json::json!(p.review_gate.unwrap_or(false)),  // unwrap_or: gate not named = off, the control arm
+        );
+        // WHERE THE ROUND ROOTS is the spawn seam's decision, for every recipe: the
+        // benchmark recipe declares `base: academy` (a round is learning, by what it is),
+        // so no parent is named here.
+        let room = crate::modules::activity::spawn_activity_room(
+            &airc,
+            &room_name,
+            &bench_recipe,
+            None,
+            &run_params,
+        )
+        .await?;
+        // The round's standing rules, published as the run room's operating doctrine
+        // RIGHT HERE while the curator's current room is still the freshly spawned run
+        // (spawn_activity_room leaves the pointer there). Rendered verbatim into every
+        // resident's grounding as `[Room operating doctrine]` — the reminder that
+        // survives the window, unlike a kickoff message.
+        if let Some(doctrine) = &p.doctrine {
+            airc.publish_room_doctrine(
+                doctrine.clone(),
+                format!("round-{}", room.room_id.as_uuid().simple()),
+            )
+            .await
+            .map_err(|e| CommandError::Internal(format!("doctrine publish: {e}")))?;
+            crate::probe!(
+                class = "bench.round.doctrine_published",
+                room = %room.room_id.as_uuid(),
+                chars = doctrine.len() as u64,
+                "the round's standing rules are on the run room's doctrine — every \
+                 resident grounds on them each turn"
+            );
+        }
+
+        // Move every assignee INTO the run — a citizen who is not subscribed never sees the
+        // board, the kickoff, or the peers working beside her. This is the members[] half
+        // of #274, done for the one activity that needs it most.
+        let mut room_join_errors: Vec<String> = Vec::new();
+        for (who, peer) in &roster {
+            match self.registry.get(*peer) {
+                Some(rt) => {
+                    // join_room, not airc().join: it bumps the membership epoch so
+                    // her LIVE perception stream re-opens with the new room in its
+                    // channel snapshot. A bare join grants durable membership to a
+                    // room she structurally cannot hear (P0 20b44763 — three rounds
+                    // of kickoffs into deaf run rooms, zero turns).
+                    if let Err(e) = rt.join_room(&room_name).await {
+                        room_join_errors.push(format!("{who}: {e}"));
+                    }
+                }
+                None => room_join_errors.push(format!("{who}: no live airc runtime")),
+            }
+        }
+
+        // The RUN ROOM's board — fresh, so the idempotence gate and prune below reason
+        // about THIS run and nothing else. That is the point: a run's board is finally its
+        // own honest denominator instead of a shared pile 136 cards deep.
+        let board = airc
+            .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
+            .await
+            .map_err(|e| CommandError::Internal(format!("board read: {e}")))?
+            .snapshot();
+
+        // Tasks that ALREADY have a live card. A card in a terminal state (Closed /
+        // Merged) is finished work and must NOT block a re-dispatch — that is how a
+        // benchmark gets legitimately re-run. Everything else (Open, Claimed,
+        // InProgress, Blocked, Review) is live work; posting a second card for it
+        // just splits effort across duplicates.
+        // Grouped by task key, because the same map answers BOTH questions: "does
+        // this task already have a card?" (the idempotence gate) and "which of its
+        // cards are redundant?" (the optional prune below).
+        let mut live_by_task: std::collections::HashMap<&str, Vec<&airc_lib::WorkCard>> =
+            std::collections::HashMap::new();
+        for c in board.cards.iter().filter(|c| {
+            !matches!(
+                c.state,
+                airc_lib::CardState::Closed | airc_lib::CardState::Merged
+            )
+        }) {
+            if let Some(k) = bench_card_key(&c.title) {
+                live_by_task.entry(k).or_default().push(c);
+            }
+        }
+
+        // Repo: caller-supplied, else the repo the board already uses. No
+        // baked-in default — an empty board with no repo argument is a real
+        // question only the operator can answer.
+        // Repo key, most-explicit-first:
+        //   1. what the caller named;
+        //   2. what the room they came from already uses (unchanged legacy behaviour —
+        //      matches existing cards so a re-dispatch never splits a live board);
+        //   3. THE CHECKOUT'S OWN `origin` — the repo key is a fact about this clone,
+        //      not a string to retype.
+        //
+        // (3) exists because per-run rooms removed (2)'s source by construction: the
+        // FIRST dispatch leaves the curator standing in a fresh empty bench room, so the
+        // SECOND one had nothing to infer from and failed asking for `--repo`. Deriving
+        // it from `origin` fixes that at the root and is right for any repo user on a
+        // fresh clone, the same way `resolve_dispatch_roster` refuses to bake in names.
+        let repo_key = match p.repo.clone() {
+            Some(r) => r,
+            None => repo_hint
+                .or_else(|| {
+                    // Process cwd, because `git` walks UP to find `.git` — any directory
+                    // inside the checkout answers. The core is launched from the repo by
+                    // start-server.sh, and cognition/eval + gym resolve their roots the
+                    // same way. That is a real cwd dependency of the #195 class, not a
+                    // pretence otherwise: if the core is ever launched from elsewhere this
+                    // returns None and the caller is asked for `repo` — a loud fallback,
+                    // never a wrong board key.
+                    std::env::current_dir()
+                        .ok()
+                        .and_then(|cwd| crate::code::git_bridge::origin_repo_slug(&cwd))
+                })
+                .ok_or_else(|| {
+                    CommandError::Invalid(
+                        "no `repo` was given, the room you dispatched from has no cards to \
+                         infer one from, and this checkout has no `origin` remote to derive \
+                         one from — pass repo=<owner/name> so the cards land under a real \
+                         board key"
+                            .to_string(),
+                    )
+                })?,
+        };
+        let repo = RepoId::new(repo_key)
+            .map_err(|e| CommandError::Invalid(format!("invalid repo: {e:?}")))?;
 
         let take = p.limit.map(|l| l as usize).unwrap_or(prepared.len());
+        // Every task key THIS benchmark owns — captured before the loop consumes
+        // `prepared`, and deliberately NOT limited by `take`: a prune must be able
+        // to clean duplicates for tasks outside the current dispatch window, which
+        // is what makes `limit=0 prune=true` a pure board-cleanup call.
+        let planned_keys: Vec<String> = prepared
+            .iter()
+            .filter_map(|pc| bench_card_key(&pc.title).map(str::to_string))
+            .collect();
         // Continuum home under which each citizen's workspace lives (for SWE staging).
         let stage_home = continuum_home().ok();
         let mut card_ids = Vec::new();
-        let mut skipped_needs_setup = 0u32;
+        // FULL card uuids for the round tracker (#371) — the bus event carries the full
+        // hyphenated uuid, so the round's membership set must too (the 8-char `card_ids`
+        // shorts are the human/CLI handle, not the identity).
+        let mut card_uuids: Vec<uuid::Uuid> = Vec::new();
+        let skipped_needs_setup = 0u32; // setup runs at the claim edge now (card_staging)
+        let mut skipped_known_red = 0u32;
+        let mut skipped_already_on_board = 0u32;
         let mut kickoffs = 0u32;
         let mut solves_fired = 0u32;
         let mut kickoff_errors = Vec::new();
@@ -933,74 +2067,170 @@ impl ActionCommand for BenchmarkDispatch {
         // launch a solve into a corpse, self-healing on the next dispatch). NOTE: this caps THIS
         // dispatch call; the global in-flight-solve admission gate shared with work/claim
         // (#385/#386) is the broader fix.
-        let solve_cap: u32 = match crate::inference::llama_server::await_ready_serving(
-            std::time::Duration::from_secs(30),
+        //
+        // #442, and the correction that makes it a GATE: the probe below was already here and
+        // already correct — its answer was simply advisory. On a dead lane this set the cap to
+        // zero and STAGED THE CARDS ANYWAY, posting a full round of work to a board with
+        // nothing on the box able to decode a token (#455: "we stage work into the gap"). A
+        // not-ready lane is now a STATE the round stops at, not a parameter that silently
+        // degrades it into an empty round.
+        //
+        // The wait budget is DERIVED, never invented: `DEFAULT_SERVING_WAIT` is
+        // `READY_TIMEOUT + margin` — the spawner's own load budget — so this gate can never
+        // declare failure before a legitimate cold load has had its full window. The flat 30s
+        // that used to be here was exactly that bug in miniature.
+        let awaited = crate::inference::llama_server::await_ready_serving(
+            crate::inference::llama_server::DEFAULT_SERVING_WAIT,
         )
-        .await
-        {
-            Some(s) => s.lanes.max(1),
-            None => 0,
+        .await;
+        let solve_cap: u32 = {
+            use crate::cognition::round_readiness::{decide, RoundReadiness};
+            let current = crate::inference::llama_server::current_serving();
+            match decide(awaited.as_ref(), Some(&current)) {
+                RoundReadiness::Ready { lanes } => lanes,
+                RoundReadiness::Blocked(reason) => {
+                    let why = reason.explain();
+                    crate::probe!(
+                        class = "bench.round.staging_blocked",
+                        benchmark = spec.name,
+                        forced = p.force.unwrap_or(false),
+                        reason = why.as_str(),
+                        "STAGING → READY refused: serving cannot work this round (#442)",
+                    );
+                    // Refuse, with the override announcing itself — same contract as
+                    // `start --force` (#420). A gate with no escape gets worked around;
+                    // a silent escape is worse than no gate.
+                    if !p.force.unwrap_or(false) {
+                        return Err(CommandError::Invalid(format!(
+                            "benchmark/dispatch refused to stage `{}`: {why}\n\
+                             (pass --force to stage anyway — it will post cards that cannot be \
+                             worked until a lane comes up)",
+                            spec.name
+                        )));
+                    }
+                    tracing::warn!(
+                        benchmark = %spec.name,
+                        reason = %why,
+                        "--force: staging a round into a lane that is NOT decode-verified"
+                    );
+                    0
+                }
+            }
         };
+        // OPEN the round BEFORE the first card exists. Kickoffs go out inside the loop, so
+        // a citizen can claim card 1 while card 2 is still being posted — and `work/claim`
+        // asks the round who drives. Registering after the loop (as this did) left that
+        // window answering with the default, which would silently fire the detached solver
+        // on the first card of a citizen-driven round.
+        let driver = p.drive.unwrap_or_default();  // unwrap_or: unreadable = empty, the report shows the tracker's view
+        crate::cognition::bench_round::open_round(room.room_id.as_uuid(), spec.name, driver);
+        crate::cognition::bench_round::set_run_room_name(room.room_id.as_uuid(), &room_name);
+        if p.review_gate.unwrap_or(false) {  // unwrap_or: gate not named = off, the control arm
+            crate::cognition::bench_round::set_review_gate(room.room_id.as_uuid(), true);
+        }
+        // The round REMEMBERS its team: driver edges (settle-advance, non-settling
+        // advance, boot resume) dispatch cards that were never initially fired, and
+        // without a round-level record they went out team-less (2026-08-30).
+        if !teammates.is_empty() {
+            crate::cognition::bench_round::set_round_team(
+                room.room_id.as_uuid(),
+                teammates.iter().map(|t| t.as_uuid()).collect(),
+            );
+        }
         for pc in prepared.into_iter().take(take) {
-            // A gym setup_shell task needs its workspace re-broken before work
-            // starts — harness orchestration a claimed card can't provide yet.
-            // Skipping SILENTLY would report "dispatched" over fewer tasks
-            // than the benchmark holds; the count rides on the result instead.
-            if pc.needs_setup {
-                skipped_needs_setup += 1;
+            // A gym setup_shell card is prepared in the CLAIMER's workspace at claim
+            // time (`card_staging`, 2026-09-03) — the early unconditional skip that
+            // used to live here reported the entire ds-1000 maiden dispatch as
+            // `skipped_needs_setup: 4` (2026-08-22): the eval path always ran
+            // setup_shell, but no card-dispatch orchestration did.
+
+            // IDEMPOTENCE: this exact task already has a live card. Re-dispatching
+            // would post a duplicate, and duplicates are not free — two citizens
+            // claiming two cards for one instance burn two of a 2-4 lane box on the
+            // same problem, and the resulting board has no honest denominator to
+            // compute a pass rate from. The key comes from `pc.title` itself, so the
+            // string we match on is the string that would have been posted.
+            //
+            // Skipping is REPORTED (`skipped_already_on_board`), never silent — same
+            // contract as `skipped_needs_setup` above: a partial dispatch that reads
+            // as full coverage is the lie these counters exist to prevent.
+            if bench_card_key(&pc.title).is_some_and(|k| live_by_task.contains_key(k)) {
+                skipped_already_on_board += 1;
                 continue;
             }
 
             // The directed assignee (round-robin over the RESOLVED live roster). Always a
             // real online citizen — resolve_dispatch_roster guaranteed a non-empty roster
             // or errored. Her peer_id rides along, so SWE staging needs no second name
-            // lookup (and can never silently no-stage on an unknown name). A SWE card stages
-            // into HER workspace before it is claimable, so her claim auto-fires the scored
-            // solve (#346 dispatch_staged_swe_solve).
+            // lookup (and can never silently no-stage on an unknown name). Under a
+            // DETACHED-SOLVE round she is staged and pre-claimed below and her solve
+            // fires (#346); under a CITIZEN round she is only the kickoff's voice
+            // exclusion — the card posts OPEN and whoever pulls it is staged at claim.
             let (who, who_peer) = &roster[card_ids.len() % roster.len()];
 
             // STAGE the SWE checkout into the assignee's workspace/swe/<instance> BEFORE the
             // card is claimable, so `work/claim` finds it and launches the solve. Reuses the
             // proven swe_bench::clone_at (fast from the local mirror). Best-effort: a stage
             // failure is REPORTED and the card still posts — the loop never half-breaks.
-            let mut staged_ok = false;
-            if let (CardWork::Swe { instance }, Some(home)) = (&pc.work, stage_home.as_ref()) {
-                let dir = home
-                    .join("citizens")
-                    .join("peers")
-                    .join(who_peer.to_string())
-                    .join("workspace")
-                    .join("swe")
-                    .join(&instance.instance_id);
-                if dir.join(".git").exists() {
-                    staged_ok = true; // already staged (a prior claim / dispatch)
-                } else if let Err(e) = crate::cognition::swe_bench::clone_at(instance, &dir).await {
-                    kickoff_errors.push(format!("stage {}: {e}", instance.instance_id));
-                } else {
-                    staged_ok = true;
-                }
-                // Build the per-instance venv NOW (with pytest + the repo installed) so her
-                // HANDS have a working `pytest`/`python` the moment she starts — not only at
-                // grade time. Without this the solve's `code/shell pytest` hits the system
-                // interpreter and she loops trying to install pytest into it (glass-boxed
-                // 2026-08-11 from Anon's astropy turn). ensure_env is idempotent and cached, so
-                // the later grade reuses this exact venv. Best-effort: a build failure is
-                // reported but the card still posts — the loop never half-breaks.
-                if staged_ok {
-                    if let Err(e) = crate::cognition::swe_bench::ensure_env(instance, &dir).await {
-                        kickoff_errors.push(format!("env {}: {e}", instance.instance_id));
-                        // A solve against an unbuildable env can ONLY void: she spends a
-                        // full attempt (24 acts, live: pytest-5413 twice on 2026-08-12)
-                        // in a workspace whose grade is a known-in-advance env fault —
-                        // no verdict, no lesson (the failure is the env's, not hers).
-                        // The card still posts (claimable once the env heals); the
-                        // SCORED solve does not fire (Joel: "why run broken code
-                        // knowing she's gonna struggle and fall").
-                        staged_ok = false;
-                    }
+            // THE COVERAGE GATE (the cheap half of `benchmark/validate`). If THIS
+            // box has already PROVEN this instance's (repo, era) env class red,
+            // do not spend a citizen's hours and a grader's slot discovering the
+            // same wall a third time — name it and skip. Measured 2026-08-28:
+            // astropy-6938 was dispatched into the numpy-2 wall while a validate
+            // run minutes away already knew astropy/2017 was red.
+            //
+            // A DICTIONARY LOOKUP, never a build: dispatch must stay fast for a
+            // repo user who has never run validate. Fail-open by construction —
+            // no map, a green class, or a map earned on a different machine class
+            // all return None and DISPATCH (see known_red_wall). Reported like
+            // every other skip; a partial dispatch reading as full coverage is
+            // the lie these counters exist to prevent.
+            if let CardWork::Swe { instance } = &pc.work {
+                if let Some(wall) =
+                    known_red_wall(spec.name, &instance.repo, instance.year())
+                {
+                    skipped_known_red += 1;
+                    kickoff_errors.push(format!(
+                        "skipped {} — its env class ({} {}) is PROVEN RED on this box by \
+                         benchmark/validate, so a solve here would burn hours on a known \
+                         wall: {wall}",
+                        instance.instance_id,
+                        instance.repo,
+                        instance.year()
+                    ));
+                    continue;
                 }
             }
 
+            // STAGING MOVED TO THE CLAIM EDGE (2026-09-03, the pull inversion). A
+            // citizen-driven round stages NOTHING here: whoever PULLS the card is
+            // staged for it by `work/claim` → `card_staging::stage_for_claimer`, so any
+            // resident can work any Open card and a rebooted citizen who re-reads the
+            // board is staged exactly like a first claimer. Only a DETACHED-SOLVE round
+            // still stages its directed assignee here — the SAME function — because
+            // the solve below fires without a claim from her.
+            let staged_ok = if driver == crate::cognition::bench_round::WorkDriver::DetachedSolve
+            {
+                match stage_home.as_ref() {
+                    Some(home) => match crate::modules::card_staging::stage_for_claimer(
+                        home,
+                        *who_peer,
+                        &pc.title,
+                    )
+                    .await
+                    {
+                        crate::modules::card_staging::Staging::Ready { .. }
+                        | crate::modules::card_staging::Staging::Ordinary => true,
+                        crate::modules::card_staging::Staging::Failed { stage, error } => {
+                            kickoff_errors.push(format!("stage {}: {stage}: {error}", pc.title));
+                            false
+                        }
+                    },
+                    None => false,
+                }
+            } else {
+                false
+            };
             let mut req = CreateWorkCard::new(repo.clone(), pc.title, Priority::P2);
             req.body = Some(pc.body);
             let card_id = airc
@@ -1010,12 +2240,118 @@ impl ActionCommand for BenchmarkDispatch {
             let full = card_id.as_uuid().simple().to_string();
             let short = full[..8].to_string();
 
+            // The card joins the round the moment it exists — BEFORE the pre-claim and
+            // the kickoff below, either of which can put it into someone's hands. From
+            // here `work/claim` can read who drives it (see `open_round`).
+            crate::cognition::bench_round::add_card(room.room_id.as_uuid(), card_id.as_uuid());
+            // WHO works this card, recorded at staging (before any solve fires) —
+            // the follow-on driver and the boot resume read it (plan A4/A5).
+            if driver == crate::cognition::bench_round::WorkDriver::DetachedSolve {
+                crate::cognition::bench_round::record_card_assignee(card_id.as_uuid(), *who_peer);
+            }
+            // WHAT it tests, same moment — the roll-call names the instance
+            // and in-flight runs join back to their card by it.
+            if let CardWork::Swe { instance } = &pc.work {
+                crate::cognition::bench_round::record_card_instance(
+                    card_id.as_uuid(),
+                    &instance.instance_id,
+                );
+            }
+
+            // Directed gym card: CLAIM IT FOR HER at dispatch, under her own airc
+            // identity. The detached-solve SWE arm below fires her scored solve directly
+            // (dispatch_staged_swe_solve — "we don't wait on her to re-derive a
+            // work/claim from the kickoff"); gym cards never got the same cut, so
+            // every round spent its first multi-minute turn per card on claim
+            // ceremony the dispatcher had already decided (Joel 2026-08-15:
+            // "taking 30 minutes to start coding sure is a flawed design").
+            // #425-compatible: the claim is administrative — the WORK stays hers,
+            // in-room, through her own cognition. Best-effort: a failed pre-claim
+            // is REPORTED and the card stays claimable by hand.
+            //
+            // A CITIZEN-driven SWE card takes the same cut, and for the same reason it
+            // was written: nothing detached will fire for it, so the ONLY thing standing
+            // between the card and her work turn is the kickoff→claim hop that stalls
+            // rounds. Pre-claiming removes that hop without moving the work — she still
+            // does it herself, in her own loop, on the held-work turn. (This goes through
+            // airc directly, not the `work/claim` verb, so it cannot re-enter the
+            // detached-solve dispatcher from here.)
+            let mut pre_claimed = false;
+            //
+            // `staged_ok` gates the SWE arm for the SAME reason it gates the detached
+            // solve above ("why run broken code knowing she's gonna struggle and fall"):
+            // an unbuildable env can only void, and pre-claiming would put her hands in it
+            // for a full turn. The card still posts, claimable by hand once the env heals.
+            // BOTH drivers pre-claim a staged SWE card now. DetachedSolve was
+            // excluded, which left its cards Open forever: the solve never touches
+            // card state and the lapse sweeper refuses unclaimed cards, so a
+            // detached round could never reach Done and every boot reaped it
+            // (mapped 2026-08-26). Claimed-by-the-assignee is what lets the
+            // grade path close the card and the round complete.
+            // PRE-CLAIM only for a detached-solve round: its solve fires for the
+            // directed assignee below, so the claim must already be hers. A
+            // citizen-driven round posts its cards OPEN — that is what makes the deck
+            // a deck. (Before 2026-09-03 every card, both drivers, was pre-claimed for
+            // its round-robin assignee: a push wearing a pull's clothes.)
+            let pre_claim_this = driver == crate::cognition::bench_round::WorkDriver::DetachedSolve
+                && staged_ok
+                && matches!(pc.work, CardWork::Swe { .. });
+            if pre_claim_this {
+                match self.registry.get(*who_peer) {
+                    Some(rt) => {
+                        let ttl_ms = crate::modules::work::DEFAULT_CLAIM_TTL_MS;
+                        let mut attempt = rt
+                            .airc()
+                            .claim_work_card(airc_lib::ClaimWorkCard { card_id, ttl_ms })
+                            .await;
+                        // Follow the card to its room, same as work/claim (#328).
+                        // Sequential dispatch mints a solve room per card, so the
+                        // assignee's current-room pointer trails one card behind and
+                        // every pre-claim after the first bounced on wrong-room
+                        // (observed on the first team round, 2026-08-30: 3 of 8).
+                        if matches!(
+                            attempt,
+                            Err(airc_lib::AircError::WorkCardNotInCurrentRoom { .. })
+                        ) {
+                            if let Some(retry) = crate::modules::work::claim_following_card_room(
+                                rt.airc(),
+                                card_id,
+                                ttl_ms,
+                            )
+                            .await
+                            {
+                                attempt = retry;
+                            }
+                        }
+                        match attempt {
+                            Ok(_) => pre_claimed = true,
+                            Err(e) => kickoff_errors.push(format!("pre-claim {short}: {e}")),
+                        }
+                    }
+                    None => kickoff_errors
+                        .push(format!("pre-claim {short}: {who} has no live airc runtime")),
+                }
+            }
+
             // Directed dispatch: round-robin an addressed kickoff per card. An addressed
             // imperative in its OWN message block is what actually starts work (measured
             // 2026-08-07: coalesced mid-burst it was ignored). airc.say is one event = one
             // block, so the structural condition holds by construction.
-            {
+            // Per-card, ADDRESSED kickoffs are a detached-solve round's activation path
+            // (the assignee is named, her solve is already running). A citizen-driven
+            // round gets ONE room-addressed kickoff after the loop instead — twelve
+            // per-card kickoffs cost every resident twelve inbound turns of near-
+            // duplicate noise per dispatch (measured 2026-09-03: `deferred_loop_filler`
+            // ×9 per citizen), for a deck the substrate pulls from deterministically.
+            if driver == crate::cognition::bench_round::WorkDriver::DetachedSolve {
                 let kickoff = match &pc.work {
+                    CardWork::Gym { solution_file } if pre_claimed => format!(
+                        "@{who} (to you): card {short} is CLAIMED FOR YOU on this board — \
+                         no claim step needed. Read its body, write your solution to \
+                         `{solution_file}` in your workspace NOW, then mark it done \
+                         (work/state {short} done). Your artifact gets graded against \
+                         held-out tests."
+                    ),
                     CardWork::Gym { solution_file } => format!(
                         "@{who} (to you): card {short} on this board is yours. Claim it \
                          (claim_task {short}), read its body, write your solution to \
@@ -1032,17 +2368,76 @@ impl ActionCommand for BenchmarkDispatch {
                         } else {
                             String::new()
                         };
+                        // The close coaching is NOT optional decoration: the gym arm
+                        // always carried it, this arm said "watch the room for the
+                        // verdict" — passive voice — and citizens did exactly that:
+                        // wrote real patches, never said done, and every settle came
+                        // from the lapse sweeper confiscating a partial (both misses
+                        // of 2026-08-31). The verb that fires her grade is HERS.
                         format!(
                             "@{who} (to you): card {short} is a REAL {} issue (SWE-bench, a full \
                              project).{staged} I've STARTED your scored solve on it — fix the bug \
                              in `swe/{}/` (do not edit the tests); your diff is graded against the \
                              repo's held-out tests, and you get a few attempts to investigate your \
-                             own failures. Watch the room for the verdict.",
+                             own failures. When your fix is ready, YOU close it: `work/state \
+                             {short} done` — that is what fires your grade; nobody fires it for \
+                             you. Teammates each hold their OWN card in this room — a kickoff \
+                             naming someone else is not yours; {who}, card {short} is the one and \
+                             only card you work.",
                             instance.repo, instance.instance_id
                         )
                     }
                 };
-                match airc.say(&kickoff).await {
+                // AUTHOR IT AS SOMEONE ELSE. A citizen's inbound stream skips messages
+                // she is recorded as having said (correct — nobody answers their own
+                // speech), so a kickoff addressed to her and AUTHORED by her is dropped
+                // silently and she never takes a turn.
+                //
+                // That is not hypothetical: `curator_airc` falls back to
+                // `any_live_citizen()` for the operator (no self-peer, #27), which picks
+                // the lexicographically-lowest name. With the roster at `Atlas` + `Benchy`
+                // that is ALWAYS Atlas — so a round directed at Atlas sent her three
+                // kickoffs she authored herself, reported `kickoff_errors: []`, and
+                // produced ZERO turns while a detached solver did the work beside her
+                // (measured 2026-08-17). A bigger roster usually picked someone else,
+                // which is why it read as intermittent (#417) rather than structural.
+                let voice_rt = match self.registry.any_live_citizen_other_than(Some(*who_peer)) {
+                    Some(rt) => rt,
+                    None => {
+                        // The only live citizen IS the addressee. Refuse loudly instead of
+                        // sending a message that cannot be heard — the card stays on the
+                        // board, and the operator learns the roster is too small to direct
+                        // work at all ([[fallbacks-are-illegal-fail-loud]]).
+                        kickoff_errors.push(format!(
+                            "{short}: {who} is the only live citizen, so nobody else can \
+                             voice a kickoff addressed to her — she would skip her own \
+                             message and never take a turn. Spawn a second citizen \
+                             (persona/spawn), then re-dispatch."
+                        ));
+                        continue;
+                    }
+                };
+                // SAY IT IN THE ROUND'S ROOM — never `say()`. Plain `say` posts to the
+                // VOICE's current room, and the voice is by construction a different
+                // citizen than the addressee, standing wherever she happens to stand.
+                // Measured 2026-08-21 (the third deaf-kickoff variant): two dispatches
+                // reported `kickoffs: 1`, both messages landed in the voice's own room,
+                // the addressee's stream never carried them — and Atlas spent the
+                // afternoon solving a gym exercise she COULD see while her staged SWE
+                // card sat silent. The voice also JOINS the round room first (idempotent,
+                // epoch-bumping), because membership is what makes say_in deliverable —
+                // the same rule the assignee join-loop above encodes for hearing.
+                if let Err(e) = voice_rt.join_room(&room_name).await {
+                    kickoff_errors.push(format!("{short}: voice join: {e}"));
+                    continue;
+                }
+                match crate::persona::airc_citizen::publish_text_in_room(
+                    voice_rt.airc(),
+                    room.room_id.as_uuid(),
+                    &kickoff,
+                )
+                .await
+                {
                     Ok(_) => kickoffs += 1,
                     // The card stays claimable — a lost kickoff is REPORTED (never unwound
                     // or hidden); the citizen can still find and claim it off the board.
@@ -1057,21 +2452,146 @@ impl ActionCommand for BenchmarkDispatch {
             // zero solves). Her WHOLE cognition solves it with an exclusive warm slot; the
             // work/claim path stays the trigger for undirected / human-claimed cards. Only a
             // STAGED SWE card has a solve to fire here (a gym card self-grades differently).
-            if staged_ok && solves_fired < solve_cap {
+            if staged_ok
+                && solves_fired < solve_cap
+                && driver == crate::cognition::bench_round::WorkDriver::DetachedSolve
+            {
                 if let CardWork::Swe { .. } = &pc.work {
-                    crate::modules::work::dispatch_staged_swe_solve(ctx, &airc, *who_peer, card_id)
-                        .await;
+                    // The run room goes WITH the solve: her acts radiate receipts
+                    // into the room this dispatch just spawned, so the round's work
+                    // is visible where the round lives (#243/#329) instead of only
+                    // in a ledger file that lands when it is already over.
+                    crate::modules::work::dispatch_staged_swe_solve(
+                        ctx,
+                        &airc,
+                        crate::modules::work::StagedSolveDispatch {
+                            // The roster still carries bare `(String, Uuid)` tuples — a
+                            // loose-id smell of its own (#396). Typed at THIS boundary so
+                            // the dispatch cannot confuse a peer with a room; typing the
+                            // roster itself is that card's work, not a silent widening here.
+                            claimer: crate::identity::PeerId::from_uuid(*who_peer),
+                            card: card_id,
+                            teammates: teammates
+                                .iter()
+                                .filter(|m| m.as_uuid() != *who_peer) // the claimer is not her own teammate
+                                .cloned()
+                                .collect(),
+                            room: room.room_id,
+                        },
+                    )
+                    .await;
                     solves_fired += 1;
                 }
             }
+            card_uuids.push(card_id.as_uuid());
             card_ids.push(short);
         }
 
+        // THE ROUND BECOMES AN ENTITY (#371): register the dispatched card set under the
+        // run room's own id (dispatch already mints one id per run — the room; never a
+        // second one). From here the round has a lifecycle somebody owns: the
+        // `work.card.state_changed` subscriber settles cards as they reach terminal
+        // states and announces the END — instead of the round's fate being probe
+        // archaeology ("random and directed by agent, not an ecosystem", Joel 8/16).
+        // ONE kickoff for the whole deck of a citizen-driven round, addressed to the
+        // ROOM: the deck is shared, the substrate pulls for whoever is idle, and the
+        // claim stages the work — so the message is an announcement, not an order.
+        if driver == crate::cognition::bench_round::WorkDriver::Citizen && !card_ids.is_empty() {
+            let text = format!(
+                "{} cards are OPEN on this board ({}): {}. Whoever is free pulls one — the \
+                 substrate claims it for you when you are idle (or claim_task <id>), and the \
+                 claim stages the work in YOUR workspace. Work it there; when your fix is \
+                 verified green say `work/state <id> done` — that is what fires your grade. \
+                 One card at a time; talk here when you are stuck or when you can review a \
+                 teammate's diff.",
+                card_ids.len(),
+                spec.name,
+                card_ids.join(", ")
+            );
+            match self.registry.any_live_citizen() {
+                Some(voice_rt) => {
+                    if let Err(e) = voice_rt.join_room(&room_name).await {
+                        kickoff_errors.push(format!("deck kickoff: voice join: {e}"));
+                    } else {
+                        match crate::persona::airc_citizen::publish_text_in_room(
+                            voice_rt.airc(),
+                            room.room_id.as_uuid(),
+                            &text,
+                        )
+                        .await
+                        {
+                            Ok(_) => kickoffs += 1,
+                            Err(e) => kickoff_errors.push(format!("deck kickoff: {e}")),
+                        }
+                    }
+                }
+                None => kickoff_errors.push("deck kickoff: no live citizen to voice it".into()),
+            }
+        }
+        crate::cognition::bench_round::seal_round(room.room_id.as_uuid());
+
+        // PRUNE (opt-in): converge the board to one live card per task for THIS
+        // benchmark. Scoped to the keys this dispatch planned, so pruning one
+        // benchmark can never touch another's cards — or a hand-written one.
+        //
+        // Runs AFTER dispatch so a card just posted for a task is already in the
+        // group and cannot be orphaned by a prune that ran against a stale read.
+        let mut pruned_duplicates = 0u32;
+        let mut contended_tasks = 0u32;
+        if p.prune.unwrap_or(false) {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            for key in planned_keys.iter() {
+                let Some(group) = live_by_task.get(key.as_str()) else {
+                    continue;
+                };
+                let holds: Vec<_> = group
+                    .iter()
+                    .map(|c| crate::persona::card_holder::hold_of(c, now_ms))
+                    .collect();
+                let (to_close, contended) = duplicates_to_close(&holds);
+                if contended {
+                    contended_tasks += 1;
+                }
+                for idx in to_close {
+                    let card_id = group[idx].card_id;
+                    match airc
+                        .change_work_card_state(airc_lib::ChangeWorkCardState {
+                            card_id,
+                            state: airc_lib::CardState::Closed,
+                        })
+                        .await
+                    {
+                        Ok(_) => pruned_duplicates += 1,
+                        // A close that fails is REPORTED, never silently dropped —
+                        // the caller must not read a partial prune as a clean board.
+                        Err(e) => kickoff_errors.push(format!(
+                            "prune {}: {e}",
+                            card_id.as_uuid().simple().to_string()[..8].to_string()
+                        )),
+                    }
+                }
+            }
+        }
+
+        // Room-join failures ride the SAME reported channel as kickoff failures — a
+        // citizen who never made it into the run is exactly as invisible as a kickoff
+        // that never landed, and neither may be silent.
+        kickoff_errors.extend(room_join_errors.into_iter().map(|e| format!("join room: {e}")));
+
         Ok(BenchmarkDispatchResult {
             benchmark: spec.name.to_string(),
+            room: room.name,
+            room_id: room.room_id,
             dispatched: card_ids.len() as u32,
             card_ids,
             skipped_needs_setup,
+            skipped_known_red,
+            skipped_already_on_board,
+            pruned_duplicates,
+            contended_tasks,
             kickoffs,
             solves_fired,
             kickoff_errors,
@@ -1087,7 +2607,338 @@ crate::register_command!(BenchmarkDispatch);
 
 #[cfg(test)]
 mod tests {
+    // what this catches: the recipe row's serde contract — a minimal hand-authored
+    // `data/create` row (name + dispatches only) MUST parse, extra/unknown future
+    // fields MUST be tolerated, and instances default empty. The recipe is data
+    // authored by operators; a brittle parse turns a typo into a dead experiment
+    // with no compiler to catch it (2026-08-29, the two-command flow).
+    // what this catches: the template→instance substitution contract — `{model}`
+    // resolves from params everywhere in the row, and an unresolved placeholder
+    // is a LOUD error naming the key, never a literal "{model}" reaching a lane
+    // pin (Joel 2026-08-29: the model is an ARGUMENT to the recipe, recipes are
+    // templates — one "challenge" recipe serves every future model drop).
+    #[test]
+    fn recipe_templates_substitute_and_fail_loud_on_missing() {
+        let row = serde_json::json!({
+            "name": "challenge",
+            "model_id": "{model}",
+            "dispatches": [{"benchmark": "{dataset}", "instances": ["a__b-1"]}]
+        });
+        let mut params = std::collections::BTreeMap::new();
+        params.insert("model".to_string(), "org/some-model".to_string());
+        params.insert("dataset".to_string(), "swe-bench-lite".to_string());
+        let out = BenchmarkDispatch::instantiate_recipe(row.clone(), &params).unwrap(); // unwrap: test asserts substitution succeeds
+        assert_eq!(out["model_id"], "org/some-model");
+        assert_eq!(out["dispatches"][0]["benchmark"], "swe-bench-lite");
+
+        let err = BenchmarkDispatch::instantiate_recipe(row, &Default::default()).unwrap_err();
+        assert!(format!("{err:?}").contains("model"), "names the missing key");
+    }
+
+    #[test]
+    fn recipe_rows_parse_tolerantly() {
+        let minimal: BenchmarkRecipe = serde_json::from_value(serde_json::json!({
+            "name": "x",
+            "dispatches": [{"benchmark": "swe-bench-lite"}]
+        }))
+        .expect("minimal row parses"); // expect: test asserts the serde contract
+        assert!(minimal.model_id.is_none());
+        assert!(minimal.dispatches[0].instances.is_empty());
+
+        let rich: BenchmarkRecipe = serde_json::from_value(serde_json::json!({
+            "name": "hard-eight",
+            "description": "d",
+            "model_id": "some/model",
+            "dispatches": [
+                {"benchmark": "swe-bench-lite", "instances": ["a__b-1"], "limit": 3},
+                {"benchmark": "swe-bench-verified", "instances": ["c__d-2"]}
+            ],
+            "some_future_field": {"ignored": true}
+        }))
+        .expect("future fields tolerated"); // expect: test asserts tolerant parse
+        assert_eq!(rich.dispatches.len(), 2);
+        assert_eq!(rich.dispatches[0].limit, Some(3));
+    }
+    mod coverage_gate {
+        use super::super::*;
+
+        // what this catches: the gate turning into a BLOCKER for people who have
+        // never run benchmark/validate. Joel's constraint, 2026-08-28: "we don't
+        // slow them down, but we run checks before wasting the persona and
+        // graders time." So every ambiguous case must DISPATCH: no map on disk, a
+        // green class, or a map earned on a DIFFERENT machine class (a coverage
+        // claim is only true for the platform that earned it). Only a class this
+        // very box proved red may withhold a card — and then it must name the
+        // wall, because a silent skip is the partial-dispatch lie the counters
+        // exist to prevent.
+        #[test]
+        fn the_coverage_gate_fails_open_and_only_blocks_a_locally_proven_red_class() {
+            let dataset = "swe-bench-unit-test-fixture";
+            let here = BenchmarkPlatformFingerprint::capture().machine_class;
+            // A TEMPDIR, never the operator's real ~/.continuum: writing a
+            // fixture into a person's live data directory is both a lie about
+            // isolation and a way to clobber their state — and it made this very
+            // test pass alone and FAIL in the full suite.
+            let root = std::env::temp_dir().join(format!("cov-gate-{}", uuid::Uuid::new_v4()));
+            let path = coverage_map_path_in(&root, dataset, &here);
+
+            // 1. No map at all — the fresh-clone case. Must dispatch.
+            assert_eq!(
+                known_red_wall_in(&root, dataset, "astropy/astropy", 2017),
+                None,
+                "a user who never ran validate must never be gated"
+            );
+
+            // 2. A map from THIS box: red class blocks (with its wall), green does not.
+            let mut map = BenchmarkValidateResult {
+                platform: BenchmarkPlatformFingerprint::capture(),
+                classes: vec![
+                    BenchmarkValidateClass {
+                        repo: "astropy/astropy".into(),
+                        era: "2017".into(),
+                        representative: "astropy__astropy-6938".into(),
+                        covers: 1,
+                        green: false,
+                        wall: Some("numpy 2 rejects copy=False".into()),
+                    },
+                    BenchmarkValidateClass {
+                        repo: "django/django".into(),
+                        era: "2022".into(),
+                        representative: "django__django-15252".into(),
+                        covers: 9,
+                        green: true,
+                        wall: None,
+                    },
+                ],
+                instances_green: 9,
+                dataset_size: 10,
+                summary: String::new(),
+            };
+            if let Some(d) = path.parent() {
+                std::fs::create_dir_all(d).unwrap();
+            }
+            std::fs::write(&path, serde_json::to_string(&map).unwrap()).unwrap();
+
+            assert_eq!(
+                known_red_wall_in(&root, dataset, "astropy/astropy", 2017).as_deref(),
+                Some("numpy 2 rejects copy=False"),
+                "a locally-proven red class must withhold the card AND name the wall"
+            );
+            assert_eq!(
+                known_red_wall_in(&root, dataset, "django/django", 2022),
+                None,
+                "a green class must dispatch"
+            );
+            assert_eq!(
+                known_red_wall_in(&root, dataset, "astropy/astropy", 2023),
+                None,
+                "an era with no row is not evidence of anything — dispatch"
+            );
+
+            // 3. A map earned on ANOTHER machine class must not gate this one.
+            map.platform.machine_class = format!("not-{here}");
+            std::fs::write(&path, serde_json::to_string(&map).unwrap()).unwrap();
+            assert_eq!(
+                known_red_wall_in(&root, dataset, "astropy/astropy", 2017),
+                None,
+                "another box's coverage claim is not evidence about this box"
+            );
+
+            let _ = std::fs::remove_dir_all(&root);
+        }
+    }
+
+
     use super::*;
+
+    fn citizen(name: &str) -> (String, uuid::Uuid) {
+        (
+            name.to_string(),
+            uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, name.as_bytes()),
+        )
+    }
+
+    // what this catches: #370. Every catalogued suite carried a real `source_url` and exactly
+    // ONE of them could be pulled, because the only fetcher was fused to the SWE row shape.
+    // This pins the derivation that makes the OTHER rows reachable — and pins that a non-HF
+    // source (a GitHub raw .jsonl, of which the catalog has two) is REFUSED rather than
+    // silently handed to the HF rows API, which would return an in-band error the caller
+    // would read as "the suite is empty".
+    #[test]
+    // what this catches: a name collision in the catalog. Found live 2026-08-23:
+    // the Terminal-Bench adapter's full row landed while the old stub row of the
+    // same name survived — benchmark/list showed the name twice and fetch-by-name
+    // silently took whichever matched first. A name IS the lookup key everywhere
+    // (fetch, dispatch, verify), so duplicates are a routing hazard, not cosmetics.
+    #[test]
+    fn catalog_names_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for b in known_benchmarks() {
+            assert!(
+                seen.insert(b.name),
+                "catalog name '{}' appears more than once — the name is the lookup \
+                 key for fetch/dispatch/verify; merge the rows",
+                b.name
+            );
+        }
+    }
+
+    fn every_hf_catalogued_suite_yields_coordinates_and_non_hf_is_refused() {
+        let by_name = |n: &str| known_benchmarks().iter().find(|b| b.name == n).unwrap();
+
+        assert_eq!(
+            by_name("swe-bench-lite").reach(),
+            SourceReach::Rows {
+                dataset: "princeton-nlp/SWE-bench_Lite",
+                config: "default",
+                split: "test"
+            }
+        );
+        assert!(
+            matches!(by_name("humaneval").reach(), SourceReach::ForeignSource { .. }),
+            "a GitHub raw .jsonl must NOT fall through to the HF rows API — that returns an \
+             in-band error a caller reads as 'the suite is empty'"
+        );
+        assert!(matches!(by_name("hard-rs").reach(), SourceReach::InTree));
+
+        // The two live-verified script datasets (2026-08-19): the rows API refuses these at
+        // EVERY coordinate, so they must be told apart from a wrong-config miss or the
+        // operator retries configs forever.
+        for n in ["apps", "livecodebench"] {
+            assert!(
+                matches!(by_name(n).reach(), SourceReach::HuggingFaceScriptDataset { .. }),
+                "`{n}` is a loading-script dataset; classifying it as fetchable sends the \
+                 caller into a config-guessing loop that can never succeed"
+            );
+        }
+
+        // what this catches specifically: bigcodebench publishes REVISIONS as splits and has
+        // no `test` split at all. The default coordinates return "Unexpected error" — measured
+        // live — so the version we score against has to be a recorded catalog fact.
+        assert_eq!(
+            by_name("bigcodebench").reach(),
+            SourceReach::Rows {
+                dataset: "bigcode/bigcodebench",
+                config: "default",
+                split: "v0.1.4"
+            }
+        );
+
+        // And no catalogued row may be silently unclassifiable.
+        for b in known_benchmarks() {
+            let reach = b.reach();
+            if let SourceReach::Rows { dataset, .. } = reach {
+                assert!(
+                    dataset.contains('/'),
+                    "`{}` resolves to `{dataset}`, which the rows API cannot address",
+                    b.name
+                );
+            }
+        }
+    }
+
+    // what this catches: THE round-killer of 2026-08-18. Citizens registered but not yet
+    // hosted made every readiness surface report a ready roster, and dispatch staged a full
+    // round into a room where nobody had a perception stream — `dispatched: 2, kickoffs: 2,
+    // kickoff_errors: []`, zero turns. Resolving against RESIDENCY must refuse instead, and
+    // the refusal must say WHICH state this is, because the two have opposite fixes:
+    // registered-but-not-resident is a WAIT, unregistered is `persona/spawn`.
+    #[test]
+    fn registered_but_not_resident_refuses_and_names_the_wait() {
+        let registered = vec![citizen("Atlas"), citizen("Benchy")];
+        let err = resolve_dispatch_roster(&[], &registered, &[]).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            matches!(err, CommandError::Denied(_)),
+            "staging into an empty room is denied, not a soft warning: {msg}"
+        );
+        assert!(
+            msg.contains("Atlas") && msg.contains("Benchy"),
+            "the refusal names WHO is registered so the operator can wait on them: {msg}"
+        );
+        assert!(
+            msg.contains("NOT RESIDENT"),
+            "and says the state plainly, not 'not online' (which reads as a typo): {msg}"
+        );
+    }
+
+    // what this catches: the OTHER arm must stay distinguishable. Nobody registered at all
+    // is a different problem with a different fix — `persona/spawn`, not a wait — and
+    // collapsing the two would send an operator to wait forever for a citizen who was
+    // never born.
+    #[test]
+    fn nobody_registered_at_all_points_at_spawn_not_at_waiting() {
+        let err = resolve_dispatch_roster(&[], &[], &[]).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(msg.contains("persona/spawn"), "names the actual fix: {msg}");
+        assert!(
+            !msg.contains("NOT RESIDENT"),
+            "must NOT claim a residency wait when there is nobody to wait for: {msg}"
+        );
+    }
+
+    // what this catches: a named assignee who is registered but not resident must not be
+    // reported as a typo. "not online" against a name the operator can see in
+    // `persona/roster` sends them hunting for a misspelling that does not exist — the same
+    // lie as the round-level one, in a smaller box.
+    #[test]
+    fn a_named_assignee_who_is_not_resident_is_told_apart_from_a_typo() {
+        let resident = vec![citizen("Atlas")];
+        let registered = vec![citizen("Atlas"), citizen("Benchy")];
+
+        let err =
+            resolve_dispatch_roster(&resident, &registered, &["Benchy".into()]).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("registered but not resident") && msg.contains("not a typo"),
+            "a real citizen who is merely unhosted must be named as a WAIT: {msg}"
+        );
+
+        // ...while a genuine typo still reads as one, with no residency excuse attached.
+        let err = resolve_dispatch_roster(&resident, &registered, &["Atals".into()]).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            !msg.contains("not a typo"),
+            "an unknown name gets no residency note — it IS a typo: {msg}"
+        );
+    }
+
+    // what this catches: with everyone resident, dispatch behaves exactly as before —
+    // empty request → the whole resident roster, in order. The residency gate must not
+    // narrow the happy path (the default dispatch is what actuates a round at all).
+    #[test]
+    fn all_resident_dispatches_the_whole_roster_in_order() {
+        let all = vec![citizen("Atlas"), citizen("Benchy")];
+        let got = resolve_dispatch_roster(&all, &all, &[]).unwrap();
+        assert_eq!(got, all, "empty request → everyone resident, order preserved");
+
+        let got = resolve_dispatch_roster(&all, &all, &["Benchy".into()]).unwrap();
+        assert_eq!(got, vec![citizen("Benchy")], "named assignee resolves");
+    }
+
+    // what this catches: a derived run-room name that airc REFUSES. `ChannelName::new` accepts
+    // only `[a-z0-9_-]`, so a benchmark named with a `/`, a `.` or a capital (`swe-bench/lite`,
+    // `humaneval-rs.v2`) would build a name that fails at `join` — dispatch would die at the
+    // room, AFTER the caller believes a run started. Asserting through airc's own constructor
+    // rather than a hand-copied charset, so the two can never drift.
+    #[test]
+    fn a_derived_run_room_name_is_always_a_name_airc_accepts() {
+        for bench in [
+            "humaneval-rs",
+            "swe-bench/lite",       // the `/` the design-of-record path form wants
+            "HumanEval.Rs v2",      // capitals, a dot, and a space
+            "tool_bugfix_rs",
+        ] {
+            let name = default_run_room_name(bench, 1_786_000_000);
+            airc_lib::ChannelName::new(&name)
+                .unwrap_or_else(|e| panic!("derived room {name:?} from {bench:?} is unusable: {e}"));
+        }
+        // Stamped, so two runs of one benchmark are two rooms — the whole point.
+        assert_ne!(
+            default_run_room_name("humaneval-rs", 1),
+            default_run_room_name("humaneval-rs", 2),
+        );
+    }
 
     // what this catches: the catalog is non-empty, humaneval-rs is present + runnable (has an
     // eval_set the grader understands), and every runnable benchmark names a real committed gym.
@@ -1102,11 +2953,178 @@ mod tests {
             .expect("humaneval-rs catalogued");
         assert!(hr.eval_set.is_some(), "humaneval-rs must be runnable");
         assert!(matches!(hr.grader, Grader::Rust));
-        // Every runnable benchmark's eval_set must resolve through the gym resolver.
+        // Every COMMITTED gym's eval_set must resolve through the gym resolver.
+        // A FETCHED gym — the new class ds-1000 introduced: eval_set AND source_url
+        // both present — legitimately resolves only after `benchmark/fetch` converts
+        // it into the gym cache, so on a fresh checkout its eval_set correctly does
+        // NOT resolve. The invariant for that class is different and equally pinned:
+        // its eval_set must NOT shadow a committed gym (a name collision would make
+        // the fetch silently overwrite a bundled suite's identity).
         for b in ks.iter().filter(|b| b.eval_set.is_some()) {
-            crate::cognition::gym::resolve_gym(b.eval_set.unwrap()).unwrap_or_else(|e| {
-                panic!("benchmark '{}' eval_set does not resolve: {e}", b.name)
-            });
+            let fetched = b.source_url.is_some();
+            match crate::cognition::gym::resolve_gym(b.eval_set.unwrap()) {
+                Ok((origin, _)) if fetched => assert!(
+                    !origin.starts_with("embedded:"),
+                    "fetched benchmark '{}' shadows committed gym '{origin}'",
+                    b.name
+                ),
+                Ok(_) => {}
+                Err(e) if fetched => assert!(
+                    e.contains("could not be resolved"),
+                    "fetched benchmark '{}' failed oddly: {e}",
+                    b.name
+                ),
+                Err(e) => panic!("benchmark '{}' eval_set does not resolve: {e}", b.name),
+            }
+        }
+    }
+
+    // The dispatch idempotence key (#417). These pin the ONE property the gate
+    // rests on: the key a dispatch computes for a task and the key parsed back
+    // off that task's own live card are the same string. If they ever diverge,
+    // dedupe silently stops working and the board refills with duplicates —
+    // which is exactly the state these tests were written from (124 bench cards
+    // for 51 distinct tasks, sympy__sympy-24152 holding 15 of them).
+    mod dispatch_identity {
+        use super::*;
+
+        // what this catches: key/title drift. The key MUST be a prefix of the
+        // rendered title, so a card on the board can be matched back to the task
+        // that would produce it. A future edit to either function that breaks the
+        // prefix relation fails here instead of silently duplicating cards.
+        #[test]
+        fn a_rendered_title_yields_back_its_own_key() {
+            for (bench, task, prompt) in [
+                ("swe-bench-lite", "sympy__sympy-24152", "Bug in expand of TensorProduct"),
+                ("hard-rs", "rle_roundtrip", "Implement run-length encoding and decoding"),
+                // A prompt long enough to be truncated with an ellipsis.
+                ("frontier-rs", "dijkstra", &"x".repeat(200)),
+                // A prompt containing colons must not widen the key past the FIRST one.
+                ("hard-rs", "spiral_order", "note: returns Vec<i32>: in spiral order"),
+            ] {
+                let title = dispatch_card_title(bench, task, prompt);
+                let key = dispatch_card_key(bench, task);
+                assert!(
+                    title.starts_with(&key),
+                    "key must be a prefix of its own title\n  title: {title}\n  key:   {key}"
+                );
+                assert_eq!(
+                    bench_card_key(&title),
+                    Some(key.as_str()),
+                    "parsing a rendered title must recover exactly the constructed key ({title})"
+                );
+            }
+        }
+
+        // what this catches: two DIFFERENT tasks (or the same task id under two
+        // different benchmarks) must never collide onto one key — a collision
+        // would suppress a legitimate card as a false duplicate.
+        #[test]
+        fn distinct_tasks_never_share_a_key() {
+            let a = dispatch_card_key("swe-bench-lite", "sympy__sympy-24152");
+            let b = dispatch_card_key("swe-bench-lite", "sympy__sympy-24066");
+            let c = dispatch_card_key("swe-bench-verified", "sympy__sympy-24152");
+            assert_ne!(a, b, "different task ids must differ");
+            assert_ne!(a, c, "same task under a different benchmark must differ");
+        }
+
+        // what this catches: a hand-written card sharing the board must never be
+        // read as a benchmark task key. `bench_card_key` returning Some for an
+        // ordinary card would let unrelated work suppress a real dispatch.
+        #[test]
+        fn a_non_benchmark_card_has_no_task_key() {
+            for title in [
+                "Stage-on-claim: SWE checkout follows the CLAIMER",
+                "[not-a-bench] whatever: text",
+                "",
+                // Marker present but no colon at all — not a dispatchable card.
+                "[bench swe-bench-lite] malformed title with no colon",
+            ] {
+                assert_eq!(
+                    bench_card_key(title),
+                    None,
+                    "non-benchmark title must yield no key: {title:?}"
+                );
+            }
+        }
+    }
+
+    // The prune's selection rule. These guard a DESTRUCTIVE operation, so the
+    // bar is: never close work someone is doing, and never resolve a genuine
+    // two-citizen collision by cancelling one of them.
+    mod duplicate_selection {
+        use super::*;
+        use crate::persona::card_holder::Hold;
+
+        // what this catches: THE unacceptable failure — closing a card a citizen
+        // is actively working. Every arrangement of a held card among duplicates
+        // must leave that card open.
+        #[test]
+        fn a_held_card_is_never_closed() {
+            for holds in [
+                vec![Hold::Held, Hold::Unclaimed],
+                vec![Hold::Unclaimed, Hold::Held],
+                vec![Hold::Unclaimed, Hold::Held, Hold::Lapsed],
+                vec![Hold::Lapsed, Hold::Lapsed, Hold::Held],
+            ] {
+                let held: Vec<usize> = holds
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, h)| matches!(h, Hold::Held))
+                    .map(|(i, _)| i)
+                    .collect();
+                let (to_close, _) = duplicates_to_close(&holds);
+                for h in held {
+                    assert!(
+                        !to_close.contains(&h),
+                        "index {h} is HELD and must never be closed (holds={holds:?}, \
+                         to_close={to_close:?})"
+                    );
+                }
+                // And the prune must actually do something about the rest.
+                assert_eq!(
+                    to_close.len(),
+                    holds.len() - 1,
+                    "exactly one card survives when a single card is held"
+                );
+            }
+        }
+
+        // what this catches: two citizens genuinely on the same task. Cancelling
+        // either would destroy real in-flight work, so BOTH survive and the caller
+        // is told it is contended.
+        #[test]
+        fn a_contended_task_keeps_every_holder_and_is_reported() {
+            let holds = vec![Hold::Held, Hold::Held, Hold::Unclaimed, Hold::Lapsed];
+            let (to_close, contended) = duplicates_to_close(&holds);
+            assert!(contended, "two live claims on one task must report contention");
+            assert_eq!(
+                to_close,
+                vec![2, 3],
+                "only the unheld duplicates are closed; both holders survive"
+            );
+        }
+
+        // what this catches: the ordinary case — nobody is on any of them, so the
+        // choice only has to be deterministic. Keep the first.
+        #[test]
+        fn unheld_duplicates_collapse_to_the_first() {
+            let holds = vec![Hold::Unclaimed, Hold::Unclaimed, Hold::Lapsed];
+            let (to_close, contended) = duplicates_to_close(&holds);
+            assert_eq!(to_close, vec![1, 2]);
+            assert!(!contended);
+        }
+
+        // what this catches: a task with ONE card is not a duplicate and must be
+        // left completely alone — a prune that closed singletons would empty the
+        // board instead of deduplicating it.
+        #[test]
+        fn a_single_card_is_never_touched() {
+            for holds in [vec![], vec![Hold::Unclaimed], vec![Hold::Held], vec![Hold::Lapsed]] {
+                let (to_close, contended) = duplicates_to_close(&holds);
+                assert!(to_close.is_empty(), "singleton/empty must yield no closes: {holds:?}");
+                assert!(!contended);
+            }
         }
     }
 }
@@ -1244,17 +3262,85 @@ impl ActionCommand for BenchmarkSweGrade {
     }
 }
 
+/// Paths that are NEVER part of a solution — the ONE list, shared by every reading of
+/// "her work" ([`workspace_candidate_diff`] here and `agent::solve::workspace_patch`).
+///
+/// Two kinds, and the second is a SECURITY boundary, not tidiness:
+///
+/// 1. Build/cache byproducts. A `python3 -c ...` verify step left
+///    `__pycache__/calc.cpython-314.pyc` in a graded patch; real SWE-bench/aider patches are
+///    SOURCE-only. Anything a task might legitimately produce (`build`/`dist`/`target`) is kept.
+///
+/// 2. **Agent-scope state the SUBSTRATE writes into her tree.** airc creates its scope at the
+///    enclosing git root, so a citizen working inside a cloned bench repo gets `.airc/` —
+///    `events.sqlite`, a work-board cache, and **`identity.key`, a private keypair** — created
+///    under the repo she is being graded on. This has bitten twice: card b34f7eb5, where Atlas's
+///    first grade carried 91KB of staged `.airc` blobs and the fresh clone refused the WHOLE
+///    candidate (a real fix voided by files no solver wrote); and 2026-08-18, where
+///    sympy-22714's tree still held `.airc/identity.key` with git status `A` — already
+///    intent-added, because `workspace_patch` ran `git add -A -N` with an exclude list that
+///    lacked `.airc`. The grader was safe (it excluded `.airc` inline) but `workspace_patch`
+///    was not, and IT is the reading that feeds `files_changed` → `format_solve_lesson` →
+///    the curriculum. A credential could have been written into training data as
+///    "I changed: .airc/identity.key".
+///
+/// That divergence is exactly what [`workspace_candidate_diff`]'s own doc warned about — "a
+/// second inline `git diff` would drift on the exclude rules" — so the rule now lives in ONE
+/// place and both readings consume it ([[the-compression-principle]]).
+pub(crate) const SOLUTION_PATH_EXCLUDES: &[&str] = &[
+    // Agent/substrate scope — never authored by the solver, and credential-bearing.
+    ":(exclude,glob)**/.airc/**",
+    ":(exclude,glob)**/.continuum/**",
+    // Build + cache byproducts.
+    ":(exclude,glob)**/__pycache__/**",
+    ":(exclude,glob)**/*.pyc",
+    ":(exclude,glob)**/*.pyo",
+    ":(exclude,glob)**/.pytest_cache/**",
+    ":(exclude,glob)**/.mypy_cache/**",
+    ":(exclude,glob)**/.ruff_cache/**",
+    ":(exclude,glob)**/node_modules/**",
+    ":(exclude,glob)**/.DS_Store",
+];
+
 /// The candidate diff of a solver workspace — the ONE reading of "her work"
 /// (grade_swe's candidate arm and agent/solve's attempt-patch receipt both
 /// call this; a second inline `git diff` would drift on the exclude rules).
 /// `diff HEAD` (not bare `diff`) so STAGED edits count as her work too, and
-/// `:(exclude).airc` because the substrate stages its own coordination files
-/// into her workspace (card b34f7eb5): Atlas's first grade carried 91KB of
-/// staged `.airc` blobs, and the fresh clone refused the WHOLE candidate —
-/// a real fix voided by files no solver wrote.
+/// [`SOLUTION_PATH_EXCLUDES`] keeps substrate-authored files out — see its doc
+/// for the two incidents that make the `.airc` entry load-bearing.
 pub(crate) fn workspace_candidate_diff(ws: &str) -> Result<String, CommandError> {
+    workspace_candidate_diff_from(ws, None)
+}
+
+/// Her work is everything since the instance's BASE COMMIT — committed,
+/// staged, and unstaged alike. The old `diff HEAD` collector read only the
+/// dirty tree, so a citizen who COMMITTED her fix (sympy-12481, 2026-08-27:
+/// "Fix Permutation constructor to compose non-disjoint cycles left-to-right",
+/// the exact task, sitting in a commit) graded as "no candidate patch" — the
+/// harness punishing her best engineering habit. With `base` given, diff from
+/// there; unknown rev (odd staging) falls back to the dirty-tree read rather
+/// than failing the grade.
+pub(crate) fn workspace_candidate_diff_from(
+    ws: &str,
+    base: Option<&str>,
+) -> Result<String, CommandError> {
+    if let Some(base) = base {
+        let mut args: Vec<&str> = vec!["diff", base, "--", "."];
+        args.extend_from_slice(SOLUTION_PATH_EXCLUDES);
+        let out = std::process::Command::new("git")
+            .args(&args)
+            .current_dir(ws)
+            .output()
+            .map_err(|e| CommandError::Internal(format!("could not read {ws}'s diff: {e}")))?;
+        if out.status.success() {
+            return Ok(String::from_utf8_lossy(&out.stdout).to_string());
+        }
+        // Unknown base in this tree — fall through to the dirty-tree read.
+    }
+    let mut args: Vec<&str> = vec!["diff", "HEAD", "--", "."];
+    args.extend_from_slice(SOLUTION_PATH_EXCLUDES);
     let out = std::process::Command::new("git")
-        .args(["diff", "HEAD", "--", ".", ":(exclude).airc"])
+        .args(&args)
         .current_dir(ws)
         .output()
         .map_err(|e| CommandError::Internal(format!("could not read {ws}'s diff: {e}")))?;
@@ -1266,103 +3352,246 @@ pub(crate) fn workspace_candidate_diff(ws: &str) -> Result<String, CommandError>
 /// (fresh clone at base_commit, held-out tests, experience-stream write) as
 /// the operator verb. One grader, never two.
 pub(crate) async fn grade_swe(p: SweGradeParams) -> Result<SweGradeResult, CommandError> {
-        let dataset = p
-            .dataset
-            .clone()
-            .unwrap_or_else(|| "princeton-nlp/SWE-bench_Lite".to_string());
-        let rows = swe_bench::load_dataset(&dataset)
+    // Dataset resolution: an explicit dataset wins; otherwise SEARCH every known
+    // SWE dataset for the instance. The old default hardcoded Lite, so any
+    // Verified-only instance was ungradeable — glass-boxed live 2026-08-26:
+    // astropy-13236 (a swe-bench-verified dispatch) auto-graded as
+    // "[not_found] … not found in princeton-nlp/SWE-bench_Lite" and the whole
+    // attempt's verdict vanished. The instance names its dataset; the grader's
+    // job is to find it, not to guess one.
+    let candidate_datasets: Vec<String> = match p.dataset.clone() {
+        Some(d) => vec![d],
+        None => known_benchmarks()
+            .iter()
+            .filter_map(|b| b.swe_dataset())
+            .map(|d| d.to_string())
+            .collect(),
+    };
+    let mut instance_row = None;
+    let mut searched = Vec::new();
+    for dataset in &candidate_datasets {
+        let rows = swe_bench::load_dataset(dataset)
             .await
             .map_err(CommandError::Internal)?;
-        let instance = rows
-            .into_iter()
-            .find(|r| r.instance_id == p.instance)
-            .ok_or_else(|| {
-                CommandError::NotFound(format!("{} not found in {dataset}", p.instance))
-            })?;
-
-        // Resolve the candidate patch. A workspace's diff is READ here but graded in a fresh
-        // clone below — where the solver worked is never where the score is taken.
-        let candidate: Option<String> = if p.gold.unwrap_or(false) {
-            Some(instance.patch.clone())
-        } else if let Some(ws) = p.workspace.as_ref() {
-            Some(workspace_candidate_diff(ws)?)
-        } else {
-            p.patch.clone()
-        };
-        let patch_bytes = candidate.as_ref().map(|c| c.len()).unwrap_or(0);
-
-        let work = swe_bench::swe_cache_dir()
-            .join("work")
-            .join(&instance.instance_id);
-        let repo = work.join("repo");
-        let _ = std::fs::create_dir_all(&work);
-        if let Err(e) = swe_bench::clone_at(&instance, &repo).await {
-            return Ok(SweGradeResult::from((
-                SweVerdict {
-                    instance_id: instance.instance_id,
-                    error: Some(e),
-                    ..Default::default()
-                },
-                patch_bytes,
-            )));
+        if let Some(r) = rows.into_iter().find(|r| r.instance_id == p.instance) {
+            instance_row = Some((r, dataset.clone()));
+            break;
         }
-        let verdict = swe_bench::grade(&instance, &repo, candidate.as_deref()).await;
+        searched.push(dataset.clone());
+    }
+    let Some((instance, dataset)) = instance_row else {
+        return Err(CommandError::NotFound(format!(
+            "{} not found in any known SWE dataset (searched: {})",
+            p.instance,
+            searched.join(", ")
+        )));
+    };
+    let _ = &dataset; // named for the receipt below; instance carries everything else
 
-        // #319: a WORKSPACE grade is a citizen's lived, objectively judged work —
-        // append it to her experience stream. Only her: the gold/raw-patch arms are
-        // harness plumbing, not experience. And only a REAL verdict: an errored run
-        // is an ABSENCE (harness fault), and teaching from a harness failure would
-        // corrupt the reward signal (`an_errored_verdict_is_an_absence_not_a_zero`).
-        if verdict.error.is_none() {
-            if let Some(peer_dir) = p
-                .workspace
-                .as_ref()
-                .and_then(|ws| citizen_peer_dir_of(std::path::Path::new(ws)))
-            {
-                let task = crate::cognition::eval::EvalTask {
-                    id: instance.instance_id.clone(),
-                    prompt: instance.problem_statement.clone(),
-                    ..Default::default()
-                };
-                // Name the failures — a count is a score, a name is a lesson (Joel,
-                // 2026-08-08). "PASS_TO_PASS 6/11" told Atlas nothing; "your change
-                // broke test_arguments" is what a human reviewer would have said.
-                let broke = if verdict.failed_tests.is_empty() {
-                    String::new()
-                } else {
-                    format!(" — failing: {}", verdict.failed_tests.join(", "))
-                };
-                let detail = format!(
-                    "swe-bench {}: resolved={} FAIL_TO_PASS {}/{} PASS_TO_PASS {}/{}{}",
-                    instance.instance_id,
-                    verdict.resolved,
-                    verdict.f2p_passed,
-                    verdict.f2p_total,
-                    verdict.p2p_passed,
-                    verdict.p2p_total,
-                    broke
-                );
-                let episode = crate::cognition::experience::ExperienceRecord::from_kanban_grade(
-                    &task,
-                    candidate.as_deref().unwrap_or(""),
-                    verdict.resolved,
-                    &detail,
-                );
-                if let Err(e) =
-                    crate::cognition::experience::append_experience(&peer_dir, &episode)
-                {
-                    tracing::warn!(
-                        workspace = ?p.workspace,
-                        error = %e,
-                        "swe-grade outcome could not be appended to the experience \
-                         stream — the verdict stands, but this lesson was LOST"
+    // Resolve the candidate patch. A workspace's diff is READ here but graded in a fresh
+    // clone below — where the solver worked is never where the score is taken.
+    // RESOLVE WHICH COPY, rather than trusting the caller to have picked right.
+    //
+    // The same instance is legitimately staged into MULTIPLE citizens' workspaces —
+    // dispatch round-robins over the roster. On 2026-08-18 `astropy__astropy-14995` sat in
+    // Atlas's tree (dirty: a real fix) AND Asha's (clean: staged, never worked), and an
+    // operator grade pointed at the clean one returned a confident `resolved: false` for
+    // work that existed ten directories away. Deletion was never the risk; AMBIGUITY was.
+    //
+    // So an omitted `workspace` no longer means "no candidate" — it means ASK. The answer
+    // comes from `staged_workspace`, the module that already owns "which checkout is this
+    // instance", and it refuses on ambiguity for the same reason its sibling does: grading
+    // either of two worked copies scores one citizen's diff against another's card.
+    let resolved_workspace: Option<String> = match p.workspace.clone() {
+        Some(ws) => Some(ws),
+        None if p.gold.unwrap_or(false) || p.patch.is_some() => None,
+        None => {
+            use crate::persona::staged_workspace::{grade_target, owners_of, GradeTarget};
+            let copies = owners_of(&instance.instance_id);
+            match grade_target(&copies) {
+                GradeTarget::One(path) => {
+                    crate::probe!(
+                        class = "benchmark.grade.workspace_resolved",
+                        instance = %instance.instance_id,
+                        staged_copies = copies.len(),
+                        path = %path.display(),
+                        "resolved the one WORKED staged copy — never guessed between citizens"
                     );
+                    Some(path.to_string_lossy().to_string())
+                }
+                // No worked copy: fall through with no candidate. The empty-candidate guard
+                // below turns that into an ABSENCE, which is the honest verdict.
+                GradeTarget::NoWork => None,
+                GradeTarget::Ambiguous(paths) => {
+                    return Err(CommandError::Invalid(format!(
+                        "{} is staged with real work in {} citizens' workspaces — refusing to \
+                         guess which one this grade is about, because grading either scores one \
+                         citizen's diff against the other's card. Pass workspace=<path> \
+                         explicitly. Candidates: {}",
+                        instance.instance_id,
+                        paths.len(),
+                        paths
+                            .iter()
+                            .map(|p| p.display().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )));
                 }
             }
         }
+    };
 
-        Ok(SweGradeResult::from((verdict, patch_bytes)))
+    let candidate: Option<String> = if p.gold.unwrap_or(false) {
+        Some(instance.patch.clone())
+    } else if let Some(ws) = resolved_workspace.as_ref() {
+        Some(workspace_candidate_diff_from(ws, Some(&instance.base_commit))?)
+    } else {
+        p.patch.clone()
+    };
+    let patch_bytes = candidate.as_ref().map(|c| c.len()).unwrap_or(0);
+
+    // AN EMPTY CANDIDATE IS AN ABSENCE, NOT A ZERO — refuse before spending a clone on it.
+    //
+    // Grading a pristine tree at `base_commit` ALWAYS yields `resolved: false` with
+    // `gate_ok: true`: the FAIL_TO_PASS test correctly fails because the bug is still there.
+    // That is byte-identical downstream to a citizen who tried and missed, so recording it
+    // manufactures a capability zero out of nothing — the #384/#386 class, and the exact
+    // failure this arm's own `gold_gate` comment exists to prevent one screen above.
+    //
+    // Caught by the positive control on 2026-08-18, minutes after verdict persistence landed:
+    // re-grading astropy-14995 (a REAL pass, watched at F2P 1/1 / P2P 40/40 that afternoon)
+    // returned `patchBytes: 0, resolved: false` and PERSISTED it. Her tree had been re-cloned
+    // — `git reflog` showed exactly two entries, `clone` then `checkout`, no work — so the
+    // artifact was gone and the harness scored its own absence as her failure. One run of the
+    // control turned a silent laundering bug into a named one.
+    //
+    // Also stops the experience stream teaching "you failed" from a tree that was wiped: the
+    // append below gates on `error.is_none()`, so an absence correctly teaches nothing.
+    if !p.gold.unwrap_or(false) && patch_bytes == 0 {
+        return Ok(SweGradeResult::from((
+            SweVerdict {
+                instance_id: instance.instance_id.clone(),
+                error: Some(format!(
+                    "no candidate patch to grade for {} — the workspace holds no diff (a fresh \
+                     or reset checkout), so there is nothing to score. This is an ABSENCE, not \
+                     a failed attempt: grading a pristine tree would report resolved=false for \
+                     a citizen who never got the chance.",
+                    instance.instance_id
+                )),
+                ..Default::default()
+            },
+            patch_bytes,
+        )));
     }
+
+    let work = swe_bench::swe_cache_dir()
+        .join("work")
+        .join(&instance.instance_id);
+    let repo = work.join("repo");
+    let _ = std::fs::create_dir_all(&work);
+    if let Err(e) = swe_bench::clone_at(&instance, &repo).await {
+        return Ok(SweGradeResult::from((
+            SweVerdict {
+                instance_id: instance.instance_id,
+                error: Some(e),
+                ..Default::default()
+            },
+            patch_bytes,
+        )));
+    }
+    // THE SPINE CHECK IS NOW ENFORCED, not just run. `gold` graded through the plain
+    // `grade` path returned a bare `resolved: false`, which is byte-identical downstream to
+    // a citizen's capability zero — so the `gold` doc's own demand ("if it does not, the
+    // environment is wrong and no other number from it means anything") was a sentence
+    // addressed to a human and enforced by nobody. `gold_gate` stamps the verdict's `error`
+    // with WHY, and an `error` is contractually an ABSENCE, never a tallied failure
+    // (see `SweVerdict::error`). One path, so every caller inherits the labelling.
+    let verdict = if p.gold.unwrap_or(false) {
+        swe_bench::gold_gate(&instance).await
+    } else {
+        swe_bench::grade(&instance, candidate.as_deref()).await
+    };
+
+    // PERSIST THE VERDICT before anything else consumes it. Until 2026-08-18 this arm
+    // computed a score, taught from it, and returned it — writing nothing durable. Two real
+    // Lite resolutions were watched passing that afternoon and left no trace; `benchmark/runs`
+    // went on rendering both artifacts as `ungraded`, and the day's honest rate could not be
+    // stated from anything the system held. A measurement the system cannot remember is not a
+    // measurement. `record_verdict` itself refuses gold and errored verdicts, so the board can
+    // never be laundered by a positive control or an env fault (see its doc).
+    match swe_bench::record_verdict(&verdict, p.gold.unwrap_or(false)) {
+        Ok(Some(path)) => crate::probe!(
+            class = "benchmark.verdict.recorded",
+            instance = %verdict.instance_id,
+            resolved = verdict.resolved,
+            path = %path.display(),
+            "verdict persisted — the board and every later reader now see this grade"
+        ),
+        Ok(None) => {}
+        // Fail LOUD in the log but never fail the grade: the verdict in hand is still true,
+        // and refusing to return it would lose the measurement twice over.
+        Err(e) => tracing::warn!(
+            instance = %verdict.instance_id,
+            error = %e,
+            "VERDICT NOT PERSISTED — this grade is real but the system will forget it"
+        ),
+    }
+
+    // #319: a WORKSPACE grade is a citizen's lived, objectively judged work —
+    // append it to her experience stream. Only her: the gold/raw-patch arms are
+    // harness plumbing, not experience. And only a REAL verdict: an errored run
+    // is an ABSENCE (harness fault), and teaching from a harness failure would
+    // corrupt the reward signal (`an_errored_verdict_is_an_absence_not_a_zero`).
+    if verdict.error.is_none() {
+        // The RESOLVED workspace, not the caller's parameter: a grade that resolved the
+        // owner must teach THAT citizen, or the lesson lands on nobody (and, before
+        // resolution existed, could have landed on whoever the operator happened to name).
+        if let Some(peer_dir) = resolved_workspace
+            .as_ref()
+            .and_then(|ws| citizen_peer_dir_of(std::path::Path::new(ws)))
+        {
+            let task = crate::cognition::eval::EvalTask {
+                id: instance.instance_id.clone(),
+                prompt: instance.problem_statement.clone(),
+                ..Default::default()
+            };
+            // Name the failures — a count is a score, a name is a lesson (Joel,
+            // 2026-08-08). "PASS_TO_PASS 6/11" told Atlas nothing; "your change
+            // broke test_arguments" is what a human reviewer would have said.
+            let broke = if verdict.failed_tests.is_empty() {
+                String::new()
+            } else {
+                format!(" — failing: {}", verdict.failed_tests.join(", "))
+            };
+            let detail = format!(
+                "swe-bench {}: resolved={} FAIL_TO_PASS {}/{} PASS_TO_PASS {}/{}{}",
+                instance.instance_id,
+                verdict.resolved,
+                verdict.f2p_passed,
+                verdict.f2p_total,
+                verdict.p2p_passed,
+                verdict.p2p_total,
+                broke
+            );
+            let episode = crate::cognition::experience::ExperienceRecord::from_kanban_grade(
+                &task,
+                candidate.as_deref().unwrap_or(""),
+                verdict.resolved,
+                &detail,
+            );
+            if let Err(e) = crate::cognition::experience::append_experience(&peer_dir, &episode) {
+                tracing::warn!(
+                    workspace = ?p.workspace,
+                    error = %e,
+                    "swe-grade outcome could not be appended to the experience \
+                     stream — the verdict stands, but this lesson was LOST"
+                );
+            }
+        }
+    }
+
+    Ok(SweGradeResult::from((verdict, patch_bytes)))
+}
 
 /// The citizen peer dir owning a workspace path: the `<...>/citizens/peers/<uuid>`
 /// prefix of `path`, or `None` when the path is not inside a citizen's home (an
@@ -1450,18 +3679,6 @@ mod swe_grade_tests {
     }
 }
 
-/// The task text handed to her. Deliberately says WHERE she is and what "done" means — the
-/// glass-boxed failure it prevents is her creating a new project beside the repo, or leaving
-/// the fix in a message instead of the files.
-fn swe_task_prompt(problem_statement: &str) -> String {
-    format!(
-        "You are ALREADY in the task's workspace: a real git repository with a real bug. Do not \
-         create a new workspace and do not add new top-level files — find the existing source \
-         with code/search and code/read, and fix it IN PLACE with code/edit. Run checks with \
-         code/shell if useful. The fix must land in the existing files.\n\nISSUE:\n{problem_statement}"
-    )
-}
-
 /// The continuum home dir (`$CONTINUUM_HOME` else `~/.continuum`) — the same
 /// resolution the dispatch workspace + progress ledger use. `pub(crate)` so the
 /// curriculum drain (`genome/teach --from-experience`) resolves the SAME citizen
@@ -1513,7 +3730,11 @@ pub(crate) fn resolve_solver_dir(
     })?;
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name.to_ascii_lowercase().replace('-', "").starts_with(&needle) {
+        if name
+            .to_ascii_lowercase()
+            .replace('-', "")
+            .starts_with(&needle)
+        {
             matches.push((name, entry.path()));
         }
     }
@@ -1637,9 +3858,12 @@ impl ActionCommand for BenchmarkSweSetup {
         // so the card speaks in HER coordinates, not the operator's absolute ones.
         let rel = format!("swe/{}", instance.instance_id);
         let card_body = format!(
-            "Real bug in a real repo ({repo} @ {commit}). The checkout is ALREADY in your \
-             workspace at `{rel}/` — work there. Do not create a new workspace and do not add \
-             new top-level files; find the existing source of the fault and edit it in place.\n\n\
+            "Real bug in a real repo ({repo} @ {commit}). The checkout is ALREADY staged in your \
+             workspace at `{rel}/`, and while you hold this card your hands (files, shell) are \
+             rooted AT that repo's root: paths are repo-relative and `ls` lists the repo itself \
+             (there is no `swe/` directory from where you stand). Do not create a new workspace \
+             and do not add new top-level files; find the existing source of the fault and edit \
+             it in place.\n\n\
              ## Issue\n{statement}\n\n\
              ## Definition of done\n\
              The repo's own tests for this issue pass. Fix the bug with the smallest edit that \
@@ -1747,7 +3971,11 @@ mod swe_setup_tests {
             let card = fold_run_card("r3", Some(&failed), None, ancient, now);
             assert_eq!(card.phase, "failed");
             assert!(!card.stalled);
-            assert!(card.infra_error.as_deref().unwrap_or("").contains("deadline"));
+            assert!(card
+                .infra_error
+                .as_deref()
+                .unwrap_or("")
+                .contains("deadline"));
         }
 
         // what this catches: fresh activity reads `active` — the stall window
@@ -1777,6 +4005,55 @@ mod swe_setup_tests {
             assert!(!card.stalled);
             assert_eq!(card.solver.as_deref(), Some("atlas-uuid"));
             assert_eq!(card.resolved, None, "no grade yet — never a verdict");
+        }
+
+        // what this catches: an UNGRADEABLE grade must fold as an ABSENCE, never
+        // a capability zero. `SweGradeResult.error` documents the contract ("an
+        // ABSENCE, not a zero, and must never be tallied as a failed attempt")
+        // and the grader proves it — for the env class it re-runs the PRISTINE
+        // tree before declaring one. This projection read only the RESULT's
+        // error, so a grade-level fault folded `resolved: false` + phase
+        // `failed`, indistinguishable from a citizen who tried and lost.
+        // Measured 2026-08-13 on sympy__sympy-11400: p2p 0/29 on the pristine
+        // tree, and 8 of 36 instances graded UNGRADEABLE on that box — the
+        // denominator of every rate read off this projection was poisoned.
+        #[test]
+        fn an_ungradeable_grade_folds_as_absence_never_a_capability_zero() {
+            let now: u64 = 10_000_000_000;
+            let fresh = now - 5_000;
+            let result = json!({"persona_id": "asha-uuid", "acts": 12,
+                                "instance": "sympy__sympy-11400", "attempt": 1});
+            let ungradeable = json!({
+                "instance": "sympy__sympy-11400", "resolved": false, "gateOk": false,
+                "passToPassPassed": 0, "passToPassTotal": 29, "patchBytes": 402,
+                "error": "UNGRADEABLE — PASS_TO_PASS passes 0 of 29 on the PRISTINE tree: \
+                          the suite does not run in this environment, so every score from \
+                          this tree is an env fault, never a capability verdict."});
+            let card = fold_run_card("r6", Some(&result), Some(&ungradeable), fresh, now);
+            assert_eq!(
+                card.resolved, None,
+                "an env fault is an ABSENCE — `Some(false)` is the lie that reads as a \
+                 citizen who tried and failed"
+            );
+            assert_eq!(card.phase, "ungradeable", "never `failed`, never `resolved`");
+            assert!(
+                card.infra_error
+                    .as_deref()
+                    .is_some_and(|e| e.contains("UNGRADEABLE")),
+                "the REASON rides with the absence — one field means 'no valid verdict, \
+                 and why', fed by both the result's error and the grade's"
+            );
+
+            // Positive control: the SAME shape with no grade error is a real
+            // verdict and must still fold as a capability zero, or this test
+            // would pass by simply never reporting failure.
+            let honest_zero = json!({
+                "instance": "sympy__sympy-11400", "resolved": false, "gateOk": true,
+                "passToPassPassed": 29, "passToPassTotal": 29, "patchBytes": 402});
+            let card = fold_run_card("r7", Some(&result), Some(&honest_zero), fresh, now);
+            assert_eq!(card.resolved, Some(false), "a graded miss IS a zero");
+            assert_ne!(card.phase, "ungradeable");
+            assert!(card.infra_error.is_none());
         }
 
         // what this catches: the board facts (#329) — instance + attempt N/M
@@ -1820,7 +4097,10 @@ mod swe_setup_tests {
 const RUN_STALL_WINDOW_SECS: u64 = 20 * 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkRunsParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/BenchmarkRunsParams.ts"
+)]
 pub struct BenchmarkRunsParams {
     /// Filter to one run. Omit → the newest `limit` runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1837,7 +4117,10 @@ pub struct BenchmarkRunsParams {
 /// liveness Monitor all fold THIS, never bespoke file scraping
 /// (docs/architecture/ACADEMY-EXAM-ROOM-POSITRONIC-SURFACE.md §5.2).
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchRunCard.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/BenchRunCard.ts"
+)]
 pub struct BenchRunCard {
     pub run_id: String,
     /// Instance under test ("sympy__sympy-24066") — from the result ledger's
@@ -1850,6 +4133,7 @@ pub struct BenchRunCard {
     #[ts(optional, type = "number")]
     pub attempt: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub max_attempts: Option<u32>,
     /// Solver persona (from the result ledger; absent while attempt 1 is
@@ -1859,8 +4143,13 @@ pub struct BenchRunCard {
     pub solver: Option<String>,
     /// `resolved` | `failed` (loud infra marker, incl. #2180 stalls the
     /// deadline caught) | `active` (artifact activity within the stall
-    /// window) | `quiet` (non-terminal AND silent past the window — the
-    /// shape the projection exists to make visible).
+    /// window) | `queued` (silent past the window BUT the solver is actively
+    /// working another run — one pair of hands; waiting a turn is not a
+    /// stall) | `quiet` (non-terminal AND silent past the window — the
+    /// shape the projection exists to make visible) | `ungraded` (a staged
+    /// workspace holds a real diff that no grade has ever seen — durable
+    /// work awaiting a verdict, NOT a stall; see
+    /// [`scan_workspace_artifact_cards`]).
     pub phase: String,
     /// True exactly when `phase == "quiet"`.
     pub stalled: bool,
@@ -1870,6 +4159,7 @@ pub struct BenchRunCard {
     #[ts(type = "number")]
     pub age_secs: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub acts: Option<u32>,
     pub files_changed: Vec<String>,
@@ -1895,9 +4185,44 @@ pub struct BenchRunCard {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkRunsResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/BenchmarkRunsResult.ts"
+)]
 pub struct BenchmarkRunsResult {
     pub runs: Vec<BenchRunCard>,
+    /// How many cards MATCHED before `limit` truncated — so a page is never mistaken
+    /// for the whole set.
+    ///
+    /// Measured cost of not having this (2026-08-21, on me): `benchmark/runs` returned
+    /// 20 rows carrying 1 resolved instance, and I read that as the system's whole
+    /// history and as evidence that grades were being lost on the way to the board.
+    /// Both wrong. The projection reads grade siblings AND durable verdicts correctly;
+    /// there were simply 37 graded instances and `limit.unwrap_or(20)` showed the 20
+    /// most recent. The SECOND real pass (`sympy__sympy-13480`) was older than the
+    /// window, so the board looked like a 1-pass history and nobody knew otherwise.
+    ///
+    /// Same convention `debug/probes/query` already uses ("MATCHED versus returned, so
+    /// a page is never mistaken for the whole"). Silent truncation reads as "that's
+    /// everything" — on the command an operator uses to ask how the benchmark is going,
+    /// that is the worst possible failure shape.
+    #[ts(type = "number")]
+    pub matched: u32,
+    /// Human-readable statement of the two numbers, so the truncation is visible in a
+    /// glance at the receipt and not only to a caller who compares two fields.
+    pub summary: String,
+}
+
+/// One run-ledger scan: the cards a caller asked for, plus how many there were BEFORE
+/// truncation.
+///
+/// Returned as a struct rather than a bare `Vec` so the count cannot be dropped on the
+/// way out — the positron board consumes `.cards` and ignores the total, while the
+/// command reports both. A tuple would have let either caller silently discard it.
+pub(crate) struct RunScan {
+    pub cards: Vec<BenchRunCard>,
+    /// Cards that matched the filter before `limit` was applied.
+    pub matched: usize,
 }
 
 /// Fold one run's on-disk ledgers into a card. Pure over the two JSON values +
@@ -1910,19 +4235,49 @@ fn fold_run_card(
     now_ms: u64,
 ) -> BenchRunCard {
     let s = |v: Option<&serde_json::Value>, k: &str| {
-        v.and_then(|v| v.get(k)).and_then(|x| x.as_str()).map(String::from)
+        v.and_then(|v| v.get(k))
+            .and_then(|x| x.as_str())
+            .map(String::from)
     };
     let n = |v: Option<&serde_json::Value>, k: &str| {
-        v.and_then(|v| v.get(k)).and_then(|x| x.as_u64()).map(|x| x as u32)
+        v.and_then(|v| v.get(k))
+            .and_then(|x| x.as_u64())
+            .map(|x| x as u32)
     };
     let arr = |v: Option<&serde_json::Value>, k: &str| -> Vec<String> {
         v.and_then(|v| v.get(k))
             .and_then(|x| x.as_array())
-            .map(|a| a.iter().filter_map(|e| e.as_str().map(String::from)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|e| e.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default()
     };
-    let resolved = grade.and_then(|g| g.get("resolved")).and_then(|x| x.as_bool());
-    let infra_error = s(result, "infra_error").or_else(|| s(result, "error"));
+    // ABSENCE vs ZERO, on the board. A grade carrying `error` is a harness/env
+    // fault the grader PROVED — for the env class it re-runs the PRISTINE tree
+    // first, so a genuinely broken patch is never mislabelled — and
+    // `SweGradeResult.error` documents the contract in its own doc comment: "a
+    // result with `error` is an ABSENCE, not a zero, and must never be tallied
+    // as a failed attempt." This projection honoured that for the RESULT's error
+    // and ignored the GRADE's, so an env fault folded as `resolved: false` +
+    // phase `failed` — indistinguishable from a citizen who tried and lost.
+    // Measured 2026-08-13: 8 of 36 instances (22%) grade UNGRADEABLE on this box.
+    // `infra_error` already means "no valid verdict, and why", so it takes both
+    // sources rather than growing a second field, and `resolved` returns to None
+    // — the same "no verdict" the pre-grade card carries, because that is the truth.
+    let grade_error = s(grade, "error");
+    let ungradeable = grade_error.is_some();
+    let resolved = if ungradeable {
+        None
+    } else {
+        grade
+            .and_then(|g| g.get("resolved"))
+            .and_then(|x| x.as_bool())
+    };
+    let infra_error = s(result, "infra_error")
+        .or_else(|| s(result, "error"))
+        .or(grade_error);
     let failed_marker = result
         .and_then(|r| r.get("failed"))
         .and_then(|x| x.as_bool())
@@ -1930,6 +4285,10 @@ fn fold_run_card(
     let age_secs = now_ms.saturating_sub(last_activity_ms) / 1000;
     let phase = if resolved == Some(true) {
         "resolved"
+    } else if ungradeable {
+        // Ahead of `failed`: a run can carry both a failed marker and an
+        // ungradeable grade, and the absence is the more truthful of the two.
+        "ungradeable"
     } else if failed_marker {
         "failed"
     } else if age_secs < RUN_STALL_WINDOW_SECS {
@@ -1937,11 +4296,12 @@ fn fold_run_card(
     } else {
         "quiet"
     };
-    let ratio = |g: Option<&serde_json::Value>, passed: &str, total: &str| {
-        match (n(g, passed), n(g, total)) {
-            (Some(p), Some(t)) => Some(format!("{p}/{t}")),
-            _ => None,
-        }
+    let ratio = |g: Option<&serde_json::Value>, passed: &str, total: &str| match (
+        n(g, passed),
+        n(g, total),
+    ) {
+        (Some(p), Some(t)) => Some(format!("{p}/{t}")),
+        _ => None,
     };
     BenchRunCard {
         run_id: run_id.to_string(),
@@ -1973,6 +4333,514 @@ fn fold_run_card(
     }
 }
 
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkScoreboardParams.ts")]
+pub struct BenchmarkScoreboardParams {}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkScoreRow.ts")]
+pub struct BenchmarkScoreRow {
+    /// Catalog benchmark this tallies (e.g. `swe-bench-verified`).
+    pub benchmark: String,
+    /// Distinct instances with a REAL verdict (error-free; absences never tally).
+    #[ts(type = "number")]
+    pub attempted: u32,
+    /// Of those, resolved (all fail-to-pass passed, gate held).
+    #[ts(type = "number")]
+    pub resolved: u32,
+    /// The dataset's full size — the leaderboard denominator this samples.
+    #[ts(type = "number")]
+    pub dataset_size: u32,
+    /// Resolved instance ids — the receipt pointers.
+    pub resolved_instances: Vec<String>,
+    /// The harness build(s) that produced this row's verdicts, newest-first.
+    ///
+    /// MORE THAN ONE MEANS THE ROW BLENDS ERAS — and a rate averaged over a
+    /// moving instrument is not a measurement. Measured 2026-08-28: 19 of 32
+    /// verdicts here had been scored across ten days by three harness builds,
+    /// and regrading one from its IDENTICAL banked patch moved pass-to-pass
+    /// from 0/40 to 40/40. Publishing an improvement curve over that is
+    /// publishing the harness's changes as if they were hers. `<unstamped>`
+    /// marks verdicts written before provenance existed.
+    #[serde(default)]
+    pub harness_builds: Vec<String>,
+    /// ENV failures (verdict carries `error`): the harness could not measure
+    /// the model at all — clone/env/patch infrastructure, NEVER a model miss.
+    /// These are absences owing retakes, and they must read that way.
+    #[ts(type = "number")]
+    pub env_absences: u32,
+    /// The env-absent instance ids, so the failure is chaseable per instance.
+    pub env_absent_instances: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkScoreboardResult.ts")]
+pub struct BenchmarkScoreboardResult {
+    pub rows: Vec<BenchmarkScoreRow>,
+    /// The REGIME every published number must carry: model, window, build, host.
+    pub regime: String,
+    pub summary: String,
+}
+
+#[derive(Default)]
+pub struct BenchmarkScoreboard;
+
+#[async_trait::async_trait]
+impl ActionCommand for BenchmarkScoreboard {
+    const NAME: &'static str = "benchmark/scoreboard";
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "The SCORE rollup: per SWE-class benchmark, attempted vs resolved from the durable \
+         verdicts on disk, with the serving REGIME (model, window, build sha, host) every \
+         published claim must carry. ONE read for the operator, the README chart, and a \
+         citizen grounding on how the team is scoring — instead of tallying verdict files \
+         by hand.";
+    type Params = BenchmarkScoreboardParams;
+    type Output = BenchmarkScoreboardResult;
+
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        _p: BenchmarkScoreboardParams,
+    ) -> Result<BenchmarkScoreboardResult, CommandError> {
+        let verdicts = swe_bench::recorded_verdicts();
+        let mut rows = Vec::new();
+        for spec in known_benchmarks() {
+            let Some(dataset) = spec.swe_dataset() else {
+                continue;
+            };
+            // Membership by the SAME loader the grade path searches with — one
+            // source of truth for "which dataset does this instance belong to".
+            let Ok(instances) = crate::cognition::swe_bench::load_dataset(dataset).await else {
+                continue; // not fetched yet — an un-run benchmark, not an error
+            };
+            let ids: std::collections::HashSet<&str> =
+                instances.iter().map(|i| i.instance_id.as_str()).collect();
+            let mut attempted = 0u32;
+            let mut resolved_instances = Vec::new();
+            let mut env_absent_instances = Vec::new();
+            // Which harness build(s) actually produced the verdicts behind this
+            // rate. Collected from the TALLIED verdicts only — the absences are
+            // not part of the claim.
+            let mut builds: std::collections::BTreeSet<String> = Default::default();
+            for (id, v) in &verdicts {
+                if !ids.contains(id.as_str()) {
+                    continue;
+                }
+                if v.error.is_some() || !v.gate_ok {
+                    // Absence, never a tallied attempt — but never invisible
+                    // either: an env failure the user can't see reads as a
+                    // model miss in every retelling. A failed GATE is the same
+                    // class: the control was broken, nothing was measured
+                    // (belt-and-suspenders — record_verdict already refuses
+                    // gate-failed verdicts, so this arm should never fire).
+                    env_absent_instances.push(id.clone());
+                    continue;
+                }
+                attempted += 1;
+                builds.insert(if v.harness_build.is_empty() {
+                    "<unstamped>".to_string()
+                } else {
+                    v.harness_build.clone()
+                });
+                if v.resolved {
+                    resolved_instances.push(id.clone());
+                }
+            }
+            rows.push(BenchmarkScoreRow {
+                benchmark: spec.name.to_string(),
+                attempted,
+                resolved: resolved_instances.len() as u32,
+                dataset_size: instances.len() as u32,
+                resolved_instances,
+                harness_builds: {
+                    let mut b: Vec<String> = builds.into_iter().collect();
+                    b.sort();
+                    b
+                },
+                env_absences: env_absent_instances.len() as u32,
+                env_absent_instances,
+            });
+        }
+        let serving = crate::inference::llama_server::current_serving();
+        let regime = format!(
+            "model={} served_window={} build={} sha={} host={}-{}",
+            serving.active_model.as_deref().unwrap_or("none-serving"), // absence stated, never a fake model id
+            serving.served_context_window,
+            env!("CONTINUUM_BUILD_NUMBER"),
+            env!("CONTINUUM_BUILD_GIT_SHA"),
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+        );
+        let summary = rows
+            .iter()
+            .filter(|r| r.attempted > 0 || r.env_absences > 0)
+            .map(|r| {
+                let env = if r.env_absences > 0 {
+                    format!(
+                        " · {} ENV failure(s) — not model misses, they owe retakes: {}",
+                        r.env_absences,
+                        r.env_absent_instances.join(", ")
+                    )
+                } else {
+                    String::new()
+                };
+                // SAY IT WHEN THE RATE BLENDS ERAS. A number averaged over a
+                // moving instrument is not a measurement, and this string is
+                // what gets quoted into charts and READMEs — the exact place a
+                // silent blend becomes a published claim.
+                let mixed = if r.harness_builds.len() > 1 {
+                    format!(
+                        " · ⚠ MIXED HARNESS ERAS ({}) — regrade to one build before \
+                         publishing this as a curve",
+                        r.harness_builds.join(", ")
+                    )
+                } else {
+                    String::new()
+                };
+                format!(
+                    "{}: {}/{} resolved (of {} in the set){env}{mixed}",
+                    r.benchmark, r.resolved, r.attempted, r.dataset_size
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let summary = if summary.is_empty() {
+            "no real verdicts on disk yet — dispatch a round first".to_string()
+        } else {
+            summary
+        };
+        Ok(BenchmarkScoreboardResult {
+            rows,
+            regime,
+            summary,
+        })
+    }
+}
+
+crate::register_stateless_command!(BenchmarkScoreboard);
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkValidateParams.ts")]
+pub struct BenchmarkValidateParams {
+    /// SWE-class benchmark to validate (default swe-bench-verified).
+    #[serde(default)]
+    #[ts(optional)]
+    pub name: Option<String>,
+    /// Cap on env classes to build (default all). Each class = one real
+    /// checkout + env build for its representative instance.
+    #[serde(default)]
+    #[ts(optional, type = "number")]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkValidateClass.ts")]
+pub struct BenchmarkValidateClass {
+    /// The env class: repo + era year.
+    pub repo: String,
+    pub era: String,
+    /// The representative instance actually built.
+    pub representative: String,
+    /// Instances in the dataset this class covers.
+    #[ts(type = "number")]
+    pub covers: u32,
+    /// Did checkout + env build + (for pytest repos) the trivial-test smoke pass?
+    pub green: bool,
+    /// The named wall when red — actionable, never a mystery.
+    #[ts(optional)]
+    pub wall: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkPlatformFingerprint.ts")]
+pub struct BenchmarkPlatformFingerprint {
+    /// The machine CLASS a coverage claim is keyed by (e.g. `m-series-macos`,
+    /// `x86_64-linux`, `windows`) — the coarse key an alloy consumer matches.
+    pub machine_class: String,
+    pub os: String,
+    pub arch: String,
+    /// The load-bearing toolchain versions — the BITTEN-BY list, grown only
+    /// when a new wall names a new dependency (2026-08-27 initial set: clang
+    /// broke on `-march=native`, libomp/freetype were the matplotlib/sklearn
+    /// walls, uv's interpreter shelf decided the py3.7 structural question).
+    pub clang: String,
+    pub libomp: bool,
+    pub freetype: bool,
+    pub uv: String,
+    /// Interpreter majors uv can actually provide on this platform.
+    pub pythons: Vec<String>,
+}
+
+impl BenchmarkPlatformFingerprint {
+    fn capture() -> Self {
+        let run = |cmd: &str, args: &[&str]| -> String {
+            std::process::Command::new(cmd)
+                .args(args)
+                .output()
+                .ok()
+                .map(|o| String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "absent".into())
+        };
+        let machine_class = match (std::env::consts::OS, std::env::consts::ARCH) {
+            ("macos", "aarch64") => "m-series-macos",
+            ("macos", _) => "intel-macos",
+            ("linux", a) if a == "aarch64" => "arm-linux",
+            ("linux", _) => "x86_64-linux",
+            ("windows", _) => "windows",
+            _ => "other",
+        }
+        .to_string();
+        let pythons = std::process::Command::new("uv")
+            .args(["python", "list", "--only-installed"])
+            .output()
+            .ok()
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .filter_map(|l| l.split_whitespace().next().map(str::to_string))
+                    .take(8)
+                    .collect()
+            })
+            .unwrap_or_default();  // unwrap_or: unreadable = empty, the report shows the tracker's view
+        Self {
+            machine_class,
+            os: std::env::consts::OS.into(),
+            arch: std::env::consts::ARCH.into(),
+            clang: run("clang", &["--version"]),
+            libomp: std::path::Path::new("/opt/homebrew/opt/libomp/include/omp.h").exists()
+                || std::path::Path::new("/usr/lib/libomp.so").exists(),
+            freetype: std::process::Command::new("pkg-config")
+                .args(["--exists", "freetype2"])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false),
+            uv: run("uv", &["--version"]),
+            pythons,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkValidateResult.ts")]
+pub struct BenchmarkValidateResult {
+    /// The platform this coverage map is TRUE FOR — coverage claims are always
+    /// per-machine-class; an alloy consumer matches this before trusting them.
+    pub platform: BenchmarkPlatformFingerprint,
+    pub classes: Vec<BenchmarkValidateClass>,
+    /// Instances covered by GREEN classes / dataset size — THE coverage number.
+    #[ts(type = "number")]
+    pub instances_green: u32,
+    #[ts(type = "number")]
+    pub dataset_size: u32,
+    pub summary: String,
+}
+
+/// `benchmark/validate` — the harness proves ITSELF before anyone trusts a
+/// round with it. One representative per (repo, era-year) class runs the SAME
+/// checkout + env-build seams every real solve and grade use; the result is
+/// the env-coverage map ("N of 500 instances sit in classes proven green on
+/// this box") with every red class carrying its named wall. Run it before a
+/// published round; cite it in the regime. No excuses, surprised-ourselves-first.
+#[derive(Default)]
+pub struct BenchmarkValidate;
+
+#[async_trait::async_trait]
+impl ActionCommand for BenchmarkValidate {
+    const NAME: &'static str = "benchmark/validate";
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Validate the benchmark harness against a dataset: build one representative env per \
+         (repo, era) class through the real checkout/env seams and report the coverage map — \
+         which instances sit in proven-green classes, and the named wall for every red one.";
+    type Params = BenchmarkValidateParams;
+    type Output = BenchmarkValidateResult;
+
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        p: BenchmarkValidateParams,
+    ) -> Result<BenchmarkValidateResult, CommandError> {
+        let name = p.name.as_deref().unwrap_or("swe-bench-verified");
+        let spec = known_benchmarks()
+            .iter()
+            .find(|b| b.name == name)
+            .ok_or_else(|| CommandError::Invalid(format!("unknown benchmark '{name}'")))?;
+        let dataset = spec.swe_dataset().ok_or_else(|| {
+            CommandError::Invalid(format!("'{name}' is not an SWE-class benchmark"))
+        })?;
+        let instances = crate::cognition::swe_bench::load_dataset(dataset)
+            .await
+            .map_err(CommandError::Internal)?;
+        let dataset_size = instances.len() as u32;
+        // Class = (repo, created_at year): the era proxy the env machinery keys
+        // dependency resolution on. First instance per class represents it.
+        let mut classes: std::collections::BTreeMap<(String, String), (String, u32)> =
+            Default::default();
+        for i in &instances {
+            let era = i.created_at.get(0..4).unwrap_or("????").to_string(); // dataset rows carry ISO dates; a malformed one groups under ???? visibly
+            let e = classes
+                .entry((i.repo.clone(), era))
+                .or_insert_with(|| (i.instance_id.clone(), 0));
+            e.1 += 1;
+        }
+        let cap = p.limit.unwrap_or(u32::MAX) as usize; // default: every class — a validation that samples silently is not a validation
+        let mut rows = Vec::new();
+        let mut instances_green = 0u32;
+        for ((repo, era), (rep, covers)) in classes.into_iter().take(cap) {
+            let inst = instances
+                .iter()
+                .find(|i| i.instance_id == rep)
+                .expect("representative came from this same list"); // same vec, same loop — cannot miss
+            let outcome = async {
+                let dir = crate::cognition::swe_bench::ensure_grade_checkout(inst)
+                    .await
+                    .map_err(|e| format!("checkout: {e}"))?;
+                crate::cognition::swe_bench::ensure_env(inst, &dir)
+                    .await
+                    .map_err(|e| format!("env: {e}"))?;
+                Ok::<(), String>(())
+            }
+            .await;
+            let green = outcome.is_ok();
+            if green {
+                instances_green += covers;
+            }
+            let wall = outcome.err().map(|e| {
+                let t: String = e.chars().take(500).collect();
+                t
+            });
+            crate::probe!(
+                class = "benchmark.validate.class",
+                repo = %repo,
+                era = %era,
+                green,
+                covers = covers as u64,
+                "env class validated through the real seams"
+            );
+            rows.push(BenchmarkValidateClass {
+                repo,
+                era,
+                representative: rep,
+                covers,
+                green,
+                wall,
+            });
+        }
+        let summary = format!(
+            "{instances_green}/{dataset_size} instances sit in proven-green env classes \
+             ({} classes green, {} red)",
+            rows.iter().filter(|r| r.green).count(),
+            rows.iter().filter(|r| !r.green).count()
+        );
+        let result = BenchmarkValidateResult {
+            platform: BenchmarkPlatformFingerprint::capture(),
+            classes: rows,
+            instances_green,
+            dataset_size,
+            summary,
+        };
+        // PERSIST, so the map can GATE. A coverage map that only ever exists in
+        // one command's stdout cannot protect anything: dispatch had no way to
+        // ask "is this instance's class known-red?", so a citizen could be sent
+        // to spend hours inside an env class this box had already PROVEN cannot
+        // build (measured 2026-08-28: astropy-6938 dispatched into the numpy-2
+        // wall while a validate run sitting minutes away already knew that class
+        // was red). Written per (dataset × machine_class) because a coverage
+        // claim is only true for the platform that earned it.
+        if let Err(e) = write_coverage_map(name, &result) {
+            crate::probe!(
+                class = "benchmark.validate.map_unwritten",
+                error = %e,
+                "coverage map could not be persisted — dispatch keeps its \
+                 fail-open behaviour and gates nothing"
+            );
+        }
+        Ok(result)
+    }
+}
+
+/// Where a validated coverage map lives for one (dataset, machine-class) pair.
+/// Under the governed benchmarks root, next to the verdicts it protects — one
+/// small file per dataset, rewritten in place, so it needs no eviction story.
+pub fn coverage_map_path(dataset: &str, machine_class: &str) -> std::path::PathBuf {
+    coverage_map_path_in(
+        &crate::cognition::swe_bench::swe_cache_dir(),
+        dataset,
+        machine_class,
+    )
+}
+
+/// Root-injected core of [`coverage_map_path`] — the filesystem seam, so tests
+/// run against a tempdir instead of the operator's real `~/.continuum` (the
+/// pattern `tool_executor::spill` already sets). A test that writes into a
+/// person's live data directory is both a lie about isolation and a way to
+/// clobber their state.
+pub fn coverage_map_path_in(
+    root: &std::path::Path,
+    dataset: &str,
+    machine_class: &str,
+) -> std::path::PathBuf {
+    let safe: String = dataset
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .collect();
+    let mc: String = machine_class
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .collect();
+    root.join("coverage").join(format!("{safe}.{mc}.json"))
+}
+
+fn write_coverage_map(dataset: &str, result: &BenchmarkValidateResult) -> Result<(), String> {
+    let path = coverage_map_path(dataset, &result.platform.machine_class);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let json = serde_json::to_string_pretty(result).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| e.to_string())
+}
+
+/// The named wall for an instance's env class, when THIS box has already proven
+/// that class red. `None` means "no map, or the class is green, or the map was
+/// earned on a different machine class" — every one of which must DISPATCH, not
+/// block. Fail-open is the contract: a repo user who has never run
+/// `benchmark/validate` is never slowed down by a gate that has nothing to say.
+pub fn known_red_wall(dataset: &str, repo: &str, era_year: u32) -> Option<String> {
+    known_red_wall_in(
+        &crate::cognition::swe_bench::swe_cache_dir(),
+        dataset,
+        repo,
+        era_year,
+    )
+}
+
+/// Root-injected core of [`known_red_wall`]. See [`coverage_map_path_in`].
+pub fn known_red_wall_in(
+    root: &std::path::Path,
+    dataset: &str,
+    repo: &str,
+    era_year: u32,
+) -> Option<String> {
+    let machine_class = BenchmarkPlatformFingerprint::capture().machine_class;
+    let raw = std::fs::read_to_string(coverage_map_path_in(root, dataset, &machine_class)).ok()?;
+    let map: BenchmarkValidateResult = serde_json::from_str(&raw).ok()?;
+    if map.platform.machine_class != machine_class {
+        return None; // another box's claim is not evidence about this one
+    }
+    let era = era_year.to_string();
+    map.classes
+        .iter()
+        .find(|c| c.repo == repo && c.era == era && !c.green)
+        .map(|c| {
+            c.wall
+                .clone()
+                .unwrap_or_else(|| "class proven red by benchmark/validate".to_string())
+        })
+}
+crate::register_stateless_command!(BenchmarkValidate);
+
 #[derive(Default)]
 pub struct BenchmarkRuns;
 
@@ -1982,7 +4850,8 @@ impl ActionCommand for BenchmarkRuns {
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "The benchmark RunProjection: every agent/solve run's live card — phase \
-         (active/quiet/resolved/failed), last-activity age, stall flag, acts, grade summary, \
+         (active/quiet/resolved/failed/ungradeable), last-activity age, stall flag, acts, \
+         grade summary, \
          investigation trail — folded from the run ledgers. ONE projection for every consumer: \
          the exam-room tab bar, a teacher persona's grounding, and the operator's liveness \
          monitor all read THIS instead of scraping files. `quiet` (stalled=true) is the shape \
@@ -1996,9 +4865,33 @@ impl ActionCommand for BenchmarkRuns {
         _ctx: &Ctx,
         p: BenchmarkRunsParams,
     ) -> Result<BenchmarkRunsResult, CommandError> {
-        let runs = scan_run_cards(p.run_id.as_deref(), p.limit.unwrap_or(20).max(1) as usize)
+        // safe: `limit` is an OPTIONAL page size, so None means "caller didn't ask", not
+        // "unknown quantity" — 20 is this command's documented default page and the value
+        // the board already uses. `.max(1)` keeps an explicit 0 from returning nothing
+        // silently. The count that must never be defaulted is `matched`, which comes from
+        // the scan itself and is reported separately.
+        let scan = scan_run_cards(p.run_id.as_deref(), p.limit.unwrap_or(20).max(1) as usize) // safe: see the 5 lines above
             .map_err(CommandError::Internal)?;
-        Ok(BenchmarkRunsResult { runs })
+        let returned = scan.cards.len();
+        let matched = scan.matched;
+        // Say which of the two this is, in words. A caller comparing `runs.len()` to
+        // `matched` would also learn it, but the receipt is what a human (or a citizen
+        // reading the board) actually looks at, and the whole point is that truncation
+        // must not be invisible there.
+        let summary = if returned < matched {
+            format!(
+                "showing {returned} of {matched} run(s) — NEWEST first, older runs truncated \
+                 by `limit`. Raise `--limit` to see the rest; this is a PAGE, not the whole \
+                 history."
+            )
+        } else {
+            format!("all {matched} run(s) — this is the complete set for these filters, not a page.")
+        };
+        Ok(BenchmarkRunsResult {
+            runs: scan.cards,
+            matched: matched as u32,
+            summary,
+        })
     }
 }
 
@@ -2006,10 +4899,182 @@ impl ActionCommand for BenchmarkRuns {
 /// command AND the positron `kind="bench"` board emitter (#329) fold THIS —
 /// never a parallel file scrape ([[the-compression-principle]]). Synchronous
 /// fs I/O: async callers wrap it in `spawn_blocking`.
+/// Cards for staged workspaces that hold REAL WORK no grade has ever seen.
+///
+/// Why this source exists (glass-boxed 2026-08-18, and it is the acceptance test from
+/// docs/architecture/BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md failing): the board read ONLY
+/// `progress/agent-solve-*.json`. Those files are written by a solve PROCESS. A process that
+/// froze mid-flight never writes `files_changed`, and work done another way never writes a
+/// file at all — so the board showed 20 runs with `files_changed: []` and phase `quiet`,
+/// while three staged trees on the same disk held real in-place source edits. Two of them
+/// were PASSES (astropy-14995, pytest-11143, both `resolved=true` once the grader could read
+/// its own output). They were found by hand with `git -C … diff`, which is precisely the
+/// "if answering needs a file read, it is disconnected and it failed" the doc names.
+///
+/// The workspace is DURABLE truth; a run file is an ephemeral progress marker. So the board
+/// projects both, and an artifact nobody graded is a first-class row rather than an absence.
+/// Instances already carrying a grade are skipped — a graded run is the authoritative card.
+///
+/// Bounded on purpose: at most [`WORKSPACE_ARTIFACT_SCAN_CAP`] trees per call, and the count
+/// dropped is logged rather than silently truncated (no-silent-caps).
+fn scan_workspace_artifact_cards(graded: &std::collections::HashSet<String>, now_ms: u64) -> Vec<BenchRunCard> {
+    let Ok(home) = continuum_home() else {
+        return Vec::new();
+    };
+    let peers = home.join("citizens").join("peers");
+    let Ok(peer_entries) = std::fs::read_dir(&peers) else {
+        return Vec::new();
+    };
+    let mut cards = Vec::new();
+    let mut scanned = 0usize;
+    let mut skipped_over_cap = 0usize;
+    for peer in peer_entries.flatten() {
+        let peer_id = peer.file_name().to_string_lossy().to_string();
+        let swe = peer.path().join("workspace").join("swe");
+        let Ok(instances) = std::fs::read_dir(&swe) else {
+            continue;
+        };
+        for inst in instances.flatten() {
+            if !inst.path().is_dir() {
+                continue;
+            }
+            let instance = inst.file_name().to_string_lossy().to_string();
+            if graded.contains(&instance) {
+                continue;
+            }
+            if scanned >= WORKSPACE_ARTIFACT_SCAN_CAP {
+                skipped_over_cap += 1;
+                continue;
+            }
+            scanned += 1;
+            let Some(ws) = inst.path().to_str().map(String::from) else {
+                continue;
+            };
+            // The SAME reading of "her work" the grader uses — never a second inline diff.
+            let Ok(diff) = workspace_candidate_diff(&ws) else {
+                continue;
+            };
+            if diff.trim().is_empty() {
+                continue;
+            }
+            // Touched paths straight off the diff header — no extra process spawn.
+            let files_changed: Vec<String> = diff
+                .lines()
+                .filter_map(|l| l.strip_prefix("+++ b/"))
+                .map(|p| p.to_string())
+                .collect();
+            let last_activity_ms = std::fs::metadata(inst.path())
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            cards.push(BenchRunCard {
+                run_id: format!("workspace:{}:{instance}", &peer_id[..8.min(peer_id.len())]),
+                instance: Some(instance),
+                attempt: None,
+                max_attempts: None,
+                solver: Some(peer_id.clone()),
+                // NOT "quiet": nothing is stalled here — a finished artifact is waiting for a
+                // verdict. Conflating the two is what hid two passes for ~22 hours.
+                phase: "ungraded".to_string(),
+                stalled: false,
+                last_activity_ms,
+                age_secs: now_ms.saturating_sub(last_activity_ms) / 1000,
+                acts: None,
+                files_changed,
+                files_examined: Vec::new(),
+                resolved: None,
+                fail_to_pass: None,
+                pass_to_pass: None,
+                patch_bytes: Some(diff.len() as u32),
+                failed_tests: Vec::new(),
+                infra_error: None,
+            });
+        }
+    }
+    if skipped_over_cap > 0 {
+        tracing::warn!(
+            scanned,
+            skipped_over_cap,
+            cap = WORKSPACE_ARTIFACT_SCAN_CAP,
+            "benchmark/runs: workspace-artifact scan hit its cap — some trees were NOT examined \
+             for ungraded work (raise the cap or narrow the query; this is not 'nothing found')"
+        );
+    }
+    cards
+}
+
+/// How many staged trees one `benchmark/runs` call will diff. A `git diff` per tree is a
+/// process spawn, and the board is polled; this bounds the cost. Over-cap trees are WARNED
+/// about, never silently dropped.
+const WORKSPACE_ARTIFACT_SCAN_CAP: usize = 200;
+
+/// Cards for instances that carry a DURABLE VERDICT — the third row source, and the one that
+/// makes a score visible at all.
+///
+/// # Why (2026-08-18, the last link in the grade tail)
+///
+/// Verdict persistence landed and the board still could not show a pass. Measured minutes
+/// after: `astropy__astropy-14995` graded `resolved=true, F2P 1/1, P2P 40/40`, the verdict
+/// was on disk and readable — and `benchmark/runs` reported `resolved: 1`, still counting only
+/// an old sympy row. Three rows for 14995 read `failed`, which was HONEST: those are the three
+/// solve RUNS that died at the reboot. A run and a verdict are different objects. The board
+/// projected runs and artifacts; a verdict had nowhere to appear.
+///
+/// Until this, `recorded_verdicts` only SUBTRACTED — it marked an artifact as graded so the
+/// artifact row disappeared, which made a scored instance LESS visible than an unscored one.
+/// A verdict must EMIT.
+///
+/// This is the acceptance test from
+/// [BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER](../../../docs/architecture/BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md):
+/// *can a citizen standing in the room perceive the run's state through the same ViewState
+/// pipe the human's screen uses?* A score answerable only by reading
+/// `benchmarks/swe/verdicts/*.json` is disconnected, and it failed.
+///
+/// Cheap by construction: no `git diff`, no process spawn — one small JSON read per scored
+/// instance, so this source needs no cap.
+fn scan_verdict_cards(now_ms: u64) -> Vec<BenchRunCard> {
+    swe_bench::recorded_verdicts()
+        .into_iter()
+        .map(|(instance, v)| {
+            let last_activity_ms = std::fs::metadata(swe_bench::verdict_path(&instance))
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            BenchRunCard {
+                run_id: format!("verdict:{instance}"),
+                instance: Some(instance),
+                attempt: None,
+                max_attempts: None,
+                solver: None,
+                // The verdict IS the phase. `record_verdict` refuses gold and errored
+                // verdicts, so every row here is a real capability result — never a control
+                // and never an env fault dressed as a score.
+                phase: if v.resolved { "resolved" } else { "failed" }.to_string(),
+                stalled: false,
+                last_activity_ms,
+                age_secs: now_ms.saturating_sub(last_activity_ms) / 1000,
+                acts: None,
+                files_changed: Vec::new(),
+                files_examined: Vec::new(),
+                resolved: Some(v.resolved),
+                fail_to_pass: Some(format!("{}/{}", v.f2p_passed, v.f2p_total)),
+                pass_to_pass: Some(format!("{}/{}", v.p2p_passed, v.p2p_total)),
+                patch_bytes: None,
+                failed_tests: v.failed_tests.clone(),
+                infra_error: None,
+            }
+        })
+        .collect()
+}
+
 pub(crate) fn scan_run_cards(
     run_id_filter: Option<&str>,
     limit: usize,
-) -> Result<Vec<BenchRunCard>, String> {
+) -> Result<RunScan, String> {
     let base = std::env::var("CONTINUUM_HOME")
         .map(std::path::PathBuf::from)
         .ok()
@@ -2021,29 +5086,25 @@ pub(crate) fn scan_run_cards(
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
     let mut cards: Vec<BenchRunCard> = Vec::new();
-    let entries =
-        std::fs::read_dir(&base).map_err(|e| format!("read {}: {e}", base.display()))?;
+    let entries = std::fs::read_dir(&base).map_err(|e| format!("read {}: {e}", base.display()))?;
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        let Some(run_id) = name
-            .strip_prefix("agent-solve-")
-            .and_then(|r| r.strip_suffix(".json"))
-        else {
+        // Grade files are read as SIBLINGS of their run below, never enumerated as runs
+        // (live first use showed `X.grade` phantoms). That rule and the prefix now live in
+        // ONE place with the boot reaper and the reboot guard, which is what stops the
+        // board and the reaper disagreeing about what a run ledger is called.
+        let Some(run_id) = crate::cognition::swe_bench::solve_run_id_from_file_name(&name) else {
             continue;
         };
-        // Grade files are read as SIBLINGS of their run below, never
-        // enumerated as runs (live first use showed `X.grade` phantoms:
-        // `agent-solve-X.grade.json` survives the prefix/suffix strip).
-        if run_id.ends_with(".grade") {
-            continue;
-        }
         if let Some(want) = run_id_filter {
             if want != run_id {
                 continue;
             }
         }
         let read_json = |p: &std::path::Path| -> Option<serde_json::Value> {
-            std::fs::read_to_string(p).ok().and_then(|s| serde_json::from_str(&s).ok())
+            std::fs::read_to_string(p)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
         };
         let mtime_ms = |p: &std::path::Path| -> Option<u64> {
             std::fs::metadata(p)
@@ -2070,7 +5131,58 @@ pub(crate) fn scan_run_cards(
             now_ms,
         ));
     }
+    // QUEUED-BEHIND-HANDS, not stalled (glass-boxed 2026-08-30): a persona
+    // runs ONE solve at a time (HandsLease), so her other claim-dispatched
+    // runs sit legitimately idle while she works — and the per-card silence
+    // window read them as "quiet", inflating the console's gone-quiet alarm
+    // with runs that are just WAITING THEIR TURN (4 of the banner's 8, live).
+    // Cross-card rule: a quiet card whose solver has an ACTIVE card is
+    // re-phased `queued`. Same-solver-and-active is the whole test — honest
+    // quiet (solver has nothing active anywhere) still alarms.
+    let active_solvers: std::collections::HashSet<String> = cards
+        .iter()
+        .filter(|c| c.phase == "active")
+        .filter_map(|c| c.solver.clone())
+        .collect();
+    for card in cards.iter_mut() {
+        if card.phase == "quiet"
+            && card
+                .solver
+                .as_ref()
+                .is_some_and(|s| active_solvers.contains(s))
+        {
+            card.phase = "queued".to_string();
+            card.stalled = false;
+        }
+    }
+    // Second source: staged trees holding work no grade has seen. Only when the caller is
+    // asking for the BOARD — a run-id query is asking about one run's ledger, and a workspace
+    // artifact has no run id to match. See `scan_workspace_artifact_cards` for why the board
+    // cannot be run-files-only.
+    if run_id_filter.is_none() {
+        // "Scored" is the union of two sources, and it MUST be: a run ledger's own grade
+        // sibling, AND the durable per-instance verdict record. An operator or workspace
+        // grade has no run id at all, so before verdicts were recorded (2026-08-18) a real
+        // pass could not make an artifact stop reading `ungraded` — two of them didn't.
+        let mut graded: std::collections::HashSet<String> = cards
+            .iter()
+            .filter(|c| c.resolved.is_some())
+            .filter_map(|c| c.instance.clone())
+            .collect();
+        // A verdict EMITS its own row, and that row is also what marks the instance graded —
+        // so a scored instance is MORE visible than an unscored one, not less. Before this,
+        // verdicts only subtracted: the artifact row vanished and no score took its place.
+        let verdict_cards = scan_verdict_cards(now_ms);
+        graded.extend(verdict_cards.iter().filter_map(|c| c.instance.clone()));
+        cards.extend(verdict_cards);
+        cards.extend(scan_workspace_artifact_cards(&graded, now_ms));
+    }
     cards.sort_by(|a, b| b.last_activity_ms.cmp(&a.last_activity_ms));
+    // Counted BEFORE the truncate, and carried out with the cards. Every consumer that
+    // shows a bounded page has to be able to say how much it bounded away, or the page
+    // reads as the whole history — see `BenchmarkRunsResult::matched` for the hour that
+    // cost.
+    let matched = cards.len();
     cards.truncate(limit);
     // The ledger stores the solver as her PERSONA UUID; the board speaks NAMES.
     // Resolve against the live workspace roster here — the ONE scan — so every
@@ -2090,7 +5202,626 @@ pub(crate) fn scan_run_cards(
             }
         }
     }
-    Ok(cards)
+    Ok(RunScan { cards, matched })
+}
+
+// ---------------------------------------------------------------------------
+// benchmark/rounds — the ROUND lifecycle, askable (#371)
+// ---------------------------------------------------------------------------
+
+/// No parameters. Rounds in flight are few (usually one) and each is a handful of
+/// fields, so paging and filtering would be ceremony over a list you always want whole.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/BenchmarkRoundsParams.ts"
+)]
+pub struct BenchmarkRoundsParams {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/BenchmarkRoundsResult.ts"
+)]
+pub struct BenchmarkRoundsResult {
+    /// Rounds currently in flight. EMPTY is a real, unambiguous answer — "no round is
+    /// running" — and never "the question could not be reached". A round is removed the
+    /// instant its last card settles, so a round that finished is absent by design and
+    /// its END is on the `bench.round.done` probe.
+    pub rounds: Vec<crate::cognition::bench_round::RoundSnapshot>,
+    /// How many are in flight, so a reader that only needs the yes/no does not have to
+    /// interpret an array's length.
+    pub in_flight: usize,
+}
+
+#[derive(Default)]
+pub struct BenchmarkRounds;
+
+#[async_trait]
+impl ActionCommand for BenchmarkRounds {
+    const NAME: &'static str = "benchmark/rounds";
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Every benchmark ROUND in flight, with its stage — the lifecycle question answered \
+         by a QUERY instead of by probe archaeology (#371). A round is the card set one \
+         `benchmark/dispatch` posted; its id IS its run room's id. Each row carries stage \
+         (working|done), dispatched/settled/remaining, and the work DRIVER (citizen — works \
+         in the room and feeds the curriculum — vs detached_solve). An EMPTY list is a real \
+         answer meaning no round is running, never a failure to reach the question; a round \
+         is dropped the moment its last card settles, and that END is the `bench.round.done` \
+         probe. This is what a fresh driver reads to answer 'has it started, is it stuck, is \
+         it done' with zero log reads.";
+    type Params = BenchmarkRoundsParams;
+    type Output = BenchmarkRoundsResult;
+
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        _p: BenchmarkRoundsParams,
+    ) -> Result<BenchmarkRoundsResult, CommandError> {
+        let mut rounds = crate::cognition::bench_round::live_rounds();
+        // Merge run-ledger facts so the row answers "is it stuck" itself
+        // (2026-09-01: `working 0/8` rendered identically for three hours of
+        // thrash and for a healthy grind — the description above promised
+        // "is it stuck" and the row could not say). Blocking fs scan off the
+        // async worker; a scan failure degrades to tracker-only rows, which
+        // is the honest board on a node with no ledger yet.
+        let runs = tokio::task::spawn_blocking(|| {
+            scan_run_cards(None, ROUNDS_ENRICH_SCAN_LIMIT)
+                .map(|s| s.cards)
+                .unwrap_or_default()
+        })
+        .await
+        .unwrap_or_default();  // unwrap_or: unreadable = empty, the report shows the tracker's view
+        let facts: Vec<crate::cognition::bench_round::CardRunFacts> =
+            runs.iter().map(card_run_facts).collect();
+        crate::cognition::bench_round::enrich_rounds(
+            &mut rounds,
+            &facts,
+            crate::persona::trace::now_ms(),
+        );
+        enrich_rounds_from_board_and_verdicts(&mut rounds).await;
+        Ok(BenchmarkRoundsResult {
+            in_flight: rounds.len(),
+            rounds,
+        })
+    }
+}
+
+/// BOARD TRUTH + VERDICT FILES onto the round report — the durable records, read at
+/// report time (the round tracker knows the deck; the board knows who holds what and
+/// when; the verdict file knows the grade and when). This is what makes a round's
+/// time-to-claim, time-to-settle and resolve rate readable by a stranger after any
+/// number of reboots. Best-effort: an unreadable board leaves the tracker's view.
+pub(crate) async fn enrich_rounds_from_board_and_verdicts(
+    rounds: &mut [crate::cognition::bench_round::RoundSnapshot],
+) {
+    let registry = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global();
+    let reader = registry.as_ref().and_then(|reg| reg.any_live_citizen());
+    for round in rounds.iter_mut() {
+        // Verdicts: keyed by instance, independent of the board.
+        for card in round.cards.iter_mut() {
+            if card.instance.is_empty() {
+                continue;
+            }
+            if let Some(v) = crate::cognition::swe_bench::read_verdict(&card.instance) {
+                card.resolved = Some(v.resolved);
+                card.graded_at_ms = (v.graded_at_ms > 0).then_some(v.graded_at_ms);
+            }
+        }
+        let Some(rt) = reader.as_ref() else {
+            continue;
+        };
+        let Ok(room_id) = round.round_id.parse::<uuid::Uuid>() else {
+            continue;
+        };
+        let Ok(set) = rt.airc().subscription_set().await else {
+            continue;
+        };
+        let Some(room) = set
+            .all()
+            .map(|sub| sub.as_room())
+            .find(|r| r.channel.as_uuid() == room_id)
+        else {
+            continue; // the reader is not resident in this run room — tracker view stands
+        };
+        let Ok(board) = rt.airc().work_board_in(&room).await else {
+            continue;
+        };
+        let board = board.snapshot();
+        for card in round.cards.iter_mut() {
+            let Some(bc) = board
+                .cards
+                .iter()
+                .find(|c| c.card_id.as_uuid().to_string() == card.card_id)
+            else {
+                continue;
+            };
+            card.board_state = serde_json::to_value(bc.state)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default();  // unwrap_or: unreadable = empty, the report shows the tracker's view
+            card.owner = bc
+                .owner
+                .map(|o| {
+                    registry
+                        .as_ref()
+                        .and_then(|reg| reg.get(o.as_uuid()))
+                        .map(|rt| rt.agent_name().to_string())
+                        .unwrap_or_else(|| o.as_uuid().to_string()[..8].to_string())  // unwrap_or: no live runtime for the owner = her short id, still addressable
+                })
+                .unwrap_or_default();  // unwrap_or: unreadable = empty, the report shows the tracker's view
+            // An owner is a CLAIM attribute: the board keeps the last holder's id on a
+            // card set back to open (2026-09-05: seven reopened cards read as "owned" and
+            // the academy board — and the operator — counted 12 in hands with 5 held).
+            if matches!(card.board_state.as_str(), "open" | "closed" | "merged") {
+                card.owner.clear();
+            }
+            card.created_at_ms = Some(bc.created_at_ms);
+            card.updated_at_ms = Some(bc.updated_at_ms);
+        }
+    }
+}
+
+/// How deep the rounds projection scans the run ledger for enrichment. Bounded
+/// so a node with hundreds of banked verdicts pays a bounded scan; deep enough
+/// that every in-flight round's instances are covered (a round is ≤ dozens of
+/// cards and its runs are by definition recent).
+const ROUNDS_ENRICH_SCAN_LIMIT: usize = 200;
+
+/// `BenchRunCard` → the minimal facts `bench_round::enrich_rounds` folds.
+/// ONE mapping, shared by the command above and the positron bench emitter —
+/// two hand-rolled copies would drift ([[the-same-bug-at-two-sites-is-a-missing-constraint]]).
+pub(crate) fn card_run_facts(card: &BenchRunCard) -> crate::cognition::bench_round::CardRunFacts {
+    crate::cognition::bench_round::CardRunFacts {
+        instance: card.instance.clone().unwrap_or_default(),
+        solver: card.solver.clone(),
+        phase: card.phase.clone(),
+        acts: card.acts,
+        patch_bytes: card.patch_bytes,
+        last_activity_ms: card.last_activity_ms,
+        resolved: card.resolved,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// benchmark/fetch — stage a catalogued suite so it can actually be run (#370)
+// ---------------------------------------------------------------------------
+
+/// Where a catalogued suite's rows actually live, and whether anything in this tree can read
+/// them. Four states, because the four have four different fixes and collapsing any two of
+/// them produces a refusal the operator has to go do archaeology on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceReach {
+    /// Servable by the HuggingFace rows API at these exact coordinates.
+    Rows {
+        dataset: &'static str,
+        config: &'static str,
+        split: &'static str,
+    },
+    /// HuggingFace-hosted, but a LOADING-SCRIPT dataset: the rows API refuses it outright
+    /// ("runs arbitrary Python code"). No config or split makes it work, so a refusal that
+    /// merely says "not found" invites an infinite guessing loop. Measured live 2026-08-19
+    /// against `datasets-server.huggingface.co/splits` for both rows carrying this.
+    HuggingFaceScriptDataset { dataset: &'static str },
+    /// A real source, just not one the HF path can read (GitHub raw files, a repo to clone).
+    /// Needs its own fetcher; naming that is the honest answer.
+    ForeignSource { url: &'static str },
+    /// Ships with the binary — there is nothing to pull.
+    InTree,
+}
+
+impl BenchmarkSpec {
+    /// The suite's fetch coordinates, as DATA rather than as an operator's memory.
+    ///
+    /// `config`/`split` are NOT derivable from the URL and are not uniformly `default`/`test`
+    /// — bigcodebench versions its splits (`v0.1.4`), and a wrong guess returns an in-band HF
+    /// error that a caller reads as "the suite is empty". So the exceptions live here, in the
+    /// ONE place that knows, exactly as [`BenchmarkSpec::swe_dataset`] already does for row
+    /// shape. The dataset id is still read back off `source_url` so it is never duplicated.
+    pub fn reach(&self) -> SourceReach {
+        let Some(url) = self.source_url else {
+            return SourceReach::InTree;
+        };
+        let Some(dataset) = url
+            .strip_prefix("https://huggingface.co/datasets/")
+            .filter(|id| id.contains('/'))
+        else {
+            return SourceReach::ForeignSource { url };
+        };
+        // Loading-script datasets: the rows API cannot serve these at ANY coordinates.
+        if matches!(dataset, "codeparrot/apps" | "livecodebench/code_generation_lite") {
+            return SourceReach::HuggingFaceScriptDataset { dataset };
+        }
+        let (config, split) = match dataset {
+            // bigcodebench publishes revisions as SPLITS; `test` does not exist. v0.1.4 is
+            // the newest as of 2026-08-19 — bump it here when they publish, so the version
+            // scored against is a recorded catalog fact and not whatever the default was.
+            "bigcode/bigcodebench" => ("default", "v0.1.4"),
+            _ => ("default", "test"),
+        };
+        SourceReach::Rows {
+            dataset,
+            config,
+            split,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/BenchmarkFetchParams.ts"
+)]
+pub struct BenchmarkFetchParams {
+    /// Which catalogued benchmark to stage, as it appears in `benchmark/list`.
+    pub benchmark: String,
+    /// Dataset config. Defaults to `default` — the HF convention.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub config: Option<String>,
+    /// Split to pull. Defaults to `test`, which is what a benchmark is scored on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub split: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/BenchmarkFetchResult.ts"
+)]
+pub struct BenchmarkFetchResult {
+    pub benchmark: String,
+    pub dataset: String,
+    pub config: String,
+    pub split: String,
+    /// Rows actually staged. This is the suite's REAL denominator — compare it against the
+    /// catalog's `tasks` before trusting any rate computed from it.
+    pub rows: usize,
+    /// The catalog's declared task count, so a mismatch is visible at fetch time rather than
+    /// discovered when a published number turns out to be over the wrong denominator.
+    pub declared_tasks: u32,
+    /// True when `rows` and `declared_tasks` agree. False is not fatal — datasets are revised
+    /// upstream — but a rate published over a disagreeing denominator is not comparable.
+    pub denominator_matches: bool,
+    /// How many rows actually PROJECT into posable tasks through this suite's `SuiteAdapter`.
+    /// `None` = the suite has no adapter yet: its rows are staged but cannot be posed to a
+    /// citizen. Staged-but-unposable is the honest middle state, and reporting it as a distinct
+    /// value is what keeps a fetched suite from LOOKING runnable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tasks: Option<usize>,
+    /// Present only when projection is unavailable or failed, saying which of those it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub adapter_note: Option<String>,
+}
+
+#[derive(Default)]
+pub struct BenchmarkFetch;
+
+#[async_trait]
+impl ActionCommand for BenchmarkFetch {
+    const NAME: &'static str = "benchmark/fetch";
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Stage a catalogued benchmark's task list from its `source_url`, cached on disk (#370). \
+         The catalog has carried ~20 suites with real source URLs while exactly ONE could be \
+         pulled, because the only fetcher was fused to the SWE row shape — every other suite was \
+         a name nothing could read. This pulls ANY HuggingFace-hosted suite through the same \
+         paging+cache path already proven against SWE-bench Lite. Reports the REAL row count \
+         beside the catalog's declared task count, because a pass rate over the wrong \
+         denominator is not comparable to anyone else's number. Fails loud on an unknown \
+         benchmark, a non-HF source, or a refused dataset — an empty pull is never reported as \
+         an empty suite.";
+    type Params = BenchmarkFetchParams;
+    type Output = BenchmarkFetchResult;
+
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        p: BenchmarkFetchParams,
+    ) -> Result<BenchmarkFetchResult, CommandError> {
+        let spec = known_benchmarks()
+            .iter()
+            .find(|b| b.name == p.benchmark)
+            .ok_or_else(|| {
+                CommandError::Invalid(format!(
+                    "unknown benchmark `{}` — see `benchmark/list` for the catalogued names",
+                    p.benchmark
+                ))
+            })?;
+        // ds-1000 is fetched AND CONVERTED onto the gym rails in one step: the raw
+        // rows are not runnable (their oracle is a program, not a test string), so a
+        // fetch that stopped at rows would report "staged" for a suite nothing could
+        // run — the exact #370 gap this command exists to close.
+        if spec.name == "super-masked" {
+            let (path, count) = crate::cognition::benchmark_super::materialize_gym(None)
+                .await
+                .map_err(CommandError::Invalid)?;
+            return Ok(BenchmarkFetchResult {
+                benchmark: spec.name.to_string(),
+                dataset: "allenai/super".to_string(),
+                config: "Masked".to_string(),
+                split: "all_examples".to_string(),
+                rows: count,
+                declared_tasks: spec.tasks,
+                denominator_matches: count as u32 == spec.tasks,
+                tasks: Some(count),
+                adapter_note: Some(format!(
+                    "converted onto the gym rails at {} — dispatch with \
+                     `benchmark/dispatch --name super-masked`",
+                    path.display()
+                )),
+            });
+        }
+        if spec.name == "algotune" {
+            let (path, count) = crate::cognition::benchmark_algotune::materialize_gym(None)
+                .await
+                .map_err(CommandError::Invalid)?;
+            return Ok(BenchmarkFetchResult {
+                benchmark: spec.name.to_string(),
+                dataset: "github.com/oripress/AlgoTune".to_string(),
+                config: "main".to_string(),
+                split: "tasks".to_string(),
+                rows: count,
+                declared_tasks: spec.tasks,
+                denominator_matches: count as u32 == spec.tasks,
+                tasks: Some(count),
+                adapter_note: Some(format!(
+                    "cloned + converted onto the gym rails at {} — dispatch with \
+                     `benchmark/dispatch --name algotune`",
+                    path.display()
+                )),
+            });
+        }
+
+        if spec.name == "terminal-bench" {
+            let outcome = crate::cognition::benchmark_terminalbench::materialize_gym(None)
+                .await
+                .map_err(CommandError::Invalid)?;
+            // The skip tally is the Docker seam's honesty contract: the receipt names
+            // every excluded task and why, so the denominator is never silently shrunk.
+            let mut by_reason: std::collections::BTreeMap<&str, usize> =
+                std::collections::BTreeMap::new();
+            for (_, reason) in &outcome.skipped {
+                // Group on the reason's stable head (before any per-task detail).
+                let head = reason.split(':').next().unwrap_or(reason.as_str()); // split always yields ≥1 piece; this is belt-and-suspenders
+                *by_reason.entry(head).or_default() += 1;
+            }
+            let breakdown = by_reason
+                .iter()
+                .map(|(r, n)| format!("{n}× {r}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Ok(BenchmarkFetchResult {
+                benchmark: spec.name.to_string(),
+                dataset: "github.com/harbor-framework/terminal-bench-2-1".to_string(),
+                config: "main".to_string(),
+                split: "tasks".to_string(),
+                rows: outcome.converted,
+                declared_tasks: spec.tasks,
+                denominator_matches: outcome.converted as u32 == spec.tasks,
+                tasks: Some(outcome.converted),
+                adapter_note: Some(format!(
+                    "cloned + converted onto the gym rails at {} — {} of {} registry tasks \
+                     converted; {} skipped by the declared Docker seam ({}). Dispatch with \
+                     `benchmark/dispatch --name terminal-bench`",
+                    outcome.path.display(),
+                    outcome.converted,
+                    outcome.converted + outcome.skipped.len(),
+                    outcome.skipped.len(),
+                    breakdown,
+                )),
+            });
+        }
+
+        if spec.name == "mirrorcode" {
+            let (path, count) = crate::cognition::benchmark_mirrorcode::materialize_gym(None)
+                .await
+                .map_err(CommandError::Invalid)?;
+            return Ok(BenchmarkFetchResult {
+                benchmark: spec.name.to_string(),
+                dataset: "github.com/epoch-research/MirrorCode".to_string(),
+                config: "main".to_string(),
+                split: "data/gold_outputs".to_string(),
+                rows: count,
+                declared_tasks: spec.tasks,
+                denominator_matches: count as u32 == spec.tasks,
+                tasks: Some(count),
+                adapter_note: Some(format!(
+                    "cloned + converted onto the gym rails at {} — one task per public \
+                     program, graded on the full recorded case set (visible + hidden \
+                     duals) by exact output match; Rust-language variant, visible cases \
+                     staged WITH expected outputs — internal signal only; dispatch with \
+                     `benchmark/dispatch --name mirrorcode`",
+                    path.display()
+                )),
+            });
+        }
+        if spec.name == "ds-1000" {
+            let (path, count) = crate::cognition::benchmark_ds1000::materialize_gym(None)
+                .await
+                .map_err(CommandError::Invalid)?;
+            return Ok(BenchmarkFetchResult {
+                benchmark: spec.name.to_string(),
+                dataset: "xlangai/DS-1000".to_string(),
+                config: "default".to_string(),
+                split: "test".to_string(),
+                rows: count,
+                declared_tasks: spec.tasks,
+                denominator_matches: count as u32 == spec.tasks,
+                tasks: Some(count),
+                adapter_note: Some(format!(
+                    "converted onto the gym rails at {} — every task carries the official \
+                     execution oracle as its dod; dispatch with `benchmark/dispatch --name ds-1000`",
+                    path.display()
+                )),
+            });
+        }
+        let (dataset, def_config, def_split) = match spec.reach() {
+            SourceReach::Rows {
+                dataset,
+                config,
+                split,
+            } => (dataset, config, split),
+            SourceReach::InTree => {
+                return Err(CommandError::Invalid(format!(
+                    "`{}` is an in-tree suite with no source to pull — it ships with the binary \
+                     and is already runnable via its eval_set",
+                    spec.name
+                )))
+            }
+            SourceReach::HuggingFaceScriptDataset { dataset } => {
+                return Err(CommandError::Invalid(format!(
+                    "`{}` is hosted at `{dataset}` as a LOADING-SCRIPT dataset — HuggingFace's \
+                     rows API refuses those outright (\"runs arbitrary Python code\"), so NO \
+                     config or split makes this work and retrying with different ones is wasted \
+                     effort. It needs a fetcher that reads the repo's own files (or an upstream \
+                     parquet conversion) before it can be staged.",
+                    spec.name
+                )))
+            }
+            SourceReach::ForeignSource { url } => {
+                return Err(CommandError::Invalid(format!(
+                    "`{}` is sourced from `{url}`, which is not a HuggingFace dataset. Only the \
+                     HF rows path is wired; this suite needs its own fetcher.",
+                    spec.name
+                )))
+            }
+        };
+        let config = p.config.unwrap_or_else(|| def_config.to_string());
+        let split = p.split.unwrap_or_else(|| def_split.to_string());
+
+        // PLAN BEFORE ALLOCATING (#56). Staging is a governed RAM consumer; it asks the
+        // governor for the headroom it may plan against and refuses with a named shortfall
+        // rather than allocating hopefully and letting the allocator arbitrate against a live
+        // call. The estimate is the catalog's declared task count × a per-row budget — coarse,
+        // and deliberately so: it is a SIZING input, not a measurement, and the footprint
+        // reported to the governor after the fetch is the honest number.
+        //
+        // ~24 KiB/row is derived from the staged suites on disk (SWE rows carry a problem
+        // statement + two patches; program rows carry a test body), rounded up so the estimate
+        // errs toward refusing rather than toward an OOM.
+        const EST_BYTES_PER_ROW: u64 = 24 * 1024;
+        // The HF pager reads 100 rows at a time, so one page is the real peak of the streaming
+        // mode — the floor below which not even adaptation can run.
+        const ROWS_PER_PAGE: u64 = 100;
+        let estimated = u64::from(spec.tasks) * EST_BYTES_PER_ROW;
+        let page_bytes = ROWS_PER_PAGE * EST_BYTES_PER_ROW;
+        let plan = crate::cognition::bench_staging::plan_against_governor(estimated, page_bytes);
+        if let Some(why) = plan.explain_refusal() {
+            crate::probe!(
+                class = "benchmark.staging.refused",
+                benchmark = spec.name,
+                estimated_bytes = estimated,
+                page_bytes = page_bytes,
+                "staging refused: not even one page fits the governor's RAM plan",
+            );
+            return Err(CommandError::Denied(why));
+        }
+        let staging = crate::cognition::bench_staging::staging_area();
+        // Declare the plan's PEAK, not the suite size — for a streamed plan those differ by the
+        // whole point of streaming, and reporting the suite would have the governor evicting a
+        // peer to make room for bytes staging is never going to hold.
+        staging.hold(plan.peak_bytes());
+        let streaming = matches!(plan, crate::cognition::bench_staging::StagingPlan::Streamed { .. });
+        crate::probe!(
+            class = "benchmark.staging.plan",
+            benchmark = spec.name,
+            streaming = streaming,
+            peak_bytes = plan.peak_bytes(),
+            estimated_bytes = estimated,
+            "staging planned against the governor's RAM headroom",
+        );
+
+        // THE ADAPTATION. Both arms project every row and both report the same counts; they
+        // differ only in whether the rows are ever all in memory at once. `count_projectable`
+        // needs a slice, so the streamed arm projects page-locally through the same adapter —
+        // one row alive at a time.
+        let (row_count, tasks, adapter_note) = if streaming {
+            let mut projected = 0usize;
+            let mut failure: Option<String> = None;
+            let streamed = crate::cognition::swe_bench::stream_hf_rows(
+                dataset,
+                &config,
+                &split,
+                |row| {
+                    if failure.is_some() {
+                        return Ok(());
+                    }
+                    match crate::cognition::bench_task::count_projectable(
+                        spec.name,
+                        std::slice::from_ref(row),
+                    ) {
+                        Ok(n) => projected += n,
+                        // Record and keep draining: aborting mid-stream would leave the partial
+                        // cache unpromoted AND lose the row count, so the caller could not tell
+                        // a projection failure from a fetch failure.
+                        Err(e) => failure = Some(e),
+                    }
+                    Ok(())
+                },
+            )
+            .await
+            .map_err(CommandError::Internal)?;
+            match failure {
+                Some(e) => (streamed, None, Some(e)),
+                None => (streamed, Some(projected), None),
+            }
+        } else {
+            let rows = crate::cognition::swe_bench::fetch_hf_rows(dataset, &config, &split)
+                .await
+                .map_err(CommandError::Internal)?;
+            let (tasks, note) =
+                match crate::cognition::bench_task::count_projectable(spec.name, &rows) {
+                    Ok(n) => (Some(n), None),
+                    Err(e) => (None, Some(e)),
+                };
+            let n = rows.len();
+            drop(rows);
+            (n, tasks, note)
+        };
+        // The footprint returns to zero the moment the rows are gone. A consumer that keeps
+        // reporting bytes it no longer holds makes the governor evict a REAL holder to recover
+        // memory nobody has — the mirror image of the OOM this whole path exists to prevent.
+        staging.drop_all();
+
+        let denominator_matches = row_count as u32 == spec.tasks;
+        crate::probe!(
+            class = "benchmark.suite.staged",
+            benchmark = spec.name,
+            dataset = dataset,
+            rows = row_count,
+            declared = spec.tasks,
+            streamed = streaming,
+            denominator_matches = denominator_matches,
+            "benchmark suite staged from its catalog source",
+        );
+        if !denominator_matches {
+            tracing::warn!(
+                benchmark = %spec.name,
+                staged = row_count,
+                declared = spec.tasks,
+                "staged row count disagrees with the catalog's declared tasks — any rate \
+                 computed over this is NOT comparable until the denominator is reconciled"
+            );
+        }
+        Ok(BenchmarkFetchResult {
+            benchmark: spec.name.to_string(),
+            dataset: dataset.to_string(),
+            config,
+            split,
+            rows: row_count,
+            declared_tasks: spec.tasks,
+            denominator_matches,
+            tasks,
+            adapter_note,
+        })
+    }
 }
 
 crate::register_stateless_command!(BenchmarkRuns);
+crate::register_stateless_command!(BenchmarkRounds);
+crate::register_stateless_command!(BenchmarkFetch);

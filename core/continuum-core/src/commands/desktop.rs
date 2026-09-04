@@ -28,7 +28,10 @@ const DEFAULT_DESKTOP_URL: &str = "http://localhost:5173/?core=ws://127.0.0.1:89
 /// Inputs to `desktop`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/desktop/DesktopParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/desktop/DesktopParams.ts"
+)]
 pub struct DesktopParams {
     /// URL to open. Omit for the default local web client
     /// (`CONTINUUM_DESKTOP_URL`, else the localhost dev URL).
@@ -43,7 +46,10 @@ pub struct DesktopParams {
 /// Result of `desktop`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/desktop/DesktopResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/desktop/DesktopResult.ts"
+)]
 pub struct DesktopResult {
     /// The URL that is now open.
     pub url: String,
@@ -66,10 +72,7 @@ fn session_path() -> Result<PathBuf, CommandError> {
     let home = dirs::home_dir().ok_or_else(|| {
         CommandError::Internal("no home directory for the desktop session marker".into())
     })?;
-    Ok(home
-        .join(".continuum")
-        .join("desktop")
-        .join("session.json"))
+    Ok(home.join(".continuum").join("desktop").join("session.json"))
 }
 
 fn now_ms() -> u64 {

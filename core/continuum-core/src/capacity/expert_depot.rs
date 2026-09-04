@@ -80,7 +80,9 @@ impl DepotManifest {
     /// True when this depot holds the (layer, tier) bank — the routing
     /// predicate slice 2's peer resolve runs against every peer manifest.
     pub fn holds(&self, layer: u16, tier: u16) -> bool {
-        self.banks.iter().any(|b| b.layer == layer && b.tier == tier)
+        self.banks
+            .iter()
+            .any(|b| b.layer == layer && b.tier == tier)
     }
 }
 
@@ -365,7 +367,11 @@ async fn get_expert(
     Query(query): Query<TierQuery>,
 ) -> Response {
     let tier = query.tier.unwrap_or(0);
-    let key = ExpertKey { layer, expert, tier };
+    let key = ExpertKey {
+        layer,
+        expert,
+        tier,
+    };
     // Not resident locally → try the GRID (#315 slice 2): fetch this bank from a peer
     // that holds it, verify, serve. Only if no peer holds it is this a clean 404 the
     // fork falls back on. A shard we never held is a miss, never an error.
@@ -581,14 +587,23 @@ mod tests {
         let depot = Arc::new(ExpertDepot::open(dir.path()).expect("open"));
         let (port, server) = depot.serve_localhost(0).await.expect("serve");
         let base = format!("http://127.0.0.1:{port}");
-        for miss in ["/expert/1/0", "/expert/0/9", "/expert/5/0", "/expert/0/0?tier=7"] {
+        for miss in [
+            "/expert/1/0",
+            "/expert/0/9",
+            "/expert/5/0",
+            "/expert/0/0?tier=7",
+        ] {
             let status = client()
                 .get(format!("{base}{miss}"))
                 .send()
                 .await
                 .expect("get")
                 .status();
-            assert_eq!(status, reqwest::StatusCode::NOT_FOUND, "{miss} must be a clean miss");
+            assert_eq!(
+                status,
+                reqwest::StatusCode::NOT_FOUND,
+                "{miss} must be a clean miss"
+            );
         }
         server.abort();
 
@@ -660,7 +675,11 @@ mod tests {
         let body = response.bytes().await.expect("body");
         assert_eq!(body.len() as u64, RECORD_ALIGN);
         assert_v1_record_identity(&body, 1, 2); // it IS layer-1 expert-2, sourced from B
-        assert_eq!(hex_sha256(&body), advertised, "the cross-grid record is verified end to end");
+        assert_eq!(
+            hex_sha256(&body),
+            advertised,
+            "the cross-grid record is verified end to end"
+        );
         server_a.abort();
         server_b.abort();
     }

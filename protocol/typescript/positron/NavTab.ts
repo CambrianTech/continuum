@@ -34,4 +34,27 @@ unread: number,
  * an honest unknown, never a fabricated purpose. `#[serde(default)]` so a
  * tab serialized before this field folds as empty, never dropped.
  */
-purpose: string, };
+purpose: string, 
+/**
+ * The PARENT activity's ref, when this activity nests under another —
+ * a solve room under its benchmark run room, a design review under its
+ * project (#2632: the rail is a tree, not a list). Empty = top-level.
+ * Renderers group children under their parent; the raw ref stays a
+ * tooltip/copy affordance, never the reading line.
+ */
+parent_ref: string, 
+/**
+ * Humanized label for the reading line (`django-10914 · Atlas`) when the
+ * raw title is a substrate identifier. Empty = use `title` as-is.
+ * Display labels humanize; URIs address; UUIDs identify — three jobs,
+ * never conflated (Joel, 2026-08-30).
+ */
+display_label: string, 
+/**
+ * Whether the citizen has this activity OPEN — selected it at least once
+ * (`nav/select`) and not closed it (`nav/close`) — as opposed to merely
+ * present in the room set. The rail lists the SET; the tab strip renders
+ * only the opened ones (caught live 2026-09-03: 49 identical tabs, one per
+ * room the daemon knew). The current tab is always opened.
+ */
+opened: boolean, };

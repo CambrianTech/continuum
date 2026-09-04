@@ -24,7 +24,7 @@
 //! (single-machine first), but the snapshot is the rail it slots onto.
 
 use crate::model_registry::Model;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -198,6 +198,218 @@ pub fn note_real_decode() {
     );
 }
 
+/// How a NEVER-STARTED stream timeout should be read. The adapter's queue-budget
+/// timeout fires for two very different worlds that look identical from inside one
+/// request: the backend is dead (wedge), or the lane is busy serving OTHER work and
+/// this request simply never got a slot (starvation). Its own error text has always
+/// admitted the ambiguity ("either the backend is dead or the queue is oversubscribed").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NeverStartedClass {
+    /// The lane delivered real tokens to SOMEONE within the window we waited —
+    /// it is provably alive, just oversubscribed. Not wedge evidence: stamping
+    /// it as such relaunches a healthy busy lane, killing the very generations
+    /// that prove it healthy. Measured live 2026-08-15 (bench-hard-rs): 4 demand
+    /// lanes on 1-2 slots with multi-minute thinking turns → queued turns timed
+    /// out never-started → 2 stamps → `serving.health via=real_turn_failures` →
+    /// relaunch every 2 minutes, forever — llama's own log showed 11k-token
+    /// completions at 17.5 t/s between the kills. The round died to its own
+    /// health monitor.
+    Starved,
+    /// No real decode landed for anyone across the whole window we waited (or
+    /// none has ever been observed) — the timeout IS evidence the lane cannot
+    /// serve, and it must count toward the relaunch threshold (#363: an
+    /// undersized/dead lane rejecting the fleet's real prompts is exactly what
+    /// the real-turn counter exists to catch).
+    WedgeEvidence,
+}
+
+/// Classify a never-started stream timeout using the lane's OWN delivery record —
+/// the same "health is recent delivery, never a synthetic probe" principle as
+/// [`ms_since_real_decode`], applied to the failure side. Pure so the busy-lane
+/// and dead-lane rows are table-testable without a server.
+pub fn classify_never_started_timeout(
+    ms_since_decode: Option<u64>,
+    waited_ms: u64,
+) -> NeverStartedClass {
+    match ms_since_decode {
+        // Tokens came out for someone while we were waiting: alive, oversubscribed.
+        Some(age) if age < waited_ms => NeverStartedClass::Starved,
+        // No delivery across our whole wait (or never / clock unreadable): the
+        // timeout is genuine evidence about the lane, not about the queue.
+        _ => NeverStartedClass::WedgeEvidence,
+    }
+}
+
+/// How a missed decode SMOKE PROBE should be read, judged by the server's own
+/// `/slots` activity between two consecutive misses (L11) — the exact sibling of
+/// [`classify_never_started_timeout`], one layer up: that one classifies a REQUEST
+/// timeout by the lane's delivery record; this one classifies a PROBE miss by the
+/// lane's slot-state record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmokeMissVerdict {
+    /// `/slots` changed between the two misses: the serve loop is advancing (for
+    /// whoever's work — including clients this core never knew about), so the probe
+    /// missed because real work held the slots. Contention, never wedge evidence.
+    AliveViaSlotProgress,
+    /// No proof of progress: first miss (nothing to compare), fingerprint frozen
+    /// (the wedge signature), or `/slots` unreadable (no exoneration on a fetch
+    /// error). Counts toward the relaunch threshold exactly as before L11.
+    CountMiss,
+}
+
+/// Judge a smoke-probe miss by comparing `/slots` fingerprints across misses. Pure so
+/// the busy-lane / frozen-lane / first-miss / no-endpoint rows are table-testable.
+/// The miss threshold a wedge declaration must reach, scaled by what a kill
+/// would destroy (2026-08-23, the MirrorCode baseline's three kills): a lane
+/// holding a LARGE in-flight prompt (≥ a quarter of its served window —
+/// relative, never an absolute constant) earns DOUBLE the base threshold,
+/// because relaunching it burns minutes of re-prefill and, when the client
+/// retries the same giant turn, can cycle into a kill loop. The patience is
+/// priced in the same currency as the false-kill cost. A lane with no large
+/// in-flight investment keeps the base threshold — a truly quiet wedge still
+/// dies fast.
+pub fn wedge_miss_threshold(
+    base: u8,
+    inflight_prompt_tokens: Option<u64>,
+    served_window: u32,
+) -> u8 {
+    match inflight_prompt_tokens {
+        Some(t) if served_window > 0 && t >= served_window as u64 / 4 => base.saturating_mul(2),
+        _ => base,
+    }
+}
+
+pub fn judge_smoke_miss(prev_fp: Option<u64>, cur_fp: Option<u64>) -> SmokeMissVerdict {
+    match (prev_fp, cur_fp) {
+        (Some(prev), Some(cur)) if prev != cur => SmokeMissVerdict::AliveViaSlotProgress,
+        _ => SmokeMissVerdict::CountMiss,
+    }
+}
+
+/// Fingerprint of the server's own `/slots` activity state — the lane-level work
+/// evidence that survives every blind spot the adapter-side stamps have (L11).
+///
+/// The adapter stamps ([`note_real_decode`] / [`note_real_prefill_progress`]) only see
+/// work done for OUR open streams. Two measured cases where that goes blind while the
+/// lane works flat out:
+///   1. GHOST WORK after a core restart: the predecessor's in-flight turns keep
+///      decoding inside llama-server for clients that no longer exist — no stream on
+///      this side, no stamps (2026-08-16 boot: 3 wedge declarations + kill-loop,
+///      10:13→10:36, on a lane llama's own log showed grinding the whole time).
+///   2. A fresh core's atomics start at 0 (`None`), so the L9 "trust busy lanes" gate
+///      falls through until the first adapter stream observes progress.
+/// `/slots` is the server's OWN account: per slot `id_task` (task turnover),
+/// `is_processing`, `n_prompt_tokens_processed` (prefill advance), and the decode
+/// counter when the build exposes it. If ANY of that changed between two looks, the
+/// serve loop is provably advancing — for whoever's work — and a missed smoke probe
+/// is queue contention, not death. A truly wedged backend is FROZEN: same fingerprint
+/// every look (the 2026-08-05 4-hour wedge held one task at one impossible progress).
+///
+/// FOR WHOEVER EXTENDS THIS: hash only fields that change WITH WORK. Never hash
+/// timing/params blobs — they'd churn the fingerprint on every poll and exonerate a
+/// dead lane forever. `None` (no array) means "cannot say", which the caller must
+/// treat as no exoneration, never as evidence of progress.
+/// The largest in-flight prompt investment on the lane, in tokens — how much
+/// re-prefill a lane kill would DESTROY right now. Read from the same `/slots`
+/// control-plane JSON as the activity fingerprint. `None` = no in-flight task
+/// (or unparseable), which the caller must read as "nothing to protect", never
+/// as an error.
+pub fn slots_max_inflight_prompt_tokens_of(slots: &serde_json::Value) -> Option<u64> {
+    slots
+        .as_array()?
+        .iter()
+        .filter(|s| s.get("is_processing").and_then(|v| v.as_bool()) == Some(true))
+        .filter_map(|s| s.get("n_prompt_tokens_processed").and_then(|v| v.as_u64()))
+        .max()
+}
+
+pub fn slots_activity_fingerprint_of(slots: &serde_json::Value) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let arr = slots.as_array()?;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    arr.len().hash(&mut h);
+    for slot in arr {
+        slot.get("id").and_then(|v| v.as_u64()).hash(&mut h);
+        slot.get("id_task").and_then(|v| v.as_i64()).hash(&mut h);
+        slot.get("is_processing").and_then(|v| v.as_bool()).hash(&mut h);
+        slot.get("n_prompt_tokens_processed")
+            .and_then(|v| v.as_u64())
+            .hash(&mut h);
+        // DECODE ADVANCE — the field that was silently never read (2026-08-24 kill):
+        // current llama-server builds wrap the per-slot decode state in an ARRAY
+        // (`next_token: [{n_decoded: ...}]`); a string-key get on an array is always
+        // None, so during a long DECODE every hashed field above is static (prefill
+        // done → processed frozen; one task → id_task frozen) and a lane grinding at
+        // 31 tok/s fingerprinted as WEDGED. Two smoke misses later the healer killed a
+        // 35k-token in-flight turn — the 1-lane kill-loop. Read n_decoded through both
+        // shapes: object (older builds) or first element of the array (current).
+        let next_token = slot.get("next_token");
+        next_token
+            .and_then(|nt| {
+                nt.get("n_decoded")
+                    .or_else(|| nt.get(0).and_then(|first| first.get("n_decoded")))
+            })
+            .and_then(|v| v.as_u64())
+            .hash(&mut h);
+        // Belt for the build where next_token vanishes entirely: this llama build also
+        // grows `n_prompt_tokens` monotonically as decode extends the context (measured
+        // live: 47,211 → 47,704 over 16s of pure decode). Work-driven, monotone — NOT a
+        // timing blob (the doc's churn hazard), so hashing it can only exonerate a lane
+        // that is provably extending a sequence.
+        slot.get("n_prompt_tokens").and_then(|v| v.as_u64()).hash(&mut h);
+    }
+    Some(h.finish())
+}
+
+/// Wall-clock ms of the last real PREFILL advance on the served lane. The decode stamp
+/// above is blind to a lane that is 100% mid-prefill: eight 17k prompts saturate the
+/// slots for minutes producing ZERO output tokens, the decode stamp goes stale, the
+/// health heartbeat's "trust busy lanes" gate falls through, its probe can't get a
+/// slot, and two misses relaunch a lane working flat out (round-killer L9, live
+/// 2026-08-15 13:32 — 30s after dispatch, reason "sustained decode failure"). The #385
+/// per-request detector already learned PREFILL IS PROGRESS; this is the same lesson at
+/// the lane level. Stamped from the adapter's prefill-progress site, same local-lane
+/// gating as the decode stamp.
+static LAST_REAL_PREFILL_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Record that a real generation's PREFILL advanced on the served lane.
+pub fn note_real_prefill_progress() {
+    let Ok(since_epoch) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+        // Same clock discipline as note_real_decode: 0 is the "never" sentinel,
+        // an unreadable clock must not erase a real stamp.
+        return;
+    };
+    LAST_REAL_PREFILL_MS.store(
+        since_epoch.as_millis() as u64,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+/// Milliseconds since the lane last did REAL WORK for anyone — a decode that produced
+/// tokens OR a prefill that advanced, whichever is fresher. This is the liveness
+/// question the health heartbeat and the never-started-timeout classifier actually ask;
+/// [`ms_since_real_decode`] remains for callers that specifically need tokens-out.
+pub fn ms_since_real_work() -> Option<u64> {
+    let decode = ms_since_real_decode();
+    let prefill = ms_since_stamp(&LAST_REAL_PREFILL_MS);
+    match (decode, prefill) {
+        (Some(d), Some(p)) => Some(d.min(p)),
+        (one, other) => one.or(other),
+    }
+}
+
+fn ms_since_stamp(stamp: &std::sync::atomic::AtomicU64) -> Option<u64> {
+    let last = stamp.load(std::sync::atomic::Ordering::Relaxed);
+    if last == 0 {
+        return None;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis() as u64;
+    Some(now.saturating_sub(last))
+}
+
 /// Milliseconds since the last real token-producing generation, or `None` if none has been
 /// observed yet (fresh boot) — the caller must then fall back to probing.
 pub fn ms_since_real_decode() -> Option<u64> {
@@ -239,6 +451,19 @@ const WINDOW_RELAUNCH_TOLERANCE: u32 = 512;
 // context-budget-exempt: how many tokens a post-spawn smoke decode must produce to prove the lane is alive — a liveness probe, not a budget
 const MIN_SMOKE_DECODE_TOKENS: u64 = 5;
 
+/// Smoke budget for the quick first attempt. Cheap on purpose: a non-thinking
+/// model answers "count to 10" well inside this, and the probe must stay a light
+/// passenger on a busy co-tenant lane.
+// context-budget-exempt: liveness-probe first-attempt budget — probe cost control, never a serving cap
+const QUICK_SMOKE_BUDGET: u64 = 24;
+
+/// Smoke budget for the THINK-STARVED retry: a THINKING model that spent the whole
+/// quick budget inside its reasoning channel gets one attempt with room to finish
+/// thinking AND put the ten digits in the ANSWER channel. Only a proven
+/// think-starved outcome (decode ran, visible empty, reasoning non-empty) pays this.
+// context-budget-exempt: liveness-probe retry budget for thinking models — room to traverse the reasoning phase, never a serving cap
+const THINKING_SMOKE_BUDGET: u64 = 768;
+
 /// Everything the launcher needs to bring a model up, GROUPED so adding a new
 /// serving knob is a field here — never a new param threaded down the call chain
 /// ([[pass-the-model-struct-no-param-hell]]). The [`Model`] carries its own id,
@@ -253,6 +478,14 @@ const MIN_SMOKE_DECODE_TOKENS: u64 = 5;
 pub struct ServingTarget {
     /// The chosen base model — the grouped model info, resolved once.
     pub model: Model,
+    /// The host-RAM prompt cache (`--cache-ram`, MiB) DERIVED for this serve —
+    /// per-citizen measured demand × the model's own kv/token, clamped by what
+    /// the host affords after the resident working set (restore-economy 1.b).
+    /// Computed ONCE at target construction; the governor's host-cache lease
+    /// reads the SAME number, so the expert cache can never be sized as if
+    /// this RAM were free. Single-purpose lanes (eval, vision sidecar) pass
+    /// the declared cold-start prior.
+    pub host_prompt_cache_mib: u32,
     /// The host-fit served window the planner computed for this host — the
     /// PER-LANE window. Sized to fit the working set (tool schemas + framing +
     /// room burst + recalled memory + completion reserve) within the budget,
@@ -314,6 +547,13 @@ pub struct ServingTarget {
     /// resident fits as-shipped (Native), served with no override — the default and
     /// the only shape for a dense or small-MoE model. [[device-fit-repeatable-primitive]] / #29.
     pub resident_override: Option<std::path::PathBuf>,
+    /// This lane IS the vision sidecar (its whole purpose is the projector).
+    /// The `mmproj_on_main_lane` withhold — written so multimodal never disables
+    /// `--cache-reuse` on the MAIN persona lane — must not strip the sidecar's own
+    /// eyes: measured 2026-08-26, every sidecar spawn flowed through the same
+    /// withhold, launched sightless, honestly failed its /props sight check, and
+    /// churned. The guard was scoped too broadly; the lane's ROLE decides.
+    pub vision_sidecar: bool,
 }
 
 /// Where a serving lane's model weights are resident — see [`ServingTarget::placement`].
@@ -533,6 +773,67 @@ pub fn port_of_base_url(url: &str) -> Option<u16> {
     host_port.rsplit_once(':')?.1.parse().ok()
 }
 
+/// The KV disk-page dir for one serve GEOMETRY (restore economy): a page saved
+/// under one model + per-slot window must never restore into another. The
+/// geometry is IN THE PATH so mismatch is structurally impossible — a new
+/// geometry simply reads an empty dir. Rooted under `~/.continuum/cache/`
+/// (tracked in `system_resources::disk_reporters`, eviction decided in
+/// `disk_eviction` — the no-new-cache-dir-without-an-eviction-decision law).
+pub fn kv_page_dir(model_id: &str, per_slot_ctx: u32) -> PathBuf {
+    let sanitized: String = model_id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
+        .collect();
+    kv_pages_root().join(format!("{sanitized}--c{per_slot_ctx}"))
+}
+
+/// The root every geometry dir lives under — the ONE path the disk reporter
+/// tracks and the spawn sweep walks.
+pub fn kv_pages_root() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(std::env::temp_dir) // JUSTIFIED unwrap_or_else: no home dir = containerized oddity; pages in tmp still work, and the lane must not fail to spawn over cache placement
+        .join(".continuum")
+        .join("cache")
+        .join("kv-pages")
+}
+
+/// Sweep sibling GENERATIONS of the current geometry dir: same model prefix,
+/// different `--c<n>` suffix. Their pages can never be restored again (the
+/// geometry is gone), so the spawn — the one place that knows the new truth —
+/// deletes them. This is the eviction story `disk_eviction` records for
+/// `cache/kv-pages`; cross-model dirs are left for their own lanes' spawns.
+pub fn sweep_stale_page_generations(current: &Path) {
+    let (Some(parent), Some(name)) = (current.parent(), current.file_name().and_then(|n| n.to_str()))
+    else {
+        return;
+    };
+    let Some((model_prefix, _)) = name.rsplit_once("--c") else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let entry_name = entry.file_name();
+        let Some(entry_name) = entry_name.to_str() else {
+            continue;
+        };
+        if entry_name != name
+            && entry_name.starts_with(model_prefix)
+            && entry_name[model_prefix.len()..].starts_with("--c")
+        {
+            let stale = entry.path();
+            let removed = std::fs::remove_dir_all(&stale).is_ok();
+            crate::probe!(
+                class = "inference.kv_page.generation_swept",
+                dir = %stale.display(),
+                removed,
+                "stale KV page generation removed — its geometry no longer exists to restore into",
+            );
+        }
+    }
+}
+
 /// Path to the `llama-server` binary — the inference engine WE OWN, built from
 /// our vendored llama.cpp submodule by `tools/scripts/install-llama-server.sh`
 /// into `~/.continuum/bin`. Resolution order:
@@ -579,7 +880,7 @@ fn server_bin() -> String {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(
     export,
-    export_to = "../../../shared/generated/persona/ServingSnapshot.ts"
+    export_to = "../../../protocol/typescript/serving/ServingSnapshot.ts"
 )]
 pub struct ServingSnapshot {
     /// The model id currently being served, if any. `None` = nothing live yet.
@@ -678,6 +979,21 @@ pub struct ServingSnapshot {
     #[serde(default)]
     #[ts(optional)]
     pub vision_model: Option<String>,
+    /// THE MODEL THIS NODE IS BRINGING UP RIGHT NOW, if a lane is loading.
+    ///
+    /// Before this field the snapshot was BINARY — ready with a model, or not-ready with
+    /// `active_model: None` — so throughout the entire load window the pipe FORGOT what
+    /// it was loading. Measured live 2026-08-19 on a cold boot: physical climbed
+    /// 29.90 → 36.88 GB while `serving` attributed 0.00 GB, because the consumer had
+    /// nothing to name. Those bytes read as unowned, unowned reads as immovable,
+    /// `available` fell to 18.79 GB, and a planner running in that window sizes against a
+    /// machine that looks two thirds full of someone else's memory.
+    ///
+    /// The bytes exist from the moment the process is spawned, not from the moment it
+    /// answers `/props`. Readiness is a claim about SERVICE; residency is a fact about
+    /// MEMORY, and they do not start together.
+    #[ts(optional)]
+    pub loading_model: Option<String>,
 }
 
 impl ServingSnapshot {
@@ -719,6 +1035,7 @@ impl ServingSnapshot {
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
+            loading_model: None,
         }
     }
 
@@ -996,7 +1313,22 @@ pub async fn await_ready_serving(timeout: Duration) -> Option<ServingSnapshot> {
     if external_serving_pin().is_some() {
         return probe_external_serving(timeout).await;
     }
-    let mut rx = SERVING_STATE.get()?.clone();
+    // The park must also cover the boot window BEFORE the serving daemon has
+    // initialized SERVING_STATE at all. `get()?` here made every early-boot
+    // caller's "600s park" return instantly (measured 2026-09-01: the round
+    // resume burned 13 park attempts in 400µs — four share one log
+    // timestamp — because each `?` bailed on the uninitialized OnceLock, and
+    // the resume forfeited its whole fast window to the slow watch).
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut rx = loop {
+        if let Some(state) = SERVING_STATE.get() {
+            break state.clone();
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
     {
         // Fast path: already ready, no await.
         let cur = rx.borrow_and_update();
@@ -1006,7 +1338,9 @@ pub async fn await_ready_serving(timeout: Duration) -> Option<ServingSnapshot> {
     }
     // Bind the timeout result before matching so its `watch::Ref` temporary
     // drops before `rx` does (else the borrow outlives `rx` — E0597).
-    let waited = tokio::time::timeout(timeout, rx.wait_for(|s| s.is_live())).await;
+    // `timeout_at` the SAME deadline the init-poll spent from — the caller
+    // asked for one bounded park, never up to double.
+    let waited = tokio::time::timeout_at(deadline, rx.wait_for(|s| s.is_live())).await;
     match waited {
         Ok(Ok(guard)) => Some(guard.clone()),
         _ => None,
@@ -1149,6 +1483,8 @@ pub async fn probe_external_serving(timeout: Duration) -> Option<ServingSnapshot
     );
 
     Some(ServingSnapshot {
+        // A lane with a verified window is serving, not loading.
+        loading_model: None,
         active_model: Some(active_model),
         ready: true,
         // Personas point their inference adapter here; `serving_v1_url()` already
@@ -1285,6 +1621,31 @@ pub trait LlamaServerControl: Send + Sync {
     /// `n_ctx` (a loud invariant violation — never a guessed window).
     async fn served_context_window(&self) -> Result<u32, LlamaServerError>;
 
+    /// The REAL number of continuous-batching slots the running server serves,
+    /// read from its own `/props` (`total_slots`) — the LANE sibling of
+    /// [`Self::served_context_window`], and for the same reason.
+    ///
+    /// # Why this must be probed and not remembered (measured 2026-08-19)
+    ///
+    /// The adopt-or-relaunch decision has two operands. The window one always
+    /// asked the process. The lane one asked `current_serving().lanes` — our own
+    /// process-local snapshot. For a lane THIS core spawned those agree, so the
+    /// asymmetry was invisible. For a lane it did NOT spawn — a **past form of
+    /// ourself**, surviving a crash on the canonical port and named in our own
+    /// custody record — the snapshot describes nothing, and a healthy 4-lane
+    /// 27B was declined, reaped, and rebuilt over ~110s only to come back at 3
+    /// lanes and a smaller window than the lane that was already there.
+    ///
+    /// One operand asking the lane and the other asking our memory of it is the
+    /// whole defect. Both now ask the lane.
+    ///
+    /// Error policy is deliberately identical to the window's: a probe failure
+    /// returns `Err` and the CALLER treats it as "lanes OK" so a transient
+    /// `/props` hiccup can never spuriously relaunch a healthy lane. `Ok(0)`
+    /// means the server named no slot count — nothing to compare, not zero
+    /// capacity ([[an-absence-is-an-unfinished-measurement]]).
+    async fn served_lanes(&self) -> Result<u32, LlamaServerError>;
+
     /// The multimodal capabilities the running server ITSELF reports in `/props`
     /// (`modalities.vision` / `modalities.audio`) — the endpoint-side truth of
     /// whether the `--mmproj` projector actually loaded (#106). `Ok(None)` means
@@ -1320,6 +1681,24 @@ pub trait LlamaServerControl: Send + Sync {
         false
     }
 
+    /// Fingerprint of the server's `/slots` activity state (see
+    /// [`slots_activity_fingerprint_of`]). The health heartbeat compares the value
+    /// across two consecutive smoke-probe MISSES: changed → the serve loop is
+    /// advancing (ghost work, other clients' turns — work the adapter stamps can't
+    /// see) and the miss is queue contention; frozen → the miss counts as wedge
+    /// evidence exactly as before. `None` = "cannot say" (no endpoint, fake/remote
+    /// control) — never exoneration. Default `None` keeps fakes honest.
+    async fn slots_activity_fingerprint(&self) -> Option<u64> {
+        None
+    }
+
+    /// Largest in-flight prompt investment on the lane (tokens) — see
+    /// [`slots_max_inflight_prompt_tokens_of`]. Default `None` = unknown/none;
+    /// the health tick then applies base patience.
+    async fn slots_max_inflight_prompt_tokens(&self) -> Option<u64> {
+        None
+    }
+
     /// The flag this control's stderr watcher raises when the running lane proves itself
     /// WEDGED — a slot reporting arithmetically impossible progress (see
     /// [`crate::inference::wedge`]). The serving daemon polls it on its tick and owns the
@@ -1349,6 +1728,124 @@ fn counts_upward(text: &str) -> bool {
         .collect();
     nums.windows(3)
         .any(|w| w[1] == w[0] + 1 && w[2] == w[1] + 1)
+}
+
+/// Verdict of one smoke-decode attempt, judged from the response's TWO channels.
+///
+/// THINK-STARVED (2026-08-15, root cause of a fully dead bench round): a THINKING
+/// model spends its whole small smoke budget inside the reasoning channel — the
+/// server decodes perfectly (the round's llama-server stderr showed healthy ~30 t/s
+/// generations of exactly `max_tokens` on every probe) while `content` comes back
+/// EMPTY, so a visible-channel-only judgment reads a working brain as a dead lane,
+/// marks serving degraded forever, and every turn then waits on a serving
+/// transition that never resolves. The reasoning channel is an ADAPTER FACT — any
+/// thinking model (Qwen, DeepSeek, whatever comes next) hits this identically — so
+/// the verdict is judged structurally, never by model name.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum SmokeVerdict {
+    /// Multi-token decode AND the visible answer followed the instruction.
+    Alive,
+    /// Wedged, incoherent, or structurally not a chat model.
+    Dead,
+    /// Decode PROVEN (token floor met) but the whole budget went to private
+    /// reasoning and the visible channel is empty — a thinking model mid-thought,
+    /// not a dead lane. Retry with a budget that lets it finish and ANSWER.
+    ThinkStarved,
+}
+
+/// Pure (numbers + strs in, verdict out) so the judgment is unit-testable without
+/// a server. The embedding-model-on-the-port incident (BigMama: "uiuiui…" garbage
+/// past a count-only gate) still reads `Dead` here: its garbage lands in the
+/// VISIBLE channel with no reasoning channel at all.
+fn smoke_verdict(out_tokens: u64, visible: &str, reasoning_len: usize) -> SmokeVerdict {
+    if out_tokens >= MIN_SMOKE_DECODE_TOKENS && counts_upward(visible) {
+        return SmokeVerdict::Alive;
+    }
+    if out_tokens >= MIN_SMOKE_DECODE_TOKENS && visible.trim().is_empty() && reasoning_len > 0 {
+        return SmokeVerdict::ThinkStarved;
+    }
+    SmokeVerdict::Dead
+}
+
+/// One smoke-decode HTTP attempt: POST the count-to-ten prompt with `max_tokens`,
+/// return `(completion_tokens, visible_content, reasoning_len)` — or `None` when
+/// the transport/status/schema failed (each case logged where it is detected).
+/// Free fn (client + url in) so [`decode_smoke_ok`]'s policy stays a readable
+/// verdict match instead of interleaved I/O.
+async fn smoke_attempt(
+    client: &reqwest::Client,
+    v1_url: &str,
+    max_tokens: u64,
+) -> Option<(u64, String, usize)> {
+    let url = format!("{v1_url}/chat/completions");
+    let mut body = serde_json::json!({
+        // Digits-only instruction so a compliant model spends its budget on the ANSWER,
+        // not a preamble — the content assertion needs the answer to actually fit.
+        "messages": [{ "role": "user", "content":
+            "Reply with only the numbers 1 through 10 separated by single spaces. No other words." }],
+        "max_tokens": max_tokens,
+        "stream": false,
+        "temperature": 0.0,
+    });
+    // Pin the probe to the SCRATCH slot (Probe class — B2). Unpinned, llama's
+    // LCP selection could seat this tiny prompt on a citizen's warm slot and
+    // evict her 30k tail to prove the lane decodes — the exact "contend for a
+    // slot with the work" the heartbeat's own doc warns about. Best-effort: an
+    // uninstalled pool (server not yet probed by any turn) leaves it unpinned.
+    if let Some(root) = v1_url.strip_suffix("/v1") {
+        if let Some(Some(pool)) = crate::inference::slots::directory().get(root) {
+            if let Some(scratch) = pool.scratch_slot() {
+                if let Some(obj) = body.as_object_mut() {
+                    obj.insert("id_slot".to_string(), serde_json::json!(scratch));
+                    obj.insert("cache_prompt".to_string(), serde_json::json!(true));
+                }
+            }
+        }
+    }
+    let resp = match client
+        .post(&url)
+        .timeout(DECODE_SMOKE_TIMEOUT)
+        .json(&body)
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => resp,
+        _ => return None,
+    };
+    let Ok(v) = resp.json::<serde_json::Value>().await else {
+        return None;
+    };
+    // A missing/!u64 `usage.completion_tokens` is NOT "produced 0 tokens" — it is
+    // "this server did not tell us". Both fail the smoke test, but only one of them
+    // is a wedge; say which, or a schema change reads forever as a dead lane.
+    let Some(out_tokens) = v
+        .get("usage")
+        .and_then(|u| u.get("completion_tokens"))
+        .and_then(|t| t.as_u64())
+    else {
+        tracing::warn!(
+            "smoke decode: response carried no usage.completion_tokens — cannot \
+             confirm the compute path (treating as NOT proven, but this is a \
+             missing field, not a measured zero)"
+        );
+        return None;
+    };
+    // The VISIBLE answer channel. Missing is treated as empty here (not None):
+    // paired with a non-empty reasoning channel that shape is the think-starved
+    // outcome, which the verdict must SEE rather than abort on.
+    let visible = v
+        .pointer("/choices/0/message/content")
+        .and_then(|c| c.as_str())
+        .unwrap_or("")
+        .to_string();
+    // The PRIVATE reasoning channel (llama-server splits `<think>` out when the
+    // template opens one). Its length is evidence of where the budget went.
+    let reasoning_len = v
+        .pointer("/choices/0/message/reasoning_content")
+        .and_then(|c| c.as_str())
+        .map(str::len)
+        .unwrap_or(0);
+    Some((out_tokens, visible, reasoning_len))
 }
 
 /// Pure reconcile decision: bring the running server in line with `desired`.
@@ -1413,8 +1910,20 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
             // treated as "window OK" so a probe error never spuriously relaunches.
             let window_ok = match ctrl.served_context_window().await {
                 Ok(served) => {
-                    served == 0
-                        || target.context_window <= served.saturating_add(WINDOW_RELAUNCH_TOLERANCE)
+                    // Tolerance is a PERCENTAGE of the served window, floored at the
+                    // flat minimum — never a bare flat count. A flat 512 is 0.35% of a
+                    // 147k lane, so the boot plan's normal drift (it re-computes against
+                    // live memory, which climbs ~7% once the old core frees its share:
+                    // measured 2026-09-03, 147712 → 158107) tripped a RELAUNCH — a full
+                    // ~7-10 min 35B reload on EVERY reboot, the dominant "resume is slow"
+                    // cost. A warm lane at 88% of the ideal window NOW beats a cold ideal
+                    // one in 10 minutes; the runtime re-home (streak-debounced) still
+                    // grows it later if a bigger window's gain actually persists. A
+                    // genuinely starved lane (2048 vs a 31k plan) still relaunches:
+                    // 31k ≫ 2048 × 1.125. served 0 / probe-err stays "OK" (no spurious
+                    // relaunch), unchanged.
+                    let tolerance = WINDOW_RELAUNCH_TOLERANCE.max(served / 8);
+                    served == 0 || target.context_window <= served.saturating_add(tolerance)
                 }
                 Err(e) => {
                     // Deliberate: a probe error must not spuriously relaunch a healthy
@@ -1439,17 +1948,46 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
             // cannot hot-resize n_seq_max any more than the window, so a lane increase
             // needs a relaunch. Grow-only + discrete: served 0 = nothing to compare;
             // target ≤ served is fine (a down-plan is the daemon's sticky choice); only
-            // target > served relaunches. `served_lanes` is the process's own truth
-            // (ServingSnapshot.lanes), never a recomputed plan value.
-            let served_lanes = current_serving().lanes;
-            let lanes_ok = served_lanes == 0 || target.lanes <= served_lanes;
+            // target > served relaunches.
+            //
+            // ASK THE LANE, NOT OUR MEMORY OF IT (fixed 2026-08-19). This read used to
+            // be `current_serving().lanes` — the process-local snapshot — while the
+            // window operand three lines up probed the running server. That asymmetry
+            // is invisible for a lane we spawned (snapshot == process) and wrong for a
+            // PAST FORM OF OURSELF: a lane that survived a crash on the canonical port,
+            // named in our own custody record, has no entry in a fresh core's snapshot.
+            // Measured cost of the old read: a healthy 4-lane 27B declined, reaped and
+            // rebuilt over ~110s, returning at 3 lanes and a SMALLER window than the
+            // lane that was already running. Both operands now ask the process.
+            let served_lanes_probe = ctrl.served_lanes().await;
+            let lanes_ok = match &served_lanes_probe {
+                Ok(served) => *served == 0 || target.lanes <= *served,
+                Err(e) => {
+                    // Deliberate, and identical to the window's policy above: a probe
+                    // error must not spuriously relaunch a healthy lane. The error is
+                    // still evidence — if lanes stop growing, this line is the reason.
+                    tracing::warn!(
+                        error = %e,
+                        "could not read the served lane count — treating lanes as OK (no \
+                         spurious relaunch); a starved lane will not grow while this probe \
+                         keeps failing"
+                    );
+                    true
+                }
+            };
+            // Report what the LANE said, and say so when it could not be asked — a
+            // probe that silently substitutes a number is how the old bug hid.
+            let served_lanes = match &served_lanes_probe {
+                Ok(n) => n.to_string(),
+                Err(e) => format!("unreadable ({e})"),
+            };
             if !window_ok || !lanes_ok {
                 crate::probe!(
                     class = "serving.grow",
                     model = target.model_id(),
                     target_window = target.context_window,
                     target_lanes = target.lanes,
-                    served_lanes,
+                    served_lanes = served_lanes.as_str(),
                     window_ok,
                     lanes_ok,
                     "served capacity is below target (window and/or lanes) — relaunching to \
@@ -1486,9 +2024,21 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
     }
 
     match ctrl.serve(target).await {
-        Ok(()) => EnsureOutcome::Spawned {
-            model: target.model_id().to_string(),
-        },
+        Ok(()) => {
+            // A fresh lane starts with a CLEAN failure record. `serve` kills the old
+            // child, which murders its in-flight turns; their deaths stamp
+            // `note_real_decode_failure` DURING the load window — after the reset
+            // `declare_lane_wedged` did — so without this the corpses of the turns OUR
+            // kill created condemn the replacement on its first heartbeat and the
+            // relaunch loops (measured 2026-08-16: wedge 10:19:04 → kill → 4 stamped
+            // fails by 10:19:49 → wedged again; 23 min of self-fighting). The reset
+            // comment on `reset_real_decode_failures` always promised "the freshly
+            // relaunched lane starts clean" — this is the site that makes it true.
+            reset_real_decode_failures();
+            EnsureOutcome::Spawned {
+                model: target.model_id().to_string(),
+            }
+        }
         Err(reason) => EnsureOutcome::Degraded {
             reason: reason.to_string(),
         },
@@ -1526,6 +2076,23 @@ pub struct LlamaServerProcess {
     /// polled by the serving daemon. Live lane only — an ephemeral lane has no daemon
     /// watching it and tears down its own process, so its watcher would report into a void.
     wedge: Option<crate::inference::wedge::WedgeFlag>,
+    /// The engine's own offload banner (`offloaded X/Y layers to GPU`), recorded by the
+    /// same stderr pump — the READBACK half of the placement contract (#441). Every lane
+    /// carries it (live and ephemeral): a CPU-fallback eval lane silently corrupts a
+    /// benchmark's wall-clock exactly like a live one starves citizens.
+    offload: crate::inference::placement_watch::OffloadReport,
+    /// LEARNED, once per lane: the served model spends its quick smoke budget inside
+    /// the reasoning channel (a thinking model). Latched on the first `ThinkStarved`
+    /// verdict; every later readiness check then STARTS at the thinking budget instead
+    /// of re-proving the same property by burning a doomed 24-token generation first.
+    /// Measured before this latch: the identical `think_retry` fired ~30×/hour on a
+    /// contended lane — two generations per readiness check, forever, on the same
+    /// slots the citizens were starving for. Thinking-ness is a property of the MODEL;
+    /// a probe that rediscovers a known property by experiment on every tick is waste
+    /// (ADMISSION-IS-UNOBSERVABLE §4c). Lane-scoped (one lane serves one model), reset
+    /// naturally with the lane; the model catalog inherits this as a declared field
+    /// when the recipe/entity work lands.
+    smoke_proven_thinking: std::sync::atomic::AtomicBool,
 }
 
 impl LlamaServerProcess {
@@ -1545,6 +2112,8 @@ impl LlamaServerProcess {
             // pidfile. `new()`/`with_client()` are the live constructors.
             is_live_lane: true,
             wedge: Some(crate::inference::wedge::WedgeFlag::new()),
+            offload: crate::inference::placement_watch::OffloadReport::new(),
+            smoke_proven_thinking: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -1571,6 +2140,8 @@ impl LlamaServerProcess {
             // No serving daemon watches an ephemeral lane, and its owner tears the process
             // down when the eval ends — a wedge report would have no consumer.
             wedge: None,
+            offload: crate::inference::placement_watch::OffloadReport::new(),
+            smoke_proven_thinking: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -1954,6 +2525,46 @@ impl LlamaServerControl for LlamaServerProcess {
             })
     }
 
+    async fn served_lanes(&self) -> Result<u32, LlamaServerError> {
+        // Same root-level `/props` as the served window. llama.cpp publishes the
+        // slot count it was launched with (`--parallel` / `n_seq_max`) as the
+        // top-level `total_slots`. A connection error means nothing is up (the
+        // normal pre-spawn state) → Unreachable, which the caller reads as
+        // "lanes OK" so a probe hiccup never relaunches a healthy lane.
+        let url = format!("{}/props", self.root);
+        let resp = self
+            .client
+            .get(&url)
+            .timeout(PROBE_TIMEOUT)
+            .send()
+            .await
+            .map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(LlamaServerError::Unreachable(format!(
+                "status {}",
+                resp.status()
+            )));
+        }
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
+        // An older build that publishes no `total_slots` is UNKNOWN, not zero —
+        // and unknown must not be dressed up as a number the grow-gate compares
+        // against. Returning `Err` routes it to the caller's no-spurious-relaunch
+        // arm, the same place a probe failure lands.
+        body.get("total_slots")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as u32)
+            .ok_or_else(|| {
+                LlamaServerError::Unreachable(
+                    "/props carries no total_slots (server up but this build does not report \
+                     its slot count — refusing to guess the served lane count)"
+                        .to_string(),
+                )
+            })
+    }
+
     async fn multimodal_support(&self) -> Result<Option<MultimodalSupport>, LlamaServerError> {
         // Same root-level `/props` as the served window. llama.cpp publishes a
         // `modalities: { vision: bool, audio: bool }` block once an mtmd
@@ -1989,82 +2600,100 @@ impl LlamaServerControl for LlamaServerProcess {
         // "~2 tokens then stop for EVERY request" failure mode, observed intermittently
         // on fresh ephemeral eval lanes) still answers a `max_tokens: 1` request with
         // 200 — so a status-only probe passes it, and every downstream task then decodes
-        // ~2 tokens and silently scores 0. The probe now forces a prompt a healthy model
-        // MUST answer with many tokens and asserts the completion actually produced
-        // several (`usage.completion_tokens >= MIN_SMOKE_DECODE_TOKENS`). That is the
-        // difference between "the server binds" and "the decode path truly generates".
-        // A 500 "Compute error" (the wedged-orphan signature) still fails fast on status.
-        // The `--alias` id is what the server answers to; reuse the live v1 url.
-        let url = format!("{}/chat/completions", self.v1_url);
-        let body = serde_json::json!({
-            // Digits-only instruction so a compliant model spends its budget on the ANSWER, not a
-            // preamble — the content assertion below needs the answer to actually fit.
-            "messages": [{ "role": "user", "content":
-                "Reply with only the numbers 1 through 10 separated by single spaces. No other words." }],
-            // Room for the full answer plus a short preamble, still a light passenger on a busy
-            // co-tenant lane (the probe must not become another load source).
-            "max_tokens": 24,
-            "stream": false,
-            "temperature": 0.0,
-        });
-        let resp = match self
+        // ~2 tokens and silently scores 0. The probe forces a prompt a healthy model
+        // MUST answer with many tokens and verifies BOTH volume (token floor) and
+        // CONTENT (the digits actually count upward — the embedding-model-on-the-port
+        // incident sailed past a count-only gate with "uiuiui…" garbage).
+        //
+        // Judged by [`smoke_verdict`] over BOTH response channels, because a THINKING
+        // model can spend the whole quick budget inside its reasoning channel with a
+        // perfectly healthy decode path (2026-08-15: this exact shape marked serving
+        // degraded forever and killed a full bench round while the server generated
+        // at 30 t/s). That outcome is ThinkStarved, not Dead — retry once with a
+        // budget that lets the model finish thinking and ANSWER. A wedged lane
+        // (~2 tokens) and the garbage-content lane both still read Dead on EITHER
+        // budget. A 500 "Compute error" (the wedged-orphan signature) still fails
+        // fast on status inside `smoke_attempt`.
+        // A lane that has PROVEN its model thinks starts at the thinking budget —
+        // the quick attempt is structurally incapable of succeeding there, and paying
+        // it anyway cost two generations per readiness check, ~30 identical
+        // `think_retry` rows/hour on a lane citizens were starving for. First check
+        // per lane still takes the cheap path; the latch below learns from it.
+        if self
+            .smoke_proven_thinking
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return match smoke_attempt(&self.client, &self.v1_url, THINKING_SMOKE_BUDGET).await {
+                Some((tok, visible, rlen)) => {
+                    matches!(smoke_verdict(tok, &visible, rlen), SmokeVerdict::Alive)
+                }
+                None => false,
+            };
+        }
+        let Some((tok, visible, rlen)) =
+            smoke_attempt(&self.client, &self.v1_url, QUICK_SMOKE_BUDGET).await
+        else {
+            return false;
+        };
+        match smoke_verdict(tok, &visible, rlen) {
+            SmokeVerdict::Alive => true,
+            SmokeVerdict::Dead => false,
+            SmokeVerdict::ThinkStarved => {
+                self.smoke_proven_thinking
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                crate::probe!(
+                    class = "serving.smoke.think_retry",
+                    quick_tokens = tok,
+                    reasoning_len = rlen as u64,
+                    retry_budget = THINKING_SMOKE_BUDGET,
+                    "smoke decode proven but the whole quick budget went to private \
+                     reasoning — thinking model, not a wedge; retrying with room to \
+                     answer, and LATCHING: this lane's checks start at the thinking \
+                     budget from now on (one discovery per lane, not one per tick)"
+                );
+                match smoke_attempt(&self.client, &self.v1_url, THINKING_SMOKE_BUDGET).await {
+                    Some((tok, visible, rlen)) => {
+                        matches!(smoke_verdict(tok, &visible, rlen), SmokeVerdict::Alive)
+                    }
+                    None => false,
+                }
+            }
+        }
+    }
+
+    async fn slots_activity_fingerprint(&self) -> Option<u64> {
+        // Control-plane read (`/slots` is on the HTTP thread, answers while compute
+        // is saturated). Any failure → None: the caller must not read a fetch error
+        // as either progress or freeze.
+        let url = format!("{}/slots", self.root);
+        let body: serde_json::Value = self
             .client
-            .post(&url)
-            .timeout(DECODE_SMOKE_TIMEOUT)
-            .json(&body)
+            .get(&url)
+            .timeout(PROBE_TIMEOUT)
             .send()
             .await
-        {
-            Ok(resp) if resp.status().is_success() => resp,
-            _ => return false,
-        };
-        // Read the completion-token count; a wedged lane yields ~2, a healthy one 20+.
-        let Ok(v) = resp.json::<serde_json::Value>().await else {
-            return false;
-        };
-        // A missing/!u64 `usage.completion_tokens` is NOT "produced 0 tokens" — it is
-        // "this server did not tell us". Both fail the smoke test, but only one of them
-        // is a wedge; say which, or a schema change reads forever as a dead lane.
-        let Some(out_tokens) = v
-            .get("usage")
-            .and_then(|u| u.get("completion_tokens"))
-            .and_then(|t| t.as_u64())
-        else {
-            tracing::warn!(
-                "smoke decode: response carried no usage.completion_tokens — cannot \
-                 confirm the compute path (treating as NOT proven, but this is a \
-                 missing field, not a measured zero)"
-            );
-            return false;
-        };
-        // CONTENT, not just volume — the second half of the same idea as the branch above.
-        // M5 removed a FABRICATED zero here (`.unwrap_or(0)` turned "the server did not say"
-        // into "it produced nothing"). This removes a fabricated PASS: a token count alone
-        // cannot tell a chat model from one with no usable generative head. MEASURED on
-        // BigMama: an EMBEDDING model (qwen3-embedding-0.6b) was bound to the port the persona
-        // lane was configured for and answered this probe with
-        //   "user interface interface user interface UIUUIUUIuiuiuiuiuiuiuiui"
-        // — comfortably past a count-only gate, while structurally incapable of chat. Every
-        // persona on the node then "thought" through it, producing the token-loop garbage that
-        // flooded the rooms and scored eval runs as capability zeros when they were infra zeros.
-        //
-        // The prompt has a verifiable answer, so verify it. Missing content is treated the same
-        // way M5 treats a missing token count: NOT PROVEN, not a silent pass.
-        let Some(text) = v
-            .pointer("/choices/0/message/content")
-            .and_then(|c| c.as_str())
-        else {
-            tracing::warn!(
-                "smoke decode: response carried no choices[0].message.content — cannot \n                 confirm the model answered (NOT proven; a missing field, not an empty reply)"
-            );
-            return false;
-        };
-        // BOTH conditions survive this merge, deliberately. M5's side of the
-        // conflict kept only the token count; dropping `counts_upward(text)`
-        // would re-open the exact defect that poisoned this node all night —
-        // an embedding model bound to the persona port sails past a count-only
-        // gate while being structurally incapable of chat.
-        out_tokens >= MIN_SMOKE_DECODE_TOKENS && counts_upward(text)
+            .ok()?
+            .json()
+            .await
+            .ok()?;
+        slots_activity_fingerprint_of(&body)
+    }
+
+    async fn slots_max_inflight_prompt_tokens(&self) -> Option<u64> {
+        // Same control-plane read as the fingerprint; any failure → None
+        // (nothing to protect, base patience applies).
+        let url = format!("{}/slots", self.root);
+        let body: serde_json::Value = self
+            .client
+            .get(&url)
+            .timeout(PROBE_TIMEOUT)
+            .send()
+            .await
+            .ok()?
+            .json()
+            .await
+            .ok()?;
+        slots_max_inflight_prompt_tokens_of(&body)
     }
 
     fn owns_child(&self) -> bool {
@@ -2174,170 +2803,150 @@ impl LlamaServerControl for LlamaServerProcess {
         // the prior bug). See `served_total_ctx` / `parallel_lanes`.
         let lanes = target.parallel_lanes();
         let total_ctx = target.served_total_ctx();
-        let mut cmd = tokio::process::Command::new(&self.bin);
-        cmd.arg("-m")
-            .arg(&gguf)
-            .arg("--alias")
-            .arg(&target.model.id)
-            .arg("--host")
-            .arg(host)
-            .arg("--port")
-            .arg(port.to_string())
-            // Total KV = per-lane window × lanes; split back to one full window
-            // per slot by `--parallel` below. The plan budgeted this exact total
-            // (`kv_at(context_window) * lanes`) against the host, so it fits.
-            .arg("-c")
-            .arg(total_ctx.to_string())
-            .arg("--parallel")
-            .arg(lanes.to_string())
-            // KV PREFIX REUSE across a persona's turns. `cache_prompt:true` (sent
-            // per-request) only reuses a slot's prior content when the *exact*
-            // prefix still sits in that slot; with the volatile grounding tail
-            // changing every turn and embedding requests sharing these same slots,
-            // measured cross-turn reuse was ZERO (`cachedTokens: 0` over every
-            // captured live turn, forcing a full re-prefill of the ~720-token
-            // static identity/doctrine/tool prefix each turn). `--cache-reuse`
-            // lets llama.cpp reuse cached chunks ≥ N tokens via KV shifting even
-            // when a later span differs — so the stable prefix is kept, not
-            // recomputed. 256 is the llama.cpp-recommended min chunk. This is a
-            // pure optimization flag: absent it we just re-prefill (correct, slow);
-            // present it we reuse (correct, fast) — no fallback, no behavior change.
-            .arg("--cache-reuse")
-            .arg("256")
-            // PREFILL THROUGHPUT (#139). Live personas are prefill-bound: a real turn
-            // re-prefills ~4k tokens of fresh RAG context at ~109 tok/s → 30–110s turns
-            // (decode is tiny and fast; the mind is NOT slow, the re-read is). The
-            // physical micro-batch (`--ubatch-size`, llama.cpp default 512) is how many
-            // prompt tokens Metal processes per compute pass — bigger batch = more
-            // parallel prefill = higher tok/s, traded against a larger per-slot compute
-            // buffer. 1024 doubles prefill parallelism; the compute-buffer growth is the
-            // same axis that OOMs (kIOGPUCommandBufferCallbackErrorOutOfMemory) so it is
-            // sized WITH the 2-lane headroom, not blindly. Measured knob: watch prefill
-            // tok/s in the captures and back off if the lane 500s "Compute error".
-            .arg("--ubatch-size")
-            .arg("1024")
-            // Overflow must FAIL, never silently amputate. With context shift on
-            // (the llama.cpp default), a prompt larger than the slot's window has
-            // its MIDDLE evicted and generation proceeds on the mutilated prompt —
-            // exam-corrupting amnesia no log line reports (#139: 44k-token prompts
-            // observed riding ~13.4k slots with no error anywhere). Disabled, the
-            // server 400s ("exceeds context size") and the caller's fail-loud path
-            // surfaces the real defect: a RAG budget that overshot the served
-            // window ([[fallbacks-are-illegal-fail-loud]]).
-            .arg("--no-context-shift");
-        // MULTIMODAL PROJECTOR (#106): a vision/audio-capable model needs its mmproj GGUF so
-        // llama-server loads the vision (or audio) encoder and can tokenize image/audio content
-        // parts. Present → the model actually SEES (the `ContentPart::Image` the persona render
-        // seam attaches gets mtmd-encoded). Absent on a Vision-capable row → the server serves
-        // TEXT only and silently ignores images, which is a capability LIE — so warn LOUD rather
-        // than fabricate sight ([[fallbacks-are-illegal-fail-loud]]). Safe on a generation lane
-        // (unlike `--embeddings` below): the projector only adds the encoder, it does not switch
-        // the server out of causal-generation mode.
-        if let Some(mmproj) =
-            crate::model_registry::artifacts::resolve_mmproj_for_model(&target.model)
-        {
-            cmd.arg("--mmproj").arg(&mmproj);
-        } else if target
+        // The unconditional flag spine moved to `lane_args` (decomposition slice 1,
+        // docs/architecture/KV-CACHE-ECONOMY.md §7). It lives there because it is PURE
+        // there — primitives in, an invocation out — and therefore assertable without
+        // spawning a GPU process. From HERE it never could be, which is exactly how
+        // `--parallel` silently quartered every citizen's window: the arithmetic was
+        // welded into a Command chain no unit test could reach. Every flag's incident
+        // comment moved WITH it; that comment is the only record of the failure that
+        // set the value.
+        // Resolution stays HERE (config_env reads, registry probes, the vision receipt);
+        // `lane_args` decides only what a resolved value MEANS on a command line. That is
+        // the split that keeps the flag surface pure and assertable — gather inputs, then
+        // compute a plan, exactly as `TierPolicy` does.
+        let kv_cache_type = crate::config_env::read("SERVING_KV_CACHE_TYPE")
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty() && s != "f16");
+        let flash_attn = crate::config_env::read("SERVING_FLASH_ATTN")
+            .map(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "1" | "on" | "true" | "yes"))
+            .unwrap_or(false);
+        // THE MAIN PERSONA LANE SERVES TEXT-ONLY — sight lives in the SIDECAR
+        // (2026-08-24, the cache_reuse confession). llama-server hard-disables
+        // `--cache-reuse` the moment an mmproj loads ("cache_reuse is not supported
+        // by multimodal, it will be disabled" — in our own lane log at every boot),
+        // and cache_reuse chunk-shifting is the mechanism the ENTIRE message-shaped
+        // prompt economy leans on: working-memory evicts whole messages and the
+        // conversation fitter drops whole old turns on the assumption the surviving
+        // suffix realigns. With it silently off, every drop re-prefilled everything
+        // after it — measured on round 437529ff: 6,419 of 30,004 tokens cached (the
+        // system head only) with the slot EXCLUSIVELY the exam's. That is ~60-90s of
+        // re-prefill tax per act, for every persona, always.
+        //
+        // Native ingestion on the main lane bought nothing that the designed
+        // text-only path doesn't provide: `vision_lane_ready` reads /props (which
+        // will now truthfully report no vision) and the SIDECAR VL lane +
+        // description bridge take over — the exact flow every text-only mind
+        // already uses. One sight path, not two. The mmproj artifact stays
+        // resolved/fetched for the sidecar's use.
+        // MODEL TRUTH, not blanket policy (Joel 2026-08-24: "we are not designing
+        // around one model but many"): the row's `serving.mmproj_on_main_lane`
+        // decides. Default FALSE (text-only main lane, cache_reuse alive); a
+        // VL-first deployment opts in per model and pays the reuse cost knowingly.
+        let resolved_mmproj =
+            crate::model_registry::artifacts::resolve_mmproj_for_model(&target.model);
+        let mmproj: Option<std::path::PathBuf> =
+            if target.model.serving.mmproj_on_main_lane || target.vision_sidecar {
+                resolved_mmproj.clone()
+            } else {
+                None
+            };
+        if mmproj.is_none() && resolved_mmproj.is_some() {
+            crate::probe!(
+                class = "serving.vision.mmproj_withheld",
+                model = %target.model.id,
+                "mmproj resolved but WITHHELD from the main lane (model row: \
+                 mmproj_on_main_lane=false — multimodal disables cache_reuse); sight \
+                 routes via the vision sidecar + description bridge"
+            );
+        } else if resolved_mmproj.is_none() && target
             .model
             .capabilities
             .contains(&crate::model_registry::Capability::Vision)
         {
+            // A Vision row with no projector anywhere is still a capability LIE —
+            // the sidecar can't load what doesn't exist. Same receipt as before.
             tracing::warn!(
                 probe_class = "serving.vision.no_mmproj",
                 model = %target.model.id,
                 declared = ?target.model.mmproj_local_path,
-                "vision-capable model has no resolvable mmproj projector — serving TEXT-ONLY; \
-                 image parts will be silently ignored. Fetch the mmproj GGUF (see the model row's \
-                 mmproj_local_path) or drop the Vision capability so the row stops claiming sight."
+                "vision-capable model has no resolvable mmproj projector — no sidecar sight \
+                 possible. Fetch the mmproj GGUF (see the model row's mmproj_local_path) or drop \
+                 the Vision capability so the row stops claiming sight."
             );
         }
-        // Device-fit resident-override (#29): source the RESIDENT (non-expert)
-        // tensors from the precision-shrunk fit GGUF so the whole resident tier fits
-        // VRAM offloaded to GPU, while this primary GGUF streams the experts. The
-        // loader hook (`LLAMA_RESIDENT_OVERRIDE`) lazy-maps only the override's
-        // resident bytes (its experts are ignored). Set by the governor's device_fit
-        // plan when as-shipped resident overflows the VRAM budget; absent = resident
-        // fits as-shipped (no override, no env). [[device-fit-repeatable-primitive]].
-        if let Some(ov) = &target.resident_override {
-            cmd.env("LLAMA_RESIDENT_OVERRIDE", ov);
-        }
-        // `--embeddings` is deliberately NOT set on this GENERATION lane. On the
-        // current llama.cpp build it puts the server in embedding (non-causal)
-        // mode, which makes generation fail with `500 "Compute error."` on EVERY
-        // request — every persona turn went dark (and OAI /v1/embeddings still
-        // 400s with "pooling type 'none'", so it wasn't even serving embeddings
-        // correctly). One server cannot serve both causal generation and
-        // non-causal embeddings. Verified 2026-07-03: the base GGUF generates
-        // cleanly the instant this flag is removed. llama-server-hosted
-        // embeddings need their OWN lane (`--embeddings --pooling mean/last` on a
-        // separate port) — a follow-up; the live embedding path today is the
-        // fastembed/ONNX provider, unaffected by this lane.
-        // Placement: CPU lanes pin every layer to RAM so they never contend for
-        // the GPU VRAM a living lane already holds (the Metal decode-time OOM that
-        // muted the eval). GPU lanes omit the flag — llama-server offloads all it
-        // can by default. [[ServingTarget::placement]] / #59 / #56.
-        if target.placement == LanePlacement::Cpu {
-            cmd.arg("--n-gpu-layers").arg("0");
-        }
-        // Native tool-calling needs the model's TOOL-CAPABLE chat template. The
-        // mlx→gguf conversion can strip the embedded template down to a bare
-        // ChatML loop (no `<tools>`/`<tool_call>` rendering) — which silently
-        // disables native function-calling, so the gateway ignores the `tools`
-        // param and the persona's hands go dead (verified live 2026-06-26: the
-        // forged GGUF carried a 208-char template, zero tool support). When the
-        // forge writes a `chat_template.jinja` sidecar next to the GGUF, hand it
-        // to llama-server with --jinja so it renders tools and does
-        // grammar-constrained native tool calls — VALID tool-call JSON guaranteed
-        // by the sampler, not hand-escaped by a 4B model into a JSON string (the
-        // failure that made multi-line code calls unparseable). This is an
-        // explicit override file, not a silent fallback: present → it's the
-        // truth the GGUF should have carried; absent → the embedded template
-        // stands.
-        // --jinja is UNCONDITIONAL: it makes llama-server render the `tools` we send and do
-        // grammar-constrained parsing of the model's NATIVE tool-call format, using the
-        // model's OWN chat template. That is the tool-trained shape a Qwen/Hermes/etc GGUF
-        // expects — infinitely more reliable than us reverse-engineering tool calls out of
-        // prose after the fact. A normal pulled GGUF carries a tool-capable embedded template;
-        // this switch was previously gated on a forge sidecar existing, so pulled models
-        // silently ran with tools DISABLED (the gateway ignored the `tools` param → the
-        // persona narrated tool calls instead of emitting them). The sidecar, when the forge
-        // wrote one, now OVERRIDES the embedded template (for forged GGUFs that shipped a
-        // thin, tool-less 208-char template) — present → override, absent → the embedded
-        // tool-capable template stands, tools ON either way.
-        cmd.arg("--jinja");
-        if let Some(tpl) = gguf
+        let mtp_draft = crate::model_registry::artifacts::resolve_mtp_draft_for_model(&target.model);
+
+        // Slice-3 resolution, same rule as above: look things up HERE, let `lane_args`
+        // decide what they mean on a command line.
+        let chat_template = gguf
             .parent()
             .map(|d| d.join("chat_template.jinja"))
-            .filter(|p| p.is_file())
-        {
-            cmd.arg("--chat-template-file").arg(tpl);
+            .filter(|p| p.is_file());
+        let lora_paths: Vec<std::path::PathBuf> =
+            target.adapters.iter().map(|a| a.path.clone()).collect();
+        let expert_ot = target.expert_ot_value();
+
+        // KV disk-paging dir (restore economy): GEOMETRY-KEYED — model + the
+        // per-slot window — so a saved page can never be restored into a slot
+        // of a different size or model (llama-server would refuse or corrupt).
+        // Stale sibling generations for the SAME model are swept at spawn: a
+        // relaunch that changed geometry orphans its old pages, and the spawn
+        // is the one place that knows the new truth. Tracked + eviction-decided
+        // in system_resources (the no-new-cache-dir-without-eviction law).
+        let slot_save_dir = kv_page_dir(&target.model.id, total_ctx / lanes.max(1));
+        if let Err(e) = std::fs::create_dir_all(&slot_save_dir) {
+            tracing::warn!(
+                probe_class = "inference.kv_page.dir_failed",
+                dir = %slot_save_dir.display(),
+                error = %e,
+                "could not create the KV page dir — the lane still serves, but rotation \
+                 pays full re-prefill (the paging tier is amputated for this serve)"
+            );
+        } else {
+            sweep_stale_page_generations(&slot_save_dir);
         }
-        // Load each trained genome layer into the `/lora-adapters` catalog at
-        // index order; the per-request `"lora":[{id,scale}]` field pages them in.
-        // ONE comma-separated `--lora` value: llama.cpp (b8784+) deprecated
-        // repeated `--lora` flags and SILENTLY keeps only the last — which was
-        // collapsing every multi-layer genome stack to a single adapter
-        // (glass-boxed 2026-07-23 in the lane's own stderr: 'DEPRECATED:
-        // --lora specified multiple times... only last value will be used' ×4
-        // while a 4-layer stack served). The genome's whole premise is layers
-        // that STACK; this arg shape is what actually stacks them.
-        if !target.adapters.is_empty() {
-            let joined = target
-                .adapters
-                .iter()
-                .map(|a| a.path.to_string_lossy().into_owned())
-                .collect::<Vec<_>>()
-                .join(",");
-            cmd.arg("--lora").arg(joined);
+        let mut cmd = tokio::process::Command::new(&self.bin);
+        let invocation = crate::inference::lane_args::base_invocation(
+            &gguf,
+            &target.model.id,
+            &host,
+            port,
+            lanes,
+            total_ctx,
+            target.host_prompt_cache_mib,
+            &slot_save_dir,
+        )
+        .with_options(&crate::inference::lane_args::LaneOptions {
+            kv_cache_type: kv_cache_type.as_deref(),
+            flash_attn,
+            mmproj: mmproj.as_deref(),
+            mtp_draft: mtp_draft.as_deref(),
+            // Ngram spec is free (no tensors, no VRAM) and decode is half of
+            // act latency — on for every GPU serving lane.
+            // MEASURED OFF 2026-08-27: ngram spec ran at 2% draft acceptance on
+            // live SWE-solve decode (1 of 48 draft tokens accepted, main lane,
+            // 134k window) — at that rate the drafts cost more than they save
+            // and tax every act. [[the-depth-decode-tax-is-our-lane-config]]:
+            // the A/B said try ngram first; the A/B is done, evidence says off.
+            // Revisit only with a measured acceptance ≥ ~30% on our real mix.
+            ngram_spec: false,
+            resident_override: target.resident_override.as_deref(),
+            cpu_only: target.placement == LanePlacement::Cpu,
+            chat_template: chat_template.as_deref(),
+            loras: &lora_paths,
+            expert_ot: expert_ot.as_deref(),
+            host_pinned_tensors: target.model.serving.host_pinned_tensors,
+            fit_off: target.model.serving.fit_off,
+            no_warmup: target.model.serving.no_warmup,
+            max_ubatch: target.model.serving.max_ubatch,
+            reasoning_budget: target.model.serving.reasoning_budget,
+        });
+        for a in &invocation.args {
+            cmd.arg(a);
         }
-        // K3 slice-1 physical expert paging: if the residency planner handed us a layer
-        // placement, offload the COLD layers' stacked expert tensors to CPU via -ot, keeping
-        // the hot layers GPU-resident. Experts are stacked (one blk.N.ffn_*_exps tensor per
-        // layer), so -ot — which places whole tensors — pages at LAYER granularity. None /
-        // all-hot → no flag (an empty -ot is rejected by llama-server). A change to the hot
-        // set is honored on the next relaunch (the pager decides when).
-        if let Some(ot) = target.expert_ot_value() {
-            cmd.arg("--override-tensor").arg(ot);
+        for (k, v) in &invocation.envs {
+            cmd.env(k, v);
         }
         // MoE glass-box env seam (#278): when expert paging is active, the DAEMON
         // hands the fork its capture + plan file locations. Previously these envs
@@ -2389,6 +2998,35 @@ impl LlamaServerControl for LlamaServerProcess {
         if let Some(dir) = log_path.as_ref().and_then(|p| p.parent()) {
             let _ = std::fs::create_dir_all(dir);
         }
+        // BUILD FOR SPEED (Joel, 2026-09-04): a debug llama-server (asserts on)
+        // serves numbers that are not valid and lanes that are several times too
+        // slow — BigMama's 5090 hosted one for a day. Refuse it at the door, on
+        // every machine, with the rebuild instruction; the version line is the
+        // receipt either way.
+        let version = tokio::process::Command::new(&self.bin)
+            .arg("--version")
+            .output()
+            .await
+            .map(|o| format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)))
+            .unwrap_or_default(); // unwrap_or: a binary that cannot answer --version fails at spawn below with its own error
+        crate::probe!(
+            class = "serving.server_version",
+            bin = %self.bin,
+            version = %version.lines().next().unwrap_or("").trim(), // unwrap_or: no output = empty receipt, spawn reports the real failure
+            "the serving binary named its build"
+        );
+        if is_debug_build(&version) {
+            crate::probe!(
+                class = "serving.debug_build_refused",
+                bin = %self.bin,
+                "refused to serve from a DEBUG build — build for speed"
+            );
+            return Err(LlamaServerError::Spawn(format!(
+                "{} is a DEBUG build (asserts enabled; its speed is not valid). Rebuild llama-server in \
+                 release from the canary pin and relaunch — a debug server never hosts a lane.",
+                self.bin
+            )));
+        }
         let mut child = cmd
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -2401,9 +3039,18 @@ impl LlamaServerControl for LlamaServerProcess {
         // `progress = 1.10` is wedged; the decode heartbeat can't see it (the OTHER slots
         // still decode, so the lane reads healthy) — which is how one slot burned four
         // hours on 2026-08-05. The watcher only RAISES; the serving daemon reaps.
+        // The same pump also records the engine's OFFLOAD BANNER — the readback half of
+        // the placement contract (#441): the governor planned a placement, the banner is
+        // what the engine actually allocated, and serve() compares them after readiness.
+        let offload_watch = Box::new(super::placement_watch::OffloadWatch::new(
+            self.offload.clone(),
+        ));
         let watch: Box<dyn super::child_log::LineWatch> = match self.wedge.clone() {
-            Some(flag) => Box::new(super::wedge::WedgeWatch::new(flag)),
-            None => Box::new(()),
+            Some(flag) => Box::new(super::placement_watch::ChainWatch(
+                Box::new(super::wedge::WedgeWatch::new(flag)),
+                offload_watch,
+            )),
+            None => offload_watch,
         };
         match (child.stderr.take(), log_path) {
             (Some(stderr), Some(path)) => super::child_log::drain_capped(stderr, path, watch),
@@ -2462,6 +3109,11 @@ impl LlamaServerControl for LlamaServerProcess {
                 port,
                 role,
                 model: target.model_id().to_string(),
+                // The SHAPE, so a successor core can size this lane as its own
+                // without probing it — the difference between counting our
+                // predecessor's bytes as ours and counting them as foreign.
+                context_window: target.context_window,
+                lanes: target.lanes,
             };
             if let Err(e) = crate::inference::lane_registry::record(&rec) {
                 crate::probe!(
@@ -2479,6 +3131,45 @@ impl LlamaServerControl for LlamaServerProcess {
         *self.served_adapters.lock().unwrap() = target.adapter_paths();
 
         self.wait_ready().await?;
+        // PLACEMENT CONTRACT READBACK (#441, Joel 2026-08-15: "models that got fucked by
+        // serving and are on cpu. You never catch it and we are waiting an eternity").
+        // The governor planned a placement; the engine's own load banner says what it
+        // ACTUALLY allocated. A GPU-placement lane that offloaded ZERO layers is the
+        // whole model on CPU — it answers /health, decodes at a tenth of the planned
+        // speed, and nothing else in the system can see the difference. This is a lease
+        // violation, not a tuning note: probe LOUD so the daemon/operator respond,
+        // never wait for a human to notice the eternity. (Partial offload is legit —
+        // MoE cold-expert `-ot` splits offload a subset by design; only 0-of-N on a
+        // GPU-intent lane is unambiguous.) The watcher only REPORTS; lifecycle stays
+        // with the daemon, same doctrine as the wedge flag.
+        if target.placement != LanePlacement::Cpu {
+            match self.offload.get() {
+                Some((0, total)) => {
+                    crate::probe!(
+                        class = "serving.placement.cpu_fallback",
+                        port = port,
+                        model = target.model_id(),
+                        total_layers = total,
+                        "PLACEMENT VIOLATION: GPU-placement lane offloaded 0/{total} layers \
+                         — the model is running ON CPU. Throughput will be an order of \
+                         magnitude below plan; every consumer of this lane is degraded (#441).",
+                    );
+                }
+                Some(_) => {}
+                None => {
+                    // No banner observed is a different fact from "reported 0" — an
+                    // engine build that never prints it would otherwise read as
+                    // healthy forever, which is exactly the silent class this exists
+                    // to kill. Say so once, quietly.
+                    tracing::info!(
+                        probe_class = "serving.placement.unreported",
+                        port = port,
+                        "no offload banner observed by readiness — placement readback \
+                         unavailable for this lane (#441)"
+                    );
+                }
+            }
+        }
         // GENOME DORMANCY (glass-boxed 2026-07-23): llama.cpp loads every
         // `--lora` at scale 1.0 — ALL ACTIVE, superimposed. Four personas'
         // adapters blended at full scale produced the degenerate-decode plague
@@ -2568,8 +3259,223 @@ fn split_host_port(root: &str) -> (String, u16) {
     }
 }
 
+/// llama-server announces a debug build on its own output ("warning: DEBUG BUILD
+/// (asserts enabled) -- performance numbers from this process are not valid").
+fn is_debug_build(version_output: &str) -> bool {
+    version_output.contains("DEBUG BUILD")
+}
+
 #[cfg(test)]
 mod tests {
+    // what this catches: a debug llama-server hosting a lane silently (BigMama's
+    // 5090 served one for a day, 2026-09-04) — the door reads the server's own
+    // warning line; a release version line passes.
+    #[test]
+    fn a_debug_build_is_refused_at_the_door_and_a_release_build_passes() {
+        assert!(super::is_debug_build("warning: DEBUG BUILD (asserts enabled) -- performance numbers from this process are not valid\nversion: 10229 (a28ee566c)"));
+        assert!(!super::is_debug_build("version: 0.3.0-dev (build 10751, commit 0a637ba22)\nbuilt with AppleClang 21.0.0.21000101 for Darwin arm64"));
+    }
+
+    // what this catches: the work-scaled patience rule (2026-08-23, three
+    // MirrorCode-baseline kills): a lane holding a window-scale in-flight
+    // prompt earns DOUBLE the miss threshold (a kill destroys minutes of
+    // re-prefill and can loop); a quiet or small-investment lane keeps base
+    // patience and still dies fast. Relative quarter-window bound — no
+    // absolute token constant to drift.
+    #[test]
+    fn wedge_patience_scales_with_inflight_investment() {
+        assert_eq!(wedge_miss_threshold(2, None, 65_024), 2, "no in-flight = base");
+        assert_eq!(wedge_miss_threshold(2, Some(1_000), 65_024), 2, "small investment = base");
+        assert_eq!(wedge_miss_threshold(2, Some(16_256), 65_024), 4, "quarter-window doubles");
+        assert_eq!(wedge_miss_threshold(2, Some(82_668), 163_072), 4, "the live case doubles");
+        assert_eq!(wedge_miss_threshold(2, Some(82_668), 0), 2, "unknown window = base, never a guess");
+    }
+
+    // what this catches (2026-08-15, round-killer #2 of the day): a never-started
+    // stream timeout stamped `note_real_decode_failure` unconditionally, so an
+    // OVERSUBSCRIBED lane (4 demand lanes, 1-2 slots, multi-minute thinking turns)
+    // hit the relaunch threshold from queue starvation alone — the health monitor
+    // killed a lane whose own log showed 11k-token completions at 17.5 t/s, every
+    // 2 minutes, forever. The classifier reads the lane's own delivery record:
+    // tokens for ANYONE within the wait = Starved (alive, no stamp); no delivery
+    // across the whole wait, or none ever observed = WedgeEvidence (stamp — the
+    // #363 undersized/dead class this counter exists for).
+    #[test]
+    fn never_started_timeout_on_a_delivering_lane_is_starvation_not_wedge_evidence() {
+        use super::{classify_never_started_timeout, NeverStartedClass};
+        // Busy lane: someone got tokens 30s into our 120s wait — alive.
+        assert_eq!(
+            classify_never_started_timeout(Some(30_000), 120_000),
+            NeverStartedClass::Starved
+        );
+        // Dead lane: last delivery predates our whole wait — genuine evidence.
+        assert_eq!(
+            classify_never_started_timeout(Some(300_000), 120_000),
+            NeverStartedClass::WedgeEvidence
+        );
+        // Fresh boot / unreadable clock: no delivery record — do not excuse the
+        // timeout on faith; the wedge path (and its relaunch) is the safe read.
+        assert_eq!(
+            classify_never_started_timeout(None, 120_000),
+            NeverStartedClass::WedgeEvidence
+        );
+        // Boundary: delivery exactly as old as the wait means nothing came out
+        // DURING it — evidence, not starvation.
+        assert_eq!(
+            classify_never_started_timeout(Some(120_000), 120_000),
+            NeverStartedClass::WedgeEvidence
+        );
+    }
+
+    // what this catches (2026-08-16, the 23-minute boot kill-loop): a smoke miss on
+    // a lane doing GHOST WORK (a dead core's in-flight turns, no adapter stream →
+    // no L9 stamps) counted as wedge evidence, so 2 misses killed a lane llama's
+    // own log showed grinding flat out — three times in one boot. The verdict must
+    // exonerate a miss when the server's own /slots state ADVANCED between misses,
+    // keep a FROZEN fingerprint counting (the 2026-08-05 wedge signature holds one
+    // task at one impossible progress forever), never exonerate on a first miss
+    // (nothing to compare), and never exonerate on a fetch error.
+    #[test]
+    fn smoke_miss_on_an_advancing_lane_is_contention_not_wedge_evidence() {
+        use super::{judge_smoke_miss, SmokeMissVerdict};
+        // Slots advanced between the two misses: real work held the probe out.
+        assert_eq!(
+            judge_smoke_miss(Some(1), Some(2)),
+            SmokeMissVerdict::AliveViaSlotProgress
+        );
+        // Frozen fingerprint: the wedge signature — count it.
+        assert_eq!(judge_smoke_miss(Some(7), Some(7)), SmokeMissVerdict::CountMiss);
+        // First miss: nothing to compare — count it (threshold ≥ 2 keeps the
+        // detection latency identical to pre-L11).
+        assert_eq!(judge_smoke_miss(None, Some(7)), SmokeMissVerdict::CountMiss);
+        // /slots unreadable: a fetch error is never exoneration.
+        assert_eq!(judge_smoke_miss(Some(7), None), SmokeMissVerdict::CountMiss);
+        assert_eq!(judge_smoke_miss(None, None), SmokeMissVerdict::CountMiss);
+    }
+
+    // what this catches: the fingerprint must move with WORK (prefill advance, task
+    // turnover, decode count) and must NOT move with volatile per-request params —
+    // hashing the params blob would churn every poll and exonerate a dead lane
+    // forever. JSON shape pinned from a live /slots response (2026-08-16, :58057).
+    #[test]
+    fn slots_fingerprint_moves_with_work_and_ignores_params() {
+        use super::slots_activity_fingerprint_of;
+        let slot = |processed: u64, temp: f64| {
+            serde_json::json!([{
+                "id": 0, "n_ctx": 32512, "is_processing": true, "id_task": 55395,
+                "n_prompt_tokens": 143, "n_prompt_tokens_processed": processed,
+                "params": { "temperature": temp, "top_k": 20 }
+            }])
+        };
+        let base = slots_activity_fingerprint_of(&slot(4, 0.0)).expect("array parses");
+        // Prefill advanced → fingerprint moves.
+        assert_ne!(
+            base,
+            slots_activity_fingerprint_of(&slot(90, 0.0)).unwrap(),
+            "prefill advance must change the fingerprint"
+        );
+        // Only volatile params changed → fingerprint stable.
+        assert_eq!(
+            base,
+            slots_activity_fingerprint_of(&slot(4, 0.9)).unwrap(),
+            "params churn must NOT change the fingerprint"
+        );
+        // Non-array body (error page, wrong endpoint) → None, never a fake hash.
+        assert_eq!(
+            slots_activity_fingerprint_of(&serde_json::json!({"error": "nope"})),
+            None
+        );
+    }
+
+    // what this catches (2026-08-24, the 1-lane kill-loop): current llama-server
+    // wraps decode state in an ARRAY (`next_token: [{n_decoded: N}]`); the old
+    // string-key read returned None on it, so during a long DECODE (prefill done →
+    // `n_prompt_tokens_processed` frozen, one task → `id_task` frozen) the
+    // fingerprint was static and L11 judged a lane decoding at 31 tok/s as WEDGED —
+    // two smoke misses killed a 35k-token in-flight turn. Shape pinned from the live
+    // /slots response (:58057). Decode advance must move the fingerprint through
+    // BOTH the array shape and the older object shape.
+    #[test]
+    fn slots_fingerprint_sees_decode_through_the_array_shaped_next_token() {
+        use super::slots_activity_fingerprint_of;
+        let decoding = |n_decoded: u64, n_prompt: u64| {
+            serde_json::json!([{
+                "id": 0, "n_ctx": 166_400, "is_processing": true, "id_task": 350,
+                "n_prompt_tokens": n_prompt, "n_prompt_tokens_processed": 35_144,
+                "next_token": [{ "has_next_token": true, "n_remain": 697, "n_decoded": n_decoded }]
+            }])
+        };
+        // Pure decode: processed/id_task static, only n_decoded (+ context growth) move.
+        assert_ne!(
+            slots_activity_fingerprint_of(&decoding(148, 47_211)).unwrap(),
+            slots_activity_fingerprint_of(&decoding(400, 47_211)).unwrap(),
+            "array-shaped n_decoded advance must change the fingerprint"
+        );
+        // Same story via the context-growth belt alone (build hides n_decoded).
+        assert_ne!(
+            slots_activity_fingerprint_of(&decoding(148, 47_211)).unwrap(),
+            slots_activity_fingerprint_of(&decoding(148, 47_704)).unwrap(),
+            "n_prompt_tokens growth during decode must change the fingerprint"
+        );
+        // Truly frozen (the 2026-08-05 4-hour wedge shape): identical looks stay equal.
+        assert_eq!(
+            slots_activity_fingerprint_of(&decoding(148, 47_211)).unwrap(),
+            slots_activity_fingerprint_of(&decoding(148, 47_211)).unwrap(),
+            "a frozen slot must keep a frozen fingerprint"
+        );
+        // Older builds: object-shaped next_token still read.
+        let object_shape = |n: u64| {
+            serde_json::json!([{
+                "id": 0, "is_processing": true, "id_task": 1,
+                "n_prompt_tokens": 100, "n_prompt_tokens_processed": 100,
+                "next_token": { "n_decoded": n }
+            }])
+        };
+        assert_ne!(
+            slots_activity_fingerprint_of(&object_shape(5)).unwrap(),
+            slots_activity_fingerprint_of(&object_shape(6)).unwrap(),
+            "object-shaped n_decoded advance must change the fingerprint"
+        );
+    }
+
+    // what this catches (2026-08-15, the round-killer): the smoke verdict judged a
+    // THINKING model's healthy decode as a dead lane because the whole quick budget
+    // went to the reasoning channel and `content` came back empty — serving was
+    // marked degraded forever and every turn waited on a transition that never
+    // resolved. The verdict must read that shape as ThinkStarved (retry), keep the
+    // wedged-lane shape (~2 tokens) Dead, keep the embedding-model-on-the-port
+    // shape (garbage in the VISIBLE channel, no reasoning) Dead, and pass a real
+    // answer regardless of whether reasoning is present.
+    #[test]
+    fn smoke_verdict_separates_thinking_from_wedged_from_garbage() {
+        use super::{smoke_verdict, SmokeVerdict};
+        // Healthy non-thinking model: answer in the visible channel.
+        assert_eq!(
+            smoke_verdict(20, "1 2 3 4 5 6 7 8 9 10", 0),
+            SmokeVerdict::Alive
+        );
+        // Healthy THINKING model after the big-budget retry: reasoning present AND
+        // the visible answer counts — reasoning must not disqualify a real answer.
+        assert_eq!(
+            smoke_verdict(120, "1 2 3 4 5 6 7 8 9 10", 400),
+            SmokeVerdict::Alive
+        );
+        // Thinking model starved by the quick budget: decode proven, all of it
+        // private, visible empty — retry, never "dead lane".
+        assert_eq!(smoke_verdict(24, "", 300), SmokeVerdict::ThinkStarved);
+        assert_eq!(smoke_verdict(24, "   ", 300), SmokeVerdict::ThinkStarved);
+        // Wedged lane: ~2 tokens then stop. Dead on either budget.
+        assert_eq!(smoke_verdict(2, "", 0), SmokeVerdict::Dead);
+        assert_eq!(smoke_verdict(2, "", 50), SmokeVerdict::Dead);
+        // Embedding model bound to the port: garbage in the VISIBLE channel, no
+        // reasoning channel at all (the BigMama incident) — Dead, never a retry.
+        assert_eq!(
+            smoke_verdict(24, "user interface interface UIUUIUUIuiui", 0),
+            SmokeVerdict::Dead
+        );
+        // Empty visible with NO reasoning: nothing proves a mind is attached.
+        assert_eq!(smoke_verdict(24, "", 0), SmokeVerdict::Dead);
+    }
 
     /// what this catches (2026-08-11, the solve-prelude keyhole): the settle wait
     /// must resolve on the FIRST ready snapshot whose layout differs from the
@@ -2584,7 +3490,12 @@ mod tests {
 
         // Resettle: a ready snapshot with a NEW layout resolves the wait.
         let (tx, rx) = tokio::sync::watch::channel(ServingSnapshot::empty());
-        let waiter = tokio::spawn(await_snapshot_resettle(rx, 4, 16384, Duration::from_secs(5)));
+        let waiter = tokio::spawn(await_snapshot_resettle(
+            rx,
+            4,
+            16384,
+            Duration::from_secs(5),
+        ));
         // Transient mid-relaunch publish (not ready) must be ignored…
         let mut transitional = ServingSnapshot::empty();
         transitional.lanes = 1;
@@ -2606,7 +3517,12 @@ mod tests {
         // planner ran and held — resolves well before the (long) bound, so a
         // no-change solve pays reconcile-tick latency, never the full backstop.
         let (tx2, rx2) = tokio::sync::watch::channel(ServingSnapshot::empty());
-        let waiter2 = tokio::spawn(await_snapshot_resettle(rx2, 4, 16384, Duration::from_secs(30)));
+        let waiter2 = tokio::spawn(await_snapshot_resettle(
+            rx2,
+            4,
+            16384,
+            Duration::from_secs(30),
+        ));
         let mut same = ServingSnapshot::empty();
         same.lanes = 4;
         same.served_context_window = 16384;
@@ -2622,8 +3538,12 @@ mod tests {
 
         // Unchanged, BACKSTOP: a daemon that stops publishing ends at the bound.
         let (_tx3, rx3) = tokio::sync::watch::channel(ServingSnapshot::empty());
-        let waiter3 =
-            tokio::spawn(await_snapshot_resettle(rx3, 4, 16384, Duration::from_millis(80)));
+        let waiter3 = tokio::spawn(await_snapshot_resettle(
+            rx3,
+            4,
+            16384,
+            Duration::from_millis(80),
+        ));
         assert_eq!(waiter3.await.unwrap(), SnapshotSettle::Unchanged);
     }
 
@@ -2804,6 +3724,11 @@ mod tests {
         /// an adopted orphan (the conservative default that exercises the
         /// smoke-probe gate).
         owns: bool,
+        /// The slot count the fake's `/props` reports (`total_slots`). Defaults to
+        /// 0 = "the server named no slot count, nothing to compare", which is the
+        /// same lanes-OK verdict these tests had before the lane operand was probed
+        /// — so every pre-existing case still exercises the WINDOW axis alone.
+        served_lanes: u32,
         /// The per-slot window the fake's `/props` reports. Defaults to the tests'
         /// target window so the window-grow relaunch check (which only fires when
         /// target > served + tolerance) is a no-op for the model/adapter/decode
@@ -2820,6 +3745,7 @@ mod tests {
                 serves: AtomicUsize::new(0),
                 decode_ok: true,
                 owns: false,
+                served_lanes: 0,
                 served_window: 32768,
             }
         }
@@ -2827,6 +3753,13 @@ mod tests {
         /// the starved boot-floor case the window-grow relaunch must catch.
         fn with_served_window(mut self, n: u32) -> Self {
             self.served_window = n;
+            self
+        }
+        /// Model a lane whose live `/props total_slots` is what it is — the LANE
+        /// axis of the same grow-vs-adopt decision. Used to pin that a past form of
+        /// ourself already serving enough slots is ADOPTED, not reaped.
+        fn with_served_lanes(mut self, n: u32) -> Self {
+            self.served_lanes = n;
             self
         }
         fn serve_fails(mut self) -> Self {
@@ -2877,6 +3810,12 @@ mod tests {
             // check is a no-op unless a test deliberately floors it.
             Ok(self.served_window)
         }
+        async fn served_lanes(&self) -> Result<u32, LlamaServerError> {
+            // The slot count the fake's /props reports (configurable via
+            // `with_served_lanes`). Defaults to 0 = "nothing to compare", so the
+            // lane axis is inert unless a test deliberately sets it.
+            Ok(self.served_lanes)
+        }
         async fn decode_smoke_ok(&self) -> bool {
             self.decode_ok
         }
@@ -2892,7 +3831,10 @@ mod tests {
     fn target(id: &str) -> ServingTarget {
         use crate::model_registry::types::{Arch, MultiPartyChatStrategy};
         ServingTarget {
+            host_prompt_cache_mib: crate::inference::lane_args::CACHE_RAM_MIB,
             model: Model {
+                weights_bytes: None,
+                mmproj_bytes: None,
                 id: id.to_string(),
                 name: None,
                 provider: "llamacpp-local".to_string(),
@@ -2913,6 +3855,7 @@ mod tests {
                 parameter_count: 0,
                 sampling: crate::model_registry::types::ModelSampling::default(),
                 persona_serving_eligible: true,
+                serving: Default::default(), // test/fixture literal: substrate defaults (text-only main lane, unverified kv-shift)
             },
             context_window: 32768,
             lanes: 1,
@@ -2920,6 +3863,7 @@ mod tests {
             placement: LanePlacement::Gpu,
             expert_placement: None,
             resident_override: None,
+            vision_sidecar: false,
         }
     }
 
@@ -3004,6 +3948,85 @@ mod tests {
             ctrl.serves.load(Ordering::SeqCst),
             1,
             "exactly one relaunch to the larger window"
+        );
+    }
+
+    // what this catches: THE 2026-09-03 SLOW-RESUME defect — a warm lane REAPED for a
+    // trivial window drift. On reboot the boot plan re-computes the window against live
+    // memory, which climbs ~7% once the old core frees its share (measured 147712 →
+    // 158107). A flat 512-token tolerance (0.35% of a 147k lane) tripped a full ~7-10
+    // min 35B RELAUNCH on EVERY restart — the dominant "resume is slow" cost. Tolerance
+    // is now a percentage (max(512, served/8) ≈ 12.5%), so a warm lane within ~12.5% of
+    // the target is ADOPTED (warm-now beats cold-in-10-min); a genuinely starved lane
+    // (the 2× case above) still relaunches, and the runtime re-home grows a persistent
+    // gain later.
+    #[tokio::test]
+    async fn a_small_window_drift_adopts_the_warm_lane_not_a_slow_reload() {
+        // Owned + decode-healthy, serving 147712; the boot plan drifted to 158107 (~7%).
+        let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
+            .owned()
+            .with_served_window(147_712);
+        let mut t = target("coder-14b");
+        t.context_window = 158_107;
+        let outcome = ensure_model_serving(&ctrl, &t, false).await;
+        assert_eq!(
+            outcome,
+            EnsureOutcome::AlreadyServing,
+            "a ~7% window drift must ADOPT the warm lane, not reload it; got {outcome:?}"
+        );
+        assert_eq!(
+            ctrl.serves.load(Ordering::SeqCst),
+            0,
+            "zero relaunches — the warm 35B lane is reused, not reloaded"
+        );
+    }
+
+    // what this catches: THE 2026-08-19 DEFECT — a PAST FORM OF OURSELF being reaped
+    // instead of adopted. A lane this core did not spawn (crash survivor on the
+    // canonical port, named in our own custody record) already serves 4 slots at the
+    // target window. It must be ADOPTED with zero relaunches. Regression here — reading
+    // the lane count from `current_serving()` instead of the lane's own `/props` — makes
+    // a fresh core see 0 lanes for a lane it didn't spawn, decline, reap, and rebuild:
+    // measured live at ~110s of downtime, returning at 3 lanes and a SMALLER window than
+    // the lane that was already running.
+    #[tokio::test]
+    async fn a_past_form_of_ourself_serving_enough_lanes_is_adopted_not_reaped() {
+        // NOT owned (we did not spawn it) + decode-healthy + already at the target
+        // shape: the exact live crash-survivor case.
+        let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
+            .with_served_lanes(4)
+            .with_served_window(32768);
+        let mut t = target("coder-14b");
+        t.lanes = 4;
+        let outcome = ensure_model_serving(&ctrl, &t, false).await;
+        assert_eq!(
+            outcome,
+            EnsureOutcome::AlreadyServing,
+            "a healthy past form of ourself already at the target shape must be adopted"
+        );
+        assert_eq!(
+            ctrl.serves.load(Ordering::SeqCst),
+            0,
+            "adoption is FREE — reaping and reloading a lane that already fits is the bug"
+        );
+    }
+
+    // what this catches: the fix above must not disable lane grow-back (#214's sibling).
+    // A lane genuinely serving FEWER slots than the plan wants still has to relaunch —
+    // llama.cpp cannot hot-resize n_seq_max. Without this, "adopt more eagerly" would
+    // silently freeze every citizen at the squeezed slot count forever.
+    #[tokio::test]
+    async fn a_lane_serving_fewer_slots_than_planned_still_relaunches_to_grow() {
+        let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
+            .owned()
+            .with_served_lanes(1)
+            .with_served_window(32768); // window is FINE — only the lane count is short
+        let mut t = target("coder-14b");
+        t.lanes = 4;
+        let outcome = ensure_model_serving(&ctrl, &t, false).await;
+        assert!(
+            matches!(outcome, EnsureOutcome::Spawned { .. }),
+            "1 served slot against a 4-lane plan must relaunch to grow, got {outcome:?}"
         );
     }
 
@@ -3332,6 +4355,7 @@ mod tests {
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
+            loading_model: None,
         });
         assert!(!pred(&rx.borrow()));
         // not-ready but has a model → unsatisfied.
@@ -3348,6 +4372,7 @@ mod tests {
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
+            loading_model: None,
         });
         assert!(!pred(&rx.borrow()));
         // ready AND a model → satisfied, and wait_for resolves to it at once.
@@ -3364,6 +4389,7 @@ mod tests {
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
+            loading_model: None,
         });
         let got = tokio::time::timeout(Duration::from_millis(100), rx.wait_for(pred))
             .await

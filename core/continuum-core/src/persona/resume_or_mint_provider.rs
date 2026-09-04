@@ -110,6 +110,18 @@ impl ResumeOrMintProvider {
             minted_count: 0,
         })
     }
+
+    /// How many identities this provider WILL yield: every resumed citizen on
+    /// disk, floored by the mint floor. The spawner's plan must be sized to
+    /// THIS number, not to the floor alone — before #432, `plan.len()` came
+    /// from `CONTINUUM_PERSONA_FLOOR` while the provider held every resumed
+    /// seed, so with 5 seeds and floor=1 only the alphabetically-first citizen
+    /// came online and the rest sat on disk, silently unhosted. The floor
+    /// stays a MINT floor (how many to create when the disk is emptier than
+    /// it); it must never CAP how many existing citizens resume.
+    pub fn identities_available(&self) -> usize {
+        self.resumed.len().max(self.min_personas)
+    }
 }
 
 #[async_trait]
@@ -169,7 +181,9 @@ pub(crate) fn now_ms() -> u64 {
 ///
 /// Missing personas dir returns empty Vec — that's the "first boot"
 /// path and not an error.
-async fn scan_personas_dir(personas_dir: &Path) -> Result<Vec<PersonaIdentityIntent>, PersonaIdentityError> {
+async fn scan_personas_dir(
+    personas_dir: &Path,
+) -> Result<Vec<PersonaIdentityIntent>, PersonaIdentityError> {
     let mut entries = match tokio::fs::read_dir(personas_dir).await {
         Ok(e) => e,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -194,12 +208,15 @@ async fn scan_personas_dir(personas_dir: &Path) -> Result<Vec<PersonaIdentityInt
     // alphabetically so behavior is reproducible. Reviewer-defect-
     // driven (continuum #1507 finding 7).
     let mut dir_entries: Vec<std::path::PathBuf> = Vec::new();
-    while let Some(entry) = entries.next_entry().await.map_err(|source| {
-        PersonaIdentityError::HomeScanFailed {
-            path: personas_dir.to_path_buf(),
-            source,
-        }
-    })? {
+    while let Some(entry) =
+        entries
+            .next_entry()
+            .await
+            .map_err(|source| PersonaIdentityError::HomeScanFailed {
+                path: personas_dir.to_path_buf(),
+                source,
+            })?
+    {
         if !entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false) {
             // Each direct child of personas/ should be a persona
             // directory; non-dir entries (stray file, .DS_Store, etc.)
@@ -294,6 +311,46 @@ mod tests {
         assert!(exhausted.is_none());
     }
 
+    // what this catches (#432): the floor ORPHANING resumed citizens. The
+    // spawner's plan must be sized to identities_available() — every resumed
+    // seed on disk, floored by the mint floor — not to the floor alone. Before
+    // this, 5 seeds + floor=1 meant one hosted citizen and four sitting on
+    // disk, silently unhosted forever.
+    #[tokio::test]
+    async fn identities_available_counts_every_resumed_seed_above_the_floor() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        // Empty disk: the mint floor is the whole population.
+        let empty = ResumeOrMintProvider::new(temp.path(), 2)
+            .await
+            .expect("provider");
+        assert_eq!(empty.identities_available(), 2);
+
+        // Three seeds on disk with floor=1: every resumed citizen gets a slot.
+        // Same production layout + writer helper as the other resume tests.
+        let dir =
+            crate::context::citizens_kind_dir(temp.path(), crate::identity::IdentityKind::Persona);
+        for i in 0..3u32 {
+            let name = format!("Citizen{i}");
+            let seed = PersonaSeedFile::V1 {
+                persona_id: Uuid::from_u128(0x432_0000 + u128::from(i)),
+                agent_name: name.clone(),
+                created_at_ms: 1_717_200_000_000,
+                avatar_vrm: None,
+            };
+            write_seed_atomic(&dir.join(&name).join("seed.json"), &seed)
+                .await
+                .expect("write seed");
+        }
+        let provider = ResumeOrMintProvider::new(temp.path(), 1)
+            .await
+            .expect("provider");
+        assert_eq!(
+            provider.identities_available(),
+            3,
+            "floor must MINT, never CAP: all resumed citizens count"
+        );
+    }
+
     #[tokio::test]
     async fn resumes_one_plus_mints_to_floor() {
         let temp = TempDir::new().unwrap();
@@ -329,10 +386,8 @@ mod tests {
     async fn corrupted_seed_is_skipped_not_fatal() {
         let temp = TempDir::new().unwrap();
         // Canonical citizen layout (same helper production scans).
-        let citizens = crate::context::citizens_kind_dir(
-            temp.path(),
-            crate::identity::IdentityKind::Persona,
-        );
+        let citizens =
+            crate::context::citizens_kind_dir(temp.path(), crate::identity::IdentityKind::Persona);
         // Good persona.
         let good = citizens.join("Pax").join("seed.json");
         let seed = PersonaSeedFile::V1 {
@@ -354,7 +409,10 @@ mod tests {
         let first = provider.next_persona().await.unwrap().unwrap();
         assert_eq!(first.agent_name, "Pax");
         let exhausted = provider.next_persona().await.unwrap();
-        assert!(exhausted.is_none(), "broken seed should not have been yielded");
+        assert!(
+            exhausted.is_none(),
+            "broken seed should not have been yielded"
+        );
     }
 
     #[tokio::test]

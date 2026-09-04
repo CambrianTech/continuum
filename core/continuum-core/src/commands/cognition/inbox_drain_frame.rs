@@ -31,7 +31,10 @@ fn default_max_items() -> usize {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/InboxDrainFrameParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/InboxDrainFrameParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct InboxDrainFrameParams {
     /// Persona whose inbox is drained.
@@ -55,7 +58,10 @@ pub struct InboxDrainFrameParams {
 /// panics the whole `command_registry()` walk. `frame == None` preserves the
 /// contract: the coalescing window was empty (no-op).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/InboxDrainFrameResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/InboxDrainFrameResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct InboxDrainFrameResult {
     pub frame: Option<PersonaInboxFrame>,

@@ -1158,7 +1158,10 @@ mod tests {
             .revoke_leases_for(500_000, PressureTier::Normal, 200)
             .expect("expired lease is reclaimable");
         assert_eq!(outcome.bytes_freed, 1_000_000);
-        assert_eq!(outcome.revoked, vec![("expired-pin".to_string(), 1_000_000)]);
+        assert_eq!(
+            outcome.revoked,
+            vec![("expired-pin".to_string(), 1_000_000)]
+        );
         assert_eq!(reg.total_bytes(), 0, "footprint actually returned");
     }
 

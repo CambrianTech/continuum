@@ -338,10 +338,12 @@ impl RecallMetadataRegistry {
     /// salience to ~0 immediately.
     pub fn admit_with_defaults(&self, engram_id: Uuid) {
         let now = now_ms();
-        self.inner.entry(engram_id).or_insert_with(|| RecallMetadata {
-            last_decayed_ms: now,
-            ..RecallMetadata::default()
-        });
+        self.inner
+            .entry(engram_id)
+            .or_insert_with(|| RecallMetadata {
+                last_decayed_ms: now,
+                ..RecallMetadata::default()
+            });
     }
 
     /// Record a recall hit. Atomic increment of access_count +
@@ -622,7 +624,10 @@ mod tests {
             r.record_recall_hit(id, 1_000_000 + i * 1000);
         }
         let s = r.get(id).unwrap().salience;
-        assert!(s <= RECALL_UPLIFT_CEILING + f32::EPSILON, "recall alone must not exceed the ceiling: {s}");
+        assert!(
+            s <= RECALL_UPLIFT_CEILING + f32::EPSILON,
+            "recall alone must not exceed the ceiling: {s}"
+        );
         assert!(s > 0.85, "but it should still climb close to it: {s}");
 
         // A memory admitted ABOVE the ceiling keeps its value — recall neither lifts
@@ -632,7 +637,11 @@ mod tests {
         md.salience = 0.97;
         r.admit(hi, md);
         r.record_recall_hit(hi, 2_000_000);
-        assert_eq!(r.get(hi).unwrap().salience, 0.97, "recall must not disturb an already-important memory");
+        assert_eq!(
+            r.get(hi).unwrap().salience,
+            0.97,
+            "recall must not disturb an already-important memory"
+        );
     }
 
     #[test]
@@ -686,7 +695,10 @@ mod tests {
         // Try to decay during protection window. Should be no-op.
         r.apply_decay(id, 1_000_000);
         let after = r.get(id).unwrap();
-        assert_eq!(after.salience, 0.8, "protection window failed to prevent decay");
+        assert_eq!(
+            after.salience, 0.8,
+            "protection window failed to prevent decay"
+        );
     }
 
     #[test]
@@ -815,7 +827,10 @@ mod tests {
         let ridiculous_time_ms: u64 = 1_000_000 * 365 * 24 * 3_600_000;
         r.apply_decay(id, ridiculous_time_ms);
         let after_decay = r.get(id).unwrap();
-        assert_eq!(after_decay.salience, 1.0, "permanent pin must protect forever");
+        assert_eq!(
+            after_decay.salience, 1.0,
+            "permanent pin must protect forever"
+        );
         assert_eq!(after_decay.protected_until_ms, PERMANENT_PROTECTION);
     }
 
@@ -1047,7 +1062,6 @@ mod tests {
             after.is_none(),
             "ON DELETE CASCADE must wipe the recall-metadata row when its engram is deleted"
         );
-
     }
 
     // what this catches: the supersession demotion contract (#221 slice 2) — a

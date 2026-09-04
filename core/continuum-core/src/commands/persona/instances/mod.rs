@@ -28,6 +28,7 @@ use crate::sdk_codegen::DynCommand;
 
 pub mod despawn;
 pub mod get;
+pub mod hold;
 pub mod list;
 
 use despawn::PersonaDespawn;

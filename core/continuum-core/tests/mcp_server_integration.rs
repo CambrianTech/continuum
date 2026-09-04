@@ -91,12 +91,18 @@ async fn mcp_tools_list_round_trips_to_core_catalog() {
 
     let v: serde_json::Value = serde_json::from_str(&resp).expect("response is JSON");
     assert_eq!(v["id"].as_i64(), Some(2), "id echoed: {v}");
-    assert!(v["error"].is_null(), "tools/list reached the core cleanly: {v}");
+    assert!(
+        v["error"].is_null(),
+        "tools/list reached the core cleanly: {v}"
+    );
 
     let tools = v["result"]["tools"]
         .as_array()
         .unwrap_or_else(|| panic!("tools array present: {v}"));
-    assert!(!tools.is_empty(), "live core exposes a non-empty tool catalog");
+    assert!(
+        !tools.is_empty(),
+        "live core exposes a non-empty tool catalog"
+    );
 
     let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
     assert!(

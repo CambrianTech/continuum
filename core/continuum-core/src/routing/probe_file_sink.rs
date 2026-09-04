@@ -328,6 +328,15 @@ where
     S: Subscriber + for<'lookup> LookupSpan<'lookup>,
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+        // ZERO-COST GATE (2026-08-23 serialization audit): callsite field sets
+        // are static metadata — asking whether `probe_class` exists allocates
+        // nothing. Without this, EVERY tracing event in the process and its
+        // dependency crates paid a full visitor walk (a String per field into a
+        // HashMap) in this layer, then discarded it. The span path got exactly
+        // this fix in PR #1541 R2; the event path never did.
+        if event.metadata().fields().field("probe_class").is_none() {
+            return;
+        }
         // Same visit pattern as ProbeRouterLayer: pull probe_class +
         // message + every other field off the tracing event. The
         // visitor is private here (not exported from probe_router)
@@ -403,9 +412,7 @@ where
         // Class filter applies to timing spans just as it does to
         // event-shape probes; an operator filtering to
         // `persona.render.exit` shouldn't see timing noise.
-        if !self.allowed_classes.is_empty()
-            && !self.allowed_classes.contains(&probe_event.class)
-        {
+        if !self.allowed_classes.is_empty() && !self.allowed_classes.contains(&probe_event.class) {
             return;
         }
 
@@ -449,7 +456,10 @@ pub(crate) fn class_passes_filter(class: &str, filter: &HashSet<String>) -> bool
         return true;
     }
     filter.iter().any(|f| {
-        class == f || (class.len() > f.len() + 1 && class.starts_with(f) && class[f.len()..].starts_with('.'))
+        class == f
+            || (class.len() > f.len() + 1
+                && class.starts_with(f)
+                && class[f.len()..].starts_with('.'))
     })
 }
 
@@ -559,7 +569,10 @@ mod tests {
         assert_eq!(lines.len(), 2);
 
         let classes: Vec<&str> = lines.iter().map(|l| l["class"].as_str().unwrap()).collect();
-        assert_eq!(classes, vec!["persona.render.exit", "cognition.analyze.cache_hit"]);
+        assert_eq!(
+            classes,
+            vec!["persona.render.exit", "cognition.analyze.cache_hit"]
+        );
 
         // The first line should preserve the message + fields the
         // probe! call carried, so an operator reading the log can
@@ -593,9 +606,12 @@ mod tests {
         });
 
         let lines = read_jsonl(&path);
-        assert_eq!(lines.len(), 2, "namespace prefix must drop both non-matching classes");
-        let kept_classes: Vec<&str> =
-            lines.iter().map(|l| l["class"].as_str().unwrap()).collect();
+        assert_eq!(
+            lines.len(),
+            2,
+            "namespace prefix must drop both non-matching classes"
+        );
+        let kept_classes: Vec<&str> = lines.iter().map(|l| l["class"].as_str().unwrap()).collect();
         assert!(kept_classes.contains(&"persona.turn.spoke"));
         assert!(kept_classes.contains(&"persona.response.render.prompt"));
     }

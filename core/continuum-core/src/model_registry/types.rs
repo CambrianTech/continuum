@@ -31,7 +31,10 @@ use std::path::PathBuf;
     ts_rs::TS,
     schemars::JsonSchema,
 )]
-#[ts(export, export_to = "../../../protocol/typescript/model_registry/Arch.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/model_registry/Arch.ts"
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Arch {
     Qwen2,
@@ -341,6 +344,87 @@ pub struct ModelSampling {
     pub frequency_penalty: f32,
 }
 
+/// Per-model SERVING truths (2026-08-24) — how this model behaves on a llama
+/// lane, stamped where measured. The substrate serves MANY models; anything a
+/// lane decision branches on lives HERE as model truth, never as a blanket
+/// policy that bakes one model's quirk into the architecture (Joel: "we are not
+/// designing around one model but many").
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelServingPrefs {
+    /// Load the vision projector on the MAIN persona lane. Default FALSE:
+    /// llama-server hard-disables `--cache-reuse` on a multimodal lane
+    /// ("cache_reuse is not supported by multimodal"), and chunk reuse is worth
+    /// ~60-90s of re-prefill per act to every persona. Sight then routes through
+    /// the vision sidecar + description bridge — the same path every text-only
+    /// mind uses. A VL-first deployment (live-call heavy, KV economy secondary)
+    /// opts IN per model.
+    pub mmproj_on_main_lane: bool,
+    /// Can this model's KV cache shift (llama context-shift / cache_reuse
+    /// realignment)? `None` = unverified. `Some(false)` = measured incapable
+    /// (hybrid/SWA attention — llama logs "cache_reuse is not supported by this
+    /// context"): prompt shaping must then treat the prefix as EXTEND-ONLY,
+    /// because any interior mutation re-prefills everything after it.
+    pub kv_shiftable: Option<bool>,
+    /// Tensor-name patterns pinned to HOST memory (`--override-tensor "<pat>=CPU"`),
+    /// for models whose lookup tables are DESIGNED disk/host-resident. Embedding
+    /// gathers are memory reads, not matmul — inference stays GPU-only while the
+    /// table pages from SSD via mmap. (Flash-Next: `per_layer_token_embd`, a
+    /// single 35.8 GB n-gram table that CANNOT be Metal-resident beside 43 GB of
+    /// compute weights on a 64 GB machine — measured 2026-08-28, zero OOMs with
+    /// the pin vs instant kIOGPUCommandBufferCallbackErrorOutOfMemory without.)
+    /// Serde-skipped: consumed in-process at spawn from the catalog row; the
+    /// wire echo of prefs never drives a spawn.
+    #[serde(skip)]
+    pub host_pinned_tensors: &'static [&'static str],
+    /// Disable llama-server's `-fit` auto-sizing (default false = fit runs).
+    /// Models with host-pinned tensors opt OUT: fit's device-memory heuristics
+    /// count the pinned table as loadable and mis-size everything downstream.
+    #[serde(default)]
+    pub fit_off: bool,
+    /// Skip the load-time warmup pass (default false = warmup runs). True for
+    /// models whose warmup would fault a designed-cold tensor set fully into
+    /// RAM (Flash-Next: warmup walks the 35.8 GB table the pin exists to keep cold).
+    #[serde(default)]
+    pub no_warmup: bool,
+    /// Per-model ceiling on `--ubatch-size` (`None` = the lane default stands).
+    /// The lane default is sized for the resident coder lane's compute buffer;
+    /// a bigger-geometry model can need less (Flash-Next verified at 512).
+    #[serde(default)]
+    pub max_ubatch: Option<u32>,
+    /// Token budget for the model's THINKING phase (`--reasoning-budget`).
+    /// `None` = unrestricted (the llama default). External receipt 2026-08-28:
+    /// Flash-Next spent 40,265 thinking tokens before a 21k answer on one hard
+    /// prompt — uncapped on a 32k serving window it dies mid-think and the
+    /// harness misreads "wasn't allowed to finish" as "can't solve". A miss
+    /// that terminates AT this cap is a geometry loss, not an intelligence
+    /// loss, and gets annotated for retest under a larger window.
+    #[serde(default)]
+    pub reasoning_budget: Option<u32>,
+    /// VERIFIED serving-context ceiling — the largest window this model has
+    /// actually SERVED on this class of hardware without faulting. Clamps the
+    /// planner's window below the GGUF's trained max. The trained max is the
+    /// model's claim; this is our receipt (Flash-Next: 32k verified, the
+    /// planner's 46848 Metal-OOM'd every deep prefill for six hours, 8/29).
+    #[serde(default)]
+    pub verified_ctx_ceiling: Option<u32>,
+}
+
+impl Default for ModelServingPrefs {
+    fn default() -> Self {
+        Self {
+            mmproj_on_main_lane: false,
+            kv_shiftable: None,
+            host_pinned_tensors: &[],
+            fit_off: false,
+            no_warmup: false,
+            max_ubatch: None,
+            reasoning_budget: None,
+            verified_ctx_ceiling: None,
+        }
+    }
+}
+
 impl Default for ModelSampling {
     /// The substrate floor — conservative chat defaults + the #181 anti-loop
     /// pair. The ONE place these numbers live; `SamplingProfile::chat_defaults`
@@ -429,6 +513,26 @@ pub struct Model {
     /// server-side and leave this absent.
     #[serde(default)]
     pub mmproj_local_path: Option<PathBuf>,
+    /// Size on disk of the resolved GGUF, in bytes. Hydrated ONCE by
+    /// [`resolve_model_artifacts`](crate::model_registry::artifacts::resolve_model_artifacts)
+    /// at the same moment `gguf_local_path` is resolved — the artifact's path and its
+    /// size are one fact discovered together, so they are stored together.
+    ///
+    /// It lives on the row because it is an input to EVERY residency estimate
+    /// (`weights + lanes × kv(window) + compute reserve`), and those estimates run on
+    /// the governor's accounting tick. Deriving it by `stat`ing the file per call —
+    /// which is what `footprint_for` used to do — means a syscall per poll for a number
+    /// that cannot change while the path is valid, and it puts filesystem I/O on a hot
+    /// path that must not block. `None` means "not resolved yet", never "zero bytes".
+    #[serde(default)]
+    pub weights_bytes: Option<u64>,
+    /// Size on disk of the resolved multimodal projector, in bytes. Same hydration and
+    /// the same reason as [`weights_bytes`](Self::weights_bytes) — and it is a REAL
+    /// residency term the weights alone omit: a vision lane loads the projector
+    /// alongside the model, so an estimate that counts only the GGUF under-reports a
+    /// vision lane by the projector's whole size.
+    #[serde(default)]
+    pub mmproj_bytes: Option<u64>,
     /// Jinja chat template the adapter feeds to llama.cpp's renderer.
     /// Source of truth ordering: (1) template embedded in the GGUF's
     /// own metadata (`tokenizer.chat_template`), (2) this field, (3)
@@ -473,6 +577,11 @@ pub struct Model {
     /// row that doesn't tune sampling is byte-identical to the pre-#76 default.
     #[serde(default)]
     pub sampling: ModelSampling,
+    /// Per-model serving truths (see [`ModelServingPrefs`]) — lane decisions
+    /// branch on the ROW, never on a hardcoded model name. Omitted rows get the
+    /// defaults (text-only main lane, unverified kv-shift) via serde.
+    #[serde(default)]
+    pub serving: ModelServingPrefs,
     /// Whether the autonomic serving planner may pick this row to host the
     /// PERSONAS. Benchmark opponents and campaign-roster rows carry real Ready
     /// GGUFs (so the matrix can serve them on demand) but must NEVER be

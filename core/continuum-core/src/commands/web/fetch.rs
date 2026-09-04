@@ -3,13 +3,13 @@
 use super::{web_fetch, WebFetchParams, WebFetchResult};
 
 crate::action_command! {
-    /// Fetch a URL and READ its text — a doc page, API reference, article, or a result
-    /// `web/search` returned. Strips scripts/markup and returns clean, capped text you can
-    /// quote or reason over. This is how you actually read what you find online instead of
-    /// guessing from a snippet. Pair it with `web/search`: search to find the page, fetch to read it.
+    /// Read a web page's full text (a doc, API reference, raw source file, or a web/search
+    /// result) with real lines. `filter` greps it to just what you need; a large page is
+    /// pageable via tool/output. Never returns a silent empty result.
     pub struct WebFetch;
     name: "web/fetch",
     access: AiSafe,
+    native: true, // her hands must be able to REACH the web (a native-call model can only emit calls in its offered specs); I forage constantly, so must she — direct SWE/task score lever
     params: WebFetchParams,
     output: WebFetchResult,
     run(_this, _ctx, p) => { web_fetch(p).await }

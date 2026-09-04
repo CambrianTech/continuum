@@ -16,4 +16,20 @@ peer_id: string,
  * SWE instances already staged in her workspace (`workspace/swe/<id>` with a `.git`).
  * Non-empty here is the REUSE signal: dispatch found the checkout and skipped cloning.
  */
-staged_swe: Array<string>, };
+staged_swe: Array<string>, 
+/**
+ * Is she RESIDENT — a live service loop, i.e. actually in the room and able to take
+ * a turn?
+ *
+ * REGISTRATION IS NOT RESIDENCY, and this row used to report only the former.
+ * Measured 2026-08-18: for ~15 minutes after a reboot this command listed Atlas and
+ * Benchy while `persona.inbound.subscribe_opened` was 0 — hosting was correctly parked
+ * waiting for the serving lane to prove it could decode (#363), so neither had a
+ * perception stream. A round was staged into that window on the strength of THIS
+ * roster: cards posted, `kickoffs: 2`, `kickoff_errors: []`, zero turns.
+ *
+ * `false` means she exists but is not in the room yet — usually hosting waiting on a
+ * serving lane (watch `inference.lane_relaunch_retry`), which self-heals on the next
+ * serving-plan edge. Work must NOT be staged for a citizen whose `resident` is false.
+ */
+resident: boolean, };

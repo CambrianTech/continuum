@@ -6,9 +6,7 @@ use crate::modules::data::DataState;
 use crate::orm::types::StorageResult;
 
 /// Params for `data/list-collections`.
-#[derive(
-    Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,

@@ -348,10 +348,16 @@ impl AdmissionPersistenceSink for RecordingSink {
         "recording"
     }
     fn observe_admission(&self, engram: &Engram, metadata: RecallMetadata) {
-        self.admissions.lock().unwrap().push((engram.clone(), metadata));
+        self.admissions
+            .lock()
+            .unwrap()
+            .push((engram.clone(), metadata));
     }
     fn observe_metadata_update(&self, engram_id: Uuid, metadata: RecallMetadata) {
-        self.metadata_updates.lock().unwrap().push((engram_id, metadata));
+        self.metadata_updates
+            .lock()
+            .unwrap()
+            .push((engram_id, metadata));
     }
     fn observe_content_update(&self, engram: &Engram) {
         self.content_updates.lock().unwrap().push(engram.clone());
@@ -417,14 +423,7 @@ impl OrmLoader {
     /// longer scans the whole table).
     pub async fn load_with_row_ids(
         &self,
-    ) -> Result<
-        (
-            Vec<Engram>,
-            Vec<(Uuid, RecallMetadata)>,
-            Vec<(Uuid, Uuid)>,
-        ),
-        OrmStoreError,
-    > {
+    ) -> Result<(Vec<Engram>, Vec<(Uuid, RecallMetadata)>, Vec<(Uuid, Uuid)>), OrmStoreError> {
         let engrams_with_ids = self.engram_store.find_all().await?;
         let metadata_with_ids = self.metadata_store.find_all().await?;
         let engrams: Vec<Engram> = engrams_with_ids.into_iter().map(|(_, e)| e).collect();
@@ -570,7 +569,7 @@ mod tests {
                 id: Uuid::new_v4(),
                 room_id: Uuid::new_v4(),
                 sender_id: Uuid::new_v4(),
-                sender_name: "joel".to_string(),
+                sender_name: "operator".to_string(),
                 sender_type: crate::persona::types::SenderType::Human,
                 content: "persistence proof engram alpha".to_string(),
                 timestamp: 1_000,
@@ -582,7 +581,7 @@ mod tests {
                 id: Uuid::new_v4(),
                 room_id: Uuid::new_v4(),
                 sender_id: Uuid::new_v4(),
-                sender_name: "joel".to_string(),
+                sender_name: "operator".to_string(),
                 sender_type: crate::persona::types::SenderType::Human,
                 content: "persistence proof engram beta".to_string(),
                 timestamp: 2_000,
@@ -646,7 +645,6 @@ mod tests {
             scored_ids, original_ids,
             "recall after restart returns the originally-admitted engram ids"
         );
-
     }
 
     /// What this catches: the PORTABILITY invariant for a persona's
@@ -758,6 +756,5 @@ mod tests {
             }
             tokio::task::yield_now().await;
         }
-
     }
 }

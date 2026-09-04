@@ -96,9 +96,11 @@ impl OpenAIFineTuningAdapter {
                     { "role": "assistant", "content": example.completion },
                 ],
             });
-            jsonl.push_str(&serde_json::to_string(&line).map_err(|e| {
-                FineTuningError::InvalidRequest(format!("serialize example: {e}"))
-            })?);
+            jsonl.push_str(
+                &serde_json::to_string(&line).map_err(|e| {
+                    FineTuningError::InvalidRequest(format!("serialize example: {e}"))
+                })?,
+            );
             jsonl.push('\n');
         }
 
@@ -159,10 +161,7 @@ impl FineTuningAdapter for OpenAIFineTuningAdapter {
         }
     }
 
-    async fn create_job(
-        &self,
-        request: TrainingJobRequest,
-    ) -> Result<JobHandle, FineTuningError> {
+    async fn create_job(&self, request: TrainingJobRequest) -> Result<JobHandle, FineTuningError> {
         let api_key = self.require_api_key()?;
 
         // Stage 1: upload the dataset.

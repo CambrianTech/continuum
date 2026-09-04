@@ -106,9 +106,7 @@ impl FromStr for BootMode {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error(
-    "unknown --mode={0:?} — valid: full-citizen (default), inference-only, fail-fast"
-)]
+#[error("unknown --mode={0:?} — valid: full-citizen (default), inference-only, fail-fast")]
 pub struct BootModeParseError(pub String);
 
 /// Parse `--mode=<value>` out of an argv vector. Removes the
@@ -168,23 +166,41 @@ mod tests {
 
     #[test]
     fn parse_canonical_forms() {
-        assert_eq!("full-citizen".parse::<BootMode>().unwrap(), BootMode::FullCitizen);
-        assert_eq!("inference-only".parse::<BootMode>().unwrap(), BootMode::InferenceOnly);
+        assert_eq!(
+            "full-citizen".parse::<BootMode>().unwrap(),
+            BootMode::FullCitizen
+        );
+        assert_eq!(
+            "inference-only".parse::<BootMode>().unwrap(),
+            BootMode::InferenceOnly
+        );
         assert_eq!("fail-fast".parse::<BootMode>().unwrap(), BootMode::FailFast);
     }
 
     #[test]
     fn parse_aliases() {
         assert_eq!("full".parse::<BootMode>().unwrap(), BootMode::FullCitizen);
-        assert_eq!("citizen".parse::<BootMode>().unwrap(), BootMode::FullCitizen);
-        assert_eq!("inference".parse::<BootMode>().unwrap(), BootMode::InferenceOnly);
+        assert_eq!(
+            "citizen".parse::<BootMode>().unwrap(),
+            BootMode::FullCitizen
+        );
+        assert_eq!(
+            "inference".parse::<BootMode>().unwrap(),
+            BootMode::InferenceOnly
+        );
         assert_eq!("strict".parse::<BootMode>().unwrap(), BootMode::FailFast);
     }
 
     #[test]
     fn parse_is_case_insensitive_and_trims() {
-        assert_eq!("  Full-Citizen  ".parse::<BootMode>().unwrap(), BootMode::FullCitizen);
-        assert_eq!("INFERENCE-ONLY".parse::<BootMode>().unwrap(), BootMode::InferenceOnly);
+        assert_eq!(
+            "  Full-Citizen  ".parse::<BootMode>().unwrap(),
+            BootMode::FullCitizen
+        );
+        assert_eq!(
+            "INFERENCE-ONLY".parse::<BootMode>().unwrap(),
+            BootMode::InferenceOnly
+        );
     }
 
     #[test]

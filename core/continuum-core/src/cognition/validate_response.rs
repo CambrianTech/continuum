@@ -184,11 +184,7 @@ pub async fn evaluate_validate_response(
     // Device = `Auto` — cognition is model-driven, not device-driven.
     // See cognition/generate_response.rs:285 doctrine note.
     let (_provider_id, adapter) = registry
-        .select(
-            Some(VALIDATE_PROVIDER),
-            Some(&model),
-            InferenceDevice::Auto,
-        )
+        .select(Some(VALIDATE_PROVIDER), Some(&model), InferenceDevice::Auto)
         .ok_or_else(|| ValidateResponseError::NoAdapter {
             provider: VALIDATE_PROVIDER.to_string(),
             model: Some(model.clone()),

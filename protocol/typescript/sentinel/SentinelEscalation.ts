@@ -14,11 +14,11 @@ export type SentinelEscalation = {
 /**
  * Owning persona for inbox delivery
  */
-parentPersonaId: string | null, 
+parentPersonaId?: string, 
 /**
  * SentinelEntity ID for execution history persistence
  */
-entityId: string | null, 
+entityId?: string, 
 /**
  * Human-readable name for escalation messages
  */
@@ -28,4 +28,4 @@ sentinelName: string,
  * [`default_escalation_rules`]. The wire shape is typed (not
  * `Value` pass-through) now that TS no longer owns the schema.
  */
-escalationRules: Array<EscalationRule> | null, };
+escalationRules?: Array<EscalationRule>, };

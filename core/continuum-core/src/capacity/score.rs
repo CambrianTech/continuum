@@ -33,10 +33,20 @@ pub struct FacultyScore {
 
 impl FacultyScore {
     pub fn critical(name: &'static str, value: f32) -> Self {
-        Self { name, value: value.clamp(0.0, 1.0), role: Role::Critical }
+        Self {
+            name,
+            value: value.clamp(0.0, 1.0),
+            role: Role::Critical,
+        }
     }
     pub fn quality(name: &'static str, value: f32, weight: f32) -> Self {
-        Self { name, value: value.clamp(0.0, 1.0), role: Role::Quality { weight: weight.max(0.0) } }
+        Self {
+            name,
+            value: value.clamp(0.0, 1.0),
+            role: Role::Quality {
+                weight: weight.max(0.0),
+            },
+        }
     }
 }
 
@@ -94,7 +104,10 @@ mod tests {
             FacultyScore::quality("latency", 0.9, 2.0),
         ];
         let good = score_experience(&excellent);
-        assert!(good > 0.9, "all faculties present + strong → a great experience, got {good}");
+        assert!(
+            good > 0.9,
+            "all faculties present + strong → a great experience, got {good}"
+        );
 
         // Pull ONLY speak; everything else stays perfect.
         let mut muted = excellent;
@@ -133,6 +146,9 @@ mod tests {
             "the same poor latency must hurt a live room more than a code-gen job \
              (codegen={codegen}, liveroom={liveroom})"
         );
-        assert!(codegen > 0.85, "slow-but-excellent code-gen stays strong, got {codegen}");
+        assert!(
+            codegen > 0.85,
+            "slow-but-excellent code-gen stays strong, got {codegen}"
+        );
     }
 }

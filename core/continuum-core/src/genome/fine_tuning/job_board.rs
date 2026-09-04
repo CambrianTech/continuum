@@ -90,6 +90,13 @@ pub struct WatchedJob {
     /// gene is unmeasurable and the sentinel refuses to adopt it (never falls back to
     /// a default gym — [[fallbacks-are-illegal-fail-loud]]).
     pub eval_set: Option<String>,
+    /// The gene's embedding-space identity, MINTED at `genome/job-create` — the
+    /// one moment the training corpus is in hand (before this field the chain
+    /// broke there: an adopted gene's corpus was unreferenceable, audited
+    /// 2026-08-22). Carried here so the sentinel can stamp it into the
+    /// signature sidecar at adoption. `None` = mint failed or predates the
+    /// field; the gene still adopts, it just routes by the fallback path.
+    pub signature: Option<crate::genome::signature::GeneSignature>,
 }
 
 /// Process-global registry of in-flight training jobs. DashMap-backed so the L2
@@ -294,6 +301,7 @@ mod tests {
             base_model: "qwen3-coder".to_string(),
             trait_kind: "code".to_string(),
             eval_set: Some("docs/genome/coder-eval.jsonl".to_string()),
+            signature: None,
         }
     }
 
@@ -308,7 +316,11 @@ mod tests {
         board.register(watched(id, "local-candle"));
 
         assert_eq!(board.len(), 1, "registered job must be in flight");
-        assert_eq!(board.snapshot().len(), 1, "snapshot sees the registered job");
+        assert_eq!(
+            board.snapshot().len(),
+            1,
+            "snapshot sees the registered job"
+        );
 
         let claimed = board.claim(id).expect("first claim returns the job");
         assert_eq!(claimed.handle.local_id, id);

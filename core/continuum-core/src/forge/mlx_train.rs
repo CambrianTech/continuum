@@ -265,10 +265,10 @@ pub fn prepare_base_for_mlx(
     // 1. model_type dispatch rewrite (e.g. qwen3_5_text → qwen3_5).
     if let Some(want) = &prep.model_type_override {
         let path = base_model_dir.join("config.json");
-        let text = std::fs::read_to_string(&path)
-            .map_err(|e| format!("read {}: {e}", path.display()))?;
-        let mut cfg: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|e| format!("parse {}: {e}", path.display()))?;
+        let text =
+            std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        let mut cfg: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| format!("parse {}: {e}", path.display()))?;
         let cur = cfg
             .get("model_type")
             .and_then(|v| v.as_str())
@@ -277,8 +277,7 @@ pub fn prepare_base_for_mlx(
             cfg["model_type"] = serde_json::Value::String(want.clone());
             let pretty = serde_json::to_string_pretty(&cfg)
                 .map_err(|e| format!("serialize config.json: {e}"))?;
-            std::fs::write(&path, pretty)
-                .map_err(|e| format!("write {}: {e}", path.display()))?;
+            std::fs::write(&path, pretty).map_err(|e| format!("write {}: {e}", path.display()))?;
             changes.push(format!(
                 "config.json model_type {:?} → {:?}",
                 cur.as_deref().unwrap_or("(absent)"),
@@ -290,10 +289,10 @@ pub fn prepare_base_for_mlx(
     // 2. chat_template — only ADD when absent (never overwrite a real template).
     if let Some(template) = &prep.chat_template {
         let path = base_model_dir.join("tokenizer_config.json");
-        let text = std::fs::read_to_string(&path)
-            .map_err(|e| format!("read {}: {e}", path.display()))?;
-        let mut cfg: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|e| format!("parse {}: {e}", path.display()))?;
+        let text =
+            std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        let mut cfg: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| format!("parse {}: {e}", path.display()))?;
         let has = cfg
             .get("chat_template")
             .map(|v| !v.is_null())
@@ -302,8 +301,7 @@ pub fn prepare_base_for_mlx(
             cfg["chat_template"] = serde_json::Value::String(template.clone());
             let pretty = serde_json::to_string_pretty(&cfg)
                 .map_err(|e| format!("serialize tokenizer_config.json: {e}"))?;
-            std::fs::write(&path, pretty)
-                .map_err(|e| format!("write {}: {e}", path.display()))?;
+            std::fs::write(&path, pretty).map_err(|e| format!("write {}: {e}", path.display()))?;
             changes.push("tokenizer_config.json: added chat_template".to_string());
         }
     }
@@ -407,7 +405,11 @@ fn acquire_train_slot(
             );
             Ok(Some(guard))
         }
-        Err(LeaseError::InsufficientCapacity { available, requested, .. }) => Err(format!(
+        Err(LeaseError::InsufficientCapacity {
+            available,
+            requested,
+            ..
+        }) => Err(format!(
             "governor refused the training lease: needs {requested}B of VRAM/UMA but only \
              {available}B is available (live serving + other consumers hold the rest). \
              Refusing to launch mlx_lm.lora rather than OOM the machine mid-forge — free \
@@ -499,11 +501,8 @@ pub fn run_mlx_train(
     // this fn returns, AFTER `child.wait()` below — free the process, then the accounting)
     // so a concurrent serving tick sees the training bytes as taken and won't tier up into
     // them. Fails LOUD if the governor can't fit it — never OOM a live video-chat mid-forge.
-    let footprint = derive_train_footprint_bytes(
-        &spec.base_model_dir,
-        spec.batch_size,
-        spec.max_seq_length,
-    );
+    let footprint =
+        derive_train_footprint_bytes(&spec.base_model_dir, spec.batch_size, spec.max_seq_length);
     let _train_lease = acquire_train_slot(footprint, &spec.base_model_dir)?;
 
     // --- spawn the trainer, STREAMING stdout for live progress ---
@@ -536,7 +535,10 @@ pub fn run_mlx_train(
 
     if let Some(stdout) = child.stdout.take() {
         use std::io::BufRead;
-        for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+        for line in std::io::BufReader::new(stdout)
+            .lines()
+            .map_while(Result::ok)
+        {
             if let Some((step, loss)) = parse_mlx_progress(&line) {
                 on_progress(step, loss);
             }
@@ -625,7 +627,11 @@ mod tests {
         std::fs::write(dir.path().join("config.json"), br#"{"vocab_size": 1000}"#).unwrap();
         let est = derive_train_footprint_bytes(dir.path(), 2, 128).expect("sizes");
         // weights 4000 + logits 2×128×1000×4×2 + slop 4000/8
-        assert_eq!(est, 4000 + 2 * 128 * 1000 * 4 * 2 + 500, "sum of named terms");
+        assert_eq!(
+            est,
+            4000 + 2 * 128 * 1000 * 4 * 2 + 500,
+            "sum of named terms"
+        );
 
         // vocab missing → None (can't derive the dominant term → ungoverned, probed).
         std::fs::write(dir.path().join("config.json"), b"{}").unwrap();
@@ -646,7 +652,10 @@ mod tests {
     fn capped_argv_pins_the_allocator_to_the_grant() {
         let cfg = PathBuf::from("/out/cfg.yaml");
         let plain = build_train_argv(&spec(), &cfg, None);
-        assert_eq!(&plain[..3], &["-m".to_string(), "mlx_lm".into(), "lora".into()]);
+        assert_eq!(
+            &plain[..3],
+            &["-m".to_string(), "mlx_lm".into(), "lora".into()]
+        );
 
         let capped = build_train_argv(&spec(), &cfg, Some(12_345_678));
         assert_eq!(capped[0], "-c");
@@ -655,7 +664,10 @@ mod tests {
             "wrapper must pin the granted bytes: {}",
             capped[1]
         );
-        assert!(capped[1].contains("lora.main()"), "wrapper delegates to mlx_lm.lora");
+        assert!(
+            capped[1].contains("lora.main()"),
+            "wrapper delegates to mlx_lm.lora"
+        );
         // The CLI tail is identical to the plain form's (everything after `lora`).
         assert_eq!(&capped[2..], &plain[3..], "same CLI args reach the trainer");
     }
@@ -769,7 +781,9 @@ mod tests {
         let cfg = PathBuf::from("/out/mlx_train_config.yaml");
         let mut off = spec();
         off.grad_checkpoint = false;
-        assert!(!build_train_args(&off, &cfg).iter().any(|a| a == "--grad-checkpoint"));
+        assert!(!build_train_args(&off, &cfg)
+            .iter()
+            .any(|a| a == "--grad-checkpoint"));
         let mut on = spec();
         on.grad_checkpoint = true;
         let on_args = build_train_args(&on, &cfg);
@@ -797,10 +811,7 @@ mod tests {
     // on a second pass (idempotent) while never clobbering an existing template.
     #[test]
     fn prepare_base_normalizes_model_type_and_adds_chat_template() {
-        let dir = std::env::temp_dir().join(format!(
-            "mlx_prep_test_{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("mlx_prep_test_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("config.json"),
@@ -818,7 +829,11 @@ mod tests {
             chat_template: Some("{{ TEMPLATE }}".into()),
         };
         let changes = prepare_base_for_mlx(&dir, &prep).unwrap();
-        assert_eq!(changes.len(), 2, "expected both normalizations: {changes:?}");
+        assert_eq!(
+            changes.len(),
+            2,
+            "expected both normalizations: {changes:?}"
+        );
 
         let cfg: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap())

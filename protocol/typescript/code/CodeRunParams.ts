@@ -5,12 +5,15 @@
  */
 export type CodeRunParams = { 
 /**
- * Language to run. `rust` (alias `rs`) only — any other value fails loud rather
- * than guessing a toolchain. This is a Rust organism; its exec hand is `rustc`.
+ * Language to run: `rust` (alias `rs`) → `rustc` a complete program, or
+ * `python` (alias `py`/`python3`) → run a Python script. SWE-bench and most repos
+ * are Python — use `python`, never `rust` for Python code. Any other value fails
+ * loud naming both supported paths (use code/shell for anything else).
  */
 lang: string, 
 /**
- * A COMPLETE Rust program (with its own `fn main`) to compile and run. Passed
+ * A COMPLETE program in the chosen `lang` (Rust needs its own `fn main`; Python is a
+ * plain script). Passed
  * through verbatim — no markdown-fence stripping, no wrapping: the command runs
  * exactly what it is given. (Cleaning up model formatting is the deliberation
  * layer's job, never the hand's — a hand that second-guesses its input is a

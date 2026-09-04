@@ -27,7 +27,10 @@ use super::memory_manager::GpuPriority;
 
 /// A registered GPU consumer visible to the eviction system.
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/gpu/EvictableEntry.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/gpu/EvictableEntry.ts"
+)]
 pub struct EvictableEntry {
     /// Unique identifier (e.g., "candle:llama-3.2-3b", "tts:kokoro", "embed:bge-small")
     pub id: String,
@@ -174,14 +177,33 @@ impl EvictionRegistry {
         }
     }
 
-    /// Number of registered entries.
-    pub fn len(&self) -> usize {
-        self.entries.lock().map(|m| m.len()).unwrap_or(0)
+    /// Number of registered entries — `None` when the registry cannot be read.
+    ///
+    /// # A poisoned lock is not an empty registry (2026-08-20)
+    ///
+    /// This was `self.entries.lock().map(|m| m.len()).unwrap_or(0)`. The `unwrap_or(0)`
+    /// makes a POISONED LOCK — some other thread panicked mid-mutation — indistinguishable
+    /// from "nothing is registered", in the one structure that tells the allocator what is
+    /// resident on the GPU. Report zero there and the reader concludes there is nothing to
+    /// evict, which is the most dangerous possible wrong answer: it is exactly the shape
+    /// that lets a caller believe VRAM is free when it is full.
+    ///
+    /// `Option` says what is true: `Some(n)` is a count, `None` is "could not read", and the
+    /// caller has to decide. That is the same law the serving demand now follows after a
+    /// bootstrap prior spent an hour posing as measured demand
+    /// ([[unknown-is-not-a-quantity-context-needs-the-vram-machinery]]) — the failure mode
+    /// is identical, only the units differ.
+    pub fn len(&self) -> Option<usize> {
+        self.entries.lock().ok().map(|m| m.len())
     }
 
-    /// Whether the registry is empty.
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
+    /// Whether the registry is known to be empty.
+    ///
+    /// `Some(true)` means read-and-empty. `None` propagates "unreadable" rather than
+    /// answering — an unreadable registry is emphatically NOT an empty one, and a bare
+    /// `bool` here could not say the difference.
+    pub fn is_empty(&self) -> Option<bool> {
+        self.len().map(|n| n == 0)
     }
 }
 
@@ -229,7 +251,7 @@ mod tests {
     #[test]
     fn test_register_and_snapshot() {
         let reg = EvictionRegistry::new();
-        assert_eq!(reg.len(), 0);
+        assert_eq!(reg.len(), Some(0));
 
         reg.register(make_entry(
             "model:llama",
@@ -244,7 +266,7 @@ mod tests {
             500_000_000,
         ));
 
-        assert_eq!(reg.len(), 2);
+        assert_eq!(reg.len(), Some(2));
 
         let snap = reg.snapshot();
         assert_eq!(snap.entries.len(), 2);
@@ -261,10 +283,10 @@ mod tests {
             GpuPriority::Interactive,
             1000,
         ));
-        assert_eq!(reg.len(), 1);
+        assert_eq!(reg.len(), Some(1));
 
         reg.unregister("model:test");
-        assert_eq!(reg.len(), 0);
+        assert_eq!(reg.len(), Some(0));
     }
 
     #[test]
@@ -364,7 +386,7 @@ mod tests {
             2000,
         ));
 
-        assert_eq!(reg.len(), 1);
+        assert_eq!(reg.len(), Some(1));
         let snap = reg.snapshot();
         assert_eq!(snap.entries[0].label, "Llama v2");
         assert_eq!(snap.entries[0].bytes, 2000);

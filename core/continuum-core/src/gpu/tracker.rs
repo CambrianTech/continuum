@@ -338,7 +338,7 @@ mod tests {
         let mgr = test_manager();
 
         // Before tracking: registry empty
-        assert_eq!(mgr.eviction_registry.len(), 0);
+        assert_eq!(mgr.eviction_registry.len(), Some(0));
 
         // Track → registered
         tracker
@@ -349,7 +349,7 @@ mod tests {
                 GpuPriority::Interactive,
             )
             .unwrap();
-        assert_eq!(mgr.eviction_registry.len(), 1);
+        assert_eq!(mgr.eviction_registry.len(), Some(1));
 
         let snap = mgr.eviction_registry.snapshot();
         assert_eq!(snap.entries[0].id, "tts:registrytest");
@@ -358,7 +358,7 @@ mod tests {
 
         // Release → unregistered
         tracker.release();
-        assert_eq!(mgr.eviction_registry.len(), 0);
+        assert_eq!(mgr.eviction_registry.len(), Some(0));
     }
 
     #[test]

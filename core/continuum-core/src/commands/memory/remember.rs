@@ -44,7 +44,7 @@ fn default_importance() -> f64 {
 pub struct MemoryRememberParams {
     /// The authoring agent's persona id — its airc peer id. Also the corpus key and the
     /// `agent_peer_id` provenance (agent = its own peer).
-    pub persona_id: String,
+    pub persona_id: crate::identity::PersonaRef,
     /// The lesson to remember. Free text; serde escapes it into the record.
     pub content: String,
     /// Project / room scope — becomes the recall `room_id`, a tag, and part of context.
@@ -92,7 +92,8 @@ pub(super) fn build_agent_record(
         layer: None,
         relevance_score: None,
         origin_node: None,
-        origin_seq: None,    }
+        origin_seq: None,
+    }
 }
 
 crate::action_command! {
@@ -118,7 +119,7 @@ crate::action_command! {
         let id = uuid::Uuid::new_v4().to_string();
         let timestamp = chrono::Utc::now().to_rfc3339();
         let record = build_agent_record(
-            &p.persona_id,
+            p.persona_id.as_str(),
             p.content,
             &p.scope,
             p.session,
@@ -176,9 +177,17 @@ mod tests {
         assert_eq!(r.context["session"], "sess-1");
         // A migrated lesson (no session) still builds a valid record with null session.
         let migrated = build_agent_record(
-            "peer-abc", "old lesson".to_string(), "continuum", None, 0.6,
-            "id-2".to_string(), "2026-07-25T00:00:00Z".to_string(),
+            "peer-abc",
+            "old lesson".to_string(),
+            "continuum",
+            None,
+            0.6,
+            "id-2".to_string(),
+            "2026-07-25T00:00:00Z".to_string(),
         );
-        assert!(migrated.context["session"].is_null(), "no session ⇒ null, still valid");
+        assert!(
+            migrated.context["session"].is_null(),
+            "no session ⇒ null, still valid"
+        );
     }
 }

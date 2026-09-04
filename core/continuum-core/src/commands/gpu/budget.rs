@@ -13,7 +13,10 @@ use crate::sdk_codegen::CommandError;
 /// Inputs to `gpu/set-budget`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/gpu/GpuSetBudgetParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/gpu/GpuSetBudgetParams.ts"
+)]
 pub struct GpuSetBudgetParams {
     /// Which subsystem's budget to set: `rendering`, `inference`, or `tts`.
     pub subsystem: String,

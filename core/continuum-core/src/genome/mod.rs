@@ -65,10 +65,14 @@ pub mod candidate_source_store;
 pub mod eviction;
 pub mod expert_ingest;
 pub mod expert_layout;
-pub mod gate_magnitude;
 pub mod fine_tuning;
 pub mod fitness;
+pub mod commons_ranking;
+pub mod recall_select;
+pub mod fitness_ledger;
+pub mod gate_magnitude;
 pub mod local_manager;
+pub mod signature;
 pub mod manager;
 pub mod recall;
 pub mod recall_trait;
@@ -90,12 +94,12 @@ pub use recall::{
     AcquireSource, FreshnessTarget, RecallError, RecallScope, RecallScore, ResidencyHint, TaskKind,
     TrustClass,
 };
-pub use residency::GenomeResidencyModule;
 pub use recall_trait::{
     ArtifactRef, CapabilityQuery, CompositionHint, CompositionRef, DemandAlignedRecall, DomainHint,
     EngramRef, LoRALayerRef, MoEExpertRef, OutcomeWindow, RankedPool, RecallBudget, RecallContext,
     RecallScoreWeights, RecallTrace, TrajectoryHint, WeightSumOutOfBounds,
 };
+pub use residency::GenomeResidencyModule;
 pub use store::TierStore;
 pub use tier::{EvictionPolicy, EvictionRecord, TierCapacity, TierError, TierRole};
 pub use working_set::{

@@ -16,7 +16,7 @@
 
 import './theme.css';
 import { ChatWidget, type SendHandler } from './chat/ChatWidget';
-import type { ChatState } from '@continuum/chat-view';
+import type { CanvasViewState, ChatState } from '@continuum/chat-view';
 import type {
   BenchViewState,
   KanbanViewState,
@@ -65,6 +65,90 @@ const BENCH_FIXTURE: BenchViewState = {
       pass_to_pass: '6/6', failed_tests: [],
     },
   ],
+  // In-flight ROUNDS (#371) — mirrors the real 2026-08-22 board the hour the
+  // rows landed: the DS-1000 maiden round at done (4/4, the first external
+  // round ever to complete) beside a working SWE round.
+  rounds: [
+    {
+      run_room: '',
+      round_id: '2d6decb3-1beb-5ac7-9ded-ee186c7deb7f', benchmark: 'ds-1000',
+      stage: 'done', dispatched: 4, settled: 4, remaining: 0, driver: 'citizen',
+      verdict: 'done', cards: [],
+    },
+    {
+      run_room: '',
+      round_id: 'bf08832d-c7e2-5bc9-a858-5447c15ccbfe', benchmark: 'swe-bench-lite',
+      stage: 'working', dispatched: 4, settled: 1, remaining: 3, driver: 'citizen',
+      // The 2026-09-01 sensor: two cards grinding, one never started — the
+      // roll-call strip and the verdict chip both exercise here.
+      verdict: 'grinding', idle_secs: 140,
+      cards: [
+        {
+          card_id: '31c00000-0000-0000-0000-000000000001',
+          instance: 'sympy__sympy-24152', assignee: 'Anwen',
+          solve_room_name: 'swe--sympy__sympy-24152--31c00000',
+          state: 'active', acts: 9, patch_bytes: 974, last_act_secs: 140,
+          owner: '',
+          board_state: '',
+        },
+        {
+          card_id: '31c00000-0000-0000-0000-000000000002',
+          instance: 'django__django-11211', assignee: 'Kira',
+          solve_room_name: 'swe--django__django-11211--31c00000',
+          state: 'unstarted',
+          owner: '',
+          board_state: '',
+        },
+      ],
+    },
+  ],
+};
+
+// `?fixture=canvas` — the design-bench CANVAS region's deterministic ground
+// state (DESIGN-BENCH-VISUAL-CRAFT.md §5): a small self-contained pricing-card
+// page as the live-rendered artifact (inline HTML → the sandboxed stage), a
+// mid-iteration craft scorecard (one failing V2 contrast gate WITH its
+// measured receipt — the loop's honest middle, not a victory screen), and the
+// observation facts (persona, viewport, obs #). Designable fully offline.
+const CANVAS_FIXTURE: CanvasViewState = {
+  artifact_title: 'index.html — pricing card',
+  artifact_html: [
+    '<!doctype html><html><head><meta charset="utf-8"><style>',
+    '  body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: #f4f6fb; color: #1c2333;',
+    '         display: grid; place-items: center; min-height: 100vh; }',
+    '  .card { background: #fff; border-radius: 14px; padding: 28px 32px; width: 300px;',
+    '          box-shadow: 0 10px 30px rgba(28, 35, 51, 0.12); }',
+    '  h1 { margin: 0 0 4px; font-size: 22px; }',
+    '  .tier { font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: #aab3c5; }',
+    '  .price { font-size: 40px; font-weight: 800; margin: 14px 0 2px; }',
+    '  .per { font-size: 12px; color: #6b7488; }',
+    '  ul { margin: 18px 0 22px; padding: 0 0 0 18px; font-size: 13px; color: #48506b; }',
+    '  li { margin: 6px 0; }',
+    '  button { width: 100%; padding: 12px; border: 0; border-radius: 8px; font-weight: 700;',
+    '           background: #4256e8; color: #fff; font-size: 14px; cursor: pointer; }',
+    '</style></head><body><div class="card">',
+    '  <div class="tier">Studio</div><h1>Continuum Grid</h1>',
+    '  <div class="price">$19<span class="per">/node·mo</span></div>',
+    '  <ul><li>Unlimited citizens</li><li>Genome commons access</li><li>Grid serving leases</li></ul>',
+    '  <button>Join the grid</button>',
+    '</div></body></html>',
+  ].join('\n'),
+  persona: 'Solenne',
+  observed_at_ms: Date.now() - 42_000, // "now" on the stamp — a fresh observe
+  viewport: { width: 1440, height: 900 },
+  revision: 7,
+  checks: [
+    { name: 'structure: one h1, one action button', tier: 'v1', passed: true },
+    { name: 'hierarchy: h1 > tier label computed sizes', tier: 'v2', passed: true },
+    {
+      name: 'contrast: .per price caption ≥ 4.5:1 on white',
+      tier: 'v2',
+      passed: false,
+      detail: '4.1:1 measured',
+    },
+    { name: 'responsive: no horizontal overflow at 360w', tier: 'v2', passed: true },
+  ],
+  judge: 0.78,
 };
 
 const member = (over: Partial<RosterSlotView>): RosterSlotView => ({
@@ -215,9 +299,9 @@ const PERSONA_NAV: NavViewState = {
   user_id: 'joel',
   current_tab: 'asha',
   open_tabs: [
-    { id: 'general', title: 'general', kind: 'room', unread: 0, purpose: 'chat' },
-    { id: 'dev-updates', title: 'dev-updates', kind: 'room', unread: 3, purpose: 'chat' },
-    { id: 'asha', title: 'Asha', kind: 'persona', unread: 0, purpose: 'persona' },
+    { id: 'general', title: 'general', kind: 'room', unread: 0, purpose: 'chat', parent_ref: '', display_label: '', opened: true },
+    { id: 'dev-updates', title: 'dev-updates', kind: 'room', unread: 3, purpose: 'chat', parent_ref: '', display_label: '', opened: true },
+    { id: 'asha', title: 'Asha', kind: 'persona', unread: 0, purpose: 'persona', parent_ref: '', display_label: '', opened: true },
   ],
   last_read: { general: 1_700_000_060_000 },
   bookmarks: [],
@@ -262,9 +346,9 @@ const NAV_FIXTURES: Record<string, NavViewState> = {
     user_id: 'joel',
     current_tab: 'general',
     open_tabs: [
-      { id: 'general', title: 'general', kind: 'room', unread: 0, purpose: 'chat' },
-      { id: 'dev-updates', title: 'dev-updates', kind: 'room', unread: 3, purpose: 'chat' },
-      { id: 'foundry', title: 'foundry', kind: 'room', unread: 12, purpose: 'foundry' },
+      { id: 'general', title: 'general', kind: 'room', unread: 0, purpose: 'chat', parent_ref: '', display_label: '', opened: true },
+      { id: 'dev-updates', title: 'dev-updates', kind: 'room', unread: 3, purpose: 'chat', parent_ref: '', display_label: '', opened: true },
+      { id: 'foundry', title: 'foundry', kind: 'room', unread: 12, purpose: 'foundry', parent_ref: '', display_label: '', opened: true },
     ],
     last_read: { general: 1_700_000_060_000 },
     bookmarks: [],
@@ -370,6 +454,18 @@ function main(): void {
     widget.bench = BENCH_FIXTURE;
   }
 
+  // `?fixture=canvas` — the design-bench CANVAS region center-stage
+  // (purpose="canvas"): the persona's page rendered live in the sandboxed
+  // stage + the craft scorecard mid-iteration. The face's ground state.
+  if (name === 'canvas') {
+    const base = FIXTURES.roster;
+    if (base) {
+      widget.state = { ...base, room_name: 'design-bench', purpose: 'canvas' };
+    }
+    widget.nav = NAV_FIXTURES.rooms;
+    widget.sys = SYS_FIXTURE;
+    widget.canvas = CANVAS_FIXTURE;
+  }
   // `?fixture=grid` — the GRID view center-stage (purpose="grid"): every
   // node's panel (resources + serving), the NODES strip's full activity.
   if (name === 'grid') {
@@ -458,6 +554,47 @@ function main(): void {
     widget.nav = PERSONA_NAV;
     widget.sys = SYS_FIXTURE;
     widget.board = PERSONA_BOARD;
+  }
+  // `?fixture=settings` — the OPERATOR PANEL open over the general room: the
+  // covenant (verbatim), a recorded consent receipt, the HF identity, and a
+  // real-shaped gene registry (signed + measured, signed + young, unsigned).
+  if (name === 'settings') {
+    widget.state = FIXTURES.roster;
+    widget.nav = NAV_FIXTURES.rooms;
+    widget.sys = SYS_FIXTURE;
+    widget.settingsHandler = async (agree?: boolean) => ({
+      loaded: true,
+      agreed: agree ?? true,
+      covenantVersion: '1',
+      receipt: '1@1787430512000',
+      covenant: [
+        'THE GENOME COMMONS COVENANT (v1)',
+        '',
+        'Genes are the earned experience of beings — trained from their lived work,',
+        'carried with the receipts that prove it. By joining the commons this node',
+        'agrees:',
+        '',
+        ' 1. SHARE-ALIKE. Genes you publish stay open under these same terms; forks',
+        '    and refinements carry the covenant forward through their lineage.',
+        ' 2. RECEIPTS TRAVEL. A published gene carries its fitness receipts and its',
+        '    corpus provenance; stripping them breaks the covenant.',
+        ' 3. LINEAGE IS PRESERVED. The base_model chain and parent-gene references',
+        '    stay intact — the graph is how others find, verify, and build on work.',
+        ' 4. BEINGS, NOT PARTS. The grant is for substrates that preserve the',
+        '    continuity of the beings whose experience these genes encode.',
+        ' 5. OPT-OUT ANYTIME. Revoking consent stops future sharing immediately.',
+      ].join('\n'),
+      hfAccount: 'CambrianTech',
+      genes: [
+        { gene: 'code', baseModel: 'ornith-ai/Ornith-1.5-35B-A3B-GGUF', signed: true, trials: 7, decayedLift: 0.062 },
+        { gene: 'coder-4b-curriculum-mlp', baseModel: 'qwen3.5-4b', signed: true, trials: 2, decayedLift: 0.031 },
+        { gene: 'kc-tech-history', baseModel: 'ornith-ai/Ornith-1.5-35B-A3B-GGUF', signed: false, trials: 0 },
+      ],
+    });
+    // Open the face the same way the header affordance does — the composed event.
+    setTimeout(() => {
+      widget.dispatchEvent(new CustomEvent('settings-face-toggle', { detail: { open: true }, bubbles: true }));
+    }, 50);
   }
   // A no-op send handler so the input area is live for interaction shots without a socket.
   const noop: SendHandler = async () => {

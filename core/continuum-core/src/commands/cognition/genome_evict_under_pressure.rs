@@ -21,7 +21,10 @@ fn default_target_pressure() -> f32 {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/GenomeEvictUnderPressureParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/GenomeEvictUnderPressureParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct GenomeEvictUnderPressureParams {
     /// Persona whose genome is evicted.
@@ -34,7 +37,10 @@ pub struct GenomeEvictUnderPressureParams {
 }
 
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/GenomeEvictUnderPressureResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/GenomeEvictUnderPressureResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct GenomeEvictUnderPressureResult {
     #[ts(type = "string")]

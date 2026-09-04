@@ -11,12 +11,18 @@ use crate::gpu::GpuMemoryManager;
 
 /// `gpu/pressure` takes no input.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/gpu/GpuPressureParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/gpu/GpuPressureParams.ts"
+)]
 pub struct GpuPressureParams {}
 
 /// Just the GPU memory pressure, 0.0 (idle) to 1.0 (saturated).
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/gpu/GpuPressureResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/gpu/GpuPressureResult.ts"
+)]
 pub struct GpuPressureResult {
     /// Current GPU memory pressure across all subsystems, 0.0–1.0.
     #[ts(type = "number")]
@@ -59,7 +65,10 @@ mod tests {
         let cmd = GpuPressureCmd {
             manager: Arc::new(GpuMemoryManager::simulated("Apple M5 Pro", 53_000_000_000)),
         };
-        let r = cmd.run(&Ctx::default(), GpuPressureParams {}).await.unwrap();
+        let r = cmd
+            .run(&Ctx::default(), GpuPressureParams {})
+            .await
+            .unwrap();
         assert!(r.pressure >= 0.0 && r.pressure <= 1.0);
     }
 }

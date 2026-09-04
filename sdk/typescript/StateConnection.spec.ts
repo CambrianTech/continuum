@@ -279,6 +279,44 @@ describe('StateConnection', () => {
     conn.close();
   });
 
+  // what this catches: a storage adapter that HANGS must not take the feed down.
+  // Regression for the 2026-08-14 blank-page incident: hydrateFromStorage awaited
+  // `storage.load()` guarded only by try/catch, which covers a promise that
+  // REJECTS and cannot cover one that never SETTLES. A hung IndexedDB read held
+  // connect() open forever, so the socket was never constructed and the web
+  // client painted nothing — the exact opposite of StateStorage.ts's declared
+  // contract ("storage is an ACCELERANT, not a dependency"). Without the bound
+  // this test does not fail fast, it TIMES OUT — which is how it presented live.
+  it('opens the socket anyway when storage.load never settles', async () => {
+    const hungStorage = {
+      load: () => new Promise<never>(() => { /* never resolves, never rejects */ }),
+      save: () => Promise.resolve(),
+      clear: () => Promise.resolve(),
+    };
+    // This test spans the hydrate bound (~1.5s), long enough for an EARLIER
+    // test's still-open reconnect ladder to construct sockets and clobber the
+    // shared `FakeWebSocket.last`. So capture THIS connection's own socket via a
+    // local ctor instead of the static — isolation by construction, not by luck.
+    let mine: FakeWebSocket | undefined;
+    const MineCtor = function (url: string) {
+      mine = new FakeWebSocket(url);
+      return mine;
+    } as unknown as typeof FakeWebSocket;
+
+    const conn = new StateConnection('ws://x', MineCtor, { storage: hungStorage, scope: 'scopeHung' });
+    conn.on('chat', () => { /* a registered kind — connect() fails loud with none */ });
+    const connected = conn.connect();
+    // The bound expires, boot proceeds live-only, and the socket finally appears.
+    await vi.waitFor(() => expect(mine).toBeDefined(), { timeout: 8000 });
+    mine?.open();
+    await connected;
+    expect(mine?.sent).toHaveLength(1);
+    expect(subOf(String(mine?.sent[0])).type).toBe('subscribe');
+    conn.close();
+    // Deliberately above vitest's 5s default: this test WAITS OUT the real
+    // hydrate bound rather than faking timers, so it proves the shipped budget.
+  }, 15_000);
+
   // what this catches: a dropped socket must SELF-HEAL — reconnect constructs a
   // fresh socket and re-sends Subscribe (with last_seen replay) so a routine
   // core reboot never permanently orphans an open renderer. Status stays loud

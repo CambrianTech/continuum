@@ -63,7 +63,8 @@ export {
   roomInfoListing,
   chatWorkspace,
 } from './patternProjections';
-export type { ChatContentBody, WorkspaceLive } from './patternProjections';
+export type { AcademyContentBody, ChatContentBody, WorkspaceLive } from './patternProjections';
+export { ACADEMY_PURPOSE } from './patternProjections';
 
 // The persona HOME projections — the profile/brain surface as a purpose-
 // dispatched activity (PERSONA_PURPOSE), lit from the SAME live pulse the
@@ -99,6 +100,12 @@ export type { LiveCallOverlay } from './liveProjections';
 // strip (the benchmarks-are-the-show face).
 export { ARENA_KIND, arenaBoards, arenaContentBody } from './arenaProjections';
 export type { ArenaLedgerRow, ArenaViewState } from './arenaProjections';
+
+// Canvas projections — a design-bench observation → the run room's live
+// artifact render (DESIGN-BENCH-VISUAL-CRAFT.md §5: the walk-in sees the
+// design evolve). `chatWorkspace` dispatches to it off the room's purpose.
+export { CANVAS_KIND, canvasContentBody, canvasFromEnvelope } from './canvasProjections';
+export type { CanvasCheckRow, CanvasViewState } from './canvasProjections';
 
 // The chat activity as a positron app, defined ONCE — mount it on any RenderTarget
 // (web/mobile/terminal/RAG). The first real `defineApp` consumer.

@@ -35,7 +35,10 @@ pub const AVATAR_CATALOG: &[AvatarModel] = &[
             gender: AvatarGender::Female,
             energy: EnergyLevel::Moderate,
         },
-        url: concat!("https://opengameart.org/sites/default/files", "/base_female.zip"),
+        url: concat!(
+            "https://opengameart.org/sites/default/files",
+            "/base_female.zip"
+        ),
         source_kind: "vroid-zip",
         license: "CC0",
     },
@@ -49,7 +52,10 @@ pub const AVATAR_CATALOG: &[AvatarModel] = &[
             gender: AvatarGender::Male,
             energy: EnergyLevel::Moderate,
         },
-        url: concat!("https://opengameart.org/sites/default/files", "/base_male.zip"),
+        url: concat!(
+            "https://opengameart.org/sites/default/files",
+            "/base_male.zip"
+        ),
         source_kind: "vroid-zip",
         license: "CC0",
     },
@@ -63,7 +69,10 @@ pub const AVATAR_CATALOG: &[AvatarModel] = &[
             gender: AvatarGender::Male,
             energy: EnergyLevel::Energetic,
         },
-        url: concat!("https://opengameart.org/sites/default/files", "/sakurada_fumiriya.zip"),
+        url: concat!(
+            "https://opengameart.org/sites/default/files",
+            "/sakurada_fumiriya.zip"
+        ),
         source_kind: "vroid-zip",
         license: "CC0",
     },
@@ -77,7 +86,10 @@ pub const AVATAR_CATALOG: &[AvatarModel] = &[
             gender: AvatarGender::Female,
             energy: EnergyLevel::Calm,
         },
-        url: concat!("https://opengameart.org/sites/default/files", "/sendagaya_shino.zip"),
+        url: concat!(
+            "https://opengameart.org/sites/default/files",
+            "/sendagaya_shino.zip"
+        ),
         source_kind: "vroid-zip",
         license: "CC0",
     },
@@ -91,7 +103,10 @@ pub const AVATAR_CATALOG: &[AvatarModel] = &[
             gender: AvatarGender::Female,
             energy: EnergyLevel::Calm,
         },
-        url: concat!("https://opengameart.org/sites/default/files", "/avatarsample_d_darkness.zip"),
+        url: concat!(
+            "https://opengameart.org/sites/default/files",
+            "/avatarsample_d_darkness.zip"
+        ),
         source_kind: "vroid-zip",
         license: "CC0",
     },
@@ -105,7 +120,10 @@ pub const AVATAR_CATALOG: &[AvatarModel] = &[
             gender: AvatarGender::Female,
             energy: EnergyLevel::Moderate,
         },
-        url: concat!("https://opengameart.org/sites/default/files", "/avatarsample_d_0.zip"),
+        url: concat!(
+            "https://opengameart.org/sites/default/files",
+            "/avatarsample_d_0.zip"
+        ),
         source_kind: "vroid-zip",
         license: "CC0",
     },
@@ -119,7 +137,10 @@ pub const AVATAR_CATALOG: &[AvatarModel] = &[
             gender: AvatarGender::Female,
             energy: EnergyLevel::Energetic,
         },
-        url: concat!("https://opengameart.org/sites/default/files", "/avatarsample_e.zip"),
+        url: concat!(
+            "https://opengameart.org/sites/default/files",
+            "/avatarsample_e.zip"
+        ),
         source_kind: "vroid-zip",
         license: "CC0",
     },
@@ -133,7 +154,10 @@ pub const AVATAR_CATALOG: &[AvatarModel] = &[
             gender: AvatarGender::Female,
             energy: EnergyLevel::Moderate,
         },
-        url: concat!("https://opengameart.org/sites/default/files", "/avatarsample_f.zip"),
+        url: concat!(
+            "https://opengameart.org/sites/default/files",
+            "/avatarsample_f.zip"
+        ),
         source_kind: "vroid-zip",
         license: "CC0",
     },

@@ -46,6 +46,11 @@ pub struct SettleOutcome {
     /// identified" and she had no memory of identifying it — 10 acts re-deriving
     /// cse_main.py). The retry caller threads these into the next attempt's task.
     pub touched_paths: Vec<String>,
+    /// The ACTIVITY this turn belonged to — its room (non-nil, witnessed at burst
+    /// construction, #425). Carried on the outcome so the curriculum stream can
+    /// attribute a lived turn to the activity it happened in; before this, the
+    /// room survived only as prose inside `world_state`'s header.
+    pub room: uuid::Uuid,
 }
 
 impl SettleOutcome {
@@ -55,15 +60,16 @@ impl SettleOutcome {
     /// NAMED infrastructure failure — never a wrong answer — so a serving wedge
     /// never masquerades as a capability miss ([[self-improvement-is-a-control-loop]]).
     /// Zeroed metrics/acts because none accrued meaningfully. `TurnMetrics: Default`.
-    pub fn infra_failure(cause: impl Into<String>) -> Self {
+    pub fn infra_failure(room: uuid::Uuid, cause: impl Into<String>) -> Self {
         Self {
-            decision: Decision::Pass,
+            decision: Decision::pass(),
             spoken: None,
             acts: 0,
             world_state: String::new(),
             metrics: TurnMetrics::default(),
             inference_error: Some(cause.into()),
             touched_paths: Vec::new(),
+            room,
         }
     }
 }
@@ -79,16 +85,28 @@ pub enum SettleStep {
     /// (live: next metronome tick; eval: next loop step). The calls+intent ride
     /// along so a caller that paces acting (the eval budget) can report the final
     /// Act if its budget runs out on the following step.
-    Acted { calls: Vec<ToolCall>, intent: String },
+    Acted {
+        calls: Vec<ToolCall>,
+        intent: String,
+    },
     /// She decided to act but the caller's budget said no this step (`may_act =
     /// false`) — the act was NOT executed. Only the eval driver passes `may_act =
     /// false`; the live heartbeat always permits its one act, so it never sees this.
-    WouldAct { calls: Vec<ToolCall>, intent: String },
+    WouldAct {
+        calls: Vec<ToolCall>,
+        intent: String,
+    },
     /// She chose silence (`Pass`) — honored as a turn that produces no utterance.
-    Passed,
+    /// `reason` carries her OWN words for why (from `Decision::Pass`), so the
+    /// held-work edge can tell a gradeable *done* from a *blocker* from a
+    /// substrate-gap *nothing*; `None` for a bare pass.
+    Passed { reason: Option<String> },
     /// She reached for an act that could NOT be carried out (no hands / executor
     /// error). No utterance; the intent rides along for honest logging/grading.
-    ActUnfulfilled { calls: Vec<ToolCall>, intent: String },
+    ActUnfulfilled {
+        calls: Vec<ToolCall>,
+        intent: String,
+    },
     /// The deliberation model call itself FAILED — a timeout, a 5xx, or the serving
     /// lane refusing a model it isn't hosting (the swept-model bug). NO verdict was
     /// produced. This is NOT a `Passed`: a failed model is not a chosen silence
@@ -128,7 +146,7 @@ impl SettleStep {
                 SettleStep::Spoke(text)
             }
             Decision::Act { calls, intent } => SettleStep::Acted { calls, intent },
-            Decision::Pass => SettleStep::Passed,
+            Decision::Pass { reason } => SettleStep::Passed { reason },
         };
         (step, metrics)
     }
@@ -147,9 +165,7 @@ mod tests {
     fn outcome_with(decision: Decision, inference_error: Option<String>) -> SettleOutcome {
         SettleOutcome {
             spoken: match &decision {
-                Decision::Speak { text } | Decision::RaiseUnprompted { text } => {
-                    Some(text.clone())
-                }
+                Decision::Speak { text } | Decision::RaiseUnprompted { text } => Some(text.clone()),
                 _ => None,
             },
             decision,
@@ -158,6 +174,7 @@ mod tests {
             metrics: TurnMetrics::default(),
             inference_error,
             touched_paths: Vec::new(),
+            room: uuid::Uuid::from_u128(7),
         }
     }
 
@@ -193,14 +210,23 @@ mod tests {
         ));
         assert!(matches!(step, SettleStep::Acted { .. }));
 
-        // Pass → Passed (chosen silence, honored).
-        let (step, _) = SettleStep::from_settled(outcome_with(Decision::Pass, None));
-        assert!(matches!(step, SettleStep::Passed));
+        // Pass → Passed (chosen silence, honored) — reason carried through.
+        let (step, _) = SettleStep::from_settled(outcome_with(Decision::pass(), None));
+        assert!(matches!(step, SettleStep::Passed { reason: None }));
+
+        // A reasoned pass carries her words through the projection.
+        let (step, _) = SettleStep::from_settled(outcome_with(
+            Decision::Pass {
+                reason: Some("done — patch ready".into()),
+            },
+            None,
+        ));
+        assert!(matches!(step, SettleStep::Passed { reason: Some(r) } if r == "done — patch ready"));
 
         // inference_error present → InferenceFailed, REGARDLESS of decision — a
         // failed model is never a chosen silence.
         let (step, _) = SettleStep::from_settled(outcome_with(
-            Decision::Pass,
+            Decision::pass(),
             Some("lane refused model".into()),
         ));
         assert!(

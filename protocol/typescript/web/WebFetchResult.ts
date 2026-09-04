@@ -9,14 +9,13 @@ export type WebFetchResult = { url: string,
  */
 title: string, 
 /**
- * Readable text (scripts/styles/tags stripped, whitespace collapsed), capped to `max_chars`.
+ * Readable page text with real lines (`<pre>`/code kept verbatim). The FULL page (or,
+ * with `filter`, the matching lines) — web/fetch does not truncate; if this is large the
+ * executor bounds what you see inline and spills the rest, pageable via `tool/output`.
  */
 content: string, 
 /**
- * True if the readable text was longer than the cap and got truncated.
- */
-truncated: boolean, 
-/**
- * Total readable characters before truncation.
+ * Total readable characters of the WHOLE page (with `filter`, `content` may be a smaller
+ * matching slice — this still reports the full page size, honest scale).
  */
 chars: number, };

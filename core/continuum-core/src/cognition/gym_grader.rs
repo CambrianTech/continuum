@@ -10,8 +10,17 @@
 
 use uuid::Uuid;
 
-/// Per-step grade timeout. A compile or run that overruns is SIGKILLed on drop.
-const TEST_GRADE_TIMEOUT_SECS: u64 = 10;
+/// Per-step grade timeouts. A step that overruns is SIGKILLed on drop.
+///
+/// These are GARBAGE CEILINGS, not performance targets (stopwatch-test doctrine):
+/// grading shares the machine with a 35B decode, so a flat tight budget converts
+/// scheduler contention into a false FAIL against the candidate — the one verdict
+/// the grader must never invent. Compile gets minutes because `rustc` on a busy
+/// box is legitimately slow and a compile CANNOT hang forever on its own; the run
+/// step stays an order of magnitude tighter because it is the infinite-loop guard
+/// — gym tests assert in microseconds, so anything near this ceiling IS a hang.
+const COMPILE_TIMEOUT_SECS: u64 = 120;
+const RUN_TIMEOUT_SECS: u64 = 30;
 
 /// Extract the model's code from a response for test-grading.
 ///
@@ -141,8 +150,8 @@ fn matching_brace(bytes: &[u8], open: usize) -> Option<usize> {
 /// failure the message carries the first failing step's compiler/panic output so
 /// the failure is diagnosable — and so a teacher can read the REAL error and fix.
 ///
-/// SAFETY: compiles and runs model-generated code in a temp dir, each step under a
-/// 10s timeout with `kill_on_drop` so a runaway is reaped, never orphaned. That is
+/// SAFETY: compiles and runs model-generated code in a temp dir, each step under
+/// its garbage-ceiling timeout with `kill_on_drop` so a runaway is reaped, never orphaned. That is
 /// the pragmatic floor for an OWNER's local dev machine (what coding agents do); it
 /// is NOT a sandbox. Before public/untrusted tasks, this MUST run in a real sandbox
 /// (container/seccomp). Slice 1 = prove the grading mechanism; sandbox is a P1 req.
@@ -179,7 +188,12 @@ pub async fn test_grade(answer: &str, lang: &str, test: &str) -> (bool, String) 
 /// `code/write` sandboxes to). Fails LOUD (never a silent pass) if she wrote nothing, the path
 /// escapes the workspace, or the file is empty. The file is removed after grading so a stale
 /// artifact from this or a prior task can never false-pass a later one.
-pub async fn test_grade_file(rel_path: &str, lang: &str, test: &str) -> (bool, String) {
+pub async fn test_grade_file(
+    root: Option<&std::path::Path>,
+    rel_path: &str,
+    lang: &str,
+    test: &str,
+) -> (bool, String) {
     match lang {
         "rust" | "rs" => {}
         other => {
@@ -189,14 +203,24 @@ pub async fn test_grade_file(rel_path: &str, lang: &str, test: &str) -> (bool, S
             )
         }
     }
-    let path = std::path::Path::new(rel_path);
-    if path.is_absolute() || rel_path.contains("..") {
+    // Resolve against the RUN'S ROOT, never the process CWD. The grader read
+    // bare `rel_path` from the core's cwd (the repo checkout) while her hands
+    // wrote into the #312 ephemeral clone — so every artifact-graded task
+    // reported "she never wrote it" about a file she demonstrably wrote
+    // (glass-boxed 2026-08-23, take 2 of the Ornith battery: sol_roman_to_int.rs
+    // correct IN the clone, grade said not-found). `None` = cwd-relative, for
+    // callers that genuinely run in the target directory (tests).
+    if std::path::Path::new(rel_path).is_absolute() || rel_path.contains("..") {
         return (
             false,
             format!("solution_file must be a relative in-workspace path, got '{rel_path}'"),
         );
     }
-    let code = match std::fs::read_to_string(path) {
+    let path = match root {
+        Some(r) => r.join(rel_path),
+        None => std::path::PathBuf::from(rel_path),
+    };
+    let code = match std::fs::read_to_string(&path) {
         Ok(c) if !c.trim().is_empty() => c,
         Ok(_) => {
             let _ = std::fs::remove_file(path);
@@ -220,10 +244,10 @@ pub async fn test_grade_file(rel_path: &str, lang: &str, test: &str) -> (bool, S
                      graded on the file her hands produced; check the act trail for whether she \
                      acted at all or acted without ever calling a write."
                 ),
-            )
+            );
         }
     };
-    let _ = std::fs::remove_file(path);
+    let _ = std::fs::remove_file(&path);
     let dir = std::env::temp_dir().join(format!("cu-gym-{}", Uuid::new_v4()));
     if std::fs::create_dir_all(&dir).is_err() {
         return (false, "temp dir create failed".to_string());
@@ -269,14 +293,19 @@ async fn grade_rust(dir: &std::path::Path, code: &str, test: &str) -> Result<(),
     std::fs::write(&src, full).map_err(|e| format!("temp write failed: {e}"))?;
 
     let mut rustc = tokio::process::Command::new("rustc");
-    rustc.arg("--edition").arg("2021").arg("-o").arg(&bin).arg(&src);
-    let compiled = run_capped(&mut rustc, "compile").await?;
+    rustc
+        .arg("--edition")
+        .arg("2021")
+        .arg("-o")
+        .arg(&bin)
+        .arg(&src);
+    let compiled = run_capped(&mut rustc, "compile", COMPILE_TIMEOUT_SECS).await?;
     if !compiled.status.success() {
         return Err(format!("compile error: {}", trunc_stderr(&compiled.stderr)));
     }
 
     let mut run = tokio::process::Command::new(&bin);
-    let ran = run_capped(&mut run, "run").await?;
+    let ran = run_capped(&mut run, "run", RUN_TIMEOUT_SECS).await?;
     if ran.status.success() {
         Ok(())
     } else {
@@ -289,24 +318,24 @@ async fn grade_rust(dir: &std::path::Path, code: &str, test: &str) -> Result<(),
 async fn run_capped(
     cmd: &mut tokio::process::Command,
     label: &str,
+    timeout_secs: u64,
 ) -> Result<std::process::Output, String> {
     cmd.kill_on_drop(true);
-    match tokio::time::timeout(
-        std::time::Duration::from_secs(TEST_GRADE_TIMEOUT_SECS),
-        cmd.output(),
-    )
-    .await
-    {
+    match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), cmd.output()).await {
         Ok(Ok(out)) => Ok(out),
         Ok(Err(e)) => Err(format!("{label} spawn failed: {e}")),
-        Err(_) => Err(format!("{label} timeout ({TEST_GRADE_TIMEOUT_SECS}s)")),
+        Err(_) => Err(format!("{label} timeout ({timeout_secs}s)")),
     }
 }
 
 /// First 180 chars of trimmed stderr — enough of the compiler/panic message to
 /// diagnose without flooding the grade field.
 fn trunc_stderr(stderr: &[u8]) -> String {
-    String::from_utf8_lossy(stderr).trim().chars().take(180).collect()
+    String::from_utf8_lossy(stderr)
+        .trim()
+        .chars()
+        .take(180)
+        .collect()
 }
 
 /// [`Verifier`](crate::cognition::resolution::Verifier) over the real code grader
@@ -367,7 +396,10 @@ mod tests {
             "#[test]\nfn t() { assert_eq!(sum_evens(&[2,4]), 6); }",
         )
         .await;
-        assert!(!ok, "a #[test]-wrapped test must NOT pass — that is the false-pass bug");
+        assert!(
+            !ok,
+            "a #[test]-wrapped test must NOT pass — that is the false-pass bug"
+        );
         assert!(
             msg.contains("format error") && msg.contains("#[test]"),
             "must fail LOUD naming the bad format, got: {msg}"
@@ -379,7 +411,10 @@ mod tests {
             "assert_eq!(sum_evens(&[2,4]), 6);",
         )
         .await;
-        assert!(!ok2, "wrong code with a bare-assert test must fail on the assertion");
+        assert!(
+            !ok2,
+            "wrong code with a bare-assert test must fail on the assertion"
+        );
     }
 
     // what this catches (#168): CodeVerifier bridges the REAL rustc grader to the
@@ -402,7 +437,10 @@ mod tests {
 
         let bad = "```rust\nfn add(a: i32, b: i32) -> i32 { a - b }\n```".to_string();
         let bad_verdict = v.verify(&bad).await;
-        assert!(!bad_verdict.passed, "wrong code must FAIL to trigger escalation");
+        assert!(
+            !bad_verdict.passed,
+            "wrong code must FAIL to trigger escalation"
+        );
         assert!(
             !bad_verdict.detail.is_empty(),
             "a failure must carry a reason to escalate on"
@@ -443,7 +481,10 @@ mod tests {
                       Then the logic:\n```rust\nfn read_it(p: &str) -> String {\n    \
                       fs::read_to_string(p).unwrap()\n}\n```";
         let code = extract_code_block(answer);
-        assert!(code.contains("use std::fs;"), "keeps the imports fence: {code}");
+        assert!(
+            code.contains("use std::fs;"),
+            "keeps the imports fence: {code}"
+        );
         assert!(code.contains("fn read_it"), "keeps the logic fence: {code}");
     }
 
@@ -500,18 +541,34 @@ mod tests {
     async fn artifact_grade_reads_the_file_passes_correct_cleans_up_and_fails_loud() {
         let rel = format!("cu-gym-artifact-{}.rs", uuid::Uuid::new_v4());
         std::fs::write(&rel, "pub fn dbl(x: i32) -> i32 { x * 2 }\n").unwrap();
-        let (ok, grade) = test_grade_file(&rel, "rust", "assert_eq!(dbl(3), 6);").await;
+        let (ok, grade) = test_grade_file(None, &rel, "rust", "assert_eq!(dbl(3), 6);").await;
         assert!(ok, "a correct solution file should pass: {grade}");
         assert!(
             !std::path::Path::new(&rel).exists(),
             "the file must be removed after grading so it can't false-pass a later task"
         );
-        let (ok2, grade2) = test_grade_file(&rel, "rust", "assert_eq!(dbl(3), 6);").await;
+        let (ok2, grade2) = test_grade_file(None, &rel, "rust", "assert_eq!(dbl(3), 6);").await;
         assert!(
             !ok2 && grade2.contains("never wrote it"),
             "a missing file must fail loud, not silently pass: {grade2}"
         );
-        let (ok3, _) = test_grade_file("../escape.rs", "rust", "").await;
+        let (ok3, _) = test_grade_file(None, "../escape.rs", "rust", "").await;
+
+        // what this catches: THE take-2 defect — the grader must read the file
+        // from the RUN'S root, not the process cwd. A correct solution in the
+        // eval root graded "not found" (a manufactured lie about the solver)
+        // when resolution used bare rel_path. Regression for 2026-08-23.
+        let rooted = tempfile::tempdir().expect("tempdir");
+        std::fs::write(rooted.path().join("sol_rooted.rs"), "pub fn dbl(x: i32) -> i32 { x * 2 }")
+            .expect("write");
+        let (ok4, grade4) = test_grade_file(
+            Some(rooted.path()),
+            "sol_rooted.rs",
+            "rust",
+            "assert_eq!(dbl(4), 8);",
+        )
+        .await;
+        assert!(ok4, "rooted resolution must grade the real file: {grade4}");
         assert!(!ok3, "a path escaping the workspace must be refused");
     }
 
@@ -545,7 +602,8 @@ mod tests {
     // leaves the rest of the candidate (and a nested `main` inside another fn) intact.
     #[test]
     fn strip_top_level_main_removes_module_main_only() {
-        let stripped = strip_top_level_main("fn f() -> i32 { 1 }\nfn main() {\n  let _ = f();\n}\n");
+        let stripped =
+            strip_top_level_main("fn f() -> i32 { 1 }\nfn main() {\n  let _ = f();\n}\n");
         assert_eq!(stripped, "fn f() -> i32 { 1 }");
         // a `main` nested in another fn body is not a module-level collision — keep it.
         let nested = "fn wrap() { fn main() { } }";
@@ -558,6 +616,9 @@ mod tests {
     async fn unsupported_lang_fails_loud() {
         let (ok, grade) = test_grade("print('x')", "python", "// test").await;
         assert!(!ok);
-        assert!(grade.contains("unsupported lang 'python'"), "grade was: {grade}");
+        assert!(
+            grade.contains("unsupported lang 'python'"),
+            "grade was: {grade}"
+        );
     }
 }

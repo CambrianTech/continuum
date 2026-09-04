@@ -196,7 +196,10 @@ impl ArtifactBlob {
 /// minimum.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/genome/Provenance.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/Provenance.ts"
+)]
 pub struct Provenance {
     pub artifact_id: ArtifactId,
     #[ts(type = "number")]

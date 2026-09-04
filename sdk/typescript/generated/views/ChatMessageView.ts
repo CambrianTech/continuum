@@ -48,4 +48,12 @@ provenance: Provenance, content: string,
 /**
  * Unix-ms substrate-local time of arrival.
  */
-timestamp: number, };
+timestamp: number, 
+/**
+ * Citizens whose inbound stream ADMITTED this line as a turn — the
+ * delivery receipt a human can see ("heard by 8"). Empty = nobody yet;
+ * `#[serde(default)]` so a row serialized before this field folds as
+ * empty, never dropped. (2026-09-04: the live plane was dead for weeks
+ * and nothing on screen said so.)
+ */
+heard_by?: Array<string>, };

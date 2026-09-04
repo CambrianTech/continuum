@@ -151,10 +151,9 @@ fn run_pipeline(
     };
 
     let analysis_path = output_dir.join("analysis.json");
-    let analysis_json = serde_json::to_string_pretty(&analysis)
-        .map_err(|e| crate::sdk_codegen::CommandError::Internal(format!(
-            "Failed to serialize analysis: {e}"
-        )))?;
+    let analysis_json = serde_json::to_string_pretty(&analysis).map_err(|e| {
+        crate::sdk_codegen::CommandError::Internal(format!("Failed to serialize analysis: {e}"))
+    })?;
     std::fs::write(&analysis_path, analysis_json).map_err(|e| {
         crate::sdk_codegen::CommandError::Internal(format!("Failed to write analysis: {e}"))
     })?;

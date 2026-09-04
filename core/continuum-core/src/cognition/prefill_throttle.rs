@@ -35,6 +35,25 @@ static THROTTLE: OnceLock<PrefillThrottle> = OnceLock::new();
 /// [[never-thrash-sticky-hysteresis-on-every-lane]]
 const GROW_STICKINESS_TICKS: usize = 3;
 
+/// Spikes of headroom a GROW must fit under, where holding/shrinking needs only ONE.
+///
+/// The deadband. Stickiness alone cannot stop a boundary oscillation, and live evidence
+/// 2026-08-13 says it didn't: the grant walked `1→4→4→1→1→4→4→1` with a ~20s period —
+/// exactly `GROW_STICKINESS_TICKS` ticks to climb, one tick to fall. Slowing the climb only
+/// sets the frequency; it cannot remove the flip, because grow and shrink were deciding
+/// against the SAME threshold, so a free-VRAM value resting on the fit boundary satisfies it
+/// one tick and fails it the next, forever.
+///
+/// A control loop that must not chatter needs its two directions to disagree about where the
+/// line is. Shrink keeps the tight margin (one spike — the safety direction is unchanged and
+/// still instant). Grow must clear a STRICTER bar: room for the target lanes plus a second
+/// spike. Between those two thresholds is a band where neither direction fires, and the
+/// measurement noise lives entirely inside it.
+///
+/// Expressed in spikes, not bytes, so it scales with whatever model is resident — the same
+/// unit `FitPolicy::safety_margin_bytes` already speaks. [[never-thrash]]
+const GROW_MARGIN_SPIKES: u64 = 2;
+
 pub struct PrefillThrottle {
     sem: Arc<tokio::sync::Semaphore>,
     /// Permits conceptually installed (a Semaphore only exposes AVAILABLE). Shrink debt is
@@ -133,7 +152,9 @@ impl PrefillThrottle {
         let want = self.want_lanes.load(Ordering::Acquire).max(1);
         if spike == 0 {
             // No plan published yet — no fit facts, hold at the lane count (pre-throttle).
-            return self.apply(want);
+            // Both thresholds are the same number, so there is no deadband and the behaviour
+            // is exactly the pre-deadband one: settle on `want`.
+            return self.apply(want, want);
         }
         let cap = DeviceCapacity {
             // The fit rule only reads the live-free axis; the others are not sourced here.
@@ -146,8 +167,23 @@ impl PrefillThrottle {
             want_concurrency: want as u32,
             spike_bytes: spike,
         };
-        let grant = FitPolicy { safety_margin_bytes: spike }.grant(&cap, &req);
-        self.apply(grant.concurrency as usize)
+        // HOLD threshold — the tight margin. What we may keep running RIGHT NOW. Falling
+        // below this is the safety direction and still shrinks instantly, unchanged.
+        let hold = FitPolicy {
+            safety_margin_bytes: spike,
+        }
+        .grant(&cap, &req)
+        .concurrency as usize;
+        // GROW threshold — the strict margin, one extra spike of headroom. Clearing this is
+        // what it takes to ADD a permit. `hold >= grow` always, and the gap between them is
+        // the deadband that absorbs boundary noise instead of converting it into a flip.
+        let grow = FitPolicy {
+            safety_margin_bytes: spike.saturating_mul(GROW_MARGIN_SPIKES),
+        }
+        .grant(&cap, &req)
+        .concurrency as usize;
+
+        self.apply(hold, grow)
     }
 
     /// See [`acquire_prefill_slot`].
@@ -169,10 +205,26 @@ impl PrefillThrottle {
     /// GROW only lands after [`GROW_STICKINESS_TICKS`] consecutive reconciles wanted it —
     /// sustained headroom, not one optimistic reading. Never blocks, never revokes running
     /// work, never thrashes on a boundary-riding live number.
-    fn apply(&self, target: usize) -> usize {
-        let target = target.max(1); // a resident model may always run ONE prefill (residency decision)
-        let _g = self.reconcile_lock.lock().expect("prefill reconcile lock never poisoned");
+    fn apply(&self, hold: usize, grow: usize) -> usize {
+        // a resident model may always run ONE prefill (residency decision)
+        let hold = hold.max(1);
+        let grow = grow.max(1);
+        let _g = self
+            .reconcile_lock
+            .lock()
+            .expect("prefill reconcile lock never poisoned");
         let installed = self.installed.load(Ordering::Acquire);
+        // THE DEADBAND, resolved against the authoritative `installed` under the lock — not
+        // against a value read before it, which would be a race the moment reconcile gains a
+        // second caller.
+        let target = if hold < installed {
+            hold // below what we may keep — shed now, tight margin, instant
+        } else {
+            // Safe to stay put. Climb only on the STRICT fit, and never propose fewer than we
+            // already hold — otherwise the strict threshold becomes a second shrink path and
+            // re-creates the very oscillation the deadband exists to remove.
+            grow.max(installed)
+        };
         if target > installed {
             // The recovery direction: deliberate. One tick of headroom is often UMA cache
             // wobble; demand the signal persist before paying the flap.
@@ -187,7 +239,8 @@ impl PrefillThrottle {
             if target < installed {
                 // The safety direction: instant, always.
                 let forgotten = self.sem.forget_permits(installed - target);
-                self.installed.store(installed - forgotten, Ordering::Release);
+                self.installed
+                    .store(installed - forgotten, Ordering::Release);
             }
         }
         let now = self.installed.load(Ordering::Acquire);
@@ -242,6 +295,53 @@ mod tests {
         last
     }
 
+    // what this catches: THE DEADBAND — a boundary-riding free-VRAM reading must move the
+    // grant ZERO times, not once per wobble. Measured live 2026-08-13 with stickiness already
+    // in place: `1→4→4→1→1→4→4→1`, ~20s period (GROW_STICKINESS_TICKS up, ONE tick down).
+    // Stickiness sets the frequency of a flap; only two different thresholds can remove it.
+    // Here 11GB and 9GB straddle the 4-lane HOLD line (10GB) — pre-deadband that alternation
+    // is the flap itself, 11→4 then 9→3 forever. With grow needing 12GB the pair settles at 3
+    // and never moves again. If GROW_MARGIN_SPIKES is ever lowered to 1 this goes red.
+    #[tokio::test]
+    async fn a_wobble_narrower_than_one_spike_never_moves_the_grant() {
+        let t = PrefillThrottle::with_lanes(1);
+        t.publish_serving(2 * GB, 4); // spike 2GB, plan wants 4 lanes
+
+        // Settle under the STRICT fit: 11GB grants (11−4)/2 = 3, not the (11−2)/2 = 4 the
+        // hold line alone would have allowed. Climbing conservatively is the point.
+        let mut settled = 0;
+        for _ in 0..GROW_STICKINESS_TICKS {
+            settled = t.reconcile(11 * GB);
+        }
+        assert_eq!(settled, 3, "grow uses the strict margin: (11−4)/2 = 3");
+
+        // Now oscillate ACROSS the 4-lane hold boundary the old code flapped on. Every tick
+        // must be a no-op: 9GB still holds 3 ((9−2)/2 = 3), and 11GB still cannot reach 4.
+        for tick in 0..8 {
+            let free = if tick % 2 == 0 { 9 * GB } else { 11 * GB };
+            assert_eq!(
+                t.reconcile(free),
+                3,
+                "tick {tick} at {}GB moved the grant — the deadband leaks",
+                free / GB
+            );
+        }
+    }
+
+    // what this catches: the deadband must NOT blunt the safety direction. Real pressure —
+    // a drop below the HOLD line, not wobble around it — still sheds on the very next tick.
+    #[tokio::test]
+    async fn real_pressure_still_sheds_instantly_through_the_deadband() {
+        let t = PrefillThrottle::with_lanes(1);
+        t.publish_serving(2 * GB, 4);
+        grow_to(&t, 4, 13 * GB);
+        assert_eq!(
+            t.reconcile(7 * GB),
+            2,
+            "a genuine drop shrinks on the FIRST tick — (7−2)/2 = 2, tight margin, unchanged"
+        );
+    }
+
     // what this catches: THE LIVE SAFETY VALVE — the exact 2026-07-16 OOM shape, gated, WITH
     // the asymmetry the first live boot proved necessary. Plan serves 4 lanes, ~2GB spikes.
     // A game eating the GPU (free → 7GB) shrinks admission to (7−2)/2 = 2 on the VERY NEXT
@@ -262,13 +362,21 @@ mod tests {
         assert_eq!(t.reconcile(7 * GB), 2, "shrink is instant: (7−2)/2 = 2");
 
         // Game closes: one good reading does NOT regrow (boundary-riding wobble)…
-        assert_eq!(t.reconcile(13 * GB), 2, "one optimistic tick is not recovery");
+        assert_eq!(
+            t.reconcile(13 * GB),
+            2,
+            "one optimistic tick is not recovery"
+        );
         assert_eq!(t.reconcile(13 * GB), 2, "nor two");
         // …and a dip in between resets the streak — the signal must be SUSTAINED.
         assert_eq!(t.reconcile(7 * GB), 2, "a relapse resets the grow streak");
         assert_eq!(t.reconcile(13 * GB), 2);
         assert_eq!(t.reconcile(13 * GB), 2);
-        assert_eq!(t.reconcile(13 * GB), 4, "three consecutive good ticks → regrown to demand");
+        assert_eq!(
+            t.reconcile(13 * GB),
+            4,
+            "three consecutive good ticks → regrown to demand"
+        );
 
         // The applied grant is enforced, not advisory: under pressure only 2 slots grant.
         assert_eq!(t.reconcile(7 * GB), 2);
@@ -299,12 +407,20 @@ mod tests {
         let b = t.acquire_prefill_slot().await;
         let c = t.acquire_prefill_slot().await;
         // (4−2)/2 = 1: only the 1 idle permit is collectable now → installed 4→3, debt 2.
-        assert_eq!(t.reconcile(4 * GB), 3, "collects the idle permit; in-flight can't be revoked");
+        assert_eq!(
+            t.reconcile(4 * GB),
+            3,
+            "collects the idle permit; in-flight can't be revoked"
+        );
 
         drop(a); // one prefill finishes → its permit returns → collectable
         assert_eq!(t.reconcile(4 * GB), 2, "debt drains as calls finish");
         drop(b);
-        assert_eq!(t.reconcile(4 * GB), 1, "down to the target — one lane always runs");
+        assert_eq!(
+            t.reconcile(4 * GB),
+            1,
+            "down to the target — one lane always runs"
+        );
 
         // Floor: even under absurd pressure the gate never goes below 1 (a resident model
         // may always run one prefill — going below is a residency decision, not admission).

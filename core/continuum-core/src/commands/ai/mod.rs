@@ -26,7 +26,10 @@ pub mod providers;
     Debug, Clone, Default, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema,
 )]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/ai/AiRegistryQueryParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/AiRegistryQueryParams.ts"
+)]
 pub struct AiRegistryQueryParams {}
 
 /// The `ai/*` commands as typed self-routing objects, each sharing the module's
@@ -34,12 +37,24 @@ pub struct AiRegistryQueryParams {}
 /// `ai/generate` inference seam.
 pub fn command_objects(registry: Arc<RwLock<AdapterRegistry>>) -> Vec<Arc<dyn DynCommand>> {
     vec![
-        Arc::new(generate::AiGenerate { registry: registry.clone() }),
-        Arc::new(providers::list::AiProvidersList { registry: registry.clone() }),
-        Arc::new(providers::health::AiProvidersHealth { registry: registry.clone() }),
-        Arc::new(models::list::AiModelsList { registry: registry.clone() }),
-        Arc::new(model_info::AiModelInfo { registry: registry.clone() }),
-        Arc::new(lora::list::AiLoraList { registry: registry.clone() }),
+        Arc::new(generate::AiGenerate {
+            registry: registry.clone(),
+        }),
+        Arc::new(providers::list::AiProvidersList {
+            registry: registry.clone(),
+        }),
+        Arc::new(providers::health::AiProvidersHealth {
+            registry: registry.clone(),
+        }),
+        Arc::new(models::list::AiModelsList {
+            registry: registry.clone(),
+        }),
+        Arc::new(model_info::AiModelInfo {
+            registry: registry.clone(),
+        }),
+        Arc::new(lora::list::AiLoraList {
+            registry: registry.clone(),
+        }),
         Arc::new(lora::capabilities::AiLoraCapabilities { registry }),
     ]
 }

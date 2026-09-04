@@ -230,8 +230,8 @@ describe('chat → pattern projections', () => {
       user_id: 'joel',
       current_tab: 'room-2',
       open_tabs: [
-        { id: 'room-1', title: 'general', kind: 'room', unread: 0, purpose: 'chat' },
-        { id: 'room-2', title: 'dev-updates', kind: 'room', unread: 4, purpose: '' },
+        { id: 'room-1', title: 'general', kind: 'room', unread: 0, opened: true, purpose: 'chat', parent_ref: '', display_label: '' },
+        { id: 'room-2', title: 'dev-updates', kind: 'room', unread: 4, opened: true, purpose: '', parent_ref: '', display_label: '' },
       ],
       last_read: { 'room-1': 1 },
       bookmarks: [],
@@ -256,5 +256,48 @@ describe('chat → pattern projections', () => {
       (w) => w.kind === 'listing' && (w.body as { id: string }).id === 'rooms',
     );
     expect((rooms?.body as { cells: unknown[] }).cells).toHaveLength(2);
+  });
+});
+
+describe('recipe-purpose family dispatch (#431)', () => {
+  // what this catches: a dispatched benchmark round's room being UNRENDERABLE.
+  // Recipes bind rooms to hierarchical purposes (benchmark/hard-rs); before the
+  // family resolver, chatWorkspace passed that purpose through with a CHAT body
+  // and the registry threw `no content renderer for room purpose` — measured
+  // live 2026-08-22 on every run room the dispatcher spawned.
+  it('a benchmark-family room renders the bench board, frame-first before the feed', () => {
+    const bench = { ...vm, purpose: 'benchmark/hard-rs', parent_ref: '', display_label: '' };
+    const ws = chatWorkspace(bench);
+    expect(ws.content.purpose).toBe('bench');
+    // Honest pre-feed frame (same contract as arena/serving): the face renders
+    // with feedLive=false rather than falling back to chat or erroring.
+    const body = ws.content.body as { runs: unknown[]; feedLive: boolean };
+    expect(body.feedLive).toBe(false);
+    expect(body.runs).toEqual([]);
+  });
+
+  it('a video-chat room renders the live face; unknown purposes still pass through fail-loud', () => {
+    const call = chatWorkspace({ ...vm, purpose: 'video-chat' });
+    expect(call.content.purpose).toBe('live');
+    // Unknown purpose is NOT silently rewritten — the registry stays the
+    // fail-loud authority on truly unregistered activities.
+    const unknown = chatWorkspace({ ...vm, purpose: 'totally-novel' });
+    expect(unknown.content.purpose).toBe('totally-novel');
+  });
+});
+
+describe('the settings face (operator panel)', () => {
+  // what this catches: the settings overlay's dispatch contract — while open it
+  // WINS outright (an explicit operator act), renders the awaiting frame before
+  // the fetch lands, and on close every other face resumes. One consent surface
+  // in the UI, same verbs as the terminal.
+  it('an open settings overlay wins the content dispatch, awaiting-first', () => {
+    const ws = chatWorkspace(vm, { settings: { open: true } });
+    expect(ws.content.purpose).toBe('settings');
+    const body = ws.content.body as { loaded: boolean; genes: unknown[] };
+    expect(body.loaded).toBe(false);
+    expect(body.genes).toEqual([]);
+    const closed = chatWorkspace(vm, { settings: { open: false } });
+    expect(closed.content.purpose).toBe('chat');
   });
 });

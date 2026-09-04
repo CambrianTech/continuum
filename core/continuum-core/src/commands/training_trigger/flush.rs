@@ -96,7 +96,11 @@ impl FlushOutcome {
         }
     }
 
-    fn job_dispatched(examples_used: u32, selected_provider: String, job_handle: JobHandle) -> Self {
+    fn job_dispatched(
+        examples_used: u32,
+        selected_provider: String,
+        job_handle: JobHandle,
+    ) -> Self {
         Self {
             outcome: Some("JobDispatched".into()),
             examples_used: Some(examples_used),
@@ -210,7 +214,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            trigger.state.bucket_example_count(persona, "test-trait", "synthetic"),
+            trigger
+                .state
+                .bucket_example_count(persona, "test-trait", "synthetic"),
             Some(5)
         );
 
@@ -229,7 +235,9 @@ mod tests {
         assert_eq!(json["outcome"], "JobDispatched");
         assert_eq!(json["examplesUsed"], 5);
         assert_eq!(
-            trigger.state.bucket_example_count(persona, "test-trait", "synthetic"),
+            trigger
+                .state
+                .bucket_example_count(persona, "test-trait", "synthetic"),
             None
         );
 

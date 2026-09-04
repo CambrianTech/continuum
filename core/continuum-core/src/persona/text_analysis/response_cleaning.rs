@@ -127,7 +127,11 @@ fn strip_leading_scaffold_lines(mut s: &str) -> &str {
 /// real message, so we demand the stronger signal.
 pub(crate) fn is_leaked_deliberation_scaffold(text: &str) -> bool {
     let lower = text.to_lowercase();
-    SCAFFOLD_LABELS.iter().filter(|l| lower.contains(*l)).count() >= 2
+    SCAFFOLD_LABELS
+        .iter()
+        .filter(|l| lower.contains(*l))
+        .count()
+        >= 2
 }
 
 /// Clean an AI response by stripping thinking blocks and unwanted prefixes.
@@ -221,16 +225,16 @@ mod tests {
     #[test]
     fn test_strip_timestamp_and_name() {
         assert_eq!(
-            clean_response("[11:59] GPT Assistant: Yes, Joel...").text,
-            "Yes, Joel..."
+            clean_response("[11:59] GPT Assistant: Yes, Operator...").text,
+            "Yes, Operator..."
         );
     }
 
     #[test]
     fn test_strip_name_only() {
         assert_eq!(
-            clean_response("GPT Assistant: Yes, Joel...").text,
-            "Yes, Joel..."
+            clean_response("GPT Assistant: Yes, Operator...").text,
+            "Yes, Operator..."
         );
     }
 
@@ -396,7 +400,10 @@ mod tests {
         let out = clean_response(leaked);
         assert_eq!(out.text, "", "leaked scaffold must NOT post");
         assert!(
-            out.thinking.as_deref().unwrap_or("").contains("what I propose"),
+            out.thinking
+                .as_deref()
+                .unwrap_or("")
+                .contains("what I propose"),
             "the leaked frame is preserved as thinking for memory"
         );
     }
@@ -434,9 +441,15 @@ mod tests {
             out.starts_with("You're asking me"),
             "scaffold prefix must be stripped, got: {out:?}"
         );
-        assert!(out.contains("```rust"), "the real code must survive: {out:?}");
+        assert!(
+            out.contains("```rust"),
+            "the real code must survive: {out:?}"
+        );
         assert!(!out.contains("[TOOL_CALLS]"), "marker must be gone");
-        assert!(!out.contains("[workspace]"), "leaked block header must be gone");
+        assert!(
+            !out.contains("[workspace]"),
+            "leaked block header must be gone"
+        );
     }
 
     /// what this catches: leak #1 — a PURE scaffolding echo (native marker + `[room-roster]`
@@ -451,7 +464,10 @@ mod tests {
         let out = clean_response(leaked);
         assert_eq!(out.text, "", "pure scaffold echo must not post");
         assert!(
-            out.thinking.as_deref().unwrap_or("").contains("workspace-map"),
+            out.thinking
+                .as_deref()
+                .unwrap_or("")
+                .contains("workspace-map"),
             "the leaked frame is preserved as thinking"
         );
     }

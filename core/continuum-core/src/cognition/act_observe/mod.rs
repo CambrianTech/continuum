@@ -28,23 +28,20 @@
 // fold, echoed args) come from the persona's LIVE served window via `ContextBudget` — never
 // a constant; see `cognition/context_budget.rs`.
 
-mod recency;
 mod perception;
+mod recency;
 
 mod observation;
-pub use observation::{
-    extract_paths, ActOutcome, ActStatus, Observation, ToolOutput, ToolVerb,
-};
+pub use observation::{extract_paths, ActOutcome, ActStatus, Observation, ToolOutput, ToolVerb};
 
 mod types;
 pub use types::{SettleOutcome, SettleStep};
 
 mod apply;
-pub use apply::apply_act;
+pub use apply::{apply_act, ActChain};
 
 mod settle;
 pub use settle::{drive_to_settle, settle_step};
-
 
 #[cfg(test)]
 mod tests {
@@ -75,12 +72,11 @@ mod tests {
         );
     }
 
+    use super::perception::is_redundant_orientation;
     use super::*;
-    use uuid::Uuid;
     use crate::ai::types::ToolCall;
     use crate::cognition::workspace::{Decision, Situation, TurnFraming, WorkspaceCycle};
-    use super::perception::is_redundant_orientation;
-
+    use uuid::Uuid;
 
     use crate::cognition::tool_executor::{
         NativeBatchOutcome, ParsedToolBatch, ToolError, ToolExecutionContext, ToolExecutor,
@@ -117,6 +113,7 @@ mod tests {
                     tool_use_id: c.id.clone(),
                     content: self.result_content.clone(),
                     is_error: None,
+                spill_handle: None,
                 })
                 .collect();
             Ok(NativeBatchOutcome {
@@ -316,6 +313,123 @@ mod tests {
         }
     }
 
+    // what this catches: the causal spine's first production wiring (task #447,
+    // CAUSAL-MEMORY-GRAPH.md slice A). Two acts driven through ONE chain must
+    // leave a `CausedBy` edge from the second act's engram to the first's —
+    // recorded at the write site, queryable through the admission store's graph.
+    // A fresh chain (a new turn) must NOT link back to the previous turn's acts.
+    // Regression guard for the zero-production-callers state EngramGraph shipped
+    // in: this pins that acts now populate the graph.
+    #[tokio::test]
+    async fn a_settle_chain_links_each_act_caused_by_its_predecessor() {
+        let exec = Arc::new(RecordingExecutor {
+            seen_context: Mutex::new(None),
+            result_content: "ok\n".into(),
+        });
+        let adm = admission();
+        let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+            .with_acting(body(exec.clone(), adm.clone()));
+        let room = Uuid::new_v4();
+        let chain = ActChain::new();
+
+        // Act 1 — starts the chain: no predecessor, so no edge.
+        acts_of(apply_act(&cycle, &[tool_call()], "start", room, &chain).await);
+        let first = chain.prior().expect("first act admitted onto the chain");
+        assert!(
+            adm.engram_neighbors(&first).is_empty(),
+            "the chain's first act has no predecessor to point at"
+        );
+
+        // Act 2 — a DIFFERENT call (the repeat guard short-circuits identical
+        // batches; a chain is made of distinct steps).
+        let second_call = ToolCall {
+            id: "call-2".into(),
+            name: "code/read".into(),
+            input: serde_json::json!({ "file_path": "src/main.rs" }),
+        };
+        acts_of(apply_act(&cycle, &[second_call], "inspect", room, &chain).await);
+        let second = chain.prior().expect("second act admitted onto the chain");
+        assert_ne!(first, second, "two acts, two engrams");
+
+        let edges = adm.engram_neighbors(&second);
+        assert!(
+            edges.iter().any(|e| e.target == first
+                && e.kind == crate::persona::engram_graph::EdgeKind::CausedBy),
+            "the second act must carry a CausedBy edge to its predecessor — \
+             the `because` clause as structure, not prose; got {edges:?}"
+        );
+
+        // A NEW chain (next turn) must not reach back across the boundary.
+        let next_turn = ActChain::new();
+        assert!(
+            next_turn.prior().is_none(),
+            "a fresh chain starts empty — edges can never cross turns by construction"
+        );
+    }
+
+    // what this catches: THE gap that made "which acts were done for this card"
+    // unanswerable. The chain used to start at `None`, so the FIRST act of every turn
+    // carried no CausedBy edge — and since a turn is triggered by a message or a
+    // work-card kickoff, that meant NO PATH IN THE GRAPH from a card to the work done
+    // for it. The card and its acts were causally disconnected, so every query showed
+    // "claimed, did nothing" no matter how much she actually did.
+    //
+    // Rooting the chain fixes it through the SAME write site — no new branch, no second
+    // rule — which is why this test asserts on the first act specifically.
+    #[tokio::test]
+    async fn a_chain_rooted_in_its_trigger_links_the_first_act_to_what_caused_the_turn() {
+        let exec = Arc::new(RecordingExecutor {
+            seen_context: Mutex::new(None),
+            result_content: "ok\n".into(),
+        });
+        let adm = admission();
+        let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+            .with_acting(body(exec.clone(), adm.clone()));
+        let room = Uuid::new_v4();
+
+        // The kickoff / inbound message that caused this turn to happen at all.
+        let trigger = Uuid::new_v4();
+        let chain =
+            ActChain::rooted_in(&crate::cognition::workspace::Cause::Stimulus(trigger));
+
+        acts_of(apply_act(&cycle, &[tool_call()], "start", room, &chain).await);
+        let first = chain.prior().expect("first act admitted onto the chain");
+        assert_ne!(first, trigger, "the act is its own engram, not the trigger");
+
+        let edges = adm.engram_neighbors(&first);
+        assert!(
+            edges.iter().any(|e| e.target == trigger
+                && e.kind == crate::persona::engram_graph::EdgeKind::CausedBy),
+            "the FIRST act must chain to the trigger that caused the turn — without \
+             this edge there is no path from a work card to the acts done for it; \
+             got {edges:?}"
+        );
+    }
+
+    // what this catches: an unrooted chain silently gaining a phantom antecedent. A
+    // burst with no admitted trigger — an idle tick (`Ambient`), an eval fixture
+    // (`Synthetic`) — must produce a first act with NO edge rather than one pointing
+    // at something invented. Honest absence over a fabricated link, which is also what
+    // makes the `engram.chain.rooted` probe's ambient rows mean something.
+    #[tokio::test]
+    async fn an_unrooted_chain_leaves_its_first_act_honestly_unlinked() {
+        let exec = Arc::new(RecordingExecutor {
+            seen_context: Mutex::new(None),
+            result_content: "ok\n".into(),
+        });
+        let adm = admission();
+        let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+            .with_acting(body(exec.clone(), adm.clone()));
+        let chain = ActChain::rooted_in(&crate::cognition::workspace::Cause::Ambient);
+
+        acts_of(apply_act(&cycle, &[tool_call()], "start", Uuid::new_v4(), &chain).await);
+        let first = chain.prior().expect("first act admitted");
+        assert!(
+            adm.engram_neighbors(&first).is_empty(),
+            "no trigger means no edge — never a fabricated one"
+        );
+    }
+
     /// Unwrap the typed acts of an `Acted` outcome (panics on NoHands/ExecutorError) —
     /// the typed sibling of the old `.expect("acted")` on the `Option<String>`.
     fn acts_of(outcome: ActOutcome) -> Vec<Observation> {
@@ -353,7 +467,6 @@ mod tests {
         })
     }
 
-
     // what this catches: an act is scoped to the room it is FOR (one mind is in
     // many rooms — the body is room-agnostic, `room_id` flows per-call), the
     // observation correlates each call to its result in first person, and the
@@ -370,7 +483,7 @@ mod tests {
             .with_acting(body(exec.clone(), adm.clone()));
 
         let room = Uuid::new_v4();
-        let acts = match apply_act(&cycle, &[tool_call()], "check the math", room).await {
+        let acts = match apply_act(&cycle, &[tool_call()], "check the math", room, &ActChain::new()).await {
             ActOutcome::Acted { acts } => acts,
             other => panic!("expected Acted, got {other:?}"),
         };
@@ -382,7 +495,10 @@ mod tests {
             Some(room),
             "the act must be scoped to the room it is for, not a phantom nil room"
         );
-        assert_eq!(obs.call.name, "code/run", "the typed act names the tool it ran");
+        assert_eq!(
+            obs.call.name, "code/run",
+            "the typed act names the tool it ran"
+        );
         // THE RESULT THREADS BACK BY ID — the run-18057-f1 correlation, now a TYPED
         // field the caller reads instead of splitting on "[action #".
         assert_eq!(
@@ -395,7 +511,9 @@ mod tests {
         );
         // The recency rendering still names tool + intent + result (byte-stable).
         assert!(obs.render_recall("check the math").contains("code/run"));
-        assert!(obs.render_recall("check the math").contains("check the math"));
+        assert!(obs
+            .render_recall("check the math")
+            .contains("check the math"));
         assert!(obs.render_recall("check the math").contains('4'));
         assert_eq!(
             adm.engram_count(),
@@ -417,7 +535,7 @@ mod tests {
         let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8);
         assert!(
             matches!(
-                apply_act(&cycle, &[tool_call()], "try", Uuid::new_v4()).await,
+                apply_act(&cycle, &[tool_call()], "try", Uuid::new_v4(), &ActChain::new()).await,
                 ActOutcome::NoHands
             ),
             "no hands → NoHands, never a fabricated success"
@@ -434,7 +552,7 @@ mod tests {
             .with_acting(body(Arc::new(FailingExecutor), adm.clone()));
         assert!(
             matches!(
-                apply_act(&cycle, &[tool_call()], "run", Uuid::new_v4()).await,
+                apply_act(&cycle, &[tool_call()], "run", Uuid::new_v4(), &ActChain::new()).await,
                 ActOutcome::ExecutorError { .. }
             ),
             "a batch-level failure surfaces as ExecutorError, distinct from NoHands"
@@ -465,8 +583,12 @@ mod tests {
         )
         .with_acting(body_with_wm(exec.clone(), adm.clone(), Arc::clone(&wm)));
 
-        let outcome =
-            drive_to_settle(&cycle, "[eval]\npeer: what is 2+2?", Uuid::new_v4(), 8, TurnFraming::ambient()).await;
+        let outcome = drive_to_settle(
+            &cycle,
+            "[eval]\npeer: what is 2+2?",
+            8,
+            TurnFraming::ambient(),)
+        .await;
 
         assert_eq!(outcome.acts, 1, "acted exactly once before settling");
         assert_eq!(outcome.spoken.as_deref(), Some("the answer is 4"));
@@ -477,11 +599,12 @@ mod tests {
     // 2026-08-04 on sympy-21379: one `code/tree`, then a prose explanation of the bug —
     // 0 patch bytes, 29 of 30 acts unspent, run over). When the CALLER declared the
     // deliverable to be the workspace, a Speak that changed no file must not end the
-    // turn on the first pass: she gets exactly ONE more perception, carrying the
-    // structural fact that her working memory holds no mutation. Bounded — she speaks
-    // again and it settles, so a determined Speak is never trapped in a loop.
+    // turn: she gets up to NARRATION_BUDGET more perceptions, each carrying the
+    // structural fact that her working memory holds no mutation (2026-09-05: one was
+    // too few — a plan, one act, a second plan ended every work turn). Bounded — the
+    // budget spends and it settles, so a determined Speak is never trapped in a loop.
     #[tokio::test]
-    async fn a_zero_change_speak_reperceives_once_when_the_workspace_is_the_deliverable() {
+    async fn a_zero_change_speak_reperceives_up_to_the_narration_budget_when_the_workspace_is_the_deliverable() {
         let speaker = CountingSpeaker::new();
         let wm = Arc::new(WorkingMemory::new(8));
         let exec = Arc::new(RecordingExecutor {
@@ -501,16 +624,14 @@ mod tests {
         let outcome = drive_to_settle(
             &cycle,
             "fix the bug in sympy/core/basic.py",
-            Uuid::new_v4(),
             8,
-            TurnFraming::directed().on_workspace(),
-        )
+            TurnFraming::directed().on_workspace(),)
         .await;
 
         assert_eq!(
             speaker.generations(),
-            2,
-            "the zero-deliverable Speak bought exactly one more perception — not zero, not a loop"
+            super::settle::NARRATION_BUDGET + 1,
+            "the zero-deliverable Speaks bought exactly the narration budget of perceptions — not zero, not a loop"
         );
         assert!(
             wm.recent().iter().any(|l| l.contains("[no-deliverable]")),
@@ -519,7 +640,7 @@ mod tests {
         );
         assert!(
             matches!(outcome.decision, Decision::Speak { .. }),
-            "she settles on her second Speak — the decision stays hers"
+            "she settles on the Speak after the budget — the decision stays hers"
         );
     }
 
@@ -549,20 +670,21 @@ mod tests {
         let outcome = drive_to_settle(
             &cycle,
             "what do you think?",
-            Uuid::new_v4(),
             8,
-            TurnFraming::directed(),
-        )
+            TurnFraming::directed(),)
         .await;
 
-        assert_eq!(speaker.generations(), 1, "one generation, settled — unchanged");
+        assert_eq!(
+            speaker.generations(),
+            1,
+            "one generation, settled — unchanged"
+        );
         assert!(
             !wm.recent().iter().any(|l| l.contains("[no-deliverable]")),
             "no workspace-deliverable fact on a turn whose deliverable is the answer"
         );
         assert!(matches!(outcome.decision, Decision::Speak { .. }));
     }
-
 
     /// Emits a DIFFERENT read-class act every tick (fresh path per generation), so
     /// every batch has a fresh loop signature — the exact shape the #206 identical-act
@@ -615,7 +737,9 @@ mod tests {
         });
         let adm = admission();
         let cycle = WorkspaceCycle::new(
-            vec![Arc::new(VaryingAct { ticks: Mutex::new(0) })],
+            vec![Arc::new(VaryingAct {
+                ticks: Mutex::new(0),
+            })],
             Arc::new(SalienceArbiter),
             8,
         )
@@ -624,16 +748,16 @@ mod tests {
         let outcome = drive_to_settle(
             &cycle,
             "fix the bug",
-            Uuid::new_v4(),
             20,
-            TurnFraming::ambient().on_workspace(),
-        )
+            TurnFraming::ambient().on_workspace(),)
         .await;
 
         assert_eq!(
-            outcome.acts, 10,
-            "discovery saturates at half the budget (20/2) with zero mutations — \
-             the other half is preserved for the empty-diff re-drive"
+            outcome.acts, 15,
+            "discovery saturates at 3/4 of the budget (20*3/4) with zero mutations \
+             — PREMISE CHANGED 2026-08-24: the /2 gate measured live as forcing \
+             early settles on honest study phases (she 'quit' at 16/32 because \
+             the gate quit for her); 3/4 still bounds a pure-read runaway"
         );
         assert!(
             matches!(outcome.decision, Decision::Act { .. }) && outcome.spoken.is_none(),
@@ -647,18 +771,94 @@ mod tests {
             result_content: "file contents...".into(),
         });
         let cycle2 = WorkspaceCycle::new(
-            vec![Arc::new(VaryingAct { ticks: Mutex::new(0) })],
+            vec![Arc::new(VaryingAct {
+                ticks: Mutex::new(0),
+            })],
             Arc::new(SalienceArbiter),
             8,
         )
         .with_acting(body(exec2, admission()));
-        let ambient =
-            drive_to_settle(&cycle2, "look around", Uuid::new_v4(), 20, TurnFraming::ambient())
-                .await;
+        let ambient = drive_to_settle(
+            &cycle2,
+            "look around",
+            20,
+            TurnFraming::ambient(),)
+        .await;
         assert_eq!(
             ambient.acts, 20,
             "a non-workspace turn reads to the full budget — the gate scopes to \
              workspace-deliverable turns only"
+        );
+    }
+
+    // what this catches: the act-budget stopwatch actually reaching her MIND —
+    // regression for the 2026-08-23 framing gap where the facts were written
+    // (#2411) but eval framed every task as directed-speech, so they never
+    // fired for the DoD tasks they were built for. Pins: on a workspace-
+    // deliverable turn the [act-budget] contract fact lands in working memory;
+    // on an ordinary turn it does not (speech turns owe no stopwatch).
+    #[tokio::test]
+    async fn act_budget_facts_reach_working_memory_on_workspace_turns_only() {
+        let exec = Arc::new(RecordingExecutor {
+            seen_context: Mutex::new(None),
+            result_content: "file contents...".into(),
+        });
+        let adm = admission();
+        let the_body = body(exec.clone(), adm.clone());
+        let wm = the_body.working_memory.clone();
+        let cycle = WorkspaceCycle::new(
+            vec![Arc::new(VaryingAct {
+                ticks: Mutex::new(0),
+            })],
+            Arc::new(SalienceArbiter),
+            8,
+        )
+        .with_acting(the_body);
+        drive_to_settle(
+            &cycle,
+            "fix the bug",
+            6,
+            TurnFraming::ambient().on_workspace(),)
+        .await;
+        let entries = wm.recent_entries();
+        let budget_facts: Vec<_> = entries
+            .iter()
+            .filter(|e| e.text.contains("[act-budget]"))
+            .collect();
+        // The turn-start contract fact fires at act 0 and is legitimately
+        // EVICTED by the WM ring as acts accumulate (observed in this very
+        // test: 6 acts on a capacity-8 ring pushed it out) — which is exactly
+        // why the midpoint/two-remaining milestones RE-STATE the budget. The
+        // guarantee worth pinning is therefore: at settle, working memory
+        // holds at least one [act-budget] fact naming the REAL budget number.
+        assert!(
+            budget_facts.iter().any(|e| e.text.contains("of 6 acts") || e.text.contains("my 6 acts")),
+            "a budget fact naming the real budget must survive to settle; got: {:?}",
+            budget_facts.iter().map(|e| &e.text).collect::<Vec<_>>()
+        );
+
+        // Control: an ordinary (speech-deliverable) turn records no stopwatch.
+        let exec2 = Arc::new(RecordingExecutor {
+            seen_context: Mutex::new(None),
+            result_content: "file contents...".into(),
+        });
+        let body2 = body(exec2, admission());
+        let wm2 = body2.working_memory.clone();
+        let cycle2 = WorkspaceCycle::new(
+            vec![Arc::new(VaryingAct {
+                ticks: Mutex::new(0),
+            })],
+            Arc::new(SalienceArbiter),
+            8,
+        )
+        .with_acting(body2);
+        drive_to_settle(&cycle2, "look around", 6, TurnFraming::ambient()).await;
+        assert!(
+            !wm2
+                .recent_entries()
+                .iter()
+                .any(|e| e.text.contains("[act-budget]")),
+            "speech turns owe no stopwatch — the fact is scoped to workspace-deliverable turns"
         );
     }
 
@@ -676,7 +876,8 @@ mod tests {
         let cycle = WorkspaceCycle::new(vec![Arc::new(AlwaysAct)], Arc::new(SalienceArbiter), 8)
             .with_acting(body(exec.clone(), adm.clone()));
 
-        let outcome = drive_to_settle(&cycle, "go", Uuid::new_v4(), 2, TurnFraming::ambient()).await;
+        let outcome =
+            drive_to_settle(&cycle, "go", 2, TurnFraming::ambient()).await;
 
         assert_eq!(outcome.acts, 2, "spent exactly the observer's budget");
         assert!(
@@ -709,7 +910,8 @@ mod tests {
 
         // Budget of 20 acts, but she loops on the identical call — the backstop must fire long
         // before, at 4 acts (3 consecutive identical repeats + the first).
-        let outcome = drive_to_settle(&cycle, "go", Uuid::new_v4(), 20, TurnFraming::ambient()).await;
+        let outcome =
+            drive_to_settle(&cycle, "go", 20, TurnFraming::ambient()).await;
 
         assert_eq!(
             outcome.acts, 4,
@@ -737,8 +939,14 @@ mod tests {
         let cycle = WorkspaceCycle::new(vec![Arc::new(AlwaysAct)], Arc::new(SalienceArbiter), 8)
             .with_acting(body(exec.clone(), adm.clone()));
 
-        let (deferred, _) =
-            settle_step(&cycle, "go", Uuid::new_v4(), false, TurnFraming::ambient(), Situation::FreshContext).await;
+        let (deferred, _) = settle_step(
+            &cycle,
+            "go",
+            false,
+            TurnFraming::ambient(),
+            Situation::FreshContext,
+            &ActChain::new(),)
+        .await;
         assert!(
             matches!(deferred, SettleStep::WouldAct { .. }),
             "may_act=false defers the act"
@@ -748,9 +956,18 @@ mod tests {
             "a deferred act NEVER touches the executor"
         );
 
-        let (ran, _) =
-            settle_step(&cycle, "go", Uuid::new_v4(), true, TurnFraming::ambient(), Situation::FreshContext).await;
-        assert!(matches!(ran, SettleStep::Acted { .. }), "may_act=true runs it");
+        let (ran, _) = settle_step(
+            &cycle,
+            "go",
+            true,
+            TurnFraming::ambient(),
+            Situation::FreshContext,
+            &ActChain::new(),)
+        .await;
+        assert!(
+            matches!(ran, SettleStep::Acted { .. }),
+            "may_act=true runs it"
+        );
         assert!(
             exec.seen_context.lock().unwrap().is_some(),
             "a permitted act DOES reach the executor"
@@ -791,6 +1008,7 @@ mod tests {
                     tool_use_id: c.id.clone(),
                     content: content.clone(),
                     is_error: None,
+                spill_handle: None,
                 })
                 .collect();
             Ok(NativeBatchOutcome {
@@ -917,10 +1135,8 @@ mod tests {
         let outcome = drive_to_settle(
             &cycle,
             "[eval]\npeer: where does the program start and what does it call?",
-            Uuid::new_v4(),
             8,
-            TurnFraming::ambient(),
-        )
+            TurnFraming::ambient(),)
         .await;
 
         assert_eq!(
@@ -1005,8 +1221,11 @@ mod tests {
         let room = Uuid::new_v4();
 
         // First act genuinely runs; its result lands in working memory.
-        let first = acts_of(apply_act(&cycle, &[tool_call()], "check the math", room).await);
-        assert_eq!(first[0].call.name, "code/run", "first act names the tool it ran");
+        let first = acts_of(apply_act(&cycle, &[tool_call()], "check the math", room, &ActChain::new()).await);
+        assert_eq!(
+            first[0].call.name, "code/run",
+            "first act names the tool it ran"
+        );
         assert!(
             matches!(first[0].status, ActStatus::Executed),
             "the first act really executed"
@@ -1019,7 +1238,7 @@ mod tests {
 
         // Second, byte-identical act: already satisfied → short-circuit, no re-run.
         // The typed act's OUTPUT carries the nudge and the STATUS names the demotion.
-        let second = acts_of(apply_act(&cycle, &[tool_call()], "check the math", room).await);
+        let second = acts_of(apply_act(&cycle, &[tool_call()], "check the math", room, &ActChain::new()).await);
         assert!(
             matches!(second[0].status, ActStatus::AlreadySatisfied { .. }),
             "the second identical act is typed AlreadySatisfied, not Executed"
@@ -1039,7 +1258,7 @@ mod tests {
         // than the second — the proprioception climbs rather than repeating byte-identical
         // text. Without this, static-nudge spam evicts the useful receipt from the bounded
         // recency window and a greedy (temp-0) model re-emits the identical call forever.
-        let third = acts_of(apply_act(&cycle, &[tool_call()], "check the math", room).await);
+        let third = acts_of(apply_act(&cycle, &[tool_call()], "check the math", room, &ActChain::new()).await);
         let third_nudge = third[0].output.result.content.clone();
         assert_ne!(
             second_nudge, third_nudge,
@@ -1081,7 +1300,11 @@ mod tests {
         const K: &str = "orientation|<class>";
         assert_eq!(wm.note_action_fingerprint(K), 1);
         assert_eq!(wm.note_action_fingerprint(K), 2);
-        assert_eq!(wm.note_action_fingerprint(K), 3, "climbs — perception shifts each demotion");
+        assert_eq!(
+            wm.note_action_fingerprint(K),
+            3,
+            "climbs — perception shifts each demotion"
+        );
 
         // The OLD arg-keyed shape, for contrast: jittered variants never escalate, which is
         // precisely how a determined model rode past the guard.
@@ -1113,7 +1336,10 @@ mod tests {
             input: serde_json::json!({ "name": "code/write" }),
         };
         // First orientation, nothing yet in the concern → honest, not redundant.
-        assert!(!is_redundant_orientation(&[], &[list(serde_json::json!({}))]));
+        assert!(!is_redundant_orientation(
+            &[],
+            &[list(serde_json::json!({}))]
+        ));
         // A discovery receipt is already in the concern → a second orientation is spin.
         let recent = vec!["commands/list({}) → ok".to_string()];
         assert!(is_redundant_orientation(&recent, &[help.clone()]));
@@ -1130,7 +1356,10 @@ mod tests {
         assert!(!is_redundant_orientation(&recent_settled, &[help.clone()]));
         // A MIXED batch with a real workspace action is never demoted — the real call
         // must reach the hand.
-        assert!(!is_redundant_orientation(&recent, &[help.clone(), tool_call()]));
+        assert!(!is_redundant_orientation(
+            &recent,
+            &[help.clone(), tool_call()]
+        ));
         // Empty batch is never redundant.
         assert!(!is_redundant_orientation(&recent, &[]));
 
@@ -1143,17 +1372,28 @@ mod tests {
             name: "code/tree".into(),
             input: serde_json::json!({ "path": p, "max_depth": 2 }),
         };
-        assert!(!is_redundant_orientation(&[], &[tree("apps/cli")]), "first survey is honest");
+        assert!(
+            !is_redundant_orientation(&[], &[tree("apps/cli")]),
+            "first survey is honest"
+        );
         let after_tree = vec!["code/tree(path=apps/cli, max_depth=2) → ok".to_string()];
         // Jittered repeat (trailing slash, different depth) → still demoted (args ignored).
         assert!(is_redundant_orientation(&after_tree, &[tree("apps/cli/")]));
         assert!(is_redundant_orientation(
             &after_tree,
-            &[ToolCall { id: "t".into(), name: "code/tree".into(), input: serde_json::json!({}) }]
+            &[ToolCall {
+                id: "t".into(),
+                name: "code/tree".into(),
+                input: serde_json::json!({})
+            }]
         ));
         // `code/list` is NOT orientation — a specific-dir listing to get filenames before
         // an edit is a legitimate narrowing step, so it always runs.
-        let clist = ToolCall { id: "l".into(), name: "code/list".into(), input: serde_json::json!({ "path": "src" }) };
+        let clist = ToolCall {
+            id: "l".into(),
+            name: "code/list".into(),
+            input: serde_json::json!({ "path": "src" }),
+        };
         assert!(!is_redundant_orientation(&after_tree, &[clist]));
     }
 
@@ -1190,7 +1430,7 @@ mod tests {
         };
 
         // First orientation genuinely runs; its receipt lands in working memory.
-        acts_of(apply_act(&cycle, &[list], "orient", room).await);
+        acts_of(apply_act(&cycle, &[list], "orient", room, &ActChain::new()).await);
         assert_eq!(
             exec.results.lock().unwrap().len(),
             1,
@@ -1198,7 +1438,7 @@ mod tests {
         );
 
         // Second, DIFFERENT-args orientation this concern → demoted, no re-run.
-        let second = acts_of(apply_act(&cycle, &[help], "orient again", room).await);
+        let second = acts_of(apply_act(&cycle, &[help], "orient again", room, &ActChain::new()).await);
         assert!(
             matches!(second[0].status, ActStatus::RedundantOrientation { .. }),
             "the demoted orientation is typed RedundantOrientation, not Executed"
@@ -1228,7 +1468,10 @@ mod tests {
         // content-addressed dedup no-op in memory (correct substrate behavior,
         // [[embeddings-are-per-content-computed-once-shared]]), which would mask
         // the continuity-of-self assertion below.
-        let exec = Arc::new(ScriptedExecutor::new(["learned about A", "learned about B"]));
+        let exec = Arc::new(ScriptedExecutor::new([
+            "learned about A",
+            "learned about B",
+        ]));
         let adm = admission();
         // One living mind: the working-memory buffer accumulates ACROSS both
         // concern-drives (volatile continuity), so `ActThenSpeak` must re-awaken on
@@ -1247,13 +1490,23 @@ mod tests {
         let room = Uuid::new_v4();
 
         // Concern A: act → observe → settle on a Speak.
-        let a = drive_to_settle(&cycle, "[eval]\npeer: concern A?", room, 8, TurnFraming::ambient()).await;
+        let a = drive_to_settle(
+            &cycle,
+            "[eval]\npeer: concern A?",
+            8,
+            TurnFraming::ambient(),)
+        .await;
         assert_eq!(a.acts, 1, "settled concern A after one act→observe");
         assert!(a.spoken.is_some(), "concern A got a spoken answer");
         assert_eq!(adm.engram_count(), 1, "concern A left exactly one memory");
 
         // Concern B on the SAME living mind — it must wake again, not stay halted.
-        let b = drive_to_settle(&cycle, "[eval]\npeer: a totally different concern B?", room, 8, TurnFraming::ambient()).await;
+        let b = drive_to_settle(
+            &cycle,
+            "[eval]\npeer: a totally different concern B?",
+            8,
+            TurnFraming::ambient(),)
+        .await;
         assert_eq!(
             b.acts, 1,
             "the mind RE-AWAKENED and acted on the new concern — not stuck post-settle"
@@ -1265,7 +1518,6 @@ mod tests {
             "continuity of self: concern-A memory persisted, concern B added its own"
         );
     }
-
 
     /// Deliberation faculty that Speaks a fixed text — for exercising the Speak arm.
     struct SpeaksText(&'static str);
@@ -1279,7 +1531,9 @@ mod tests {
         }
         async fn contribute(&self, _ws: &Workspace) -> Option<Contribution> {
             Some(Contribution::verdict(
-                Decision::Speak { text: self.0.into() },
+                Decision::Speak {
+                    text: self.0.into(),
+                },
                 0.9,
                 "speaks",
             ))
@@ -1297,8 +1551,7 @@ mod tests {
             seen_context: Mutex::new(None),
             result_content: "ok".into(),
         });
-        let promise =
-            "I'll run this script to check:\n```python\nprint(2+2)\n```\nOutput soon!";
+        let promise = "I'll run this script to check:\n```python\nprint(2+2)\n```\nOutput soon!";
         let wm = Arc::new(WorkingMemory::new(4));
         let cycle = WorkspaceCycle::new(
             vec![Arc::new(SpeaksText(promise)) as Arc<dyn Faculty>],
@@ -1309,11 +1562,10 @@ mod tests {
         let (step, _) = settle_step(
             &cycle,
             "[eval]\npeer: can you check 2+2?",
-            Uuid::new_v4(),
             true,
             TurnFraming::ambient(),
             Situation::FreshContext,
-        )
+            &ActChain::new(),)
         .await;
         assert!(matches!(step, SettleStep::Spoke(_)));
         assert!(
@@ -1332,11 +1584,10 @@ mod tests {
         let (step2, _) = settle_step(
             &cycle2,
             "[eval]\npeer: can you check 2+2?",
-            Uuid::new_v4(),
             true,
             TurnFraming::ambient(),
             Situation::FreshContext,
-        )
+            &ActChain::new(),)
         .await;
         assert!(matches!(step2, SettleStep::Spoke(_)));
         assert!(
@@ -1377,11 +1628,10 @@ mod tests {
         let (step, _) = settle_step(
             &cycle,
             "[eval]\npeer: please provide the content of the test files",
-            Uuid::new_v4(),
             true,
             TurnFraming::ambient(),
             Situation::FreshContext,
-        )
+            &ActChain::new(),)
         .await;
         assert!(matches!(step, SettleStep::Spoke(_)));
         assert!(
@@ -1406,11 +1656,10 @@ mod tests {
         let (step2, _) = settle_step(
             &cycle2,
             "[eval]\npeer: could you draft example test data?",
-            Uuid::new_v4(),
             true,
             TurnFraming::ambient(),
             Situation::FreshContext,
-        )
+            &ActChain::new(),)
         .await;
         assert!(matches!(step2, SettleStep::Spoke(_)));
         assert!(
@@ -1419,5 +1668,4 @@ mod tests {
             wm2.recent()
         );
     }
-
 }

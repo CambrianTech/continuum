@@ -395,10 +395,7 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("helper"), "names the role: {msg}");
         assert!(msg.contains("nonexistent/model"), "names the model: {msg}");
-        assert!(
-            msg.contains("catalog.rs"),
-            "points at the registry: {msg}"
-        );
+        assert!(msg.contains("catalog.rs"), "points at the registry: {msg}");
 
         let err = InferenceProfileError::NoLocalGguf {
             model_id: "continuum-ai/qwen2.5-0.5b".to_string(),

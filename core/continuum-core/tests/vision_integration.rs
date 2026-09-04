@@ -150,10 +150,9 @@ async fn vision_roundtrip_local_qwen2_vl() {
     // Skip cleanly when the GGUF/mmproj aren't on disk — same pattern as
     // tests/llamacpp_vision_integration.rs. CI hosts won't have these
     // 6 GB files; dev machines do.
-    let model_path = model_meta
-        .gguf_local_path
-        .clone()
-        .expect("qwen2-vl-7b-instruct should declare gguf_local_path in the Rust catalog (catalog.rs)");
+    let model_path = model_meta.gguf_local_path.clone().expect(
+        "qwen2-vl-7b-instruct should declare gguf_local_path in the Rust catalog (catalog.rs)",
+    );
     if !model_path.exists() {
         eprintln!(
             "[vision-int] skipping — Qwen2-VL-7B GGUF not at {}. Pull via \

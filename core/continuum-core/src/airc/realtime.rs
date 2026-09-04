@@ -326,7 +326,9 @@ pub struct AircPeerCapability {
     export_to = "../../../protocol/typescript/airc/AircPeerManifest.ts"
 )]
 pub struct AircPeerManifest {
-    pub peer_id: String,
+    #[ts(type = "string")]
+    #[schemars(with = "String")]
+    pub peer_id: crate::identity::PeerId,
     #[ts(optional)]
     pub display_name: Option<String>,
     #[ts(type = "Array<string>")]
@@ -366,7 +368,14 @@ impl AircPeerManifest {
     /// rule, a bad manifest must fail loud so the peer that sent it can
     /// be told why.
     pub fn validate(&self) -> Result<(), AircPeerManifestError> {
-        if self.peer_id.trim().is_empty() {
+        // Typing `peer_id` as `PeerId` (transparent UUID) killed the BLANK case:
+        // "" cannot be constructed or deserialized, and malformed input now fails at
+        // parse with a serde error naming the field — louder than this check was.
+        //
+        // But it did NOT kill "unset": `Uuid::nil()` is still constructible and still
+        // means nobody. The type narrowed the hole rather than closing it, so the
+        // invariant keeps an explicit guard at its remaining expressible form.
+        if self.peer_id.as_uuid().is_nil() {
             return Err(AircPeerManifestError::EmptyPeerId);
         }
         validate_signing_pubkey_hex(&self.signing_pubkey_hex)?;
@@ -428,7 +437,9 @@ fn validate_signing_pubkey_hex(hex: &str) -> Result<(), AircPeerManifestError> {
 #[ts(export, export_to = "../../../protocol/typescript/airc/AircReceipt.ts")]
 pub struct AircReceipt {
     pub event_id: String,
-    pub peer_id: String,
+    #[ts(type = "string")]
+    #[schemars(with = "String")]
+    pub peer_id: crate::identity::PeerId,
     pub received_at_ms: u64,
     #[ts(optional)]
     pub replay_cursor: Option<AircReplayCursor>,
@@ -527,6 +538,7 @@ impl AircRealtimeEnvelope {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use airc_core::PeerId;
     use serde_json::json;
 
     /// Sample ed25519 pubkey hex for test fixtures. 32 bytes (64 hex
@@ -624,7 +636,10 @@ mod tests {
         let cambriantech = Uuid::from_u128(0xA2);
         let useideem = Uuid::from_u128(0xA3);
         let manifest = AircPeerManifest {
-            peer_id: "peer-continuum-1".to_string(),
+            peer_id: PeerId::from_uuid(uuid::Uuid::new_v5(
+                &uuid::Uuid::NAMESPACE_OID,
+                b"peer-continuum-1",
+            )),
             display_name: Some("Continuum GPU Host".to_string()),
             room_ids: vec![general, cambriantech],
             capabilities: vec![AircPeerCapability {
@@ -637,7 +652,17 @@ mod tests {
             expires_at_ms: Some(10_000),
         };
 
-        assert_eq!(manifest.coalesce_key(), "peer_manifest:peer-continuum-1");
+        assert_eq!(
+            manifest.coalesce_key(),
+            format!(
+                "peer_manifest:{}",
+                PeerId::from_uuid(uuid::Uuid::new_v5(
+                    &uuid::Uuid::NAMESPACE_OID,
+                    b"peer-continuum-1"
+                ))
+                .as_uuid()
+            )
+        );
         assert!(manifest.advertises_room(general));
         assert!(!manifest.advertises_room(useideem));
         assert!(!manifest.is_expired_at(9_999));
@@ -652,7 +677,10 @@ mod tests {
         let payload = AircRealtimePayload::Receipt {
             receipt: AircReceipt {
                 event_id: "evt-1".to_string(),
-                peer_id: "peer-1".to_string(),
+                peer_id: PeerId::from_uuid(uuid::Uuid::new_v5(
+                    &uuid::Uuid::NAMESPACE_OID,
+                    b"peer-1",
+                )),
                 received_at_ms: 10,
                 replay_cursor: None,
             },
@@ -674,7 +702,7 @@ mod tests {
 
     fn manifest_with_pubkey(pubkey_hex: &str) -> AircPeerManifest {
         AircPeerManifest {
-            peer_id: "peer-1".to_string(),
+            peer_id: PeerId::from_uuid(uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, b"peer-1")),
             display_name: None,
             room_ids: vec![Uuid::from_u128(0xA1)],
             capabilities: vec![],
@@ -728,8 +756,13 @@ mod tests {
 
     #[test]
     fn manifest_rejects_empty_peer_id() {
+        // what this catches: an UNSET peer id must never validate. The
+        // field is now `PeerId`, so "" is no longer expressible — the nil
+        // UUID is the only remaining way to say "unset", and it is what
+        // this must refuse. (Before the newtype the test typed `""`; that
+        // spelling is gone, the invariant is not.)
         let mut m = manifest_with_pubkey(TEST_PUBKEY_HEX);
-        m.peer_id = String::new();
+        m.peer_id = PeerId::from_uuid(uuid::Uuid::nil());
         let err = m.validate().unwrap_err();
         assert!(matches!(err, AircPeerManifestError::EmptyPeerId));
     }

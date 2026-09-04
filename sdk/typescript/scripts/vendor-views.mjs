@@ -60,6 +60,10 @@ const VENDORED = [
   // bench closure (kind="bench" — the academy's live benchmark board, #329)
   { src: 'positron', dest: 'views', name: 'BenchViewState' },
   { src: 'positron', dest: 'views', name: 'BenchRunRow' },
+  { src: 'positron', dest: 'views', name: 'BenchRoundRow' },
+  // BenchRoundRow imports ./BenchRoundCardRow (per-card status incl.
+  // unstarted cards — the 2026-09-01 thrash-vs-grind sensor)
+  { src: 'positron', dest: 'views', name: 'BenchRoundCardRow' },
   // kanban closure (kind="kanban" — the work board; the persona home's claims
   // feed renders cards by assignee). Vendored now that a widget renders it.
   { src: 'positron', dest: 'views', name: 'KanbanViewState' },

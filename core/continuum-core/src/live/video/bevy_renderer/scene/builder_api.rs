@@ -11,7 +11,8 @@
 
 use super::description::{
     AnimationProfileKind, AssetRef, AvatarPayload, CameraPayload, ColorDesc, EnvironmentPayload,
-    NodePayload, PropPayload, SceneDescription, SceneNode, TransformDesc, SCENE_DESCRIPTION_VERSION,
+    NodePayload, PropPayload, SceneDescription, SceneNode, TransformDesc,
+    SCENE_DESCRIPTION_VERSION,
 };
 
 /// Fluent builder for a [`SceneDescription`]. Every `with_*` method appends a
@@ -140,8 +141,16 @@ mod tests {
 
     fn sample() -> SceneDescription {
         SceneBuilder::new()
-            .backdrop(ColorDesc { r: 0.1, g: 0.2, b: 0.3, a: 1.0 })
-            .with_camera(true, TransformDesc::from_translation(Vec3Desc::new(0.0, 1.5, 2.0)))
+            .backdrop(ColorDesc {
+                r: 0.1,
+                g: 0.2,
+                b: 0.3,
+                a: 1.0,
+            })
+            .with_camera(
+                true,
+                TransformDesc::from_translation(Vec3Desc::new(0.0, 1.5, 2.0)),
+            )
             .with_environment("office", "models/scenes/office.glb")
             .with_avatar(
                 "asha",

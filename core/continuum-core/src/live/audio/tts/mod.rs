@@ -418,9 +418,54 @@ pub async fn synthesize(
         gender_hint.unwrap_or("any"),
         adapter.name()
     );
-    let mut result = adapter.synthesize(text, &resolved).await?;
-    result.voice_name = Some(resolved);
-    Ok(result)
+    match adapter.synthesize(text, &resolved).await {
+        Ok(mut result) => {
+            result.voice_name = Some(resolved);
+            Ok(result)
+        }
+        Err(active_err) => {
+            // ADAPTER FALL-THROUGH, loudly (2026-09-02, caught by the FIRST
+            // voice/selftest run): Edge-TTS (a CLOUD service, primary) returned
+            // empty audio while Kokoro sat fully provisioned on disk — and one
+            // provider's outage silenced every citizen. A registry of providers
+            // is not a fallback hiding a defect: the next INITIALIZED adapter
+            // takes the utterance, the voice re-resolves in ITS voice space,
+            // and the swap is probed per-utterance so a degraded provider is a
+            // visible fact, never a silent one. `silence` is excluded — zeros
+            // are for tests, not for a persona's mouth.
+            let candidates = ["pocket", "kokoro", "orpheus", "piper"];
+            for name in candidates {
+                if name == adapter.name() {
+                    continue;
+                }
+                let Some(next) = get_registry().read().get(name) else {
+                    continue;
+                };
+                if !next.is_initialized() {
+                    // Wake it: only the ACTIVE adapter initializes at boot, so
+                    // a provisioned local engine (Kokoro, 2026-09-02) sat
+                    // skippable exactly when it was needed. Bounded by the
+                    // adapter's own init; a failed wake moves on.
+                    if next.initialize().await.is_err() {
+                        continue;
+                    }
+                }
+                let re_resolved = resolve_voice_gendered(next.as_ref(), voice, gender_hint);
+                if let Ok(mut result) = next.synthesize(text, &re_resolved).await {
+                    crate::probe!(
+                        class = "tts.fallthrough",
+                        from = adapter.name(),
+                        to = name,
+                        error = %active_err,
+                        "active TTS adapter failed — utterance served by the next local adapter"
+                    );
+                    result.voice_name = Some(re_resolved);
+                    return Ok(result);
+                }
+            }
+            Err(active_err)
+        }
+    }
 }
 
 /// Initialize the active adapter, falling back to next adapter on failure.
@@ -594,13 +639,19 @@ mod tests {
             .filter(|v| v.gender.as_deref() == Some("female"))
             .map(|v| v.id)
             .collect();
-        assert!(female.len() >= 2, "need ≥2 female voices to prove distinctness");
+        assert!(
+            female.len() >= 2,
+            "need ≥2 female voices to prove distinctness"
+        );
 
         // same identity → stable, gender-coherent voice
         let a = resolve_voice_gendered(&kokoro, "persona-alpha", Some("female"));
         let a2 = resolve_voice_gendered(&kokoro, "persona-alpha", Some("female"));
         assert_eq!(a, a2, "same identity seed must yield the same voice");
-        assert!(female.contains(&a), "picked voice must be female (gender-coherent)");
+        assert!(
+            female.contains(&a),
+            "picked voice must be female (gender-coherent)"
+        );
 
         // distinct identities → a SPREAD across the female pool, not all one voice
         let picked: std::collections::HashSet<String> = (0..50)
@@ -611,7 +662,10 @@ mod tests {
             "identity-seeded voices must spread across the female pool, got {}",
             picked.len()
         );
-        assert!(picked.iter().all(|v| female.contains(v)), "all picks stay female");
+        assert!(
+            picked.iter().all(|v| female.contains(v)),
+            "all picks stay female"
+        );
     }
 
     #[test]

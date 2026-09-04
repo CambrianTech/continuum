@@ -10,6 +10,7 @@
 //! Test dataset: A persona's thought chain about learning Rust,
 //! with explicit tags forming an associative graph.
 
+use continuum_core::identity::PersonaRef;
 use continuum_core::memory::recall::{
     AssociativeRecallLayer, CoreRecallLayer, CrossContextLayer, DecayResurfaceLayer, RecallLayer,
     RecallQuery, SemanticRecallLayer, TemporalRecallLayer,
@@ -23,6 +24,21 @@ use std::sync::Arc;
 // ─── Test Harness ─────────────────────────────────────────────────────────────
 
 const PERSONA_ID: &str = "test-persona-recall";
+
+/// The fixture persona as the TYPED ref the memory API takes.
+///
+/// `load_corpus` / `multi_layer_recall` / `consciousness_context` moved from `&str`
+/// to `&PersonaRef` — an identity is a type, not loose text. This file kept handing
+/// them the bare literal and stopped compiling, which is only visible to a build that
+/// includes `--tests`: the macOS job runs `--lib`, so the red lived exclusively in the
+/// Windows column and read like a platform problem for days. It was neither Windows-
+/// specific nor a test failure — the test binary never compiled anywhere.
+///
+/// One constructor so the id itself still lives in exactly one place; the string is
+/// still `PERSONA_ID` for the struct fields that legitimately want a `String`.
+fn persona() -> PersonaRef {
+    PersonaRef(PERSONA_ID.to_string())
+}
 
 /// Create a test manager with deterministic embeddings.
 fn test_manager() -> PersonaMemoryManager {
@@ -187,7 +203,7 @@ fn load_standard_corpus(
     memories: Vec<CorpusMemory>,
     events: Vec<CorpusTimelineEvent>,
 ) {
-    manager.load_corpus(PERSONA_ID, memories, events);
+    manager.load_corpus(&persona(), memories, events);
 }
 
 /// Build a raw MemoryCorpus directly (for individual layer tests).
@@ -210,7 +226,7 @@ async fn test_roundtrip_corpus_load_and_recall() {
         max_results: 10,
         layers: None,
     };
-    let resp = manager.multi_layer_recall(PERSONA_ID, &req).await.unwrap();
+    let resp = manager.multi_layer_recall(&persona(), &req).await.unwrap();
 
     // Should find memories (core layer alone finds 3 with importance >= 0.8)
     assert!(
@@ -316,9 +332,7 @@ async fn test_semantic_layer_cooking_query_finds_cooking() {
     let corpus = build_corpus(build_thought_chain().await, vec![]);
     let provider = DeterministicEmbeddingProvider;
 
-    let query_emb = provider
-        .embed("What do I know about cooking pasta?")
-        .await;
+    let query_emb = provider.embed("What do I know about cooking pasta?").await;
 
     let query = RecallQuery {
         query_text: Some("What do I know about cooking pasta?".into()),
@@ -499,7 +513,7 @@ async fn test_multi_layer_convergence_boost() {
         layers: None,
     };
 
-    let resp = manager.multi_layer_recall(PERSONA_ID, &req).await.unwrap();
+    let resp = manager.multi_layer_recall(&persona(), &req).await.unwrap();
 
     assert!(
         !resp.memories.is_empty(),
@@ -560,7 +574,7 @@ async fn test_thought_chain_association() {
         layers: None,
     };
 
-    let resp = manager.multi_layer_recall(PERSONA_ID, &req).await.unwrap();
+    let resp = manager.multi_layer_recall(&persona(), &req).await.unwrap();
 
     // Top result should be about Rust memory/ownership/borrow concepts.
     let top_content = resp.memories[0].content.to_lowercase();
@@ -602,7 +616,7 @@ async fn test_unrelated_query_finds_correct_domain() {
         layers: None,
     };
 
-    let resp = manager.multi_layer_recall(PERSONA_ID, &req).await.unwrap();
+    let resp = manager.multi_layer_recall(&persona(), &req).await.unwrap();
 
     // Cooking memory should appear somewhere in results
     let has_pasta = resp.memories.iter().any(|m| m.content.contains("pasta"));
@@ -657,8 +671,8 @@ async fn test_recall_performance_with_many_memories() {
                     source: Some("test".into()),
                     last_accessed_at: None,
                     layer: None,
-            origin_node: None,
-            origin_seq: None,
+                    origin_node: None,
+                    origin_seq: None,
                     relevance_score: None,
                 },
                 embedding,
@@ -676,7 +690,7 @@ async fn test_recall_performance_with_many_memories() {
         max_results: 10,
         layers: None,
     };
-    let resp = manager.multi_layer_recall(PERSONA_ID, &req).await.unwrap();
+    let resp = manager.multi_layer_recall(&persona(), &req).await.unwrap();
     let elapsed = start.elapsed();
 
     assert!(
@@ -715,7 +729,7 @@ async fn test_corpus_load_response_counts() {
     let memories = build_thought_chain().await; // 6 memories, all with embeddings
     let events = build_timeline_events().await; // 2 events, both with embeddings
 
-    let resp = manager.load_corpus(PERSONA_ID, memories, events);
+    let resp = manager.load_corpus(&persona(), memories, events);
 
     assert_eq!(resp.memory_count, 6);
     assert_eq!(resp.embedded_memory_count, 6);
@@ -737,7 +751,9 @@ async fn test_recall_without_corpus_returns_error() {
         layers: None,
     };
 
-    let result = manager.multi_layer_recall("nonexistent-persona", &req).await;
+    let result = manager
+        .multi_layer_recall(&PersonaRef("nonexistent-persona".to_string()), &req)
+        .await;
     assert!(result.is_err(), "Recall without loaded corpus should error");
 }
 
@@ -746,7 +762,11 @@ async fn test_recall_without_corpus_returns_error() {
 #[tokio::test]
 async fn test_consciousness_context_with_cross_context_events() {
     let manager = test_manager();
-    load_standard_corpus(&manager, build_thought_chain().await, build_timeline_events().await);
+    load_standard_corpus(
+        &manager,
+        build_thought_chain().await,
+        build_timeline_events().await,
+    );
 
     let req = continuum_core::memory::ConsciousnessContextRequest {
         room_id: "room-general".into(),
@@ -754,7 +774,7 @@ async fn test_consciousness_context_with_cross_context_events() {
         skip_semantic_search: false,
     };
 
-    let resp = manager.consciousness_context(PERSONA_ID, &req).unwrap();
+    let resp = manager.consciousness_context(&persona(), &req).unwrap();
 
     // Should have cross-context events (from room-academy and room-kitchen)
     assert!(
@@ -791,11 +811,13 @@ async fn test_corpus_replacement_clears_old_data() {
             origin_seq: None,
             relevance_score: None,
         },
-        embedding: Some(provider
-            .embed("This is the old memory that should disappear")
-            .await),
+        embedding: Some(
+            provider
+                .embed("This is the old memory that should disappear")
+                .await,
+        ),
     }];
-    manager.load_corpus(PERSONA_ID, initial, vec![]);
+    manager.load_corpus(&persona(), initial, vec![]);
 
     // Replace with new corpus
     let replacement = vec![CorpusMemory {
@@ -819,7 +841,7 @@ async fn test_corpus_replacement_clears_old_data() {
         },
         embedding: Some(provider.embed("This is the new replacement memory").await),
     }];
-    manager.load_corpus(PERSONA_ID, replacement, vec![]);
+    manager.load_corpus(&persona(), replacement, vec![]);
 
     // Recall should find new memory, not old
     let req = MultiLayerRecallRequest {
@@ -828,7 +850,7 @@ async fn test_corpus_replacement_clears_old_data() {
         max_results: 10,
         layers: None,
     };
-    let resp = manager.multi_layer_recall(PERSONA_ID, &req).await.unwrap();
+    let resp = manager.multi_layer_recall(&persona(), &req).await.unwrap();
 
     assert!(
         resp.memories.iter().all(|m| m.id != "old-memory"),

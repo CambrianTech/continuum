@@ -425,9 +425,13 @@ mod tests {
             post("rules", "Be concise; cite the post you follow."),
         ]));
         let source = WallSource::new(persona(), reader);
-        let delivery = source.deliver(&ctx(), 1_000, ResolutionPreference::Raw).await;
+        let delivery = source
+            .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
+            .await;
         assert_eq!(delivery.items.len(), 2);
-        assert!(delivery.items[0].content.contains("Ship the wall grounding"));
+        assert!(delivery.items[0]
+            .content
+            .contains("Ship the wall grounding"));
         assert!(delivery.items[0].content.contains("[plan]"));
         assert_eq!(delivery.items[1].metadata["category"], "rules");
         assert!(delivery.continuation.is_none());
@@ -439,7 +443,9 @@ mod tests {
     async fn empty_wall_delivers_nothing() {
         let reader = Arc::new(StubReader::new(vec![]));
         let source = WallSource::new(persona(), reader);
-        let delivery = source.deliver(&ctx(), 1_000, ResolutionPreference::Raw).await;
+        let delivery = source
+            .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
+            .await;
         assert!(delivery.items.is_empty());
         assert_eq!(delivery.tokens_used, 0);
         assert!(delivery.continuation.is_none());
@@ -452,7 +458,9 @@ mod tests {
         let reader = Arc::new(StubReader::new(vec![post("plan", "body")]));
         reader.set_fail(true);
         let source = WallSource::new(persona(), reader);
-        let delivery = source.deliver(&ctx(), 1_000, ResolutionPreference::Raw).await;
+        let delivery = source
+            .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
+            .await;
         assert!(delivery.items.is_empty());
         assert_eq!(delivery.resolution_used, ResolutionPreference::Placeholder);
     }
@@ -527,8 +535,8 @@ mod tests {
                 delivery.tokens_used
             );
             if let Some(item) = delivery.items.first() {
-                let only_marker = item.content.trim_start().starts_with('…')
-                    || !item.content.contains('z');
+                let only_marker =
+                    item.content.trim_start().starts_with('…') || !item.content.contains('z');
                 assert!(
                     !only_marker,
                     "budget {budget}: delivered a content-free block: {:?}",

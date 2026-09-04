@@ -217,24 +217,9 @@ fn build_remote_request() -> RemoteInferenceRequest {
         }],
         system_prompt: Some("federated-alignment chaos test".to_string()),
         model: Some("benign".to_string()),
-        provider: None,
         temperature: Some(0.0),
         max_tokens: Some(16),
-        top_p: None,
-        top_k: None,
-        repeat_penalty: None,
-        frequency_penalty: None,
-        repeat_last_n: None,
-        stop_sequences: None,
-        tools: None,
-        tool_choice: None,
-        response_format: None,
-        active_adapters: None,
-        request_id: None,
-        user_id: None,
-        room_id: None,
-        purpose: None,
-        persona_id: None,
+        ..Default::default()
     })
 }
 
@@ -267,9 +252,8 @@ async fn hostile_peer_dispatch_is_refused_with_typed_forbidden_verdict() {
         },
     );
 
-    let executor = Arc::new(
-        CommandExecutor::new(registry_with_ai_generate()).with_policy(Arc::new(policy)),
-    );
+    let executor =
+        Arc::new(CommandExecutor::new(registry_with_ai_generate()).with_policy(Arc::new(policy)));
     let handler = build_handler(Arc::clone(loop_back.peer_a()), executor);
 
     let ready = Arc::new(Notify::new());
@@ -357,9 +341,8 @@ async fn gate_sees_callers_airc_verified_peer_id_not_a_claimed_one() {
         },
     );
 
-    let executor = Arc::new(
-        CommandExecutor::new(registry_with_ai_generate()).with_policy(Arc::new(policy)),
-    );
+    let executor =
+        Arc::new(CommandExecutor::new(registry_with_ai_generate()).with_policy(Arc::new(policy)));
     let handler = build_handler(Arc::clone(loop_back.peer_a()), executor);
 
     let ready = Arc::new(Notify::new());
@@ -381,18 +364,15 @@ async fn gate_sees_callers_airc_verified_peer_id_not_a_claimed_one() {
     let _result = transport.send_request(build_remote_request()).await;
     responder.await.expect("responder task joined cleanly");
 
-    let observed = captured
-        .lock()
-        .unwrap()
-        .clone()
-        .expect(
-            "AuthPolicy::gate must have been invoked with Some(caller) — \
+    let observed = captured.lock().unwrap().clone().expect(
+        "AuthPolicy::gate must have been invoked with Some(caller) — \
              the cross-grid dispatch path failed to thread caller \
              identity into the gate (silent privilege-escalation seam)",
-        );
+    );
 
     assert_eq!(
-        observed.peer_id.as_uuid(), peer_b_id,
+        observed.peer_id.as_uuid(),
+        peer_b_id,
         "the caller identity surfaced to the gate must match peer_b's \
          airc-verified peer_id, not a header-claimable shape. If this \
          fires, a hostile peer can substitute identities by rewriting \

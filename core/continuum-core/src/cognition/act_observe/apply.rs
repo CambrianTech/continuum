@@ -9,17 +9,14 @@ use crate::ai::types::{ToolCall, ToolResult};
 use crate::cognition::context_budget::ContextBudget;
 use crate::cognition::workspace::WorkspaceCycle;
 
-use super::observation::{
-    extract_paths, ActOutcome, ActStatus, Observation, ToolOutput, ToolVerb,
-};
-use super::settle::now_ms;
+use super::observation::{extract_paths, ActOutcome, ActStatus, Observation, ToolOutput, ToolVerb};
 use super::perception::{all_calls_already_satisfied, is_redundant_orientation};
+use super::settle::now_ms;
 
 /// Recall salience for an action-observation receipt (#166). Below the neutral
 /// default (0.5) so genuine findings/facts win recall, but well above zero so the
 /// receipt stays recallable for "what did I just do" when nothing better matches.
 const PROPRIOCEPTION_RECALL_SALIENCE: f32 = 0.25;
-
 
 /// Execute ONE `Act` verdict: run its calls through the persona's hands, admit
 /// the outcome as an Episodic engram (the result becomes memory), and return the
@@ -45,7 +42,11 @@ const PROPRIOCEPTION_RECALL_SALIENCE: f32 = 0.25;
 fn is_long_running(command: &str) -> bool {
     matches!(
         command,
-        "code/cargo/check" | "code/cargo/test" | "cognition/full-evaluate" | "forge/train"
+        "code/cargo/check"
+            | "code/cargo/test"
+            | "code/cargo/build"
+            | "cognition/full-evaluate"
+            | "forge/train"
     )
 }
 
@@ -64,6 +65,7 @@ fn short_circuit_acts(calls: &[ToolCall], nudge: &str, status: ActStatus) -> Vec
                 result: ToolResult {
                     tool_use_id: c.id.clone(),
                     content: nudge.to_string(),
+                    spill_handle: None,
                     is_error: None,
                 },
                 verb: ToolVerb::classify(&c.name),
@@ -74,11 +76,58 @@ fn short_circuit_acts(calls: &[ToolCall], nudge: &str, status: ActStatus) -> Vec
         .collect()
 }
 
+/// One settle chain's causal thread — owned by the DRIVER of the chain
+/// (`drive_to_settle`, or one turn-frame), passed by reference through
+/// `settle_step` into `apply_act`. Holds the engram id of the most recently
+/// ADMITTED act observation so the next act in the same chain can carry a
+/// `CausedBy` edge to it (CAUSAL-MEMORY-GRAPH.md §3a). One concern, one
+/// chain; the driver drops it when the turn settles, so an edge can never
+/// cross turns or rooms by construction — the wire is the scope, never an
+/// inference over timestamps.
+#[derive(Default)]
+pub struct ActChain(std::sync::Mutex<Option<Uuid>>);
+
+impl ActChain {
+    /// A chain with no recorded antecedent — its first act links to nothing.
+    /// Prefer [`rooted_in`](Self::rooted_in): a chain that knows what caused it is
+    /// what makes "which acts were done FOR this card" answerable.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A chain rooted in whatever CAUSED the turn (CAUSAL-MEMORY-GRAPH.md §3a) — the
+    /// stimulus engram for a real arrival, nothing for an ambient or synthetic burst.
+    ///
+    /// Seeding rather than special-casing is the whole trick: the write site already
+    /// links each act to `prior()`, so rooting the chain makes the FIRST act link to
+    /// its trigger through the same line of code. No new branch, no second rule, and
+    /// the thread has a head instead of starting mid-air.
+    ///
+    /// Takes the whole [`Cause`] rather than a pre-extracted id so the decision about
+    /// what counts as a root lives in ONE place (`Cause::root`) instead of at every
+    /// driver that builds a chain.
+    pub fn rooted_in(cause: &crate::cognition::workspace::Cause) -> Self {
+        Self(std::sync::Mutex::new(cause.root()))
+    }
+
+    /// The CAUSE of whatever act comes next in this chain: the latest admitted act
+    /// engram, or — before any act has run — the trigger the chain was rooted in.
+    /// `None` only when the chain has no antecedent at all.
+    pub fn prior(&self) -> Option<Uuid> {
+        *self.0.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn advance(&self, id: Uuid) {
+        *self.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(id);
+    }
+}
+
 pub async fn apply_act(
     cycle: &WorkspaceCycle,
     calls: &[ToolCall],
     intent: &str,
     room_id: Uuid,
+    chain: &ActChain,
 ) -> ActOutcome {
     // no hands → cannot act (and tools were never offered)
     let Some(body) = cycle.acting() else {
@@ -173,11 +222,13 @@ pub async fn apply_act(
             .collect::<Vec<_>>()
             .join(", ");
         let n = bump_repeat();
+        // Sense, not steer (2026-09-01): the fact is the repeat count and
+        // where the result lives; the old "whatever I do next must be
+        // something DIFFERENT" tail was workflow steering. The short-circuit
+        // above is what actually protects the substrate.
         let nudge = format!(
             "I have now issued {names} {n} times this turn — the result is already in my \
-             working memory above, and re-running the identical call returns nothing new. \
-             Repeating it will not progress; whatever I do next must be something DIFFERENT: \
-             a different action, or an answer built from what I already have."
+             working memory above; the identical call returns nothing new."
         );
         body.working_memory.record_fact(&nudge);
         crate::probe!(
@@ -228,8 +279,7 @@ pub async fn apply_act(
             calls = calls.len(),
             "orientation call with a discovery receipt already in the concern — recorded redundant-orientation proprioception, skipped re-execution"
         );
-        let acts =
-            short_circuit_acts(calls, &nudge, ActStatus::RedundantOrientation { repeat: n });
+        let acts = short_circuit_acts(calls, &nudge, ActStatus::RedundantOrientation { repeat: n });
         return ActOutcome::Acted { acts };
     }
 
@@ -298,11 +348,39 @@ pub async fn apply_act(
     if !fg_calls.is_empty() {
         cycle.note_acting();
     }
-    let outcome = match body
-        .executor
-        .execute_native_batch(&fg_calls, &ctx, budget.result_fold_chars())
-        .await
-    {
+    // BOUNDED (2026-08-24): this await was the last UNGUARDED hang in the act
+    // chain — inference has the stream-liveness ladder, but a wedged IPC
+    // socket or a runaway command could hold this forever with NO propagated
+    // error. Measured: bitwise ran 03:51→05:51 in silence until the 2h
+    // GLOBAL backstop fired as an infra fault. This per-act ceiling converts
+    // that into a 30-min act-level ERROR OBSERVATION she perceives and can
+    // react to. Generous by design (a real build can take many minutes; the
+    // shell window hands back handles long before this) — firing means a
+    // substrate hang, and the receipt says so.
+    const TOOL_BATCH_CEILING: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+    let batch_result = tokio::time::timeout(
+        TOOL_BATCH_CEILING,
+        body.executor
+            .execute_native_batch(&fg_calls, &ctx, budget.result_fold_chars()),
+    )
+    .await
+    .unwrap_or_else(|_| { // timeout elapsed = the hang this bound exists to convert; the closure builds the honest error
+        crate::probe!(
+            class = "persona.act.tool_batch_hung",
+            ceiling_s = TOOL_BATCH_CEILING.as_secs(),
+            tools = fg_calls.len(),
+            "tool batch exceeded the act ceiling with no result and no error —              substrate hang converted to a perceptible act error (find the              unpropagated await beneath)"
+        );
+        Err(crate::cognition::tool_executor::ToolError::ExecutionFailed {
+            tool: "batch".to_string(),
+            underlying: format!(
+                "tool batch hung past {}s with no result — the substrate lost this \
+                 act; the workspace may hold partial effects",
+                TOOL_BATCH_CEILING.as_secs()
+            ),
+        })
+    });
+    let outcome = match batch_result {
         Ok(o) => o,
         Err(e) => {
             // Fail loud-ish: the hand could not run. Abstain — do NOT synthesize a
@@ -362,7 +440,38 @@ pub async fn apply_act(
                 tool_use_id: call.id.clone(),
                 content: "(no result returned)".to_string(),
                 is_error: None,
+                spill_handle: None,
             });
+        // PUSHED SHELL COMPLETION, receive side (2026-08-24): a `code/shell` whose
+        // inline window elapsed hands back a RUNNING handle. Register that handle as a
+        // dispatch NOW so the exit fold's command:completed event (shell_session.rs)
+        // has a label to fold against — dispatch_listener drops completions for
+        // unregistered handles. Without this she must remember to poll; with it the
+        // finished build lands in her working memory like any dispatched background job.
+        if call.name.replace('_', "/") == "code/shell" && typed_result.is_error != Some(true) {
+            if let Ok(resp) = serde_json::from_str::<crate::code::shell_types::ShellExecuteResponse>(
+                &typed_result.content,
+            ) {
+                if resp.status == crate::code::shell_types::ShellExecutionStatus::Running {
+                    if let Ok(handle) = uuid::Uuid::parse_str(&resp.execution_id) {
+                        let label: String = call
+                            .input
+                            .get("command")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("code/shell") // label only — the handle is the key
+                            .chars()
+                            .take(80)
+                            .collect();
+                        body.working_memory.record_dispatch_event(
+                            handle,
+                            &format!("code/shell: {label}"),
+                            "handle handed back — still running",
+                            crate::cognition::working_memory::DispatchStatus::Running,
+                        );
+                    }
+                }
+            }
+        }
         let obs = Observation {
             call: call.clone(),
             output: ToolOutput {
@@ -374,6 +483,9 @@ pub async fn apply_act(
         };
         observation.push_str(&obs.render_recency(intent, &budget));
         recall_observation.push_str(&obs.render_recall(intent));
+        // (The canvas feed publishes at the tool-executor seam, PRE-fold — a
+        // flood-sized ObserveResult here is already a spilled preview that no
+        // longer parses. See CommandToolExecutor::execute_native_batch.)
         acts.push(obs);
     }
     // A pure-background batch (every call was long-running → dispatched, `fg_calls`
@@ -387,6 +499,7 @@ pub async fn apply_act(
                     result: ToolResult {
                         tool_use_id: call.id.clone(),
                         content: "dispatched — running in background".to_string(),
+                        spill_handle: None,
                         is_error: None,
                     },
                     verb: ToolVerb::classify(&call.name),
@@ -412,7 +525,11 @@ pub async fn apply_act(
     if room_id.is_nil() {
         // fall through to the working-memory record below — the receipt is
         // transcript-only observability; her own proprioception is unaffected.
-    } else if let Some(bus) = body.executor.command_executor().and_then(|e| e.message_bus()) {
+    } else if let Some(bus) = body
+        .executor
+        .command_executor()
+        .and_then(|e| e.message_bus())
+    {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
@@ -446,7 +563,90 @@ pub async fn apply_act(
             };
             match serde_json::to_value(&update) {
                 Ok(payload) => bus.publish_async_only("persona:act", payload),
-                Err(e) => tracing::warn!(error = %e, "persona:act receipt failed to serialize — receipt dropped, act unaffected"),
+                Err(e) => {
+                    tracing::warn!(error = %e, "persona:act receipt failed to serialize — receipt dropped, act unaffected")
+                }
+            }
+        }
+        // THE SAME HISTORY, FOR THE OTHER KIND (Joel, 2026-08-30: "they should
+        // be chatting within their activity as they work and see each other's
+        // work, thoughts, chats, actions like any good history"). The loop
+        // above feeds the HUMAN console; teammates' perception reads the airc
+        // room transcript — which carried nothing, so a charged reviewer
+        // watched an empty room while the solver worked beside her. One
+        // coalesced, honest-thin receipt message per act batch, authored by
+        // the actor herself: her own self-filter keeps it from waking HER;
+        // roommates perceive live work and can speak the moment something
+        // looks wrong. Receipts are history, not imperatives — coalescing is
+        // correct here (the one-block-per-imperative law governs kickoffs,
+        // not transcripts).
+        // Her WORKING THOUGHT leads the receipt (Joel, 2026-08-30: "they
+        // should be chatty as they work like you are"). The deliberation
+        // already narrates every act batch — `intent` is her stated reasoning
+        // for these calls — and we were discarding it into capture logs. This
+        // is the running commentary of an engineer pairing: thought first,
+        // then the moves it chose. Zero extra inference; we stop throwing
+        // away what she already said.
+        let mut lines: Vec<String> = Vec::with_capacity(acts.len() + 1);
+        let thought = intent.trim();
+        if !thought.is_empty() {
+            lines.push(crate::persona::presence_glyph::thought_line(thought, 240));
+        }
+        lines.extend(acts.iter().map(|obs| {
+                let object = obs
+                    .output
+                    .paths
+                    .first()
+                    .map(|p| p.display().to_string())
+                    .or_else(|| {
+                        obs.call
+                            .input
+                            .get("command")
+                            .and_then(|c| c.as_str())
+                            .map(|c| c.chars().take(80).collect::<String>())
+                    })
+                    .unwrap_or_default();
+                crate::persona::presence_glyph::act_line(
+                    &obs.call.name,
+                    &object,
+                    obs.output.result.is_error != Some(true),
+                )
+            }));
+        // The vitals ACT PULSE: executed acts are the thinking-right-now
+        // signal during a held-work turn (the cycle-delta is blind inside one).
+        crate::ipc::vitals_emitter::record_acts(body.persona_id, acts.len() as u64);
+        // Receipts radiate into the CARD's activity room when a held card
+        // rooted her hands — the room her reviewer and teammates watch — not
+        // the room whose line triggered the turn (`acting_card_of`).
+        let receipt_room = crate::cognition::persona_workspace::acting_card_of(body.persona_id)
+            .and_then(crate::cognition::bench_round::room_for_card)
+            .unwrap_or(room_id);
+        if !lines.is_empty() {
+            if let Some(rt) = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+                .and_then(|reg| reg.get(body.persona_id))
+            {
+                match crate::persona::airc_citizen::publish_text_in_room(
+                    rt.airc(),
+                    receipt_room,
+                    &lines.join("\n"),
+                )
+                .await
+                {
+                    Ok(_) => crate::probe!(
+                        class = "room.work_receipt.published",
+                        room = %receipt_room,
+                        actor = %body.persona_id,
+                        acts = lines.len() as u64,
+                        "act receipts radiated into the activity transcript — roommates see the work"
+                    ),
+                    Err(e) => crate::probe!(
+                        class = "room.work_receipt.failed",
+                        room = %room_id,
+                        actor = %body.persona_id,
+                        error = %e.to_string(),
+                        "act receipts did not reach the room transcript — console feed unaffected"
+                    ),
+                }
             }
         }
     }
@@ -548,6 +748,27 @@ pub async fn apply_act(
             // durable knowledge.
             body.admission
                 .set_recall_salience(engram.id, PROPRIOCEPTION_RECALL_SALIENCE);
+            // The causal spine (CAUSAL-MEMORY-GRAPH.md): this act was decided by
+            // a deliberation that perceived the chain's previous act result, so
+            // wire the CausedBy edge HERE, where the relation is known — the
+            // `because` clause as structure. A fact about what happened, never
+            // a rail on what she does next.
+            if let Some(prior) = chain.prior() {
+                body.admission.link_engrams(
+                    engram.id,
+                    prior,
+                    crate::persona::engram_graph::EdgeKind::CausedBy,
+                );
+                crate::probe!(
+                    class = "engram.edge.caused_by",
+                    persona = %body.persona_name,
+                    room_id = %room_id,
+                    from = %engram.id,
+                    to = %prior,
+                    "act chained to its predecessor in the causal memory graph"
+                );
+            }
+            chain.advance(engram.id);
         }
         Ok(_) => {} // Drop (dedup) — nothing admitted to weight.
         Err(e) => {
@@ -577,7 +798,8 @@ pub async fn apply_act(
     // ALONGSIDE the typed acts, so `active_act()`/`recent_acts()` read the tool result
     // by field instead of re-parsing this prose (run-18057-f1). `observation` is the
     // one-time recency rendering; `acts` are the id-correlated typed observations.
-    body.working_memory.record_receipt_typed(&acts, &observation);
+    body.working_memory
+        .record_receipt_typed(&acts, &observation, Some(room_id));
     if let Some(f) = &tally_fact {
         body.working_memory.record_fact(f);
     }
@@ -593,9 +815,12 @@ pub async fn apply_act(
     // `wrote` is the question we actually keep asking, precomputed so it is a filter and
     // not a substring guess at query time: did anything in this batch reach DISK?
     let verbs: Vec<&str> = calls.iter().map(|c| c.name.as_str()).collect();
-    let wrote = verbs.iter().any(|n| {
-        let n = n.replace('_', "/");
-        n.contains("write") || n.contains("edit") || n.contains("apply") || n.contains("commit")
+    // Honest: a mutating verb that ERRORED reached no disk. Freya (2026-09-05)
+    // had a correct `code/edit` answer "File not found" and still read as a write.
+    let wrote = acts.iter().any(|a| {
+        let n = a.call.name.replace('_', "/");
+        matches!(a.status, crate::cognition::act_observe::ActStatus::Executed)
+            && (n.contains("write") || n.contains("edit") || n.contains("apply") || n.contains("commit"))
     });
     crate::probe!(
         class = "persona.act.observed",
@@ -623,8 +848,14 @@ mod tests {
         assert!(is_long_running("code/cargo/test"));
         assert!(is_long_running("code/cargo/check"));
         assert!(is_long_running("cognition/full-evaluate"));
-        assert!(!is_long_running("code/read"), "a file read stays synchronous");
+        assert!(
+            !is_long_running("code/read"),
+            "a file read stays synchronous"
+        );
         assert!(!is_long_running("chat/send"));
-        assert!(!is_long_running("cargo/test"), "the wrong short name must NOT match");
+        assert!(
+            !is_long_running("cargo/test"),
+            "the wrong short name must NOT match"
+        );
     }
 }

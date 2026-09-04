@@ -141,7 +141,10 @@ mod tests {
         // a malformed line fails loud with its 1-based line number.
         let bad = "{not json}\n";
         let err = parse_humaneval_rs(bad, None).unwrap_err().to_string();
-        assert!(err.contains("line 1"), "must name the offending line: {err}");
+        assert!(
+            err.contains("line 1"),
+            "must name the offending line: {err}"
+        );
     }
 
     // what this catches: the adapter registers under the slug `benchmark/run` resolves, and

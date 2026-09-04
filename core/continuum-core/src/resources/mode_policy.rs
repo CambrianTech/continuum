@@ -128,11 +128,19 @@ impl GovernorMode {
             .map(|d| PolicyFloor {
                 consumer_id: d.id.clone(),
                 kind: d.kind,
-                floor_bytes: if self.protects(d.role) { d.footprint_bytes } else { 0 },
+                floor_bytes: if self.protects(d.role) {
+                    d.footprint_bytes
+                } else {
+                    0
+                },
                 // Cost is always present; a gifted consumer is free regardless of mode, and
                 // the initial modes price everything at zero (free among trusted peers).
                 // The market / alt-coin settlement layer replaces ONLY this value.
-                price: if d.gift { Price::FREE } else { self.price_for(d.role) },
+                price: if d.gift {
+                    Price::FREE
+                } else {
+                    self.price_for(d.role)
+                },
             })
             .collect()
     }
@@ -163,7 +171,13 @@ mod tests {
     use super::*;
 
     fn demand(id: &str, role: ConsumerRole, bytes: u64, gift: bool) -> ConsumerDemand {
-        ConsumerDemand { id: id.into(), role, kind: ResourceKind::Vram, footprint_bytes: bytes, gift }
+        ConsumerDemand {
+            id: id.into(),
+            role,
+            kind: ResourceKind::Vram,
+            footprint_bytes: bytes,
+            gift,
+        }
     }
 
     /// A representative LAN-party box: a serving lane, the recall embed lane, a VL vision
@@ -178,7 +192,9 @@ mod tests {
     }
 
     fn floor_of<'a>(fs: &'a [PolicyFloor], id: &str) -> &'a PolicyFloor {
-        fs.iter().find(|f| f.consumer_id == id).expect("consumer present in output")
+        fs.iter()
+            .find(|f| f.consumer_id == id)
+            .expect("consumer present in output")
     }
 
     // what this catches (#395): benchmark-max must protect ONLY the serving lane and drop
@@ -188,10 +204,26 @@ mod tests {
     #[test]
     fn benchmark_max_protects_only_serving_and_yields_the_rest() {
         let fs = GovernorMode::BenchmarkMax.floors(&box_demands());
-        assert_eq!(floor_of(&fs, "serving").floor_bytes, 22_000, "serving keeps its full footprint");
-        assert_eq!(floor_of(&fs, "embed").floor_bytes, 0, "embed yields to the benchmark");
-        assert_eq!(floor_of(&fs, "vl").floor_bytes, 0, "vision yields to the benchmark");
-        assert_eq!(floor_of(&fs, "game").floor_bytes, 0, "the game yields to the benchmark");
+        assert_eq!(
+            floor_of(&fs, "serving").floor_bytes,
+            22_000,
+            "serving keeps its full footprint"
+        );
+        assert_eq!(
+            floor_of(&fs, "embed").floor_bytes,
+            0,
+            "embed yields to the benchmark"
+        );
+        assert_eq!(
+            floor_of(&fs, "vl").floor_bytes,
+            0,
+            "vision yields to the benchmark"
+        );
+        assert_eq!(
+            floor_of(&fs, "game").floor_bytes,
+            0,
+            "the game yields to the benchmark"
+        );
     }
 
     // what this catches: dev-sim protects serving AND recall embedding (a coding persona
@@ -201,8 +233,16 @@ mod tests {
     fn dev_sim_protects_serving_and_embedding_but_yields_vision_and_other() {
         let fs = GovernorMode::DevSim.floors(&box_demands());
         assert_eq!(floor_of(&fs, "serving").floor_bytes, 22_000);
-        assert_eq!(floor_of(&fs, "embed").floor_bytes, 1_800, "recall survives in dev-sim");
-        assert_eq!(floor_of(&fs, "vl").floor_bytes, 0, "no vision in a coding sim");
+        assert_eq!(
+            floor_of(&fs, "embed").floor_bytes,
+            1_800,
+            "recall survives in dev-sim"
+        );
+        assert_eq!(
+            floor_of(&fs, "vl").floor_bytes,
+            0,
+            "no vision in a coding sim"
+        );
         assert_eq!(floor_of(&fs, "game").floor_bytes, 0);
     }
 
@@ -213,7 +253,12 @@ mod tests {
         let fs = GovernorMode::default().floors(&box_demands());
         assert_eq!(GovernorMode::default(), GovernorMode::Balanced);
         for d in box_demands() {
-            assert_eq!(floor_of(&fs, &d.id).floor_bytes, d.footprint_bytes, "{} kept whole", d.id);
+            assert_eq!(
+                floor_of(&fs, &d.id).floor_bytes,
+                d.footprint_bytes,
+                "{} kept whole",
+                d.id
+            );
         }
     }
 
@@ -235,10 +280,22 @@ mod tests {
             demand("serving", ConsumerRole::Serving, 22_000, false),
             demand("friends-gpu", ConsumerRole::Serving, 8_000, true), // a friend lent their box
         ];
-        for mode in [GovernorMode::Balanced, GovernorMode::BenchmarkMax, GovernorMode::DevSim] {
+        for mode in [
+            GovernorMode::Balanced,
+            GovernorMode::BenchmarkMax,
+            GovernorMode::DevSim,
+        ] {
             let fs = mode.floors(&donated);
-            assert_eq!(floor_of(&fs, "friends-gpu").price, Price::FREE, "a gift is always free ({mode:?})");
-            assert_eq!(floor_of(&fs, "serving").price, Price::FREE, "current modes price free ({mode:?})");
+            assert_eq!(
+                floor_of(&fs, "friends-gpu").price,
+                Price::FREE,
+                "a gift is always free ({mode:?})"
+            );
+            assert_eq!(
+                floor_of(&fs, "serving").price,
+                Price::FREE,
+                "current modes price free ({mode:?})"
+            );
         }
     }
 
@@ -249,7 +306,13 @@ mod tests {
     #[test]
     fn decision_is_a_pure_function_of_the_local_view() {
         let d = box_demands();
-        assert_eq!(GovernorMode::BenchmarkMax.floors(&d), GovernorMode::BenchmarkMax.floors(&d));
-        assert_eq!(GovernorMode::BenchmarkMax.floors(&[]), Vec::<PolicyFloor>::new());
+        assert_eq!(
+            GovernorMode::BenchmarkMax.floors(&d),
+            GovernorMode::BenchmarkMax.floors(&d)
+        );
+        assert_eq!(
+            GovernorMode::BenchmarkMax.floors(&[]),
+            Vec::<PolicyFloor>::new()
+        );
     }
 }

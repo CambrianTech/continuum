@@ -16,7 +16,10 @@ use crate::modules::cognition::CognitionState;
 use crate::persona::genome_paging::GenomeAdapterInfo;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/GenomeSyncParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/GenomeSyncParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct GenomeSyncParams {
     /// Persona whose genome is reconciled.
@@ -31,7 +34,10 @@ pub struct GenomeSyncParams {
 }
 
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/GenomeSyncResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/GenomeSyncResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct GenomeSyncResult {
     pub synced: bool,

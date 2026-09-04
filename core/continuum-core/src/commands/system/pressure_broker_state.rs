@@ -76,7 +76,10 @@ mod tests {
         assert!(json["globalTier"].is_string(), "globalTier missing");
         assert!(json["pools"].is_array(), "pools missing");
         assert!(json["evictionsFired"].is_number(), "evictionsFired missing");
-        assert!(json["bytesFreedTotal"].is_number(), "bytesFreedTotal missing");
+        assert!(
+            json["bytesFreedTotal"].is_number(),
+            "bytesFreedTotal missing"
+        );
         // globalTier pins the PressureTier enum's lowercase wire form.
         let tier = json["globalTier"].as_str().unwrap();
         assert!(

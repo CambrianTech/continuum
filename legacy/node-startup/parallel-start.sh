@@ -487,6 +487,7 @@ else
 fi
 cleanup_startup_pause
 
+<<<<<<<< HEAD:legacy/node-startup/parallel-start.sh
 # Phase 6: HEADLESS IS THE DEFAULT. `npm start` brings up the substrate (core +
 # server) and NEVER launches a desktop — servers (AWS, BigMama, grid nodes) run
 # headless, which is the first-class operating mode. The desktop is a DEPENDENT
@@ -512,6 +513,26 @@ if [ "$SEED_OK" = true ]; then
     fi
   else
     echo -e "  ${GREEN}Headless — no desktop launched (attach a UI via the tray / launch-mode setting)${NC}"
+========
+# Phase 6: Browser attach happens only after seed. This script owns the final
+# post-seed refresh/open so the orchestrator cannot race UI hydration against
+# database synchronization.
+BROWSER_CONNECTED=false
+if [ "$SEED_OK" = true ]; then
+  echo -e "  ${YELLOW}Attaching browser after seed...${NC}"
+  PING_OUTPUT=$(./jtag ping --timeout=5000 2>/dev/null || echo '{}')
+  if echo "$PING_OUTPUT" | grep -q '"browser"' 2>/dev/null; then
+    if ./jtag interface/navigate >/dev/null 2>&1; then
+      BROWSER_CONNECTED=true
+      echo -e "  ${GREEN}Browser refreshed after seed${NC}"
+    else
+      ./jtag development/exec --code="location.reload()" >/dev/null 2>&1 || true
+    fi
+  elif command -v open >/dev/null 2>&1; then
+    open "http://localhost:9000/chat/general" >/dev/null 2>&1 || true
+  elif command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "http://localhost:9000/chat/general" >/dev/null 2>&1 || true
+>>>>>>>> origin/main:tools/scripts/parallel-start.sh
   fi
 fi
 if [ "$HOT_RESTART" = true ]; then

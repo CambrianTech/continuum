@@ -18,7 +18,10 @@ use crate::persona::genome_paging::ActivateSkillResult;
 use crate::sdk_codegen::CommandError;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/GenomeActivateSkillParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/GenomeActivateSkillParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct GenomeActivateSkillParams {
     /// Persona whose genome pages in the skill.

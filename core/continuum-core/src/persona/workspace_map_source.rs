@@ -109,7 +109,8 @@ pub struct CwdWorkspaceLayoutReader;
 
 impl WorkspaceLayoutReader for CwdWorkspaceLayoutReader {
     fn layout(&self) -> Result<WorkspaceLayout, String> {
-        let root = std::env::current_dir().map_err(|e| format!("workspace root unavailable: {e}"))?;
+        let root =
+            std::env::current_dir().map_err(|e| format!("workspace root unavailable: {e}"))?;
         let security =
             PathSecurity::new(&root).map_err(|e| format!("workspace security init failed: {e}"))?;
         // Identity here is the reader, not a persona — this engine only LISTS the
@@ -223,8 +224,26 @@ impl WorkspaceLayoutReader for CitizenLayerWorkspaceLayoutReader {
         // exactly as the hands would (same function, same sync-forward
         // self-heal) — map and tools can never again describe different
         // worlds. A provisioning failure degrades to no block, never a lie.
-        let root = crate::modules::code_commands::ensure_citizen_layer(&self.peer)
-            .map_err(|e| format!("citizen layer unavailable: {e}"))?;
+        // THE MAP FOLLOWS HER HANDS: while a work turn roots her at a card's
+        // checkout, the map renders that root — not her workspace with the
+        // checkout under `swe/` (2026-09-05: the map said "swe/ is a top-level
+        // dir" while her shell stood inside the repo, and she oriented again).
+        let acting = uuid::Uuid::parse_str(&self.peer)
+            .ok()
+            .and_then(crate::cognition::persona_workspace::acting_root_of);
+        let acting_root_present = acting.is_some();
+        let root = match acting {
+            Some(r) => r,
+            None => crate::modules::code_commands::ensure_citizen_layer(&self.peer)
+                .map_err(|e| format!("citizen layer unavailable: {e}"))?,
+        };
+        crate::probe!(
+            class = "workspace.map.rendered",
+            peer = %self.peer,
+            root = %root.display(),
+            acting = acting_root_present,
+            "the workspace map rendered from this root (acting = her hands are at a card's checkout)"
+        );
         let security =
             PathSecurity::new(&root).map_err(|e| format!("workspace security init failed: {e}"))?;
         let engine = FileEngine::new(SOURCE_ID, security);
@@ -327,7 +346,10 @@ impl WorkspaceMapSource {
     /// `workspace_root` is set (create-workspace re-roots the hands there; this makes
     /// the map match). See [`FixedRootWorkspaceLayoutReader`].
     pub fn for_pinned_root(persona_id: uuid::Uuid, root: impl Into<PathBuf>) -> Self {
-        Self::new(persona_id, Arc::new(FixedRootWorkspaceLayoutReader::new(root)))
+        Self::new(
+            persona_id,
+            Arc::new(FixedRootWorkspaceLayoutReader::new(root)),
+        )
     }
 
     /// Fit the rendered map to `budget` tokens. The map is small (a root path +
@@ -487,8 +509,10 @@ mod tests {
         let body = render_layout(&hidden_only);
         assert!(!body.contains("It is EMPTY"), "{body}");
         assert!(
-            !body.contains("nothing \\
-             to read"),
+            !body.contains(
+                "nothing \\
+             to read"
+            ),
             "must never tell her reading cannot work here: {body}"
         );
 
@@ -556,8 +580,14 @@ mod tests {
         assert_eq!(delivery.items[0].metadata["top_level_dirs"][1], "core");
         // Explicitly refutes the recalled "workspace is empty" confabulation with a
         // concrete count, so live ground truth beats a stale memory.
-        assert!(content.contains("NOT empty"), "refutes the empty-belief: {content}");
-        assert!(content.contains("4 top-level directories"), "states the count: {content}");
+        assert!(
+            content.contains("NOT empty"),
+            "refutes the empty-belief: {content}"
+        );
+        assert!(
+            content.contains("4 top-level directories"),
+            "states the count: {content}"
+        );
     }
 
     // what this catches: we do NOT steer — the block never tells her which
@@ -613,7 +643,10 @@ mod tests {
         assert_eq!(delivery.items.len(), 1);
         let content = &delivery.items[0].content;
         assert!(content.contains("EMPTY"), "states it's empty: {content}");
-        assert!(content.contains("code/write"), "points at creation, not exploration: {content}");
+        assert!(
+            content.contains("code/write"),
+            "points at creation, not exploration: {content}"
+        );
         assert!(
             content.contains("nothing to read"),
             "explicitly counters the read-a-void reflex: {content}"
@@ -670,9 +703,15 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let reader = FixedRootWorkspaceLayoutReader::new(dir.path());
         let layout = reader.layout().expect("empty dir layout reads");
-        assert!(layout.top_level_dirs.is_empty(), "a fresh temp dir has no subdirs");
+        assert!(
+            layout.top_level_dirs.is_empty(),
+            "a fresh temp dir has no subdirs"
+        );
         let body = render_layout(&layout);
-        assert!(body.contains("EMPTY"), "empty pinned root grounds write-first: {body}");
+        assert!(
+            body.contains("EMPTY"),
+            "empty pinned root grounds write-first: {body}"
+        );
         assert!(body.contains("code/write"), "points at creation: {body}");
     }
 
@@ -687,10 +726,19 @@ mod tests {
         let layout = FixedRootWorkspaceLayoutReader::new(dir.path())
             .layout()
             .expect("layout reads");
-        assert_eq!(layout.top_level_dirs, vec!["src".to_string(), "tests".to_string()]);
+        assert_eq!(
+            layout.top_level_dirs,
+            vec!["src".to_string(), "tests".to_string()]
+        );
         let body = render_layout(&layout);
-        assert!(body.contains("src") && body.contains("tests"), "lists real dirs: {body}");
-        assert!(body.contains("NOT empty"), "refutes the empty-belief: {body}");
+        assert!(
+            body.contains("src") && body.contains("tests"),
+            "lists real dirs: {body}"
+        );
+        assert!(
+            body.contains("NOT empty"),
+            "refutes the empty-belief: {body}"
+        );
     }
 
     // what this catches: the citizen-layer reader roots at the persona's OWN

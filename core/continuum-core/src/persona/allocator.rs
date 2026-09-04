@@ -23,7 +23,10 @@ use crate::gpu::GpuMemoryManager;
 
 /// Model preference for a specific VRAM tier.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/ModelPreference.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/ModelPreference.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelPreference {
     /// Minimum total VRAM (GB) for this preference to apply
@@ -38,7 +41,10 @@ pub struct ModelPreference {
 
 /// A persona definition from the catalog (data, not code).
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/PersonaCatalogEntry.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/PersonaCatalogEntry.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct PersonaCatalogEntry {
     pub unique_id: String,
@@ -639,12 +645,18 @@ mod tests {
             provider: "sentinel".to_string(),
             ..base.clone()
         };
-        assert!(sentinel.is_sentinel() && !sentinel.is_local(), "provider=sentinel");
+        assert!(
+            sentinel.is_sentinel() && !sentinel.is_local(),
+            "provider=sentinel"
+        );
         let cloud = PersonaCatalogEntry {
             provider: "anthropic".to_string(),
             ..base
         };
-        assert!(!cloud.is_local() && !cloud.is_sentinel(), "cloud is neither");
+        assert!(
+            !cloud.is_local() && !cloud.is_sentinel(),
+            "cloud is neither"
+        );
     }
 
     #[test]
@@ -677,17 +689,32 @@ mod tests {
         };
 
         // 32GB → gets larger Qwen3.5 model when catalog permits
-        let r = resolve_model_for_persona(&entry, 32.0, "continuum-ai/qwen3.5-4b-code-forged-GGUF", None);
+        let r = resolve_model_for_persona(
+            &entry,
+            32.0,
+            "continuum-ai/qwen3.5-4b-code-forged-GGUF",
+            None,
+        );
         assert_eq!(r.model, "continuum-ai/qwen3.5-27b-code-forged");
         assert_eq!(r.vram_budget_gb, 20.0);
 
         // 24GB → gets forged Qwen3.5 default
-        let r = resolve_model_for_persona(&entry, 24.0, "continuum-ai/qwen3.5-4b-code-forged-GGUF", None);
+        let r = resolve_model_for_persona(
+            &entry,
+            24.0,
+            "continuum-ai/qwen3.5-4b-code-forged-GGUF",
+            None,
+        );
         assert_eq!(r.model, "continuum-ai/qwen3.5-4b-code-forged-GGUF");
         assert_eq!(r.vram_budget_gb, 3.0);
 
         // 8GB → falls to lowest preference
-        let r = resolve_model_for_persona(&entry, 8.0, "continuum-ai/qwen3.5-4b-code-forged-GGUF", None);
+        let r = resolve_model_for_persona(
+            &entry,
+            8.0,
+            "continuum-ai/qwen3.5-4b-code-forged-GGUF",
+            None,
+        );
         assert_eq!(r.model, "continuum-ai/qwen3.5-4b-code-forged-GGUF");
         assert_eq!(r.vram_budget_gb, 3.0);
     }
@@ -710,7 +737,12 @@ mod tests {
             model_preferences: vec![], // No preferences → legacy path
         };
 
-        let r = resolve_model_for_persona(&entry, 32.0, "continuum-ai/qwen3.5-4b-code-forged-GGUF", None);
+        let r = resolve_model_for_persona(
+            &entry,
+            32.0,
+            "continuum-ai/qwen3.5-4b-code-forged-GGUF",
+            None,
+        );
         assert_eq!(r.model, "continuum-ai/qwen3.5-4b-code-forged-GGUF");
         assert_eq!(r.vram_budget_gb, 3.0);
     }
@@ -748,7 +780,10 @@ mod tests {
             r.model, "qwen3-coder-14b",
             "the runtime assignment overrides the catalog tier"
         );
-        assert_eq!(r.vram_budget_gb, 9.0, "override budgets off the entry's min_vram_gb");
+        assert_eq!(
+            r.vram_budget_gb, 9.0,
+            "override budgets off the entry's min_vram_gb"
+        );
     }
 
     /// Verify catalog model_preferences are correctly parsed from catalog.json

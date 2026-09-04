@@ -76,7 +76,8 @@ impl Simulator {
             // to faculty scores, the gate composes them. A crash (OOM) zeroes the critical
             // faculties → the perceived-quality reward collapses, which is why shed-load beats
             // hold-and-crash on the number a learned policy climbs.
-            experience_sum += score_experience(&quality.faculties(&ev.capacity, &scenario.demand, &grant));
+            experience_sum +=
+                score_experience(&quality.faculties(&ev.capacity, &scenario.demand, &grant));
             last = Some(grant);
             grants.push(grant);
         }
@@ -106,9 +107,18 @@ pub fn opera_eats_gpu_mid_session() -> Scenario {
             spike_bytes: 2 * GB,
         },
         timeline: vec![
-            CapacityEvent { t_ms: 0, capacity: dev(13) },        // calm: room for 4
-            CapacityEvent { t_ms: 30_000, capacity: dev(7) },    // game opens → must shrink
-            CapacityEvent { t_ms: 900_000, capacity: dev(13) },  // game closes → must regrow
+            CapacityEvent {
+                t_ms: 0,
+                capacity: dev(13),
+            }, // calm: room for 4
+            CapacityEvent {
+                t_ms: 30_000,
+                capacity: dev(7),
+            }, // game opens → must shrink
+            CapacityEvent {
+                t_ms: 900_000,
+                capacity: dev(13),
+            }, // game closes → must regrow
         ],
     }
 }
@@ -141,7 +151,10 @@ pub struct NodeReading {
 /// bounded by the one machine it came from (BigMama's `grid_budget` find; the per-node clamp is
 /// the sim sibling of her winner-ceiling clamp in `host_budget_from`).
 pub fn node_surplus(node: &NodeReading) -> u64 {
-    let free = node.capacity.gpu_free_bytes_live.min(node.capacity.gpu_total_bytes);
+    let free = node
+        .capacity
+        .gpu_free_bytes_live
+        .min(node.capacity.gpu_total_bytes);
     let own_need = (node.demand.want_concurrency as u64).saturating_mul(node.demand.spike_bytes);
     free.saturating_sub(own_need)
 }
@@ -246,7 +259,9 @@ mod tests {
     fn fit_policy_never_ooms_and_regrows_when_the_gpu_frees() {
         let result = Simulator::run(
             &opera_eats_gpu_mid_session(),
-            &FitPolicy { safety_margin_bytes: GB },
+            &FitPolicy {
+                safety_margin_bytes: GB,
+            },
             &LiveRoomServing,
         );
         assert_eq!(
@@ -258,8 +273,16 @@ mod tests {
         // Shape of adaptation: full at calm, shrunk during the game, back to full after.
         let c: Vec<u32> = result.grants.iter().map(|g| g.concurrency).collect();
         assert_eq!(c[0], 4, "calm: grants the full demand");
-        assert!(c[1] < c[0], "game opens: shrinks below full ({} !< {})", c[1], c[0]);
-        assert_eq!(c[2], 4, "game closes: REGROWS to full — capacity growth is first-class");
+        assert!(
+            c[1] < c[0],
+            "game opens: shrinks below full ({} !< {})",
+            c[1],
+            c[0]
+        );
+        assert_eq!(
+            c[2], 4,
+            "game closes: REGROWS to full — capacity growth is first-class"
+        );
     }
 
     // what this catches: THE PERCEPTION REWARD — the number a learned policy actually climbs.
@@ -271,8 +294,18 @@ mod tests {
     #[test]
     fn fit_beats_static_on_perceived_experience_not_just_oom_count() {
         let scenario = opera_eats_gpu_mid_session();
-        let fit = Simulator::run(&scenario, &FitPolicy { safety_margin_bytes: GB }, &LiveRoomServing);
-        let stat = Simulator::run(&scenario, &StaticConcurrencyPolicy { fixed: 4 }, &LiveRoomServing);
+        let fit = Simulator::run(
+            &scenario,
+            &FitPolicy {
+                safety_margin_bytes: GB,
+            },
+            &LiveRoomServing,
+        );
+        let stat = Simulator::run(
+            &scenario,
+            &StaticConcurrencyPolicy { fixed: 4 },
+            &LiveRoomServing,
+        );
         assert!(
             fit.score.mean_experience > stat.score.mean_experience,
             "shedding a lane to stay alive must score HIGHER perceived experience than holding \
@@ -312,7 +345,11 @@ mod tests {
         }
 
         fn conc(tick: &[NodeGrant], name: &str) -> u32 {
-            tick.iter().find(|g| g.node == name).expect("node present this tick").grant.concurrency
+            tick.iter()
+                .find(|g| g.node == name)
+                .expect("node present this tick")
+                .grant
+                .concurrency
         }
 
         // what this catches: THE GRID GROWS CAPABILITY ON JOIN. A laptop with a deficit (wants 4
@@ -328,10 +365,20 @@ mod tests {
                     vec![("laptop", node(10, 4, 4)), ("server", node(40, 0, 4))],
                 ],
             };
-            let trace = run_symmetric_grid(&scenario, &FitPolicy { safety_margin_bytes: MARGIN });
-            assert_eq!(conc(&trace[0], "laptop"), 2, "alone: (10-1)/4 = 2 fit locally");
+            let trace = run_symmetric_grid(
+                &scenario,
+                &FitPolicy {
+                    safety_margin_bytes: MARGIN,
+                },
+            );
             assert_eq!(
-                conc(&trace[1], "laptop"), 4,
+                conc(&trace[0], "laptop"),
+                2,
+                "alone: (10-1)/4 = 2 fit locally"
+            );
+            assert_eq!(
+                conc(&trace[1], "laptop"),
+                4,
                 "provider joins → laptop borrows 40GB surplus → grants its full demand of 4"
             );
         }
@@ -345,8 +392,16 @@ mod tests {
                 name: "partition-never-blocks",
                 ticks: vec![vec![("solo", node(2, 4, 4))]],
             };
-            let trace = run_symmetric_grid(&scenario, &FitPolicy { safety_margin_bytes: MARGIN });
-            assert!(conc(&trace[0], "solo") >= 1, "a lone node with no borrowable spare still grants ≥1");
+            let trace = run_symmetric_grid(
+                &scenario,
+                &FitPolicy {
+                    safety_margin_bytes: MARGIN,
+                },
+            );
+            assert!(
+                conc(&trace[0], "solo") >= 1,
+                "a lone node with no borrowable spare still grants ≥1"
+            );
         }
 
         // what this catches: SHRINK-THEN-REGROW across a peer leaving and returning. Down is half
@@ -359,10 +414,20 @@ mod tests {
                 name: "shed-then-regrow",
                 ticks: vec![full(), vec![("laptop", node(10, 4, 4))], full()],
             };
-            let trace = run_symmetric_grid(&scenario, &FitPolicy { safety_margin_bytes: MARGIN });
+            let trace = run_symmetric_grid(
+                &scenario,
+                &FitPolicy {
+                    safety_margin_bytes: MARGIN,
+                },
+            );
             let c: Vec<u32> = (0..3).map(|t| conc(&trace[t], "laptop")).collect();
             assert_eq!(c[0], 4, "borrowing the peer's surplus");
-            assert!(c[1] < c[0], "peer partitions → shed to local fit ({} !< {})", c[1], c[0]);
+            assert!(
+                c[1] < c[0],
+                "peer partitions → shed to local fit ({} !< {})",
+                c[1],
+                c[0]
+            );
             assert_eq!(c[2], 4, "peer returns → REGROW — down is symmetric with up");
         }
 
@@ -380,15 +445,30 @@ mod tests {
                     vec![("laptop", node(10, 4, 4)), ("server", node(40, 9, 4))],
                 ],
             };
-            let trace = run_symmetric_grid(&scenario, &FitPolicy { safety_margin_bytes: MARGIN });
-            assert_eq!(conc(&trace[0], "laptop"), 4, "server all-surplus → laptop runs full 4");
+            let trace = run_symmetric_grid(
+                &scenario,
+                &FitPolicy {
+                    safety_margin_bytes: MARGIN,
+                },
+            );
+            assert_eq!(
+                conc(&trace[0], "laptop"),
+                4,
+                "server all-surplus → laptop runs full 4"
+            );
             let borrower = trace[1].iter().find(|g| g.node == "laptop").unwrap();
-            assert!(borrower.grant.concurrency < 4, "server reclaims its surplus → laptop sheds");
+            assert!(
+                borrower.grant.concurrency < 4,
+                "server reclaims its surplus → laptop sheds"
+            );
             assert!(
                 (borrower.grant.concurrency as u64) * (4 * GB) <= borrower.effective_free_bytes,
                 "the shed grant fits the shrunken effective free — graceful, never OOM"
             );
-            assert!(conc(&trace[1], "server") >= 1, "the lender is now ALSO a consumer of its own work");
+            assert!(
+                conc(&trace[1], "server") >= 1,
+                "the lender is now ALSO a consumer of its own work"
+            );
         }
 
         // what this catches: MULTI-BORROWER CONTENTION never double-lends. Two deficit laptops and
@@ -406,10 +486,20 @@ mod tests {
                     ("server", node(40, 0, 4)),
                 ]],
             };
-            let trace = run_symmetric_grid(&scenario, &FitPolicy { safety_margin_bytes: MARGIN });
+            let trace = run_symmetric_grid(
+                &scenario,
+                &FitPolicy {
+                    safety_margin_bytes: MARGIN,
+                },
+            );
             let local = node(10, 4, 4).capacity.gpu_free_bytes_live;
             let borrowed = |name: &str| {
-                trace[0].iter().find(|g| g.node == name).unwrap().effective_free_bytes - local
+                trace[0]
+                    .iter()
+                    .find(|g| g.node == name)
+                    .unwrap()
+                    .effective_free_bytes
+                    - local
             };
             let pool = node_surplus(&node(40, 0, 4));
             assert!(
@@ -434,7 +524,11 @@ mod tests {
                     gpu_free_bytes_live: 400 * GB, // absurd claim: 400GB free on an 8GB card
                     system_ram_free_bytes: 40 * GB,
                 },
-                demand: LeaseRequest { consumer: "liar".into(), want_concurrency: 0, spike_bytes: 4 * GB },
+                demand: LeaseRequest {
+                    consumer: "liar".into(),
+                    want_concurrency: 0,
+                    spike_bytes: 4 * GB,
+                },
             };
             assert!(
                 node_surplus(&liar) <= 8 * GB,

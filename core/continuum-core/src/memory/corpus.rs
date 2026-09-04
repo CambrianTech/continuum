@@ -358,7 +358,8 @@ mod tests {
             layer: None,
             relevance_score: None,
             origin_node: None,
-            origin_seq: None,        }
+            origin_seq: None,
+        }
     }
 
     fn make_event(

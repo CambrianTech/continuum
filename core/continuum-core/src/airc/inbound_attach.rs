@@ -22,6 +22,61 @@ use crate::ipc::positron_source::CHAT_POSTED;
 use crate::ipc::positron_wall_source::WALL_CHANGED;
 use crate::runtime::MessageBus;
 
+/// One attach stream per ROOM, spawned at most once — the registry the room
+/// ADOPTION path (positron_presence's refresher, #2606) calls so every room
+/// the node serves also bridges its transcript onto the projection bus.
+/// Before this, exactly ONE channel (the bootstrap room) was attached: acts
+/// radiated into solve rooms (`room.work_receipt.published` ×67 on the night
+/// this was found) and no bridge ever carried them — every activity
+/// transcript rendered empty while the work streamed (Joel, 2026-08-31:
+/// "we should see their chats as a team, acts in the center transcript").
+pub struct AttachRegistry {
+    socket: PathBuf,
+    bus: Arc<MessageBus>,
+    rt: tokio::runtime::Handle,
+    attached: std::sync::Mutex<std::collections::HashSet<RoomId>>,
+}
+
+static ATTACHES: std::sync::OnceLock<Arc<AttachRegistry>> = std::sync::OnceLock::new();
+
+impl AttachRegistry {
+    /// Install the process-wide registry (AircModule::initialize owns this).
+    /// Idempotent; the first install wins.
+    pub fn install(socket: PathBuf, bus: Arc<MessageBus>, rt: tokio::runtime::Handle) -> Arc<Self> {
+        ATTACHES
+            .get_or_init(|| {
+                Arc::new(Self {
+                    socket,
+                    bus,
+                    rt,
+                    attached: std::sync::Mutex::new(std::collections::HashSet::new()),
+                })
+            })
+            .clone()
+    }
+
+    pub fn try_global() -> Option<Arc<Self>> {
+        ATTACHES.get().cloned()
+    }
+
+    /// Bridge `room`'s transcript onto the bus — at most one stream per room.
+    pub fn ensure_attached(&self, room: RoomId) {
+        let fresh = self
+            .attached
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(room);
+        if fresh {
+            crate::probe!(
+                class = "airc.attach.room_bridged",
+                room = %room.as_uuid(),
+                "daemon attach spawned for an adopted room — its transcript now reaches the projection bus"
+            );
+            spawn_daemon_attach(self.socket.clone(), room, self.bus.clone(), &self.rt);
+        }
+    }
+}
+
 pub fn spawn_daemon_attach(
     socket_path: PathBuf,
     channel: RoomId,
@@ -101,7 +156,10 @@ fn persist_cursor(channel: &RoomId, cursor: &IpcCursor) {
     match serde_json::to_string(cursor) {
         Ok(json) => {
             if let Err(error) = std::fs::write(&path, json) {
-                warn!("failed to persist airc attach cursor to {}: {error}", path.display());
+                warn!(
+                    "failed to persist airc attach cursor to {}: {error}",
+                    path.display()
+                );
             }
         }
         Err(error) => warn!("failed to serialize airc attach cursor: {error}"),
@@ -273,6 +331,7 @@ pub async fn publish_transcript_event(
                 // never depends on any persona's workspace budget.
                 crate::cognition::deliberation_budget::record_room_speech(
                     event.room_id.as_uuid(),
+                    Some(event.peer_id.as_uuid()),
                     payload["content"].as_str().unwrap_or_default(),
                 );
                 bus.publish_async_only(name, payload);
@@ -299,7 +358,7 @@ pub async fn publish_transcript_event(
     //    on ONE `chat:posted`, two wire shapes, mirroring the receive-side
     //    `perceptual_from_event`. Anything else is not ours here → skip.
     if let Some(bus_event) = bus_event_from_envelope(&envelope) {
-        bus.publish_async_only(&bus_event.name, bus_event.payload);
+        bus.publish_async_only(&bus_event.name, (*bus_event.payload).clone()); // crossing OUT of the bus type; one owned copy at the boundary
     } else if let Some(offer) = capacity_offer_from_envelope(&envelope) {
         // Grid capacity gossip (#56 step 4): fold the heard offer into the
         // process-global ledger, keyed on the WIRE's peer id (airc's authenticated
@@ -309,11 +368,8 @@ pub async fn publish_transcript_event(
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        let is_new = crate::capacity::gossip::global_ledger().hear(
-            event.peer_id.as_uuid(),
-            offer,
-            now_ms,
-        );
+        let is_new =
+            crate::capacity::gossip::global_ledger().hear(event.peer_id.as_uuid(), offer, now_ms);
         if is_new {
             crate::probe!(
                 class = "grid.capacity.heard",
@@ -334,6 +390,7 @@ pub async fn publish_transcript_event(
         // #264: room-speech ring — same single-seam record as the plain arm.
         crate::cognition::deliberation_budget::record_room_speech(
             event.room_id.as_uuid(),
+            Some(event.peer_id.as_uuid()),
             payload["content"].as_str().unwrap_or_default(),
         );
         bus.publish_async_only(name, payload);
@@ -397,7 +454,9 @@ fn capacity_offer_from_envelope(
     if payload.schema != crate::airc::realtime::AircRealtimeSchema::GridCapacity {
         return None;
     }
-    serde_json::from_value(payload.inline.clone()?).ok()
+    // Borrow-decode: this runs per inbound event, and `.clone()?` copied the
+    // whole inline payload just to hand `from_value` an owned Value.
+    serde::Deserialize::deserialize(payload.inline.as_ref()?).ok()
 }
 
 /// Project a plain airc chat message into the THIN `chat:posted` bus

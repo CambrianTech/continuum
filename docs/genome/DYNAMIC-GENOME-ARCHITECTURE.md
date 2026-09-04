@@ -1,4 +1,4 @@
-> **Superseded by [../GENOME-ARCHITECTURE.md](../GENOME-ARCHITECTURE.md)** — kept as reference
+> **Superseded by [../GENOME-ARCHITECTURE.md](GENOME-ARCHITECTURE.md)** — kept as reference
 
 # PersonaUser Dynamic Genome Architecture
 
@@ -464,16 +464,16 @@ Fine-tuning is a task type in PersonaUser's self-managed queue. Continuous learn
 ## Related Documentation
 
 **PersonaUser Architecture**:
-- [PERSONAUSER-NEXT-PHASE.md](../personas/PERSONAUSER-NEXT-PHASE.md) - RAG, AI adapters, context switching
-- [PERSONA-CONVERGENCE-ROADMAP.md](../../system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md) - Autonomous loop + tasks + genome
+- [PERSONAUSER-NEXT-PHASE.md](../personas/PERSONA-CONVERGENCE-ROADMAP.md) - RAG, AI adapters, context switching
+- [PERSONA-CONVERGENCE-ROADMAP.md](../personas/PERSONA-CONVERGENCE-ROADMAP.md) - Autonomous loop + tasks + genome
 
 **Genome Implementation**:
-- [LORA-GENOME-PAGING.md](../../system/user/server/modules/LORA-GENOME-PAGING.md) - LRU eviction, virtual memory pattern
-- [DYNAMIC-COMPOSITION-ROADMAP.md](../../system/genome/fine-tuning/DYNAMIC-COMPOSITION-ROADMAP.md) - PEFT integration plan
+- [LORA-GENOME-PAGING.md](../architecture/GENOME-FOUNDRY-SENTINEL.md) - LRU eviction, virtual memory pattern
+- [DYNAMIC-COMPOSITION-ROADMAP.md](../architecture/GENOME-FOUNDRY-SENTINEL.md) - PEFT integration plan
 
 **Fine-Tuning System**:
-- [genome-fine-tuning-e2e.test.ts](../../tests/integration/genome-fine-tuning-e2e.test.ts) - Multi-provider training tests
-- [BaseLoRATrainerServer.ts](../../system/genome/fine-tuning/server/BaseLoRATrainerServer.ts) - Handle-based async pattern
+- [genome-fine-tuning-e2e.test.ts](../../legacy/src/tests/integration/genome-fine-tuning-e2e.test.ts) - Multi-provider training tests
+- [BaseLoRATrainerServer.ts](../../legacy/src/system/genome/fine-tuning/server/BaseLoRATrainerServer.ts) - Handle-based async pattern
 
 ---
 

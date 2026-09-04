@@ -29,7 +29,23 @@ Exit codes:
   0  CLEAN or UNKNOWN or (CONTENDED + --allow-contended)  -> safe to measure
   3  CONTENDED and not accepted                           -> caller should quiesce first
 """
-import argparse, json, subprocess, sys
+import argparse, json, os, shutil, subprocess, sys
+
+
+def _resolve_cli():
+    """Locate the continuum CLI.
+
+    `uu` is THE official short alias (the double-U of contin-UU-m). `uu` is
+    /usr/bin/cu (UUCP) on every Unix and was never ours — a default pointing at a
+    `uu` binary resolved to a file that does not exist, so the harness failed at
+    the first invocation instead of running. Prefer what is actually installed on
+    PATH; fall back to the release build.
+    """
+    for name in ("uu", "continuum"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return os.path.expanduser("~/.continuum/cache/cargo-target/release/continuum")
 
 
 def measurement_in_flight():
@@ -66,7 +82,7 @@ def gpu_slack(cu):
     try:
         d = json.loads(out.stdout)
     except json.JSONDecodeError:
-        # some cu builds prefix a human line; grab the JSON object tail.
+        # some uu builds prefix a human line; grab the JSON object tail.
         s = out.stdout
         i = s.find("{")
         if i < 0:
@@ -84,7 +100,7 @@ def gpu_slack(cu):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--cu", required=True, help="path to the cu binary")
+    ap.add_argument("--uu", default=_resolve_cli(), help="path to the continuum CLI (uu)")
     ap.add_argument("--threshold", type=float, default=0.10,
                     help="GPU pressure at/above which a measurement is CONTENDED (default 0.10)")
     ap.add_argument("--allow-contended", action="store_true",
@@ -104,7 +120,7 @@ def main():
               "  Pass --allow-contended to override.", file=sys.stderr)
         return 0 if args.allow_contended else 3
 
-    slack = gpu_slack(args.cu)
+    slack = gpu_slack(args.uu)
     if slack is None:
         # No core, or gpu/stats unavailable -> nothing on OUR side to contend. The
         # opponent arms serve their own scratch lanes; report UNKNOWN and proceed.
@@ -118,7 +134,7 @@ def main():
                    f"numbers taken now are NOT clean")
         print(verdict, file=sys.stderr)
         print("  quiet it first (on a Continuum box: sleep the live personas with "
-              "`cu cognition/set-sleep-mode --mode sleeping --duration-minutes N`,\n"
+              "`uu cognition/set-sleep-mode --mode sleeping --duration-minutes N`,\n"
               "  or on any box stop the other GPU job), then re-run. "
               "Pass --allow-contended to measure anyway and stamp the number CONTENDED.",
               file=sys.stderr)

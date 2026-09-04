@@ -7,7 +7,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::genome::fine_tuning::{coordinator::FineTuningCoordinator, JobHandle, TrainingJobRequest};
+use crate::genome::fine_tuning::{
+    coordinator::FineTuningCoordinator, JobHandle, TrainingJobRequest,
+};
 
 use super::fine_tuning_error_kind;
 
@@ -16,7 +18,10 @@ use super::fine_tuning_error_kind;
 /// honors — or rejects, surfacing the rejection as `success=false` rather than
 /// silently routing elsewhere.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/genome/JobCreateParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/JobCreateParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct JobCreateParams {
     #[serde(flatten)]
@@ -25,6 +30,7 @@ pub struct JobCreateParams {
     /// if that provider is in the capable set; otherwise the outcome is
     /// `success=false` — never a silent fallback to a different provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub preferred_provider: Option<String>,
     /// Name of an on-disk dataset under the datasets root
     /// (`~/.continuum/datasets/<name>/train.jsonl`, the chat `{messages}` JSONL
@@ -33,6 +39,7 @@ pub struct JobCreateParams {
     /// populated dataset. Mutually exclusive with inlining `dataset` examples —
     /// exactly one of the two must be provided.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub dataset_name: Option<String>,
 }
 
@@ -40,7 +47,10 @@ pub struct JobCreateParams {
 /// provider is surfaced for telemetry + operators validating that locality
 /// preference fired.
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/genome/JobCreateResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/JobCreateResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct JobCreateResult {
     pub handle: JobHandle,
@@ -52,7 +62,10 @@ pub struct JobCreateResult {
 /// adapter rather than the coordinator). See the module docs for why expected
 /// domain failures are data, not a transport `Err`.
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/genome/JobCreateOutcome.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/JobCreateOutcome.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct JobCreateOutcome {
     pub success: bool,
@@ -161,6 +174,48 @@ crate::action_command! {
         let watched_base_model = p.request.base_model.clone();
         let watched_trait_kind = p.request.trait_kind.clone();
         let watched_eval_set = p.request.eval_set.clone();
+        // MINT the gene's embedding-space signature NOW — the training corpus is
+        // in hand at exactly this moment and never again (the audited 2026-08-22
+        // break: an adopted gene's corpus was unreferenceable). Best-effort: a
+        // failed mint warns and trains anyway — the gene routes by the fallback
+        // path; it never blocks the training the persona is owed.
+        let watched_signature = {
+            let texts: Vec<String> = p
+                .request
+                .dataset
+                .examples
+                .iter()
+                .map(|ex| format!("{}\n{}", ex.prompt, ex.completion))
+                .collect();
+            let joined = texts.join("\n");
+            let corpus = crate::forge::recipe::CorpusRef {
+                name: p
+                    .dataset_name
+                    .clone()
+                    .unwrap_or_else(|| format!("inline:{}", p.request.trait_kind)), // inline datasets have no on-disk name; the trait names the mint
+                content_hash: crate::persona::inbox_admission::content_hash_sha256(&joined),
+                size_bytes: joined.len() as u64,
+                source_url: None,
+            };
+            let embedder = crate::cognition::embedding::resolve_recall_embedder_local().await;
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0); // pre-epoch clock: mint stamps 0 rather than refusing the gene its training
+            match crate::genome::signature::GeneSignature::mint(&texts, corpus, &embedder, now_ms)
+                .await
+            {
+                Ok(sig) => Some(sig),
+                Err(e) => {
+                    tracing::warn!(
+                        trait_kind = %p.request.trait_kind,
+                        error = %e,
+                        "gene signature mint failed — training proceeds, gene will route by fallback"
+                    );
+                    None
+                }
+            }
+        };
 
         // 2. Adapter creates the job. FineTuningError carries a stable errorKind
         //    slug callers branch on for retry-vs-surface.
@@ -183,6 +238,7 @@ crate::action_command! {
                         base_model: watched_base_model,
                         trait_kind: watched_trait_kind,
                         eval_set: watched_eval_set,
+                        signature: watched_signature,
                     },
                 );
                 Ok(JobCreateOutcome {
@@ -331,7 +387,10 @@ mod tests {
             .unwrap();
         assert!(!out.success);
         let err = out.error.unwrap();
-        assert!(err.contains("no-such-dataset-xyz") && err.contains("dataset/list"), "{err}");
+        assert!(
+            err.contains("no-such-dataset-xyz") && err.contains("dataset/list"),
+            "{err}"
+        );
     }
 
     // what this catches: preferredProvider is honored and surfaced in

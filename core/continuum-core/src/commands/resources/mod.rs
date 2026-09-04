@@ -26,7 +26,10 @@ use board::ResourcesBoard;
 /// struct per verb (compression principle), mirroring `system::SystemQuery`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/resources/ResourcesQuery.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/resources/ResourcesQuery.ts"
+)]
 pub struct ResourcesQuery {}
 
 /// The dep-holding `resources/*` command objects the

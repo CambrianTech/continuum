@@ -75,7 +75,10 @@ pub enum PageKind {
 /// a hook to enforce "this PageRef points inside ArtifactId X".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/genome/PageOffset.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/PageOffset.ts"
+)]
 pub enum PageOffset {
     /// The page IS the whole artifact (LoRA layer adapter, single
     /// engram). No sub-artifact split.
@@ -120,7 +123,10 @@ pub struct PageRef {
 /// pin the handle (Fast / Warm) or stream-read it (Cold / Frozen).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/genome/PageHandle.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/PageHandle.ts"
+)]
 pub struct PageHandle {
     pub page: PageRef,
     pub tier_role: TierRole,
@@ -143,7 +149,10 @@ pub struct PageHandle {
 /// in caller-side `Instant`s.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/genome/ResidentPage.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/ResidentPage.ts"
+)]
 pub struct ResidentPage {
     pub page: PageRef,
     pub role: TierRole,
@@ -192,7 +201,10 @@ pub struct WorkingSetCapacity {
 /// instead of BTreeMap because access is by exact match, not range.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/genome/WorkingSet.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/WorkingSet.ts"
+)]
 pub struct WorkingSet {
     #[ts(type = "string")]
     pub persona: PeerId,
@@ -282,7 +294,10 @@ pub struct PageFault {
 /// its `AccessDenied` audit-log inputs.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/genome/AccessDenied.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/AccessDenied.ts"
+)]
 pub struct AccessDenied {
     /// Which persona attempted the access.
     #[ts(type = "string")]

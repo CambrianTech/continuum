@@ -18,7 +18,10 @@ use crate::persona::domain_classifier::DomainClassification;
 use crate::sdk_codegen::CommandError;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/ClassifyDomainParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/ClassifyDomainParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ClassifyDomainParams {
     /// Persona whose domain classifier scores the text.

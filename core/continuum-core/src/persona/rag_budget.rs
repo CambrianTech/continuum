@@ -184,13 +184,21 @@ impl RagContext {
 /// (`None`, legacy/test construction) and an unstamped ctx (`airc_room: None`,
 /// background consolidation) both keep pre-gate behavior. One logical decision,
 /// one place (the compression law); every abstain emits a probe naming both
-/// rooms so a mis-binding is diagnosable from the log, never a silent blank
-/// grounding block. [[identity-context-session-three-axes]]
+/// rooms so a mis-binding is diagnosable from the PROBE STREAM, never a silent
+/// blank grounding block. [[identity-context-session-three-axes]]
+///
+/// `probe!`, not `tracing::info!(probe_class = …)`. Glass-boxed 2026-08-14
+/// chasing the anchor_silent cascade (#346/#353/#264): this abstain WAS a bare
+/// `tracing::info!` carrying a `probe_class` field, which is the "tracing
+/// masquerading as a probe" move the concurrency guide forbids — it never
+/// reaches `~/.continuum/probes/`, so querying the probe stream for it returned
+/// a confident zero that meant nothing at all. An absence is only evidence when
+/// the instrument can produce a presence; this one couldn't.
 pub fn room_scope_allows(bound: Option<uuid::Uuid>, ctx: &RagContext, source_id: &str) -> bool {
     match (bound, ctx.airc_room.as_ref()) {
         (Some(b), Some(t)) if t.as_uuid() != b => {
-            tracing::info!(
-                probe_class = "rag.room_gate.abstain",
+            crate::probe!(
+                class = "rag.room_gate.abstain",
                 source = %source_id,
                 bound_room = %b,
                 turn_room = %t.as_uuid(),
@@ -294,6 +302,41 @@ pub struct ReservedTokens {
 impl ReservedTokens {
     pub fn total(self) -> u32 {
         self.system.saturating_add(self.completion)
+    }
+
+    /// THE window-scaled reservation shape (#424 dedup — this derivation was
+    /// byte-identical in `unified.rs` and `rag_inspect.rs`; one logical
+    /// decision lives in one place). Reservations scale as a percentage of
+    /// the window per [[intent-driven-api-not-hot-patches]]: a 2048-window
+    /// persona can't reserve a flat 4000 for completion (negative headroom →
+    /// all sources get 0 → cognition fires with no RAG content → LLM defaults
+    /// to the grammar-shortest "will_respond=false" attractor), while an
+    /// M-series 32k persona shouldn't be pinned to Compat-tier crumbs.
+    ///
+    /// - system: 10% of window, clamped [128, 512]
+    /// - completion: 25% of window, clamped [256, 4_000]
+    ///
+    /// This is a FALLBACK shape, not a budgeter: the substrate's real
+    /// budgeter (profile/model-characteristic driven) can override via a
+    /// richer reservation API. NOTE the 4_000 completion ceiling is the RAG
+    /// *reservation* only — the generation ceiling itself is deliberately
+    /// uncapped (`llm_deliberation_faculty::completion_budget_for`, Joel
+    /// 2026-07-13: stop choking context); whether this reservation should
+    /// follow it up on large windows is an open budgeting question, not a
+    /// dedup question.
+    pub fn scaled_for_window(context_window: u32) -> Self {
+        Self {
+            system: (context_window / 10).clamp(128, 512),
+            completion: (context_window / 4).clamp(256, 4_000),
+        }
+    }
+
+    /// Tokens left for sources after this reservation, floored at 512 so a
+    /// tiny window still delivers *some* context instead of zeroing every
+    /// source. Sibling of [`Self::scaled_for_window`] — both call sites
+    /// computed this identically too.
+    pub fn headroom_within(self, context_window: u32) -> u32 {
+        context_window.saturating_sub(self.total()).max(512)
     }
 }
 
@@ -597,7 +640,11 @@ impl RagBudgetAdapter for FlexboxRagBudgetAdapter {
         // deterministic tie-break — the boot-time output should
         // not depend on slice ordering or hashmap iteration.
         let mut sorted: Vec<&RagSourceBudget> = sources.iter().collect();
-        sorted.sort_by(|a, b| b.priority.cmp(&a.priority).then(a.source_id.cmp(&b.source_id)));
+        sorted.sort_by(|a, b| {
+            b.priority
+                .cmp(&a.priority)
+                .then(a.source_id.cmp(&b.source_id))
+        });
 
         // Working allocation: source_id -> tokens. Use a Vec parallel
         // to sorted for cache-locality + deterministic iteration.
@@ -671,11 +718,16 @@ impl RagBudgetAdapter for FlexboxRagBudgetAdapter {
         // ---- Pass 2: min — top up to min_tokens for sources we
         // haven't dropped, in priority order ----
         for (i, source) in sorted.iter().enumerate() {
-            if matches!(state[i], AllocationState::Dropped | AllocationState::UnderProvisioned) {
+            if matches!(
+                state[i],
+                AllocationState::Dropped | AllocationState::UnderProvisioned
+            ) {
                 continue;
             }
             let needed = source.min_tokens.saturating_sub(alloc[i]);
-            let granted = needed.min(remaining).min(source.max_tokens.saturating_sub(alloc[i]));
+            let granted = needed
+                .min(remaining)
+                .min(source.max_tokens.saturating_sub(alloc[i]));
             alloc[i] += granted;
             remaining -= granted;
             if alloc[i] >= source.min_tokens {
@@ -693,8 +745,10 @@ impl RagBudgetAdapter for FlexboxRagBudgetAdapter {
                 .iter()
                 .enumerate()
                 .filter(|(i, s)| {
-                    !matches!(state[*i], AllocationState::Dropped | AllocationState::UnderProvisioned)
-                        && alloc[*i] < s.max_tokens
+                    !matches!(
+                        state[*i],
+                        AllocationState::Dropped | AllocationState::UnderProvisioned
+                    ) && alloc[*i] < s.max_tokens
                 })
                 .map(|(i, _)| i)
                 .collect();
@@ -707,7 +761,8 @@ impl RagBudgetAdapter for FlexboxRagBudgetAdapter {
             }
             let mut moved = 0u32;
             for &i in &active {
-                let share = ((remaining as u64) * (sorted[i].priority as u64) / (priority_sum as u64)) as u32;
+                let share = ((remaining as u64) * (sorted[i].priority as u64)
+                    / (priority_sum as u64)) as u32;
                 let headroom = sorted[i].max_tokens - alloc[i];
                 let grant = share.min(headroom);
                 if grant > 0 {
@@ -733,8 +788,10 @@ impl RagBudgetAdapter for FlexboxRagBudgetAdapter {
 
         // Build result in input order (NOT sorted order) for caller
         // ergonomics.
-        let mut allocations_by_id: std::collections::HashMap<String, (u32, AllocationState, &RagSourceBudget)> =
-            std::collections::HashMap::new();
+        let mut allocations_by_id: std::collections::HashMap<
+            String,
+            (u32, AllocationState, &RagSourceBudget),
+        > = std::collections::HashMap::new();
         for (i, source) in sorted.iter().enumerate() {
             allocations_by_id.insert(source.source_id.clone(), (alloc[i], state[i], *source));
         }
@@ -1132,7 +1189,7 @@ mod tests {
         let tiny = alloc_for(&result, "tiny");
         let big = alloc_for(&result, "big");
         assert_eq!(tiny.allocated_tokens, 100); // capped
-        // Big should absorb whatever the priority-10 cap left behind.
+                                                // Big should absorb whatever the priority-10 cap left behind.
         assert!(big.allocated_tokens >= 5000);
         assert!(big.allocated_tokens <= 9_000);
     }
@@ -1204,7 +1261,10 @@ mod tests {
         let first = source.deliver(&ctx(), 20, ResolutionPreference::Raw).await;
         assert_eq!(first.items.len(), 2);
         let cursor = first.continuation.unwrap();
-        let second = source.deliver_continuation(&ctx(), cursor, 100).await.unwrap();
+        let second = source
+            .deliver_continuation(&ctx(), cursor, 100)
+            .await
+            .unwrap();
         assert_eq!(second.items.len(), 2);
         assert!(second.continuation.is_none());
     }
@@ -1248,23 +1308,17 @@ mod tests {
         let pax_ctx = RagContext::for_persona(pax, 1_000_000);
         let maya_ctx = RagContext::for_persona(maya, 1_000_000);
 
-        let pax_source = StubRagSource::new(
-            "stub",
-            pax,
-            vec![item("a", 10), item("b", 10)],
-        );
-        let pax_first = pax_source.deliver(&pax_ctx, 15, ResolutionPreference::Raw).await;
+        let pax_source = StubRagSource::new("stub", pax, vec![item("a", 10), item("b", 10)]);
+        let pax_first = pax_source
+            .deliver(&pax_ctx, 15, ResolutionPreference::Raw)
+            .await;
         let pax_cursor = pax_first.continuation.unwrap();
         assert_eq!(pax_cursor.persona_id, pax);
 
         // Maya's source must refuse Pax's cursor — both because the
         // cursor's persona_id doesn't match Maya's binding AND because
         // the source verifies its own persona_id against ctx.persona_id.
-        let maya_source = StubRagSource::new(
-            "stub",
-            maya,
-            vec![item("x", 10), item("y", 10)],
-        );
+        let maya_source = StubRagSource::new("stub", maya, vec![item("x", 10), item("y", 10)]);
         let cross = maya_source
             .deliver_continuation(&maya_ctx, pax_cursor, 100)
             .await;
@@ -1279,9 +1333,7 @@ mod tests {
             source_id: "memories".to_string(),
             opaque: serde_json::json!({ "next": 0 }),
         };
-        let cross = source
-            .deliver_continuation(&ctx(), alien_cursor, 100)
-            .await;
+        let cross = source.deliver_continuation(&ctx(), alien_cursor, 100).await;
         assert!(cross.is_none(), "wrong-source cursor must be refused");
     }
 
@@ -1294,7 +1346,9 @@ mod tests {
         let maya = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000def").unwrap();
         let pax_source = StubRagSource::new("stub", pax, vec![item("a", 10)]);
         let maya_ctx = RagContext::for_persona(maya, 1_000_000);
-        let delivery = pax_source.deliver(&maya_ctx, 100, ResolutionPreference::Raw).await;
+        let delivery = pax_source
+            .deliver(&maya_ctx, 100, ResolutionPreference::Raw)
+            .await;
         assert_eq!(delivery.items.len(), 0);
         assert_eq!(delivery.resolution_used, ResolutionPreference::Placeholder);
     }
@@ -1330,7 +1384,10 @@ mod tests {
         let alloc = adapter.allocate(
             &RagContext::for_persona(uuid::Uuid::nil(), 0),
             214,
-            ReservedTokens { system: 0, completion: 0 },
+            ReservedTokens {
+                system: 0,
+                completion: 0,
+            },
             &sources,
         );
         for (i, s) in sources.iter().enumerate() {
@@ -1348,6 +1405,32 @@ mod tests {
                 s.source_id,
             );
         }
+    }
+
+    /// What this catches: the window-scaled reservation stays ONE derivation
+    /// with the documented shape — a second hand-copied variant (the exact
+    /// duplication this replaced across unified.rs / rag_inspect.rs) shows up
+    /// as a drift here. Also pins the headroom floor: a tiny window must
+    /// still deliver ≥512 tokens to sources, never zero. regression for #424
+    #[test]
+    fn reserved_tokens_scaled_shape_is_the_one_derivation() {
+        // Compat-tier 2048: percentages, floors active.
+        let small = ReservedTokens::scaled_for_window(2048);
+        assert_eq!(small.system, 204); // 10%, inside [128, 512]
+        assert_eq!(small.completion, 512); // 25%, inside [256, 4_000]
+        assert_eq!(small.headroom_within(2048), 2048 - 204 - 512);
+
+        // M-series 32k: both ceilings engage.
+        let big = ReservedTokens::scaled_for_window(32_768);
+        assert_eq!(big.system, 512);
+        assert_eq!(big.completion, 4_000);
+        assert_eq!(big.headroom_within(32_768), 32_768 - 4_512);
+
+        // Degenerate window: floors dominate, headroom floor holds — sources
+        // still get 512, never zero (the zero-budget annihilation class, #259).
+        let tiny = ReservedTokens::scaled_for_window(256);
+        assert_eq!((tiny.system, tiny.completion), (128, 256));
+        assert_eq!(tiny.headroom_within(256), 512);
     }
 }
 

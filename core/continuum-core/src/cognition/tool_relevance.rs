@@ -167,7 +167,10 @@ mod tests {
             2,
             0.01,
         );
-        assert!(exp.contains("code"), "sticky cursor must stay open: {exp:?}");
+        assert!(
+            exp.contains("code"),
+            "sticky cursor must stay open: {exp:?}"
+        );
         assert!(exp.contains("data"), "on-task category opens too: {exp:?}");
     }
 

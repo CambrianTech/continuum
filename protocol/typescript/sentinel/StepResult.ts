@@ -3,7 +3,7 @@
 /**
  * Result of a single step execution
  */
-export type StepResult = { stepIndex: number, stepType: string, success: boolean, durationMs: bigint, output: string | null, error: string | null, exitCode: number | null, 
+export type StepResult = { stepIndex: number, stepType: string, success: boolean, durationMs: bigint, output?: string, error?: string, exitCode?: number, 
 /**
  * Full result data for complex outputs
  */

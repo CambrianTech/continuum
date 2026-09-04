@@ -49,7 +49,10 @@ use status::AuthOauthStatus;
 /// the provider to act on. One type, four commands — the same `{provider_id}`
 /// contract, defined once.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/auth/AuthProviderRef.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/auth/AuthProviderRef.ts"
+)]
 pub struct AuthProviderRef {
     /// Provider identifier: `"github"`, `"huggingface"`, `"google"`, or a custom
     /// registered provider.

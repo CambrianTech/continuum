@@ -13,6 +13,60 @@ pub fn resolve_model_artifacts(model: &mut Model) {
     if let Some(p) = model.mmproj_local_path.take() {
         model.mmproj_local_path = Some(expand_user_path(&p));
     }
+    hydrate_artifact_sizes(model);
+}
+
+/// Stamp the resolved artifacts' sizes onto the row, ONCE, here — where the paths are
+/// discovered. Every residency estimate downstream reads these instead of `stat`ing per
+/// call, which is what keeps filesystem I/O off the governor's accounting tick.
+///
+/// `None` on an unreadable or unresolvable artifact, deliberately: a missing size is
+/// "not known", and a consumer that turns that into `0` is the silent-zero defect this
+/// exists to prevent. Callers that resolve a path by another route (`attach_local_artifact`
+/// after a pull) call this too, so a row never carries a path without its size.
+pub fn hydrate_artifact_sizes(model: &mut Model) {
+    model.weights_bytes = resolve_gguf_for_model(model)
+        .map(|p| total_gguf_bytes(&p))
+        .filter(|n| *n > 0);
+    // `Some(0)` when the model HAS NO PROJECTOR — that is a real, known fact, not a
+    // missing measurement. `None` is reserved for "we could not resolve it", so a
+    // consumer can tell "this model holds no projector bytes" apart from "nobody has
+    // looked yet". Collapsing both to `None` (and then to 0 downstream) is the same
+    // defect as the capacity zero, one field over.
+    model.mmproj_bytes = match resolve_mmproj_for_model(model) {
+        None => Some(0),
+        Some(path) => fs::metadata(path).ok().map(|md| md.len()),
+    };
+}
+
+/// Total on-disk weight bytes for a GGUF artifact — SUMS ALL SHARDS of a split
+/// model. The 2026-08-29 overnight killer: Flash-Next's 28-shard artifact was
+/// sized by shard 1 alone (0.69 GB of a 79 GB set), so the planner believed a
+/// 176B MoE was a toy model, derived kv_per_token ~40x too small, sized a 46848
+/// window past the verified 32k geometry, and every deep solve prefill Metal-
+/// OOM'd for six silent hours. A split shard is named `-NNNNN-of-MMMMM.gguf`;
+/// sum every sibling that shares the prefix. A single-file GGUF is its own size.
+pub fn total_gguf_bytes(first: &std::path::Path) -> u64 {
+    let name = first.file_name().and_then(|n| n.to_str()).unwrap_or(""); // unwrap_or: non-utf8 name = not a split pattern, single-file path below
+    let single = || fs::metadata(first).map(|m| m.len()).unwrap_or(0); // unwrap_or: unstat-able file sizes as 0, caller filters zero out
+    // "-00001-of-00028.gguf" → prefix "…-", suffix "-of-00028.gguf"
+    let Some(idx) = name.rfind("-of-") else { return single() };
+    if idx < 6 || !name.ends_with(".gguf") { return single(); }
+    let (head, _tail) = name.split_at(idx);
+    let Some(dash) = head.rfind('-') else { return single() };
+    if !head[dash + 1..].chars().all(|c| c.is_ascii_digit()) { return single(); }
+    let prefix = &head[..dash + 1];
+    let Some(dir) = first.parent() else { return single() };
+    let Ok(entries) = fs::read_dir(dir) else { return single() };
+    let mut total = 0u64;
+    for e in entries.flatten() {
+        let f = e.file_name();
+        let f = f.to_string_lossy();
+        if f.starts_with(prefix) && f.ends_with(".gguf") {
+            total += e.metadata().map(|m| m.len()).unwrap_or(0); // unwrap_or: unreadable shard adds 0, undercount fails safe (smaller window)
+        }
+    }
+    if total > 0 { total } else { single() }
 }
 
 pub fn resolve_gguf_for_model(model: &Model) -> Option<PathBuf> {
@@ -79,6 +133,119 @@ fn find_mmproj_beside(dir: &Path) -> Option<PathBuf> {
     })
 }
 
+/// Resolve a model's native-MTP speculative-decode draft head for serving
+/// (`llama-server --spec-type draft-mtp --spec-draft-model <this>`).
+///
+/// Convention (ggml-org, e.g. Qwen3.8-27B): repos whose architecture bakes in
+/// multi-token-prediction heads ship the head as a sibling `mtp-<Model>-<quant>.gguf`
+/// beside the main weights, so it lands in the same snapshot dir the normal GGUF
+/// resolution finds. Artifact presence IS the capability signal — the exact pattern
+/// [`resolve_mmproj_for_model`] established: no draft file → `None` → the spawn adds
+/// no flags and serving is byte-identical to before this seam existed.
+pub fn resolve_mtp_draft_for_model(model: &Model) -> Option<PathBuf> {
+    let gguf = resolve_gguf_for_model(model)?;
+    find_mtp_draft_beside(gguf.parent()?)
+}
+
+/// Does this GGUF carry an EMBEDDED multi-token-prediction head — `nextn`
+/// tensors baked into the main weights (the DeepSeek/Ornith layout), as opposed
+/// to the sibling `mtp-*.gguf` convention above?
+///
+/// Detection = a header-only scan of tensor NAMES (never a weight load): the
+/// GGUF tensor-info section sits after the KV metadata, so this reads a few MB
+/// of names at most. Verified live 2026-08-28 on Ornith-1.5-35B-Q4_K_M: 4
+/// `blk.40.nextn.*` tensors, and `--spec-type draft-mtp` (no sidecar) engaged
+/// with **91% draft acceptance** (draft_n=90, accepted=82) on the scratch A/B.
+///
+/// CAUTION, measured the same day: acceptance is a MODEL property, throughput
+/// is a BACKEND property. On CPU the same 91%-acceptance run decoded SLOWER
+/// than the no-spec control (30.6 vs 48.6 tok/s — batch verification costs
+/// more than sequential decode for a 3B-active MoE on CPU). The Metal receipt
+/// decides whether the flag ships on; presence alone is NOT the capability
+/// signal for embedded MTP the way it is for the sidecar.
+pub fn gguf_has_embedded_mtp(gguf: &Path) -> bool {
+    fn scan(gguf: &Path) -> Option<bool> {
+        use std::io::Read;
+        let mut f = std::fs::File::open(gguf).ok()?;
+        let mut hdr = [0u8; 24];
+        f.read_exact(&mut hdr).ok()?;
+        if &hdr[0..4] != b"GGUF" {
+            return Some(false);
+        }
+        let n_tensors = u64::from_le_bytes(hdr[8..16].try_into().ok()?);
+        let n_kv = u64::from_le_bytes(hdr[16..24].try_into().ok()?);
+        let mut rdr = std::io::BufReader::new(f);
+        fn read_u32(r: &mut impl Read) -> Option<u32> {
+            let mut b = [0u8; 4];
+            r.read_exact(&mut b).ok()?;
+            Some(u32::from_le_bytes(b))
+        }
+        fn read_u64(r: &mut impl Read) -> Option<u64> {
+            let mut b = [0u8; 8];
+            r.read_exact(&mut b).ok()?;
+            Some(u64::from_le_bytes(b))
+        }
+        fn read_str(r: &mut impl Read) -> Option<String> {
+            let n = read_u64(r)? as usize;
+            if n > 1 << 20 {
+                return None; // a >1MB "string" means a corrupt header — bail
+            }
+            let mut b = vec![0u8; n];
+            r.read_exact(&mut b).ok()?;
+            Some(String::from_utf8_lossy(&b).into_owned())
+        }
+        fn skip_val(r: &mut impl Read, t: u32) -> Option<()> {
+            match t {
+                0 | 1 | 7 => std::io::copy(&mut r.take(1), &mut std::io::sink()).ok().map(|_| ()),
+                2 | 3 => std::io::copy(&mut r.take(2), &mut std::io::sink()).ok().map(|_| ()),
+                4 | 5 | 6 => std::io::copy(&mut r.take(4), &mut std::io::sink()).ok().map(|_| ()),
+                10 | 11 | 12 => std::io::copy(&mut r.take(8), &mut std::io::sink()).ok().map(|_| ()),
+                8 => read_str(r).map(|_| ()),
+                9 => {
+                    let et = read_u32(r)?;
+                    let n = read_u64(r)?;
+                    for _ in 0..n {
+                        skip_val(r, et)?;
+                    }
+                    Some(())
+                }
+                _ => None,
+            }
+        }
+        for _ in 0..n_kv {
+            read_str(&mut rdr)?;
+            let t = read_u32(&mut rdr)?;
+            skip_val(&mut rdr, t)?;
+        }
+        for _ in 0..n_tensors {
+            let name = read_str(&mut rdr)?;
+            if name.contains(".nextn.") {
+                return Some(true);
+            }
+            let nd = read_u32(&mut rdr)? as u64;
+            std::io::copy(&mut (&mut rdr).take(8 * nd + 12), &mut std::io::sink()).ok()?;
+        }
+        Some(false)
+    }
+    scan(gguf).unwrap_or(false)
+}
+
+/// Find an MTP draft-head GGUF sitting in `dir` — an `mtp-*.gguf` sibling of the
+/// model's GGUF. When several quants of the head are present, newest-mtime wins
+/// (same tie-break as main-model candidate selection).
+fn find_mtp_draft_beside(dir: &Path) -> Option<PathBuf> {
+    let candidates: Vec<PathBuf> = fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let name = path.file_name()?.to_str()?.to_ascii_lowercase();
+            (name.starts_with("mtp-") && name.ends_with(".gguf")).then_some(path)
+        })
+        .collect();
+    pick_best_candidate(candidates)
+}
+
 /// Resolve a canonical model id to the HF safetensors repo id of its
 /// *trainable* form (`Model::hf_source`). The training lane (`mlx_lm.lora
 /// --model`) and the forge custodian's HF→PEFT→GGUF convert both need the
@@ -91,9 +258,7 @@ fn find_mmproj_beside(dir: &Path) -> Option<PathBuf> {
 /// reinterpreted as "the id is already an HF repo".
 pub fn resolve_hf_source_for_model_id(model_id: &str) -> Result<String, String> {
     let registry = crate::model_registry::try_global().ok_or_else(|| {
-        format!(
-            "cannot resolve hf_source for '{model_id}': model registry not initialized"
-        )
+        format!("cannot resolve hf_source for '{model_id}': model registry not initialized")
     })?;
     let model = registry.model(model_id).ok_or_else(|| {
         format!(
@@ -212,8 +377,9 @@ pub fn resolve_device_fit_override(
 
 /// Per-user cache dir a device-fit override for `model_id` lives in:
 /// `<storage_root>/device-fit/<normalized id>/`. A convention (mirrors
-/// [`local_model_roots`]), never a hardcoded operator path.
-fn device_fit_cache_dir(model_id: &str) -> PathBuf {
+/// [`local_model_roots`]), never a hardcoded operator path. Public because the
+/// division actuator discovers its `*.resident.json` tier manifests here.
+pub fn device_fit_cache_dir(model_id: &str) -> PathBuf {
     let slug: String = model_id
         .chars()
         .map(|c| {
@@ -294,7 +460,8 @@ fn find_model_dir_in_root(model_id: &str, root: &Path) -> Option<PathBuf> {
     }
 
     let repo_name = model_id.split('/').next_back()?;
-    let wanted: std::collections::HashSet<String> = identity_tokens(repo_name).into_iter().collect();
+    let wanted: std::collections::HashSet<String> =
+        identity_tokens(repo_name).into_iter().collect();
     if wanted.is_empty() {
         return None;
     }
@@ -316,7 +483,10 @@ fn find_model_dir_in_root(model_id: &str, root: &Path) -> Option<PathBuf> {
             continue;
         }
         let overlap = have.len();
-        if best.as_ref().is_none_or(|(best_overlap, _)| overlap > *best_overlap) {
+        if best
+            .as_ref()
+            .is_none_or(|(best_overlap, _)| overlap > *best_overlap)
+        {
             best = Some((overlap, path));
         }
     }
@@ -460,15 +630,22 @@ fn is_gguf(path: &Path) -> bool {
 /// (#106): pulling Qwen2.5-VL wrote the mmproj AFTER the main weights, so
 /// mtime-newest candidate selection picked the projector as the model and
 /// every VL spawn died with "unsupported model architecture: 'clip'".
-/// ONE predicate for every main-model collector; [`find_mmproj_beside`]
-/// remains the mmproj-POSITIVE scan.
+/// Also excludes `mtp-*.gguf` MTP draft heads (the ggml-org Qwen3.8 layout):
+/// same failure shape — the draft downloads AFTER the main weights, so
+/// mtime-newest would serve the 1.6GB head as the 27B model. Draft heads load
+/// via `--spec-draft-model`, never `-m`.
+/// ONE predicate for every main-model collector; [`find_mmproj_beside`] and
+/// [`find_mtp_draft_beside`] remain the sidecar-POSITIVE scans.
 fn is_main_model_gguf(path: &Path) -> bool {
     if !is_gguf(path) {
         return false;
     }
     path.file_name()
         .and_then(|s| s.to_str())
-        .is_some_and(|name| !name.to_ascii_lowercase().contains("mmproj"))
+        .is_some_and(|name| {
+            let name = name.to_ascii_lowercase();
+            !name.contains("mmproj") && !name.starts_with("mtp-")
+        })
 }
 
 fn home_dir_string() -> Option<String> {
@@ -548,12 +725,60 @@ pub(crate) fn with_test_home<T>(home: &Path, f: impl FnOnce() -> T) -> T {
 
 #[cfg(test)]
 mod tests {
+    // what this catches: the embedded-MTP capability signal lying in either
+    // direction. A false positive would push `--spec-type draft-mtp` onto a
+    // model with no nextn head (llama-server may refuse or misbehave); a false
+    // negative silently forfeits the speculation the head was trained for.
+    // Synthetic GGUF headers, no real weights — the scan is header-only by
+    // design and must stay that way (it runs at model resolution).
+    #[test]
+    fn embedded_mtp_detection_reads_headers_not_weights() {
+        use std::io::Write;
+        fn gguf_with_tensor(name: &str) -> std::path::PathBuf {
+            let dir = std::env::temp_dir().join(format!("mtp-det-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).unwrap(); // unwrap: test fixture tempdir must exist
+            let p = dir.join("model.gguf");
+            let mut f = std::fs::File::create(&p).unwrap();
+            f.write_all(b"GGUF").unwrap();
+            f.write_all(&3u32.to_le_bytes()).unwrap(); // version
+            f.write_all(&1u64.to_le_bytes()).unwrap(); // n_tensors
+            f.write_all(&1u64.to_le_bytes()).unwrap(); // n_kv
+            // one KV: key "k" -> u32 7
+            f.write_all(&1u64.to_le_bytes()).unwrap();
+            f.write_all(b"k").unwrap();
+            f.write_all(&4u32.to_le_bytes()).unwrap(); // type u32
+            f.write_all(&7u32.to_le_bytes()).unwrap();
+            // one tensor: name, ndims=1, dim, dtype, offset
+            f.write_all(&(name.len() as u64).to_le_bytes()).unwrap();
+            f.write_all(name.as_bytes()).unwrap();
+            f.write_all(&1u32.to_le_bytes()).unwrap();
+            f.write_all(&8u64.to_le_bytes()).unwrap();
+            f.write_all(&0u32.to_le_bytes()).unwrap();
+            f.write_all(&0u64.to_le_bytes()).unwrap();
+            p
+        }
+        let with = gguf_with_tensor("blk.40.nextn.eh_proj.weight");
+        let without = gguf_with_tensor("blk.40.attn_q.weight");
+        assert!(super::gguf_has_embedded_mtp(&with), "nextn tensor must be detected");
+        assert!(!super::gguf_has_embedded_mtp(&without), "plain model must not");
+        assert!(
+            !super::gguf_has_embedded_mtp(std::path::Path::new("/nonexistent.gguf")),
+            "unreadable file is honestly false, never a panic"
+        );
+        for p in [with, without] {
+            let _ = std::fs::remove_dir_all(p.parent().unwrap());
+        }
+    }
+
+
     use super::*;
     use crate::model_registry::types::{Arch, Capability};
     use std::collections::BTreeSet;
 
     fn model(id: &str, hint: Option<&str>, explicit: Option<PathBuf>) -> Model {
         Model {
+            weights_bytes: None,
+            mmproj_bytes: None,
             id: id.to_string(),
             name: None,
             provider: "llamacpp-local".into(),
@@ -578,6 +803,7 @@ mod tests {
             parameter_count: 0,
             sampling: crate::model_registry::types::ModelSampling::default(),
             persona_serving_eligible: true,
+            serving: Default::default(), // test/fixture literal: substrate defaults (text-only main lane, unverified kv-shift)
         }
     }
 
@@ -609,6 +835,35 @@ mod tests {
         assert!(find_ggufs_under_snapshots(snap.path()).is_none());
     }
 
+    // what this catches: #440 — the ggml-org Qwen3.8 snapshot ships main + `mtp-*.gguf`
+    // draft head + mmproj in ONE dir, and the draft downloads AFTER the main weights
+    // (live ordering 2026-08-15: main 02:48, mtp 02:49). Without the mtp exclusion,
+    // mtime-newest candidate selection serves the 1.6GB DRAFT HEAD as the 27B model —
+    // the exact #106 clip failure shape. The draft-POSITIVE scan
+    // (`find_mtp_draft_beside`) must still find it so the spawn can pass
+    // `--spec-type draft-mtp`.
+    #[test]
+    fn mtp_draft_head_never_wins_main_model_resolution_but_resolves_as_draft() {
+        let snap = tempfile::tempdir().unwrap();
+        let model_dir = snap.path().join("snapshots").join("qwen38");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        let main = model_dir.join("Qwen3.8-27B-Q4_K_M.gguf");
+        write_empty_gguf(&main);
+        // Written SECOND → newer mtime, the exact live download ordering.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let draft = model_dir.join("mtp-Qwen3.8-27B-Q4_0.gguf");
+        write_empty_gguf(&draft);
+
+        let picked = find_ggufs_under_snapshots(snap.path()).expect("main model resolves");
+        assert_eq!(picked, main, "draft head must not out-mtime the model");
+        let found = find_mtp_draft_beside(&model_dir).expect("draft head still discoverable");
+        assert_eq!(found, draft);
+        // A directory with no mtp sibling resolves no draft — the spawn adds no
+        // spec-decode flags and serving is byte-identical to pre-#440.
+        std::fs::remove_file(&draft).unwrap();
+        assert!(find_mtp_draft_beside(&model_dir).is_none());
+    }
+
     // what this catches: tier-1 resolution — an explicitly declared projector resolves
     // (with `~` expansion + existence check) so the serving spawn passes `--mmproj` and
     // the model can SEE; a declared-but-absent projector with no GGUF-sibling either,
@@ -626,7 +881,10 @@ mod tests {
 
             let mut m = model("qwen-vl", None, None);
             m.mmproj_local_path = Some(mmproj.clone());
-            assert_eq!(resolve_mmproj_for_model(&m).as_deref(), Some(mmproj.as_path()));
+            assert_eq!(
+                resolve_mmproj_for_model(&m).as_deref(),
+                Some(mmproj.as_path())
+            );
 
             // Declared but not on disk, and no GGUF resolves (empty HOME) → None
             // (serving warns TEXT-ONLY, never fakes sight).
@@ -670,7 +928,10 @@ mod tests {
 
             // Tier 1 still wins when a declared projector is actually present.
             m.mmproj_local_path = Some(mmproj.clone());
-            assert_eq!(resolve_mmproj_for_model(&m).as_deref(), Some(mmproj.as_path()));
+            assert_eq!(
+                resolve_mmproj_for_model(&m).as_deref(),
+                Some(mmproj.as_path())
+            );
         });
     }
 
@@ -729,11 +990,17 @@ mod tests {
             write_empty_gguf(&d.join("model-Q4_K_M.gguf"));
         }
 
-        let resolved =
-            find_model_dir_in_root("Continuum/qwen3-coder-30b-a3b-compacted-19b-256k", root.path());
+        let resolved = find_model_dir_in_root(
+            "Continuum/qwen3-coder-30b-a3b-compacted-19b-256k",
+            root.path(),
+        );
         assert_eq!(
             resolved.as_deref(),
-            Some(root.path().join("qwen3-coder-30b-a3b-compacted-19b").as_path()),
+            Some(
+                root.path()
+                    .join("qwen3-coder-30b-a3b-compacted-19b")
+                    .as_path()
+            ),
             "19b request must select the 19b dir, not the 32b sibling"
         );
 
@@ -746,6 +1013,33 @@ mod tests {
 
         // A size the request does not name has no subset dir → no false match.
         let absent = find_model_dir_in_root("Continuum/qwen3-coder-70b", root.path());
-        assert_eq!(absent, None, "no 70b dir exists; must not match a 32b/19b sibling");
+        assert_eq!(
+            absent, None,
+            "no 70b dir exists; must not match a 32b/19b sibling"
+        );
+    }
+
+    // what this catches: the 2026-08-29 overnight killer — a 28-shard split GGUF
+    // sized by shard 1 alone (0.69 of 79 GB), which poisoned kv_per_token and let
+    // the planner size a window past the verified geometry (six hours of silent
+    // Metal OOMs). Splits sum ALL siblings; singles stay their own size; a
+    // non-split name with "-of-" noise falls back to single-file size.
+    #[test]
+    fn split_gguf_bytes_sum_all_shards() {
+        let dir = std::env::temp_dir().join(format!("split-gguf-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap(); // unwrap: test fixture tempdir must exist
+        let w = |name: &str, len: usize| {
+            let p = dir.join(name);
+            std::fs::write(&p, vec![0u8; len]).unwrap(); // unwrap: test fixture shard write must succeed
+            p
+        };
+        let s1 = w("m-00001-of-00003.gguf", 100);
+        w("m-00002-of-00003.gguf", 200);
+        w("m-00003-of-00003.gguf", 300);
+        let single = w("solo.gguf", 42);
+        w("unrelated-00001-of-00002.bin", 999);
+        assert_eq!(total_gguf_bytes(&s1), 600, "split must sum every shard");
+        assert_eq!(total_gguf_bytes(&single), 42, "single file is its own size");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

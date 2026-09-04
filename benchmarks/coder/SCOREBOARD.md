@@ -44,11 +44,11 @@ Same 40 HumanEval-Rust tasks, same rustc compile+run grader.
 
 | model | pass@1 | via |
 |---|---|---|
-| **Qwen2.5-Coder-14B — OURS** | **85% (34/40)** | `cu benchmark/run --name humaneval-rs` |
+| **Qwen2.5-Coder-14B — OURS** | **85% (34/40)** | `uu benchmark/run --name humaneval-rs` |
 | Hermes-3-Llama-3.1-8B | 52% (21/40) | external /v1, one-shot |
 
 **+33 points, run through the actual benchmark system, cross-validated (Hermes 52% a third time).**
-Reproduce: `cu benchmark/run --persona_id <UUID> --name humaneval-rs --limit 40` for ours; bring up
+Reproduce: `uu benchmark/run --persona_id <UUID> --name humaneval-rs --limit 40` for ours; bring up
 any `/v1` and `python3 benchmarks/coder/oneshot_opponent.py --endpoint … --limit 40` for a challenger.
 
 ## Size + category ladder (2026-07) — humaneval-rs, 40 tasks, rustc-graded
@@ -72,7 +72,7 @@ toolchain-free opponent script; ours via `benchmark/run`. Reproduce with the two
 
 The clean, confound-free test: hold the model fixed, vary only the harness. `benchmark/run
 --base_model_id <id>` measures the full loop on that exact model (own ephemeral lane, living
-persona untouched). Reproduce: `cu benchmark/run --persona_id <id> --name humaneval-rs
+persona untouched). Reproduce: `uu benchmark/run --persona_id <id> --name humaneval-rs
 --base_model_id continuum-ai/qwen2.5-coder-1.5b-instruct-GGUF --limit 40`.
 
 | model | raw one-shot | through our system | delta |
@@ -108,7 +108,7 @@ value lives in the OTHER axes (continuous learning / LoRA, teams), which get mea
 ## Team vs solo — first cell (2026-07): does a teammate lift the SAME model?
 
 writer + reviewer (both fresh forks of the SAME persona/14B) vs solo, same 20 humaneval-rs tasks, same grader.
-Reproduce: `cu benchmark/run --persona_id <id> --name humaneval-rs --limit 20` (solo) vs `--reviewers 1` (team).
+Reproduce: `uu benchmark/run --persona_id <id> --name humaneval-rs --limit 20` (solo) vs `--reviewers 1` (team).
 
 | config | pass@1 |
 |---|---|

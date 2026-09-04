@@ -11,13 +11,19 @@ use crate::modules::agent::{AgentService, AgentStatusInfo};
 
 /// `agent/list` takes no input.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/agent/AgentListParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/agent/AgentListParams.ts"
+)]
 pub struct AgentListParams {}
 
 /// Result of `agent/list` — the live set of tracked agents. A named wrapper so the
 /// wire type is a struct, not a bare `Array<T>`.
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/agent/AgentStatusList.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/agent/AgentStatusList.ts"
+)]
 pub struct AgentStatusList {
     /// Every agent the runtime is currently tracking (running + not-yet-evicted).
     pub agents: Vec<AgentStatusInfo>,
@@ -62,10 +68,7 @@ mod tests {
         let cmd = AgentList {
             service: Arc::new(AgentService::new(rt)),
         };
-        let out = cmd
-            .run(&Ctx::default(), AgentListParams {})
-            .await
-            .unwrap();
+        let out = cmd.run(&Ctx::default(), AgentListParams {}).await.unwrap();
         assert!(out.agents.is_empty());
     }
 }

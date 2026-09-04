@@ -71,14 +71,38 @@ pub trait EmbeddingProvider: Send + Sync {
 /// deliberately diverse in topic, register, length AND LANGUAGE (an English-only
 /// null would mis-measure the space a multilingual room actually queries in).
 pub const CALIBRATION_PAIRS: &[(&str, &str)] = &[
-    ("the invoice for March is overdue", "a heron stood motionless in the shallows"),
-    ("fn main() { println!(\"hello\"); }", "she packed two sweaters for the trip north"),
-    ("die Sitzung wurde auf Donnerstag verschoben", "el río bajaba turbio después de la tormenta"),
-    ("our quarterly revenue grew eight percent", "the sonata's third movement is in A minor"),
-    ("git rebase rewrites commit history", "la soupe manque de sel et d'une feuille de laurier"),
-    ("降雨量は流域全体で予想を上回った", "the defendant waived the right to a jury"),
-    ("the cache invalidation bug ships tomorrow", "auf dem Bergrücken blühten die Wildblumen früh"),
-    ("please review the attached slide deck", "der Springer gabelte Dame und Turm"),
+    (
+        "the invoice for March is overdue",
+        "a heron stood motionless in the shallows",
+    ),
+    (
+        "fn main() { println!(\"hello\"); }",
+        "she packed two sweaters for the trip north",
+    ),
+    (
+        "die Sitzung wurde auf Donnerstag verschoben",
+        "el río bajaba turbio después de la tormenta",
+    ),
+    (
+        "our quarterly revenue grew eight percent",
+        "the sonata's third movement is in A minor",
+    ),
+    (
+        "git rebase rewrites commit history",
+        "la soupe manque de sel et d'une feuille de laurier",
+    ),
+    (
+        "降雨量は流域全体で予想を上回った",
+        "the defendant waived the right to a jury",
+    ),
+    (
+        "the cache invalidation bug ships tomorrow",
+        "auf dem Bergrücken blühten die Wildblumen früh",
+    ),
+    (
+        "please review the attached slide deck",
+        "der Springer gabelte Dame und Turm",
+    ),
 ];
 
 /// Measure an embedder's unrelated-cosine null distribution over
@@ -245,7 +269,9 @@ pub struct EmbeddingCache {
 
 impl Default for EmbeddingCache {
     fn default() -> Self {
-        Self { map: DashMap::new() }
+        Self {
+            map: DashMap::new(),
+        }
     }
 }
 
@@ -299,8 +325,11 @@ impl EmbeddingCache {
         // Snapshot the keys first so the count matches the bytes even if the map
         // grows during the write (a concurrent insert simply lands in the next
         // snapshot). Iterating clones under DashMap's per-shard locks — brief.
-        let entries: Vec<(u64, Vec<f32>)> =
-            self.map.iter().map(|e| (*e.key(), e.value().clone())).collect();
+        let entries: Vec<(u64, Vec<f32>)> = self
+            .map
+            .iter()
+            .map(|e| (*e.key(), e.value().clone()))
+            .collect();
         w.write_all(&(entries.len() as u64).to_le_bytes())?;
         for (key, vec) in &entries {
             w.write_all(&key.to_le_bytes())?;
@@ -638,14 +667,13 @@ fn local_embed_adapter() -> Option<(Arc<dyn AIProviderAdapter>, String)> {
     let model = reg
         .models_for_provider(crate::inference::llamacpp_adapter::LLAMACPP_PROVIDER_ID)
         .find(|m| {
-            m.capabilities.contains(&crate::model_registry::Capability::Embedding)
+            m.capabilities
+                .contains(&crate::model_registry::Capability::Embedding)
                 && m.gguf_local_path.as_ref().is_some_and(|p| p.exists())
         })?;
     let path = model.gguf_local_path.clone()?;
-    let adapter = crate::inference::llamacpp_adapter::LlamaCppAdapter::with_model_id(
-        path,
-        model.id.clone(),
-    );
+    let adapter =
+        crate::inference::llamacpp_adapter::LlamaCppAdapter::with_model_id(path, model.id.clone());
     Some((Arc::new(adapter), model.id.clone()))
 }
 
@@ -787,7 +815,9 @@ async fn shared_in_process_embedder(model: &str) -> Option<(Arc<dyn EmbeddingPro
 /// Always returns a usable embedder — never errors, never panics: a persona on a
 /// box with no embed model still gets real lexical relevance ("solve for public
 /// users" / degrade-not-panic).
-pub async fn resolve_recall_embedder(adapter: Arc<dyn AIProviderAdapter>) -> Arc<dyn EmbeddingProvider> {
+pub async fn resolve_recall_embedder(
+    adapter: Arc<dyn AIProviderAdapter>,
+) -> Arc<dyn EmbeddingProvider> {
     // The embedding-SPACE identity (cache key). Defaults to the canonical grid
     // embedder; an operator standardizing on a different embed model overrides it
     // so in-process and gateway vectors stay in one comparable space.
@@ -837,7 +867,9 @@ pub async fn resolve_recall_embedder(adapter: Arc<dyn AIProviderAdapter>) -> Arc
         model = %model,
         "recall embedder = LEXICAL — no neural embed model serving; semantic recall DEGRADED to word-overlap"
     );
-    Arc::new(CachingEmbeddingProvider::new(Arc::new(LexicalEmbedder::new())))
+    Arc::new(CachingEmbeddingProvider::new(Arc::new(
+        LexicalEmbedder::new(),
+    )))
 }
 
 /// Resolve the recall embedder WITHOUT a chat adapter — for the GLOBAL memory
@@ -871,7 +903,9 @@ pub async fn resolve_recall_embedder_local() -> Arc<dyn EmbeddingProvider> {
         model = %model,
         "global recall embedder = LEXICAL — no in-process embed model serving; semantic recall DEGRADED to word-overlap"
     );
-    Arc::new(CachingEmbeddingProvider::new(Arc::new(LexicalEmbedder::new())))
+    Arc::new(CachingEmbeddingProvider::new(Arc::new(
+        LexicalEmbedder::new(),
+    )))
 }
 
 /// A recall embedder that resolves its real backend LAZILY on first use, off the
@@ -979,7 +1013,11 @@ mod tests {
 
         // Missing file (first boot) → Ok(0), not an error.
         let _ = std::fs::remove_file(&path);
-        assert_eq!(dst.load_from(&path).unwrap(), 0, "missing snapshot warms as Ok(0)");
+        assert_eq!(
+            dst.load_from(&path).unwrap(),
+            0,
+            "missing snapshot warms as Ok(0)"
+        );
     }
 
     // what this catches: the cosine of identical text is ~1; orthogonal
@@ -987,8 +1025,12 @@ mod tests {
     #[tokio::test]
     async fn identical_text_is_maximally_similar() {
         let e = LexicalEmbedder::new();
-        let a = e.embed("the deploy pipeline went red after the migration").await;
-        let same = e.embed("the deploy pipeline went red after the migration").await;
+        let a = e
+            .embed("the deploy pipeline went red after the migration")
+            .await;
+        let same = e
+            .embed("the deploy pipeline went red after the migration")
+            .await;
         assert!(cosine_similarity(&a, &same) > 0.999);
     }
 
@@ -998,11 +1040,15 @@ mod tests {
     #[tokio::test]
     async fn relevant_text_outscores_unrelated_text() {
         let e = LexicalEmbedder::new();
-        let query = e.embed("what was our rollout plan for the auth flow?").await;
+        let query = e
+            .embed("what was our rollout plan for the auth flow?")
+            .await;
         let relevant = e
             .embed("we will ship the auth flow behind a feature flag and ramp the rollout to 10%")
             .await;
-        let unrelated = e.embed("lunch is at noon, someone booked the corner table").await;
+        let unrelated = e
+            .embed("lunch is at noon, someone booked the corner table")
+            .await;
         let rel = cosine_similarity(&query, &relevant);
         let unrel = cosine_similarity(&query, &unrelated);
         assert!(
@@ -1161,7 +1207,10 @@ mod tests {
         assert!(!probe_indicates_usable(&[]), "empty = no signal");
         assert!(!probe_indicates_usable(&[0.0, 0.0]), "all-zero = no signal");
         assert!(!probe_indicates_usable(&[f32::NAN, 1.0]), "NaN = no signal");
-        assert!(!probe_indicates_usable(&[f32::INFINITY, 1.0]), "Inf = no signal");
+        assert!(
+            !probe_indicates_usable(&[f32::INFINITY, 1.0]),
+            "Inf = no signal"
+        );
     }
 
     /// Minimal adapter whose embeddings are configurable, to drive the resolver
@@ -1308,7 +1357,11 @@ mod tests {
             0,
             "grid round-trip never fired — the local-cached vector was reused"
         );
-        assert_eq!(cache.len(), 1, "one entry: identity is the model, not the transport");
+        assert_eq!(
+            cache.len(),
+            1,
+            "one entry: identity is the model, not the transport"
+        );
     }
 
     // what this catches: the in-process neural embedder actually PRODUCES semantic
@@ -1336,13 +1389,20 @@ mod tests {
             .await
             .expect("neural embedder probe must succeed with a real embed model on disk");
 
-        let anchor = embedder.embed("the deployment failed with a compile error").await;
+        let anchor = embedder
+            .embed("the deployment failed with a compile error")
+            .await;
         let similar = embedder
             .embed("the build broke because the code did not compile")
             .await;
-        let different = embedder.embed("she watered the tomato plants in the garden").await;
+        let different = embedder
+            .embed("she watered the tomato plants in the garden")
+            .await;
 
-        assert!(!anchor.is_empty(), "real embed must return a non-empty vector");
+        assert!(
+            !anchor.is_empty(),
+            "real embed must return a non-empty vector"
+        );
         eprintln!(
             "[embed-test] dim={} (canonical={})",
             anchor.len(),

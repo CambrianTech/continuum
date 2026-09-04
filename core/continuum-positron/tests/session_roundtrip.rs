@@ -83,6 +83,7 @@ fn build_chat_state(content: &str) -> ChatViewState {
             },
             content: content.into(),
             timestamp: 1_700_000_000_000,
+            heard_by: Vec::new(),
         }],
         roster: vec![RosterSlotView {
             pronouns: None,

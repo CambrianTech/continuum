@@ -87,7 +87,7 @@ mod tests {
         assert_eq!(mode(0.7, 60), PowerMode::Sport); // hard + room
         assert_eq!(mode(0.9, 60), PowerMode::Performance); // out of its league + room
         assert_eq!(mode(0.9, 5), PowerMode::Eco); // game ate the RAM → don't thrash
-        // Hard but only middling free memory → shift up only to Sport, not Performance.
+                                                  // Hard but only middling free memory → shift up only to Sport, not Performance.
         assert_eq!(mode(0.9, 14), PowerMode::Sport);
     }
 }

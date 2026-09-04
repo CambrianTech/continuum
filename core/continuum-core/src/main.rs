@@ -76,9 +76,14 @@ fn install_shutdown_handlers() {
                 tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
             {
                 sig.recv().await;
-                eprintln!("[continuum-core] SIGTERM — killing sentinel process groups");
+                eprintln!("[continuum-core] SIGTERM — save-and-join broadcast, then exit");
+                // The CBAR stop (2026-09-02): every module saves and joins in
+                // parallel under a bound — replacing a flat 2s sleep during
+                // which NOTHING saved. Sentinels last (they are children, not
+                // modules), then the fast _exit that skips llama.cpp's
+                // double-free-prone static destructors (note above).
+                continuum_core::runtime::run_signal_shutdown().await;
                 continuum_core::modules::sentinel::shutdown_all_sentinels();
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 unsafe { libc::_exit(0) };
             }
         });
@@ -89,9 +94,9 @@ fn install_shutdown_handlers() {
                 tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
             {
                 sig.recv().await;
-                eprintln!("[continuum-core] SIGINT — killing sentinel process groups");
+                eprintln!("[continuum-core] SIGINT — save-and-join broadcast, then exit");
+                continuum_core::runtime::run_signal_shutdown().await;
                 continuum_core::modules::sentinel::shutdown_all_sentinels();
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 unsafe { libc::_exit(0) };
             }
         });
@@ -215,6 +220,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // directory so the operator sees it landed. A DIRECTORY, not a
     // file — the sink owns the file name because it rotates by size
     // (#341).
+    // PANIC LOCATION → the tracing LOG, not just stderr. A panic's `panicked at FILE:LINE`
+    // is written by the default hook to STDERR, which is not captured into the tracing log
+    // (Joel's "stderr is never an interface" law) — so a service_loop panic showed only its
+    // MESSAGE ("attempt to multiply with overflow") with no WHERE, and the residency-killer
+    // hid for a full session (2026-08-25) until the stderr capture was grepped by hand. This
+    // hook logs the panic's location + payload + a backtrace THROUGH tracing, so the next
+    // panic names its own seam in the same log every debugger reads. catch_unwind still
+    // runs after it; this only adds the location the payload lacks.
+    {
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let loc = info
+                .location()
+                .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+                .unwrap_or_else(|| "<unknown location>".to_string()); // panic hook display path; unknown location is the honest label
+            let msg = info
+                .payload()
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| info.payload().downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "<non-string panic payload>".to_string()); // panic hook display path; payload downcast miss keeps the hook alive
+            let bt = std::backtrace::Backtrace::force_capture();
+            tracing::error!(
+                probe_class = "panic.caught",
+                location = %loc,
+                payload = %msg,
+                backtrace = %bt,
+                "PANIC at {loc}: {msg}"
+            );
+            // Keep the default behaviour too (stderr line), so nothing regresses.
+            default_hook(info);
+        }));
+    }
+
     let probe_install = install_probe_tracing(ProbeTracingConfig::from_env("info"))?;
     if let Some(ref path) = probe_install.probe_log_path {
         // Use println so it appears even when RUST_LOG filters out
@@ -313,14 +352,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => {}
         }
     }
-    if args.len() < 2 {
-        eprintln!("Usage: {} [--mode=<MODE>] <socket-path>", args[0]);
-        eprintln!("Example: {} /tmp/continuum-core.sock", args[0]);
-        eprintln!("Try `{} --help` for more.", args[0]);
-        std::process::exit(1);
-    }
-
-    let socket_path = args[1].clone();
+    // argv[1] wins; otherwise resolve the socket the SAME way every client does.
+    //
+    // This binary used to be the one component in the tree that hand-rolled its own
+    // socket resolution — argv or die — while `continuum`, `continuum-mcp` and every
+    // library caller went through `endpoint_paths::core_socket_path()` (which honours
+    // `CONTINUUM_CORE_SOCKET`, then the platform default). That disagreement is not
+    // cosmetic: `launch_core` communicated the socket over exactly that env var and
+    // omitted the positional, so the server exited 1 with its usage text ~2s into every
+    // `start`/`reboot` on a machine with an installed binary. The launcher's bug is
+    // fixed on its side too, but a resolver that everyone else shares and this process
+    // ignores is a standing invitation to the same defect.
+    let socket_path = match args.get(1) {
+        Some(explicit) => explicit.clone(),
+        None => continuum_core::ipc::endpoint_paths::core_socket_path(),
+    };
 
     info!("🦀 Continuum Core Server starting...");
     info!("   IPC Socket: {socket_path}");

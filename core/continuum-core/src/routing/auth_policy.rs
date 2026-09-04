@@ -297,11 +297,7 @@ pub trait AuthPolicy: Send + Sync + std::fmt::Debug {
     ///
     /// `caller = None` means "this substrate's own code" —
     /// default policies treat it as implicitly trusted.
-    fn gate(
-        &self,
-        decision: &RouteDecision,
-        caller: Option<&CallerIdentity>,
-    ) -> Verdict;
+    fn gate(&self, decision: &RouteDecision, caller: Option<&CallerIdentity>) -> Verdict;
 }
 
 /// Default policy — every dispatch is allowed.
@@ -342,7 +338,9 @@ impl ClosurePolicy {
 
 impl std::fmt::Debug for ClosurePolicy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ClosurePolicy").field("name", &self.name).finish()
+        f.debug_struct("ClosurePolicy")
+            .field("name", &self.name)
+            .finish()
     }
 }
 
@@ -410,11 +408,8 @@ mod tests {
             local_decision("inference/llm/generate"),
             route(&CommandUri::parse("airc://maya/inference/llm/generate").expect("peer")),
             route(
-                &CommandUri::parse(&format!(
-                    "airc://room:{}/chat/post",
-                    Uuid::new_v4()
-                ))
-                .expect("room"),
+                &CommandUri::parse(&format!("airc://room:{}/chat/post", Uuid::new_v4()))
+                    .expect("room"),
             ),
             route(&CommandUri::parse("airc://maya:*/notification/send").expect("broadcast")),
         ];

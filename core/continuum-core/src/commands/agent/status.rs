@@ -11,7 +11,10 @@ use crate::modules::agent::{AgentService, AgentStatusInfo};
 
 /// Inputs to `agent/status`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/agent/AgentStatusParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/agent/AgentStatusParams.ts"
+)]
 pub struct AgentStatusParams {
     /// The agent handle returned by `agent/start`.
     pub handle: String,
@@ -21,7 +24,10 @@ pub struct AgentStatusParams {
 /// agent has that handle (unknown, or already finished and evicted). A named
 /// wrapper so the wire type is a struct, not a bare `T | null`.
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/agent/AgentStatusLookup.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/agent/AgentStatusLookup.ts"
+)]
 pub struct AgentStatusLookup {
     /// The progress snapshot, or absent when the handle is unknown/evicted.
     #[serde(skip_serializing_if = "Option::is_none")]

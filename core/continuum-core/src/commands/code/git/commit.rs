@@ -12,14 +12,20 @@ use crate::modules::code::CodeState;
 use crate::sdk_codegen::CommandError;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/code/GitCommitParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/GitCommitParams.ts"
+)]
 pub struct GitCommitParams {
     /// The commit message.
     pub message: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/code/GitCommitResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/GitCommitResult.ts"
+)]
 pub struct GitCommitResult {
     /// The full SHA of the new commit.
     pub hash: String,
@@ -69,7 +75,12 @@ mod tests {
         ));
         let cmd = CodeGitCommit { state };
         let err = cmd
-            .run(&Ctx::default(), GitCommitParams { message: "  ".into() })
+            .run(
+                &Ctx::default(),
+                GitCommitParams {
+                    message: "  ".into(),
+                },
+            )
             .await
             .unwrap_err();
         assert!(matches!(err, CommandError::Invalid(_)));

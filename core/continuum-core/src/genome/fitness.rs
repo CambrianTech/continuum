@@ -177,8 +177,14 @@ mod tests {
     #[test]
     fn any_being_level_regression_vetoes_a_layer_however_good_its_coding_lift() {
         let mut great = layer(0.9, 1.0, 0.001, 1.0);
-        assert!(great.value_density() > 0.0, "control: this layer is otherwise excellent");
-        assert_eq!(retire_verdict(great.value_density(), 0.0), FitnessVerdict::Keep);
+        assert!(
+            great.value_density() > 0.0,
+            "control: this layer is otherwise excellent"
+        );
+        assert_eq!(
+            retire_verdict(great.value_density(), 0.0),
+            FitnessVerdict::Keep
+        );
 
         great.harm = 0.001; // she repeats herself a hair more often
         assert_eq!(
@@ -199,8 +205,18 @@ mod tests {
     // Doubling the lift must not resurrect a harmful layer.
     #[test]
     fn harm_cannot_be_outbid_by_more_lift() {
-        let harmful = LayerFitness { lift: 1.0, harm: 0.0001, demand: 1.0, cost_bytes: 1, redundancy: 1.0 };
-        assert_eq!(harmful.value_density(), 0.0, "maximum lift, minimum harm — still zero");
+        let harmful = LayerFitness {
+            lift: 1.0,
+            harm: 0.0001,
+            demand: 1.0,
+            cost_bytes: 1,
+            redundancy: 1.0,
+        };
+        assert_eq!(
+            harmful.value_density(),
+            0.0,
+            "maximum lift, minimum harm — still zero"
+        );
     }
 
     // what this catches: EVERYTHING gates on lift — a layer that doesn't improve the
@@ -223,10 +239,17 @@ mod tests {
     // formula enforces "for free."
     #[test]
     fn unused_and_duplicate_layers_collapse_to_worthless() {
-        assert_eq!(layer(0.5, 0.0, 0.01, 1.0).value_density(), 0.0, "unused → 0");
+        assert_eq!(
+            layer(0.5, 0.0, 0.01, 1.0).value_density(),
+            0.0,
+            "unused → 0"
+        );
         let unique = layer(0.5, 0.8, 0.01, 1.0).value_density();
         let duplicate = layer(0.5, 0.8, 0.01, 1000.0).value_density();
-        assert!(duplicate < unique / 100.0, "a near-perfect duplicate is worth ~nothing next to the unique one");
+        assert!(
+            duplicate < unique / 100.0,
+            "a near-perfect duplicate is worth ~nothing next to the unique one"
+        );
     }
 
     // what this catches: fitness ranks layers SENSIBLY (the §6 slice-2 gate). A

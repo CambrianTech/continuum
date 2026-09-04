@@ -176,7 +176,10 @@ mod tests {
             panic!("unknown target must fail");
         };
         assert!(err.contains("desktop"), "names the bad target: {err}");
-        assert!(err.contains("web") && err.contains("ios"), "lists valid: {err}");
+        assert!(
+            err.contains("web") && err.contains("ios"),
+            "lists valid: {err}"
+        );
     }
 
     // what this catches: PNG IHDR parsing reads big-endian width/height, and

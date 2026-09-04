@@ -204,16 +204,19 @@ mod tests {
     fn picks_the_most_capable_model_that_frees_enough() {
         // Running a 24GB model; a game wants 8GB back. Land at ≤ 16GB.
         let policy = CatalogTierDownPolicy::new(cands(&[
-            ("big-30b", 9, 24 * GB),   // the current model (excluded)
-            ("mid-14b", 6, 15 * GB),   // fits (≤16), most capable qualifier → WINNER
-            ("small-7b", 4, 8 * GB),   // fits but less capable
-            ("tiny-3b", 2, 4 * GB),    // fits but least capable
+            ("big-30b", 9, 24 * GB), // the current model (excluded)
+            ("mid-14b", 6, 15 * GB), // fits (≤16), most capable qualifier → WINNER
+            ("small-7b", 4, 8 * GB), // fits but less capable
+            ("tiny-3b", 2, 4 * GB),  // fits but least capable
         ]));
         let r = req(8 * GB);
         let td = policy
             .choose(&ctx_asking("big-30b", 24 * GB, &r))
             .expect("a smaller model frees enough");
-        assert_eq!(td.target_model, "mid-14b", "most-capable model that clears the ask");
+        assert_eq!(
+            td.target_model, "mid-14b",
+            "most-capable model that clears the ask"
+        );
         assert_eq!(td.resident_after, 15 * GB);
     }
 
@@ -238,7 +241,9 @@ mod tests {
             ("big-30b", 9, 24 * GB),
             ("other-big", 8, 26 * GB), // bigger, not a shrink
         ]));
-        assert!(policy.choose(&ctx_asking("big-30b", 24 * GB, &req(1 * GB))).is_none());
+        assert!(policy
+            .choose(&ctx_asking("big-30b", 24 * GB, &req(1 * GB)))
+            .is_none());
     }
 
     const GB: u64 = 1024 * 1024 * 1024;

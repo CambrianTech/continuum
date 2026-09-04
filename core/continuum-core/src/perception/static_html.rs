@@ -69,7 +69,16 @@ fn element_to_probe(el: scraper::ElementRef<'_>) -> ProbeNode {
 
     // Curated load-bearing attributes (mirrors the browser eye's `attrs`).
     let mut attrs: HashMap<String, String> = HashMap::new();
-    for key in ["id", "class", "href", "type", "name", "aria-label", "alt", "role"] {
+    for key in [
+        "id",
+        "class",
+        "href",
+        "type",
+        "name",
+        "aria-label",
+        "alt",
+        "role",
+    ] {
         if let Some(v) = ev.attr(key) {
             attrs.insert(key.to_string(), v.to_string());
         }
@@ -84,7 +93,11 @@ fn element_to_probe(el: scraper::ElementRef<'_>) -> ProbeNode {
             .collect::<Vec<_>>()
             .join(" ");
         let s = collapse_ws(&s);
-        if s.is_empty() { None } else { Some(s) }
+        if s.is_empty() {
+            None
+        } else {
+            Some(s)
+        }
     };
 
     // Accessible name: explicit aria-label / alt wins; else the full descendant text
@@ -97,7 +110,11 @@ fn element_to_probe(el: scraper::ElementRef<'_>) -> ProbeNode {
         .or_else(|| attrs.get("alt").cloned())
         .or_else(|| {
             let full = collapse_ws(&el.text().collect::<String>());
-            if full.is_empty() { None } else { Some(full) }
+            if full.is_empty() {
+                None
+            } else {
+                Some(full)
+            }
         })
         .or_else(|| attrs.get("id").cloned());
 
@@ -119,6 +136,7 @@ fn element_to_probe(el: scraper::ElementRef<'_>) -> ProbeNode {
         name,
         text: direct_text,
         bounds: None, // no layout without a renderer; structural grading doesn't need it
+        style: None,  // no computed style without a renderer — craft checks stay honestly unmet here
         attrs: if attrs.is_empty() { None } else { Some(attrs) },
         children,
     }
@@ -133,7 +151,11 @@ fn implicit_role(tag: &str, attrs: &HashMap<String, String>) -> Option<String> {
         "button" | "summary" => "button",
         "a" | "area" => {
             // Only a *linked* anchor has the link role.
-            if attrs.contains_key("href") { "link" } else { return None }
+            if attrs.contains_key("href") {
+                "link"
+            } else {
+                return None;
+            }
         }
         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => "heading",
         "nav" => "navigation",
@@ -187,6 +209,7 @@ mod tests {
             role: role.map(str::to_string),
             text_contains: text.map(str::to_string),
             min_count: min,
+            min_contrast: None,
         }
     }
 
@@ -214,7 +237,11 @@ mod tests {
             check(None, Some("button"), Some("submit"), 1),
         ];
         let grade = grade_ui(&obs, &checks, 1.0);
-        assert!(grade.passed, "expected all 3 checks to pass, got: {}", grade.summary);
+        assert!(
+            grade.passed,
+            "expected all 3 checks to pass, got: {}",
+            grade.summary
+        );
     }
 
     // what this catches: a <button> must carry the implicit ARIA role so a
@@ -225,7 +252,9 @@ mod tests {
         let root = obs.structure.unwrap();
         // find the button anywhere in the tree
         fn find<'a>(n: &'a ProbeNode, tag: &str) -> Option<&'a ProbeNode> {
-            if n.tag == tag { return Some(n); }
+            if n.tag == tag {
+                return Some(n);
+            }
             n.children.iter().find_map(|c| find(c, tag))
         }
         let btn = find(&root, "button").expect("button node present");
@@ -250,7 +279,10 @@ mod tests {
           </form>\
         </body></html>";
         let obs = observe_html(html, None);
-        assert!(obs.success, "tolerant parse must still succeed despite the stray leading char");
+        assert!(
+            obs.success,
+            "tolerant parse must still succeed despite the stray leading char"
+        );
         let checks = vec![
             check(Some("h1"), None, Some("sign in"), 1),
             check(Some("input"), None, None, 2),

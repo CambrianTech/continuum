@@ -18,8 +18,8 @@
 //! - NanobananSource: AI-generated video frames
 
 use crate::clog_info;
-use crate::runtime::handle::Handle;
 use crate::live::video::generator::TestPatternGenerator;
+use crate::runtime::handle::Handle;
 use tokio::sync::{broadcast, mpsc};
 
 /// Pluggable video source — anything that produces frames for a participant.

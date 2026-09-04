@@ -21,6 +21,16 @@
  */
 
 import type { StreamDelta } from '@continuum/sdk-typescript';
+import {
+  Room,
+  RoomEvent,
+  Track,
+  createLocalAudioTrack,
+  createLocalVideoTrack,
+  type LocalAudioTrack,
+  type LocalVideoTrack,
+  type RemoteTrack,
+} from 'livekit-client';
 
 /** One remote participant's live media state, as the face consumes it. */
 export interface CallAvatarState {
@@ -50,6 +60,11 @@ export interface CallClientEvents {
   onAvatar?: (state: CallAvatarState) => void;
   onTranscription?: (userId: string, text: string) => void;
   onVideoFrame?: (frame: CallVideoFrame) => void;
+  /** A LiveKit media track (video or audio) for a participant appeared or
+   *  vanished (`track === undefined`). The REAL plane: UDP, hardware codecs —
+   *  the host attaches video tracks to <video> elements and audio tracks to
+   *  autoplaying <audio>; no JS ever touches pixels. */
+  onTrack?: (identity: string, kind: 'video' | 'audio', track?: RemoteTrack) => void;
   /** Mirrors transcriptions onto the SAME StreamDelta shape the typing rail
    *  uses, so the existing caption/speaking plumbing needs zero new paths. */
   onDelta?: (delta: StreamDelta) => void;
@@ -117,6 +132,14 @@ export class CallClient {
 
   /** True once Join is sent on an open socket. */
   connected = false;
+  /** The REAL media plane (LiveKit/WebRTC over UDP). Connected when the host
+   *  supplied `live/token` creds; the WS lane stays for CONTROL (join,
+   *  transcriptions, avatar state) + the glass-box video tee. */
+  private lkRoom?: Room;
+  private lkMic?: LocalAudioTrack;
+  private lkCam?: LocalVideoTrack;
+  /** True when the WebRTC media plane is up — capture publishes there. */
+  lkLive = false;
   /** True while the mic worklet is publishing. */
   micLive = false;
 
@@ -127,7 +150,45 @@ export class CallClient {
   /** Dial the call server and join. Resolves on socket-open (Join sent);
    *  rejects on dial failure — the caller keeps the honest avatar-presence
    *  face on rejection, never a fake connected state. */
-  connect(url: string, callId: string, userId: string, displayName: string): Promise<void> {
+  connect(
+    url: string,
+    callId: string,
+    userId: string,
+    displayName: string,
+    livekit?: { url: string; token: string },
+  ): Promise<void> {
+    if (livekit !== undefined) {
+      // The REAL plane, in parallel with the WS control dial. Failure is loud
+      // and leaves lkLive=false — capture then refuses rather than silently
+      // publishing nowhere ([[fallbacks-are-illegal-fail-loud]]).
+      void this.connectLiveKit(livekit.url, livekit.token);
+    }
+    return this.connectWs(url, callId, userId, displayName);
+  }
+
+  private async connectLiveKit(url: string, token: string): Promise<void> {
+    try {
+      const room = new Room();
+      room.on(RoomEvent.TrackSubscribed, (track, _pub, participant) => {
+        const kind = track.kind === Track.Kind.Video ? 'video' : 'audio';
+        this.events.onTrack?.(participant.identity, kind, track);
+      });
+      room.on(RoomEvent.TrackUnsubscribed, (track, _pub, participant) => {
+        const kind = track.kind === Track.Kind.Video ? 'video' : 'audio';
+        this.events.onTrack?.(participant.identity, kind, undefined);
+      });
+      await room.connect(url, token);
+      this.lkRoom = room;
+      this.lkLive = true;
+      // Tracks already live in the room replay through TrackSubscribed on
+      // connect; nothing to enumerate by hand.
+    } catch (err) {
+      this.lkLive = false;
+      console.error('LiveKit media plane connect failed — media stays on the WS tee this call:', err);
+    }
+  }
+
+  private connectWs(url: string, callId: string, userId: string, displayName: string): Promise<void> {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(url);
       ws.binaryType = 'arraybuffer';
@@ -164,6 +225,18 @@ export class CallClient {
   /** Start mic capture (AudioWorklet) and publish 16k PCM16 frames. Returns
    *  false with no side effects when the user denies the mic. */
   async startMic(): Promise<boolean> {
+    // REAL plane first: the bridge's STT listener sits in the LiveKit room, so
+    // a published mic track reaches citizens' ears with no WS PCM leg.
+    if (this.lkRoom !== undefined && this.lkLive) {
+      try {
+        this.lkMic = await createLocalAudioTrack();
+        await this.lkRoom.localParticipant.publishTrack(this.lkMic);
+        this.micLive = true;
+        return true;
+      } catch {
+        return false;
+      }
+    }
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
     try {
       this.micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -186,7 +259,111 @@ export class CallClient {
     return true;
   }
 
+  /** Camera capture state — true while frames are publishing. */
+  camLive = false;
+  private camStream?: MediaStream;
+  private camTimer?: ReturnType<typeof setInterval>;
+  private camSeq = 0;
+  private camEpoch = Date.now();
+
+  /** Start camera capture and publish RGBA frames on the SAME wire the Bevy
+   *  avatar feed rides ([0x02][VideoFrameHeader 16B LE][rgba]) — humans are
+   *  video participants inherently, no separate plane (Joel, 2026-08-31:
+   *  "needs to be a positron thing inherent for people"). 320×180@12fps keeps
+   *  a raw-RGBA upstream honest (~2.7MB/s, localhost-class); returns false
+   *  with no side effects when the user denies the camera. */
+  async startCamera(selfId?: string): Promise<boolean> {
+    // REAL plane first: native WebRTC capture + hardware encode, published as
+    // a UDP track. The canvas-RGBA-over-WS path below survives only as the
+    // tee for cores without the media plane.
+    if (this.lkRoom !== undefined && this.lkLive) {
+      try {
+        this.lkCam = await createLocalVideoTrack({
+          resolution: { width: 640, height: 360, frameRate: 30 },
+        });
+        await this.lkRoom.localParticipant.publishTrack(this.lkCam);
+        this.camLive = true;
+        // Local echo: hand the local track up like any remote one.
+        this.events.onTrack?.(selfId ?? 'local', 'video', this.lkCam as unknown as RemoteTrack);
+        return true;
+      } catch {
+        return false; // permission denied or capture failure — honest no
+      }
+    }
+    try {
+      this.camStream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 640 }, height: { ideal: 360 } },
+      });
+    } catch {
+      return false;
+    }
+    const video = document.createElement('video');
+    video.srcObject = this.camStream;
+    video.muted = true;
+    await video.play();
+    const W = 320;
+    const H = 180;
+    const canvas = document.createElement('canvas');
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) {
+      this.stopCamera();
+      return false;
+    }
+    this.camTimer = setInterval(() => {
+      if (this.ws?.readyState !== WebSocket.OPEN) return;
+      ctx.drawImage(video, 0, 0, W, H);
+      const rgba = ctx.getImageData(0, 0, W, H).data;
+      const frame = new Uint8Array(1 + 16 + rgba.length);
+      const dv = new DataView(frame.buffer);
+      frame[0] = FRAME_VIDEO;
+      dv.setUint16(1, W, true);
+      dv.setUint16(3, H, true);
+      frame[5] = 0; // VideoPixelFormat::RGBA8
+      frame[6] = 0; // flags reserved
+      dv.setUint32(7, (Date.now() - this.camEpoch) >>> 0, true);
+      dv.setUint32(11, this.camSeq, true);
+      // bytes 15..17 reserved (already zero)
+      frame.set(rgba, 17);
+      this.ws.send(frame);
+      // Local echo: the server broadcast is mix-minus (excludes self), so the
+      // viewer's own tile animates from the same frame just published.
+      if (selfId !== undefined) {
+        this.events.onVideoFrame?.({
+          senderId: selfId,
+          width: W,
+          height: H,
+          pixelFormat: 0,
+          sequence: this.camSeq,
+          pixels: new Uint8Array(rgba.buffer.slice(0)),
+        });
+      }
+      this.camSeq += 1;
+    }, 1000 / 12);
+    this.camLive = true;
+    return true;
+  }
+
+  stopCamera(): void {
+    if (this.lkCam !== undefined) {
+      void this.lkRoom?.localParticipant.unpublishTrack(this.lkCam);
+      this.lkCam.stop();
+      this.lkCam = undefined;
+    }
+    if (this.camTimer !== undefined) clearInterval(this.camTimer);
+    this.camTimer = undefined;
+    this.camStream?.getTracks().forEach((t) => t.stop());
+    this.camStream = undefined;
+    this.camLive = false;
+  }
+
   stopMic(): void {
+    if (this.lkMic !== undefined) {
+      void this.lkRoom?.localParticipant.unpublishTrack(this.lkMic);
+      this.lkMic.stop();
+      this.lkMic = undefined;
+    }
     this.captureNode?.disconnect();
     this.captureNode = undefined;
     this.micStream?.getTracks().forEach((t) => t.stop());
@@ -197,6 +374,10 @@ export class CallClient {
   leave(): void {
     this.closedByUs = true;
     this.stopMic();
+    this.stopCamera();
+    void this.lkRoom?.disconnect();
+    this.lkRoom = undefined;
+    this.lkLive = false;
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type: 'Leave' }));
     }

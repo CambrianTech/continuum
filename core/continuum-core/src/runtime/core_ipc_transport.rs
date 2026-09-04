@@ -358,10 +358,8 @@ mod tests {
         // shared (pid-only) path would collide. A per-call atomic counter isolates them.
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "cc-coreipc-test-{}-{n}.sock",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("cc-coreipc-test-{}-{n}.sock", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path).expect("bind test socket");
         tokio::spawn(async move {
@@ -374,7 +372,9 @@ mod tests {
     #[cfg(windows)]
     async fn spawn_echo_ipc_server() -> EchoServer {
         // Ephemeral port on loopback — the OS picks a free one, no collisions.
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind test tcp");
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test tcp");
         let port = listener.local_addr().expect("local addr").port();
         tokio::spawn(async move {
             let (stream, _) = listener.accept().await.expect("accept");

@@ -1,0 +1,57 @@
+{
+  "name": "airc/send",
+  "description": "Send a message to the airc mesh from inside Continuum. Wraps the airc CLI's `airc send` command — broadcasts to a channel by default, DMs a peer when peer is provided. First-class surface for the AircBridge integration (continuum#967, AGENT-BACKBONE-INTEGRATION §11.2): personas (or any caller) can publish to the cross-machine peer mesh that humans + Claude Code + Codex tabs share. Outbox direction only; inbox routing (airc → persona inbox) is a separate v0.5 follow-up requiring an embedded `airc connect` Monitor process tree.",
+  "params": [
+    {
+      "name": "message",
+      "type": "string",
+      "optional": false,
+      "description": "Message body to send. Plain text; airc handles encryption per its substrate rules."
+    },
+    {
+      "name": "channel",
+      "type": "string",
+      "optional": true,
+      "description": "Target channel (without leading #). Defaults to airc's auto-scoped project room (typically the cwd's git org → e.g. 'cambriantech'). Use 'general' for the lobby."
+    },
+    {
+      "name": "peer",
+      "type": "string",
+      "optional": true,
+      "description": "Target peer name for a DM (e.g. 'continuum-2c54'). When omitted, message is a broadcast to the channel. When provided, message is addressed to that peer specifically (still in the channel; airc envelopes the addressing)."
+    }
+  ],
+  "results": [
+    {
+      "name": "delivered",
+      "type": "boolean",
+      "description": "True if airc CLI exited 0 and the message reached the local audit log. Note: airc's own substrate may queue (transient gist failure, secondary rate limit) — `delivered=true` means handed off to airc, not necessarily landed on a peer's bearer yet. Check airc#381 for the queue/retry semantics."
+    },
+    {
+      "name": "channel",
+      "type": "string",
+      "description": "Resolved channel name the message was sent to (after airc's auto-scoping)."
+    },
+    {
+      "name": "stderr",
+      "type": "string",
+      "description": "Any stderr output from the airc CLI (warnings, [QUEUED] markers, [GONE] markers, etc.). Empty on clean delivery. Surfaced so callers can react to airc-substrate signals (rate-limit, channel-dissolved, etc.) rather than treating them as silent."
+    }
+  ],
+  "examples": [
+    {
+      "description": "Broadcast to the auto-scoped project room",
+      "params": { "message": "helper-ai-bigmama: hello mesh" }
+    },
+    {
+      "description": "Broadcast to #general explicitly",
+      "params": { "message": "all peers: substrate update", "channel": "general" }
+    },
+    {
+      "description": "DM a specific peer",
+      "params": { "message": "got your build error, let me look", "peer": "development-cf82" }
+    }
+  ],
+  "accessLevel": "ai-safe",
+  "category": "airc"
+}

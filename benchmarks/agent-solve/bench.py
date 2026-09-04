@@ -13,10 +13,24 @@ Usage:
 """
 import json, os, subprocess, sys, time, shutil
 
+def _resolve_cli():
+    """Locate the continuum CLI.
+
+    `uu` is THE official short alias (the double-U of contin-UU-m). `uu` is
+    /usr/bin/cu (UUCP) on every Unix and was never ours — a default pointing at a
+    `uu` binary resolved to a file that does not exist, so the harness failed at
+    the first invocation instead of running. Prefer what is actually installed on
+    PATH; fall back to the release build.
+    """
+    for name in ("uu", "continuum"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return os.path.expanduser("~/.continuum/cache/cargo-target/release/continuum")
+
+
 HOME = os.path.expanduser("~")
-CU = f"{HOME}/.continuum/cache/cargo-target/release/cu"
-if not os.access(CU, os.X_OK):
-    CU = f"{HOME}/.continuum/cache/cargo-target/debug/cu"
+UU = _resolve_cli()
 MODEL = "bartowski/Qwen2.5-Coder-7B-Instruct-GGUF"
 ROOT = os.path.dirname(os.path.abspath(__file__)) + "/ws"
 PDIR = f"{HOME}/.continuum/progress"
@@ -121,7 +135,7 @@ def fire_one(persona, model, label, name, fn, instr, ws, suppress, capture=None)
         os.remove(led)
     task = (f"{instr} Work in your workspace: read the files, make the fix with "
             f"your tools, and run the code to confirm.")
-    args = [CU, "agent/solve", "--persona-id", persona, "--base-model-id", model,
+    args = [UU, "agent/solve", "--persona-id", persona, "--base-model-id", model,
             "--task", task, "--workspace", ws, "--max-acts", "10",
             "--detach", "true", "--run-id", rid(label, name),
             # work IS training: the experience (never the solution) reaches her

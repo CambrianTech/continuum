@@ -98,10 +98,8 @@ mod tests {
         // Construct a GridModule without a GPU + minimal grid_dir.
         // The router defaults to Local for commands with no nodeId /
         // routingHint and no remote nodes registered.
-        let tmpdir = std::env::temp_dir().join(format!(
-            "grid-interceptor-test-{}",
-            std::process::id()
-        ));
+        let tmpdir =
+            std::env::temp_dir().join(format!("grid-interceptor-test-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&tmpdir);
         let module = GridModule::new(tmpdir, false, 0);
         module.state()

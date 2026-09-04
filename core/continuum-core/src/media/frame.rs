@@ -18,6 +18,15 @@ use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 
 use super::image_ops::{scale_crop, CropRect, DestSize};
+
+/// The tier a describe reads from — ~480w (the perception buffer's ambient
+/// class): a VL vision tower downsamples to a fixed grid, so full-res input
+/// buys no fidelity, only multi-MB base64 in the request JSON (2026-08-23
+/// pixel audit). 16:9 default; scale_crop preserves aspect via its own path.
+const DESCRIBE_TIER: DestSize = DestSize {
+    width: 480,
+    height: 270,
+};
 use crate::runtime::SharedCompute;
 
 /// Produces the text DESCRIPTION of a media frame — the sensory bridge that lets a
@@ -90,7 +99,18 @@ impl MediaFrame {
         describer: &dyn FrameDescriber,
         mime: &str,
     ) -> Arc<Result<String, String>> {
-        let source = Arc::clone(&self.source);
+        // Describe from the ~ambient THUMBNAIL, not the full source (2026-08-23
+        // pixel audit): a VL model's vision tower downsamples to a fixed grid
+        // anyway, and the warm path computes this exact scaled cell right before
+        // the describe — full-res only base64-inflated a multi-MB source into
+        // the request JSON for zero fidelity gain. Fall back to the source ONLY
+        // when scaling itself failed (a corrupt frame should still fail loudly
+        // through the describer's own error, not silently skip description).
+        let scaled = self.scaled(compute, None, DESCRIBE_TIER).await;
+        let source = match &*scaled {
+            Ok(bytes) => Arc::new(bytes.clone()), // one small thumbnail copy replaces a multi-MB inline
+            Err(_) => Arc::clone(&self.source),
+        };
         let mime = mime.to_string();
         compute
             .get_or_compute(&self.content_hash, DESCRIBE_KEY, async move {
@@ -246,8 +266,16 @@ mod tests {
         let a = MediaFrame::from_bytes(png(10, 10));
         let b = MediaFrame::from_bytes(png(10, 10));
         let c = MediaFrame::from_bytes(png(12, 12));
-        assert_eq!(a.content_hash(), b.content_hash(), "same bytes → same address");
-        assert_ne!(a.content_hash(), c.content_hash(), "different bytes → different address");
+        assert_eq!(
+            a.content_hash(),
+            b.content_hash(),
+            "same bytes → same address"
+        );
+        assert_ne!(
+            a.content_hash(),
+            c.content_hash(),
+            "different bytes → different address"
+        );
         assert_eq!(a.content_hash().len(), 64, "sha256-hex");
     }
 
@@ -258,7 +286,10 @@ mod tests {
     async fn a_scaled_cell_computes_once_and_is_shared_zero_copy() {
         let compute = SharedCompute::new();
         let frame = MediaFrame::from_bytes(png(100, 80));
-        let dest = DestSize { width: 20, height: 16 };
+        let dest = DestSize {
+            width: 20,
+            height: 16,
+        };
 
         let first = frame.scaled(&compute, None, dest).await;
         let second = frame.scaled(&compute, None, dest).await;
@@ -272,8 +303,20 @@ mod tests {
         assert_eq!(img.dimensions(), (20, 16));
 
         // A different destination is a distinct cell (its own cached transform).
-        let other = frame.scaled(&compute, None, DestSize { width: 10, height: 8 }).await;
-        assert!(!Arc::ptr_eq(&first, &other), "different spec → different cell");
+        let other = frame
+            .scaled(
+                &compute,
+                None,
+                DestSize {
+                    width: 10,
+                    height: 8,
+                },
+            )
+            .await;
+        assert!(
+            !Arc::ptr_eq(&first, &other),
+            "different spec → different cell"
+        );
     }
 
     // what this catches: prefetch WARMS cells ahead of time — after it, the
@@ -284,8 +327,14 @@ mod tests {
         let compute = SharedCompute::new();
         let frame = MediaFrame::from_bytes(png(64, 64));
         let sizes = [
-            DestSize { width: 16, height: 16 },
-            DestSize { width: 32, height: 32 },
+            DestSize {
+                width: 16,
+                height: 16,
+            },
+            DestSize {
+                width: 32,
+                height: 32,
+            },
         ];
 
         assert_eq!(compute.key_count(frame.content_hash()), 0, "cold");
@@ -338,7 +387,11 @@ mod tests {
             Arc::ptr_eq(&first, &second),
             "same content → SAME cached description Arc (computed once)"
         );
-        assert_eq!(calls.load(Ordering::SeqCst), 1, "describer ran at most once");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "describer ran at most once"
+        );
     }
 
     // what this catches: a describe FAILURE is cached as Err and surfaced — the
@@ -355,7 +408,9 @@ mod tests {
         }
         let compute = SharedCompute::new();
         let frame = MediaFrame::from_bytes(png(8, 8));
-        let d = frame.description(&compute, &FailingDescriber, "image/png").await;
+        let d = frame
+            .description(&compute, &FailingDescriber, "image/png")
+            .await;
         assert_eq!(d.as_ref().as_ref().unwrap_err(), "vision model unavailable");
     }
 
@@ -367,27 +422,53 @@ mod tests {
     async fn ready_reads_are_none_until_warmed_then_share_the_cell() {
         let compute = SharedCompute::new();
         let frame = MediaFrame::from_bytes(png(50, 40));
-        let dest = DestSize { width: 20, height: 16 };
+        let dest = DestSize {
+            width: 20,
+            height: 16,
+        };
         let describer = CountingDescriber {
             calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
 
         // Cold: nothing warmed → non-blocking reads see nothing (absent this tick).
-        assert!(frame.scaled_if_ready(&compute, None, dest).is_none(), "scaled cold → None");
-        assert!(frame.description_if_ready(&compute).is_none(), "describe cold → None");
+        assert!(
+            frame.scaled_if_ready(&compute, None, dest).is_none(),
+            "scaled cold → None"
+        );
+        assert!(
+            frame.description_if_ready(&compute).is_none(),
+            "describe cold → None"
+        );
 
         // Warm the cells (the async fire; in the PerceptionBuffer this is a spawned task).
         let warmed_scaled = frame.scaled(&compute, None, dest).await;
         let warmed_desc = frame.description(&compute, &describer, "image/png").await;
 
         // Non-blocking reads now return the SAME cached Arc — ready, zero-copy.
-        let read_scaled = frame.scaled_if_ready(&compute, None, dest).expect("scaled ready");
-        let read_desc = frame.description_if_ready(&compute).expect("describe ready");
-        assert!(Arc::ptr_eq(&read_scaled, &warmed_scaled), "ready read shares the warmed cell");
-        assert!(Arc::ptr_eq(&read_desc, &warmed_desc), "ready read shares the warmed cell");
+        let read_scaled = frame
+            .scaled_if_ready(&compute, None, dest)
+            .expect("scaled ready");
+        let read_desc = frame
+            .description_if_ready(&compute)
+            .expect("describe ready");
+        assert!(
+            Arc::ptr_eq(&read_scaled, &warmed_scaled),
+            "ready read shares the warmed cell"
+        );
+        assert!(
+            Arc::ptr_eq(&read_desc, &warmed_desc),
+            "ready read shares the warmed cell"
+        );
         // A DIFFERENT spec is still cold — reads only what was actually warmed.
         assert!(frame
-            .scaled_if_ready(&compute, None, DestSize { width: 8, height: 8 })
+            .scaled_if_ready(
+                &compute,
+                None,
+                DestSize {
+                    width: 8,
+                    height: 8
+                }
+            )
             .is_none());
     }
 
@@ -400,7 +481,10 @@ mod tests {
         let bytes = png(40, 40);
         let persona_a_frame = MediaFrame::from_bytes(bytes.clone());
         let persona_b_frame = MediaFrame::from_bytes(bytes);
-        let dest = DestSize { width: 8, height: 8 };
+        let dest = DestSize {
+            width: 8,
+            height: 8,
+        };
 
         let a = persona_a_frame.scaled(&compute, None, dest).await;
         let b = persona_b_frame.scaled(&compute, None, dest).await;

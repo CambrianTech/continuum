@@ -17,7 +17,10 @@ use crate::tool_parsing::{parse_and_correct_with_family, ToolParseResult};
 
 /// What to parse, and which model family produced it.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/tool_parsing/ToolParseParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/tool_parsing/ToolParseParams.ts"
+)]
 pub struct ToolParseParams {
     /// The raw model response text, possibly containing tool-call blocks in any
     /// supported format (XML, Hermes `<tool_call>`, DeepSeek, etc.).

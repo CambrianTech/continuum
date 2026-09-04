@@ -37,7 +37,10 @@ pub struct MCPTool {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/mcp/MCPInputSchema.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/mcp/MCPInputSchema.ts"
+)]
 pub struct MCPInputSchema {
     #[serde(rename = "type")]
     pub schema_type: String,
@@ -476,15 +479,11 @@ impl McpCatalog {
     /// commands read a pre-built cache; an empty cache is a boot-ordering bug, not
     /// a silent empty result).
     pub(crate) fn list(&self) -> Result<Vec<MCPTool>, crate::sdk_codegen::CommandError> {
-        self.tools_cache
-            .read()
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| {
-                crate::sdk_codegen::CommandError::Internal(
-                    "MCP tools cache not initialized".to_string(),
-                )
-            })
+        self.tools_cache.read().as_ref().cloned().ok_or_else(|| {
+            crate::sdk_codegen::CommandError::Internal(
+                "MCP tools cache not initialized".to_string(),
+            )
+        })
     }
 
     /// Search tools by keyword
@@ -720,8 +719,14 @@ mod tests {
         let out = h.execute_json("mcp/list-tools", json!({})).await.unwrap();
         let tools = out["tools"].as_array().expect("tools array");
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
-        assert!(names.contains(&"mcp_search_tools"), "meta-tool present: {names:?}");
-        assert!(names.contains(&"mcp_tool_help"), "meta-tool present: {names:?}");
+        assert!(
+            names.contains(&"mcp_search_tools"),
+            "meta-tool present: {names:?}"
+        );
+        assert!(
+            names.contains(&"mcp_tool_help"),
+            "meta-tool present: {names:?}"
+        );
         assert_eq!(out["count"], tools.len(), "count matches the array length");
     }
 
@@ -736,7 +741,10 @@ mod tests {
             .unwrap();
         let hits = out["tools"].as_array().unwrap();
         let names: Vec<&str> = hits.iter().filter_map(|t| t["name"].as_str()).collect();
-        assert!(names.contains(&"mcp_search_tools"), "keyword match: {names:?}");
+        assert!(
+            names.contains(&"mcp_search_tools"),
+            "keyword match: {names:?}"
+        );
         assert_eq!(out["count"], hits.len(), "count matches the hit array");
         assert!(
             hits.iter().all(|h| h["jtag_command"].is_string()),
@@ -750,7 +758,10 @@ mod tests {
     #[tokio::test]
     async fn search_tools_requires_query() {
         let h = harness().await;
-        let err = h.execute_json("mcp/search-tools", json!({})).await.unwrap_err();
+        let err = h
+            .execute_json("mcp/search-tools", json!({}))
+            .await
+            .unwrap_err();
         assert!(!err.is_empty(), "missing query must refuse, got: {err:?}");
     }
 
@@ -770,7 +781,10 @@ mod tests {
             .as_array()
             .map(|a| a.iter().filter_map(|p| p["name"].as_str()).collect())
             .unwrap_or_default();
-        assert!(params.contains(&"query"), "tool-help lists the tool's params: {params:?}");
+        assert!(
+            params.contains(&"query"),
+            "tool-help lists the tool's params: {params:?}"
+        );
 
         let unknown = h
             .execute_json("mcp/tool-help", json!({ "tool": "definitely-not-a-tool" }))

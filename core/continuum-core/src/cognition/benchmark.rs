@@ -248,7 +248,10 @@ mod tests {
     #[test]
     fn registry_round_trips_and_reports_unknown() {
         register(Arc::new(StubBench));
-        assert!(get("stub").is_some(), "a registered adapter resolves by name");
+        assert!(
+            get("stub").is_some(),
+            "a registered adapter resolves by name"
+        );
         assert!(
             get("does-not-exist").is_none(),
             "an unknown benchmark is a clean None, so the runner can fail loud with the list"
@@ -271,7 +274,10 @@ mod tests {
         };
         let g = b.grade(&EvalTask::default(), &pass).await.unwrap();
         assert!(g.passed && g.score == 1.0);
-        let fail = TaskOutcome { harness_passed: false, ..pass };
+        let fail = TaskOutcome {
+            harness_passed: false,
+            ..pass
+        };
         let g = b.grade(&EvalTask::default(), &fail).await.unwrap();
         assert!(!g.passed && g.score == 0.0);
     }

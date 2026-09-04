@@ -23,29 +23,61 @@ use crate::persona::PersonaAircRuntimeRegistry;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/PersonaRosterParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/PersonaRosterParams.ts"
+)]
 pub struct PersonaRosterParams {}
 
 /// One live citizen's row.
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/PersonaRosterEntry.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/PersonaRosterEntry.ts"
+)]
 pub struct PersonaRosterEntry {
     /// The citizen's airc agent_name — the handle `benchmark/dispatch --assignees` resolves.
     pub agent_name: String,
     /// Her durable persona-airc peer_id (the id the reuse seam addresses her by).
-    pub peer_id: String,
+    #[ts(type = "string")]
+    pub peer_id: crate::identity::PeerId,
     /// SWE instances already staged in her workspace (`workspace/swe/<id>` with a `.git`).
     /// Non-empty here is the REUSE signal: dispatch found the checkout and skipped cloning.
     pub staged_swe: Vec<String>,
+    /// Is she RESIDENT — a live service loop, i.e. actually in the room and able to take
+    /// a turn?
+    ///
+    /// REGISTRATION IS NOT RESIDENCY, and this row used to report only the former.
+    /// Measured 2026-08-18: for ~15 minutes after a reboot this command listed Atlas and
+    /// Benchy while `persona.inbound.subscribe_opened` was 0 — hosting was correctly parked
+    /// waiting for the serving lane to prove it could decode (#363), so neither had a
+    /// perception stream. A round was staged into that window on the strength of THIS
+    /// roster: cards posted, `kickoffs: 2`, `kickoff_errors: []`, zero turns.
+    ///
+    /// `false` means she exists but is not in the room yet — usually hosting waiting on a
+    /// serving lane (watch `inference.lane_relaunch_retry`), which self-heals on the next
+    /// serving-plan edge. Work must NOT be staged for a citizen whose `resident` is false.
+    pub resident: bool,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/PersonaRosterResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/PersonaRosterResult.ts"
+)]
 pub struct PersonaRosterResult {
-    /// How many citizens are online right now (the roster `benchmark/dispatch` targets when
-    /// `--assignees` is omitted). Zero means dispatch would be Denied — spawn a persona.
+    /// How many citizens are REGISTERED on this machine. This is an inventory count, not a
+    /// readiness signal — read `resident_count` before staging any work.
     #[ts(type = "number")]
     pub count: u32,
+    /// How many are RESIDENT — service loop live, perception stream primed, able to take a
+    /// turn. THIS is the number a caller staging work must gate on.
+    ///
+    /// `count > 0 && resident_count == 0` is the exact state that silently ate a benchmark
+    /// round on 2026-08-18: two citizens listed, neither in the room (hosting parked while
+    /// the serving lane proved it could decode), cards + kickoffs posted anyway, zero turns.
+    #[ts(type = "number")]
+    pub resident_count: u32,
     /// Every live citizen, sorted by name (the stable round-robin order).
     pub citizens: Vec<PersonaRosterEntry>,
 }
@@ -85,9 +117,12 @@ fn staged_swe_for(peer: &uuid::Uuid) -> Vec<String> {
 #[async_trait::async_trait]
 impl ActionCommand for PersonaRoster {
     const NAME: &'static str = "persona/roster";
-    // Operator/inspection surface: it exposes peer_ids and workspace staging, the same
-    // infra a curator/dispatch sees. Not a citizen-facing verb (that is room/members).
-    const ACCESS: AccessLevel = AccessLevel::Privileged;
+    // Read-only node directory: names, peer_ids, residency, staged instance NAMES.
+    // Nothing here is privileged — room/members already serves peer_ids at ai-safe,
+    // and the web desktop's who-panel seeds from this verb (2026-08-30: Privileged
+    // left the operator's own UI showing every citizen offline while four solves ran).
+    // Mutating persona verbs (despawn, reassign-model) keep their own locks.
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "List the citizens currently online on this machine (the roster benchmark/dispatch \
          targets when --assignees is omitted), each with her durable peer_id and the SWE \
@@ -102,16 +137,21 @@ impl ActionCommand for PersonaRoster {
         _p: PersonaRosterParams,
     ) -> Result<PersonaRosterResult, CommandError> {
         let snap = self.registry.roster_snapshot();
-        let citizens: Vec<PersonaRosterEntry> = snap
-            .into_iter()
-            .map(|(agent_name, peer)| PersonaRosterEntry {
+        let mut citizens: Vec<PersonaRosterEntry> = Vec::with_capacity(snap.len());
+        for (agent_name, peer) in snap {
+            citizens.push(PersonaRosterEntry {
+                // Residency is ASKED, per citizen, at read time — never inferred from
+                // presence in the registry. See `PersonaRosterEntry::resident`.
+                resident: self.registry.is_resident(peer).await,
                 agent_name,
-                peer_id: peer.to_string(),
+                peer_id: crate::identity::PeerId::from_uuid(peer),
                 staged_swe: staged_swe_for(&peer),
-            })
-            .collect();
+            });
+        }
+        let resident_count = citizens.iter().filter(|c| c.resident).count() as u32;
         Ok(PersonaRosterResult {
             count: citizens.len() as u32,
+            resident_count,
             citizens,
         })
     }
@@ -126,6 +166,7 @@ crate::register_command!(PersonaRoster);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use airc_core::PeerId;
 
     // what this catches: the roster row shape is what the CLI/SDK read to answer "who is
     // live + what's staged". A row must carry the agent_name, the durable peer_id as a
@@ -135,14 +176,33 @@ mod tests {
     fn roster_entry_carries_name_peer_and_staged() {
         let e = PersonaRosterEntry {
             agent_name: "Yori".into(),
-            peer_id: "a93ec5cc-e183-427a-ab8f-784ffe8805cc".into(),
+            peer_id: PeerId::from_uuid(uuid::Uuid::new_v5(
+                &uuid::Uuid::NAMESPACE_OID,
+                b"a93ec5cc-e183-427a-ab8f-784ffe8805cc",
+            )),
             staged_swe: vec!["astropy__astropy-12907".into()],
+            resident: true,
         };
         let v = serde_json::to_value(&e).unwrap();
         assert_eq!(v["agent_name"], "Yori");
-        assert_eq!(v["peer_id"], "a93ec5cc-e183-427a-ab8f-784ffe8805cc");
+        assert_eq!(
+            v["peer_id"],
+            PeerId::from_uuid(uuid::Uuid::new_v5(
+                &uuid::Uuid::NAMESPACE_OID,
+                b"a93ec5cc-e183-427a-ab8f-784ffe8805cc"
+            ))
+            .as_uuid()
+            .to_string()
+        );
         assert_eq!(v["staged_swe"][0], "astropy__astropy-12907");
+        assert_eq!(v["resident"], true);
     }
+
+    // NOTE on residency coverage: a `PersonaAircRuntime` cannot be constructed without a
+    // live airc daemon (see `clone_shares_roster` in airc_runtime_registry), so the
+    // registered-but-not-resident row is pinned where it IS testable — as the pure truth
+    // table `persona::airc_runtime_registry::resident_from_loop_state`. Do not build a
+    // parallel runtime fixture here to reach it.
 
     // what this catches: an empty registry yields count=0 with an empty citizen list — the
     // honest "nobody online, dispatch would be Denied" signal, never a panic or a fake row.

@@ -101,7 +101,11 @@ pub fn assemble_residency_tiers(
     }
 
     // Fault cost first; within a medium, the roomiest tier leads (fill the emptiest first).
-    tiers.sort_by(|a, b| a.medium.cmp(&b.medium).then(b.free_bytes.cmp(&a.free_bytes)));
+    tiers.sort_by(|a, b| {
+        a.medium
+            .cmp(&b.medium)
+            .then(b.free_bytes.cmp(&a.free_bytes))
+    });
     tiers
 }
 
@@ -119,8 +123,14 @@ mod tests {
     fn assembles_and_orders_by_fault_cost() {
         let gpus = [8 * GB, 8 * GB]; // 2 GPUs
         let vols = [
-            VolumeFree { kind: StorageKind::Spinning, free_bytes: 8000 * GB }, // RAID, huge
-            VolumeFree { kind: StorageKind::SolidState, free_bytes: 1500 * GB }, // NVMe flash
+            VolumeFree {
+                kind: StorageKind::Spinning,
+                free_bytes: 8000 * GB,
+            }, // RAID, huge
+            VolumeFree {
+                kind: StorageKind::SolidState,
+                free_bytes: 1500 * GB,
+            }, // NVMe flash
         ];
         let tiers = assemble_residency_tiers(&gpus, 64 * GB, &vols);
 
@@ -144,8 +154,14 @@ mod tests {
     #[test]
     fn filled_or_removed_storage_drops_out() {
         let vols = [
-            VolumeFree { kind: StorageKind::SolidState, free_bytes: 0 }, // full of not-our-shit
-            VolumeFree { kind: StorageKind::Spinning, free_bytes: 500 * GB },
+            VolumeFree {
+                kind: StorageKind::SolidState,
+                free_bytes: 0,
+            }, // full of not-our-shit
+            VolumeFree {
+                kind: StorageKind::Spinning,
+                free_bytes: 500 * GB,
+            },
         ];
         let tiers = assemble_residency_tiers(&[16 * GB], 32 * GB, &vols);
         // VRAM + RAM + the one spinning volume with room; the full SSD is dropped.

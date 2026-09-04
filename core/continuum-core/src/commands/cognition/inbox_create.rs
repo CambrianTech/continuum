@@ -14,7 +14,10 @@ use uuid::Uuid;
 use crate::modules::cognition::CognitionState;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/InboxCreateParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/InboxCreateParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct InboxCreateParams {
     /// Persona whose inbox is ensured.
@@ -23,7 +26,10 @@ pub struct InboxCreateParams {
 }
 
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/InboxCreateResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/InboxCreateResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct InboxCreateResult {
     pub created: bool,

@@ -121,10 +121,7 @@ mod tests {
         assert_eq!(b.recall_sigma(RESTING_FOCUS), NEUTRAL_RECALL_SIGMA);
 
         // Adapter A is focus-blind by design (the lazy-first adapter).
-        assert_eq!(
-            a.recall_sigma(1.0),
-            NEUTRAL_RECALL_SIGMA
-        );
+        assert_eq!(a.recall_sigma(1.0), NEUTRAL_RECALL_SIGMA);
 
         // Adapter B: tunnel focus raises the bar; diffuse focus lowers it to
         // the floor, never below (a dreaming mind still gates pure noise).
@@ -141,9 +138,6 @@ mod tests {
         }
 
         // Out-of-range intensity clamps rather than extrapolating.
-        assert_eq!(
-            b.recall_sigma(7.0),
-            b.recall_sigma(1.0)
-        );
+        assert_eq!(b.recall_sigma(7.0), b.recall_sigma(1.0));
     }
 }

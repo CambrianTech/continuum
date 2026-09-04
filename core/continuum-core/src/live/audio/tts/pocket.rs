@@ -81,7 +81,9 @@ impl PocketTTS {
 
     /// Standard search directories for reference voice WAV files
     fn voice_search_dirs() -> Vec<PathBuf> {
-        let mut dirs = vec![crate::live::audio::model_root::voice_model_path("pocket-tts/voices")];
+        let mut dirs = vec![crate::live::audio::model_root::voice_model_path(
+            "pocket-tts/voices",
+        )];
         if let Some(data_dir) = dirs::data_dir() {
             dirs.push(data_dir.join("pocket-tts/voices"));
         }

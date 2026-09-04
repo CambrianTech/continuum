@@ -48,7 +48,10 @@ const CONVERGE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Which model's VRAM lane to free.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/model_registry/ServingUnloadParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/model_registry/ServingUnloadParams.ts"
+)]
 pub struct ServingUnloadParams {
     /// The model id as it appears in `models/list`. Fails loud if unknown. May be
     /// pinned off even if it is not the one currently served (a preemptive pin so
@@ -60,7 +63,10 @@ pub struct ServingUnloadParams {
 /// What `serving/unload` did: whether the model was actually occupying a lane, and
 /// what (if anything) the daemon is serving now that the lane is free.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/model_registry/UnloadReport.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/model_registry/UnloadReport.ts"
+)]
 pub struct UnloadReport {
     /// True if this model was the one being served when unload was called (its VRAM
     /// was actually reclaimed); false if it was pinned off preemptively.

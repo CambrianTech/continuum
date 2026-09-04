@@ -49,9 +49,24 @@ export interface LiveCallOverlay {
   readonly mediaConnected?: boolean;
   /** Mic is currently capturing/publishing (renderer state via CallClient). */
   readonly micOn?: boolean;
+  /** Camera currently publishing (renderer state, threaded through). */
+  readonly cameraOn?: boolean;
+  /** The reader's pinned tile id (explicit stage). */
+  readonly pinnedId?: string;
+  /** Who is IN the call (self + joined + track holders). Present = the grid
+   *  tiles only these; absent = legacy behavior (everyone online). */
+  readonly callParticipants?: ReadonlyArray<string>;
+  /** The staged permission card to show (threaded renderer state). */
+  readonly mediaAsk?: { readonly kind: 'camera' | 'mic'; readonly denied?: boolean };
   /** Participant ids with a live video frame right now — the tile paints a
    *  canvas for each (the widget draws the pixels imperatively post-render). */
   readonly videoSenders?: ReadonlyArray<string>;
+  /** Participants whose video arrives as a LiveKit TRACK (the real plane) —
+   *  their tiles render a <video> the host attaches, not the WS canvas. */
+  readonly lkVideoSenders?: ReadonlyArray<string>;
+  /** Participants with a live LiveKit AUDIO track — the host renders a hidden
+   *  autoplaying <audio> per sender (citizen VOICES). */
+  readonly lkAudioSenders?: ReadonlyArray<string>;
 }
 
 /** The live-purpose tab currently focused in the citizen's nav view, if any —
@@ -109,6 +124,7 @@ function participant(
     active: m.active,
     speaking: Object.prototype.hasOwnProperty.call(streams, m.id),
     hasVideo: overlay?.videoSenders?.includes(m.id) === true,
+    lkVideo: overlay?.lkVideoSenders?.includes(m.id) === true,
     runtime: m.runtime,
   };
 }
@@ -120,7 +136,15 @@ export function liveParticipants(
   streams: Readonly<Record<string, string>>,
   overlay?: LiveCallOverlay,
 ): readonly LiveParticipantVM[] {
-  return vm.members.map((m) => participant(m, streams, overlay));
+  // ONLINE participants only — a call grid shows who can actually be in the
+  // call, like any video-call app; offline members join the grid when they
+  // connect, never as grey placeholder tiles (Joel, 2026-08-31: "leave off
+  // offline people from the list till they connect").
+  const inCall =
+    overlay?.callParticipants !== undefined ? new Set(overlay.callParticipants) : undefined;
+  return vm.members
+    .filter((m) => (inCall !== undefined ? inCall.has(m.id) : m.active))
+    .map((m) => participant(m, streams, overlay));
 }
 
 /** The ACTIVE speaker's caption — the most recent citizen to start a turn
@@ -155,7 +179,8 @@ export function liveControls(
   return {
     micAvailable: overlay?.mediaConnected === true,
     micOn: overlay?.micOn === true,
-    cameraAvailable: false,
+    cameraAvailable: overlay?.mediaConnected === true,
+    cameraOn: overlay?.cameraOn === true,
     screenshareAvailable: false,
     captionsAvailable: true,
     captionsOn,
@@ -175,6 +200,9 @@ export function liveContentBody(vm: ChatViewModel, overlay?: LiveCallOverlay): L
     roomId: vm.roomId,
     roomName: vm.roomName,
     participants: liveParticipants(vm, streams, overlay),
+    ...(overlay?.mediaAsk !== undefined ? { mediaAsk: overlay.mediaAsk } : {}),
+    ...(overlay?.lkAudioSenders !== undefined ? { lkAudioSenders: overlay.lkAudioSenders } : {}),
+    ...(overlay?.pinnedId !== undefined ? { pinnedId: overlay.pinnedId } : {}),
     ...(caption ? { caption } : {}),
     controls: liveControls(vm, captionsOn, overlay),
     mediaPlaneLive: overlay?.mediaConnected === true,

@@ -20,7 +20,10 @@ pub struct GgufCandidate {
 
 impl GgufCandidate {
     pub fn new(filename: impl Into<String>, size_bytes: u64) -> Self {
-        Self { filename: filename.into(), size_bytes }
+        Self {
+            filename: filename.into(),
+            size_bytes,
+        }
     }
 
     /// The quant label parsed from the filename, e.g. "Q4_K_M" (None if unparseable).
@@ -76,7 +79,10 @@ fn looks_like_quant(token: &str) -> bool {
 /// ≈ higher fidelity). Returns None when NONE fit — a hard truth about this machine, to
 /// be surfaced (fail loud), never silently downgraded past what exists or oversized past
 /// what fits.
-pub fn select_best_fit(candidates: &[GgufCandidate], vram_budget_bytes: u64) -> Option<&GgufCandidate> {
+pub fn select_best_fit(
+    candidates: &[GgufCandidate],
+    vram_budget_bytes: u64,
+) -> Option<&GgufCandidate> {
     select_for_mode(candidates, vram_budget_bytes, PowerMode::Comfort)
 }
 
@@ -175,10 +181,16 @@ pub async fn list_repo_ggufs(
         .send()
         .await
         .and_then(|r| r.error_for_status())
-        .map_err(|source| CatalogError::Http { repo: repo.clone(), source })?
+        .map_err(|source| CatalogError::Http {
+            repo: repo.clone(),
+            source,
+        })?
         .json()
         .await
-        .map_err(|source| CatalogError::Http { repo: repo.clone(), source })?;
+        .map_err(|source| CatalogError::Http {
+            repo: repo.clone(),
+            source,
+        })?;
     Ok(entries
         .into_iter()
         .filter(|e| e.entry_type == "file" && e.path.to_lowercase().ends_with(".gguf"))
@@ -352,7 +364,13 @@ pub async fn plan_family_fetch(
         }))
     } else {
         // Everyday: the default size, sized to the mode's budget.
-        plan_model_fetch(client, family.ladder[family.default_idx], total_memory_bytes, mode).await
+        plan_model_fetch(
+            client,
+            family.ladder[family.default_idx],
+            total_memory_bytes,
+            mode,
+        )
+        .await
     }
 }
 
@@ -405,7 +423,10 @@ mod tests {
             parse_quant("Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf").as_deref(),
             Some("Q4_K_M")
         );
-        assert_eq!(parse_quant("model-IQ3_XXS.gguf").as_deref(), Some("IQ3_XXS"));
+        assert_eq!(
+            parse_quant("model-IQ3_XXS.gguf").as_deref(),
+            Some("IQ3_XXS")
+        );
         assert_eq!(parse_quant("weights.F16.gguf").as_deref(), Some("F16"));
         assert_eq!(parse_quant("some-random-model.gguf"), None);
     }
@@ -419,20 +440,29 @@ mod tests {
             GgufCandidate::new("m-Q3_K_M.gguf", 6_000),
             GgufCandidate::new("m-Q4_K_M.gguf", 8_000),
             GgufCandidate::new("m-Q8_0.gguf", 15_000),
-            GgufCandidate::new("m-f16.gguf", 30_000),     // raw float — last resort
+            GgufCandidate::new("m-f16.gguf", 30_000), // raw float — last resort
             GgufCandidate::new("mmproj-f16.gguf", 1_000), // auxiliary — never the main pick
         ];
         // 10k budget → Q4 (8k) is the largest quant that fits.
-        assert_eq!(select_best_fit(&files, 10_000).unwrap().filename, "m-Q4_K_M.gguf");
+        assert_eq!(
+            select_best_fit(&files, 10_000).unwrap().filename,
+            "m-Q4_K_M.gguf"
+        );
         // 40k budget → Q8 (15k), NOT the larger F16 (30k): prefer quantized, don't burn
         // the pool on raw float weights.
-        assert_eq!(select_best_fit(&files, 40_000).unwrap().filename, "m-Q8_0.gguf");
+        assert_eq!(
+            select_best_fit(&files, 40_000).unwrap().filename,
+            "m-Q8_0.gguf"
+        );
         // 5k budget → nothing fits (Q3 is 6k). Fail loud, don't grab the 1k mmproj.
         assert!(select_best_fit(&files, 5_000).is_none());
 
         // F16-only repo: float is the last resort, used when no quant exists.
         let float_only = vec![GgufCandidate::new("m-f16.gguf", 10_000)];
-        assert_eq!(select_best_fit(&float_only, 20_000).unwrap().filename, "m-f16.gguf");
+        assert_eq!(
+            select_best_fit(&float_only, 20_000).unwrap().filename,
+            "m-f16.gguf"
+        );
     }
 
     // what this catches: the gguf_hint → repo → file-URL derivation (host/scheme stripped,
@@ -440,7 +470,10 @@ mod tests {
     // quant into a download.
     #[test]
     fn repo_and_url_derivation() {
-        assert_eq!(normalize_repo("https://huggingface.co/bartowski/Foo-GGUF"), "bartowski/Foo-GGUF");
+        assert_eq!(
+            normalize_repo("https://huggingface.co/bartowski/Foo-GGUF"),
+            "bartowski/Foo-GGUF"
+        );
         assert_eq!(normalize_repo("bartowski/Foo-GGUF/"), "bartowski/Foo-GGUF");
         assert_eq!(
             resolve_file_url("huggingface.co/bartowski/Foo-GGUF", "Foo-Q4_K_M.gguf"),
@@ -459,7 +492,10 @@ mod tests {
             .await
             .expect("real HF query");
         assert!(ggufs.len() > 3, "repo publishes multiple quants");
-        assert!(ggufs.iter().all(|g| g.size_bytes > 0), "each gguf has a real size");
+        assert!(
+            ggufs.iter().all(|g| g.size_bytes > 0),
+            "each gguf has a real size"
+        );
         let budget = 16u64 * (1 << 30); // 16 GiB VRAM
         let pick = select_best_fit(&ggufs, budget).expect("something fits 16 GiB");
         assert!(pick.size_bytes <= budget);
@@ -517,7 +553,10 @@ mod tests {
         assert!(path.exists(), "the model file landed on disk");
         let bytes = std::fs::metadata(&path).unwrap().len();
         println!("✅ provisioned {} ({} MiB)", path.display(), bytes >> 20);
-        assert!(bytes > 50_000_000, "a real multi-hundred-MB GGUF, not an error page");
+        assert!(
+            bytes > 50_000_000,
+            "a real multi-hundred-MB GGUF, not an error page"
+        );
     }
 
     // what this catches: the budget policy reserves headroom + scales with the machine —
@@ -525,7 +564,10 @@ mod tests {
     // the reserve gets 0 (fetch nothing local, lean remote), never a negative underflow.
     #[test]
     fn model_budget_reserves_and_scales() {
-        assert_eq!(model_budget_from_total(96 * (1 << 30)), (92 * (1 << 30)) * 7 / 10);
+        assert_eq!(
+            model_budget_from_total(96 * (1 << 30)),
+            (92 * (1 << 30)) * 7 / 10
+        );
         // 8 GiB toy: (8-4)*0.7 = 2.8 GiB — small, but a real budget.
         assert!(model_budget_from_total(8 * (1 << 30)) < 3 * (1 << 30));
         assert!(model_budget_from_total(8 * (1 << 30)) > 2 * (1 << 30));
@@ -543,11 +585,15 @@ mod tests {
             GgufCandidate::new("m-f16.gguf", 30_000),
         ];
         assert_eq!(
-            select_for_mode(&files, 40_000, PowerMode::Comfort).unwrap().filename,
+            select_for_mode(&files, 40_000, PowerMode::Comfort)
+                .unwrap()
+                .filename,
             "m-Q8_0.gguf"
         );
         assert_eq!(
-            select_for_mode(&files, 40_000, PowerMode::Performance).unwrap().filename,
+            select_for_mode(&files, 40_000, PowerMode::Performance)
+                .unwrap()
+                .filename,
             "m-f16.gguf"
         );
         let total = 64u64 * (1 << 30);
@@ -573,7 +619,10 @@ mod tests {
     #[test]
     fn serving_downshifts_to_eco_under_pressure() {
         assert_eq!(serving_mode_for_pressure(4 * (1 << 30)), PowerMode::Eco);
-        assert_eq!(serving_mode_for_pressure(32 * (1 << 30)), PowerMode::Comfort);
+        assert_eq!(
+            serving_mode_for_pressure(32 * (1 << 30)),
+            PowerMode::Comfort
+        );
     }
 
     // what this catches: LIVE misfit-hardware proof — THIS machine's real memory → budget
@@ -589,7 +638,12 @@ mod tests {
         let client = reqwest::Client::new();
         let repo = "bartowski/Qwen2.5-Coder-14B-Instruct-GGUF";
         println!("this machine: total {} MiB", total >> 20);
-        for target in [PowerMode::Eco, PowerMode::Comfort, PowerMode::Sport, PowerMode::Performance] {
+        for target in [
+            PowerMode::Eco,
+            PowerMode::Comfort,
+            PowerMode::Sport,
+            PowerMode::Performance,
+        ] {
             let budget = budget_for_mode(total, target);
             match plan_model_fetch(&client, repo, total, target).await {
                 Ok(p) => println!(
@@ -616,10 +670,25 @@ mod tests {
         let total = sys.total_memory();
         let client = reqwest::Client::new();
         let fam = ModelFamily::coder();
-        println!("this machine: total {} MiB — coder family {:?}", total >> 20, fam.ladder);
-        for target in [PowerMode::Eco, PowerMode::Comfort, PowerMode::Sport, PowerMode::Performance] {
+        println!(
+            "this machine: total {} MiB — coder family {:?}",
+            total >> 20,
+            fam.ladder
+        );
+        for target in [
+            PowerMode::Eco,
+            PowerMode::Comfort,
+            PowerMode::Sport,
+            PowerMode::Performance,
+        ] {
             match plan_family_fetch(&client, &fam, total, target).await {
-                Ok(p) => println!("  {:?} → {} ({} MiB, {:?})", target, p.filename, p.size_bytes >> 20, p.quant),
+                Ok(p) => println!(
+                    "  {:?} → {} ({} MiB, {:?})",
+                    target,
+                    p.filename,
+                    p.size_bytes >> 20,
+                    p.quant
+                ),
                 Err(e) => println!("  {target:?} → {e}"),
             }
         }

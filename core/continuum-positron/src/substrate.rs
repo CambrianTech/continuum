@@ -57,7 +57,17 @@ impl Substrate {
     /// `Arc<StateEnvelope>` allocation per `[[shared-decode-per-
     /// persona-perspective]]`.
     pub fn store(&self, envelope: StateEnvelope) {
-        let arc = Arc::new(envelope);
+        self.store_shared(Arc::new(envelope));
+    }
+
+    /// Store an ALREADY-SHARED envelope — the dual-sink seam (2026-08-23
+    /// serialization audit): a producer publishing the same envelope to two
+    /// substrates (websocket + mind) was deep-cloning the entire payload tree
+    /// to satisfy `store(StateEnvelope)`'s by-value signature. Build the Arc
+    /// once, hand it to every sink; the clone becomes a refcount bump. This is
+    /// the module header's own promise ("every consumer reads the same bytes")
+    /// finally honored on the producer side.
+    pub fn store_shared(&self, arc: Arc<StateEnvelope>) {
         self.cache.store_arc(Arc::clone(&arc));
         self.broadcast.send(arc);
     }

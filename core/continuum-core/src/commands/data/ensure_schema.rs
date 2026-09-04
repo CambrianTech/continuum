@@ -10,9 +10,7 @@ use crate::orm::types::StorageResult;
 /// Callers pass a collection NAME, not an inline schema — the wire never carries
 /// SQL, fields, or indexes. Rust resolves the schema from the ORM registry (Rust
 /// substrate entities) or `entity_schemas.json` (TS-decorator authored).
-#[derive(
-    Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,

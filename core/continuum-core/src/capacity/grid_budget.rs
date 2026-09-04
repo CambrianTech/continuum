@@ -184,7 +184,11 @@ mod tests {
             peers: vec![peer(1, 20, true), peer(2, 20, true)],
         };
         let b = grid_budget(&snap);
-        assert_eq!(b.usable_bytes, gb(20), "max, never sum — 20 not 40, and not 48");
+        assert_eq!(
+            b.usable_bytes,
+            gb(20),
+            "max, never sum — 20 not 40, and not 48"
+        );
         assert_eq!(b.reachable_nodes, 3, "all three counted for POPULATION");
     }
 
@@ -199,7 +203,10 @@ mod tests {
         let b = grid_budget(&snap);
         assert_eq!(b.usable_bytes, gb(32));
         assert!(b.is_remote(), "the win came from a peer and says so");
-        assert_eq!(b.source, BudgetSource::Peer(airc_core::PeerId(uuid::Uuid::from_u128(7)).to_string()));
+        assert_eq!(
+            b.source,
+            BudgetSource::Peer(airc_core::PeerId(uuid::Uuid::from_u128(7)).to_string())
+        );
     }
 
     /// what this catches: an unreachable node treated as an offer. A peer we
@@ -212,7 +219,11 @@ mod tests {
             peers: vec![peer(1, 64, false)],
         };
         let b = grid_budget(&snap);
-        assert_eq!(b.usable_bytes, gb(8), "the 64GB peer is unreachable — not an offer");
+        assert_eq!(
+            b.usable_bytes,
+            gb(8),
+            "the 64GB peer is unreachable — not an offer"
+        );
         assert_eq!(b.source, BudgetSource::Local);
         assert_eq!(
             b.reachable_nodes, 1,
@@ -268,9 +279,17 @@ mod tests {
             }],
         };
         let b = grid_budget(&snap);
-        assert_eq!(b.usable_bytes, gb(10), "1GB free beats nothing, not 80GB total");
+        assert_eq!(
+            b.usable_bytes,
+            gb(10),
+            "1GB free beats nothing, not 80GB total"
+        );
         assert_eq!(b.source, BudgetSource::Local);
-        assert_eq!(b.total_bytes, gb(64), "the LOCAL ceiling travels with a local win");
+        assert_eq!(
+            b.total_bytes,
+            gb(64),
+            "the LOCAL ceiling travels with a local win"
+        );
     }
 
     /// what this catches: the clamp being applied against the wrong device. The
@@ -317,7 +336,11 @@ mod tests {
             }],
         };
         let b = grid_budget(&snap);
-        assert_eq!(b.usable_bytes, gb(10), "999GB claim clamps to its own 4GB total");
+        assert_eq!(
+            b.usable_bytes,
+            gb(10),
+            "999GB claim clamps to its own 4GB total"
+        );
         assert_eq!(b.source, BudgetSource::Local);
     }
 }

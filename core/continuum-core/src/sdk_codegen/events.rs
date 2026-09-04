@@ -211,7 +211,10 @@ mod tests {
             "real event keyed by class with its ts-rs payload:\n{out}"
         );
         assert!(out.contains("import type {"), "imports emitted");
-        assert!(!out.contains("../../../"), "no ts-rs export escape path leaks");
+        assert!(
+            !out.contains("../../../"),
+            "no ts-rs export escape path leaks"
+        );
         assert!(
             out.contains("from '@protocol/contracts/"),
             "payload imports from its clean module under the TS root:\n{out}"

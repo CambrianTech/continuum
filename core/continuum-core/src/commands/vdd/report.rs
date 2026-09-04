@@ -22,7 +22,10 @@ use crate::vdd::record::HarnessStatus;
 
 /// Params for `vdd/report` — optional filters + the latest-only collapse.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/vdd/VddReportParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/vdd/VddReportParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct VddReportParams {
     /// Narrow to one commit's records.
@@ -59,7 +62,10 @@ pub struct VddReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/vdd/VddReportFilters.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/vdd/VddReportFilters.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct VddReportFilters {
     #[ts(optional)]
@@ -69,7 +75,10 @@ pub struct VddReportFilters {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/vdd/VddReportSummary.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/vdd/VddReportSummary.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct VddReportSummary {
     pub total: usize,
@@ -79,7 +88,10 @@ pub struct VddReportSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/vdd/VddReportEntry.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/vdd/VddReportEntry.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct VddReportEntry {
     pub git_sha: String,
@@ -283,9 +295,24 @@ mod tests {
     #[tokio::test]
     async fn report_aggregates_summary_across_record_statuses() {
         let tmp = tempfile::tempdir().unwrap();
-        write(tmp.path(), "sha-a", "chat-roundtrip-live-harness", HarnessStatus::Pass);
-        write(tmp.path(), "sha-b", "chat-roundtrip-live-harness", HarnessStatus::Pass);
-        write(tmp.path(), "sha-c", "chat-roundtrip-live-harness", HarnessStatus::Fail);
+        write(
+            tmp.path(),
+            "sha-a",
+            "chat-roundtrip-live-harness",
+            HarnessStatus::Pass,
+        );
+        write(
+            tmp.path(),
+            "sha-b",
+            "chat-roundtrip-live-harness",
+            HarnessStatus::Pass,
+        );
+        write(
+            tmp.path(),
+            "sha-c",
+            "chat-roundtrip-live-harness",
+            HarnessStatus::Fail,
+        );
         write(
             tmp.path(),
             "sha-d",
@@ -307,7 +334,12 @@ mod tests {
     async fn report_git_sha_filter_narrows_results_and_echoes_back() {
         let tmp = tempfile::tempdir().unwrap();
         for sha in ["sha-a", "sha-b", "sha-c"] {
-            write(tmp.path(), sha, "chat-roundtrip-live-harness", HarnessStatus::Pass);
+            write(
+                tmp.path(),
+                sha,
+                "chat-roundtrip-live-harness",
+                HarnessStatus::Pass,
+            );
         }
 
         let r = report(
@@ -356,7 +388,12 @@ mod tests {
     #[tokio::test]
     async fn report_entry_carries_headline_fields_and_source_path() {
         let tmp = tempfile::tempdir().unwrap();
-        write(tmp.path(), "sha-w", "chat-roundtrip-live-harness", HarnessStatus::Pass);
+        write(
+            tmp.path(),
+            "sha-w",
+            "chat-roundtrip-live-harness",
+            HarnessStatus::Pass,
+        );
 
         let r = report(tmp.path(), VddReportParams::default()).await;
         let entry = &r.records[0];

@@ -37,9 +37,7 @@ use airc_test_fixtures::TwoAircLoopback;
 use async_trait::async_trait;
 use continuum_core::ai::adapter::AIProviderAdapter;
 use continuum_core::ai::heuristic_adapter::HeuristicInferenceAdapter;
-use continuum_core::ai::types::{
-    ChatMessage, FinishReason, MessageContent, TextGenerationRequest,
-};
+use continuum_core::ai::types::{ChatMessage, FinishReason, MessageContent, TextGenerationRequest};
 use continuum_core::inference::airc_remote::{AircLiveTransport, AircRemoteInferenceAdapter};
 use continuum_core::persona::command_inbound_pump::PersonaCommandInboundPump;
 use continuum_core::runtime::command_executor::CommandExecutor;
@@ -98,6 +96,12 @@ impl ServiceModule for TestInferenceModule {
     }
 }
 
+/// A minimal request: one user message, every knob at its default.
+/// `..Default::default()` (the struct derives `Default`) instead of an
+/// explicit `None` per field — #1952 added `frequency_penalty` +
+/// `repeat_last_n` and this initializer silently stopped compiling
+/// because it enumerated every field. Struct-update syntax makes the
+/// fixture immune to the next sampling knob.
 fn request(prompt: &str) -> TextGenerationRequest {
     TextGenerationRequest {
         messages: vec![ChatMessage {
@@ -105,24 +109,7 @@ fn request(prompt: &str) -> TextGenerationRequest {
             content: MessageContent::Text(prompt.to_string()),
             name: None,
         }],
-        system_prompt: None,
-        model: None,
-        provider: None,
-        temperature: None,
-        max_tokens: None,
-        top_p: None,
-        top_k: None,
-        repeat_penalty: None,
-        stop_sequences: None,
-        tools: None,
-        tool_choice: None,
-        response_format: None,
-        active_adapters: None,
-        request_id: None,
-        user_id: None,
-        room_id: None,
-        purpose: None,
-        persona_id: None,
+        ..Default::default()
     }
 }
 
@@ -185,10 +172,7 @@ async fn persona_command_pump_makes_persona_addressable_for_ai_generate() {
 
     // peer_b = a remote caller. The standard production-shape:
     //   AircRemoteInferenceAdapter(AircLiveTransport(peer_b, peer_a_id))
-    let transport = AircLiveTransport::new(
-        Arc::clone(loop_back.peer_b()),
-        loop_back.peer_a_id(),
-    );
+    let transport = AircLiveTransport::new(Arc::clone(loop_back.peer_b()), loop_back.peer_a_id());
     let adapter = AircRemoteInferenceAdapter::new(transport);
 
     let response = adapter

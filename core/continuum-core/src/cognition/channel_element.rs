@@ -88,11 +88,11 @@ impl ChannelElement {
         // text + logical sender for BOTH wire shapes. A non-turn (presence,
         // event-bridge, decode error) is simply a text-less element here; the
         // skip-reason visibility lives on the perception path.
-        let (text, logical_sender) =
-            match crate::airc::realtime_wire::room_turn_from_event(&event) {
-                Ok((sender, text)) => (Some(text), Some(sender)),
-                Err(_) => (None, None),
-            };
+        let (text, logical_sender) = match crate::airc::realtime_wire::room_turn_from_event(&event)
+        {
+            Ok((sender, text)) => (Some(text), Some(sender)),
+            Err(_) => (None, None),
+        };
         Self {
             event,
             text,
@@ -122,7 +122,8 @@ impl ChannelElement {
     /// (a persona's own `say()`). Attribution recovery, never fabrication — both
     /// candidates are real identities on the event.
     pub fn sender_id(&self) -> Uuid {
-        self.logical_sender.unwrap_or_else(|| self.event.peer_id.as_uuid())
+        self.logical_sender
+            .unwrap_or_else(|| self.event.peer_id.as_uuid())
     }
 
     /// The message embedding — computed ONCE for this element and shared by every
@@ -331,7 +332,11 @@ mod tests {
         let say = make_event(Some("hello"), 8);
         let say_peer = say.peer_id.as_uuid();
         let el = cache.get_or_insert(say);
-        assert_eq!(el.sender_id(), say_peer, "a say() is authored by its transport peer");
+        assert_eq!(
+            el.sender_id(),
+            say_peer,
+            "a say() is authored by its transport peer"
+        );
     }
 
     // what this catches: THE REFERENCE-PASSED FRAME — resolving the same airc
@@ -343,7 +348,10 @@ mod tests {
         let event = make_event(Some("the deploy went red"), 1);
         let a = cache.get_or_insert(event.clone());
         let b = cache.get_or_insert(event); // a second persona, same message
-        assert!(Arc::ptr_eq(&a, &b), "same message must be one shared element");
+        assert!(
+            Arc::ptr_eq(&a, &b),
+            "same message must be one shared element"
+        );
         assert_eq!(cache.len(), 1);
     }
 

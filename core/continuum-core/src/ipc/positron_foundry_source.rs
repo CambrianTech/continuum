@@ -68,6 +68,8 @@ mod tests {
         // model" is meaningless); only the fields under test carry meaning here.
         LiveModel {
             model: Model {
+                weights_bytes: None,
+                mmproj_bytes: None,
                 id: id.to_string(),
                 name: name.map(str::to_string),
                 provider: provider.to_string(),
@@ -88,6 +90,7 @@ mod tests {
                 parameter_count: params,
                 sampling: crate::model_registry::types::ModelSampling::default(),
                 persona_serving_eligible: true,
+                serving: Default::default(), // test/fixture literal: substrate defaults (text-only main lane, unverified kv-shift)
             },
             status: ModelStatus {
                 availability: Availability::Ready,

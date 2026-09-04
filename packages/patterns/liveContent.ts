@@ -52,6 +52,8 @@ export interface LiveParticipantVM {
   /** A live video frame is arriving for this participant (the media plane is
    *  painting real pixels onto the tile canvas). False = avatar/glyph only. */
   readonly hasVideo?: boolean;
+  /** Video arrives as a LiveKit track (tile renders <video>, host attaches). */
+  readonly lkVideo?: boolean;
 }
 
 /** The live caption line — the ACTIVE speaker's in-progress turn text (the
@@ -72,8 +74,11 @@ export interface LiveControlsVM {
   readonly micAvailable: boolean;
   /** Mic currently capturing (the button's lit state). */
   readonly micOn?: boolean;
-  /** Camera capture — false until the browser media plane lands. */
+  /** Camera capture — TRUE when the CallClient is connected (humans are
+   *  video participants inherently). */
   readonly cameraAvailable: boolean;
+  /** Camera currently publishing (the button's lit state). */
+  readonly cameraOn?: boolean;
   /** Screenshare — false until the browser media plane lands. */
   readonly screenshareAvailable: boolean;
   /** The caption strip toggle — real (it toggles the live transcript line). */
@@ -90,6 +95,14 @@ export interface LiveControlsVM {
 
 /** The live call face's `Content` body (`purpose === LIVE_PURPOSE`). */
 export interface LiveContentBody {
+  /** The reader's pinned tile (explicit stage choice); absent = unpinned. */
+  readonly pinnedId?: string;
+  /** Senders with live LiveKit AUDIO tracks — one hidden <audio> each. */
+  readonly lkAudioSenders?: ReadonlyArray<string>;
+  /** The staged media-permission card (POSITRON-MEDIA-PERMISSIONS.md):
+   *  present = the face shows the reason (or, when `denied`, recovery) card
+   *  for that capability. Absent = no card. */
+  readonly mediaAsk?: { readonly kind: 'camera' | 'mic'; readonly denied?: boolean };
   /** The room this call face belongs to. */
   readonly roomId: string;
   readonly roomName: string;

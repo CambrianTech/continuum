@@ -267,19 +267,34 @@ mod tests {
         assert!(map.contains("export interface CommandMap"));
         assert!(api.contains("export class CommandApi"));
         // The map/api import the vendored tree, never protocol/ or escape paths.
-        assert!(map.contains("from './wire/"), "map imports vendored types:\n{map}");
-        assert!(!map.contains("../../../"), "no escape path leaks into the SDK");
-        assert!(api.contains("from '../Commands'"), "api reaches the facade one dir up");
+        assert!(
+            map.contains("from './wire/"),
+            "map imports vendored types:\n{map}"
+        );
+        assert!(
+            !map.contains("../../../"),
+            "no escape path leaks into the SDK"
+        );
+        assert!(
+            api.contains("from '../Commands'"),
+            "api reaches the facade one dir up"
+        );
 
         // The enveloped commands' generics were vendored, and (critically) the
         // file THEY import — HandleRef — was followed transitively into the tree.
         let wire = out.join("wire");
-        assert!(wire.join("runtime/CommandRequest.ts").exists(), "envelope vendored");
+        assert!(
+            wire.join("runtime/CommandRequest.ts").exists(),
+            "envelope vendored"
+        );
         assert!(
             wire.join("runtime/HandleRef.ts").exists(),
             "transitive import (CommandRequest → HandleRef) was followed"
         );
-        assert!(wire.join("chat/ChatSendParams.ts").exists(), "a command param vendored");
+        assert!(
+            wire.join("chat/ChatSendParams.ts").exists(),
+            "a command param vendored"
+        );
 
         // CLOSURE GUARD: walk every vendored file and assert each relative import
         // points at a file that was also vendored. This is the real correctness

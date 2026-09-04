@@ -70,7 +70,10 @@ mod tests {
     #[test]
     fn avatar_disk_state_derives_and_reports_absent_for_unknown() {
         let src = AvatarSource;
-        assert_eq!(src.disk_state("definitely-not-an-avatar-id"), DiskState::Absent);
+        assert_eq!(
+            src.disk_state("definitely-not-an-avatar-id"),
+            DiskState::Absent
+        );
         // A real catalog id resolves to a concrete path decision (present/absent
         // depending on whether it's been provisioned) — the point is it doesn't panic
         // and it's derived, not hardcoded.

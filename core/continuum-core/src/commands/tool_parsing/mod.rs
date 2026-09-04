@@ -42,7 +42,10 @@ use register_tools::ToolParsingRegisterTools;
 /// exactly one name and differ only in direction (compression principle: one
 /// contract for the two halves of the codec, like `system/*`'s `SystemQuery`).
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/tool_parsing/ToolNameParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/tool_parsing/ToolNameParams.ts"
+)]
 pub struct ToolNameParams {
     /// The tool name to decode (any model variant) or encode (canonical form).
     pub name: String,

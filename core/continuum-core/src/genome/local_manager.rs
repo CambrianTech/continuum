@@ -49,8 +49,7 @@ use super::manager::WorkingSetManager;
 use super::store::TierStore;
 use super::tier::{TierError, TierRole};
 use super::working_set::{
-    AccessDenied, PageFault, PageHandle, PageRef, ResidentPage, WorkingSet,
-    WorkingSetCapacity,
+    AccessDenied, PageFault, PageHandle, PageRef, ResidentPage, WorkingSet, WorkingSetCapacity,
 };
 use crate::identity::PeerId;
 use crate::runtime::message_bus::MessageBus;
@@ -1103,16 +1102,10 @@ mod tests {
     #[tokio::test]
     async fn page_in_cold_miss_records_elapsed_for_full_walk() {
         let page = make_page(92);
-        let fast = StubTier::with_delay(
-            TierRole::Fast,
-            vec![],
-            std::time::Duration::from_millis(2),
-        );
-        let cold = StubTier::with_delay(
-            TierRole::Cold,
-            vec![],
-            std::time::Duration::from_millis(2),
-        );
+        let fast =
+            StubTier::with_delay(TierRole::Fast, vec![], std::time::Duration::from_millis(2));
+        let cold =
+            StubTier::with_delay(TierRole::Cold, vec![], std::time::Duration::from_millis(2));
         let mgr = LocalWorkingSetManager::new(vec![fast, cold]);
         let persona = make_persona(93);
         mgr.register_persona(persona, capacity_uma());
@@ -1174,7 +1167,10 @@ mod tests {
         // paid once, then it's free. This is why overlay multiplexing
         // scales: O(page-in) once, O(1) thereafter.
         let hit = mgr.page_in(asha, overlay_a).await;
-        assert!(hit.is_ok(), "resident overlay re-page is a hot hit, no fault");
+        assert!(
+            hit.is_ok(),
+            "resident overlay re-page is a hot hit, no fault"
+        );
     }
 
     // ─── Benchmark: science the multiplicity proof ──────────────────────
@@ -1216,13 +1212,13 @@ mod tests {
                 "personas", "wall_us", "per_us", "p95_us", "resident_ns"
             );
             for &count in &[1usize, 8, 32, 64, 128, 256] {
-                let overlays: Vec<_> =
-                    (0..count).map(|i| make_page(1_000 + i as u128)).collect();
+                let overlays: Vec<_> = (0..count).map(|i| make_page(1_000 + i as u128)).collect();
                 let cold = StubTier::new(TierRole::Cold, overlays.clone());
                 let fast = StubTier::new(TierRole::Fast, vec![]);
                 let mgr = LocalWorkingSetManager::new(vec![fast, cold]);
-                let personas: Vec<_> =
-                    (0..count).map(|i| make_persona(1_000 + i as u128)).collect();
+                let personas: Vec<_> = (0..count)
+                    .map(|i| make_persona(1_000 + i as u128))
+                    .collect();
                 for &p in &personas {
                     mgr.register_persona(p, capacity_uma());
                 }

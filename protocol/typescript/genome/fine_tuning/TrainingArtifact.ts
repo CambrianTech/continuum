@@ -21,7 +21,7 @@ modelId: string,
  * artifact lives provider-side and we don't keep a local copy
  * (the inference adapter pulls it on demand).
  */
-localPath: string | null, 
+localPath?: string, 
 /**
  * The artifact's on-disk shape. Drives whether the completion sentinel
  * dispatches a custodian convert before eval/page-in. Defaults to

@@ -8,36 +8,36 @@ import type { Pipeline } from "./Pipeline";
  * Steps compose recursively — condition, loop, parallel, and sentinel
  * all contain nested steps, enabling arbitrarily complex pipelines.
  */
-export type PipelineStep = { "type": "shell", cmd: string, args: Array<string>, timeoutSecs?: bigint | null, workingDir?: string | null, 
+export type PipelineStep = { "type": "shell", cmd: string, args: Array<string>, timeoutSecs?: bigint, workingDir?: string, 
 /**
  * If true, non-zero exit code doesn't mark the step as failed.
  * The exit code is still recorded in data.exitCode for condition steps.
  */
-allowFailure?: boolean | null, 
+allowFailure?: boolean, 
 /**
  * Environment variables set on the child process. Values are interpolated.
  * Use this to pass arbitrary data (code, JSON) safely — env vars bypass
  * shell quoting issues that break heredocs and embedded strings.
  */
-env?: { [key in string]: string } | null, } | { "type": "llm", prompt: string, model?: string | null, provider?: string | null, maxTokens?: number | null, temperature?: number | null, systemPrompt?: string | null, 
+env?: { [key in string]: string }, } | { "type": "llm", prompt: string, model?: string, provider?: string, maxTokens?: number, temperature?: number, systemPrompt?: string, 
 /**
  * Tool subset for agent mode (undefined = all public, [] = none)
  */
-tools?: Array<string> | null, 
+tools?: Array<string>, 
 /**
  * Enable agentic loop: LLM can call tools, see results, re-generate
  */
-agentMode?: boolean | null, 
+agentMode?: boolean, 
 /**
  * Override safety cap for tool iterations in agent mode
  */
-maxIterations?: number | null, 
+maxIterations?: number, 
 /**
  * Active LoRA adapters to apply during inference.
  * Each entry: { name, path, domain?, scale? }
  * Values are interpolated, so pipeline steps can reference trained adapter paths.
  */
-activeAdapters?: Array<{ name: string; path: string; domain?: string; scale?: number }>, } | { "type": "command", command: string, params: Record<string, unknown>, } | { "type": "condition", if: string, then: Array<PipelineStep>, else: Array<PipelineStep>, } | { "type": "loop", count?: number | null, steps: Array<PipelineStep>, while?: string | null, until?: string | null, maxIterations?: number | null, } | { "type": "parallel", 
+activeAdapters?: Array<{ name: string; path: string; domain?: string; scale?: number }>, } | { "type": "command", command: string, params: Record<string, unknown>, } | { "type": "condition", if: string, then: Array<PipelineStep>, else: Array<PipelineStep>, } | { "type": "loop", count?: number, steps: Array<PipelineStep>, while?: string, until?: string, maxIterations?: number, } | { "type": "parallel", 
 /**
  * Each branch is a sequence of steps executed in order
  */
@@ -61,7 +61,7 @@ event: string,
 /**
  * Timeout in seconds (default: 300)
  */
-timeoutSecs?: bigint | null, } | { "type": "sentinel", 
+timeoutSecs?: bigint, } | { "type": "sentinel", 
 /**
  * The nested pipeline to execute
  */
@@ -77,7 +77,7 @@ approvers: Array<string>,
 /**
  * Auto-approve after this many seconds (optional — None means wait forever)
  */
-timeoutSecs?: bigint | null, } | { "type": "webresearch", 
+timeoutSecs?: bigint, } | { "type": "webresearch", 
 /**
  * Search query — interpolated: "{{steps.2.data.stderr}} fix for rust"
  */
@@ -85,11 +85,11 @@ query: string,
 /**
  * Max pages to load (default 3)
  */
-maxPages?: number | null, 
+maxPages?: number, 
 /**
  * What to extract from pages: "code examples", "error solutions", etc.
  */
-extract?: string | null, } | { "type": "codingagent", 
+extract?: string, } | { "type": "codingagent", 
 /**
  * Task prompt — what the agent should do (interpolated)
  */
@@ -97,52 +97,52 @@ prompt: string,
 /**
  * Which provider: "claude-code" (default), future: "codex", "aider"
  */
-provider?: string | null, 
+provider?: string, 
 /**
  * Working directory
  */
-workingDir?: string | null, 
+workingDir?: string, 
 /**
  * System prompt override
  */
-systemPrompt?: string | null, 
+systemPrompt?: string, 
 /**
  * Model override (e.g., "sonnet", "opus")
  */
-model?: string | null, 
+model?: string, 
 /**
  * Allowed tools (provider-specific names)
  */
-allowedTools?: Array<string> | null, 
+allowedTools?: Array<string>, 
 /**
  * Max conversation turns
  */
-maxTurns?: number | null, 
+maxTurns?: number, 
 /**
  * Max budget in USD
  */
-maxBudgetUsd?: number | null, 
+maxBudgetUsd?: number, 
 /**
  * Permission mode: "default", "acceptEdits", "bypassPermissions"
  */
-permissionMode?: string | null, 
+permissionMode?: string, 
 /**
  * Resume a prior session
  */
-resumeSessionId?: string | null, 
+resumeSessionId?: string, 
 /**
  * Capture interactions for LoRA training (default: true if personaId set)
  */
-captureTraining?: boolean | null, 
+captureTraining?: boolean, 
 /**
  * Persona ID for training attribution
  */
-personaId?: string | null, 
+personaId?: string, 
 /**
  * Path to git repo — triggers project worktree workspace (proper git isolation)
  */
-repoPath?: string | null, 
+repoPath?: string, 
 /**
  * Branch slug: ai/sentinel-{handle}/{slug} (default: "work")
  */
-taskSlug?: string | null, };
+taskSlug?: string, };

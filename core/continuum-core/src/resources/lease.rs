@@ -19,11 +19,12 @@ use ts_rs::TS;
 /// The three physical resource axes one machine (or one container) hands out.
 /// Ports/handles can join later; these are the memory/disk axes the authority
 /// must account for first (the ones that OOM or ENOSPC a node).
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "kebab-case")]
-#[ts(export, export_to = "../../../protocol/typescript/resources/ResourceKind.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/resources/ResourceKind.ts"
+)]
 pub enum ResourceKind {
     /// GPU memory. On UMA (Apple Silicon) this overlaps `Ram` physically; the
     /// authority's scan layer is responsible for not double-counting.
@@ -51,11 +52,12 @@ impl ResourceKind {
 /// so the two axes speak the same revocation vocabulary. Convergence onto one
 /// shared enum is deferred (same pattern this module already follows for
 /// `cognition::*` re-exports) — noted, not forced.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "kebab-case")]
-#[ts(export, export_to = "../../../protocol/typescript/resources/ReclaimPolicy.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/resources/ReclaimPolicy.ts"
+)]
 pub enum ReclaimPolicy {
     /// The authority asks first (async callback), gives a deadline, and waits
     /// for the consumer to confirm. The default — patient RTOS, not preempt.
@@ -74,7 +76,10 @@ pub enum ReclaimPolicy {
 /// `expires_at_ms`. Pure value; the ledger owns the collection of these.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/resources/ResourceLease.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/resources/ResourceLease.ts"
+)]
 pub struct ResourceLease {
     /// Caller-minted unique id. The ledger stays pure (no randomness inside);
     /// the daemon mints the id and passes it in.
@@ -122,7 +127,10 @@ impl ResourceLease {
 /// under this policy." The authority decides yes/no against scanned capacity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/resources/LeaseRequest.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/resources/LeaseRequest.ts"
+)]
 pub struct LeaseRequest {
     pub consumer_id: String,
     pub kind: ResourceKind,
@@ -137,7 +145,10 @@ pub struct LeaseRequest {
 /// over-grants or silently no-ops a missing lease.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", tag = "error")]
-#[ts(export, export_to = "../../../protocol/typescript/resources/LeaseError.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/resources/LeaseError.ts"
+)]
 pub enum LeaseError {
     /// Not enough free capacity of `kind` to satisfy the request. The authority
     /// returns this rather than over-committing (the bug task #56 fixes:
@@ -185,7 +196,10 @@ mod tests {
         // expired beats everything regardless of its policy
         assert_eq!(lease(ReclaimPolicy::Pinned, 150).reclaim_rank(200), Some(0));
         assert_eq!(lease(ReclaimPolicy::Hard, 9_999).reclaim_rank(200), Some(1));
-        assert_eq!(lease(ReclaimPolicy::Graceful, 9_999).reclaim_rank(200), Some(2));
+        assert_eq!(
+            lease(ReclaimPolicy::Graceful, 9_999).reclaim_rank(200),
+            Some(2)
+        );
         // active pinned is never eligible
         assert_eq!(lease(ReclaimPolicy::Pinned, 9_999).reclaim_rank(200), None);
     }
@@ -205,8 +219,14 @@ mod tests {
     // caller parses these strings; a rename here breaks the wire silently.
     #[test]
     fn kind_and_policy_serialize_kebab_case() {
-        assert_eq!(serde_json::to_string(&ResourceKind::Vram).unwrap(), "\"vram\"");
-        assert_eq!(serde_json::to_string(&ResourceKind::Disk).unwrap(), "\"disk\"");
+        assert_eq!(
+            serde_json::to_string(&ResourceKind::Vram).unwrap(),
+            "\"vram\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ResourceKind::Disk).unwrap(),
+            "\"disk\""
+        );
         assert_eq!(
             serde_json::to_string(&ReclaimPolicy::Graceful).unwrap(),
             "\"graceful\""
@@ -224,9 +244,15 @@ mod tests {
             available: 4096,
         };
         let j = serde_json::to_string(&e).unwrap();
-        assert!(j.contains("\"error\":\"insufficientCapacity\""), "tag missing: {j}");
+        assert!(
+            j.contains("\"error\":\"insufficientCapacity\""),
+            "tag missing: {j}"
+        );
         // the resource axis still rides along under its own `kind` field
-        assert!(j.contains("\"kind\":\"vram\""), "resource kind missing: {j}");
+        assert!(
+            j.contains("\"kind\":\"vram\""),
+            "resource kind missing: {j}"
+        );
         let back: LeaseError = serde_json::from_str(&j).unwrap();
         assert_eq!(back, e);
     }

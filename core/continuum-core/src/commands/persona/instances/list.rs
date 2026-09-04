@@ -22,13 +22,19 @@ use crate::persona::PersonaAircRuntimeRegistry;
 /// keeps the wire contract explicit and the codegen/ACL surface uniform with the
 /// rest of the command tree (rather than a bare `()` that reads as "untyped").
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/PersonaInstancesListParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/PersonaInstancesListParams.ts"
+)]
 pub struct PersonaInstancesListParams {}
 
 /// The live roster — every persona currently on The Grid, newest-registration
 /// order not guaranteed (the registry is a concurrent map).
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/PersonaInstanceList.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/PersonaInstanceList.ts"
+)]
 pub struct PersonaInstanceList {
     /// One card per online persona. Empty when no citizen is bootstrapped.
     pub instances: Vec<PersonaInstanceInfo>,

@@ -62,7 +62,7 @@ impl LiveExperienceResolver {
         roles: &BTreeMap<String, Standing>,
     ) -> Option<Experience> {
         let manifest = self.source.experience_for(room_id)?;
-        let members = match self.roster.room_roster(PRESENCE_WINDOW, ROSTER_SCAN).await {
+        let members = match self.roster.room_roster(PRESENCE_WINDOW, ROSTER_SCAN, None).await {
             Ok(members) => project_membership(&members, roles),
             Err(error) => {
                 tracing::warn!(
@@ -81,12 +81,12 @@ impl LiveExperienceResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
     use crate::experience::RecipeExperienceSource;
     use crate::ipc::room_purpose::{RoomPurposeSource, SharedRoomPurpose};
     use airc_core::PeerId;
     use airc_lib::RoomMember;
     use async_trait::async_trait;
+    use std::time::Duration;
 
     struct FixedPurpose(&'static str);
     impl RoomPurposeSource for FixedPurpose {
@@ -108,6 +108,7 @@ mod tests {
             &self,
             _within: Duration,
             _window: usize,
+            _room: Option<uuid::Uuid>,
         ) -> Result<Vec<RoomMember>, airc_lib::AircError> {
             Ok(self.members.clone())
         }
@@ -162,12 +163,12 @@ mod tests {
         let joel_m = exp
             .membership
             .iter()
-            .find(|m| m.peer_id == joel.to_string())
+            .find(|m| m.peer_id.as_uuid() == joel)
             .expect("human present");
         let asha_m = exp
             .membership
             .iter()
-            .find(|m| m.peer_id == asha.to_string())
+            .find(|m| m.peer_id.as_uuid() == asha)
             .expect("persona present");
         // Standing overlaid per role: one list, human Owner + persona Examinee.
         assert_eq!(joel_m.standing, Standing::Owner);

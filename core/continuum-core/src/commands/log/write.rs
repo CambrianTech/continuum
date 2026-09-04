@@ -19,7 +19,10 @@ use crate::modules::logger::{LoggerCommandState, WriteLogPayload};
 /// the logger's background thread; this command confirms only that the entry was
 /// queued.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/logger/WriteLogResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/logger/WriteLogResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct WriteLogResult {
     #[ts(type = "number")]

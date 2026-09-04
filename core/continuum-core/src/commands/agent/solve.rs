@@ -39,10 +39,13 @@ const DEFAULT_MAX_ACTS: u32 = 32;
 const FORK_WAIT_TRIES: u32 = 20;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/agent/AgentSolveParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/agent/AgentSolveParams.ts"
+)]
 pub struct AgentSolveParams {
     /// The persona (UUID, spawned) whose FULL cognition works the task.
-    pub persona_id: String,
+    pub persona_id: crate::identity::PersonaRef,
     /// The model to measure her on — forged into a dedicated measurement lane (her genome pages
     /// in on top). A loadable id from `ai/inference/models`.
     pub base_model_id: String,
@@ -53,8 +56,24 @@ pub struct AgentSolveParams {
     pub workspace: String,
     /// Max act→observe cycles (default 12).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub max_acts: Option<u32>,
+    /// The ROOM this run happens in — `benchmark/dispatch`'s per-run activity room
+    /// (#329). Every act she executes radiates a `persona:act` receipt into it, so
+    /// the run's work lands in the room's transcript as collapsed receipts (#243)
+    /// and anyone standing there — human screen or citizen mind — perceives it
+    /// through the ONE ViewState pipe.
+    ///
+    /// Provided → the run REJOINS that activity (resume and dispatch are the same
+    /// motion). Omitted → the run MINTS its own fresh activity room at birth
+    /// (probe `agent.solve.room_minted`). THE LAW (Joel, 2026-08-26): an activity
+    /// without a room is unrepresentable — the old `Uuid::nil()` invisible-run
+    /// mode (13,209 unmeasured roomless turns, #425) no longer exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[ts(optional, type = "string")]
+    pub room: Option<Uuid>,
     /// Fire-and-poll (#86): when true, the solve is spawned DETACHED — `run` returns a job
     /// handle NOW (arms empty, `detached: true`) and the REAL result (patch + acts) lands in
     /// `~/.continuum/progress/agent-solve-<run_id>.json`. A real agentic drive (N full-generation
@@ -102,6 +121,7 @@ pub struct AgentSolveParams {
     /// attempt 3, and post-grade detection could only warn an attempt 4 that
     /// never exists).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(skip)]
     pub prev_failed_patch_sha: Option<String>,
     /// DIAGNOSTIC ONLY (default false — she competes WHOLE, memory ON). When true, her
@@ -155,15 +175,29 @@ pub struct AgentSolveParams {
     /// fault ends the run early. Default 1 (one shot, exactly the old behavior) — the
     /// per-benchmark adapter that dispatches the run owns its N, not this abstraction.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub attempts: Option<u32>,
+    /// Teammates on this solve (team-proof gap 3, 2026-08-30): peers who joined the
+    /// solve room to review. The measured-work quiesce lease excepts them alongside
+    /// the solver — the first team round proved a reviewer quiesced for the solve's
+    /// whole duration is structurally unable to review (Kira: 28 min, zero turns).
+    /// The lease's lane-demand override counts them too, so serving budgets a warm
+    /// slot per PARTICIPANT, not per resident.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, type = "Array<string>")]
+    pub teammates: Vec<Uuid>,
 }
+
 
 /// What the caller grades when the solve returns. Two genuinely different contracts,
 /// so it is an enum on the wire, never a magic string ([[strings-to-enums]]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "lowercase")]
-#[ts(export, export_to = "../../../protocol/typescript/agent/Deliverable.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/agent/Deliverable.ts"
+)]
 pub enum Deliverable {
     /// Her spoken answer is the result (the default — every non-diff task).
     #[default]
@@ -173,9 +207,12 @@ pub enum Deliverable {
 }
 
 #[derive(Debug, Clone, Serialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/agent/AgentSolveResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/agent/AgentSolveResult.ts"
+)]
 pub struct AgentSolveResult {
-    pub persona_id: String,
+    pub persona_id: crate::identity::PersonaRef,
     pub model: String,
     /// How many times she acted (edited / ran / read) before settling.
     #[ts(type = "number")]
@@ -243,7 +280,10 @@ impl ActionCommand for AgentSolve {
         // terminal event, and returns a run_id NOW. The body is ctx-free (reaches the persona via
         // the global workspace registry), so it runs identically inline or detached.
         if p.detach.unwrap_or(false) {
-            let run_id = p.run_id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
+            let run_id = p
+                .run_id
+                .clone()
+                .unwrap_or_else(|| Uuid::new_v4().to_string());
             let run_id_ack = run_id.clone();
             let (persona_ack, model_ack) = (p.persona_id.clone(), p.base_model_id.clone());
             let mut inner = p;
@@ -284,7 +324,7 @@ impl ActionCommand for AgentSolve {
             let autograde_workspace = (inner.scored.unwrap_or(false)
                 && matches!(inner.deliverable, Some(Deliverable::Workspace))
                 && swe_checkout)
-            .then(|| inner.workspace.clone());
+                .then(|| inner.workspace.clone());
             tokio::spawn(async move {
                 let path = agent_solve_ledger_path(&run_id);
                 // JOURNAL `state: running` NOW, before attempt 1 does anything (#2246,
@@ -449,11 +489,6 @@ impl ActionCommand for AgentSolve {
                                     let _ = std::fs::write(path, json);
                                 }
                             }
-                            if let Some(bus) = crate::runtime::MessageBus::global() {
-                                if let Ok(v) = serde_json::to_value(&r) {
-                                    bus.publish_async_only("agent:solve:complete", v);
-                                }
-                            }
                             tracing::info!(run_id = %run_id, acts = r.acts, attempt, "agent/solve detached run complete");
                             // #384: ZERO acts + NO error + EMPTY patch = she never
                             // worked at all — the serving-transition signature (F1:
@@ -468,9 +503,7 @@ impl ActionCommand for AgentSolve {
                             // attempts with 'no TOKEN progress' still graded and
                             // burned). Same arm, same bound; her partial work stays
                             // in the workspace and the retry resumes from it.
-                            if r.infra_error.is_some()
-                                || (r.acts == 0 && r.patch.is_empty())
-                            {
+                            if r.infra_error.is_some() || (r.acts == 0 && r.patch.is_empty()) {
                                 if infra_void_retries < INFRA_VOID_RETRIES_MAX {
                                     infra_void_retries += 1;
                                     crate::probe!(
@@ -482,8 +515,7 @@ impl ActionCommand for AgentSolve {
                                          infra void (serving transition); retrying the \
                                          SAME attempt, her chances unburned (#384)"
                                     );
-                                    tokio::time::sleep(std::time::Duration::from_secs(90))
-                                        .await;
+                                    tokio::time::sleep(std::time::Duration::from_secs(90)).await;
                                     continue;
                                 }
                                 crate::probe!(
@@ -523,7 +555,7 @@ impl ActionCommand for AgentSolve {
                             let instance = std::path::Path::new(&ws)
                                 .file_name()
                                 .map(|s| s.to_string_lossy().to_string())
-                                .unwrap_or_default();
+                                .unwrap_or_default(); // missing progress file = empty history; the redrive covers absence
                             // #379: the attempt's PATCH is a receipt, not a transient.
                             // Read the exact candidate the grader is about to read (same
                             // helper — one definition of "her diff"), persist it beside
@@ -536,15 +568,49 @@ impl ActionCommand for AgentSolve {
                                 match crate::commands::benchmark::workspace_candidate_diff(&ws) {
                                     Ok(diff) => {
                                         use sha2::{Digest, Sha256};
-                                        let sha =
-                                            format!("{:x}", Sha256::digest(diff.as_bytes()));
-                                        if let Some(dir) = inner.capture_dir.as_ref() {
-                                            let _ = std::fs::create_dir_all(dir);
-                                            let _ = std::fs::write(
-                                                std::path::Path::new(dir)
-                                                    .join(format!("attempt-{attempt}.patch")),
-                                                &diff,
-                                            );
+                                        let sha = format!("{:x}", Sha256::digest(diff.as_bytes()));
+                                        // CUSTODY IS NOT OPTIONAL. The workspace is reset for
+                                        // the next attempt, so this write is the only moment
+                                        // her diff exists anywhere durable. Every failure to
+                                        // keep it is announced — a silent drop is how a whole
+                                        // round of evidence was lost (see `run_artifact_dir`).
+                                        match run_artifact_dir(&run_id, inner.capture_dir.as_deref())
+                                        {
+                                            Some(dir) => {
+                                                let path = dir
+                                                    .join(format!("attempt-{attempt}.patch"));
+                                                if let Err(e) = std::fs::create_dir_all(&dir)
+                                                    .and_then(|_| std::fs::write(&path, &diff))
+                                                {
+                                                    tracing::error!(
+                                                        run_id = %run_id,
+                                                        attempt,
+                                                        path = %path.display(),
+                                                        error = %e,
+                                                        "PATCH CUSTODY LOST — her diff could not \
+                                                         be persisted and the workspace is about \
+                                                         to be reset; this attempt's verdict will \
+                                                         have no evidence behind it"
+                                                    );
+                                                } else {
+                                                    crate::probe!(
+                                                        class = "benchmark.patch.kept",
+                                                        run_id = %run_id,
+                                                        attempt,
+                                                        bytes = diff.len(),
+                                                        sha256 = %sha,
+                                                        path = %path.display(),
+                                                        "attempt patch persisted — the verdict has \
+                                                         evidence behind it"
+                                                    );
+                                                }
+                                            }
+                                            None => tracing::error!(
+                                                run_id = %run_id,
+                                                attempt,
+                                                "PATCH CUSTODY LOST — no artifact directory could \
+                                                 be resolved (no CONTINUUM_HOME, no home dir)"
+                                            ),
                                         }
                                         sha
                                     }
@@ -577,6 +643,21 @@ impl ActionCommand for AgentSolve {
                                     // were file-only; every wire consumer (probe router →
                                     // rooms, exam-room widgets, the pulse monitors) had to
                                     // scrape the ledger to learn an attempt's outcome.
+                                    // ABSENCE vs ZERO, carried on the wire. `SweGradeResult.error`
+                                    // documents its own contract — "a result with `error` is an
+                                    // ABSENCE, not a zero, and must never be tallied as a failed
+                                    // attempt" — and the grader earns it honestly (it re-runs the
+                                    // PRISTINE tree before declaring an env fault, so a broken
+                                    // patch is never mislabelled). That classification used to die
+                                    // in the ledger file: attempt.end published `resolved=false
+                                    // gate_ok=false` and nothing else, which every wire consumer
+                                    // reads as a citizen who tried and failed. Measured 2026-08-13:
+                                    // 8 of 36 instances (22%) grade UNGRADEABLE on this box, so the
+                                    // unlabelled zeros were poisoning the denominator of every rate
+                                    // computed off this stream. The flag rides the same event as
+                                    // the verdict so no consumer has to scrape a file to tell a
+                                    // capability zero from an absent measurement.
+                                    let ungradeable = g.error.is_some();
                                     crate::probe!(
                                         class = "benchmark.attempt.end",
                                         run_id = %run_id,
@@ -585,6 +666,8 @@ impl ActionCommand for AgentSolve {
                                         max_attempts,
                                         resolved = g.resolved,
                                         gate_ok = g.gate_ok,
+                                        ungradeable,
+                                        grade_error = %g.error.as_deref().unwrap_or(""),
                                         f2p_passed = g.fail_to_pass_passed,
                                         f2p_total = g.fail_to_pass_total,
                                         p2p_passed = g.pass_to_pass_passed,
@@ -600,6 +683,8 @@ impl ActionCommand for AgentSolve {
                                         instance = %instance,
                                         resolved = g.resolved,
                                         gate_ok = g.gate_ok,
+                                        ungradeable,
+                                        grade_error = %g.error.as_deref().unwrap_or(""),
                                         attempt,
                                         max_attempts,
                                         "solve completion auto-graded"
@@ -704,7 +789,9 @@ impl ActionCommand for AgentSolve {
                                     let file_entries: Vec<&String> = r
                                         .files_examined
                                         .iter()
-                                        .filter(|p| p.rsplit('/').next().is_some_and(|s| s.contains('.')))
+                                        .filter(|p| {
+                                            p.rsplit('/').next().is_some_and(|s| s.contains('.'))
+                                        })
                                         .collect();
                                     let trail = if !attempt_worked || file_entries.is_empty() {
                                         String::new()
@@ -739,7 +826,10 @@ impl ActionCommand for AgentSolve {
                                         let edited = if r.files_changed.is_empty() {
                                             String::new()
                                         } else {
-                                            format!(" Your edits are in: {}.", r.files_changed.join(", "))
+                                            format!(
+                                                " Your edits are in: {}.",
+                                                r.files_changed.join(", ")
+                                            )
                                         };
                                         // The resubmit fact LEADS the contract when it fired:
                                         // round D proved a verdict buried mid-prose does not
@@ -775,6 +865,75 @@ impl ActionCommand for AgentSolve {
                                             g.pass_to_pass_total,
                                         )
                                     };
+                                    // THE REVIEW-LANDING EVENT (teams arc, 2026-08-30).
+                                    // A charged reviewer who wakes to an empty room
+                                    // correctly idles — and nothing called her back when
+                                    // there was finally a diff to read. This is the
+                                    // moment a reviewer is worth the most: a diff EXISTS,
+                                    // the grader named what it misses, and a retry is
+                                    // about to spend acts. Solver-voiced (so teammates'
+                                    // inbound carries it — never self-filtered for THEM),
+                                    // addressed by name, in the solve room. Fire-and-
+                                    // continue: the retry never waits on review (the
+                                    // recipe-rule gate is the designed next lap); a
+                                    // reviewer's findings land in the room and the
+                                    // solver's own multi-room perception folds them in
+                                    // mid-retry.
+                                    if !inner.teammates.is_empty() && g.patch_bytes > 0 {
+                                        if let (Some(room), Some(reg)) = (
+                                            inner.room,
+                                            crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global(),
+                                        ) {
+                                            if let Some(solver_rt) = uuid::Uuid::parse_str(inner.persona_id.as_str())
+                                                .ok()
+                                                .and_then(|u| reg.get(u))
+                                            {
+                                                let mates: Vec<String> = inner
+                                                    .teammates
+                                                    .iter()
+                                                    .filter_map(|m| reg.get(*m))
+                                                    .map(|rt| format!("@{}", rt.agent_name()))
+                                                    .collect();
+                                                if !mates.is_empty() {
+                                                    let req = format!(
+                                                        "{} (to you, review request): my attempt {attempt} on `{instance}` \
+                                                         did not resolve — the grader's held-out tests still failing: {}. \
+                                                         My diff is live in this room's workspace (`git diff HEAD` in \
+                                                         swe/{instance}/); edited: {}. I am starting attempt {} now — \
+                                                         read the diff and SPEAK what you see wrong here, a catch \
+                                                         before I resubmit is the whole point of this team.",
+                                                        mates.join(" "),
+                                                        if g.failed_tests.is_empty() { "(unnamed)".to_string() } else { g.failed_tests.join(", ") },
+                                                        if r.files_changed.is_empty() { "(none listed)".to_string() } else { r.files_changed.join(", ") },
+                                                        attempt + 1,
+                                                    );
+                                                    match crate::persona::airc_citizen::publish_text_in_room(
+                                                        solver_rt.airc(),
+                                                        room,
+                                                        &req,
+                                                    )
+                                                    .await
+                                                    {
+                                                        Ok(_) => crate::probe!(
+                                                            class = "team.review.requested",
+                                                            run_id = %run_id,
+                                                            instance = %instance,
+                                                            attempt,
+                                                            mates = %mates.join(","),
+                                                            "failed attempt published a solver-voiced review request — the review-landing event"
+                                                        ),
+                                                        Err(e) => crate::probe!(
+                                                            class = "team.review.request_failed",
+                                                            run_id = %run_id,
+                                                            instance = %instance,
+                                                            error = %e.to_string(),
+                                                            "review request did not send — retry proceeds solo, loudly"
+                                                        ),
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                                 Err(e) => {
                                     // A failed GRADE is not a failed solve — surface it
@@ -809,6 +968,14 @@ impl ActionCommand for AgentSolve {
                     // the counter — the infra-void arm `continue`s above this line.
                     attempt += 1;
                 }
+                // A3 — HARNESS-ONLY TERMINAL CLOSE (BENCHMARK-AS-KANBAN: the citizen
+                // may move working states; the terminal transition belongs to the
+                // harness). The run carries a final verdict on disk (grade.json);
+                // closing the card here is what lets observe_card_event settle the
+                // round and — on the last card — reach Done. An UNGRADEABLE verdict
+                // (env fault) leaves the card OPEN on purpose: a resume re-fires it,
+                // which for an env fault is the owed retake, never a burial.
+                close_claim_card_if_graded(&run_id).await;
             });
             return Ok(AgentSolveResult {
                 persona_id: persona_ack,
@@ -827,16 +994,337 @@ impl ActionCommand for AgentSolve {
     }
 }
 
+/// What a run's OWN grade says should happen to its claim card. One decision,
+/// one place, testable without a disk or a board — the five outcomes were
+/// previously five interleaved booleans computed inline in an async fn with
+/// side effects, which is why the cached-env conflation (#2531) survived
+/// unnoticed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CardCloseDecision {
+    /// She produced no diff. The env was fine; nothing to score.
+    NoPatch,
+    /// The cached env could not be re-pointed at THIS grader's tree. Nothing
+    /// was measured here, but the instance's environment is NOT absent.
+    CacheRepointFailed,
+    /// No grade on disk at all — infra died before grading.
+    NoVerdict,
+    /// The environment is genuinely absent, or the control is broken
+    /// (`gate_ok == false`: the fail-to-pass tests already passed pristine).
+    EnvAbsent,
+    /// A real verdict. This run closes its card.
+    Close,
+}
+
+/// Classify a run's `grade.json` for the terminal-close decision.
+///
+/// Order matters: the two "the env was fine, we just measured nothing" cases
+/// (`NoPatch`, `CacheRepointFailed`) are checked BEFORE the generic
+/// any-error-means-absent rule, because that rule is a catch-all and would
+/// otherwise swallow them — which is exactly the bug #2531 records.
+fn classify_grade_for_close(grade: Option<&serde_json::Value>) -> CardCloseDecision {
+    let Some(g) = grade else {
+        return CardCloseDecision::NoVerdict;
+    };
+    let error = g.get("error").and_then(|e| e.as_str());
+    // "No candidate patch" is NOT an env absence — the env was fine and she
+    // simply produced no diff (measured 2026-08-27: the env label sent these
+    // through the env-retake path with a message promising "fires when the env
+    // heals", which was false and confusing in the log).
+    if error.is_some_and(|e| e.contains("no candidate patch")) {
+        return CardCloseDecision::NoPatch;
+    }
+    // A CACHED-env re-point failure is not an environment absence. The env is
+    // cached per instance and each grader re-points its editable install at ITS
+    // OWN tree (solve → the citizen's dirty workspace; benchmark_grade → a
+    // pristine clone + patch), so a patch that breaks the build backend fails
+    // the solve's re-point while the fresh clone grades fine seconds later —
+    // measured on django-11734, where this path declared an environment absent
+    // that had just run 40/40 pass-to-pass. A cache is an optimization; its
+    // failure must never become a conclusion about the world (#2531).
+    if error.is_some_and(|e| e.contains(crate::cognition::swe_bench::ENV_CACHE_REPOINT_FAILED)) {
+        return CardCloseDecision::CacheRepointFailed;
+    }
+    // A failed GATE is env-class: the fail-to-pass tests already passed on the
+    // pristine tree, so the control is broken and nothing was measured — the
+    // durable layer already refuses such verdicts (record_verdict), and the
+    // card must stay open for the retake the same as any env absence.
+    let gate_failed = g.get("gate_ok").is_some_and(|k| k == false);
+    if gate_failed || g.get("error").is_some_and(|e| !e.is_null()) {
+        return CardCloseDecision::EnvAbsent;
+    }
+    CardCloseDecision::Close
+}
+
+
+/// Fire the round's next card the MOMENT a run ends without settling its own.
+///
+/// The settle edge (`benchmark_grade`'s follow-on) only fires on a card-state
+/// change, so an honest non-settling outcome — no diff, env absent, a cached env
+/// that would not re-point — left the round motionless until the 5-minute
+/// becalmed watchdog happened to notice. That is advancement by TIMEOUT; the
+/// fact is known right here, so act on it here.
+///
+/// The just-finished card is excluded by the decision itself
+/// (`next_unworked_excluding`), which is what keeps this from re-firing the card
+/// that just failed in a tight loop. Best-effort by design: no live citizen
+/// simply means the watchdog picks it up on its next pass, exactly as before.
+async fn advance_round_after_non_settling(run_id: &str) {
+    let Some(card) = run_id
+        .strip_prefix("claim-")
+        .and_then(|s| Uuid::parse_str(s).ok())
+    else {
+        return; // not a claim-dispatched run — it owns no card to advance from
+    };
+    let Some(next) = crate::cognition::bench_round::next_unworked_excluding(card) else {
+        return; // round finished, or every remaining card is already in flight
+    };
+    let Some(reg) = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+    else {
+        return;
+    };
+    let Some(airc) = reg
+        .get(next.assignee)
+        .or_else(|| reg.any_live_citizen())
+        .map(|rt| rt.airc().clone())
+    else {
+        crate::probe!(
+            class = "bench.round.advance_blocked",
+            card_id = %next.card,
+            "the next card is due after a non-settling run, but no live citizen can \
+             carry the dispatch — the becalmed watchdog remains the backstop"
+        );
+        return;
+    };
+    crate::probe!(
+        class = "bench.round.advanced",
+        finished = %card,
+        next_card = %next.card,
+        assignee = %next.assignee,
+        "a run ended WITHOUT settling its card — firing the round's next card now \
+         instead of waiting out the becalmed watchdog"
+    );
+    crate::modules::work::dispatch_staged_swe_solve(
+        &Default::default(),
+        &airc,
+        crate::modules::work::StagedSolveDispatch {
+            claimer: crate::identity::PeerId::from_uuid(next.assignee),
+            card: airc_work::WorkCardId::from_uuid(next.card),
+            room: airc_core::RoomId::from_u128(next.run_room.as_u128()),
+            // The card's RECORDED team rides every driver edge — dropping it here
+            // silently converted a team round into a solo round on re-dispatch.
+            teammates: next
+                .teammates
+                .iter()
+                .map(|t| crate::identity::PeerId::from_uuid(*t))
+                .collect(),
+        },
+    )
+    .await;
+}
+
+/// The A3 terminal close: a claim-dispatched run (`run_id == claim-<card uuid>`)
+/// whose final attempt produced a REAL verdict closes its card, authored through
+/// the run's own persona (subscribed to the run room by dispatch). Non-claim runs
+/// and verdict-less runs (infra/ungradeable) leave the card as-is.
+async fn close_claim_card_if_graded(run_id: &str) {
+    let Some(card_uuid) = run_id
+        .strip_prefix("claim-")
+        .and_then(|s| Uuid::parse_str(s).ok())
+    else {
+        return; // not a claim-dispatched run — no card to close
+    };
+    let Some(ledger) = agent_solve_ledger_path(run_id) else {
+        return;
+    };
+    let grade_path = ledger.with_extension("grade.json");
+    let grade = std::fs::read_to_string(&grade_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok()); // disk boundary: reading the grade.json verdict file the grader wrote
+    let decision = classify_grade_for_close(grade.as_ref());
+    let env_absent = decision == CardCloseDecision::EnvAbsent;
+    let verdict_is_real = decision == CardCloseDecision::Close;
+    let no_patch = decision == CardCloseDecision::NoPatch;
+    let cache_repoint_failed = decision == CardCloseDecision::CacheRepointFailed;
+    if no_patch {
+        crate::probe!(
+            class = "benchmark.card.close_skipped",
+            run_id = %run_id,
+            reason = "no_patch",
+            "she produced no diff — card stays open for a retake; not an env absence"
+        );
+        advance_round_after_non_settling(run_id).await;
+        return;
+    }
+    if cache_repoint_failed {
+        crate::probe!(
+            class = "benchmark.card.close_skipped",
+            run_id = %run_id,
+            reason = "cache_repoint_failed",
+            "the cached env could not be re-pointed at THIS tree, so this grader \
+             measured nothing — NOT an env absence (the instance's env is healthy; \
+             a sibling grader on a pristine clone may already have scored it). No \
+             parking brake: this run simply does not close the card"
+        );
+        advance_round_after_non_settling(run_id).await;
+        return;
+    }
+    if !verdict_is_real && !env_absent {
+        crate::probe!(
+            class = "benchmark.card.close_skipped",
+            run_id = %run_id,
+            "no verdict on disk at all (infra died before grading) — this run does \
+             not close the card, so a resume re-fires it (the owed retake)"
+        );
+        advance_round_after_non_settling(run_id).await;
+        return;
+    }
+    if env_absent {
+        // Defer this instance for the rest of the boot: a broken control or
+        // absent env yields the SAME result on every retake, and each retake
+        // burns a full solve of her time (measured: sphinx-10614, two complete
+        // 30-minute attempts against a gate that cannot pass). The per-boot
+        // defer set the dispatch gate already consults is exactly the right
+        // parking brake; the next boot's prewarm re-tests honestly.
+        if let Some(inst) = grade
+            .as_ref()
+            .and_then(|g| g.get("instance"))
+            .and_then(|i| i.as_str())
+        {
+            crate::modules::work::env_broken_this_boot().insert(inst.to_string());
+        }
+        // The harness measured the environment and it is ABSENT — the card
+        // stays OPEN so the retake is AUTOMATIC the boot the env heals (Joel
+        // 2026-08-27: "you'd want to get it possible to run the broken ones
+        // after a restart"). The infinite-loop hazard this used to carry is
+        // killed at the dispatch seam instead: dispatch skips instances whose
+        // env failed THIS boot's prewarm, so a still-broken card idles quietly
+        // and a healed one re-fires with zero operator action.
+        crate::probe!(
+            class = "benchmark.card.close_skipped",
+            run_id = %run_id,
+            reason = "env_absent",
+            "env-absent verdict — this run does not close the card; the retake \
+             fires itself on the first boot whose env pre-warm succeeds (if the \
+             card is still open — a lapse sweeper may already have closed it)"
+        );
+        advance_round_after_non_settling(run_id).await;
+        return;
+    }
+    // Author through the run's persona (her runtime is subscribed to the run
+    // room); fall back to any live citizen — same authoring rule as the lapse
+    // sweeper. No runtime at all → probe and leave it; the sweeper picks the
+    // card up on its next tick because it is Claimed with an artifact.
+    let persona = std::fs::read_to_string(&ledger)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok()) // disk boundary: reading the grade.json verdict file the grader wrote
+        .and_then(|v| {
+            v.get("persona_id")
+                .and_then(|p| p.as_str())
+                .and_then(|p| Uuid::parse_str(p).ok())
+        });
+    let Some(reg) = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+    else {
+        return;
+    };
+    let airc = persona
+        .and_then(|p| reg.get(p))
+        .or_else(|| reg.any_live_citizen())
+        .map(|rt| rt.airc().clone());
+    let Some(airc) = airc else {
+        crate::probe!(
+            class = "benchmark.card.close_skipped",
+            run_id = %run_id,
+            "no live citizen to author the close — the lapse sweeper will close it"
+        );
+        return;
+    };
+    let card_id = airc_work::WorkCardId::from_uuid(card_uuid);
+    let Some(room) = crate::modules::work::room_holding_card(&airc, card_id).await else {
+        crate::probe!(
+            class = "benchmark.card.close_skipped",
+            run_id = %run_id,
+            "no subscribed room's board holds the card — cannot place the close"
+        );
+        return;
+    };
+    match airc
+        .change_work_card_state_in(
+            &room,
+            airc_lib::ChangeWorkCardState {
+                card_id,
+                state: airc_work::CardState::Closed,
+            },
+        )
+        .await
+    {
+        Ok(_) => crate::probe!(
+            class = "benchmark.card.closed_by_harness",
+            run_id = %run_id,
+            card_id = %card_uuid,
+            "final verdict on disk — harness closed the card; the round settles on              this event (last card → Done)"
+        ),
+        Err(e) => crate::probe!(
+            class = "benchmark.card.close_skipped",
+            run_id = %run_id,
+            error = %e.to_string(),
+            "close refused — card stays as-is; the lapse sweeper retries"
+        ),
+    }
+}
+
 /// Result file for a detached solve run, polled after the ack (mirrors the eval/competition
 /// progress-ledger convention: `~/.continuum/progress/agent-solve-<run_id>.json`).
+///
+/// Both the directory and the file name come from `cognition::swe_bench`, which is also where
+/// the boot reaper and the reboot guard READ them. They were spelled out independently here
+/// until 2026-08-18 and the names did not match, so neither reader ever saw a run this writer
+/// produced ([`crate::cognition::swe_bench::SOLVE_LEDGER_PREFIX`] carries the measurement).
 fn agent_solve_ledger_path(run_id: &str) -> Option<std::path::PathBuf> {
-    let base = std::env::var("CONTINUUM_HOME")
-        .map(std::path::PathBuf::from)
-        .ok()
-        .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))?;
-    let dir = base.join("progress");
+    let dir = crate::cognition::swe_bench::solve_ledger_dir();
     let _ = std::fs::create_dir_all(&dir);
-    Some(dir.join(format!("agent-solve-{run_id}.json")))
+    Some(crate::cognition::swe_bench::solve_ledger_path(&dir, run_id))
+}
+
+/// Where THIS run's artifacts live — the patch above all. One definition, so a run's
+/// evidence never depends on how it happened to be launched.
+///
+/// `capture_dir` is an OPTIONAL caller courtesy (a hand-launched run naming its own
+/// folder). It was also, until 2026-08-18, the ONLY thing standing between an attempt
+/// and total evidence loss: the patch write sat behind `if let Some(dir) =
+/// capture_dir` with no else, so every run that did not pass one silently discarded
+/// the diff. Measured that day: all 25 patches on this box live under
+/// `benchmarks/swe/captures/run-*` — hand-launched runs. Every CITIZEN-dispatched run
+/// (`claim-*`, i.e. the entire path the benchmark actually runs on) kept none. A
+/// citizen wrote 41,166 bytes against sympy-13480, broke 40 previously-passing tests,
+/// and the one artifact that could say whether that was a surgical edit or a clobber
+/// was gone before anyone could read it.
+///
+/// So custody stops being a parameter. Absent an explicit dir, it derives from
+/// [`swe_cache_dir`] — the benchmarks root, whose own doc says to read it from there and
+/// never from a remembered path.
+///
+/// It lands in `benchmarks/swe/captures/run-<id>/`, which is EXACTLY where the 25
+/// hand-launched patches already live. That is deliberate on two counts, and my first cut
+/// got both wrong by inventing `progress/run-<id>/` instead (caught by Joel the same
+/// hour):
+///
+/// 1. **One home per artifact class.** A second location for "her patch" is the parallel
+///    allocator this codebase keeps paying for — the exact sin I had written down that
+///    morning and then committed.
+/// 2. **It must be a GOVERNED directory.** `benchmarks` is a registered `TrackedDir` with
+///    a decided eviction story; `progress` is neither tracked nor decided, so patches
+///    there would have been unbounded growth in an unmanaged dir — precisely what
+///    CLAUDE.md's "no new cache dir without an eviction decision" rule exists to stop
+///    (the 460 GB incident).
+fn run_artifact_dir(run_id: &str, capture_dir: Option<&str>) -> Option<std::path::PathBuf> {
+    if let Some(d) = capture_dir {
+        return Some(std::path::PathBuf::from(d));
+    }
+    Some(
+        crate::cognition::swe_bench::swe_cache_dir()
+            .join("captures")
+            .join(format!("run-{run_id}")),
+    )
 }
 
 /// Global admission gate for scored solve DRIVES — the fix for the lane-thrash death
@@ -855,7 +1343,9 @@ fn agent_solve_ledger_path(run_id: &str) -> Option<std::path::PathBuf> {
 fn solve_admission() -> &'static tokio::sync::Semaphore {
     static SLOTS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
     SLOTS.get_or_init(|| {
-        let lanes = crate::inference::llama_server::current_serving().lanes.max(1) as usize;
+        let lanes = crate::inference::llama_server::current_serving()
+            .lanes
+            .max(1) as usize;
         tokio::sync::Semaphore::new(lanes)
     })
 }
@@ -870,7 +1360,7 @@ impl AgentSolve {
         // straight through, a short/mistyped form expands against the live persona registry
         // (the ONE shared id_resolve primitive), instead of failing "is not a UUID".
         let persona_uuid = crate::id_resolve::resolve(
-            p.persona_id.trim(),
+            p.persona_id.as_str().trim(),
             &crate::persona::card::ids(),
             "persona",
         )
@@ -902,7 +1392,7 @@ impl AgentSolve {
         let _solve_permit = solve_admission().acquire().await.ok();
         crate::probe!(
             class = "benchmark.solve.phase",
-            run_id = %run_id.as_deref().unwrap_or("-"),
+            run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
             phase = "admission.acquired",
             available_slots = solve_admission().available_permits() as u64,
             "solve admitted — holding one serving-lane solve slot for the drive"
@@ -923,16 +1413,36 @@ impl AgentSolve {
         //     `lane.served_ctx` carries it into her fork with no further plumbing.
         //     Bounded loudly: a planner that keeps the layout is a legitimate
         //     outcome, so `Unchanged` proceeds — it can never park the solve.
+        // The measured-work hold (restore-economy 1.a): the quiesce lease below
+        // pauses the other citizens' SERVICE LOOPS, but background cognition
+        // (dreams, module inference) never runs in those loops — measured
+        // 2026-08-28, dream-belief-review took 52 of 109 generations during a
+        // held solve and evicted the warm KV each time (~32.9s re-prefill vs
+        // ~0.1s restore). The hold is consulted at the adapter seam, where every
+        // generation crosses; RAII, so any exit path releases it.
+        let _measured_hold = crate::inference::measured_hold::acquire(
+            persona_uuid,
+            run_id.as_deref().unwrap_or("agent-solve"),
+        );
+        // PARTICIPANTS stay awake, not just the solver (team-proof gap 3): a
+        // teammate holding the review charge must be able to take turns DURING
+        // the solve — the first team round (2026-08-30) quiesced the reviewers
+        // and made review structurally impossible. The lease's demand override
+        // counts the whole except-set, so serving budgets one warm slot per
+        // participant.
+        let mut participants = vec![persona_uuid];
+        participants.extend(p.teammates.iter().copied());
         let _quiesce_lease =
             crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global().map(
                 |reg| {
-                    let lease = reg.quiesce_others(persona_uuid);
+                    let lease = reg.quiesce_others_than(&participants);
                     crate::probe!(
                         class = "benchmark.solve.phase",
-                        run_id = %run_id.as_deref().unwrap_or("-"),
+                        run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                         phase = "quiesce_others",
                         quiesced_peers = lease.count() as u64,
-                        "measured solve holds an exclusive warm slot — idle citizens quiesced so the KV prefix survives turn-to-turn"
+                        awake_participants = participants.len() as u64,
+                        "measured solve holds an exclusive warm slot — non-participants quiesced so the KV prefix survives turn-to-turn"
                     );
                     lease
                 },
@@ -954,7 +1464,7 @@ impl AgentSolve {
                 crate::inference::llama_server::SnapshotSettle::Resettled { lanes, window } => {
                     crate::probe!(
                         class = "benchmark.solve.phase",
-                        run_id = %run_id.as_deref().unwrap_or("-"),
+                        run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                         phase = "serving_resettled",
                         pre_lanes = pre.lanes as u64,
                         pre_window = pre.served_context_window as u64,
@@ -967,7 +1477,7 @@ impl AgentSolve {
                 crate::inference::llama_server::SnapshotSettle::Unchanged => {
                     crate::probe!(
                         class = "benchmark.solve.phase",
-                        run_id = %run_id.as_deref().unwrap_or("-"),
+                        run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                         phase = "serving_unchanged",
                         lanes = pre.lanes as u64,
                         window = pre.served_context_window as u64,
@@ -979,7 +1489,7 @@ impl AgentSolve {
         }
         crate::probe!(
             class = "benchmark.solve.phase",
-            run_id = %run_id.as_deref().unwrap_or("-"),
+            run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
             phase = "lane_acquire.start",
             base_model = %p.base_model_id,
             "solve prelude: acquiring measurement lane"
@@ -995,7 +1505,7 @@ impl AgentSolve {
             Err(_) => {
                 crate::probe!(
                     class = "benchmark.solve.phase",
-                    run_id = %run_id.as_deref().unwrap_or("-"),
+                    run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                     phase = "lane_acquire.timeout",
                     base_model = %p.base_model_id,
                     "lane acquisition exceeded its bound — INFRA fault, run ends loudly"
@@ -1012,7 +1522,7 @@ impl AgentSolve {
         };
         crate::probe!(
             class = "benchmark.solve.phase",
-            run_id = %run_id.as_deref().unwrap_or("-"),
+            run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
             phase = "lane_acquire.done",
             "solve prelude: lane acquired"
         );
@@ -1042,18 +1552,24 @@ impl AgentSolve {
                 p.task.trim()
             ),
         ));
+        crate::probe!(
+            class = "benchmark.solve.phase",
+            run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
+            phase = "fork.start",
+            "forking her cognition onto the measurement lane"
+        );
         let mut cycle = None;
         for attempt in 0..FORK_WAIT_TRIES {
             cycle = registry.fork_eval_cycle_with_adapter(
                 &persona_uuid,
                 lane.adapter.clone(),
                 lane.served_ctx,
-                true,             // with_tools — her hands are ON
-                Some(&workspace), // roots the ToolExecutor at the sandbox cwd
+                true,                               // with_tools — her hands are ON
+                Some(&workspace),                   // roots the ToolExecutor at the sandbox cwd
                 p.suppress_recall.unwrap_or(false), // memory/RAG ON by default; the diagnostic knob
-                vec![crate::cognition::persona_workspace::GroundingSource::framing(
-                    mission.clone(),
-                )],
+                vec![
+                    crate::cognition::persona_workspace::GroundingSource::framing(mission.clone()),
+                ],
             );
             if cycle.is_some() {
                 break;
@@ -1083,6 +1599,12 @@ impl AgentSolve {
         //     lifted out BEFORE the cycle is consumed, and every exit path below returns her
         //     to her own workspace. Without that, #312: after a flask solve, Anwen's LIVE
         //     self was still running `code/read(src/flask/app.py)` in her room hours later.
+        crate::probe!(
+            class = "benchmark.solve.phase",
+            run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
+            phase = "fork.done",
+            "cognition forked — rooting hands at the sandbox"
+        );
         let hands = crate::cognition::persona_workspace::ActingHands::of(&cycle);
         crate::cognition::persona_workspace::root_acting_workspace(
             &cycle,
@@ -1091,146 +1613,328 @@ impl AgentSolve {
             p.scored.unwrap_or(false),
         )
         .await?;
+        crate::probe!(
+            class = "benchmark.solve.phase",
+            run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
+            phase = "hands.rooted",
+            "hands rooted — entering the drive"
+        );
 
         // Everything the ROOTED hands touch lives in this one fallible region, so the
         // restore below runs on Ok AND on Err. A `?` added anywhere inside stays covered.
         let outcome = async {
+            // GLASS-BOX (same seam as cognition/eval, task #14): opt-in JSONL turn capture on
+            // the fork — bids + DECISION + timings per tick, the instrument that turns an
+            // acts=1 silent settle from a mystery into a mechanism.
+            let cycle = match &p.capture_dir {
+                Some(dir) => cycle.with_capture(std::sync::Arc::new(
+                    crate::cognition::workspace_capture::JsonlWorkspaceCaptureSink::open(
+                        std::path::Path::new(dir),
+                        persona_uuid,
+                    )
+                    .map_err(|e| {
+                        CommandError::Internal(format!(
+                            "failed to open agent/solve capture_dir '{dir}': {e}"
+                        ))
+                    })?,
+                )),
+                None => cycle,
+            };
 
-        // GLASS-BOX (same seam as cognition/eval, task #14): opt-in JSONL turn capture on
-        // the fork — bids + DECISION + timings per tick, the instrument that turns an
-        // acts=1 silent settle from a mystery into a mechanism.
-        let cycle = match &p.capture_dir {
-            Some(dir) => cycle.with_capture(std::sync::Arc::new(
-                crate::cognition::workspace_capture::JsonlWorkspaceCaptureSink::open(
-                    std::path::Path::new(dir),
-                    persona_uuid,
-                )
-                .map_err(|e| {
-                    CommandError::Internal(format!(
-                        "failed to open agent/solve capture_dir '{dir}': {e}"
-                    ))
-                })?,
-            )),
-            None => cycle,
-        };
-
-        // 3) Layer the task into her situation as a directed, TOOL-FORCING request. The dominant
-        //    misfit-coder failure (glass-boxed 2026-07-22): a 7B answers with the code in a message
-        //    ("here's reverse.py: ```…```" / "I saved it to reverse.py") instead of CALLING the
-        //    write tool → the graded artifact (the git patch) is empty. The old "Provide your
-        //    complete solution" framing literally invited that own-goal. This is the standard SWE /
-        //    Terminal-Bench harness contract: the deliverable is what her TOOLS put in the
-        //    workspace; narrating it does not perform it. Meeting the misfit where it is — an
-        //    ergonomic/adapter fix ([[use-adapters-dont-dumb-it-down]]), not a capability demand —
-        //    and honest (it states the real I/O contract; it does not hand her the answer). Then
-        //    DRIVE her to settlement (read → edit → run → fix, her real act→observe loop).
-        let room = Uuid::nil();
-        // The workspace-grounding sentence counters the observed "new project ritual"
-        // (glass-boxed 2026-07-22 via turn capture: her first act on a seeded task was
-        // code/create-workspace("my_stack_project") + a Rust hello-world + git/commit —
-        // her habitual onboarding sequence replaying from memory — which re-roots her
-        // hands OFF the graded tree, then she passes to a silent settle). Honest
-        // contract language, same class as the tool-forcing framing: it states where
-        // the work IS, it does not hand her the answer or gate her tools.
-        // The wrapper states the I/O CONTRACT (only tool calls take effect) and nothing about
-        // the SHAPE of the deliverable — because the TASK owns that, and the two used to
-        // contradict each other outright.
-        //
-        // The old text said "writing files with code/write" and "graded on the files your tools
-        // WRITE". That was written for from-scratch build gyms, where new files ARE the
-        // deliverable. Nested beneath it, `swe_task_prompt` says the opposite: "do not add new
-        // top-level files — fix it IN PLACE with code/edit. The fix must land in the existing
-        // files."
-        //
-        // Outer contract first, inner constraint buried under "Task:" — and she obeyed the
-        // outer one. Three consecutive sympy-21379 runs, all full-effort, all writing NEW files
-        // and never editing the library:
-        //   v3  8 acts → reproduce_piecewise_error.py
-        //   v4 30 acts → reproduce_bug.py, test_sympy_error.py, test_sympy_issue.py
-        //   v5 18 acts → reproduce_error.py, test_sympy_error.py
-        // I read that as a judgement gap for a whole session. It was two halves of my own
-        // framing disagreeing about what the deliverable IS.
-        //
-        // Now: "as your tools leave it" covers an edit and a new file equally, and `code/edit`
-        // joins the exemplar verbs so the anti-narration force survives without smuggling in a
-        // deliverable shape. Steering nothing — the task still says what to build or fix.
-        let framed = frame_task(&p.task);
-        let task_delivery = crate::persona::rag_budget::RagDelivery {
-            source_id: "airc".to_string(),
-            items: vec![crate::persona::rag_budget::RagItem {
-                content: framed,
-                tokens: 0,
-                metadata: serde_json::json!({
-                    "peer_id": "peer",
-                    "occurred_at_ms": crate::persona::trace::now_ms(),
-                }),
-            }],
-            tokens_used: 0,
-            continuation: None,
-            resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
-        };
-        let burst = crate::cognition::workspace::Burst::from_turns(
-            room,
-            crate::persona::service_loop::build_workspace_turns(
-                std::slice::from_ref(&task_delivery),
-                "",
-                "",
-                None,
-            ),
-        );
-        let workspace_deliverable =
-            matches!(p.deliverable.unwrap_or_default(), Deliverable::Workspace);
-        let framing = {
-            let f = crate::cognition::workspace::TurnFraming::directed();
-            if workspace_deliverable {
-                f.on_workspace()
-            } else {
-                f
-            }
-        };
-        let mut settled =
-            crate::cognition::act_observe::drive_to_settle(&cycle, burst, room, max_acts, framing)
-                .await;
-
-        // 4) Collect the HANDS artifact: everything she changed in the workspace as a unified diff
-        //    (new files included), plus the touched paths. This is what SWE/Terminal-Bench apply.
-        let (mut patch, mut files_changed) = workspace_patch(&workspace).await;
-
-        // EMPTY-DIFF RE-DRIVE — the two-gates doctrine made mechanism (glass-boxed
-        // 2026-08-08, atlas-sympy-24066-n6 attempts 2+3): on a Workspace-deliverable
-        // task she settled by SPEAKING after ONE act — a generic file summary, zero
-        // edits — leaving 11 of 12 acts unused, twice, near-verbatim. Working is not
-        // speaking: when the deliverable is the workspace diff, an attempt ending with
-        // an EMPTY diff and real remaining budget must not end silently. ONE bounded
-        // re-drive (a retry, never a nag loop): state the structural fact, hand back
-        // the remaining budget. If she ends on an empty diff again, THAT settles —
-        // honestly graded, with the fact on the record.
-        //
-        // This fires on ANY non-infra end with budget remaining — a Speak, the #206
-        // stuck backstop, or the #390 discovery-saturation gate (which deliberately
-        // ends the drive EARLY, at half budget, precisely so this re-drive still has
-        // budget to hand back; see `drive_to_settle`). It used to require
-        // `spoken.is_some()`, which structurally excluded the gated endings — the one
-        // population that most needs the redirect. TRUE budget exhaustion is still
-        // excluded by `acts + 1 < max_acts` (nothing left to hand back), and infra
-        // failures by `inference_error` — those grade honestly as before.
-        if workspace_deliverable
-            && patch.is_empty()
-            && settled.inference_error.is_none()
-            && settled.acts + 1 < max_acts
-        {
-            let remaining = max_acts - settled.acts;
-            crate::probe!(
-                class = "benchmark.empty_diff_redrive",
-                run_id = %run_id.as_deref().unwrap_or("-"),
-                acts_used = settled.acts,
-                acts_remaining = remaining,
-                "workspace-deliverable attempt ended with an EMPTY diff and remaining \
-                 act budget (Speak, stuck backstop, or #390 saturation gate) — one \
-                 bounded re-drive with the structural fact"
+            // 3) Layer the task into her situation as a directed, TOOL-FORCING request. The dominant
+            //    misfit-coder failure (glass-boxed 2026-07-22): a 7B answers with the code in a message
+            //    ("here's reverse.py: ```…```" / "I saved it to reverse.py") instead of CALLING the
+            //    write tool → the graded artifact (the git patch) is empty. The old "Provide your
+            //    complete solution" framing literally invited that own-goal. This is the standard SWE /
+            //    Terminal-Bench harness contract: the deliverable is what her TOOLS put in the
+            //    workspace; narrating it does not perform it. Meeting the misfit where it is — an
+            //    ergonomic/adapter fix ([[use-adapters-dont-dumb-it-down]]), not a capability demand —
+            //    and honest (it states the real I/O contract; it does not hand her the answer). Then
+            //    DRIVE her to settlement (read → edit → run → fix, her real act→observe loop).
+            // The run's ROOM (see `AgentSolveParams::room`): REJOIN the activity the
+            // dispatcher named, or MINT a fresh one. THE LAW (Joel, 2026-08-26):
+            // an activity without a room is unrepresentable, and a benchmark/solve
+            // is a NEW activity unless rejoining — so the old `Uuid::nil()`
+            // "invisible run" mode is gone (#425). A bare `agent/solve` now names
+            // its own activity at birth; acts radiate receipts into it instead of
+            // vanishing.
+            let room = match p.room {
+                Some(r) if !r.is_nil() => crate::identity::ActivityRoom::from_uuid(r)
+                    .expect("non-nil checked in this arm"), // non-nil checked in this arm's guard; witness refuses nil
+                _ => {
+                    // A bare solve is a NEW activity, and an activity IS an airc
+                    // room born from a recipe (Joel: every tab/benchmark/content
+                    // is a room created from a recipe — wrapping airc, never
+                    // bypassing it). Spawn the REAL joinable room through the
+                    // persona's own runtime, so a human or peer can stand in the
+                    // solve and assist like any activity. The id-only mint
+                    // survives strictly as the probed last resort when no
+                    // runtime exists (unit rigs, a solve fired before hosting) —
+                    // attributable, but not yet joinable, and the probe says so.
+                    let persona_uuid = uuid::Uuid::parse_str(p.persona_id.as_str()).ok();
+                    let spawned = match persona_uuid
+                        .and_then(|pu| {
+                            crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+                                .and_then(|reg| reg.get(pu))
+                        })
+                        .map(|rt| rt.airc().clone())
+                    {
+                        Some(airc) => {
+                            let name = format!(
+                                "solve--{}",
+                                p.run_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string()) // bare solve without run_id gets a fresh one; identity, not a quantity
+                            );
+                            let recipe =
+                                crate::experience::source::RecipeExperienceSource::shipped_purpose(
+                                    crate::experience::source::shipped::BENCHMARK_HARD_RS,
+                                )
+                                .unwrap_or_default(); // grade.json absent = ungradeable; the caller branches on that, not a default
+                            crate::modules::activity::spawn_activity_room(
+                                &airc,
+                                &name,
+                                &recipe,
+                                None,
+                                &std::collections::BTreeMap::new(),
+                            )
+                            .await
+                            .ok()
+                            .and_then(|r| {
+                                crate::identity::ActivityRoom::new(r.room_id).ok()
+                            })
+                        }
+                        None => None,
+                    };
+                    let room = spawned.unwrap_or_else(crate::identity::ActivityRoom::mint); // spawn failed → LAST-RESORT id-only mint, probed above
+                    crate::probe!(
+                        class = "agent.solve.room_minted",
+                        run_id = %p.run_id.clone().unwrap_or_default(), // display-only field in a probe line, never routed
+                        persona_id = %p.persona_id,
+                        room = %room,
+                        joinable = spawned.is_some(),
+                        "bare solve named its own activity — a real airc room when her \
+                         runtime could spawn one (joinable=true), an id-only mint as the \
+                         last resort (#425)",
+                    );
+                    room
+                }
+            };
+            // The workspace-grounding sentence counters the observed "new project ritual"
+            // (glass-boxed 2026-07-22 via turn capture: her first act on a seeded task was
+            // code/create-workspace("my_stack_project") + a Rust hello-world + git/commit —
+            // her habitual onboarding sequence replaying from memory — which re-roots her
+            // hands OFF the graded tree, then she passes to a silent settle). Honest
+            // contract language, same class as the tool-forcing framing: it states where
+            // the work IS, it does not hand her the answer or gate her tools.
+            // The wrapper states the I/O CONTRACT (only tool calls take effect) and nothing about
+            // the SHAPE of the deliverable — because the TASK owns that, and the two used to
+            // contradict each other outright.
+            //
+            // The old text said "writing files with code/write" and "graded on the files your tools
+            // WRITE". That was written for from-scratch build gyms, where new files ARE the
+            // deliverable. Nested beneath it, the SWE task text says the opposite: "do not add new
+            // top-level files … find the existing source of the fault and edit it in place." That
+            // text is the dispatch CARD BODY (`benchmark::BenchmarkSweSetup`) — the card IS the
+            // task, so the card owns the deliverable shape.
+            //
+            // Outer contract first, inner constraint buried under "Task:" — and she obeyed the
+            // outer one. Three consecutive sympy-21379 runs, all full-effort, all writing NEW files
+            // and never editing the library:
+            //   v3  8 acts → reproduce_piecewise_error.py
+            //   v4 30 acts → reproduce_bug.py, test_sympy_error.py, test_sympy_issue.py
+            //   v5 18 acts → reproduce_error.py, test_sympy_error.py
+            // I read that as a judgement gap for a whole session. It was two halves of my own
+            // framing disagreeing about what the deliverable IS.
+            //
+            // Now: "as your tools leave it" covers an edit and a new file equally, and `code/edit`
+            // joins the exemplar verbs so the anti-narration force survives without smuggling in a
+            // deliverable shape. Steering nothing — the task still says what to build or fix.
+            let framed = frame_task(&p.task);
+            let task_delivery = crate::persona::rag_budget::RagDelivery {
+                source_id: "airc".to_string(),
+                items: vec![crate::persona::rag_budget::RagItem {
+                    content: framed,
+                    tokens: 0,
+                    metadata: serde_json::json!({
+                        "peer_id": "peer",
+                        "occurred_at_ms": crate::persona::trace::now_ms(),
+                    }),
+                }],
+                tokens_used: 0,
+                continuation: None,
+                resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
+            };
+            let burst = crate::cognition::workspace::Burst::from_turns(
+                room,
+                crate::persona::service_loop::build_workspace_turns(
+                    std::slice::from_ref(&task_delivery),
+                    "",
+                    "",
+                    None,
+                ),
             );
-            let fact = format!(
-                "Status check from the grading harness (a structural fact, not a person): \
+            let workspace_deliverable =
+                matches!(p.deliverable.unwrap_or_default(), Deliverable::Workspace);
+            let framing = {
+                let f = crate::cognition::workspace::TurnFraming::directed();
+                if workspace_deliverable {
+                    f.on_workspace()
+                } else {
+                    f
+                }
+            };
+            // THE RUN PULSES WHILE IT RUNS (#371 law 2: liveness is a pulse, never a
+            // terminal artifact).
+            //
+            // The ledger used to be written ONCE per attempt, at settlement. So for the
+            // entire attempt — legitimately HOURS on a full SWE budget — `benchmark/runs`
+            // read `acts: 0` and a `last_activity` frozen at run start. Against a 20-minute
+            // stall window that means a HEALTHY first attempt is guaranteed to read `quiet`,
+            // every time, and the projection whose stated purpose is "silence must never be
+            // ambiguous with progress" was structurally unable to tell them apart. Measured
+            // 2026-08-16: two dispatched solves read `acts=0, stalled=false` for ten straight
+            // minutes, and the driver watching them could not distinguish working from wedged
+            // — which is exactly how a vacuous "no faults" gets reported as a green.
+            //
+            // `select!` over the drive future and an interval: no spawn, so the cycle stays
+            // BORROWED (no 'static bound, no Arc juggling, no parallel allocator). Each tick
+            // reads the persona's own monotonic act counter — a wait-free atomic load — and
+            // rewrites the running marker, which moves BOTH `acts` and the file mtime that
+            // `last_activity_ms` folds from. The counter is the same one perception renders,
+            // so the board and her own proprioception can never disagree.
+            //
+            // Cadence: well under RUN_STALL_WINDOW_SECS so a live run can never age into
+            // `quiet`, and far above act cadence (~2-6 min) so it costs a tiny JSON write
+            // per tick and nothing else.
+            const RUN_PULSE: std::time::Duration = std::time::Duration::from_secs(60);
+            // Same ledger the detached wrapper journals `state: running` into, and the
+            // SAME derivation of every field, so a pulse can never contradict the marker
+            // it refreshes. `None` run_id (an attached call) → no ledger → no pulse, which
+            // is correct: nothing is polling a run that returns inline.
+            let pulse_run_id = p.run_id.clone().unwrap_or_default();
+            let pulse_path = p
+                .run_id
+                .as_deref()
+                .and_then(agent_solve_ledger_path);
+            let pulse_persona = p.persona_id.clone();
+            let pulse_instance: Option<String> = workspace
+                .contains("/workspace/swe/")
+                .then(|| {
+                    std::path::Path::new(&workspace)
+                        .file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                })
+                .flatten();
+            crate::probe!(
+                class = "benchmark.solve.phase",
+                run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
+                phase = "drive.start",
+                "drive_to_settle entered — the next receipt is her first generation"
+            );
+            let mut settled = {
+                let drive = crate::cognition::act_observe::drive_to_settle(
+                    &cycle, burst, max_acts, framing,
+                );
+                tokio::pin!(drive);
+                let mut ticker = tokio::time::interval(RUN_PULSE);
+                ticker.tick().await; // interval fires immediately; consume that tick
+                loop {
+                    tokio::select! {
+                        outcome = &mut drive => break outcome,
+                        _ = ticker.tick() => {
+                            // COGNITION PULSE: a running solve IS her working, and the
+                            // claim-renewal gate must be able to see it.
+                            //
+                            // `cognition_pulse::touch` had exactly two callers — the
+                            // service loop's airc turn start, and (as of the sibling fix)
+                            // spawn. A detached solve is NEITHER: it drives acts for hours
+                            // without producing a single airc turn (#425), so the renewal
+                            // gate read a genuinely-working citizen as silent, denied her
+                            // renewals, and let the 30-minute lease lapse UNDER a live run.
+                            // The card then returned to claimable and was re-claimed —
+                            // spawning a fresh run that discarded the first one's work.
+                            // Observed live 2026-08-21 on pallets__flask-4045: the same
+                            // citizen re-claimed the same card three times in one evening,
+                            // each new run starting at `acts: 0`.
+                            //
+                            // The tick IS the proof, which is why this is unconditional:
+                            // `select!` only reaches this arm while the drive future is
+                            // still pending, so a tick firing means the drive is live this
+                            // instant. That is a STRONGER witness than the act counter
+                            // below (which can legitimately read 0 or None early in a run,
+                            // and would then deny a renewal to a citizen mid-first-act).
+                            // The gate's policy is untouched — it simply stops being blind
+                            // to the one path where the hardest work happens.
+                            crate::persona::cognition_pulse::touch(
+                                persona_uuid,
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_millis() as u64)
+                                    // safe: Err only if the clock is before 1970. 0 then means
+                                    // "never pulsed", which DENIES a renewal — the conservative
+                                    // direction, and the same state as no stamp at all. A wall
+                                    // clock behind the epoch must not hand out lease extensions.
+                                    .unwrap_or_default(), // safe: see the 4 lines above
+                            );
+                            // Best-effort by construction: a failed pulse must never
+                            // disturb the work it is only reporting on.
+                            if let (Some(p), Some(acts)) =
+                                (pulse_path.as_ref(), cycle.actions_taken())
+                            {
+                                let _ = std::fs::write(p, serde_json::json!({
+                                    "state": "running",
+                                    "run_id": pulse_run_id,
+                                    "persona_id": pulse_persona,
+                                    "workspace": workspace,
+                                    "instance": pulse_instance,
+                                    // Acts SHE has executed, live — not a count that
+                                    // materializes only once the work is already over.
+                                    "acts": acts,
+                                }).to_string());
+                            }
+                        }
+                    }
+                }
+            };
+
+            // 4) Collect the HANDS artifact: everything she changed in the workspace as a unified diff
+            //    (new files included), plus the touched paths. This is what SWE/Terminal-Bench apply.
+            let (mut patch, mut files_changed) = workspace_patch(&workspace).await;
+
+            // EMPTY-DIFF RE-DRIVE — the two-gates doctrine made mechanism (glass-boxed
+            // 2026-08-08, atlas-sympy-24066-n6 attempts 2+3): on a Workspace-deliverable
+            // task she settled by SPEAKING after ONE act — a generic file summary, zero
+            // edits — leaving 11 of 12 acts unused, twice, near-verbatim. Working is not
+            // speaking: when the deliverable is the workspace diff, an attempt ending with
+            // an EMPTY diff and real remaining budget must not end silently. ONE bounded
+            // re-drive (a retry, never a nag loop): state the structural fact, hand back
+            // the remaining budget. If she ends on an empty diff again, THAT settles —
+            // honestly graded, with the fact on the record.
+            //
+            // This fires on ANY non-infra end with budget remaining — a Speak, the #206
+            // stuck backstop, or the #390 discovery-saturation gate (which deliberately
+            // ends the drive EARLY, at half budget, precisely so this re-drive still has
+            // budget to hand back; see `drive_to_settle`). It used to require
+            // `spoken.is_some()`, which structurally excluded the gated endings — the one
+            // population that most needs the redirect. TRUE budget exhaustion is still
+            // excluded by `acts + 1 < max_acts` (nothing left to hand back), and infra
+            // failures by `inference_error` — those grade honestly as before.
+            if workspace_deliverable
+                && patch.is_empty()
+                && settled.inference_error.is_none()
+                && settled.acts + 1 < max_acts
+            {
+                let remaining = max_acts - settled.acts;
+                crate::probe!(
+                    class = "benchmark.empty_diff_redrive",
+                    run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
+                    acts_used = settled.acts,
+                    acts_remaining = remaining,
+                    "workspace-deliverable attempt ended with an EMPTY diff and remaining \
+                     act budget (Speak, stuck backstop, or #390 saturation gate) — one \
+                     bounded re-drive with the structural fact"
+                );
+                let fact = format!(
+                    "Status check from the grading harness (a structural fact, not a person): \
                  your workspace diff is EMPTY — no file here differs from where you \
                  started, so as of now there is NOTHING to grade. Speaking does not \
                  submit work: this task is graded ONLY on the changes your tools make \
@@ -1238,44 +1942,52 @@ impl AgentSolve {
                  Use them now: reproduce the problem with the example in the task \
                  description, find the faulty code, and change it in place with \
                  code/edit."
-            );
-            (patch, files_changed) =
-                redrive_with_fact(&cycle, room, framing, remaining, fact, &mut settled, &workspace)
-                    .await;
-        }
-
-        // IDENTICAL-DIFF RE-DRIVE — the empty-diff block's sibling (round E
-        // sha receipts, 2026-08-08: BOTH citizens settled attempt 3 with a
-        // patch byte-identical to the attempt-2 patch that had just failed —
-        // Atlas c4dbfba9…×2, Benchy 531a03d2…×2 — and the post-grade detector
-        // could only address an attempt 4 that never exists). Same patch ⇒
-        // same verdict, deterministically: settling on it re-buys a failure.
-        // ONE bounded re-drive with the hash-proven fact, at the only moment
-        // it can still change the attempt's outcome. If she settles identical
-        // AGAIN, that grades honestly — fact on the record, never a nag loop.
-        if workspace_deliverable
-            && !patch.is_empty()
-            && settled.inference_error.is_none()
-            && settled.spoken.is_some()
-            && settled.acts + 1 < max_acts
-        {
-            let sha = {
-                use sha2::{Digest, Sha256};
-                format!("{:x}", Sha256::digest(patch.as_bytes()))
-            };
-            if p.prev_failed_patch_sha.as_deref() == Some(sha.as_str()) {
-                let remaining = max_acts - settled.acts;
-                crate::probe!(
-                    class = "benchmark.identical_diff_redrive",
-                    run_id = %run_id.as_deref().unwrap_or("-"),
-                    patch_sha256 = %sha,
-                    acts_remaining = remaining,
-                    "settle produced a patch BYTE-IDENTICAL to the previous failed \
-                     attempt's — one bounded re-drive with the hash-proven fact, \
-                     before a redundant grade burns the attempt"
                 );
-                let fact = format!(
-                    "Status check from the grading harness (a structural fact, not a \
+                (patch, files_changed) = redrive_with_fact(
+                    &cycle,
+                    room,
+                    framing,
+                    remaining,
+                    fact,
+                    &p.task,
+                    &mut settled,
+                    &workspace,
+                )
+                .await;
+            }
+
+            // IDENTICAL-DIFF RE-DRIVE — the empty-diff block's sibling (round E
+            // sha receipts, 2026-08-08: BOTH citizens settled attempt 3 with a
+            // patch byte-identical to the attempt-2 patch that had just failed —
+            // Atlas c4dbfba9…×2, Benchy 531a03d2…×2 — and the post-grade detector
+            // could only address an attempt 4 that never exists). Same patch ⇒
+            // same verdict, deterministically: settling on it re-buys a failure.
+            // ONE bounded re-drive with the hash-proven fact, at the only moment
+            // it can still change the attempt's outcome. If she settles identical
+            // AGAIN, that grades honestly — fact on the record, never a nag loop.
+            if workspace_deliverable
+                && !patch.is_empty()
+                && settled.inference_error.is_none()
+                && settled.spoken.is_some()
+                && settled.acts + 1 < max_acts
+            {
+                let sha = {
+                    use sha2::{Digest, Sha256};
+                    format!("{:x}", Sha256::digest(patch.as_bytes()))
+                };
+                if p.prev_failed_patch_sha.as_deref() == Some(sha.as_str()) {
+                    let remaining = max_acts - settled.acts;
+                    crate::probe!(
+                        class = "benchmark.identical_diff_redrive",
+                        run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
+                        patch_sha256 = %sha,
+                        acts_remaining = remaining,
+                        "settle produced a patch BYTE-IDENTICAL to the previous failed \
+                         attempt's — one bounded re-drive with the hash-proven fact, \
+                         before a redundant grade burns the attempt"
+                    );
+                    let fact = format!(
+                        "Status check from the grading harness (a structural fact, not a \
                      person): your workspace diff right now is BYTE-IDENTICAL to the \
                      patch that was already graded and FAILED on the previous attempt \
                      (verified by hash). Submitting it again will produce the exact \
@@ -1284,172 +1996,189 @@ impl AgentSolve {
                      either fix the specific part the failing tests named, or revert \
                      it (`git checkout -- <file>`) and take a genuinely different \
                      approach. Do not settle until the diff has changed."
-                );
-                (patch, files_changed) = redrive_with_fact(
-                    &cycle, room, framing, remaining, fact, &mut settled, &workspace,
-                )
-                .await;
+                    );
+                    (patch, files_changed) = redrive_with_fact(
+                        &cycle,
+                        room,
+                        framing,
+                        remaining,
+                        fact,
+                        &p.task,
+                        &mut settled,
+                        &workspace,
+                    )
+                    .await;
+                }
             }
-        }
 
-        // IN-LOOP TEST VERIFIER — the structural gap between this exam room and the
-        // field harnesses that pass with the SAME model (scoreboard 2026-08-09: six
-        // rounds, zero resolves; field agents iterate against real test output every
-        // few edits, our citizens got one verdict per attempt and settled hopeful —
-        // producing the signature "on-target, harmless, doesn't fix" patch). When a
-        // workspace-deliverable settle carries a non-empty diff, run the REPO'S OWN
-        // tests for the files she touched (the held-out FAIL_TO_PASS stays held out —
-        // this is the regression half of feedback, the same loop a field harness
-        // closes) and on failure re-drive with the ACTUAL test output. Bounded at
-        // VERIFIER_ROUNDS; green tests, an unchanged diff, no test mapping, or an env
-        // fault all end the loop (loudly, never silently).
-        const VERIFIER_ROUNDS: usize = 3;
-        let mut verifier_round = 0usize;
-        let mut last_verified_sha = String::new();
-        while workspace_deliverable
-            && verifier_round < VERIFIER_ROUNDS
-            && !patch.is_empty()
-            && settled.inference_error.is_none()
-            && settled.acts + 1 < max_acts
-        {
-            let sha = {
-                use sha2::{Digest, Sha256};
-                format!("{:x}", Sha256::digest(patch.as_bytes()))
-            };
-            if sha == last_verified_sha {
-                break; // re-drive produced no new diff — nothing new to verify
-            }
-            let tests = mapped_test_files(&workspace, &files_changed);
-            if tests.is_empty() {
-                crate::probe!(
-                    class = "benchmark.verifier.no_mapping",
-                    run_id = %run_id.as_deref().unwrap_or("-"),
-                    files = %files_changed.join(","),
-                    "in-loop verifier found no test files for the touched paths — \
-                     settle stands unverified"
-                );
-                break;
-            }
-            let py = p
-                .path_prepend
-                .as_ref()
-                .and_then(|v| v.first())
-                .map(|bin| format!("{bin}/python"))
-                .filter(|py| std::path::Path::new(py).exists())
-                .unwrap_or_else(|| "python3".to_string());
-            let mut args: Vec<&str> = vec!["-m", "pytest"];
-            for t in &tests {
-                args.push(t);
-            }
-            args.extend(["-q", "--no-header", "-p", "no:cacheprovider"]);
-            match crate::cognition::swe_bench::run(&py, &args, Some(std::path::Path::new(&workspace)))
-                .await
+            // IN-LOOP TEST VERIFIER — the structural gap between this exam room and the
+            // field harnesses that pass with the SAME model (scoreboard 2026-08-09: six
+            // rounds, zero resolves; field agents iterate against real test output every
+            // few edits, our citizens got one verdict per attempt and settled hopeful —
+            // producing the signature "on-target, harmless, doesn't fix" patch). When a
+            // workspace-deliverable settle carries a non-empty diff, run the REPO'S OWN
+            // tests for the files she touched (the held-out FAIL_TO_PASS stays held out —
+            // this is the regression half of feedback, the same loop a field harness
+            // closes) and on failure re-drive with the ACTUAL test output. Bounded at
+            // VERIFIER_ROUNDS; green tests, an unchanged diff, no test mapping, or an env
+            // fault all end the loop (loudly, never silently).
+            const VERIFIER_ROUNDS: usize = 3;
+            let mut verifier_round = 0usize;
+            let mut last_verified_sha = String::new();
+            while workspace_deliverable
+                && verifier_round < VERIFIER_ROUNDS
+                && !patch.is_empty()
+                && settled.inference_error.is_none()
+                && settled.acts + 1 < max_acts
             {
-                Ok(out) if out.status.success() => {
+                let sha = {
+                    use sha2::{Digest, Sha256};
+                    format!("{:x}", Sha256::digest(patch.as_bytes()))
+                };
+                if sha == last_verified_sha {
+                    break; // re-drive produced no new diff — nothing new to verify
+                }
+                let tests = mapped_test_files(&workspace, &files_changed);
+                if tests.is_empty() {
                     crate::probe!(
-                        class = "benchmark.verifier.green",
-                        run_id = %run_id.as_deref().unwrap_or("-"),
-                        tests = %tests.join(","),
-                        round = verifier_round,
-                        "in-loop verifier: touched-file tests PASS — settle stands"
+                        class = "benchmark.verifier.no_mapping",
+                        run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
+                        files = %files_changed.join(","),
+                        "in-loop verifier found no test files for the touched paths — \
+                         settle stands unverified"
                     );
                     break;
                 }
-                Ok(out) => {
-                    verifier_round += 1;
-                    last_verified_sha = sha;
-                    let report = format!(
-                        "{}{}",
-                        String::from_utf8_lossy(&out.stdout),
-                        String::from_utf8_lossy(&out.stderr)
-                    );
-                    let tail: String = report
-                        .chars()
-                        .rev()
-                        .take(2000)
-                        .collect::<String>()
-                        .chars()
-                        .rev()
-                        .collect();
-                    crate::probe!(
-                        class = "benchmark.verifier.fail",
-                        run_id = %run_id.as_deref().unwrap_or("-"),
-                        tests = %tests.join(","),
-                        round = verifier_round,
-                        "in-loop verifier: touched-file tests FAIL — re-driving with \
-                         the real output"
-                    );
-                    let remaining = max_acts - settled.acts;
-                    let fact = format!(
-                        "Status check from the grading harness (a structural fact, not a \
+                let py = p
+                    .path_prepend
+                    .as_ref()
+                    .and_then(|v| v.first())
+                    .map(|bin| format!("{bin}/python"))
+                    .filter(|py| std::path::Path::new(py).exists())
+                    .unwrap_or_else(|| "python3".to_string());
+                let mut args: Vec<&str> = vec!["-m", "pytest"];
+                for t in &tests {
+                    args.push(t);
+                }
+                args.extend(["-q", "--no-header", "-p", "no:cacheprovider"]);
+                match crate::cognition::swe_bench::run(
+                    &py,
+                    &args,
+                    Some(std::path::Path::new(&workspace)),
+                )
+                .await
+                {
+                    Ok(out) if out.status.success() => {
+                        crate::probe!(
+                            class = "benchmark.verifier.green",
+                            run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
+                            tests = %tests.join(","),
+                            round = verifier_round,
+                            "in-loop verifier: touched-file tests PASS — settle stands"
+                        );
+                        break;
+                    }
+                    Ok(out) => {
+                        verifier_round += 1;
+                        last_verified_sha = sha;
+                        let report = format!(
+                            "{}{}",
+                            String::from_utf8_lossy(&out.stdout),
+                            String::from_utf8_lossy(&out.stderr)
+                        );
+                        let tail: String = report
+                            .chars()
+                            .rev()
+                            .take(2000)
+                            .collect::<String>()
+                            .chars()
+                            .rev()
+                            .collect();
+                        crate::probe!(
+                            class = "benchmark.verifier.fail",
+                            run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
+                            tests = %tests.join(","),
+                            round = verifier_round,
+                            "in-loop verifier: touched-file tests FAIL — re-driving with \
+                             the real output"
+                        );
+                        let remaining = max_acts - settled.acts;
+                        let fact = format!(
+                            "Status check from the grading harness (a structural fact, not a \
                          person): I ran the repo's own tests for the files you changed \
                          ({}) and they FAIL with your current edits. Test output:\n{}\n\
                          You have {} actions left. Fix your edit so these tests pass — \
                          or revert the part that broke them (`git diff HEAD` shows your \
                          changes) — and run the tests yourself with code/shell before \
                          settling.",
-                        files_changed.join(", "),
-                        tail,
-                        remaining
-                    );
-                    (patch, files_changed) = redrive_with_fact(
-                        &cycle, room, framing, remaining, fact, &mut settled, &workspace,
-                    )
-                    .await;
-                }
-                Err(e) => {
-                    crate::probe!(
-                        class = "benchmark.verifier.error",
-                        run_id = %run_id.as_deref().unwrap_or("-"),
-                        error = %e,
-                        "in-loop verifier could not run tests — env fault, settle \
-                         stands (never blocks the attempt)"
-                    );
-                    break;
+                            files_changed.join(", "),
+                            tail,
+                            remaining
+                        );
+                        (patch, files_changed) = redrive_with_fact(
+                            &cycle,
+                            room,
+                            framing,
+                            remaining,
+                            fact,
+                            &p.task,
+                            &mut settled,
+                            &workspace,
+                        )
+                        .await;
+                    }
+                    Err(e) => {
+                        crate::probe!(
+                            class = "benchmark.verifier.error",
+                            run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
+                            error = %e,
+                            "in-loop verifier could not run tests — env fault, settle \
+                             stands (never blocks the attempt)"
+                        );
+                        break;
+                    }
                 }
             }
-        }
 
-        // 5) LEARN mode (#221 slice 3): carry the EXPERIENCE back to the living self —
-        //    the same one-way bridge cognition/eval's learn mode uses. The lesson is
-        //    experience-shaped (task + how she worked + which files), deliberately
-        //    excluding the patch content and her final answer: the python-context
-        //    signal that drives dream supersession rides the task text and file
-        //    names; verbatim solutions would let a re-run score memorization instead
-        //    of capability. Solve carries no held-out answer key in-band (the harness
-        //    grades externally), so there is nothing to redact.
-        if p.learn.learns() {
-            let admitted = transfer_solve_experience(
-                &persona_uuid,
-                room,
-                &p.task,
-                settled.acts,
-                &files_changed,
-            );
-            tracing::info!(
-                persona = %persona_uuid,
-                admitted,
-                acts = settled.acts,
-                "agent/solve learn mode: work experience admitted to the living self"
-            );
-        }
+            // 5) LEARN mode (#221 slice 3): carry the EXPERIENCE back to the living self —
+            //    the same one-way bridge cognition/eval's learn mode uses. The lesson is
+            //    experience-shaped (task + how she worked + which files), deliberately
+            //    excluding the patch content and her final answer: the python-context
+            //    signal that drives dream supersession rides the task text and file
+            //    names; verbatim solutions would let a re-run score memorization instead
+            //    of capability. Solve carries no held-out answer key in-band (the harness
+            //    grades externally), so there is nothing to redact.
+            if p.learn.learns() {
+                let admitted = transfer_solve_experience(
+                    &persona_uuid,
+                    room,
+                    &p.task,
+                    settled.acts,
+                    &files_changed,
+                );
+                tracing::info!(
+                    persona = %persona_uuid,
+                    admitted,
+                    acts = settled.acts,
+                    "agent/solve learn mode: work experience admitted to the living self"
+                );
+            }
 
-        // Lane drops here (end of scope) — measurement copy torn down, living personas untouched.
-        drop(lane);
+            // Lane drops here (end of scope) — measurement copy torn down, living personas untouched.
+            drop(lane);
 
-        Ok(AgentSolveResult {
-            persona_id: p.persona_id.clone(),
-            model: p.base_model_id.clone(),
-            acts: settled.acts as u32,
-            spoken: settled.spoken.unwrap_or_default(),
-            patch,
-            files_changed,
-            files_examined: settled.touched_paths.clone(),
-            detached: false,
-            run_id,
-            infra_error: settled.inference_error,
-        })
-
+            Ok(AgentSolveResult {
+                persona_id: p.persona_id.clone(),
+                model: p.base_model_id.clone(),
+                acts: settled.acts as u32,
+                spoken: settled.spoken.unwrap_or_default(),
+                patch,
+                files_changed,
+                files_examined: settled.touched_paths.clone(),
+                detached: false,
+                run_id,
+                infra_error: settled.inference_error,
+            })
         }
         .await;
 
@@ -1457,8 +2186,8 @@ impl AgentSolve {
         // failed restore leaves the living persona standing in the exam repo, which is a
         // real defect, but it must not overwrite the measurement's own verdict.
         if let Some(hands) = &hands {
-            if let Err(e) = crate::cognition::persona_workspace::restore_acting_workspace(hands)
-                .await
+            if let Err(e) =
+                crate::cognition::persona_workspace::restore_acting_workspace(hands).await
             {
                 tracing::error!(
                     persona = %persona_uuid,
@@ -1516,7 +2245,7 @@ fn format_solve_lesson(task: &str, acts: usize, files_changed: &[String]) -> Str
 /// idempotently via `admit_reflection`'s content hash), else 0.
 fn transfer_solve_experience(
     persona_uuid: &Uuid,
-    room: Uuid,
+    room: crate::identity::ActivityRoom,
     task: &str,
     acts: usize,
     files_changed: &[String],
@@ -1536,7 +2265,7 @@ fn transfer_solve_experience(
     recall_keys.extend(files_changed.iter().cloned());
     let engram = crate::persona::engram::Engram {
         id: Uuid::new_v4(),
-        context_id: Some(room),
+        context_id: Some(room.as_uuid()),
         kind: crate::persona::engram::EngramKind::Episodic,
         content: format_solve_lesson(task, acts, files_changed),
         origin: crate::persona::engram::EngramOrigin::SelfReflection {
@@ -1553,22 +2282,11 @@ fn transfer_solve_experience(
     }
 }
 
-/// Git pathspecs excluding the universal never-a-solution byproducts a verification run leaves
-/// behind — Python bytecode/caches, tool caches, JS deps, OS cruft. Glass-boxed 2026-07-22: a
-/// `python3 -c "from calc import ..."` verify step left `__pycache__/calc.cpython-314.pyc` in the
-/// patch, polluting the graded artifact — real SWE-bench/aider patches are SOURCE-only. These are
-/// never a solution, so they're excluded from both the diff and files_changed; anything a task
-/// might legitimately produce (incl. `build`/`dist`/`target`) is kept.
-const PATCH_EXCLUDES: &[&str] = &[
-    ":(exclude,glob)**/__pycache__/**",
-    ":(exclude,glob)**/*.pyc",
-    ":(exclude,glob)**/*.pyo",
-    ":(exclude,glob)**/.pytest_cache/**",
-    ":(exclude,glob)**/.mypy_cache/**",
-    ":(exclude,glob)**/.ruff_cache/**",
-    ":(exclude,glob)**/node_modules/**",
-    ":(exclude,glob)**/.DS_Store",
-];
+/// What is NOT part of a solution lives in ONE place, beside the other reading of her work:
+/// [`crate::commands::benchmark::SOLUTION_PATH_EXCLUDES`]. This file used to carry its own
+/// near-copy that omitted `.airc`, which is precisely the drift `workspace_candidate_diff`'s
+/// doc warned about — see the shared constant for the two incidents.
+use crate::commands::benchmark::SOLUTION_PATH_EXCLUDES as PATCH_EXCLUDES;
 
 /// Unified diff of the SOLUTION changes in the workspace (tracked edits + new files), and the
 /// touched paths — build/cache byproducts ([`PATCH_EXCLUDES`]) filtered out so the graded artifact
@@ -1587,7 +2305,9 @@ fn mapped_test_files(workspace: &str, files_changed: &[String]) -> Vec<String> {
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
-        let Some(parent) = path.parent() else { continue };
+        let Some(parent) = path.parent() else {
+            continue;
+        };
         let candidates = [
             parent.join("tests").join(format!("test_{stem}.py")),
             std::path::PathBuf::from("tests").join(format!("test_{stem}.py")),
@@ -1614,17 +2334,25 @@ fn mapped_test_files(workspace: &str, files_changed: &[String]) -> Vec<String> {
 /// post-re-drive (patch, files_changed).
 async fn redrive_with_fact(
     cycle: &crate::cognition::workspace::WorkspaceCycle,
-    room: Uuid,
+    room: crate::identity::ActivityRoom,
     framing: crate::cognition::workspace::TurnFraming,
     remaining: usize,
     fact: String,
+    task: &str,
     settled: &mut crate::cognition::act_observe::SettleOutcome,
     workspace: &str,
 ) -> (String, Vec<String>) {
+    // THE FACT ALONE IS BLIND (glass-boxed 2026-08-26): a resumed attempt's
+    // re-drive runs on a fresh fork whose working memory never held the task,
+    // and the fact says "the example in the task description" — she answered
+    // 'which file?' and settled empty. The re-drive burst restates the WHOLE
+    // task beneath the structural fact, so fresh-start and post-interrupt read
+    // identically (continuity: one code path).
+    let content = format!("{fact}\n\nThe task you are working, restated in full:\n\n{task}");
     let redelivery = crate::persona::rag_budget::RagDelivery {
         source_id: "airc".to_string(),
         items: vec![crate::persona::rag_budget::RagItem {
-            content: fact,
+            content,
             tokens: 0,
             metadata: serde_json::json!({
                 "peer_id": "peer",
@@ -1645,8 +2373,7 @@ async fn redrive_with_fact(
         ),
     );
     let redriven =
-        crate::cognition::act_observe::drive_to_settle(cycle, reburst, room, remaining, framing)
-            .await;
+        crate::cognition::act_observe::drive_to_settle(cycle, reburst, remaining, framing).await;
     settled.acts += redriven.acts;
     settled.decision = redriven.decision;
     settled.spoken = redriven.spoken.or(settled.spoken.take());
@@ -1677,16 +2404,28 @@ async fn workspace_patch(workspace: &str) -> (String, Vec<String>) {
     let mut pathspec: Vec<&str> = vec!["--", "."];
     pathspec.extend_from_slice(PATCH_EXCLUDES);
     let with_paths = |head: &[&str]| -> Vec<String> {
-        head.iter().chain(pathspec.iter()).map(|s| s.to_string()).collect()
+        head.iter()
+            .chain(pathspec.iter())
+            .map(|s| s.to_string())
+            .collect()
     };
     // Non-fatal: a bare (non-git) workspace just yields no patch.
-    let _ = git(&with_paths(&["add", "-A", "-N"]).iter().map(String::as_str).collect::<Vec<_>>())
-        .output()
-        .await;
+    let _ = git(&with_paths(&["add", "-A", "-N"])
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>())
+    .output()
+    .await;
     let diff_args = with_paths(&["diff"]);
     let names_args = with_paths(&["diff", "--name-only"]);
-    let diff = git(&diff_args.iter().map(String::as_str).collect::<Vec<_>>()).output().await.ok();
-    let names = git(&names_args.iter().map(String::as_str).collect::<Vec<_>>()).output().await.ok();
+    let diff = git(&diff_args.iter().map(String::as_str).collect::<Vec<_>>())
+        .output()
+        .await
+        .ok();
+    let names = git(&names_args.iter().map(String::as_str).collect::<Vec<_>>())
+        .output()
+        .await
+        .ok();
     let patch = diff
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
@@ -1712,9 +2451,11 @@ crate::register_stateless_command!(AgentSolve);
 /// deliverable looks like — the task owns that, and the two used to contradict each other.
 ///
 /// The old text said "writing files with code/write" and "graded on the files your tools WRITE",
-/// which is right for a from-scratch build gym. Nested beneath it, `swe_task_prompt` says the
-/// opposite: "do not add new top-level files — fix it IN PLACE with code/edit. The fix must land
-/// in the existing files." Outer contract first, inner constraint under "Task:" — and she obeyed
+/// which is right for a from-scratch build gym. Nested beneath it, the SWE task text says the
+/// opposite: "do not add new top-level files … find the existing source of the fault and edit it
+/// in place" — that text is the dispatch CARD BODY (`benchmark::BenchmarkSweSetup`), which owns
+/// the deliverable shape because the card IS the task.
+/// Outer contract first, inner constraint under "Task:" — and she obeyed
 /// the outer one. Three consecutive full-effort sympy-21379 runs wrote NEW repro scripts and never
 /// edited the library (v3: 1 file, v4: 3 files, v5: 2 files; 0 edits every time). That read as a
 /// judgement gap for a whole session; it was two halves of one framing disagreeing.
@@ -1748,10 +2489,136 @@ fn frame_task(task: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    mod grade_close_classification {
+        use super::super::{classify_grade_for_close, CardCloseDecision};
+        use serde_json::json;
+
+        // what this catches: the env-absence catch-all swallowing the two
+        // "the env was fine, this grader just measured nothing" cases. Measured
+        // 2026-08-27 on django-11734 (#2531): the solve's grade failed to
+        // re-point the CACHED env at her dirty workspace and this classifier
+        // called the environment absent — while benchmark_grade, re-pointing the
+        // same cached env at a pristine clone, ran 40/40 pass-to-pass seconds
+        // later. The consequence was a lying log line and the per-boot parking
+        // brake armed against a demonstrably healthy instance. Order is the
+        // invariant: the specific "measured nothing" reasons must be decided
+        // BEFORE the generic any-error rule, or they get swallowed again.
+        #[test]
+        fn measured_nothing_is_never_an_environment_absence() {
+            let repoint = json!({
+                "error": format!(
+                    "{}: could not re-point django__django-11734's cached env at /tmp/ws: \
+                     The build backend returned an error",
+                    crate::cognition::swe_bench::ENV_CACHE_REPOINT_FAILED
+                ),
+                "gate_ok": true,
+            });
+            assert_eq!(
+                classify_grade_for_close(Some(&repoint)),
+                CardCloseDecision::CacheRepointFailed,
+                "a stale cache must never read as an absent environment"
+            );
+
+            let no_patch = json!({"error": "no candidate patch was produced"});
+            assert_eq!(
+                classify_grade_for_close(Some(&no_patch)),
+                CardCloseDecision::NoPatch
+            );
+
+            // The genuine env-class cases still classify as absent.
+            let broken_control = json!({"gate_ok": false, "error": null});
+            assert_eq!(
+                classify_grade_for_close(Some(&broken_control)),
+                CardCloseDecision::EnvAbsent,
+                "a broken control (f2p already passing pristine) stays env-class"
+            );
+            let unbuildable = json!({"error": "could not create a Python 3.8 venv", "gate_ok": true});
+            assert_eq!(
+                classify_grade_for_close(Some(&unbuildable)),
+                CardCloseDecision::EnvAbsent
+            );
+
+            // A real verdict closes the card; no grade on disk closes nothing.
+            let real = json!({"error": null, "gate_ok": true, "resolved": false});
+            assert_eq!(
+                classify_grade_for_close(Some(&real)),
+                CardCloseDecision::Close
+            );
+            assert_eq!(classify_grade_for_close(None), CardCloseDecision::NoVerdict);
+        }
+    }
+
+    mod room_mint_or_rejoin {
+        use crate::identity::ActivityRoom;
+        use uuid::Uuid;
+
+        // what this catches: the #425 regression door. A solve with no room used to run
+        // INVISIBLY under Uuid::nil() (13,209 turns, 8.7% of all turns, before it was
+        // measured). The law (Joel 2026-08-26) is mint-or-rejoin: a dispatched run REJOINS
+        // the activity it was given; a bare run MINTS its own. Nil can never re-enter as
+        // a room because ActivityRoom refuses it at construction.
+        #[test]
+        fn a_room_param_is_rejoined_and_nil_is_unrepresentable() {
+            let real = Uuid::from_u128(7);
+            let rejoined = ActivityRoom::from_uuid(real).expect("real room rejoins");
+            assert_eq!(rejoined.as_uuid(), real, "the room must survive unchanged");
+            assert!(ActivityRoom::from_uuid(Uuid::nil()).is_err(), "nil is refused");
+            let minted = ActivityRoom::mint();
+            assert!(!minted.as_uuid().is_nil(), "a bare solve mints a REAL activity");
+        }
+    }
+
+    mod patch_custody {
+        // what this catches: patch custody going back to being a caller courtesy. It WAS
+        // one — the write sat behind `if let Some(capture_dir)` with no else — and the
+        // consequence was measured on 2026-08-18: every hand-launched run kept its diff
+        // (25 patches under benchmarks/swe/captures/run-*), and every citizen-dispatched
+        // `claim-*` run, which is the entire path the benchmark actually runs on, kept
+        // none. A 41,166-byte patch that broke 40 passing tests was unrecoverable hours
+        // later because the workspace had already been reset. A run that cannot produce
+        // the artifact behind its own verdict is an anecdote, not a measurement.
+        #[test]
+        fn a_run_that_names_no_capture_dir_still_gets_one() {
+            let derived = super::super::run_artifact_dir("claim-abc123", None)
+                .expect("a run always resolves an artifact dir");
+            assert!(
+                derived.ends_with("run-claim-abc123"),
+                "custody must be derived from the run itself, not left to the caller: {}",
+                derived.display()
+            );
+            // It lands under the GOVERNED benchmarks root, in the same `captures/` folder
+            // the 25 hand-launched patches already occupy. Two invariants in one
+            // assertion, both of which my first cut broke by inventing `progress/`:
+            // one home per artifact class, and that home is a registered TrackedDir with
+            // a decided eviction story (an unmanaged dir growing patches forever is the
+            // 460 GB shape).
+            let expected =
+                crate::cognition::swe_bench::swe_cache_dir().join("captures");
+            assert_eq!(
+                derived.parent(),
+                Some(expected.as_path()),
+                "patches belong where patches already live, under the tracked benchmarks \
+                 root — never a second location: {}",
+                derived.display()
+            );
+        }
+
+        // what this catches: an explicit capture_dir being ignored once the fallback
+        // exists — the hand-launched runs that DO name a folder must keep landing there,
+        // or the 25 existing patches stop being where every prior receipt says they are.
+        #[test]
+        fn an_explicit_capture_dir_still_wins() {
+            let dir = super::super::run_artifact_dir("run-18057-h1", Some("/tmp/named-run"))
+                .expect("explicit dir resolves");
+            assert_eq!(dir, std::path::PathBuf::from("/tmp/named-run"));
+        }
+    }
+
     // what this catches: the wrapper asserting a DELIVERABLE SHAPE that the task contradicts.
     // The generic framing exists to kill narration ("only tool calls take effect"). It must not
-    // also claim the grade is about "files your tools WRITE" — `swe_task_prompt` says the
-    // opposite ("do not add new top-level files … fix it IN PLACE with code/edit"), and the
+    // also claim the grade is about "files your tools WRITE" — the SWE dispatch card body
+    // (`benchmark::BenchmarkSweSetup`) says the opposite ("do not add new top-level files …
+    // edit it in place"), and the
     // wrapper comes FIRST. Three consecutive sympy-21379 runs obeyed the wrapper and wrote new
     // repro scripts instead of editing the library. The contract may describe HOW acts take
     // effect; only the task may describe WHAT to change.
@@ -1794,7 +2661,12 @@ mod tests {
             .output()
             .await
             .expect("git runs");
-        assert!(out.status.success(), "git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     // what this catches: the patch is the benchmark's HANDS artifact — the SWE/Terminal-Bench
@@ -1818,14 +2690,65 @@ mod tests {
         std::fs::write(dir.join("brand_new.rs"), "fn main() {}\n").unwrap();
 
         let (patch, files) = workspace_patch(dir.to_str().unwrap()).await;
-        assert!(patch.contains("tracked.txt"), "edit missing from patch:\n{patch}");
-        assert!(patch.contains("brand_new.rs"), "NEW file missing from patch:\n{patch}");
+        assert!(
+            patch.contains("tracked.txt"),
+            "edit missing from patch:\n{patch}"
+        );
+        assert!(
+            patch.contains("brand_new.rs"),
+            "NEW file missing from patch:\n{patch}"
+        );
         assert!(patch.contains("+two"), "edit content missing:\n{patch}");
-        assert!(patch.contains("fn main()"), "new-file content missing:\n{patch}");
+        assert!(
+            patch.contains("fn main()"),
+            "new-file content missing:\n{patch}"
+        );
         assert!(files.iter().any(|f| f == "tracked.txt"));
         assert!(files.iter().any(|f| f == "brand_new.rs"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // what this catches: a CREDENTIAL reaching a graded patch, files_changed, or the curriculum.
+    // Live 2026-08-18: sympy-22714's tree held `.airc/identity.key` (a private keypair) at git
+    // status `A` — already intent-added, because this path's exclude list omitted `.airc` while
+    // the grader's inline list had it. airc creates its scope at the enclosing git root, so a
+    // citizen working inside a cloned bench repo gets one written under the repo she is graded
+    // on. files_changed feeds format_solve_lesson, so an unexcluded key becomes the training
+    // sentence "I changed: .airc/identity.key". Also the b34f7eb5 shape: 91KB of staged .airc
+    // blobs once voided a REAL fix because the fresh clone refused the whole candidate.
+    #[tokio::test]
+    async fn workspace_patch_never_carries_agent_scope_state_or_credentials() {
+        let dir = std::env::temp_dir().join(format!("cu-agent-solve-airc-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join(".airc/work-board-cache")).unwrap();
+        git(&dir, &["init", "-q"]).await;
+        git(&dir, &["config", "user.email", "t@t"]).await;
+        git(&dir, &["config", "user.name", "t"]).await;
+        // her actual solution
+        std::fs::write(dir.join("point.py"), "def dot(a, b):\n    return a * b\n").unwrap();
+        // what the SUBSTRATE wrote into her tree — never authored by the solver
+        std::fs::write(dir.join(".airc/identity.key"), "SUPERSECRETKEYMATERIAL").unwrap();
+        std::fs::write(dir.join(".airc/events.sqlite"), b"SQLite format 3\x00").unwrap();
+        std::fs::write(dir.join(".airc/work-board-cache/x.json"), "{}").unwrap();
+
+        let (patch, files) = workspace_patch(dir.to_str().unwrap()).await;
+        assert!(
+            patch.contains("point.py"),
+            "her solution must still be in the patch:\n{patch}"
+        );
+        assert!(
+            !patch.contains("SUPERSECRETKEYMATERIAL"),
+            "KEY MATERIAL must never reach a patch:\n{patch}"
+        );
+        assert!(
+            !patch.contains(".airc"),
+            "no agent-scope path may appear in the patch:\n{patch}"
+        );
+        assert_eq!(
+            files,
+            vec!["point.py".to_string()],
+            "files_changed feeds the curriculum lesson — it must name only her work"
+        );
     }
 
     // what this catches: verification byproducts (Python bytecode, __pycache__) must NOT pollute
@@ -1840,16 +2763,36 @@ mod tests {
         git(&dir, &["config", "user.name", "t"]).await;
         // her solution + the byproducts a verify run leaves behind
         std::fs::write(dir.join("calc.py"), "def add(a, b):\n    return a + b\n").unwrap();
-        std::fs::write(dir.join("__pycache__/calc.cpython-314.pyc"), b"\x00\x01bytecode").unwrap();
+        std::fs::write(
+            dir.join("__pycache__/calc.cpython-314.pyc"),
+            b"\x00\x01bytecode",
+        )
+        .unwrap();
         std::fs::create_dir_all(dir.join("node_modules/x")).unwrap();
         std::fs::write(dir.join("node_modules/x/index.js"), "module.exports={}").unwrap();
 
         let (patch, files) = workspace_patch(dir.to_str().unwrap()).await;
-        assert!(patch.contains("calc.py"), "the solution source must be in the patch:\n{patch}");
-        assert!(!patch.contains(".pyc"), "bytecode must be excluded:\n{patch}");
-        assert!(!patch.contains("__pycache__"), "cache dir must be excluded:\n{patch}");
-        assert!(!patch.contains("node_modules"), "deps must be excluded:\n{patch}");
-        assert_eq!(files, vec!["calc.py".to_string()], "only source is a changed file: {files:?}");
+        assert!(
+            patch.contains("calc.py"),
+            "the solution source must be in the patch:\n{patch}"
+        );
+        assert!(
+            !patch.contains(".pyc"),
+            "bytecode must be excluded:\n{patch}"
+        );
+        assert!(
+            !patch.contains("__pycache__"),
+            "cache dir must be excluded:\n{patch}"
+        );
+        assert!(
+            !patch.contains("node_modules"),
+            "deps must be excluded:\n{patch}"
+        );
+        assert_eq!(
+            files,
+            vec!["calc.py".to_string()],
+            "only source is a changed file: {files:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1861,7 +2804,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("x.txt"), "hi\n").unwrap();
         let (patch, files) = workspace_patch(dir.to_str().unwrap()).await;
-        assert!(patch.is_empty(), "bare dir should yield no patch, got:\n{patch}");
+        assert!(
+            patch.is_empty(),
+            "bare dir should yield no patch, got:\n{patch}"
+        );
         assert!(files.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1878,7 +2824,10 @@ mod tests {
             3,
             &["mathlib.py".to_string()],
         );
-        assert!(l.contains("mathlib.py"), "domain signal rides the file name: {l}");
+        assert!(
+            l.contains("mathlib.py"),
+            "domain signal rides the file name: {l}"
+        );
         assert!(l.contains("acted 3 time(s)"));
         assert!(l.contains("I changed: mathlib.py"));
         let none = format_solve_lesson("task", 0, &[]);
@@ -1903,7 +2852,10 @@ mod tests {
             l.len(),
             issue.len()
         );
-        assert!(l.contains('…'), "a truncated lesson must SAY it was truncated: {l}");
+        assert!(
+            l.contains('…'),
+            "a truncated lesson must SAY it was truncated: {l}"
+        );
         assert!(
             l.contains("src/flask/blueprints.py"),
             "the domain signal rides the file names and is never truncated: {l}"
@@ -1920,7 +2872,6 @@ mod tests {
         assert!(matches!(AgentSolve::ACCESS, AccessLevel::Privileged));
     }
 
-
     // what this catches (found by BigMama 2026-08-06, reading before wiring the consolidator):
     // the SAME field with OPPOSITE defaults in two modules — `agent/solve` defaulted learn ON
     // while `cognition/eval` defaulted it OFF, and the only thing keeping exam text out of
@@ -1936,9 +2887,10 @@ mod tests {
     // `#[serde(default = ...)]` at a different function, this reds.
     #[test]
     fn an_omitted_learn_flag_means_do_not_learn_on_every_wire_path() {
-        let solve: AgentSolveParams =
-            serde_json::from_str(r#"{"persona_id":"p","base_model_id":"m","task":"x","workspace":"w"}"#)
-                .expect("solve params without `learn`");
+        let solve: AgentSolveParams = serde_json::from_str(
+            r#"{"persona_id":"p","base_model_id":"m","task":"x","workspace":"w"}"#,
+        )
+        .expect("solve params without `learn`");
         assert!(
             !solve.learn.learns(),
             "agent/solve is the headless BENCHMARK entrypoint — an omitted learn flag must not \
@@ -1946,8 +2898,7 @@ mod tests {
         );
 
         let eval: crate::cognition::eval::CognitionEvalParams =
-            serde_json::from_str(r#"{"persona_id":"p"}"#)
-                .expect("eval params without `learn`");
+            serde_json::from_str(r#"{"persona_id":"p"}"#).expect("eval params without `learn`");
         assert!(
             !eval.learn.learns(),
             "cognition/eval measures; an omitted learn flag must not write back"

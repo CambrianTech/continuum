@@ -88,10 +88,7 @@ pub trait Drafter: Send + Sync {
 /// started and what the verifier actually required calibrates the "feel".
 pub trait Verifier: Send + Sync {
     type Draft: Send;
-    fn verify(
-        &self,
-        draft: &Self::Draft,
-    ) -> impl std::future::Future<Output = Verdict> + Send;
+    fn verify(&self, draft: &Self::Draft) -> impl std::future::Future<Output = Verdict> + Send;
 }
 
 /// The operating points live capacity affords right now, as normalized resolutions.
@@ -149,7 +146,11 @@ where
     L: ResolutionLadder,
 {
     let offered = ladder.rungs();
-    let mut rungs: Vec<f32> = offered.iter().copied().filter(|r| will.accepts(*r)).collect();
+    let mut rungs: Vec<f32> = offered
+        .iter()
+        .copied()
+        .filter(|r| will.accepts(*r))
+        .collect();
     rungs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     if rungs.is_empty() {
         return Err(ResolutionError::NoCapacity {
@@ -276,7 +277,11 @@ mod tests {
             }
             other => panic!("expected Passed, got {other:?}"),
         }
-        assert_eq!(*drafter.tried.lock().unwrap(), vec![0.2], "only the cheap rung drafted");
+        assert_eq!(
+            *drafter.tried.lock().unwrap(),
+            vec![0.2],
+            "only the cheap rung drafted"
+        );
     }
 
     // what this catches: a HARD task that the cheap rungs cannot satisfy CLIMBS the
@@ -321,7 +326,9 @@ mod tests {
             calls: AtomicU32::new(0),
         };
         let will = Will::new(0.9, 0.8, 0.1); // floor 0.8 > every rung
-        let err = resolve(will, &drafter, &verifier, &ladder).await.unwrap_err();
+        let err = resolve(will, &drafter, &verifier, &ladder)
+            .await
+            .unwrap_err();
         match err {
             ResolutionError::NoCapacity { floor, offered } => {
                 assert!((floor - 0.8).abs() < 1e-6);
@@ -329,7 +336,10 @@ mod tests {
             }
             other => panic!("expected NoCapacity, got {other:?}"),
         }
-        assert!(drafter.tried.lock().unwrap().is_empty(), "never drafted below floor");
+        assert!(
+            drafter.tried.lock().unwrap().is_empty(),
+            "never drafted below floor"
+        );
     }
 
     // what this catches: a task nothing available can satisfy climbs to the top and
@@ -351,11 +361,18 @@ mod tests {
                 verdict,
                 ..
             } => {
-                assert!((resolution - 0.6).abs() < 1e-6, "reports the top rung reached");
+                assert!(
+                    (resolution - 0.6).abs() < 1e-6,
+                    "reports the top rung reached"
+                );
                 assert!(!verdict.passed && verdict.detail.contains("0.99"));
             }
             other => panic!("expected Exhausted, got {other:?}"),
         }
-        assert_eq!(*drafter.tried.lock().unwrap(), vec![0.3, 0.6], "tried all rungs");
+        assert_eq!(
+            *drafter.tried.lock().unwrap(),
+            vec![0.3, 0.6],
+            "tried all rungs"
+        );
     }
 }

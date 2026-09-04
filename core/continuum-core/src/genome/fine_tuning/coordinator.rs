@@ -294,10 +294,7 @@ mod tests {
         fn capabilities(&self) -> FineTuningCapabilities {
             self.0.clone()
         }
-        async fn create_job(
-            &self,
-            _r: TrainingJobRequest,
-        ) -> Result<JobHandle, FineTuningError> {
+        async fn create_job(&self, _r: TrainingJobRequest) -> Result<JobHandle, FineTuningError> {
             unimplemented!()
         }
         async fn poll(&self, _h: &JobHandle) -> Result<TrainingStatus, FineTuningError> {
@@ -400,9 +397,7 @@ mod tests {
             .expect("must reject");
         match err {
             CoordinatorError::PreferredUnavailable {
-                preferred,
-                capable,
-                ..
+                preferred, capable, ..
             } => {
                 assert_eq!(preferred, "mistral");
                 assert_eq!(capable, vec!["openai"]);
@@ -501,8 +496,7 @@ mod tests {
             dropout: 0.0,
             target_modules: vec![],
         });
-        let err = coord.select(&req, None).err()
-            .expect("must reject");
+        let err = coord.select(&req, None).err().expect("must reject");
         assert!(matches!(err, CoordinatorError::NoCapableAdapter { .. }));
     }
 
@@ -511,15 +505,11 @@ mod tests {
     // capabilities are gates, not soft preferences.
     #[test]
     fn validation_split_requires_validation_capable_adapter() {
-        let reg = registry_with(vec![(
-            "no-val",
-            caps("no-val", true, false, false, &[]),
-        )]);
+        let reg = registry_with(vec![("no-val", caps("no-val", true, false, false, &[]))]);
         let coord = FineTuningCoordinator::new(reg);
         let mut req = base_request("anything");
         req.dataset.validation_split = 0.1;
-        let err = coord.select(&req, None).err()
-            .expect("must reject");
+        let err = coord.select(&req, None).err().expect("must reject");
         assert!(matches!(err, CoordinatorError::NoCapableAdapter { .. }));
     }
 
@@ -532,11 +522,19 @@ mod tests {
     #[test]
     fn metal_trainer_beats_generic_local_on_metal_host() {
         let reg = registry_with(vec![
-            ("local-candle", caps_hw("local-candle", true, TrainerHardware::Any)),
-            ("mlx-local", caps_hw("mlx-local", true, TrainerHardware::Metal)),
+            (
+                "local-candle",
+                caps_hw("local-candle", true, TrainerHardware::Any),
+            ),
+            (
+                "mlx-local",
+                caps_hw("mlx-local", true, TrainerHardware::Metal),
+            ),
         ]);
         let coord = FineTuningCoordinator::with_host(reg, host(true, false, false));
-        let (id, _) = coord.select(&base_request("Qwen/Qwen2.5-Coder-3B"), None).unwrap();
+        let (id, _) = coord
+            .select(&base_request("Qwen/Qwen2.5-Coder-3B"), None)
+            .unwrap();
         assert_eq!(id, "mlx-local");
     }
 
@@ -548,11 +546,19 @@ mod tests {
     #[test]
     fn cuda_trainer_beats_generic_local_on_cuda_host() {
         let reg = registry_with(vec![
-            ("local-candle", caps_hw("local-candle", true, TrainerHardware::Any)),
-            ("cuda-trainer", caps_hw("cuda-trainer", true, TrainerHardware::Cuda)),
+            (
+                "local-candle",
+                caps_hw("local-candle", true, TrainerHardware::Any),
+            ),
+            (
+                "cuda-trainer",
+                caps_hw("cuda-trainer", true, TrainerHardware::Cuda),
+            ),
         ]);
         let coord = FineTuningCoordinator::with_host(reg, host(false, true, false));
-        let (id, _) = coord.select(&base_request("Qwen/Qwen2.5-Coder-3B"), None).unwrap();
+        let (id, _) = coord
+            .select(&base_request("Qwen/Qwen2.5-Coder-3B"), None)
+            .unwrap();
         assert_eq!(id, "cuda-trainer");
     }
 
@@ -565,11 +571,19 @@ mod tests {
     #[test]
     fn metal_trainer_filtered_out_on_non_metal_host() {
         let reg = registry_with(vec![
-            ("local-candle", caps_hw("local-candle", true, TrainerHardware::Any)),
-            ("mlx-local", caps_hw("mlx-local", true, TrainerHardware::Metal)),
+            (
+                "local-candle",
+                caps_hw("local-candle", true, TrainerHardware::Any),
+            ),
+            (
+                "mlx-local",
+                caps_hw("mlx-local", true, TrainerHardware::Metal),
+            ),
         ]);
         let coord = FineTuningCoordinator::with_host(reg, host(false, true, false));
-        let (id, _) = coord.select(&base_request("Qwen/Qwen2.5-Coder-3B"), None).unwrap();
+        let (id, _) = coord
+            .select(&base_request("Qwen/Qwen2.5-Coder-3B"), None)
+            .unwrap();
         assert_eq!(id, "local-candle");
     }
 

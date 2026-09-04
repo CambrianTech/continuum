@@ -8,4 +8,10 @@
  * CPU/MEM series already use; `process_bytes` is our-process-only and is
  * deliberately kept distinct).
  */
-export type GpuSnapshot = { platform: string, device_name: string, total_bytes: number, free_bytes: number, process_bytes: number, utilization: number, temperature_c?: number, power_watts?: number, pressure: number, };
+export type GpuSnapshot = { platform: string, device_name: string, total_bytes: number, 
+/**
+ * Absent when the platform has no free-bytes reading yet — a renderer
+ * must show "unknown", never compute `used = total - 0` and paint a
+ * full bar. See [`GpuMonitor::free_bytes`].
+ */
+free_bytes?: number, process_bytes: number, utilization: number, temperature_c?: number, power_watts?: number, pressure: number, };

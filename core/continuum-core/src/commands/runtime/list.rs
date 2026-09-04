@@ -9,7 +9,10 @@ use crate::modules::runtime_control::RuntimeRegistryCell;
 /// has always returned.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/runtime/RuntimeListModuleInfo.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/runtime/RuntimeListModuleInfo.ts"
+)]
 pub struct RuntimeListModuleInfo {
     pub name: String,
     pub priority: String,
@@ -22,7 +25,10 @@ pub struct RuntimeListModuleInfo {
 /// Result of `runtime/list`: every registered module's config, plus the count.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/runtime/RuntimeListResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/runtime/RuntimeListResult.ts"
+)]
 pub struct RuntimeListResult {
     pub modules: Vec<RuntimeListModuleInfo>,
     #[ts(type = "number")]

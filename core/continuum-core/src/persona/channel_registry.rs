@@ -350,19 +350,17 @@ impl ChannelRegistry {
     /// `ChatChannelView::interpret` panics if called on a non-Chat unit
     /// (programmer-error guard) so a future migration can't silently
     /// regress.
-    fn interpret_for_domain(
-        unit: &CoherentUnit,
-        identity: &PersonaIdentity,
-    ) -> CoherentInput {
+    fn interpret_for_domain(unit: &CoherentUnit, identity: &PersonaIdentity) -> CoherentInput {
         match unit.domain() {
             ActivityDomain::Chat => ChatChannelView.interpret(unit, identity),
-            domain @ (ActivityDomain::Audio
-            | ActivityDomain::Code
-            | ActivityDomain::Background) => CoherentInput::Other {
-                domain,
-                item_count: unit.len(),
-                window_span_ms: unit.window_span_ms(),
-            },
+            domain
+            @ (ActivityDomain::Audio | ActivityDomain::Code | ActivityDomain::Background) => {
+                CoherentInput::Other {
+                    domain,
+                    item_count: unit.len(),
+                    window_span_ms: unit.window_span_ms(),
+                }
+            }
         }
     }
 }
@@ -663,7 +661,10 @@ mod tests {
             DEFAULT_BURST_WINDOW_MS,
         );
 
-        assert!(inputs.is_empty(), "empty registry must return empty Vec, not a sentinel");
+        assert!(
+            inputs.is_empty(),
+            "empty registry must return empty Vec, not a sentinel"
+        );
     }
 
     /// proves: state.inbox_load + mood update side-effects survive the
@@ -785,7 +786,7 @@ mod tests {
             room_id: room,
             content: "hey Maya, can you take a look?".into(),
             sender_id: Uuid::new_v4(),
-            sender_name: "Joel".into(),
+            sender_name: "Operator".into(),
             sender_type: SenderType::Human,
             mentions: false,
             timestamp: now_ms(),
@@ -797,7 +798,9 @@ mod tests {
             #[cfg(any(test, feature = "test-fixtures"))]
             compute_calls: std::sync::atomic::AtomicUsize::new(0),
         });
-        registry.route(mention.clone() as Arc<dyn QueueItemBehavior>).unwrap();
+        registry
+            .route(mention.clone() as Arc<dyn QueueItemBehavior>)
+            .unwrap();
 
         // Maya's perspective — she should see herself mentioned
         let inputs_maya = registry.service_cycle_batched(
@@ -805,14 +808,22 @@ mod tests {
             &PersonaIdentity::new(Uuid::new_v4(), "Maya"),
             DEFAULT_BURST_WINDOW_MS,
         );
-        let maya_mentioned = inputs_maya.iter().find_map(|i| match i {
-            CoherentInput::Chat(c) => Some(c.anyone_mentioned_persona),
-            _ => None,
-        }).expect("Maya should have received a chat input");
-        assert!(maya_mentioned, "Maya should see herself mentioned in 'hey Maya'");
+        let maya_mentioned = inputs_maya
+            .iter()
+            .find_map(|i| match i {
+                CoherentInput::Chat(c) => Some(c.anyone_mentioned_persona),
+                _ => None,
+            })
+            .expect("Maya should have received a chat input");
+        assert!(
+            maya_mentioned,
+            "Maya should see herself mentioned in 'hey Maya'"
+        );
 
         // Re-route the same item for a fresh tick (drain consumed it)
-        registry.route(mention as Arc<dyn QueueItemBehavior>).unwrap();
+        registry
+            .route(mention as Arc<dyn QueueItemBehavior>)
+            .unwrap();
 
         // Helper's perspective — he should NOT see himself mentioned
         let inputs_helper = registry.service_cycle_batched(
@@ -820,10 +831,16 @@ mod tests {
             &PersonaIdentity::new(Uuid::new_v4(), "Helper"),
             DEFAULT_BURST_WINDOW_MS,
         );
-        let helper_mentioned = inputs_helper.iter().find_map(|i| match i {
-            CoherentInput::Chat(c) => Some(c.anyone_mentioned_persona),
-            _ => None,
-        }).expect("Helper should have received a chat input");
-        assert!(!helper_mentioned, "Helper should NOT see himself mentioned — Maya was named, not Helper");
+        let helper_mentioned = inputs_helper
+            .iter()
+            .find_map(|i| match i {
+                CoherentInput::Chat(c) => Some(c.anyone_mentioned_persona),
+                _ => None,
+            })
+            .expect("Helper should have received a chat input");
+        assert!(
+            !helper_mentioned,
+            "Helper should NOT see himself mentioned — Maya was named, not Helper"
+        );
     }
 }

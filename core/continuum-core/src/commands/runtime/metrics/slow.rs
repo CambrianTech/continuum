@@ -9,7 +9,10 @@ use crate::modules::runtime_control::RuntimeRegistryCell;
 /// command is reported regardless of outcome).
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/runtime/SlowCommand.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/runtime/SlowCommand.ts"
+)]
 pub struct SlowCommand {
     pub module: String,
     pub command: String,
@@ -25,7 +28,10 @@ pub struct SlowCommand {
 /// descending, with the count and the threshold (ms) that classifies "slow".
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/runtime/RuntimeMetricsSlowResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/runtime/RuntimeMetricsSlowResult.ts"
+)]
 pub struct RuntimeMetricsSlowResult {
     pub slow_commands: Vec<SlowCommand>,
     #[ts(type = "number")]

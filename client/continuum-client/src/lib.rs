@@ -7,6 +7,7 @@
 //! everywhere.
 
 pub mod airc_ipc;
+pub mod attach;
 pub mod command;
 pub mod connection;
 pub mod error;
@@ -17,6 +18,7 @@ pub mod session;
 pub mod transport;
 
 pub use airc_ipc::AircIpcTransport;
+pub use attach::{attach_local_substrate, SubstrateAttachment};
 pub use command::CommandClient;
 pub use connection::Connection;
 pub use error::ClientError;

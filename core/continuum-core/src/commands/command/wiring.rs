@@ -89,9 +89,8 @@ pub fn ensure_mod_lines(src_root: &Path, id: &CommandIdent) -> Result<Vec<PathBu
         }
         let updated = insert_mod_line(&existing, &line);
         if let Some(parent) = mod_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                CommandError::Internal(format!("create {}: {e}", parent.display()))
-            })?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| CommandError::Internal(format!("create {}: {e}", parent.display())))?;
         }
         std::fs::write(&mod_path, updated)
             .map_err(|e| CommandError::Internal(format!("write {}: {e}", mod_path.display())))?;

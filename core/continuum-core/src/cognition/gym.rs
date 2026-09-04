@@ -146,6 +146,153 @@ fn embedded_names() -> String {
 /// resolution order. Returns a human-readable error string on failure (caller
 /// wraps it in its own `CommandError`), naming the reference and the candidates
 /// tried — never silently degrades.
+/// Where FETCHED gym suites materialize (`benchmark/fetch` writes converted
+/// external collections here — e.g. `ds-1000.jsonl`). Sibling of the SWE cache,
+/// same eviction story owner (`~/.continuum/benchmarks` is a governed cache class).
+pub fn gym_cache_dir() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string()); // no $HOME (systemd/minimal env): cwd-relative cache beats a panic — same fallback the sibling cache dirs use
+    std::path::PathBuf::from(home).join(".continuum/benchmarks/gym")
+}
+
+/// A fetched gym is a DERIVED artifact of (dataset rows × adapter conversion
+/// code), but its cache file is keyed only by dataset name — so an adapter fix
+/// silently kept serving stale conversions until 2026-08-22, when the DS-1000
+/// oracle fix (#2366) shipped while all 1,000 cached tasks still carried the
+/// outlawed splicing runner baked into their `setup_shell`. The cure is a
+/// fingerprint COMPUTED FROM THE CONVERSION ITSELF (never hand-bumped): hash the
+/// adapter's output for one canonical probe row, plus any program it stages
+/// out-of-band (AlgoTune's on-disk harness). Any adapter change moves the
+/// fingerprint automatically; materialize writes it as a sidecar; resolve
+/// refuses a mismatch loudly, naming the one re-fetch command.
+pub fn fingerprint_parts(parts: &[&str]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    for p in parts {
+        h.update(p.as_bytes());
+        h.update([0u8]); // part separator so ("ab","c") != ("a","bc")
+    }
+    format!("{:x}", h.finalize())
+}
+
+/// The one writer for fetched gyms: atomic jsonl write + the fingerprint
+/// sidecar. Adapters MUST come through here — the sidecar is what lets
+/// [`resolve_gym`] refuse a cache the current adapter didn't produce, and a
+/// hand-rolled write that skips it would re-open the stale-oracle hole this
+/// seam exists to close. Sidecar lands AFTER the jsonl, so a crash between the
+/// two leaves a mismatch that refuses (the safe direction), never a lie.
+pub fn write_fetched_gym(
+    basename: &str,
+    lines: &[String],
+    fingerprint: &str,
+) -> Result<(std::path::PathBuf, usize), String> {
+    let dir = gym_cache_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let path = dir.join(basename);
+    let tmp = path.with_extension("jsonl.tmp");
+    std::fs::write(&tmp, lines.join("\n") + "\n").map_err(|e| format!("write: {e}"))?;
+    std::fs::rename(&tmp, &path).map_err(|e| format!("rename: {e}"))?;
+    std::fs::write(path.with_extension("jsonl.fingerprint"), fingerprint)
+        .map_err(|e| format!("write fingerprint sidecar: {e}"))?;
+    Ok((path, lines.len()))
+}
+
+/// Every fetched-gym basename under the staleness contract — the iteration order
+/// of [`fetched_gym_statuses`] and the key set of [`fetched_fingerprint_for`].
+const FETCHED_GYM_BASENAMES: &[&str] = &[
+    "ds-1000.jsonl",
+    "algotune.jsonl",
+    "super-masked.jsonl",
+    "terminal-bench.jsonl",
+];
+
+/// Current adapter fingerprint per fetched-gym basename. A basename NOT listed
+/// here has no staleness contract (an operator's hand-placed cache file resolves
+/// as before); every `benchmark/fetch`-materialized suite must be. Same
+/// one-table-in-one-file shape as [`EMBEDDED_GYMS`].
+fn fetched_fingerprint_for(basename: &str) -> Option<String> {
+    match basename {
+        "ds-1000.jsonl" => Some(crate::cognition::benchmark_ds1000::adapter_fingerprint()),
+        "algotune.jsonl" => Some(crate::cognition::benchmark_algotune::adapter_fingerprint()),
+        "super-masked.jsonl" => Some(crate::cognition::benchmark_super::adapter_fingerprint()),
+        "terminal-bench.jsonl" => {
+            Some(crate::cognition::benchmark_terminalbench::adapter_fingerprint())
+        }
+        _ => None,
+    }
+}
+
+/// One fetched gym's cache health, as `benchmark/verify` reports it.
+pub struct FetchedGymStatus {
+    /// Cache file basename (`ds-1000.jsonl`).
+    pub basename: String,
+    /// `fresh` | `stale` | `not-fetched`.
+    pub state: &'static str,
+    /// The one command that fixes a non-fresh state, `None` when fresh.
+    /// (`not-fetched` is only a problem if you intend to dispatch that suite.)
+    pub action: Option<String>,
+}
+
+/// Cache health for every contracted fetched gym — the check `resolve_gym`
+/// performs per-reference, surfaced for all suites at once so an operator (or a
+/// weaker driver) never has to reconstruct tonight's stale-oracle audit by hand.
+pub fn fetched_gym_statuses() -> Vec<FetchedGymStatus> {
+    FETCHED_GYM_BASENAMES
+        .iter()
+        .map(|basename| {
+            let bench = basename.strip_suffix(".jsonl").unwrap_or(basename); // diagnostic text only, same as the freshness refusal
+            let refetch = format!("continuum benchmark/fetch --benchmark {bench}");
+            let cached = gym_cache_dir().join(basename);
+            if !cached.is_file() {
+                return FetchedGymStatus {
+                    basename: basename.to_string(),
+                    state: "not-fetched",
+                    action: Some(refetch),
+                };
+            }
+            let sidecar = std::fs::read_to_string(cached.with_extension("jsonl.fingerprint")).ok();
+            let fresh = fetched_gym_freshness(
+                basename,
+                sidecar.as_deref(),
+                fetched_fingerprint_for(basename).as_deref(),
+            )
+            .is_ok();
+            FetchedGymStatus {
+                basename: basename.to_string(),
+                state: if fresh { "fresh" } else { "stale" },
+                action: (!fresh).then_some(refetch),
+            }
+        })
+        .collect()
+}
+
+/// Pure freshness verdict for a cached fetched gym, split out so the refusal
+/// logic is testable without $HOME games. `sidecar` is the sidecar's contents
+/// (None = file absent — a pre-fingerprint or hand-rolled write, equally
+/// unprovable, equally refused when a contract exists).
+fn fetched_gym_freshness(
+    basename: &str,
+    sidecar: Option<&str>,
+    current: Option<&str>,
+) -> Result<(), String> {
+    let Some(current) = current else {
+        return Ok(()); // no contract for this basename — operator artifact, resolves as-is
+    };
+    match sidecar {
+        Some(s) if s.trim() == current => Ok(()),
+        _ => {
+            let bench = basename.strip_suffix(".jsonl").unwrap_or(basename); // diagnostic text only: a suffixless basename names itself in the re-fetch hint, nothing is budgeted on it
+            Err(format!(
+                "fetched gym '{basename}' is STALE: its cache was not produced by the \
+                 current adapter (sidecar {found}, adapter {current}). Grading tasks \
+                 staged from it would use an outdated oracle — the exact defect that \
+                 shipped 1,000 splicing DS-1000 runners on 2026-08-22. \
+                 Re-materialize: `continuum benchmark/fetch --benchmark {bench}`",
+                found = sidecar.map_or("missing".to_string(), |s| s.trim().to_string()),
+            ))
+        }
+    }
+}
+
 pub fn resolve_gym(reference: &str) -> Result<(String, String), String> {
     // (1) An existing on-disk file wins — a custom gym the operator points at.
     if Path::new(reference).is_file() {
@@ -153,14 +300,61 @@ pub fn resolve_gym(reference: &str) -> Result<(String, String), String> {
             .map_err(|e| format!("eval_set '{reference}' exists but could not be read: {e}"))?;
         return Ok((reference.to_string(), text));
     }
+    // (1.5) A FETCHED gym in the benchmark cache — external collections
+    // (ds-1000, …) that `benchmark/fetch` converted onto the gym rails. After
+    // the on-disk check (an operator's explicit file still wins) and before the
+    // embedded registry (a fetched suite must not be shadowed by a stale
+    // committed copy of the same name).
+    let cached = gym_cache_dir().join(reference);
+    if cached.is_file() {
+        // Freshness gate: refuse a cache the CURRENT adapter didn't produce.
+        // Serving it would stage tasks under an outdated oracle (#2366's stale-
+        // cache shadow) — refusing names the one command that re-materializes.
+        let base = Path::new(reference)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(reference); // non-UTF8 reference: fall through as no-contract, same as embedded_for
+        let sidecar = std::fs::read_to_string(cached.with_extension("jsonl.fingerprint")).ok();
+        fetched_gym_freshness(base, sidecar.as_deref(), fetched_fingerprint_for(base).as_deref())?;
+        let text = std::fs::read_to_string(&cached)
+            .map_err(|e| format!("fetched gym '{}' could not be read: {e}", cached.display()))?;
+        return Ok((cached.display().to_string(), text));
+    }
     // (2) A committed gym baked into the binary — CWD-/deployment-independent.
     if let Some((name, bytes)) = embedded_for(reference) {
         return Ok((format!("embedded:{name}"), bytes.to_string()));
     }
-    // (3) Neither — fail loud with everything tried.
+    // (2.5) GENERATED gyms — deterministic in-binary generators (no JSONL to
+    // commit, no blobs in git; byte-stable by seeded construction). vision-qa:
+    // the input-side vision benchmark (see cognition::vision_gym).
+    if reference == "vision-qa" || reference == "vision-qa.jsonl" {
+        return Ok((
+            "generated:vision-qa".to_string(),
+            crate::cognition::vision_gym::vision_qa_jsonl().to_string(),
+        ));
+    }
+    // (3a) SIGNPOST, not a dead-end: a SWE-class benchmark reached the GYM resolver means
+    // the caller used the wrong verb — SWE does NOT run through `benchmark/round`/the gym
+    // eval path, it runs through the kanban adapter `benchmark/dispatch`. The old error
+    // ("not a committed gym. Committed gyms: <rust list>") sent every driver — human and
+    // Opus — into days of archaeology looking for a SWE gym that does not exist. Point at
+    // the right verb instead (measured 2026-08-25: this refusal, verbatim, cost a session).
+    if reference.contains("swe-bench") || reference.contains("swe-rebench") {
+        return Err(format!(
+            "'{reference}' is a SWE-bench benchmark — it does NOT run through the gym path \
+             (benchmark/round resolves GYMS only). SWE runs through the kanban adapter:\n  \
+             continuum benchmark/dispatch --name {reference} \
+             --instances '[\"<instance_id>\", ...]' --assignees '[\"<persona>\"]' \
+             --drive detached_solve --force\n\
+             Step-by-step + failure modes: benchmarks/swe/RUNBOOK.md"
+        ));
+    }
+    // (3b) Neither file, cache, committed gym, nor SWE — fail loud with everything tried.
     Err(format!(
         "eval_set '{reference}' could not be resolved: no such file on disk \
-         (cwd={cwd}), and it is not a committed gym. Committed gyms: {names}.",
+         (cwd={cwd}), and it is not a committed gym. Committed gyms: {names}. \
+         (A SWE-bench collection? Use `benchmark/dispatch`, not the gym path — \
+         see benchmarks/swe/RUNBOOK.md.)",
         cwd = std::env::current_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| "<unknown>".to_string()),
@@ -216,6 +410,38 @@ mod tests {
         assert_eq!(text, text2);
     }
 
+    // what this catches: the stale-fetched-gym class (regression for #2366's
+    // shadow — the DS-1000 oracle fix shipped while all 1,000 cached tasks still
+    // staged the outlawed splicing runner). A cache whose sidecar doesn't match
+    // the CURRENT adapter fingerprint (or has no sidecar at all) must refuse to
+    // resolve, naming the one re-fetch command; a matching sidecar passes; a
+    // basename with no contract (operator artifact) passes untouched.
+    #[test]
+    fn a_stale_fetched_gym_refuses_to_resolve_and_names_the_refetch_command() {
+        let current = crate::cognition::benchmark_ds1000::adapter_fingerprint();
+        // deterministic: same code → same fingerprint, every call
+        assert_eq!(current, crate::cognition::benchmark_ds1000::adapter_fingerprint());
+
+        // fresh cache: sidecar matches → resolves
+        assert!(fetched_gym_freshness("ds-1000.jsonl", Some(&current), Some(&current)).is_ok());
+        // stale cache: sidecar from an older adapter → refuse, name the command
+        let err = fetched_gym_freshness("ds-1000.jsonl", Some("deadbeef"), Some(&current))
+            .expect_err("a mismatched fingerprint must refuse");
+        assert!(err.contains("benchmark/fetch --benchmark ds-1000"), "{err}");
+        assert!(err.contains("STALE"), "{err}");
+        // pre-fingerprint cache (no sidecar): equally unprovable, equally refused
+        assert!(fetched_gym_freshness("ds-1000.jsonl", None, Some(&current)).is_err());
+        // no contract for this basename: an operator's hand-placed file resolves as before
+        assert!(fetched_gym_freshness("my-custom.jsonl", None, None).is_ok());
+
+        // every registered fetched gym computes a real fingerprint (a panic or
+        // empty string here means an adapter broke its probe conversion)
+        for name in ["ds-1000.jsonl", "algotune.jsonl", "super-masked.jsonl"] {
+            let fp = fetched_fingerprint_for(name).expect("registered");
+            assert_eq!(fp.len(), 64, "{name}: sha256 hex expected, got '{fp}'");
+        }
+    }
+
     // what this catches: a typo'd / nonexistent gym FAILS LOUD naming the
     // reference and the embedded candidates — never silently degrades to a
     // default or a smaller set ([[fallbacks-are-illegal-fail-loud]]).
@@ -224,7 +450,24 @@ mod tests {
         let err = resolve_gym("docs/genome/does-not-exist.jsonl")
             .expect_err("unknown gym must fail loud");
         assert!(err.contains("does-not-exist.jsonl"), "names the reference");
-        assert!(err.contains("coder-eval.jsonl"), "lists embedded candidates");
+        assert!(
+            err.contains("coder-eval.jsonl"),
+            "lists embedded candidates"
+        );
+    }
+
+    // what this catches: a SWE-bench benchmark reaching the GYM resolver (the wrong verb —
+    // benchmark/round instead of benchmark/dispatch) is a SIGNPOST, not a dead-end. The old
+    // "not a committed gym. Committed gyms: <rust list>" sent every driver into days of
+    // archaeology (measured 2026-08-25). The error must name benchmark/dispatch + the runbook.
+    #[test]
+    fn swe_benchmark_name_points_at_dispatch_not_a_dead_end() {
+        for name in ["swe-bench-verified", "swe-bench-lite", "swe-rebench"] {
+            let err = resolve_gym(name).expect_err("SWE is not a gym — must fail loud");
+            assert!(err.contains("benchmark/dispatch"), "{name}: points at the right verb: {err}");
+            assert!(err.contains("RUNBOOK"), "{name}: points at the runbook: {err}");
+            assert!(!err.contains("Committed gyms:"), "{name}: NOT the generic dead-end: {err}");
+        }
     }
 
     // what this catches: the `code` trait resolves to its measuring gym, an

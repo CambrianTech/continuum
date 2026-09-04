@@ -19,4 +19,4 @@ export type PersonaTurnFrameReplayRecord = { schemaVersion: number, personaId: s
  * Capturing the prompt at record time pins the input to
  * inference for downstream attribution.
  */
-responsePrompt?: ResponsePrompt | null, };
+responsePrompt?: ResponsePrompt, };

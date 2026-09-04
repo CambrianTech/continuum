@@ -52,6 +52,7 @@ impl<T: Transport> CommandClient<T> {
         mut params: Value,
     ) -> Result<Value, ClientError> {
         self.stamp_context(&mut params);
+        stamp_actor_kind(&mut params);
         self.transport.execute(command, params).await
     }
 
@@ -87,6 +88,28 @@ impl<T: Transport> CommandClient<T> {
                 Value::String(context_id.to_string()),
             );
         }
+    }
+}
+
+
+/// Stamp the CLAIMED actor kind when this process is driven by an AI agent
+/// session (Claude Code / Codex / etc — detected from the agent runtimes' own
+/// env markers). Attribution, not authentication: the core's caller-less
+/// sender chain resolves an `"agent"` claim to the AGENT self-peer, so an
+/// agent's probes and chat never wear the human operator's name (Joel,
+/// 2026-09-01: "the chat history is clearly attributing shit you did to me").
+/// A human at a bare terminal has none of these markers and stays the operator.
+fn stamp_actor_kind(params: &mut Value) {
+    let agent_env = std::env::var_os("CLAUDECODE").is_some()
+        || std::env::var_os("AI_AGENT").is_some()
+        || std::env::var_os("CLAUDE_CODE_ENTRYPOINT").is_some()
+        || std::env::var_os("CODEX_SANDBOX").is_some();
+    if !agent_env {
+        return;
+    }
+    if let Value::Object(map) = params {
+        map.entry("actorKind".to_string())
+            .or_insert_with(|| Value::String("agent".to_string()));
     }
 }
 

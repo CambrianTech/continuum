@@ -70,7 +70,10 @@ impl HubKind {
 /// Shared params for both `hf/search-models` and `hf/search-datasets` — one search
 /// contract, two faces (compression: the query shape is identical).
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/hf/HfSearchParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/hf/HfSearchParams.ts"
+)]
 pub struct HfSearchParams {
     /// Full-text query, matched against repo id, author, tags and description —
     /// e.g. "qwen2.5 coder gguf", "medical dialogue", "function calling dataset".
@@ -95,7 +98,10 @@ pub struct HfSearchParams {
 /// The result of a Hub search: the query echoed, what kind it searched, and the
 /// ranked hits.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/hf/HfSearchResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/hf/HfSearchResult.ts"
+)]
 pub struct HfSearchResult {
     pub query: String,
     /// "model" or "dataset".
@@ -258,11 +264,17 @@ mod tests {
             {"id":"some/sparse-repo"}
         ]"#;
         let raw: Vec<HfRepoRaw> = serde_json::from_str(json).expect("parse HF json");
-        let hits: Vec<HfHit> = raw.into_iter().map(|r| to_hit(r, HubKind::Models)).collect();
+        let hits: Vec<HfHit> = raw
+            .into_iter()
+            .map(|r| to_hit(r, HubKind::Models))
+            .collect();
 
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].id, "Qwen/Qwen2.5-Coder-7B-Instruct");
-        assert_eq!(hits[0].url, "https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct");
+        assert_eq!(
+            hits[0].url,
+            "https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct"
+        );
         assert_eq!(hits[0].downloads, 123_456);
         assert_eq!(hits[0].likes, 789);
         assert_eq!(hits[0].task.as_deref(), Some("text-generation"));

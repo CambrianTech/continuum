@@ -399,7 +399,10 @@ mod tests {
         let c = card(Some(me_peer), true, Some(500));
         let h = holder(&c, me_peer.as_uuid(), 1_000, &NoNames);
         assert!(h.is_self);
-        assert_eq!(h.render(), "claim lapsed (was YOURS) — claimable, resume it");
+        assert_eq!(
+            h.render(),
+            "claim lapsed (was YOURS) — claimable, resume it"
+        );
         assert!(h.claimable(CardState::Claimed));
     }
 

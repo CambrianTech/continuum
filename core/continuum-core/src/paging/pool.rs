@@ -306,8 +306,15 @@ pub type EvictionPriority<V> = Arc<dyn Fn(&PoolEntryView, &V) -> i64 + Send + Sy
 
 /// LRU eviction priority — older `last_access_at` evicts first.
 /// Value-blind; works for any V.
+///
+/// SIGN MATTERS: `evict_at_least` sorts ascending and evicts from the front,
+/// so the OLDEST entry needs the LOWEST value — the raw timestamp, unnegated.
+/// The first cut returned `-(last_access_at)`, which inverted the whole policy
+/// into MRU: every pool using this helper evicted its most-recently-touched
+/// entry first (caught 2026-08-26 by the KV slot pool's recycle test — the
+/// warm slot that had JUST been refreshed was the one evicted).
 pub fn lru_priority<V>() -> EvictionPriority<V> {
-    Arc::new(|entry: &PoolEntryView, _value: &V| -(entry.last_access_at as i64))
+    Arc::new(|entry: &PoolEntryView, _value: &V| entry.last_access_at as i64)
 }
 
 /// Size-weighted LRU — among similarly-aged entries, larger evicts first.
@@ -316,7 +323,9 @@ pub fn lru_priority<V>() -> EvictionPriority<V> {
 /// Value-blind; works for any V.
 pub fn size_weighted_lru<V>() -> EvictionPriority<V> {
     Arc::new(|entry: &PoolEntryView, _value: &V| {
-        -(entry.last_access_at as i64) - (entry.size_bytes / 1024) as i64
+        // Same ascending-sort contract as [`lru_priority`]: older evicts first,
+        // and among similar ages the LARGER entry evicts first (lower value).
+        entry.last_access_at as i64 - (entry.size_bytes / 1024) as i64
     })
 }
 
@@ -973,6 +982,41 @@ mod tests {
         assert!(
             stats.eviction_count > 0,
             "eviction should have fired at least once"
+        );
+    }
+
+    // what this catches: the LRU sign inversion. evict_at_least sorts priority
+    // ascending and evicts from the front, so lru_priority must give the OLDEST
+    // entry the LOWEST value. The first cut negated the timestamp — MRU wearing
+    // LRU's name — and every pool using the helper evicted its most-recently-
+    // touched entry first (caught live 2026-08-26: the KV slot pool evicted the
+    // warm slot that had JUST been refreshed). regression for that inversion.
+    #[tokio::test]
+    async fn lru_priority_evicts_the_oldest_not_the_newest() {
+        let pool: PagedResourcePool<String, u32> = PagedResourcePool::new(PoolConfig {
+            name: "lru-order".into(),
+            max_bytes: 100,
+            sizer: Arc::new(|_| 1),
+            eviction_priority: lru_priority(),
+        });
+        pool.load_or_share("old".to_string(), |_| async { Ok(1u32) })
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        pool.load_or_share("new".to_string(), |_| async { Ok(2u32) })
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        // Refresh "new" so its last_access is strictly freshest.
+        let _ = pool.get(&"new".to_string());
+        assert_eq!(pool.evict_at_least(1), 1);
+        assert!(
+            pool.get(&"old".to_string()).is_none(),
+            "the OLDEST entry is the one evicted"
+        );
+        assert!(
+            pool.get(&"new".to_string()).is_some(),
+            "the freshest entry survives"
         );
     }
 

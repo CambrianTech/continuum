@@ -11,9 +11,10 @@
  * fabricated zero.
  */
 
-import type { BenchViewState, BenchRunRow } from '@continuum/sdk-typescript';
+import type { BenchViewState, BenchRoundRow, BenchRunRow } from '@continuum/sdk-typescript';
 import type {
   BenchContentBody,
+  BenchRoundVM,
   BenchRunVM,
   BenchRunState,
   BenchVerdictVM,
@@ -40,6 +41,10 @@ function stateOf(row: BenchRunRow): BenchRunState {
       return 'failed';
     case 'quiet':
       return 'stalled';
+    case 'queued':
+      // The core's cross-card verdict: silent, but the solver's hands are
+      // busy on another run — waiting a turn, never an alarm.
+      return 'queued';
     default:
       return (row.acts ?? 0) > 0 ? 'working' : 'queued';
   }
@@ -75,6 +80,9 @@ function runVM(row: BenchRunRow): BenchRunVM {
   const acts = row.acts ?? 0;
   return {
     runId: row.run_id,
+    ...(row.round_id !== undefined ? { roundId: row.round_id } : {}),
+    ...(row.solve_room !== undefined ? { roomId: row.solve_room } : {}),
+    ...(row.solve_room_name !== undefined ? { roomName: row.solve_room_name } : {}),
     // The board names WHAT when the ledger carries it; a non-SWE run is
     // honestly identified by its run id, never a guessed instance.
     instance: compactId(row.instance ?? row.run_id),
@@ -95,11 +103,48 @@ function runVM(row: BenchRunRow): BenchRunVM {
   };
 }
 
+/** Wire round → scoreboard VM. Adapt, never recompute: settled/remaining are
+ *  the round tracker's own state (#371), not client-side arithmetic. */
+function roundVM(row: BenchRoundRow): BenchRoundVM {
+  return {
+    roundId: compactId(row.round_id),
+    rawId: row.round_id,
+    benchmark: row.benchmark,
+    stage: row.stage,
+    dispatched: row.dispatched,
+    settled: row.settled,
+    remaining: row.remaining,
+    driver: row.driver,
+    // Pre-verdict wires fold to the honest empties — render nothing, never
+    // guess (the 2026-09-01 rule: an undifferentiated `working` is the bug).
+    verdict: row.verdict ?? '',
+    idleSecs: row.idle_secs ?? null,
+    cards: (row.cards ?? []).map((c) => ({
+      cardId: c.card_id,
+      instance: c.instance,
+      // A uuid-shaped assignee (never staged to a named solver yet) compacts
+      // like every other id on the board.
+      assignee: c.assignee.length === 36 ? compactId(c.assignee) : c.assignee,
+      solveRoomName: c.solve_room_name,
+      state: c.state,
+      acts: c.acts ?? null,
+      patchBytes: c.patch_bytes ?? null,
+      lastActSecs: c.last_act_secs ?? null,
+      resolved: c.resolved ?? null,
+      owner: c.owner ?? '',
+      boardState: c.board_state ?? '',
+      gradedAtMs: c.graded_at_ms ?? null,
+    })),
+  };
+}
+
 /** The bench board content body — `feedLive` is true only when the bench
  *  subscription has actually delivered (same contract as serving/arena). */
 export function benchContentBody(view?: BenchViewState): BenchContentBody {
   return {
     runs: (view?.runs ?? []).map(runVM),
+    // Older wires predate `rounds` — fold absent to empty, the honest frame.
+    rounds: (view?.rounds ?? []).map(roundVM),
     feedLive: view !== undefined,
   };
 }

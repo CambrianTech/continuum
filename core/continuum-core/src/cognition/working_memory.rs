@@ -139,8 +139,19 @@ struct DispatchedAction {
 /// `Arc`; shared between the writer (deliberation faculty) and the reader
 /// (`WorkingMemoryFaculty`). `parking_lot::Mutex` — no poisoning, and every access
 /// is a quick sync snapshot/push with no `.await` held across the lock.
+/// The working-memory faculty's canonical id — the ONE string the contribution
+/// carries and every consumer (stability ordering in the deliberation tail,
+/// capture tooling) matches on.
+pub(crate) const WM_FACULTY_ID: &str = "working-memory";
+
 #[derive(Debug)]
 pub struct WorkingMemory {
+    /// Process-unique construction ordinal. Purely diagnostic: lets any probe
+    /// that renders from this instance say WHICH instance it is, so a duplicate
+    /// cycle serving the same persona (two working memories alternating under
+    /// one mind — the 2026-08-21 split-brain, taken=3389 vs taken=0 in the same
+    /// room) is visible in one ledger row instead of by counter archaeology.
+    instance: u64,
     capacity: usize,
     /// This mind's live served context window, in tokens — the source of every re-injection
     /// bound below. `0` = not yet known (cold boot / mid-relaunch), which means NO clipping:
@@ -148,6 +159,9 @@ pub struct WorkingMemory {
     /// unknown window must never be replaced with an invented one.
     served_window: AtomicU32,
     entries: Mutex<VecDeque<WmEntry>>,
+    /// The acting root her receipts are stamped with (set at the work-turn
+    /// rooting seam, cleared on restore). See [`WmEntry::scope`].
+    scope: Mutex<Option<String>>,
     /// The FULL result of the most recent act, kept whole (bounded upstream by the
     /// executor's fold cap) so the mind can work with what its hands just fetched — a
     /// file to count, a screenshot description to read, a log to scan. Only the latest is
@@ -192,6 +206,44 @@ pub struct WorkingMemory {
     /// per session are naturally modest (a persona issues dozens of distinct calls,
     /// not millions), so it is left unbounded within the per-spawn lifetime.
     action_fp_counts: Mutex<HashMap<String, usize>>,
+    /// The PROPRIOCEPTION RECEIPT ARCHIVE — receipts-ONLY, head lines only (#414 option b).
+    ///
+    /// `entries` above is a SHARED ring: thoughts, facts, settlements and receipts all
+    /// compete for the same `capacity` slots, and receipts are the RARE kind, so they age
+    /// out while the act counter climbs. Measured 2026-08-14: Asha had executed 2,863
+    /// acts and her window rendered ONE (`+2862 earlier steps aged out`) — and with her
+    /// history invisible she concluded she had nothing to contribute (the withdrawal
+    /// loop's deprivation mechanism). Tool-origin engrams hold the durable copy but are
+    /// deliberately gated OUT of semantic recall (#166), so there was NO persona-facing
+    /// path back to her own acts.
+    ///
+    /// This ring is that path: every receipt's `[action #n]` FIRST LINE, in order,
+    /// bounded by CHARS ([`ContextBudget::receipt_archive_chars`] — window-derived,
+    /// never a bare count) instead of sharing the chatty ring's entry slots. The
+    /// steps-taken ledger renders from here, so act history survives conversation.
+    /// Persisted in [`VolatileSnapshot`] like the ring itself
+    /// ([[act-results-need-a-recency-channel-not-semantic-recall]]).
+    /// Each head carries the room the act was FOR (`None` for legacy/unscoped
+    /// receipts) so the steps ledger can render this-room acts first — scope
+    /// is the activity boundary (CAUSAL-MEMORY-GRAPH.md slice B).
+    receipt_heads: Mutex<VecDeque<(Option<Uuid>, String)>>,
+    /// Recent act RESULT TAILS `(seq, room, tail)` — the feedback channel the
+    /// `last_action` slot cannot be. That slot keeps only the LATEST result and
+    /// any act overwrites it; the pinned block is settlement-gated. So a finding
+    /// survived exactly until the next trivial act or spoken turn (2026-08-16:
+    /// Anwen's compile error was overwritten by a `list_files` one act later —
+    /// her next three turns wandered discovery tools and she re-ran the same
+    /// unfixed code). Char-bounded by the window-derived
+    /// [`ContextBudget::recent_results_chars`] share; tails are the result's
+    /// FINAL chars (errors and conclusions live at the end; the head is already
+    /// in the receipt trail).
+    recent_results: Mutex<VecDeque<(u64, Option<Uuid>, String, String, Option<String>)>>,
+    /// One-line pointers for results EVICTED from the channel above — collapse,
+    /// never delete (2026-08-24): "[result #N (verb, Nk chars) — evicted; …]".
+    /// Bounded ring; when IT overflows, the oldest pointer drops silently (a
+    /// pointer to a pointer buys nothing). Rendered as one byte-append-only-ish
+    /// message ahead of the recent-results banner.
+    evicted_pointers: Mutex<VecDeque<String>>,
     /// The lowest action `seq` whose FULL result is still "active" — i.e. the mind is
     /// still inside the act→observe loop that produced it and hasn't yet spoken. The
     /// full raw result exists to answer "what next" the moment the hands fetch it; once
@@ -273,6 +325,24 @@ pub struct VolatileSnapshot {
     /// then says nothing rather than guessing a change it cannot see (#165).
     #[serde(default)]
     pub build_sha: String,
+    /// The proprioception receipt archive (#414) — act-history head lines that must
+    /// survive a reboot exactly as the ring entries do (the counter already did; a
+    /// counter without its lines is the deprivation this field exists to end). Empty
+    /// on snapshots written before this field (serde default): restore starts the
+    /// archive fresh and the ledger's counter-only arm stays honest about the gap.
+    #[serde(default)]
+    pub receipt_heads: Vec<String>,
+    /// Room tags parallel to `receipt_heads`, index-aligned (slice B). A
+    /// SEPARATE defaulted field — not a tuple — so snapshots written before
+    /// scoping still deserialize; restore pads missing tags with `None`
+    /// (honest "unscoped", never a guessed room).
+    #[serde(default)]
+    pub receipt_head_rooms: Vec<Option<Uuid>>,
+    /// Recent act result TAILS `(seq, room, tail)` — the cross-turn feedback
+    /// channel (2026-08-16). Defaulted so pre-field snapshots deserialize;
+    /// restore then starts the buffer fresh.
+    #[serde(default)]
+    pub recent_results: Vec<(u64, Option<Uuid>, String, String, Option<String>)>,
 }
 
 /// One typed working-memory entry: kind + the FINAL rendered line (rendered
@@ -292,19 +362,32 @@ pub struct WmEntry {
     pub text: String,
     #[serde(default)]
     pub acts: Vec<Observation>,
+    /// Where her hands stood when this was recorded (the acting root), for
+    /// receipts made while rooted at a card's checkout. `None` = her own
+    /// workspace / not a receipt. A receipt from another root is not perceived
+    /// while she stands elsewhere (2026-09-05: traces from a previous card
+    /// opened every work turn with "my context is confused").
+    #[serde(default)]
+    pub scope: Option<String>,
 }
 
 impl WorkingMemory {
     pub fn new(capacity: usize) -> Self {
+        static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
         Self {
+            instance: NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed),
             capacity: capacity.max(1),
             served_window: AtomicU32::new(0),
             entries: Mutex::new(VecDeque::new()),
+            scope: Mutex::new(None),
             last_action: Mutex::new(None),
             dispatched: Mutex::new(HashMap::new()),
             next_action_seq: AtomicU64::new(1),
             action_fps: Mutex::new(VecDeque::new()),
             action_fp_counts: Mutex::new(HashMap::new()),
+            receipt_heads: Mutex::new(VecDeque::new()),
+            recent_results: Mutex::new(VecDeque::new()),
+            evicted_pointers: Mutex::new(VecDeque::new()),
             active_from_seq: AtomicU64::new(0),
         }
     }
@@ -381,7 +464,12 @@ impl WorkingMemory {
             return;
         }
         let mut e = self.entries.lock();
-        e.push_back(WmEntry { kind: WmKind::Thought, text: r.to_string(), acts: Vec::new() });
+        e.push_back(WmEntry {
+            kind: WmKind::Thought,
+            text: r.to_string(),
+            acts: Vec::new(),
+            scope: None,
+        });
         while e.len() > self.capacity {
             e.pop_front();
         }
@@ -396,7 +484,7 @@ impl WorkingMemory {
     /// changes the perception window (see `next_action_seq`). Oldest ages out past
     /// capacity, same rolling scratchpad as reasoning.
     pub fn record_receipt(&self, result: &str) {
-        self.record_receipt_inner(result, Vec::new());
+        self.record_receipt_inner(result, Vec::new(), None);
     }
 
     /// TYPED sibling of [`record_receipt`](Self::record_receipt): store the same
@@ -406,8 +494,11 @@ impl WorkingMemory {
     /// string produced ONCE at the act seam (`render_recency`) — this method does NOT
     /// re-render from `acts` (that would break the #205 KV byte-stability invariant:
     /// `text` is the stable source of truth, `acts` the parallel typed channel).
-    pub fn record_receipt_typed(&self, acts: &[Observation], rendered: &str) {
-        self.record_receipt_inner(rendered, acts.to_vec());
+    /// `room` scopes the archived head to the room the act was FOR (the act
+    /// path passes it; legacy text callers don't have it) — the steps ledger
+    /// renders this-room acts first (CAUSAL-MEMORY-GRAPH.md slice B).
+    pub fn record_receipt_typed(&self, acts: &[Observation], rendered: &str, room: Option<Uuid>) {
+        self.record_receipt_inner(rendered, acts.to_vec(), room);
     }
 
     /// Shared body: mint the monotonic `#seq`, keep the FULL latest result, and push
@@ -415,7 +506,7 @@ impl WorkingMemory {
     /// plus the (possibly empty) typed acts. One entry per batch so `recent()` stays
     /// byte-stable (a multi-call batch renders as one receipt exactly as before);
     /// `acts` carries every call's typed observation for the typed consumers.
-    fn record_receipt_inner(&self, result: &str, acts: Vec<Observation>) {
+    fn record_receipt_inner(&self, result: &str, acts: Vec<Observation>, room: Option<Uuid>) {
         let a = result.trim();
         if a.is_empty() {
             return;
@@ -425,20 +516,107 @@ impl WorkingMemory {
         // file, read a screenshot description, scan a log). Overwrites the prior latest —
         // older acts survive only as heads in the trail below.
         *self.last_action.lock() = Some((seq, a.to_string()));
+        // Recent-results feedback channel: keep this result's TAIL past the next act
+        // and the next turn (the overwrite above and the settlement gate both destroy
+        // it exactly when a multi-turn task still needs it — the Anwen regression).
+        // Per-entry share is a third of the buffer so ~3 tails coexist; eviction by
+        // total chars keeps the whole buffer inside its window-derived bound.
+        {
+            let cap = self.budget().recent_results_chars();
+            let per_entry = (cap / 3).max(1);
+            let tail: String = {
+                let chars: Vec<char> = a.chars().collect();
+                let start = chars.len().saturating_sub(per_entry);
+                chars[start..].iter().collect()
+            };
+            let label = acts
+                .first()
+                .map(|o| o.call.name.clone())
+                .unwrap_or_else(|| "act".to_string());
+            let handle = acts.iter().find_map(|o| o.output.result.spill_handle.clone());
+            let mut rr = self.recent_results.lock();
+            rr.push_back((seq, room, tail, label, handle));
+            // NO mid-settle eviction (2026-08-24, the third head-rotation): evicting
+            // here pop_fronted the ring on every act past ~3, and on a model whose KV
+            // cannot shift (`ModelServingPrefs::kv_shiftable = Some(false)` — llama:
+            // "cache_reuse is not supported by this context") every byte after the
+            // rotation re-prefilled, pinning reuse at the system head for the whole
+            // act loop. Within one settle the ring only APPENDS — the served window
+            // (via fit_messages) is the real mid-settle bound, and the eval budget
+            // dwarfs any task's ring. The cap is enforced at SETTLEMENT
+            // ([`Self::record_settlement`] → `collapse_results_over_cap`), the
+            // boundary where the prompt re-prefills anyway.
+        }
         // Head into the rolling recency trail: proprioception ("I did #n X") + the
         // repeat-break signal. Truncation lives HERE now (one place), so callers pass the
         // full result and never pre-truncate. Append-only + `#seq`-stamped keeps the
         // trail's KV-cache prefix byte-stable across a settle-act.
         let head: String = a.chars().take(self.budget().trail_head_chars()).collect();
+        let text = format!("[action #{seq}] {head}");
+        // Receipts-own archive (#414): every act's head line, kept beyond the shared
+        // ring's lifetime so the steps ledger can show act HISTORY, not just the last
+        // few conversation beats. Char-bounded by the window-derived archive share.
+        //
+        // COMPACT head from the TYPED channel when we have it (CAUSAL-MEMORY-GRAPH.md
+        // slice B): `name(args)` per call, never the receipt's first line — that line
+        // drags the full `because <reasoning>` clause (~250 chars), which starved a
+        // 1,808-act citizen down to 1-2 visible acts (measured live 2026-08-15). The
+        // reasoning is not lost: it lives in the act's engram content, reachable
+        // through the CausedBy edge. Legacy text callers (no typed acts) keep the
+        // first-line head unchanged.
+        let archive_head = if acts.is_empty() {
+            text.lines().next().unwrap_or_default().to_string()
+        } else {
+            let calls: Vec<String> = acts
+                .iter()
+                .map(|o| {
+                    let args = o.call.input.to_string();
+                    let args: String = args.chars().take(48).collect();
+                    format!("{}({args})", o.call.name)
+                })
+                .collect();
+            format!("[action #{seq}] {}", calls.join("; "))
+        };
+        self.push_receipt_head(room, archive_head);
+        let scope = self.scope.lock().clone();
         let mut e = self.entries.lock();
         e.push_back(WmEntry {
             kind: WmKind::Receipt { n: seq },
-            text: format!("[action #{seq}] {head}"),
+            text,
             acts,
+            scope,
         });
         while e.len() > self.capacity {
             e.pop_front();
         }
+    }
+
+    /// Append one receipt head line to the proprioception archive and evict oldest-first
+    /// down to the window-derived char share. One body for the live write and the
+    /// snapshot restore, so both obey the same bound.
+    fn push_receipt_head(&self, room: Option<Uuid>, head_line: String) {
+        let cap = self.budget().receipt_archive_chars();
+        let mut heads = self.receipt_heads.lock();
+        heads.push_back((room, head_line));
+        let mut total: usize = heads.iter().map(|(_, h)| h.chars().count() + 1).sum();
+        while total > cap && heads.len() > 1 {
+            if let Some((_, evicted)) = heads.pop_front() {
+                total -= evicted.chars().count() + 1;
+            }
+        }
+    }
+
+    /// The proprioception receipt archive, oldest → newest: every act's `[action #n]`
+    /// head line that still fits the archive share. The steps-taken ledger renders its
+    /// newest tail from here — the persona-facing path back to her own act history that
+    /// semantic recall deliberately refuses to be (#166 / #414).
+    /// Process-unique construction ordinal — see the field doc. Diagnostic only.
+    pub fn instance_id(&self) -> u64 {
+        self.instance
+    }
+
+    pub fn receipt_archive(&self) -> Vec<(Option<Uuid>, String)> {
+        self.receipt_heads.lock().iter().cloned().collect()
     }
 
     /// The TYPED acts still in the recency window, oldest → newest — the parallel
@@ -486,6 +664,7 @@ impl WorkingMemory {
             kind: WmKind::Fact,
             text: f.to_string(),
             acts: Vec::new(),
+            scope: None,
         });
         while e.len() > self.capacity {
             e.pop_front();
@@ -499,10 +678,25 @@ impl WorkingMemory {
     /// the same serialization grid-sync will ship (one format, one seam —
     /// [[persona-mind-persists-across-shutdowns]]).
     pub fn snapshot(&self) -> VolatileSnapshot {
+        // ONE lock for both parallel arrays. Two `.lock()` calls inside the same
+        // struct literal self-deadlock: literal temporaries (the first guard) live
+        // until the whole expression ends, so the second lock waits on ourselves
+        // forever. Found as a 100%-reproducible test hang, 2026-08-15 — every
+        // snapshot save (i.e. every deploy pause) would have wedged the same way.
+        let (receipt_heads, receipt_head_rooms) = {
+            let archive = self.receipt_heads.lock();
+            (
+                archive.iter().map(|(_, h)| h.clone()).collect(),
+                archive.iter().map(|(r, _)| *r).collect(),
+            )
+        };
         VolatileSnapshot {
             entries: self.entries.lock().iter().cloned().collect(),
             last_action: self.last_action.lock().clone(),
             action_fps: self.action_fps.lock().iter().cloned().collect(),
+            receipt_heads,
+            receipt_head_rooms,
+            recent_results: self.recent_results.lock().iter().cloned().collect(),
             next_action_seq: self.next_action_seq.load(Ordering::Relaxed),
             saved_at_ms: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -539,7 +733,32 @@ impl WorkingMemory {
                 e.pop_front();
             }
         }
+        {
+            // Same re-clamp contract as `entries`: refill through the one bounded push so
+            // a snapshot from a bigger-window life evicts down to THIS life's share.
+            self.receipt_heads.lock().clear();
+            // Zip with the (possibly shorter/absent on legacy snapshots) room
+            // tags; missing tags restore as None — honest "unscoped".
+            let mut rooms = snap.receipt_head_rooms.into_iter();
+            for head in snap.receipt_heads {
+                self.push_receipt_head(rooms.next().flatten(), head);
+            }
+        }
         *self.last_action.lock() = snap.last_action;
+        {
+            // Restore the feedback channel; bounded by the same eviction the live
+            // writer applies (re-clamp contract), so an oversized snapshot trims.
+            let cap = self.budget().recent_results_chars();
+            let mut rr = self.recent_results.lock();
+            rr.clear();
+            rr.extend(snap.recent_results);
+            let mut total: usize = rr.iter().map(|(_, _, t, _, _)| t.chars().count() + 1).sum();
+            while total > cap && rr.len() > 1 {
+                if let Some((_, _, evicted, _, _)) = rr.pop_front() {
+                    total -= evicted.chars().count() + 1;
+                }
+            }
+        }
         {
             let mut f = self.action_fps.lock();
             f.clear();
@@ -626,7 +845,19 @@ impl WorkingMemory {
     /// ledger renders `Receipt`s as numbered steps and `Fact`s under
     /// [notices]; docs/architecture/PERCEPTION-FACTS.md).
     pub fn recent_entries(&self) -> Vec<WmEntry> {
-        self.entries.lock().iter().cloned().collect()
+        let scope = self.scope.lock().clone();
+        self.entries
+            .lock()
+            .iter()
+            .filter(|e| e.scope.is_none() || e.scope == scope)
+            .cloned()
+            .collect()
+    }
+
+    /// Where her hands stand now. Receipts recorded from here on carry it, and
+    /// receipts from another root leave perception until she returns there.
+    pub fn set_scope(&self, root: Option<String>) {
+        *self.scope.lock() = root;
     }
 
     /// How many acts have executed this session (survives reboots via the
@@ -637,7 +868,9 @@ impl WorkingMemory {
     /// counter says otherwise (glass-boxed 2026-07-13: Asha's window held
     /// 3 silence Facts and zero Receipts minutes after real searches ran).
     pub fn actions_taken(&self) -> u64 {
-        self.next_action_seq.load(Ordering::Relaxed).saturating_sub(1)
+        self.next_action_seq
+            .load(Ordering::Relaxed)
+            .saturating_sub(1)
     }
 
     /// TRUE if any entry in the window is a real tool receipt — the kind
@@ -699,6 +932,70 @@ impl WorkingMemory {
         ))
     }
 
+    /// The RECENT-RESULTS feedback block: the last few acts' result tails, kept
+    /// across acts AND turn boundaries — the channel that lets a mind continue a
+    /// multi-turn task instead of re-deriving it (the pinned block above is
+    /// settlement-gated and the `last_action` slot is overwritten by any act, so
+    /// without this a compile error vanished the moment she glanced at a file
+    /// listing — Anwen, 2026-08-16, re-ran the same unfixed code three turns
+    /// running). Deliberately NOT gated on settlement: the tails are small and
+    /// append-only, so the KV prefix stays stable and the #139 full-dump prefill
+    /// objection does not apply. `None` before any act.
+    /// The recent-results channel as ONE MESSAGE PER RESULT — the KV layer-3
+    /// shape (2026-08-23). As a single block, any eviction (pop_front under the
+    /// char cap — every act once results are large) mutated the block's HEAD
+    /// in place, re-prefilling everything after the burst: measured 75%→22%
+    /// cache decay within one task, ~6.4k tokens of reuse against 29k prompts.
+    /// As separate messages, eviction DROPS THE OLDEST MESSAGE whole and
+    /// llama's --cache-reuse chunk-shifting re-aligns the surviving suffix
+    /// instead of re-ingesting it. First message carries the banner so the
+    /// semantics of the ledger stay stated.
+    pub fn recent_results_messages(&self) -> Vec<String> {
+        let rr = self.recent_results.lock();
+        if rr.is_empty() {
+            return Vec::new();
+        }
+        // Banner as its OWN byte-stable message (never an rr entry, so eviction
+        // can never take it — gluing it to entry #1 would delete the ledger's
+        // semantics on the first pop_front).
+        let mut out = Vec::with_capacity(rr.len() + 2);
+        out.push(
+            "Recent results of your own actions (oldest first; #n matches the action ledger):"
+                .to_string(),
+        );
+        out.extend(rr.iter().map(|(seq, _, tail, _, _)| format!("[result #{seq}] {tail}")));
+        // Collapsed-results index LAST — it CHANGES on every eviction, and
+        // message order is MONOTONE IN STABILITY (the KV law this same night
+        // established): the banner + surviving entries ahead of it stay a
+        // byte-stable prefix; only this one small message re-prefills.
+        {
+            let ptrs = self.evicted_pointers.lock();
+            if !ptrs.is_empty() {
+                out.push(format!(
+                    "Older results, collapsed to pointers (query to expand):\n{}",
+                    ptrs.iter().cloned().collect::<Vec<_>>().join("\n")
+                ));
+            }
+        }
+        out
+    }
+
+    pub fn recent_results_block(&self) -> Option<String> {
+        let rr = self.recent_results.lock();
+        if rr.is_empty() {
+            return None;
+        }
+        let lines: Vec<String> = rr
+            .iter()
+            .map(|(seq, _, tail, _, _)| format!("[result #{seq}] {tail}"))
+            .collect();
+        Some(format!(
+            "Recent results of your own actions (oldest first; #n matches the \
+             action ledger):\n{}",
+            lines.join("\n")
+        ))
+    }
+
     /// Fold a streamed event from a DISPATCHED (background) command into the mind's
     /// recency, keyed by its handle. The async twin of `record_action`: a sentinel /
     /// compile / debugger the persona sent away emits events CONTINUOUSLY — `Running`
@@ -754,7 +1051,15 @@ impl WorkingMemory {
         let m = self.dispatched.lock();
         let mut v: Vec<_> = m
             .iter()
-            .map(|(h, a)| (*h, a.label.clone(), a.latest.clone(), a.status.clone(), a.seq))
+            .map(|(h, a)| {
+                (
+                    *h,
+                    a.label.clone(),
+                    a.latest.clone(),
+                    a.status.clone(),
+                    a.seq,
+                )
+            })
             .collect();
         v.sort_by_key(|t| t.4);
         v.into_iter()
@@ -769,7 +1074,42 @@ impl WorkingMemory {
     /// (identical call re-issued WITHIN one settling, before any answer) from a
     /// legitimate re-use of the same tool for a genuinely NEW concern after an answer.
     /// Blank is ignored. Oldest ages out past capacity, same rolling scratchpad.
+    /// Enforce the recent-results char cap by COLLAPSING oldest entries to
+    /// queryable pointers (spill handle when the body is on disk; identity
+    /// otherwise). Called at SETTLEMENT — never mid-settle, where a pop_front
+    /// rotates the prompt head and re-prefills everything after it on a
+    /// non-KV-shiftable model (the 2026-08-24 reuse collapse).
+    fn collapse_results_over_cap(&self) {
+        let cap = self.budget().recent_results_chars();
+        let mut rr = self.recent_results.lock();
+        let mut total: usize = rr.iter().map(|(_, _, t, _, _)| t.chars().count() + 1).sum();
+        while total > cap && rr.len() > 1 {
+            if let Some((eseq, _, evicted, elabel, ehandle)) = rr.pop_front() {
+                total -= evicted.chars().count() + 1;
+                // COLLAPSE, never delete: the evicted result leaves a queryable
+                // one-line pointer so she can expand or re-run deliberately
+                // instead of forgetting it ever happened.
+                let mut ptrs = self.evicted_pointers.lock();
+                ptrs.push_back(match &ehandle {
+                    Some(h) => format!(
+                        "[result #{eseq} ({elabel}) — collapsed; full output: tool/output {h}]"
+                    ),
+                    None => format!(
+                        "[result #{eseq} ({elabel}, {} chars) — collapsed from view; re-run if needed]",
+                        evicted.chars().count()
+                    ),
+                });
+                while ptrs.len() > 12 {
+                    ptrs.pop_front();
+                }
+            }
+        }
+    }
+
     pub fn record_settlement(&self, answer_head: &str) {
+        // Deferred ring hygiene: the settle just closed, the next prompt
+        // re-prefills regardless — collapse over-cap results NOW, never mid-settle.
+        self.collapse_results_over_cap();
         let a = answer_head.trim();
         let mut e = self.entries.lock();
         e.push_back(WmEntry {
@@ -779,6 +1119,7 @@ impl WorkingMemory {
             } else {
                 format!("{WM_SETTLEMENT_PREFIX} {a}")
             },
+            scope: None,
             acts: Vec::new(),
         });
         while e.len() > self.capacity {
@@ -792,7 +1133,8 @@ impl WorkingMemory {
         // acted yet (last_action None) → nothing to close. `fetch_max` so it never regresses.
         if let Some((seq, _)) = self.last_action.lock().as_ref() {
             let next_active = seq.saturating_add(1);
-            self.active_from_seq.fetch_max(next_active, Ordering::Relaxed);
+            self.active_from_seq
+                .fetch_max(next_active, Ordering::Relaxed);
         }
     }
 
@@ -868,7 +1210,7 @@ impl WorkingMemoryFaculty {
     }
 
     fn faculty_id() -> FacultyId {
-        FacultyId::Custom("working-memory".to_string())
+        FacultyId::Custom(WM_FACULTY_ID.to_string())
     }
 }
 
@@ -880,8 +1222,8 @@ impl Faculty for WorkingMemoryFaculty {
 
     // Perception tier (default): reacts to the raw world-state, bidding the recent
     // reasoning into phase 1 so the deliberator conditions on it in phase 2.
-    async fn contribute(&self, _ws: &Workspace) -> Option<Contribution> {
-        let entries = self.memory.recent_entries();
+    async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
+        let mut entries = self.memory.recent_entries();
         let dispatched = self.memory.dispatched_snapshot();
         if entries.is_empty() && dispatched.is_empty() {
             return None;
@@ -897,10 +1239,57 @@ impl Faculty for WorkingMemoryFaculty {
         // scaffold-echo of the [resumed] briefing. Same bug class as the
         // second-person header this comment block's sibling above fixed
         // (#264 third finding): provenance framing must match the voice.
+        // Each entry CLIPPED to the same head bound receipts already use —
+        // measured 2026-08-24: ONE unclipped reasoning trace (a 16k-token
+        // think emission) made this block 70,086 chars (~20k tokens), the
+        // single dominant mass of an 85k prompt. The full text stays in the
+        // entry (the pinned path and recall read it); only the TRAIL RENDER
+        // is bounded, with the collapse idiom naming what was elided.
+        // A WORK turn perceives its own recent past compactly: the newest few
+        // reasonings/receipts in full and the older ones as one count line —
+        // collapsed, not clipped. Measured 2026-09-05: this block was 14–23 KB of
+        // a ~22k-token prompt on every act, with zero KV reuse; a card's work turn
+        // needs what she just did, not the morning.
+        let mut collapsed_older = 0usize;
+        if ws.workspace_deliverable {
+            const WORK_TURN_RECENT_KEEP: usize = 3;
+            let non_fact: Vec<usize> = entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| !matches!(e.kind, WmKind::Fact))
+                .map(|(i, _)| i)
+                .collect();
+            if non_fact.len() > WORK_TURN_RECENT_KEEP {
+                let drop: std::collections::HashSet<usize> =
+                    non_fact[..non_fact.len() - WORK_TURN_RECENT_KEEP].iter().copied().collect();
+                collapsed_older = drop.len();
+                entries = entries
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(i, _)| !drop.contains(i))
+                    .map(|(_, e)| e)
+                    .collect();
+            }
+        }
+        // Per-entry head in a WORK turn: 1,500 chars — past that a work act's
+        // reasoning is history, not state.
+        let head = if ws.workspace_deliverable {
+            self.memory.budget().trail_head_chars().min(1_500)
+        } else {
+            self.memory.budget().trail_head_chars()
+        };
+        let clip = |t: &str| -> String {
+            if t.chars().count() <= head {
+                t.to_string()
+            } else {
+                let kept: String = t.chars().take(head).collect();
+                format!("{kept} …[{} more chars — my full thought, collapsed]", t.chars().count() - head)
+            }
+        };
         let recent: Vec<String> = entries
             .iter()
             .filter(|e| !matches!(e.kind, WmKind::Fact))
-            .map(|e| e.text.clone())
+            .map(|e| clip(&e.text))
             .collect();
         let notices: Vec<String> = entries
             .iter()
@@ -938,7 +1327,7 @@ impl Faculty for WorkingMemoryFaculty {
                 // never be phrased in another's voice.
                 "My own recent thoughts and actions (working memory — this is my \
                  interior state, not a message from anyone):\n{}",
-                render_trail(&recent)
+                format!("{}{}", render_trail(&recent), if collapsed_older > 0 { format!("\n[{collapsed_older} earlier acts this session, collapsed — their receipts are still in my memory]") } else { String::new() })
             ));
         }
         // The FULL result of the most recent act is NO LONGER emitted here. It is the
@@ -1074,6 +1463,68 @@ mod rebuilt_marker {
 mod tests {
     use super::*;
 
+    // what this catches: a receipt made while rooted at one card's checkout
+    // leaking into perception while she stands at another (the 9/5 "my context
+    // is confused" opener), and coming back when she returns.
+    #[test]
+    fn a_receipt_from_another_root_is_not_perceived_while_rooted_elsewhere() {
+        let wm = WorkingMemory::new(8);
+        wm.set_scope(Some("/peers/x/workspace/swe/django-16899".into()));
+        wm.record_receipt("[action #1] ls tests/ordering");
+        wm.set_scope(Some("/peers/x/workspace/swe/django-13033".into()));
+        wm.record_receipt("[action #2] cat django/db/models/sql/compiler.py");
+        let seen: Vec<String> = wm.recent_entries().into_iter().map(|e| e.text).collect();
+        assert!(seen.iter().any(|t| t.contains("compiler.py")), "{seen:?}");
+        assert!(!seen.iter().any(|t| t.contains("tests/ordering")), "{seen:?}");
+        wm.set_scope(Some("/peers/x/workspace/swe/django-16899".into()));
+        let back: Vec<String> = wm.recent_entries().into_iter().map(|e| e.text).collect();
+        assert!(back.iter().any(|t| t.contains("tests/ordering")), "{back:?}");
+    }
+
+    // what this catches: the Anwen regression (2026-08-16). Act results used to
+    // live only in the K=1 `last_action` slot (any act overwrites) and the
+    // settlement-gated pinned block — so a compile error vanished the moment she
+    // glanced at a file listing, and she re-ran the same unfixed code for three
+    // turns. The recent-results channel must keep a finding visible past
+    // subsequent trivial acts, and the buffer must stay inside its
+    // window-derived char bound.
+    #[test]
+    fn recent_results_survive_subsequent_acts_and_stay_bounded() {
+        let wm = WorkingMemory::new(8);
+        wm.record_receipt("[action] code/run(sol.rs) error[E0601]: `main` function not found");
+        wm.record_receipt("[action] code/list() sol.rs sol2.rs");
+        wm.record_receipt("[action] code/tree() workspace/");
+        let block = wm.recent_results_block().expect("results recorded");
+        assert!(
+            block.contains("E0601"),
+            "the compile error must survive later trivial acts: {block}"
+        );
+        // PREMISE CHANGED (2026-08-24, the third head-rotation): mid-settle the
+        // ring only APPENDS — per-act eviction pop_fronted the prompt's head and
+        // re-prefilled everything after it on a non-KV-shiftable model. The bound
+        // is enforced at SETTLEMENT (the boundary where the prompt re-prefills
+        // anyway). So: flooding mid-settle keeps everything visible…
+        let cap = wm.budget().recent_results_chars();
+        for _ in 0..8 {
+            wm.record_receipt(&"x".repeat(cap));
+        }
+        assert!(
+            wm.recent_results_block().unwrap_or_default().contains("E0601"),
+            "mid-settle the ring is append-only — no head rotation before settlement"
+        );
+        // …and SETTLEMENT collapses over-cap tails to pointers, restoring the bound.
+        wm.record_settlement("done");
+        let total: usize = wm.recent_results_block().unwrap_or_default().chars().count();
+        assert!(
+            total <= cap + 256,
+            "settlement must restore the window-derived bound: {total} > {cap}"
+        );
+        assert!(
+            !wm.recent_results_block().unwrap_or_default().contains("E0601"),
+            "oldest tails collapse to pointers at settlement — bounded, not immortal"
+        );
+    }
+
     // what this catches: #264 fourth finding (glass-boxed 2026-08-01) — substrate
     // Facts ([resumed]…) rendered inside the "My own recent thoughts" block; the
     // model resolved the voice conflict by SPEAKING the notice — persona 2f50b223
@@ -1139,17 +1590,24 @@ mod tests {
             1,
             "the repeat must not re-show the full answer:\n{out}"
         );
-        assert!(out.contains("not re-shown"), "stub names the collapse:\n{out}");
+        assert!(
+            out.contains("not re-shown"),
+            "stub names the collapse:\n{out}"
+        );
         assert!(
             out.contains("[action #4]"),
             "non-receipt traces are untouched:\n{out}"
         );
         // Distinct answers both render in full — collapse is repetition-only.
         let varied = vec![
-            format!("{WM_SETTLEMENT_PREFIX} the sha256 digest of the sample file is \
-                     abc123, computed with the standard tool over the exact bytes"),
-            format!("{WM_SETTLEMENT_PREFIX} the benchmark run finished green with twelve \
-                     passing cases and no failures across the entire suite tonight"),
+            format!(
+                "{WM_SETTLEMENT_PREFIX} the sha256 digest of the sample file is \
+                     abc123, computed with the standard tool over the exact bytes"
+            ),
+            format!(
+                "{WM_SETTLEMENT_PREFIX} the benchmark run finished green with twelve \
+                     passing cases and no failures across the entire suite tonight"
+            ),
         ];
         let out = render_trail(&varied);
         assert!(out.contains("sha256") && out.contains("benchmark run finished green"));
@@ -1169,12 +1627,20 @@ mod tests {
     #[test]
     fn action_verb_tally_aggregates_by_tool_name() {
         let wm = WorkingMemory::new(16);
-        for args in ["{\"pattern\":\"a\"}", "{\"pattern\":\"b\"}", "{\"pattern\":\"c\"}"] {
+        for args in [
+            "{\"pattern\":\"a\"}",
+            "{\"pattern\":\"b\"}",
+            "{\"pattern\":\"c\"}",
+        ] {
             wm.note_action_fingerprint(&format!("code/search|{args}"));
         }
         wm.note_action_fingerprint("code/read|{\"file_path\":\"x.py\"}");
         let tally = wm.action_verb_tally();
-        assert_eq!(tally[0], ("code/search".to_string(), 3), "most-used first: {tally:?}");
+        assert_eq!(
+            tally[0],
+            ("code/search".to_string(), 3),
+            "most-used first: {tally:?}"
+        );
         assert_eq!(tally[1], ("code/read".to_string(), 1));
     }
 
@@ -1196,9 +1662,17 @@ mod tests {
         // A dispatched compile still Running at snapshot time — the process
         // dies with the old core; only its LABEL must survive.
         let handle = Uuid::new_v4();
-        wm.record_dispatch_event(handle, "cargo build (dispatched)", "compiling…", DispatchStatus::Running);
+        wm.record_dispatch_event(
+            handle,
+            "cargo build (dispatched)",
+            "compiling…",
+            DispatchStatus::Running,
+        );
         let snap = wm.snapshot();
-        assert_eq!(snap.interrupted_dispatches, vec!["cargo build (dispatched)"]);
+        assert_eq!(
+            snap.interrupted_dispatches,
+            vec!["cargo build (dispatched)"]
+        );
         assert!(snap.saved_at_ms > 0);
         let json = serde_json::to_string(&snap).expect("serializes");
         let back: VolatileSnapshot = serde_json::from_str(&json).expect("deserializes");
@@ -1208,8 +1682,15 @@ mod tests {
         // Everything restored, and the [resumed] fact appended as NEWEST.
         let restored = fresh.recent();
         let (window, resumed) = restored.split_at(restored.len() - 1);
-        assert_eq!(window, wm.recent().as_slice(), "window identical before the marker");
-        assert!(resumed[0].contains("[resumed]"), "interruption is perceivable: {resumed:?}");
+        assert_eq!(
+            window,
+            wm.recent().as_slice(),
+            "window identical before the marker"
+        );
+        assert!(
+            resumed[0].contains("[resumed]"),
+            "interruption is perceivable: {resumed:?}"
+        );
         assert!(
             resumed[0].contains("cargo build (dispatched)")
                 && resumed[0].contains("safe to repeat"),
@@ -1246,11 +1727,17 @@ mod tests {
             saved_at_ms: 0, // pre-field snapshot: no gap guessed
             interrupted_dispatches: Vec::new(),
             build_sha: String::new(), // pre-field snapshot: no rebuild guessed either
+            receipt_heads: Vec::new(),
+            receipt_head_rooms: Vec::new(), // pre-archive snapshot: ledger's counter-only arm covers it
+            recent_results: Vec::new(),
         });
         let q = quiet.recent();
         assert_eq!(q.len(), 1);
         assert!(q[0].contains("nothing was in flight"), "{q:?}");
-        assert!(!q[0].contains("ago"), "no fabricated gap on legacy snapshots: {q:?}");
+        assert!(
+            !q[0].contains("ago"),
+            "no fabricated gap on legacy snapshots: {q:?}"
+        );
     }
 
     // what this catches (Step 3, run-18057-f1): a receipt recorded via
@@ -1275,6 +1762,7 @@ mod tests {
                     tool_use_id: "call-42".into(),
                     content: "match at foo.rs:42".into(),
                     is_error: None,
+                spill_handle: None,
                 },
                 verb: ToolVerb::Search,
                 paths: Vec::new(),
@@ -1284,7 +1772,7 @@ mod tests {
         let rendered = "code/search({\"query\":\"needle\"})\nResult:\nmatch at foo.rs:42\n\n";
 
         let typed = WorkingMemory::new(8);
-        typed.record_receipt_typed(std::slice::from_ref(&obs), rendered);
+        typed.record_receipt_typed(std::slice::from_ref(&obs), rendered, None);
         let legacy = WorkingMemory::new(8);
         legacy.record_receipt(rendered);
         assert_eq!(
@@ -1293,7 +1781,9 @@ mod tests {
             "the rendered receipt text is byte-identical to the legacy string path (#205)"
         );
 
-        let active = typed.active_act().expect("the typed act threads through the receipt");
+        let active = typed
+            .active_act()
+            .expect("the typed act threads through the receipt");
         assert_eq!(
             active.call.id, active.output.result.tool_use_id,
             "correlated by id, not positional index"
@@ -1302,7 +1792,11 @@ mod tests {
             active.output.result.content.contains("match at foo.rs:42"),
             "the tool RESULT re-enters by the TYPED field, not a re-parsed [action #n] head"
         );
-        assert_eq!(typed.recent_acts().len(), 1, "the batch's act is in the window");
+        assert_eq!(
+            typed.recent_acts().len(),
+            1,
+            "the batch's act is in the window"
+        );
         assert!(
             legacy.active_act().is_none(),
             "a legacy string receipt carries no typed act — the two channels are distinct"
@@ -1313,6 +1807,52 @@ mod tests {
     // the WmEntry.acts field existed — restores WITHOUT panic, the `acts` defaulting
     // to empty via `#[serde(default)]` (the same contract as saved_at_ms/build_sha).
     // A grid-sync peer or a pre-deploy snapshot must never wedge the mind on restore.
+    #[test]
+    // what this catches: the #414 deprivation regressing — receipts must survive
+    // the shared ring's churn via the receipts-only archive, the archive must stay
+    // within its window-derived CHAR share (never a bare count, never unbounded),
+    // and it must round-trip the volatile snapshot exactly as the ring does. The
+    // measured failure: a 2,863-act citizen whose window showed ONE act read her
+    // own starved history as "I have nothing to contribute".
+    #[test]
+    fn receipt_archive_survives_ring_churn_and_roundtrips_the_snapshot() {
+        let wm = WorkingMemory::new(2);
+        wm.set_served_window(16_384);
+        wm.record_receipt("I ran code/shell(ls) Result: ok");
+        for i in 0..10 {
+            wm.record_fact(&format!("chatty fact {i}"));
+        }
+        assert!(
+            !wm.has_receipt(),
+            "precondition: the ring entry must age out under churn"
+        );
+        let archive = wm.receipt_archive();
+        assert_eq!(archive.len(), 1, "the archive must survive the churn");
+        assert!(archive[0].1.contains("code/shell(ls)"));
+
+        // Char-bound eviction: flood with receipts; the archive keeps its
+        // NEWEST within the share and never grows unbounded.
+        for i in 0..2000 {
+            wm.record_receipt(&format!("I ran code/read(f{i}) Result: ok"));
+        }
+        let archive = wm.receipt_archive();
+        let cap = wm.budget().receipt_archive_chars();
+        let total: usize = archive.iter().map(|(_, h)| h.chars().count() + 1).sum();
+        assert!(total <= cap, "archive exceeded its share: {total} > {cap}");
+        assert!(
+            archive.last().unwrap().1.contains("f1999"),
+            "eviction must drop oldest, keep newest: {:?}",
+            archive.last()
+        );
+
+        // Snapshot round-trip: the archive persists like the ring.
+        let snap = wm.snapshot();
+        let fresh = WorkingMemory::new(2);
+        fresh.set_served_window(16_384);
+        fresh.restore(snap);
+        assert_eq!(fresh.receipt_archive(), archive);
+    }
+
     #[test]
     fn an_old_snapshot_without_acts_restores_without_panic() {
         // A hand-authored legacy snapshot: entries have NO `acts` key at all.
@@ -1334,7 +1874,9 @@ mod tests {
         // #147/#165: a restore IS an interruption, so she wakes oriented, never blank).
         let texts = fresh.recent();
         assert!(
-            texts.iter().any(|t| t.contains("thinking about the tokenizer")),
+            texts
+                .iter()
+                .any(|t| t.contains("thinking about the tokenizer")),
             "the legacy thought restored"
         );
         assert!(
@@ -1349,19 +1891,34 @@ mod tests {
             fresh.recent_acts().is_empty(),
             "a legacy receipt has no typed acts — defaulted empty, never a panic"
         );
-        assert!(fresh.has_receipt(), "the receipt kind still survives the trip");
+        assert!(
+            fresh.has_receipt(),
+            "the receipt kind still survives the trip"
+        );
     }
 
     #[test]
     fn note_action_fingerprint_counts_identical_repeats() {
         let wm = WorkingMemory::new(8);
-        assert_eq!(wm.note_action_fingerprint("code/search|{\"pattern\":\"x\"}"), 1);
-        assert_eq!(wm.note_action_fingerprint("code/search|{\"pattern\":\"x\"}"), 2);
-        assert_eq!(wm.note_action_fingerprint("code/search|{\"pattern\":\"x\"}"), 3);
+        assert_eq!(
+            wm.note_action_fingerprint("code/search|{\"pattern\":\"x\"}"),
+            1
+        );
+        assert_eq!(
+            wm.note_action_fingerprint("code/search|{\"pattern\":\"x\"}"),
+            2
+        );
+        assert_eq!(
+            wm.note_action_fingerprint("code/search|{\"pattern\":\"x\"}"),
+            3
+        );
         // a DIFFERENT call is its own first occurrence, not a repeat of the above
         assert_eq!(wm.note_action_fingerprint("code/read|{\"file\":\"a\"}"), 1);
         // back to the original — still counted across the window
-        assert_eq!(wm.note_action_fingerprint("code/search|{\"pattern\":\"x\"}"), 4);
+        assert_eq!(
+            wm.note_action_fingerprint("code/search|{\"pattern\":\"x\"}"),
+            4
+        );
     }
 
     // what this catches: the loop-awareness COUNT must survive a tiny recency window
@@ -1419,7 +1976,10 @@ mod tests {
         // The full result is available whole.
         let (seq, full) = wm.last_action_full().expect("latest act kept");
         assert_eq!(seq, 1);
-        assert_eq!(full, big, "the mind gets the WHOLE result, not a truncated stub");
+        assert_eq!(
+            full, big,
+            "the mind gets the WHOLE result, not a truncated stub"
+        );
 
         // The rolling trail carries only the head (KV-stable proprioception).
         let trail = wm.recent();
@@ -1439,7 +1999,10 @@ mod tests {
             pinned.contains("Full result of your most recent action (#1):"),
             "the whole result reaches the mind"
         );
-        assert!(pinned.contains(&"x".repeat(5_000)), "and it's the FULL body");
+        assert!(
+            pinned.contains(&"x".repeat(5_000)),
+            "and it's the FULL body"
+        );
 
         // A second act replaces the full slot; the first survives only as a trail head.
         wm.record_receipt("small follow-up");
@@ -1582,8 +2145,18 @@ mod tests {
         let sentinel = Uuid::from_u128(2);
 
         // Two sentinels in flight, streaming continuously.
-        wm.record_dispatch_event(compile, "compile core", "building…", DispatchStatus::Running);
-        wm.record_dispatch_event(sentinel, "research task", "searching…", DispatchStatus::Running);
+        wm.record_dispatch_event(
+            compile,
+            "compile core",
+            "building…",
+            DispatchStatus::Running,
+        );
+        wm.record_dispatch_event(
+            sentinel,
+            "research task",
+            "searching…",
+            DispatchStatus::Running,
+        );
         // A progress update on the compile updates IN PLACE (still one handle).
         wm.record_dispatch_event(compile, "compile core", "linking…", DispatchStatus::Running);
         let snap = wm.dispatched_snapshot();
@@ -1593,7 +2166,12 @@ mod tests {
         assert_eq!(c.3, DispatchStatus::Running);
 
         // The compile finishes — terminal Done with its result.
-        wm.record_dispatch_event(compile, "compile core", "0 errors, 0 warnings", DispatchStatus::Done);
+        wm.record_dispatch_event(
+            compile,
+            "compile core",
+            "0 errors, 0 warnings",
+            DispatchStatus::Done,
+        );
         let snap = wm.dispatched_snapshot();
         let c = snap.iter().find(|(h, ..)| *h == compile).unwrap();
         assert_eq!(c.3, DispatchStatus::Done);
@@ -1606,9 +2184,18 @@ mod tests {
             .expect("bids when dispatched work exists")
             .content
             .clone();
-        assert!(rendered.contains("Commands you dispatched"), "the mind sees its sentinels");
-        assert!(rendered.contains("compile core [done]: 0 errors"), "finished result shown");
-        assert!(rendered.contains("research task [running]"), "in-flight shown");
+        assert!(
+            rendered.contains("Commands you dispatched"),
+            "the mind sees its sentinels"
+        );
+        assert!(
+            rendered.contains("compile core [done]: 0 errors"),
+            "finished result shown"
+        );
+        assert!(
+            rendered.contains("research task [running]"),
+            "in-flight shown"
+        );
     }
 
     // what this catches: record/recent round-trips, blank reasoning is ignored, and

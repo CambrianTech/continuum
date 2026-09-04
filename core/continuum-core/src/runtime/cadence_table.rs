@@ -79,7 +79,9 @@ impl CadenceTable {
     /// Is this pair due to tick on `tick`? A pair the table has never seen is eligible
     /// immediately — the first-best-guess is to tick it once and learn its hint.
     pub fn eligible(&self, key: CadenceKey, tick: u64) -> bool {
-        self.pairs.get(&key).map_or(true, |c| tick >= c.next_eligible)
+        self.pairs
+            .get(&key)
+            .map_or(true, |c| tick >= c.next_eligible)
     }
 
     /// Record that `key` ticked at `tick` and asked for `hint`; schedule its next
@@ -205,8 +207,14 @@ mod tests {
         let key = (0, persona());
         table.record(key, 100, Some(CadenceHint::Sleep));
 
-        assert!(!table.eligible(key, 100 + SLEEP_INTERVAL_PASSES - 1), "still resting");
-        assert!(table.eligible(key, 100 + SLEEP_INTERVAL_PASSES), "wakes at the floor");
+        assert!(
+            !table.eligible(key, 100 + SLEEP_INTERVAL_PASSES - 1),
+            "still resting"
+        );
+        assert!(
+            table.eligible(key, 100 + SLEEP_INTERVAL_PASSES),
+            "wakes at the floor"
+        );
         // Crucially: the pair is STILL TRACKED — sleep parked it, it did not evict it.
         assert_eq!(table.interval_of(key), Some(SLEEP_INTERVAL_PASSES));
         assert_eq!(table.len(), 1);
@@ -227,6 +235,9 @@ mod tests {
         table.retain_personas(&[alive]);
         assert_eq!(table.len(), 1);
         assert!(table.eligible((0, gone), 1_000_000) /* re-added as fresh = eligible */);
-        assert!(table.interval_of((0, alive)).is_some(), "live persona preserved");
+        assert!(
+            table.interval_of((0, alive)).is_some(),
+            "live persona preserved"
+        );
     }
 }

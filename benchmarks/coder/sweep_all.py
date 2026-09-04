@@ -33,7 +33,23 @@ Usage:
   python3 benchmarks/coder/sweep_all.py --models benchmarks/coder/models-fleet.json \
       --benchmark humaneval-rs --limit 40 [--wait-pid 56248]
 """
-import argparse, json, os, struct, subprocess, sys, time, urllib.request
+import argparse, json, os, shutil, struct, subprocess, sys, time, urllib.request
+
+def _resolve_cli():
+    """Locate the continuum CLI.
+
+    `uu` is THE official short alias (the double-U of contin-UU-m). `cu` is
+    /usr/bin/cu (UUCP) on every Unix and was never ours — a default pointing at a
+    `cu` binary resolved to a file that does not exist, so the harness failed at
+    the first invocation instead of running. Prefer what is actually installed on
+    PATH; fall back to the release build.
+    """
+    for name in ("uu", "continuum"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return os.path.expanduser("~/.continuum/cache/cargo-target/release/continuum")
+
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MATRIX = os.path.join(HERE, "matrix.py")
@@ -207,7 +223,7 @@ def run_model(row, args):
         tmp = f"/tmp/sweep-row-{_slug(label)}.json"
         json.dump(cfg, open(tmp, "w"))
         cmd = [sys.executable, MATRIX, "--models", tmp, "--benchmark", args.benchmark,
-               "--limit", str(args.limit), "--cu", args.cu,
+               "--limit", str(args.limit), "--uu", args.uu,
                "--out", f"/tmp/matrix-{_slug(label)}.md"]
         print(f"[sweep] {label}: RAW+OURS+opencode × {args.limit} tasks …", file=sys.stderr)
         subprocess.run(cmd)  # appends every cell to RESULTS.jsonl itself
@@ -226,7 +242,7 @@ def main():
     ap.add_argument("--models", required=True)
     ap.add_argument("--benchmark", default="humaneval-rs")
     ap.add_argument("--limit", type=int, default=40)
-    ap.add_argument("--cu", default=os.path.expanduser("~/.continuum/cache/cargo-target/debug/cu"))
+    ap.add_argument("--uu", default=_resolve_cli())
     ap.add_argument("--wait-pid", type=int, default=None,
                     help="idle-wait for this pid (a prior sweep) to exit before starting")
     args = ap.parse_args()

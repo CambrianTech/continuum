@@ -3,7 +3,10 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/live/UtteranceEvent.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/live/UtteranceEvent.ts"
+)]
 pub struct UtteranceEvent {
     #[ts(type = "string")]
     pub session_id: Uuid,

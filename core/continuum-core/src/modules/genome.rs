@@ -81,11 +81,7 @@ impl ServiceModule for GenomeModule {
         )
     }
 
-    async fn handle_command(
-        &self,
-        command: &str,
-        _params: Value,
-    ) -> Result<CommandResult, String> {
+    async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
         Err(format!(
             "genome command surface is migrated to the typed registry; \
              '{command}' has no legacy handler"

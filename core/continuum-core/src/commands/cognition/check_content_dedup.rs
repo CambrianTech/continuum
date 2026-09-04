@@ -17,7 +17,10 @@ use crate::modules::cognition::CognitionState;
 use crate::sdk_codegen::CommandError;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/CheckContentDedupParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/CheckContentDedupParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckContentDedupParams {
     /// Persona whose recent-content memory is consulted.
@@ -31,7 +34,10 @@ pub struct CheckContentDedupParams {
 }
 
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/CheckContentDedupResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/CheckContentDedupResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckContentDedupResult {
     pub success: bool,

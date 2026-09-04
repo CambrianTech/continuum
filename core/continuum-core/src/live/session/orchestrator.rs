@@ -217,7 +217,10 @@ impl VoiceOrchestrator {
             .map(|ps| {
                 ps.iter()
                     .filter(|p| {
-                        matches!(p.participant_type, SpeakerType::Persona | SpeakerType::Agent)
+                        matches!(
+                            p.participant_type,
+                            SpeakerType::Persona | SpeakerType::Agent
+                        )
                     })
                     .map(|p| p.user_id)
                     .collect()
@@ -335,7 +338,7 @@ mod old_tests {
                 },
                 VoiceParticipant {
                     user_id: human,
-                    display_name: "Joel".into(),
+                    display_name: "Operator".into(),
                     participant_type: SpeakerType::Human,
                     expertise: vec![],
                     is_audio_native: false,
@@ -350,7 +353,10 @@ mod old_tests {
             viewers.contains(&audio_native_ai),
             "audio-native AIs still SEE — vision is not gated on audio capability"
         );
-        assert!(!viewers.contains(&human), "humans see via their own client, not a buffer");
+        assert!(
+            !viewers.contains(&human),
+            "humans see via their own client, not a buffer"
+        );
 
         // Unknown session → empty (a frame for a call we don't track goes nowhere).
         assert!(orchestrator.video_viewers(Uuid::new_v4()).is_empty());

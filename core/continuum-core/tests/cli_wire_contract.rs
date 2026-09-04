@@ -60,8 +60,8 @@ fn cli_generate_params(prompt: &str, model: Option<&str>) -> serde_json::Value {
 #[test]
 fn cli_generate_params_decode_as_text_generation_request() {
     let params = cli_generate_params("hello substrate", None);
-    let decoded: TextGenerationRequest = serde_json::from_value(params.clone())
-        .unwrap_or_else(|e| {
+    let decoded: TextGenerationRequest =
+        serde_json::from_value(params.clone()).unwrap_or_else(|e| {
             panic!(
                 "CLI's `ctm generate` JSON shape failed to decode as TextGenerationRequest: {e}\n\
                  wire payload:\n{}",

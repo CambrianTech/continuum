@@ -144,26 +144,12 @@ async fn llamacpp_local_models_coexist_without_metal_oom() {
                 content: continuum_core::ai::types::MessageContent::Text("hi".to_string()),
                 name: None,
             }],
-            system_prompt: None,
             model: Some(model_id.clone()),
             provider: Some("local".to_string()),
             temperature: Some(0.0),
             max_tokens: Some(4),
-            top_p: None,
-            top_k: None,
-            repeat_penalty: None,
-            frequency_penalty: None,
-            repeat_last_n: None,
-            stop_sequences: None,
-            tools: None,
-            tool_choice: None,
-            response_format: None,
-            active_adapters: None,
-            request_id: None,
-            user_id: None,
-            room_id: None,
             purpose: Some("multi-adapter-smoke".to_string()),
-            persona_id: None,
+            ..Default::default()
         };
         let decode_start = std::time::Instant::now();
         let result = adapter.generate_text(req).await;

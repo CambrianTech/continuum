@@ -82,7 +82,14 @@ mod tests {
             .expect("generate/module must succeed in an empty dir");
 
         assert_eq!(out.module_path, root.join("cmd_demo"));
-        assert_eq!(out.files_created.len(), 4, "mod.rs + types.rs + DESIGN.md + README.md");
-        assert!(out.next_step.contains("pub mod"), "next_step prompts the wire-up");
+        assert_eq!(
+            out.files_created.len(),
+            4,
+            "mod.rs + types.rs + DESIGN.md + README.md"
+        );
+        assert!(
+            out.next_step.contains("pub mod"),
+            "next_step prompts the wire-up"
+        );
     }
 }

@@ -29,12 +29,18 @@ use std::time::{Duration, Instant};
 /// bring-up (a cold 17 MB VRM decode + GPU upload can take >6s before the
 /// slot goes active and the first frame reads back).
 fn observe_secs() -> u64 {
-    std::env::var("BREATHE_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(20)
+    std::env::var("BREATHE_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(20)
 }
 /// Frames before this are model-load / initial-black; skip them (matches the
 /// snapshot module's 30-frame warmup window).
 fn warmup_frames() -> u32 {
-    std::env::var("BREATHE_WARMUP").ok().and_then(|s| s.parse().ok()).unwrap_or(30)
+    std::env::var("BREATHE_WARMUP")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(30)
 }
 /// Keep every Nth post-warmup frame as a PNG (15 fps → every 3rd ≈ 5/sec).
 const KEEP_EVERY: u32 = 3;
@@ -43,7 +49,9 @@ const KEEP_EVERY: u32 = 3;
 const GIF_MAX_FRAMES: usize = 90;
 
 fn main() -> Result<(), String> {
-    let identity = std::env::args().nth(1).unwrap_or_else(|| "asha".to_string());
+    let identity = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "asha".to_string());
 
     // Both the catalog (`avatar_model_path`) and Bevy's AssetServer resolve
     // `models/avatars/<file>.vrm` relative to CWD. The VRMs live under the
@@ -177,7 +185,8 @@ fn save_gif(frames: &[(Vec<u8>, u32, u32)], path: &std::path::Path) -> Result<()
     if frames.is_empty() {
         return Err("no frames retained".to_string());
     }
-    let file = std::fs::File::create(path).map_err(|e| format!("create {}: {e}", path.display()))?;
+    let file =
+        std::fs::File::create(path).map_err(|e| format!("create {}: {e}", path.display()))?;
     let mut encoder = GifEncoder::new(std::io::BufWriter::new(file));
     encoder
         .set_repeat(Repeat::Infinite)
@@ -280,7 +289,8 @@ fn infer_dims(frame: &RgbaFrame) -> Result<(u32, u32), String> {
 fn save_png(rgba: &[u8], w: u32, h: u32, path: &std::path::Path) -> Result<(), String> {
     let img = image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_raw(w, h, rgba.to_vec())
         .ok_or("invalid frame dimensions for image buffer")?;
-    img.save(path).map_err(|e| format!("save {}: {e}", path.display()))
+    img.save(path)
+        .map_err(|e| format!("save {}: {e}", path.display()))
 }
 
 fn dirs_home() -> std::path::PathBuf {

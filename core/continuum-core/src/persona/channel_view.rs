@@ -135,11 +135,7 @@ pub struct ChatCoherentInput {
 /// accidentally re-introduce the substring-match bug class by swapping
 /// out the helper.
 pub trait PersonaChannelView: Send + Sync {
-    fn interpret(
-        &self,
-        unit: &CoherentUnit,
-        identity: &PersonaIdentity,
-    ) -> CoherentInput;
+    fn interpret(&self, unit: &CoherentUnit, identity: &PersonaIdentity) -> CoherentInput;
 }
 
 //=============================================================================
@@ -169,11 +165,7 @@ pub trait PersonaChannelView: Send + Sync {
 pub struct ChatChannelView;
 
 impl PersonaChannelView for ChatChannelView {
-    fn interpret(
-        &self,
-        unit: &CoherentUnit,
-        identity: &PersonaIdentity,
-    ) -> CoherentInput {
+    fn interpret(&self, unit: &CoherentUnit, identity: &PersonaIdentity) -> CoherentInput {
         match unit {
             CoherentUnit::Chat {
                 items,
@@ -285,7 +277,11 @@ mod tests {
             .as_millis() as u64
     }
 
-    fn make_chat_arc(content: &str, sender: &str, room: Uuid) -> Arc<dyn crate::persona::channel_types::QueueItemBehavior> {
+    fn make_chat_arc(
+        content: &str,
+        sender: &str,
+        room: Uuid,
+    ) -> Arc<dyn crate::persona::channel_types::QueueItemBehavior> {
         Arc::new(ChatQueueItem {
             id: Uuid::new_v4(),
             room_id: room,
@@ -313,9 +309,9 @@ mod tests {
         let room = Uuid::new_v4();
         let burst = CoherentUnit::Chat {
             items: vec![
-                make_chat_arc("hello team", "Joel", room),
+                make_chat_arc("hello team", "Operator", room),
                 make_chat_arc("hi there", "Maya", room),
-                make_chat_arc("good morning", "Joel", room),
+                make_chat_arc("good morning", "Operator", room),
             ],
             window_span_ms: 500,
             primary_room: room,
@@ -329,10 +325,10 @@ mod tests {
                 assert_eq!(chat.primary_room, room);
                 assert_eq!(chat.burst_message_count, 3);
                 assert_eq!(chat.window_span_ms, 500);
-                assert_eq!(chat.last_sender_name, "Joel");
-                assert!(chat.aggregated_content.contains("Joel: hello team"));
+                assert_eq!(chat.last_sender_name, "Operator");
+                assert!(chat.aggregated_content.contains("Operator: hello team"));
                 assert!(chat.aggregated_content.contains("Maya: hi there"));
-                assert!(chat.aggregated_content.contains("Joel: good morning"));
+                assert!(chat.aggregated_content.contains("Operator: good morning"));
                 // "Helper" was never mentioned in any item
                 assert!(!chat.anyone_mentioned_persona);
             }
@@ -349,7 +345,7 @@ mod tests {
         let room = Uuid::new_v4();
         let burst = CoherentUnit::Chat {
             items: vec![
-                make_chat_arc("hey Maya can you review this?", "Joel", room),
+                make_chat_arc("hey Maya can you review this?", "Operator", room),
                 make_chat_arc("on it", "Maya", room),
             ],
             window_span_ms: 500,
@@ -393,9 +389,12 @@ mod tests {
     #[test]
     fn chat_view_burst_embedding_is_arc_shared_across_personas() {
         let room = Uuid::new_v4();
-        let items: Vec<Arc<dyn crate::persona::channel_types::QueueItemBehavior>> = vec![
-            make_chat_arc("the shared content for this test", "Joel", room),
-        ];
+        let items: Vec<Arc<dyn crate::persona::channel_types::QueueItemBehavior>> =
+            vec![make_chat_arc(
+                "the shared content for this test",
+                "Operator",
+                room,
+            )];
         let burst = CoherentUnit::Chat {
             items,
             window_span_ms: 0,

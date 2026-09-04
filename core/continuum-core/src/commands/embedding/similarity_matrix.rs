@@ -12,7 +12,10 @@ use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/embedding/SimilarityMatrixParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/embedding/SimilarityMatrixParams.ts"
+)]
 pub struct SimilarityMatrixParams {
     /// Embeddings to compare pairwise. All must share one dimension.
     pub embeddings: Vec<Vec<f32>>,
@@ -20,7 +23,10 @@ pub struct SimilarityMatrixParams {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/embedding/SimilarityMatrixResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/embedding/SimilarityMatrixResult.ts"
+)]
 pub struct SimilarityMatrixResult {
     /// Flat lower-triangular matrix: similarity of pair (i, j) for every i < j,
     /// row-major. Length = `pairs`. Empty when fewer than two embeddings.
@@ -104,11 +110,7 @@ mod tests {
             .run(
                 &Ctx::default(),
                 SimilarityMatrixParams {
-                    embeddings: vec![
-                        vec![1.0, 0.0],
-                        vec![1.0, 0.0],
-                        vec![0.0, 1.0],
-                    ],
+                    embeddings: vec![vec![1.0, 0.0], vec![1.0, 0.0], vec![0.0, 1.0]],
                 },
             )
             .await

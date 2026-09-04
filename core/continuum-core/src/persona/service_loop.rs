@@ -44,6 +44,8 @@
 use crate::ai::adapter::AIProviderAdapter;
 use crate::persona::airc_source::AircTranscriptReader;
 use crate::persona::supervisor::HostedPersona;
+use crate::persona::work_burst::{held_work_burst, own_recent_thoughts, work_board_anchor};
+use crate::persona::work_pull::{try_pull_next_card, PullOutcome};
 use async_trait::async_trait;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -55,6 +57,9 @@ use uuid::Uuid;
 /// every airc type into the test.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IncomingMessage {
+    /// The transcript event this turn came from — the row a `chat:heard`
+    /// receipt points back at. Nil for scripted/synthetic turns.
+    pub event_id: Uuid,
     /// Monotonic lamport clock — used for pre-attach high-water-mark
     /// filtering.
     pub lamport: u64,
@@ -383,6 +388,8 @@ async fn serve_persona_loop_inner(
         .high_water_mark(opts.page_recent_limit)
         .await
         .map_err(|e| format!("high_water_mark failed: {e}"))?;
+    // Event-id ring for staleness at the loop head (see `wake_backlog::is_stale`).
+    let mut seen_ids = crate::persona::wake_backlog::SeenIds::new(256);
 
     // The persona's adapter (`ctx.adapter`) is reached by the
     // cognition layer through the global provider registry — slice
@@ -433,30 +440,68 @@ async fn serve_persona_loop_inner(
     let mut roster_names: std::collections::HashMap<Uuid, String> =
         std::collections::HashMap::new();
 
-    // While an eval-preemption lease is held, the loop goes FULLY quiet on this beat —
-    // it neither self-ticks NOR consumes inbound. Gating only the self-tick isn't
-    // enough: a peer's reply arrives as `Wake::Msg`, so an in-flight conversation would
-    // keep the GPU busy right through the measurement. Messages simply BUFFER in the
-    // airc stream and are served when the lease drops; the poll is short so resume is
-    // prompt. The measuring eval drives cognition DIRECTLY (not through this loop), so a
-    // quiet loop never blocks it. [[benchmark-is-a-governor-preemption-lease]]
+    // While an eval-preemption lease is held, the loop suspends WANDERING, not
+    // reachability: self-ticks are skipped (the measured lane keeps its quiet)
+    // and inbound directed turns still serve — the guard inside the loop below
+    // carries the full rationale. The measuring eval drives cognition DIRECTLY
+    // (not through this loop), so a quiet loop never blocks it.
+    // [[benchmark-is-a-governor-preemption-lease]]
     // [[first-class-citizens-even-during-benchmarks]]
-    const QUIESCE_POLL: std::time::Duration = std::time::Duration::from_millis(400);
     loop {
-        if opts.quiesced.load(std::sync::atomic::Ordering::Relaxed) {
-            tokio::time::sleep(QUIESCE_POLL).await;
-            continue;
-        }
+        // HER turn boundary: idle whenever the loop is back at its wake select. The
+        // matching `engaged` stamp is set where a serving lane is actually acquired
+        // (the deliberation faculty) — a room wake alone is not wakefulness, or a
+        // busy room would cancel every dream (measured: 290 paged out in 20 min with
+        // the stamp on the wake itself).
+        crate::cognition::activity_gate::persona_idle(ctx.identity.peer_id.as_uuid());
+        // BIASED: a line already in her inbox beats a due self-tick. Without the
+        // order, a directed line that made her yield a parked lane wait could
+        // lose the next wake to the tick again (random branch choice) — a yield
+        // storm (Lorcan: 12 yields in 5 min, measured 2026-09-04) that ended only
+        // when the event arm happened to win.
         let wake = tokio::select! {
+            biased;
             ev = next_event(conversation, &mut outcome) => match ev {
                 Some(m) => Wake::Msg(m),
                 None => Wake::Stop,
             },
             _ = tokio::time::sleep(next_beat) => Wake::Tick,
         };
+        // QUIESCE HONORS ITS OWN CONTRACT (Joel, 2026-08-30: "I could call
+        // them up or dm — just want to make sure we're not into singular
+        // activity mode again"). The lease's documented promise is "skips
+        // INITIATING self-directed turns — she stays online and still answers
+        // explicit work" — but this arm was implemented as a full coma
+        // (neither ticks NOR inbound; DMs buffered until the lease dropped).
+        // The coma's original justification — an in-flight conversation would
+        // keep the GPU busy through the measurement — predates the slot
+        // economy: a directed reply now decodes on its own slot under a
+        // permit sized to the served slots, without touching the measured
+        // lane's KV. So: a quiesced citizen SKIPS her self-tick (no
+        // wandering; the measured lane keeps its quiet) and still ANSWERS
+        // when addressed — like a colleague heads-down on a build who still
+        // picks up the phone.
+        if opts.quiesced.load(std::sync::atomic::Ordering::Relaxed) {
+            match &wake {
+                // A suppressed beat leaves the cadence untouched — when the
+                // lease drops she resumes at whatever rhythm she had earned.
+                Wake::Tick => continue,
+                Wake::Msg(_) => crate::probe!(
+                    class = "persona.quiesced.directed_served",
+                    "quiesced citizen serving an inbound turn — leases suspend wandering, never reachability"
+                ),
+                // Stop falls through to the arm below.
+                Wake::Stop => {}
+            }
+        }
         let msg = match wake {
             Wake::Stop => break,
             Wake::Tick => {
+                // With `biased;` the inbox was polled first: a tick winning means
+                // nothing admissible was queued, so any pending directed flag is
+                // stale (raised for a line that filtered at the door). Clear it,
+                // or every self-work lane wait yields forever.
+                crate::cognition::directed_pending::clear(ctx.identity.peer_id.as_uuid());
                 // (Quiescence is handled at the top of the loop — a held lease never
                 // reaches here.) Heartbeat slice — the mind gets time with no inbound
                 // activity sets the next beat: if it found something new to work on
@@ -484,28 +529,56 @@ async fn serve_persona_loop_inner(
                 // #385-wedging it (glass-boxed 2026-08-10: resident_personas=4 vs
                 // warm_slots=1, every self-tick died on "no TOKEN progress for 90s").
                 // The permit is sized to the LIVE served lane count (LaneAdmission ←
-                // set_served_lane_count) and HELD across the whole self-cycle, so ambient
+                // set_served_lane_count — true since 2026-08-17; it was a hardcoded 1 for
+                // the whole time this comment claimed otherwise) and HELD across the whole
+                // self-cycle, so ambient
                 // concurrency is bounded to real capacity no matter when everyone woke —
                 // the surplus minds genuinely yield toward rest instead of stampeding.
                 // Directed turns still bypass entirely (they were named). Self-tick and
                 // ambient replies share the same ambient pool — both are lowest-priority
                 // non-directed work competing for the same lanes.
-                let _self_tick_permit = match crate::cognition::resource_admission::try_hold_ambient_turn()
-                {
-                    Some(permit) => permit,
-                    None => {
-                        next_beat = (next_beat + next_beat / 2).min(rest_cap);
-                        continue;
-                    }
-                };
                 let before = last_burst_fp;
-                run_self_cycle(ctx, conversation, &opts, &mut last_burst_fp).await;
-                drop(_self_tick_permit);
-                next_beat = if last_burst_fp != before {
-                    engaged_beat
-                } else {
-                    (next_beat + next_beat / 2).min(rest_cap)
-                };
+                // DETERMINISTIC WORK FIRST, THEN INFERENCE. The cycle runs the held-work
+                // act question (which takes its OWN serving lane through the delib gate)
+                // and the kanban pull (no inference at all) before it ever asks for an
+                // ambient permit — that permit caps only the musing tail. Until
+                // 2026-09-03 the permit was taken HERE, before anything ran, so with 12
+                // citizens on a lanes-1 ambient pool nine of them yielded every tick and
+                // never reached the pull (measured live: 31 yields in 10 minutes, 3 of 12
+                // residents working an Open deck of 12).
+                let starved = run_self_cycle(ctx, conversation, &opts, &mut last_burst_fp).await;
+                if starved {
+                    if let Some(yields) =
+                        crate::cognition::resource_admission::take_ambient_yield_report(
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis() as u64)
+                                .unwrap_or(0),  // unwrap_or: clock before the epoch = 0
+                        )
+                    {
+                        crate::probe!(
+                            class = "persona.selftick.starved",
+                            yields_since_last_report = yields,
+                            total_yields =
+                                crate::cognition::resource_admission::ambient_yields(),
+                            "ambient MUSING yielded — the pool was full. NOT a fault: this is \
+                             what contention looks like when citizens outnumber non-directed \
+                             lanes; held work and the pull already ran. Rate-limited to ≤1 row/min."
+                        );
+                    }
+                }
+                next_beat = next_beat_after(
+                    if last_burst_fp != before {
+                        BeatOutcome::Engaged
+                    } else if starved {
+                        BeatOutcome::YieldedNoSlot
+                    } else {
+                        BeatOutcome::NothingNew
+                    },
+                    next_beat,
+                    engaged_beat,
+                    rest_cap,
+                );
                 continue;
             }
             // A message means life in the room — snap back to a quick beat so she's present
@@ -557,7 +630,10 @@ async fn serve_persona_loop_inner(
         let self_id = ctx.identity.peer_id.as_uuid();
         let mut qualifying: Vec<IncomingMessage> = Vec::with_capacity(backlog.len());
         for m in backlog {
-            let stale = m.lamport <= high_water;
+            // Staleness by EVENT ID (a lamport is the publisher's clock, not a
+            // room order — see `wake_backlog`); the clock rule only for id-less
+            // scripted sources.
+            let stale = crate::persona::wake_backlog::is_stale(&m, &mut seen_ids, high_water);
             high_water = m.lamport.max(high_water);
             if stale || m.peer_id == self_id {
                 outcome.turns_skipped += 1;
@@ -565,17 +641,35 @@ async fn serve_persona_loop_inner(
                 qualifying.push(m);
             }
         }
-        // Trigger = newest ADDRESSED message in the backlog (a question put to
-        // her outranks newer ambient chatter — she answers it WITH the newer
+        // Whatever was pending is now in hand (the yield signal is consumed here).
+        crate::cognition::directed_pending::clear(self_id);
+        // Directed = a line from outside the citizenry (human, agent) or one
+        // that names her — the same addressing FACT the turn frames on.
+        // Holding work = the BOARD says she holds a card (one airc call per
+        // wake), not the acting-root registry: a holder whose hands never
+        // rooted (two held cards → ambiguous staging) still woke on every
+        // agent status line (Lorcan, 2026-09-04).
+        let holding_work = holding_work_now(conversation, self_id).await;
+        let directed_line = |m: &IncomingMessage| {
+            let sender_is_citizen = crate::persona::PersonaAircRuntimeRegistry::try_global()
+                .is_some_and(|r| r.get(m.peer_id).is_some());
+            turn_is_directed(
+                ctx.identity.persona_identity().mentions(&m.text),
+                sender_is_citizen,
+                holding_work,
+                crate::ipc::positron_presence::is_human_peer(m.peer_id),
+            )
+        };
+        // Every directed line drained is HEARD (delivery receipt), whether or
+        // not it becomes the trigger.
+        for m in qualifying.iter().filter(|m| directed_line(m)) {
+            crate::persona::wake_backlog::publish_heard(self_id, m);
+        }
+        // Trigger = newest DIRECTED line in the backlog (a question put to her
+        // outranks newer ambient chatter — she answers it WITH the newer
         // context visible in the transcript), else the newest overall.
-        let coalesced = qualifying.len().saturating_sub(1);
-        let msg = match qualifying
-            .iter()
-            .rposition(|m| ctx.identity.persona_identity().mentions(&m.text))
-            .map(|i| qualifying.swap_remove(i))
-            .or_else(|| qualifying.pop())
-        {
-            Some(m) => m,
+        let (msg, coalesced) = match crate::persona::wake_backlog::pick_trigger(qualifying, directed_line) {
+            Some(picked) => picked,
             None => {
                 if stream_ended {
                     break;
@@ -585,8 +679,8 @@ async fn serve_persona_loop_inner(
         };
         if coalesced > 0 {
             outcome.turns_skipped += coalesced;
-            tracing::info!(
-                probe_class = "persona.wake.coalesced",
+            crate::probe!(
+                class = "persona.wake.coalesced",
                 persona_id = %self_id,
                 coalesced = coalesced,
                 trigger_lamport = msg.lamport,
@@ -690,6 +784,16 @@ async fn serve_persona_loop_inner(
         // for the complete per-turn record. The `respond_inner`-level
         // probes (`persona.response.enter` etc.) live INSIDE the
         // cognition; this one names the airc-boundary turn.
+        // Cognition pulse: this stamp is what EARNS her claim renewals
+        // (cognition_pulse.rs) — a turn starting, even one that later defers
+        // on serving pressure, is proof she is working her holds.
+        crate::persona::cognition_pulse::touch(
+            ctx.identity.peer_id.as_uuid(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or_default(),  // unwrap_or: a pre-epoch clock reads 0, as every other now_ms here
+        );
         crate::probe!(
             class = "persona.turn.start",
             persona = %ctx.identity.agent_name,
@@ -702,16 +806,19 @@ async fn serve_persona_loop_inner(
         );
 
         // ===========================================================
-        // The brain services the turn through the canonical cognition
-        // pipeline — `persona::response::respond(RespondInput)`. This
-        // is the agent contract Joel and I have been building for a
-        // year: shared analysis (single-flight cache) → specialty
-        // scoring → genome activate → evaluate_response (adapter-
-        // translated, model-canonical tool calls + multi-modal) →
-        // clean_and_validate → tool_executor → audit → record_turn.
+        // The brain services the turn through the WorkspaceCycle:
+        // admit → build_workspace_turns → Burst → workspace cycle
+        // (RecallFaculty feeds the prompt, deliberation decides,
+        // act→observe drives to settle). That is the live path below.
+        //
+        // NOT `persona::response::respond(RespondInput)` — that verb
+        // only has one caller, PersonaServiceModule, which the module
+        // audit declares UNWIRED ("shadowed", runtime/registry.rs) so
+        // the respond path is dead code, kept only until the verbs it
+        // owns are dismantled or re-homed.
         //
         // See docs/architecture/PERSONA-COGNITION-PIPELINE.md for the
-        // full pipeline and the bypass this commit replaces.
+        // full pipeline.
         //
         // NOT a `will_respond + response_text` chatbot contract. NOT
         // a parallel rag_inspect bypass. The verbs in `cognition/`
@@ -737,9 +844,9 @@ async fn serve_persona_loop_inner(
             room_id: turn_room,
             sender_id: msg.peer_id,
             sender_name: roster_names
-                    .get(&msg.peer_id)
-                    .cloned()
-                    .unwrap_or_else(|| format!("peer-{}", &msg.peer_id.to_string()[..8])),
+                .get(&msg.peer_id)
+                .cloned()
+                .unwrap_or_else(|| format!("peer-{}", &msg.peer_id.to_string()[..8])),
             sender_type: crate::persona::types::SenderType::Persona,
             content: msg.text.clone(),
             timestamp: now_ms,
@@ -755,6 +862,11 @@ async fn serve_persona_loop_inner(
         // 2026-06-03 "introspect all rag" directive). The ranked Vec is no longer
         // threaded into a per-turn RespondInput (that path is gone); only the side-
         // effects and the admit remain.
+        // The engram of the message that woke this turn — the root its acts chain back
+        // to. Bound here (outer scope) because it is written at admission and read at
+        // burst assembly, two blocks apart.
+        let mut wake_engram: Option<uuid::Uuid> = None;
+
         {
             let cognition = ctx.cognition.lock().await;
             // recall BEFORE admit so the ranking is "what I knew going in" — the
@@ -782,18 +894,33 @@ async fn serve_persona_loop_inner(
             let admit_started = std::time::Instant::now();
             let admit_result = cognition.admission.admit(&inbox_msg, None);
             phase_timings.admit_ms = admit_started.elapsed().as_millis() as u64;
-            if let Err(e) = admit_result {
-                tracing::warn!(
-                    lamport = msg.lamport,
-                    error = %e,
-                    "admission.admit failed — engram not formed this turn"
-                );
-            } else {
-                tracing::info!(
-                    lamport = msg.lamport,
-                    engram_count = cognition.admission.engram_count(),
-                    "admitted incoming → L2 store"
-                );
+            match &admit_result {
+                Err(e) => {
+                    tracing::warn!(
+                        lamport = msg.lamport,
+                        error = %e,
+                        "admission.admit failed — engram not formed this turn"
+                    );
+                }
+                Ok(decision) => {
+                    // THE ROOT OF THIS TURN'S CAUSAL THREAD (CAUSAL-MEMORY-GRAPH.md §3a).
+                    // The message that woke her is already becoming an engram here; its id
+                    // was being discarded. Keeping it lets the turn's first act carry a
+                    // `CausedBy` edge to what actually caused it, instead of the chain
+                    // starting mid-air — which is what made "which acts were done for this"
+                    // unanswerable from the graph.
+                    //
+                    // Only an ADMITTED message is a cause. A Drop (dedup) or Quarantine has
+                    // no engram to point at, and inventing one would be a fabricated link —
+                    // worse than the honest gap it replaces.
+                    wake_engram = decision.admitted_engram_id();
+                    tracing::info!(
+                        lamport = msg.lamport,
+                        engram_count = cognition.admission.engram_count(),
+                        wake_engram = ?wake_engram,
+                        "admitted incoming → L2 store"
+                    );
+                }
             }
         }
 
@@ -809,7 +936,9 @@ async fn serve_persona_loop_inner(
             // Stamp the WHERE axis: this turn is happening INSIDE `turn_room`.
             // Without it every room-scoped source abstains and she perceives no
             // board, no roster, no doctrine, no wall (#331 / #127).
-            cognition.compose_for_turn(&ctx.profile, now_ms, Some(turn_room)).await
+            cognition
+                .compose_for_turn(&ctx.profile, now_ms, Some(turn_room))
+                .await
         };
         phase_timings.compose_ms = compose_started.elapsed().as_millis() as u64;
         // Harvest the roster resolution this compose already fetched into the
@@ -875,11 +1004,25 @@ async fn serve_persona_loop_inner(
             ctx.identity.peer_id,
             turn_room,
         );
-        let workspace_burst = crate::cognition::workspace::Burst::from_turns_at(
-            turn_room,
-            ws_turns,
-            Some(now_ms),
-        );
+        // Carry the wake message's engram as this burst's cause, so the turn's acts
+        // chain back to what triggered them (CAUSAL-MEMORY-GRAPH.md §3a). `None` when
+        // the message was deduped/quarantined — an honest gap, never a made-up link.
+        let workspace_burst =
+            crate::cognition::workspace::Burst::from_turns_at(
+                // turn_room falls back to identity.default_room (A.6), which is minted
+                // v4 at identity creation — non-nil by construction.
+                crate::identity::ActivityRoom::from_uuid(turn_room)
+                    .expect("turn_room falls back to the identity's default_room, never nil"), // default_room is minted v4 at identity creation; never nil
+                ws_turns,
+                Some(now_ms),
+                // The arrival that woke this turn IS its cause. A dedup Drop or a
+                // Quarantine put nothing in the store, so those fall back to Ambient
+                // rather than pointing an edge at an engram that does not exist.
+                match wake_engram {
+                    Some(id) => crate::cognition::workspace::Cause::Stimulus(id),
+                    None => crate::cognition::workspace::Cause::Ambient,
+                },
+            );
         // Mark this world-state as just-deliberated so the next heartbeat tick doesn't
         // re-run the same burst (the message path and the self-tick share the gate;
         // own chat is excluded so this reply can't re-trigger a self-tick, while her
@@ -975,7 +1118,19 @@ async fn serve_persona_loop_inner(
                 // self-set attention weight — never a hard mute except self-chosen or
                 // flooding) is substrate-blocked on the airc per-(persona,room) state
                 // store (#89); this is the addressing half, unblocked today.
-                let directed = ctx.identity.persona_identity().mentions(&msg.text);
+                let sender_is_citizen = crate::persona::PersonaAircRuntimeRegistry::try_global()
+                    .is_some_and(|r| r.get(msg.peer_id).is_some());
+                let directed = turn_is_directed(
+                    ctx.identity.persona_identity().mentions(&msg.text),
+                    sender_is_citizen,
+                    holding_work_now(conversation, ctx.identity.peer_id.as_uuid()).await,
+                    crate::ipc::positron_presence::is_human_peer(msg.peer_id),
+                );
+                if directed {
+                    // Focus = she is TAKING the turn on it; the heard receipt
+                    // already fired at the drain (`wake_backlog::publish_heard`).
+                    crate::ipc::vitals_emitter::record_focus(ctx.identity.peer_id.as_uuid());
+                }
                 let framing = crate::cognition::workspace::TurnFraming::message(directed);
 
                 // ── Ambient-yield under lane saturation (#171 / #139) ───────────────
@@ -1071,20 +1226,39 @@ async fn serve_persona_loop_inner(
                     Some(turn_room.to_string()),
                     Some(ctx.identity.peer_id.to_string()),
                 );
+                // A citizen holding a card lives at that repo — in a ROOM turn too.
+                let held_hands = crate::cognition::persona_workspace::root_at_held_card(
+                    &cycle,
+                    ctx.identity.peer_id.as_uuid(),
+                    conversation,
+                )
+                .await;
                 let (step, turn_metrics) = {
                     let outcome = crate::cognition::act_observe::drive_to_settle(
                         &cycle,
                         workspace_burst,
-                        turn_room,
                         LIVE_MAX_ACTS,
                         framing,
                     )
                     .await;
+                    // The lived-turn experience write (#319) is NOT here: it lives inside
+                    // `drive_to_settle`, which is the one place a `SettleOutcome` is born.
+                    // It WAS here, at this single call site, and that was the bug — the
+                    // self-tick and held-work paths settle turns through the same driver
+                    // and got no record, so nothing on disk ever described a lived turn.
+                    // The driver stays a driver: no learning policy at any call site.
                     crate::cognition::act_observe::SettleStep::from_settled(outcome)
                 };
                 // Turn done: drop the cycle's sink so the forwarder's channel closes,
                 // then join it (all `tok_tx` clones are gone once the turn's Workspaces
                 // dropped inside `drive_to_settle`).
+                if let Some(hands) = &held_hands {
+                    if let Err(e) =
+                        crate::cognition::persona_workspace::restore_acting_workspace(hands).await
+                    {
+                        tracing::error!(error = %e, "room turn could NOT return her hands home");
+                    }
+                }
                 cycle.set_token_sink(None);
                 let _ = forwarder.await;
                 phase_timings.respond_ms = respond_started.elapsed().as_millis() as u64;
@@ -1118,10 +1292,7 @@ async fn serve_persona_loop_inner(
                         outcome.turns_acted += 1;
                         continue;
                     }
-                    crate::cognition::act_observe::SettleStep::ActUnfulfilled {
-                        calls,
-                        intent,
-                    } => {
+                    crate::cognition::act_observe::SettleStep::ActUnfulfilled { calls, intent } => {
                         // No hands or the executor errored. Abstain — never a
                         // fabricated result, never a raw call envelope to the room.
                         tracing::warn!(
@@ -1138,7 +1309,7 @@ async fn serve_persona_loop_inner(
                         // act is executed (→ Acted/ActUnfulfilled), never deferred.
                         unreachable!("live settle_step always permits its one act");
                     }
-                    crate::cognition::act_observe::SettleStep::Passed => {
+                    crate::cognition::act_observe::SettleStep::Passed { .. } => {
                         tracing::info!(
                             lamport = msg.lamport,
                             "persona chose silence (workspace) — substrate honors decision"
@@ -1150,102 +1321,19 @@ async fn serve_persona_loop_inner(
                             reason = "workspace-pass",
                             "persona chose silence"
                         );
-                        // THE SECOND QUESTION (BigMama's gate-conflation diagnosis,
-                        // verified in-file 2026-08-08; the root under Joel's "missing
-                        // something"): speak and act shared ONE terminal gate, so
-                        // "nothing to say" — the CORRECT answer on a quiet room —
-                        // also silently answered "nothing to do" for a citizen
-                        // holding claimed work. The ledger's falsifiable signature:
-                        // every completion followed a direct address; zero happened
-                        // ambiently. Working is not speaking. A Pass settles the
-                        // speak-question; when she holds an in-progress claim, the
-                        // ACT-question is asked as its OWN turn — a separate
-                        // drive_to_settle whose burst IS her card, under the
-                        // workspace-deliverable contract. Her answer stays hers:
-                        // Pass here too and the turn simply ends. This adds a
-                        // question, never an instruction — the card is not made
-                        // louder and nothing nags inside the speak turn
-                        // ([[no-hardcoded-heuristics-to-steer-cognition]]).
-                        if !directed {
-                            if let Some(citizen) = conversation.stream_citizen() {
-                                if let Ok(claims) = citizen.active_claims().await {
-                                    let held: Vec<&airc_lib::WorkCard> = claims
-                                        .iter()
-                                        .filter(|c| {
-                                            matches!(c.state, airc_work::CardState::InProgress)
-                                        })
-                                        .collect();
-                                    if !held.is_empty() {
-                                        let burst = held_work_burst(&held);
-                                        let work_framing =
-                                            crate::cognition::workspace::TurnFraming::self_thread(
-                                                false,
-                                            )
-                                            .on_workspace();
-                                        let work = crate::cognition::act_observe::drive_to_settle(
-                                            &cycle,
-                                            burst,
-                                            turn_room,
-                                            LIVE_MAX_ACTS,
-                                            work_framing,
-                                        )
-                                        .await;
-                                        let (work_step, _) =
-                                            crate::cognition::act_observe::SettleStep::from_settled(
-                                                work,
-                                            );
-                                        match work_step {
-                                            crate::cognition::act_observe::SettleStep::Spoke(
-                                                text,
-                                            ) => {
-                                                // She worked and has something to report —
-                                                // that report earned its send.
-                                                crate::probe!(
-                                                    class = "persona.turn.work",
-                                                    persona = %ctx.identity.agent_name,
-                                                    lamport = msg.lamport,
-                                                    decision = "spoke",
-                                                    "work-turn settled with a report"
-                                                );
-                                                // Answer where she was asked — `turn_room`
-                                                // is the A.6 arrival room already resolved
-                                                // for this turn, so the report lands in the
-                                                // room whose work it reports on.
-                                                if let Err(e) =
-                                                    conversation.say_in(turn_room, &text).await
-                                                {
-                                                    tracing::warn!(
-                                                        error = %e,
-                                                        "work-turn report failed to send"
-                                                    );
-                                                }
-                                            }
-                                            crate::cognition::act_observe::SettleStep::Passed => {
-                                                crate::probe!(
-                                                    class = "persona.turn.work",
-                                                    persona = %ctx.identity.agent_name,
-                                                    lamport = msg.lamport,
-                                                    decision = "passed",
-                                                    "work-turn passed — her choice, honored"
-                                                );
-                                            }
-                                            other => {
-                                                // Acted (results already in her working
-                                                // memory) or an inference failure — either
-                                                // way the receipt says which.
-                                                crate::probe!(
-                                                    class = "persona.turn.work",
-                                                    persona = %ctx.identity.agent_name,
-                                                    lamport = msg.lamport,
-                                                    decision = ?std::mem::discriminant(&other),
-                                                    "work-turn settled without a spoken report"
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        // THE ACT-QUESTION. Asked here on the PASS path and again after a spoken reply,
+                        // so holding work is what makes it fire — not declining to speak.
+                        // `directed` is recomputed here rather than threaded: it is a pure function of
+        // (identity, msg.text) and the binding above lives inside the cycle branch.
+        let spoke_directed = ctx.identity.persona_identity().mentions(&msg.text);
+        crate::persona::act_question::ask_the_act_question(
+            ctx,
+            conversation,
+            msg.lamport,
+            turn_room,
+            spoke_directed,
+        )
+        .await;
                         outcome.turns_skipped += 1;
                         continue;
                     }
@@ -1342,6 +1430,26 @@ async fn serve_persona_loop_inner(
             outcome.turns_errored += 1;
             continue;
         }
+        // SHE SPOKE — and she may ALSO hold work. Ask the act-question here too.
+        //
+        // The question used to live only on the PASS arm, which made answering someone
+        // mutually exclusive with working your own card: a citizen who replied in the room
+        // was never asked whether to act on the claim she was holding. That is backwards
+        // for a colleague — talking about the work and doing the work are not alternatives.
+        // Asked AFTER the reply is sent, so the room hears her answer at the same latency
+        // as before and the act-question can never delay a conversation.
+        // `directed` is recomputed here rather than threaded: it is a pure function of
+        // (identity, msg.text) and the binding above lives inside the cycle branch.
+        let spoke_directed = ctx.identity.persona_identity().mentions(&msg.text);
+        crate::persona::act_question::ask_the_act_question(
+            ctx,
+            conversation,
+            msg.lamport,
+            turn_room,
+            spoke_directed,
+        )
+        .await;
+
         let turn_duration_ms = turn_started.elapsed().as_millis() as u64;
         outcome.turn_latency.record(turn_duration_ms);
 
@@ -1352,6 +1460,7 @@ async fn serve_persona_loop_inner(
         // depend on the room's context budget.
         crate::cognition::deliberation_budget::record_own_speech(
             ctx.identity.peer_id,
+            turn_room,
             &response_text,
         );
 
@@ -1405,8 +1514,8 @@ async fn serve_persona_loop_inner(
             turn_duration_ms = turn_duration_ms,
             turns_replied = outcome.turns_replied,
             mean_ms = outcome.turn_latency.mean_ms().unwrap_or(0.0),
-            min_ms = outcome.turn_latency.min_ms.unwrap_or(0),
-            max_ms = outcome.turn_latency.max_ms.unwrap_or(0),
+            min_ms = outcome.turn_latency.min_ms.unwrap_or(0),  // unwrap_or: clock before the epoch = 0
+            max_ms = outcome.turn_latency.max_ms.unwrap_or(0),  // unwrap_or: clock before the epoch = 0
             recall_ms = phase_timings.recall_ms,
             admit_ms = phase_timings.admit_ms,
             compose_ms = phase_timings.compose_ms,
@@ -1417,6 +1526,47 @@ async fn serve_persona_loop_inner(
     }
 
     Ok(outcome)
+}
+
+/// What a self-tick beat DID, and therefore what the next interval should be.
+///
+/// Extracted as a pure decision (the `core_bind_guard::decide` shape) because the
+/// three outcomes are trivially confusable in an inline `match`, and confusing two
+/// of them cost a measured 16× slowdown across the whole roster — see
+/// [`next_beat_after`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BeatOutcome {
+    /// She ran a cycle and the room had something new → stay engaged.
+    Engaged,
+    /// She ran a cycle and nothing had changed → rest deeper (earned backoff).
+    NothingNew,
+    /// She never ran: a peer held the single ambient slot. She learned NOTHING,
+    /// so there is nothing to rest on and the beat must NOT compound.
+    YieldedNoSlot,
+}
+
+/// The self-tick cadence rule. Pure so every row is table-testable without a runtime.
+///
+/// The bug this encodes against (measured live 2026-08-17, 24 hosted citizens):
+/// `YieldedNoSlot` used to share `NothingNew`'s 1.5× backoff. With
+/// the ambient pool hardcoded at 1, ~23 citizens yield per beat, so each of them
+/// compounded 15s → the 240s cap in ~8 yields and STAYED pinned there — the only
+/// resets being a successful cycle (which the backoff itself denied them) or an
+/// inbound message. Transient contention became permanent slowness, and it got
+/// worse as the roster grew. Measured symptom: ONE self-tick across 24 citizens in
+/// 40 minutes, on a lane that was healthy and decoding throughout.
+pub fn next_beat_after(
+    outcome: BeatOutcome,
+    current: std::time::Duration,
+    engaged: std::time::Duration,
+    rest_cap: std::time::Duration,
+) -> std::time::Duration {
+    match outcome {
+        BeatOutcome::Engaged => engaged,
+        BeatOutcome::NothingNew => (current + current / 2).min(rest_cap),
+        // Unchanged: contention must never cost her cadence.
+        BeatOutcome::YieldedNoSlot => current,
+    }
 }
 
 /// Engaged heartbeat period — how often a persona pursuing its OWN intentions
@@ -1451,7 +1601,7 @@ const SELF_TICK_REST_CAP_MS: u64 = 240_000;
 /// repeat-guard fact) is how a looping mind notices itself; the ONLY external
 /// stopwatch that remains is the eval grader's `max_acts` — a proctored exam's
 /// clock, held by the observer, never wired into life.
-const LIVE_MAX_ACTS: usize = usize::MAX;
+pub(crate) const LIVE_MAX_ACTS: usize = usize::MAX;
 
 /// What woke the service loop this cycle. A message from the wire, the never-stop
 /// heartbeat, or the end of the stream. Returned by the `select!` so the borrow of
@@ -1538,43 +1688,50 @@ pub(crate) fn project_room_roster(
     }
 }
 
-/// Collapse near-identical substantial turns to their NEWEST copy, annotating
-/// the surviving turn's author with "(×N near-identical)". Same-`is_self` only
-/// (role attribution stays intact), authorless opaque turns pass through
-/// untouched, and the geometry is [`near_identical_substantial`]'s — one
-/// definition of "nearly identical" shared with the perception facts. See the
-/// call site in [`build_workspace_turns`] for the why (repetition ≈ bad RAG).
+/// Collapse near-identical substantial turns by SUPPRESSING later copies —
+/// the OLDEST copy stays, byte-untouched, at its original position. Same-
+/// `is_self` only (role attribution stays intact), authorless opaque turns
+/// pass through untouched, and the geometry is [`near_identical_substantial`]'s
+/// — one definition of "nearly identical" shared with the perception facts.
+/// See the call site in [`build_workspace_turns`] for the why (repetition ≈
+/// bad RAG).
+///
+/// ## Why oldest-survivor, unannotated (2026-09-01, the KV-prefix churn)
+///
+/// The first cut kept the NEWEST copy and stamped the survivor's author with
+/// "(×N near-identical)". Both choices rewrite EARLY bytes of the rendered
+/// conversation whenever a fresh duplicate arrives — the representative
+/// relocates and the count increments — and a mutation at 1% depth of an 80k
+/// prompt invalidates the entire KV tail behind it (measured live: Benchy's
+/// consecutive prompts diverging at char ~660 on exactly this annotation,
+/// hit_rate 0.0 while his peers cached 0.38–0.50). Suppression is prefix-
+/// stable by construction: a new duplicate simply never renders, so the bytes
+/// already prefilled stay bytes. The repetition EVIDENCE still reaches her —
+/// the `[pattern]`/`[repetition]` perception facts detect on the RAW turns
+/// and render in the volatile facts phase, where flicker belongs.
+///
+/// The LAST turn is never suppressed: it is the burst's trigger/ask, and the
+/// reply anchor must always see it even when it near-duplicates history.
 pub(crate) fn collapse_near_duplicate_turns(
     turns: Vec<crate::cognition::workspace::BurstTurn>,
 ) -> Vec<crate::cognition::workspace::BurstTurn> {
     use crate::cognition::deliberation_budget::near_identical_substantial;
+    let last_idx = turns.len().saturating_sub(1);
     let mut kept: Vec<crate::cognition::workspace::BurstTurn> = Vec::with_capacity(turns.len());
-    let mut counts: Vec<usize> = Vec::new();
-    // Newest-first so the surviving representative is the freshest copy (the
-    // one the trigger anchor and reply context care about).
-    for t in turns.into_iter().rev() {
-        if t.author.trim().is_empty() {
+    for (i, t) in turns.into_iter().enumerate() {
+        if t.author.trim().is_empty() || i == last_idx {
             kept.push(t);
-            counts.push(1);
             continue;
         }
-        if let Some(i) = kept.iter().position(|k| {
+        let already_represented = kept.iter().any(|k| {
             !k.author.trim().is_empty()
                 && k.is_self == t.is_self
                 && near_identical_substantial(&k.content, &t.content)
-        }) {
-            counts[i] += 1;
-        } else {
+        });
+        if !already_represented {
             kept.push(t);
-            counts.push(1);
         }
     }
-    for (k, c) in kept.iter_mut().zip(counts.iter()) {
-        if *c > 1 {
-            k.author = format!("{} (×{c} near-identical)", k.author);
-        }
-    }
-    kept.reverse();
     kept
 }
 
@@ -1645,8 +1802,7 @@ pub(crate) fn ring_echo_run(own_recent: &[String], room_recent: &[String]) -> us
         if window.is_empty() {
             break;
         }
-        let covered =
-            cur.iter().filter(|w| window.contains(*w)).count() as f32 / cur.len() as f32;
+        let covered = cur.iter().filter(|w| window.contains(*w)).count() as f32 / cur.len() as f32;
         if covered >= CONTAINMENT {
             run += 1;
         } else {
@@ -1670,7 +1826,7 @@ fn append_ring_anchor_if_starved(
     if turns.iter().any(|t| t.content.starts_with("[anchor]")) {
         return;
     }
-    let own = crate::cognition::deliberation_budget::recent_own_speech(peer);
+    let own = crate::cognition::deliberation_budget::recent_own_speech(peer, room);
     let room_recent = crate::cognition::deliberation_budget::recent_room_speech(room);
     let run = ring_echo_run(&own, &room_recent);
     if run >= PATTERN_FIRES_BEFORE_ANCHOR {
@@ -1712,21 +1868,6 @@ fn push_work_board_anchor(
     turns.push(crate::cognition::workspace::BurstTurn::perception(anchor));
 }
 
-/// Build the `[anchor]` escalation line — the perception-side FACT that gives a
-/// repeating mind somewhere concrete to go (work card d6f010c8, live
-/// 2026-07-23: the `[pattern]` description fired and did NOT break the greeting
-/// loop; a concrete work anchor posted in-room broke it instantly, room-wide).
-/// A description competes with an empty-looking room; an anchor gives the next
-/// token somewhere real to go.
-///
-/// Mechanical and data-driven: built from the `room-kanban` delivery ALREADY in
-/// this burst's slice ([`super::room_board_source::RoomBoardSource`] — the one
-/// airc board read, never a second fetcher), quoting the top unclaimed and
-/// in-progress card lines verbatim as the board source rendered them (one
-/// render, one truth). An empty or unreadable board is stated honestly — never
-/// a fabricated card ([[fallbacks-are-illegal-fail-loud]]). Perception, not
-/// steering: it names what exists NOW; she still chooses
-/// ([[no-hardcoded-heuristics-to-steer-cognition]]).
 
 /// The WORK-question burst — the input of the second gate a claim-holder's
 /// quiet turn asks (see the `SettleStep::Passed` arm). The burst IS the
@@ -1734,126 +1875,52 @@ fn push_work_board_anchor(
 /// passing remains hers. Deliberately NOT the room transcript — the subject of
 /// this turn is the work, and the card details/workspace root arrive through
 /// her own grounding exactly as on any turn.
-fn held_work_burst(held: &[&airc_lib::WorkCard]) -> String {
-    use std::fmt::Write as _;
-    let mut s = String::from(
-        "[work turn] The room is quiet and your speak-turn is settled. This \
-         turn is for your claimed work:\n",
-    );
-    for card in held {
-        let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
-        let _ = writeln!(s, "- card {id8} \"{}\"", card.title);
+/// Whether an inbound room message is DIRECTED at this citizen — the framing
+/// that withholds the silent-PASS hatch and reserves a lane. Two roads in:
+/// she is named, or the speaker is NOT a fellow citizen. A human at the desk or
+/// an agent asking the room is addressing the citizens by construction (being
+/// heard is the scarce thing); citizens talking among themselves — and the
+/// work receipts they radiate — stay ambient, or twelve of them answer every
+/// receipt. Live 2026-09-03: the operator asked a work room a direct question
+/// twice and no citizen answered, because "directed" meant @mention only.
+/// Does she hold a card right now — the board's answer (`active_claims`), or
+/// the acting-root registry when the board cannot be asked (no citizen stream).
+async fn holding_work_now(
+    conversation: &dyn PersonaConversation,
+    self_id: Uuid,
+) -> bool {
+    match conversation.stream_citizen() {
+        Some(citizen) => match citizen.active_claims().await {
+            Ok(held) => !held.is_empty(),
+            Err(_) => crate::cognition::persona_workspace::acting_root_of(self_id).is_some(),
+        },
+        None => crate::cognition::persona_workspace::acting_root_of(self_id).is_some(),
     }
-    s.push_str(
-        "Your workspace holds the staged checkout (see [workspace-map] and \
-         [active-work]). Continue the work with your tools — read, run, edit, \
-         test. Speak only if you have a result or a blocker to report; passing \
-         is yours to choose if you are genuinely blocked.",
-    );
-    s
 }
 
-fn work_board_anchor(deliveries: &[crate::persona::rag_budget::RagDelivery]) -> String {
-    // Did the board source SPEAK this turn? "The board is empty" and "I never read the
-    // board" are different facts about the world, and only one of them is knowable from an
-    // absent delivery. Glass-boxed 2026-08-06 from Benchy's live capture: `room-kanban`
-    // delivered NOTHING (grounding is last in the budget queue), the anchor rendered that
-    // as "No open cards are visible", and she then said exactly that in-room for six turns
-    // — while `work/list()` in her OWN working memory listed a full board in the same
-    // prompt. She trusted the authoritative-sounding anchor over her own receipt.
-    //
-    // Never assert a fact about the world on behalf of a source that did not speak.
-    // [[grounding-is-last-in-the-budget-queue-so-she-goes-blind-one-turn-in-ten]]
-    let board_spoke = deliveries.iter().any(|d| d.source_id == "room-kanban");
-    if !board_spoke {
-        // Say nothing rather than something false. A silent anchor leaves her own
-        // `work/list` receipt as the only board claim in the prompt — which is the truthful
-        // one. An anchor that invents emptiness actively overrides it.
-        return String::new();
-    }
-    let cards: Vec<&crate::persona::rag_budget::RagItem> = deliveries
-        .iter()
-        .filter(|d| d.source_id == "room-kanban")
-        .flat_map(|d| d.items.iter())
-        .filter(|i| i.metadata.get("card_id").is_some())
-        .collect();
-    /// The card's state as the TYPE, never as a string to be spelled correctly.
-    ///
-    /// `None` for an item whose metadata carries no parseable state — which is a real
-    /// possibility (a future variant this build doesn't know) and must read as "unknown",
-    /// never as a silent mismatch against a hardcoded spelling.
-    fn state(i: &crate::persona::rag_budget::RagItem) -> Option<airc_work::CardState> {
-        i.metadata
-            .get("state")
-            .and_then(|s| serde_json::from_value(s.clone()).ok())
-    }
-    /// Is this card's hold still good? Read as the structural fact the board source
-    /// carries, never re-derived here — `claim_is_live` is the ONE definition and
-    /// `room_board_source` already applied it. Absent (an older projection) reads as
-    /// LIVE, so a missing field can never invent availability that isn't there.
-    fn claim_live(i: &crate::persona::rag_budget::RagItem) -> bool {
-        i.metadata
-            .get("claim_live")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true)
-    }
-    // AVAILABLE work is not just `Open` — it is anything nobody currently holds. A card
-    // stuck in `Claimed` with a LAPSED lease is free to take, and treating it as taken is
-    // what emptied this anchor while 19 takeable cards sat on the board (2026-08-06: every
-    // resident read "nothing available" off their own expired claims and passed, for hours).
-    // `state == Open` and "unheld" are different questions; ask the second one.
-    use airc_work::CardState;
-    let unclaimed: Vec<&str> = cards
-        .iter()
-        .filter(|i| {
-            let unowned_open = state(i) == Some(CardState::Open)
-                && i.metadata.get("owner").is_none_or(|o| o.is_null());
-            // A lapsed hold on ANY non-terminal card is available work, whoever held it.
-            let lapsed = !claim_live(i)
-                && matches!(
-                    state(i),
-                    Some(CardState::Claimed | CardState::InProgress | CardState::Review)
-                );
-            unowned_open || lapsed
-        })
-        .map(|i| i.content.trim())
-        .take(2)
-        .collect();
-    // Exhaustive over the enum, so ADDING a variant to `CardState` forces a decision here
-    // instead of silently falling through as "not in flight". That is the whole point of
-    // matching the type rather than a string.
-    let in_flight: Vec<&str> = cards
-        .iter()
-        // Genuinely in flight = claimed AND the hold is still live. Without the liveness
-        // term a lapsed card counts as both available and in-flight, and the anchor would
-        // tell her the same card is free and busy in one breath.
-        .filter(|i| claim_live(i))
-        .filter(|i| match state(i) {
-            Some(CardState::Claimed | CardState::InProgress | CardState::Review) => true,
-            Some(
-                CardState::Open | CardState::Blocked | CardState::Merged | CardState::Closed,
-            ) => false,
-            None => false,
-        })
-        .map(|i| i.content.trim())
-        .take(1)
-        .collect();
-    if unclaimed.is_empty() && in_flight.is_empty() {
-        // Honest empty: no cards visible (empty board, unreadable board, or a
-        // context whose board source abstained). Never invent work.
-        "[anchor] No open cards are visible on this room's board right now — \
-         proposing one (work/create) would add something new; restating prior \
-         messages adds nothing."
-            .to_string()
-    } else {
-        let facts: Vec<&str> = unclaimed.into_iter().chain(in_flight).collect();
-        format!(
-            "[anchor] Open work exists on this room's board right now: {}. \
-             Restating prior messages adds nothing; acting on a card would.",
-            facts.join("; ")
-        )
-    }
+/// `holding_work`: she holds a card. Then only a HUMAN line or an
+/// @mention is directed — agent status traffic in the base room is message
+/// plane for perception, not a wake (working ≠ speaking; a human's question
+/// still is). Measured 2026-09-04: 8 work turns an hour across ten holders
+/// while every agent line in #academy woke all twelve for a message turn.
+pub(crate) fn turn_is_directed(
+    mentioned: bool,
+    sender_is_citizen: bool,
+    holding_work: bool,
+    sender_is_human: bool,
+) -> bool {
+    // Agent (non-human, non-citizen) status traffic is never a wake on its own:
+    // the agents' coordination room is the citizens' base room, and every idle
+    // citizen answered every agent line with a 265 s "nothing names me" turn
+    // (Joaquin, ×6 in 30 min, 2026-09-04). An agent that wants a citizen @mentions
+    // her; a human's line is always directed. `holding_work` narrows nothing
+    // further today but stays the fact the gate reasons on.
+    let _ = (holding_work, sender_is_citizen);
+    mentioned || sender_is_human
 }
+
+
+
 
 pub(crate) fn build_workspace_turns(
     deliveries: &[crate::persona::rag_budget::RagDelivery],
@@ -1917,7 +1984,10 @@ pub(crate) fn build_workspace_turns(
             .last()
             .is_some_and(|t| !t.is_self && t.content == trigger.content);
         if !already_last {
-            let author = names.get(trigger.peer_id).copied().unwrap_or(trigger.peer_id);
+            let author = names
+                .get(trigger.peer_id)
+                .copied()
+                .unwrap_or(trigger.peer_id);
             turns.push(BurstTurn::attributed(
                 false,
                 author,
@@ -1984,11 +2054,19 @@ pub(crate) fn build_workspace_turns(
             }
         }
         if self_run >= 1 {
+            // SENSE, NOT STEER (Joel 2026-09-01) — and the honest COUNT. This
+            // used to report `own.len()` — her ENTIRE visible own-message ring
+            // — as the repeat count: "your last 74 messages repeat the same
+            // sentiment" when the actual contained run was 2. Citizens
+            // memorized the inflated number as identity ("I've been spinning
+            // for 190+ turns") and spent turns narrating it. The run is the
+            // evidence; the run is what renders. And the verdict tail
+            // ("may have run its course — restating adds nothing") is hers to
+            // draw, not perception's to assert.
             turns.push(crate::cognition::workspace::BurstTurn::perception(format!(
                 "[pattern] {agent_name}'s last {} messages in this room repeat the same \
-                 sentiment in nearly the same words. This exchange may have run its \
-                 course — continuing to restate it adds nothing new.",
-                own.len()
+                 sentiment in nearly the same words.",
+                self_run + 1
             )));
             observed = true;
             if self_run >= PATTERN_FIRES_BEFORE_ANCHOR {
@@ -2008,9 +2086,9 @@ pub(crate) fn build_workspace_turns(
             const TAIL_CYCLIC: usize = 4; // consecutive low-novelty turns to conclude cycling
             const CONVO_CONTAINMENT: f32 = 0.9; // stricter than self — the floor is lower
             const CONVO_MIN_WORDS: usize = 4; // farewells are short; consecutiveness carries safety
-            // The full run is counted (not capped at TAIL_CYCLIC): every cyclic
-            // turn PAST first-fire depth is a turn the room traded after the
-            // observation was first derivable — the escalation evidence.
+                                              // The full run is counted (not capped at TAIL_CYCLIC): every cyclic
+                                              // turn PAST first-fire depth is a turn the room traded after the
+                                              // observation was first derivable — the escalation evidence.
             let mut cyclic = 0usize;
             let mut authors: std::collections::HashSet<&str> = std::collections::HashSet::new();
             for i in (1..turns.len()).rev() {
@@ -2032,11 +2110,10 @@ pub(crate) fn build_workspace_turns(
             if cyclic >= TAIL_CYCLIC && authors.len() >= 2 {
                 let mut names: Vec<&str> = authors.into_iter().collect();
                 names.sort_unstable();
+                // Sense, not steer — same contract as detector 1.
                 turns.push(crate::cognition::workspace::BurstTurn::perception(format!(
                     "[pattern] The last several messages in this room — from {} — trade the \
-                     same sentiment back and forth in nearly the same words. This exchange \
-                     has already concluded; every further reply restates it, and a courtesy \
-                     answered with another courtesy has no natural end.",
+                     same sentiment back and forth in nearly the same words.",
                     names.join(" and ")
                 )));
                 observed = true;
@@ -2095,11 +2172,10 @@ pub(crate) fn build_workspace_turns(
                 }
             }
             if mirror_run >= 1 {
+                // Sense, not steer — same contract as detector 1.
                 turns.push(crate::cognition::workspace::BurstTurn::perception(format!(
                     "[pattern] {agent_name}'s last {mirror_run} message(s) restate what other \
-                     participants in this room had already said, in nearly the same words — \
-                     an echo, not a contribution. Reflecting their words back adds nothing; \
-                     only something new (a fact, an action, a result) would.",
+                     participants in this room had already said, in nearly the same words.",
                 )));
                 if mirror_run >= PATTERN_FIRES_BEFORE_ANCHOR {
                     push_work_board_anchor(&mut turns, deliveries);
@@ -2143,8 +2219,7 @@ pub(crate) fn build_workspace_turns(
         let mut lost_threads: Vec<&str> = Vec::new();
         for d in deliveries.iter().filter(|d| d.source_id == "active-work") {
             for i in &d.items {
-                let Some(first) = i.content.trim().lines().next().filter(|l| !l.is_empty())
-                else {
+                let Some(first) = i.content.trim().lines().next().filter(|l| !l.is_empty()) else {
                     continue;
                 };
                 if i.metadata.get("fact").and_then(|v| v.as_str()) == Some("claim_lost") {
@@ -2375,20 +2450,134 @@ fn spawn_token_forwarder(
     })
 }
 
+
+/// One intrinsic heartbeat. Returns `true` iff the cycle's INFERENCE tail (the
+/// musing turn) was starved of an ambient permit — the deterministic head (held-work
+/// act question, kanban pull) always runs.
 async fn run_self_cycle(
     ctx: &HostedPersona,
-    conversation: &dyn PersonaConversation,
+    conversation: &mut dyn PersonaConversation,
     opts: &ServeOptions,
     last_burst_fp: &mut u64,
-) {
+) -> bool {
     let now_ms = (opts.now_ms)();
+    // A self-cycle IS cognition: the claim-renewal pump reads this pulse, and it
+    // was stamped only on message turns — a holder working her card for thirty
+    // minutes without a room message read as idle, her renewals were denied, her
+    // hold lapsed, she looked free and pulled a second card (2026-09-05: 32 pulls
+    // and 32 re-stagings for 12 cards in 15 minutes).
+    crate::persona::cognition_pulse::touch(ctx.identity.peer_id.as_uuid(), now_ms);
+    // FOCUS (2026-08-22): a self-cycle with no triggering message binds to the
+    // room of her FRESHEST LIVE CLAIM when she holds one, else her home room.
+    // Home-room-always was the self-clobber engine measured tonight: a citizen
+    // holding a claim in a run room alternated home-room self-ticks with
+    // work-room turns, and every swap re-rendered the room-scoped context
+    // (kanban, steps-ledger, room speech) through her ONE pinned slot —
+    // `cached: 0` by her own hand, plus attention spent re-orienting in a room
+    // her work is not in. The institution's version: you sit at your desk
+    // until the job is done; the break room is for between jobs.
+    //
+    // Claim → room resolves through the bench-round registry (a round IS its
+    // room). A claim on an untracked card (human boards) resolves None and
+    // falls back home — never a guess. Freshest = max claim_expires_at_ms,
+    // i.e. the claim most recently taken or heartbeated.
+    let focus_room = match conversation.stream_citizen() {
+        Some(citizen) => citizen
+            .active_claims()
+            .await
+            .ok()
+            .and_then(|cards| {
+                let mut live: Vec<_> = cards
+                    .iter()
+                    .filter_map(|c| {
+                        let room = crate::cognition::bench_round::room_for_card(
+                            c.card_id.as_uuid(),
+                        )?;
+                        Some((c.claim_expires_at_ms.unwrap_or(0), room)) // unknown expiry sorts LEAST-fresh: it can never win focus over a known-live lease, and a lone expiry-less claim still focuses (better than home)
+                    })
+                    .collect();
+                live.sort_by_key(|(exp, _)| *exp);
+                live.pop().map(|(_, room)| room)
+            }),
+        None => None,
+    };
+    if let Some(room) = focus_room {
+        if room != ctx.identity.default_room {
+            crate::probe!(
+                class = "persona.selftick.focused",
+                persona = %ctx.identity.agent_name,
+                room = %room,
+                "self-tick bound to the held claim's room instead of home — \
+                 focus holds until the card settles",
+            );
+        }
+    }
+    // THE HELD-WORK HEARTBEAT. If she holds a claimed card, the self-tick ADVANCES
+    // it — a real held-work turn (hands rooted at the staged checkout, the
+    // pass-reason completion edge), not a musing turn. This is what finishes a
+    // claimed card in a QUIET room: the held-work gate used to live ONLY on the
+    // message path (`ask_the_act_question` after a speak/pass), so an idle citizen
+    // holding a claim just mused and never worked it — measured 2026-09-02, 22 cards
+    // Claimed with zero `persona.work.gate` and zero progress. A card is
+    // progress-driven, not change-driven, so this runs every tick until she
+    // concludes it (`PASS: done`) — the autonomous loop the architecture always
+    // promised ("the heartbeat advances my thread, not just reacts to pokes").
+    // Returns early so she never ALSO spends a musing turn the same tick.
+    let work_room = focus_room.unwrap_or(ctx.identity.default_room);  // unwrap_or: no held claim = home room
+    if crate::persona::act_question::ask_the_act_question(
+        ctx,
+        conversation,
+        now_ms, // no triggering message — the tick clock stands in for lamport
+        work_room,
+        false, // a self-tick is never a directed address
+    )
+    .await
+    {
+        // She WORKED her claim this tick — that is engagement, so the caller must
+        // keep her at the fast beat, not rest her. The caller reads BeatOutcome from
+        // whether `last_burst_fp` changed; bump it so a work turn always counts as
+        // Engaged. Without this she works one tick, is judged "nothing new", and
+        // backs off toward the rest cap — the opposite of "virtually no time between
+        // contexts" while a card is in her hands. (LATENCY LAW / #the-build-order.)
+        *last_burst_fp = last_burst_fp.wrapping_add(1);
+        return false;
+    }
+    // No held card to work — PULL the next Open card off the shared team deck
+    // (kanban pull, Joel 2026-09-02: a team chooses from the deck, they don't work
+    // a fixed pushed pile). Deterministic (the substrate pulls when she is free,
+    // not an LLM claim tool), WIP-limited to one by construction: once she holds
+    // the pulled card the held-work branch above works it and this branch won't
+    // fire again until it settles. Pulling IS engagement → hold the fast beat.
+    match try_pull_next_card(ctx, conversation).await {
+        PullOutcome::Pulled => {
+            return true;
+        }
+        // No slot on the roster (WIP = lanes): she watches the board this tick and
+        // takes no lane for ambient deliberation — the lanes stay with the holders
+        // (2026-09-05: with 8 holders on 5 lanes, idle self-ticks were taking
+        // nondirected lane permits while holders waited; a holder saw two work
+        // turns in forty minutes).
+        PullOutcome::DeferredWip => {
+            return false;
+        }
+        PullOutcome::Nothing => {}
+    }
+    // Only the MUSING tail below is ambient inference: it pays for an ambient permit
+    // (lanes-1 pool, keeps the GPU for live speakers and held work). Nothing above
+    // needed one.
+    let Some(_ambient_permit) = crate::cognition::resource_admission::try_hold_ambient_turn()
+    else {
+        return true;
+    };
     let composed = {
         let cognition = ctx.cognition.lock().await;
-        // A self-cycle has no triggering message, so the WHERE axis is her HOME
-        // room — the durable membership her sources are bound to. Passing None
-        // here is what made idle ticks blind to the board (#331 / #127).
+        // Passing None here is what made idle ticks blind to the board (#331 / #127).
         cognition
-            .compose_for_turn(&ctx.profile, now_ms, Some(ctx.identity.default_room))
+            .compose_for_turn(
+                &ctx.profile,
+                now_ms,
+                Some(focus_room.unwrap_or(ctx.identity.default_room)),
+            )
             .await
     };
     // Collapse loop-filler BEFORE anything reasons over the burst (task #16). Two idle
@@ -2405,7 +2594,7 @@ async fn run_self_cycle(
     // heartbeat advances my thread, not just reacts to pokes). See burst_fingerprint.
     let fp = burst_fingerprint(&deliveries, &ctx.identity.peer_id.to_string());
     if fp == *last_burst_fp {
-        return; // nothing NEW to attend to (no external change, no work progress) → sleep
+        return false; // nothing NEW to attend to (no external change, no work progress) → sleep
     }
     *last_burst_fp = fp;
     // Structured turns (own posts attributed as self → assistant, peers → user),
@@ -2424,20 +2613,36 @@ async fn run_self_cycle(
     // #301: the self-tick is where the live photocopy chains actually run
     // (idle re-announcements), so it gets the same ring-counted anchor
     // escalation as the message path — window-derived counters starve here too.
+    // A6 CONSISTENCY: the tick's room is her FOCUS room when she holds live work
+    // (the room of her freshest claim — the same room the composition above framed
+    // grounding against), else her default. Before this, the composition used the
+    // focus room while the anchor/burst/drive/say all used default — she reasoned
+    // about her claim's room and then acted in a different one.
+    let tick_room = focus_room.unwrap_or(ctx.identity.default_room); // no focus claim → the tick drives in her default room by design
     append_ring_anchor_if_starved(
         &mut selftick_turns,
         &deliveries,
         ctx.identity.peer_id,
-        ctx.identity.default_room,
+        tick_room,
     );
     let burst = crate::cognition::workspace::Burst::from_turns_at(
-        ctx.identity.default_room,
+        crate::identity::ActivityRoom::from_uuid(tick_room)
+            .expect("focus room comes from a live claim's real room; default_room is minted v4 — never nil"), // claim rooms are spawned real; default_room minted v4 — nil unreachable
         selftick_turns,
         Some(now_ms),
+        // Ambient, and honestly so. The self-tick wakes on a CHANGE to a re-read
+        // projection (`burst_fingerprint` over composed deliveries), not on an
+        // arrival — the RAG sources hand back rendered text with the identity of the
+        // items that produced it already discarded, so there is no engram to point at.
+        // Something DID cause this turn; the projection layer is where its name was
+        // lost. Handles are what would make it nameable
+        // (docs/architecture/CONTENT-TRAVELS-BY-HANDLE.md).
+        crate::cognition::workspace::Cause::Ambient,
     );
-    let Some(cycle) = crate::cognition::persona_workspace::global().get(&ctx.identity.peer_id.as_uuid())
+    let Some(cycle) =
+        crate::cognition::persona_workspace::global().get(&ctx.identity.peer_id.as_uuid())
     else {
-        return; // no cycle registered (shouldn't happen) — nothing to run
+        return false; // no cycle registered (shouldn't happen) — nothing to run
     };
     // Addressing PERCEPTION, not a silence directive. The old framing asserted "no one
     // addressed you just now" unconditionally and told her to "stay silent (PASS)" —
@@ -2461,7 +2666,7 @@ async fn run_self_cycle(
                 .get("peer_id")
                 .and_then(|v| v.as_str())
                 .map(|p| p != own_peer)
-                .unwrap_or(true)
+                .unwrap_or(true)  // unwrap_or: an unreadable board counts as claimable so the pull tries, never silently skips
         })
         .any(|item| identity.mentions(&item.content));
     crate::probe!(
@@ -2500,7 +2705,7 @@ async fn run_self_cycle(
             addressed,
             "self-tick wake held by a self-set mute — back to sleep (interrupt floor honored)"
         );
-        return;
+        return false;
     }
     // The self-initiated framing (formerly an `[Self-initiated moment…]` text
     // preamble concatenated onto the burst) now rides `TurnFraming::self_thread`
@@ -2595,14 +2800,14 @@ async fn run_self_cycle(
             "no lane is live — skipping this self-tick rather than deliberating into a \
              guaranteed refusal (serving transition, not a persona fault)"
         );
-        return;
+        return false;
     }
-    let forwarder = spawn_token_forwarder(tok_rx, None, ctx.identity.agent_name.clone(), None, None);
+    let forwarder =
+        spawn_token_forwarder(tok_rx, None, ctx.identity.agent_name.clone(), None, None);
     let (step, _turn_metrics) = {
         let outcome = crate::cognition::act_observe::drive_to_settle(
             &cycle,
             burst,
-            ctx.identity.default_room,
             LIVE_MAX_ACTS,
             crate::cognition::workspace::TurnFraming::self_thread(false),
         )
@@ -2617,17 +2822,14 @@ async fn run_self_cycle(
             // message path has). A decision whose text is just {"tool_call":…} is an
             // un-acted call, not a contribution — stay silent.
             if crate::ai::json_in_prompt_tools::parse_tool_call(&text).is_some() {
-                return;
+                return false;
             }
-            // A self-cycle answers no one — there is no arrival room, so her
-            // default IS the correct audience. Same room the cycle framed its
-            // context against two lines up.
-            if let Err(e) = conversation
-                .say_in(ctx.identity.default_room, &text)
-                .await
-            {
+            // A self-cycle answers no one — the audience is the room the tick
+            // ran IN (her claim's focus room when working, else her default) —
+            // the same room the cycle framed its context against.
+            if let Err(e) = conversation.say_in(tick_room, &text).await {
                 tracing::warn!(persona = %ctx.identity.agent_name, error = %e, "self-cycle say failed");
-                return;
+                return false;
             }
             // #148: self-tick utterances are self-history too — the live
             // repeat loops are mostly idle-tick re-announcements, and the
@@ -2636,6 +2838,7 @@ async fn run_self_cycle(
             // Every successful say records, whichever path spoke.
             crate::cognition::deliberation_budget::record_own_speech(
                 ctx.identity.peer_id,
+                ctx.identity.default_room,
                 &text,
             );
             crate::probe!(
@@ -2674,6 +2877,7 @@ async fn run_self_cycle(
         // unreachable (live always permits its one act). Passed → sleep.
         _ => {}
     }
+    false
 }
 
 /// Helper: pull the next event from the conversation, handling the
@@ -2700,12 +2904,62 @@ async fn next_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use airc_core::PeerId;
 
     // what this catches: the WORK-question burst drifting from its contract — it must
     // name each held card (short id + title) and pose the act-question with passing
     // explicitly hers, because this text IS the second gate of a claim-holder's quiet
     // turn (BigMama's gate-conflation fix, 2026-08-08). A burst that loses the card
     // names starves the question; one that loses the pass-clause becomes a command.
+    #[test]
+    // what this catches: a human's (or agent's) room line is a DIRECTED turn without
+    // an @mention; citizen chatter stays ambient unless she is named (operator asked
+    // twice, nobody answered — 2026-09-03).
+    #[test]
+    fn a_non_citizen_line_is_directed_and_citizen_chatter_needs_a_mention() {
+        assert!(turn_is_directed(false, false, false, true), "human line: directed");
+        assert!(!turn_is_directed(false, false, false, false), "agent status line, idle citizen: ambient (2026-09-04)");
+        assert!(turn_is_directed(true, false, false, false), "an agent naming her: directed");
+        assert!(turn_is_directed(true, true, false, false), "a citizen naming her: directed");
+        assert!(!turn_is_directed(false, true, false, false), "citizen chatter/receipts: ambient");
+    }
+
+    // what this catches: a citizen HOLDING WORK waking for agent status traffic —
+    // every agent line in #academy woke all twelve holders (8 work turns an hour,
+    // 2026-09-04). Holding work: a human line or a mention is directed; an
+    // agent's line is message plane only.
+    #[test]
+    fn holding_work_only_a_human_line_or_a_mention_is_directed() {
+        assert!(!turn_is_directed(false, false, true, false), "agent line while holding work: ambient");
+        assert!(turn_is_directed(false, false, true, true), "human line while holding work: directed");
+        assert!(turn_is_directed(true, false, true, false), "an agent naming her: directed");
+        assert!(!turn_is_directed(false, true, true, false), "citizen receipts: ambient");
+    }
+
+    // what this catches: the resume block carries HER newest thoughts only, oldest
+    // first, clipped — never another citizen's line, never a receipt.
+    #[test]
+    fn her_last_thoughts_lead_the_work_turn_oldest_first() {
+        use crate::persona::durable_history::RoomRow;
+        let me = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        let row = |sender, ms, text: &str| RoomRow { id: Uuid::new_v4(), sender, occurred_at_ms: ms, text: text.to_string() };
+        let rows = vec![
+            row(me, 3, "💭 lines 107-152: the bug is the total_degree branch"),
+            row(other, 4, "💭 not hers"),
+            row(me, 1, "💭 let me look at itermonomials"),
+            row(me, 2, "⚙ code/read ✓"),
+            row(me, 5, "💭 let me refocus and actually do work on this card now, really"),
+        ];
+        let state = own_recent_thoughts(&rows, me, 2, 40);
+        assert_eq!(state.len(), 2);
+        assert!(state[0].starts_with("💭 lines 107-152"), "{state:?}");
+        assert!(state[1].ends_with('…'), "clipped: {state:?}");
+        let text = held_work_burst(&[], &state);
+        assert!(text.contains("resume from them"));
+        assert!(text.contains("lines 107-152"));
+    }
+
     #[test]
     fn held_work_burst_names_cards_and_keeps_the_choice_hers() {
         use airc_work::{CardState, Priority, RepoId, WorkCardId};
@@ -2728,12 +2982,20 @@ mod tests {
             reviews: None,
         };
         let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
-        let burst = held_work_burst(&[&card]);
+        let burst = held_work_burst(&[&card], &[]);
         assert!(burst.contains(&id8), "short id must appear: {burst}");
-        assert!(burst.contains("psf__requests-2148"), "title must appear: {burst}");
         assert!(
-            burst.contains("passing is yours"),
-            "the choice stays hers: {burst}"
+            burst.contains("psf__requests-2148"),
+            "title must appear: {burst}"
+        );
+        // The choice stays hers — she PASSES to conclude, and the pass carries a
+        // reason (done/blocked/nothing) the deterministic settle edge reads. A
+        // burst that loses the pass-clause becomes a command; one that loses the
+        // reason words leaves the edge unable to tell done from blocked.
+        assert!(burst.contains("PASS"), "the pass choice stays hers: {burst}");
+        assert!(
+            burst.contains("done") && burst.contains("blocked") && burst.contains("nothing"),
+            "the pass must name its three reasons for the settle edge: {burst}"
         );
     }
 
@@ -2816,7 +3078,10 @@ mod tests {
         // opaque turn is its own kind of noise.
         let mut turns: Vec<crate::cognition::workspace::BurstTurn> = Vec::new();
         push_work_board_anchor(&mut turns, &without_board);
-        assert!(turns.is_empty(), "no anchor means no turn, not an empty one");
+        assert!(
+            turns.is_empty(),
+            "no anchor means no turn, not an empty one"
+        );
 
         // The board source SPOKE and the board really is empty → the honest-empty line is
         // still correct and must survive. Silencing that would trade one lie for another.
@@ -2827,7 +3092,10 @@ mod tests {
         );
 
         // Cards present → the anchor names real work, as before.
-        let with_cards = vec![delivery("room-kanban", vec![card(airc_work::CardState::Claimed)])];
+        let with_cards = vec![delivery(
+            "room-kanban",
+            vec![card(airc_work::CardState::Claimed)],
+        )];
         let anchor = work_board_anchor(&with_cards);
         assert!(
             anchor.contains("Open work exists"),
@@ -2836,13 +3104,17 @@ mod tests {
     }
 
     // what this catches: the RAG-side mirror-hall cure (Joel 2026-07-12,
-    // "repetition almost always bad RAG"). Near-identical substantial turns
-    // collapse to their NEWEST copy with an "(×N near-identical)" author
-    // annotation; distinct turns, short acks (token floor), and opaque
-    // observation turns pass through untouched. Specimens are the live
-    // grep/file_tree loop that fed each mind 4-8 copies of one message.
+    // "repetition almost always bad RAG") in its KV-STABLE form (2026-09-01):
+    // near-identical substantial turns are SUPPRESSED — the OLDEST copy stays
+    // at its position, byte-untouched (no relocating representative, no
+    // mutating "(×N)" author annotation; both rewrote early prompt bytes and
+    // killed the whole KV tail — Benchy's consecutive prompts diverged at
+    // char ~660 on exactly the annotation). The LAST turn (the trigger/ask)
+    // is never suppressed even when it near-duplicates history. Distinct
+    // turns, short acks (token floor), and opaque observation turns pass
+    // through untouched.
     #[test]
-    fn near_dup_turns_collapse_to_annotated_newest_copy() {
+    fn near_dup_turns_suppress_later_copies_and_never_the_trigger() {
         use crate::cognition::workspace::BurstTurn;
         let loop_msg = "I see that we're all trying to find Rust files in the workspace. \
                         Let me use file_tree with a deeper recursion limit to explore the \
@@ -2861,19 +3133,31 @@ mod tests {
             ),
         ];
         let out = collapse_near_duplicate_turns(turns);
-        // 3 loop copies → 1 (the NEWEST, Atlas's variant); 2 short acks kept
-        // (token floor); opaque observation kept.
-        assert_eq!(out.len(), 4, "{:?}", out.iter().map(|t| &t.author).collect::<Vec<_>>());
+        // Asha's mid-window copy suppressed; Anwen's OLDEST copy survives
+        // untouched; Atlas's trigger variant survives because the LAST turn is
+        // sacred; acks + opaque pass through.
+        assert_eq!(
+            out.len(),
+            5,
+            "{:?}",
+            out.iter().map(|t| &t.author).collect::<Vec<_>>()
+        );
         let survivor = out
             .iter()
             .find(|t| t.content.contains("find Rust files"))
-            .expect("one representative survives");
-        assert!(
-            survivor.author.contains("Atlas") && survivor.author.contains("(×3 near-identical)"),
-            "newest copy, annotated: {}",
-            survivor.author
+            .expect("the oldest representative survives");
+        assert_eq!(
+            survivor.author, "Anwen",
+            "oldest copy survives with its author BYTE-UNTOUCHED (no ×N annotation)"
         );
-        assert!(survivor.content.contains("aren't being returned"), "newest copy is the representative");
+        assert!(
+            !out.iter().any(|t| t.author.contains("Asha")),
+            "the interior duplicate is suppressed entirely"
+        );
+        assert!(
+            out.last().unwrap().content.contains("aren't being returned"),
+            "the trigger (last turn) is never suppressed, near-dup or not"
+        );
         assert_eq!(out.iter().filter(|t| t.content == "thanks!").count(), 2);
         assert!(out.iter().any(|t| t.content.starts_with("[pattern]")));
     }
@@ -2946,7 +3230,10 @@ mod tests {
         let lost = c.find("no longer held").expect("lost-claim tail present");
         let room = c.find("Nothing has been said").expect("room line present");
         assert!(thread < room, "thread must LEAD the room description: {c}");
-        assert!(lost < room, "lost-claim tail rides before the room line: {c}");
+        assert!(
+            lost < room,
+            "lost-claim tail rides before the room line: {c}"
+        );
         assert!(
             !c.contains("No work of yours is on record"),
             "the no-thread line must not appear when a thread exists: {c}"
@@ -3019,7 +3306,10 @@ mod tests {
             // My active work card appears → fingerprint MUST change (interior drive).
             let with_my_work = vec![
                 delivery("airc", vec![chat("other", "hi")]),
-                delivery("active-work", vec![card("card abc [InProgress] \"impl X\"")]),
+                delivery(
+                    "active-work",
+                    vec![card("card abc [InProgress] \"impl X\"")],
+                ),
             ];
             assert_ne!(
                 fp0,
@@ -3173,7 +3463,7 @@ mod tests {
 
         #[test]
         fn remote_peer_renders_with_roster_name_self_with_agent_name() {
-            let room = Uuid::nil();
+            let room = crate::identity::ActivityRoom::test_room();
             let me = "me-peer";
             let joel = "7711fe60-a19f-4f41-9ab6-24c884757338";
             let stranger = "deadbeef-0000-0000-0000-000000000000";
@@ -3181,13 +3471,13 @@ mod tests {
             let deliveries = vec![
                 delivery(
                     "room-roster",
-                    vec![roster(joel, "Joel"), roster(me, "Asha")],
+                    vec![roster(joel, "Operator"), roster(me, "Asha")],
                 ),
                 delivery(
                     "airc",
                     vec![
                         chat(joel, "Asha — are you there?"),
-                        chat(me, "I'm here, Joel!"),
+                        chat(me, "I'm here, Operator!"),
                         chat(stranger, "lurking"),
                     ],
                 ),
@@ -3203,7 +3493,7 @@ mod tests {
             let joel_turn = &turns[0];
             let own_turn = &turns[1];
             let stranger_turn = &turns[2];
-            assert!(!joel_turn.is_self && joel_turn.author == "Joel");
+            assert!(!joel_turn.is_self && joel_turn.author == "Operator");
             assert!(
                 own_turn.is_self && own_turn.author == "Asha",
                 "own post must be attributed to self/agent_name, got {own_turn:?}"
@@ -3218,7 +3508,7 @@ mod tests {
             // peers, own post attributed, unrostered peer honest-by-id.
             let burst = Burst::from_turns(room, turns).rendered;
             assert!(
-                burst.contains("Joel: Asha — are you there?"),
+                burst.contains("Operator: Asha — are you there?"),
                 "remote peer must render with roster name, got:\n{burst}"
             );
             assert!(
@@ -3226,7 +3516,7 @@ mod tests {
                 "the raw peer UUID must NOT leak into the burst, got:\n{burst}"
             );
             assert!(
-                burst.contains("Asha: I'm here, Joel!"),
+                burst.contains("Asha: I'm here, Operator!"),
                 "own post must attribute to agent_name, got:\n{burst}"
             );
             assert!(
@@ -3264,12 +3554,25 @@ mod tests {
             // Two trailing photocopies in her own ring, the source + peers' copies
             // in the room ring → run 2 (escalation threshold reached).
             let own = vec![paraphrase.clone(), intro.clone()];
-            let room = vec![intro.clone(), intro.clone(), paraphrase.clone(), intro.clone()];
-            assert_eq!(super::super::ring_echo_run(&own, &room), 2, "photocopy chain must count each copy");
+            let room = vec![
+                intro.clone(),
+                intro.clone(),
+                paraphrase.clone(),
+                intro.clone(),
+            ];
+            assert_eq!(
+                super::super::ring_echo_run(&own, &room),
+                2,
+                "photocopy chain must count each copy"
+            );
 
             // A novel newest message breaks the run at 0 even with echoes behind it.
             let own_novel = vec![intro.clone(), novel];
-            assert_eq!(super::super::ring_echo_run(&own_novel, &room), 0, "novel work must reset the run");
+            assert_eq!(
+                super::super::ring_echo_run(&own_novel, &room),
+                0,
+                "novel work must reset the run"
+            );
 
             // Her own recorded copy cannot vouch for itself: identical entries are
             // excluded from the containment window, so a lone original counts 0.
@@ -3360,7 +3663,10 @@ mod tests {
                 obs.content
             );
             assert_eq!(
-                turns.iter().filter(|t| t.content.starts_with("[pattern]")).count(),
+                turns
+                    .iter()
+                    .filter(|t| t.content.starts_with("[pattern]"))
+                    .count(),
                 1,
                 "exactly one observation per burst — perception, not nagging"
             );
@@ -3424,7 +3730,12 @@ mod tests {
             let deliveries = vec![
                 delivery(
                     "room-kanban",
-                    vec![kanban_card("94ad103f", "Fix the widget", airc_work::CardState::Open, None)],
+                    vec![kanban_card(
+                        "94ad103f",
+                        "Fix the widget",
+                        airc_work::CardState::Open,
+                        None,
+                    )],
                 ),
                 delivery("airc", greeting_spiral(me, peer, 3)),
             ];
@@ -3454,7 +3765,12 @@ mod tests {
                 delivery(
                     "room-kanban",
                     vec![
-                        kanban_card("94ad103f", "Fix the lane admission planner", airc_work::CardState::Open, None),
+                        kanban_card(
+                            "94ad103f",
+                            "Fix the lane admission planner",
+                            airc_work::CardState::Open,
+                            None,
+                        ),
                         kanban_card(
                             "21ffe3c0",
                             "Wire the projector",
@@ -3563,10 +3879,9 @@ mod tests {
             let deliveries = vec![delivery("airc", items)];
             let turns = build_workspace_turns(&deliveries, me, "Asha", None);
             assert!(
-                !turns
-                    .iter()
-                    .any(|t| t.content.starts_with("[pattern]")
-                        || t.content.starts_with("[anchor]")),
+                !turns.iter().any(
+                    |t| t.content.starts_with("[pattern]") || t.content.starts_with("[anchor]")
+                ),
                 "a novel last message breaks the run — no description, no anchor, got {turns:?}"
             );
         }
@@ -3587,12 +3902,15 @@ mod tests {
             let me = "me-peer";
             let joel = "7711fe60-a19f-4f41-9ab6-24c884757338";
             let deliveries = vec![
-                delivery("room-roster", vec![roster(joel, "Joel"), roster(me, "Asha")]),
+                delivery(
+                    "room-roster",
+                    vec![roster(joel, "Operator"), roster(me, "Asha")],
+                ),
                 // The lagging thread: her own reply is the last turn; Joel's new
                 // question has NOT yet landed in the delivery.
                 delivery(
                     "airc",
-                    vec![chat(joel, "morning"), chat(me, "morning Joel!")],
+                    vec![chat(joel, "morning"), chat(me, "morning Operator!")],
                 ),
             ];
             let trigger = super::super::TriggerTurn {
@@ -3605,7 +3923,7 @@ mod tests {
             let last = turns.last().expect("at least the anchored trigger");
             assert!(
                 !last.is_self
-                    && last.author == "Joel"
+                    && last.author == "Operator"
                     && last.content == "run commands/list and tell me the count",
                 "the waking message must be anchored as the final peer turn (roster \
                  name resolved), got {last:?}"
@@ -3623,11 +3941,14 @@ mod tests {
             let joel = "7711fe60-a19f-4f41-9ab6-24c884757338";
             let question = "run commands/list and tell me the count";
             let deliveries = vec![
-                delivery("room-roster", vec![roster(joel, "Joel"), roster(me, "Asha")]),
+                delivery(
+                    "room-roster",
+                    vec![roster(joel, "Operator"), roster(me, "Asha")],
+                ),
                 // Caught-up thread: the trigger IS the last turn already.
                 delivery(
                     "airc",
-                    vec![chat(me, "morning Joel!"), chat(joel, question)],
+                    vec![chat(me, "morning Operator!"), chat(joel, question)],
                 ),
             ];
             let trigger = super::super::TriggerTurn {
@@ -3697,7 +4018,12 @@ mod tests {
             let deliveries = vec![
                 delivery(
                     "room-kanban",
-                    vec![kanban_card("65fca48d", "Break the echo loop", airc_work::CardState::Open, None)],
+                    vec![kanban_card(
+                        "65fca48d",
+                        "Break the echo loop",
+                        airc_work::CardState::Open,
+                        None,
+                    )],
                 ),
                 delivery("airc", echo_hall(me, anwen, benchy)),
             ];
@@ -3749,10 +4075,9 @@ mod tests {
             )];
             let turns = build_workspace_turns(&deliveries, me, "Asha", None);
             assert!(
-                !turns
-                    .iter()
-                    .any(|t| t.content.starts_with("[pattern]")
-                        || t.content.starts_with("[anchor]")),
+                !turns.iter().any(
+                    |t| t.content.starts_with("[pattern]") || t.content.starts_with("[anchor]")
+                ),
                 "novel multi-speaker work must never trip the mirror, got {turns:?}"
             );
         }
@@ -3777,7 +4102,12 @@ mod tests {
             let deliveries = vec![
                 delivery(
                     "room-kanban",
-                    vec![kanban_card("65fca48d", "Break the echo loop", airc_work::CardState::Open, None)],
+                    vec![kanban_card(
+                        "65fca48d",
+                        "Break the echo loop",
+                        airc_work::CardState::Open,
+                        None,
+                    )],
                 ),
                 delivery("airc", items),
             ];
@@ -3899,6 +4229,7 @@ mod tests {
 
         let mut conversation = ScriptedConversation::new().with_events(vec![
             Ok(Some(IncomingMessage {
+                event_id: uuid::Uuid::nil(),
                 lamport: 1,
                 peer_id: other_peer,
                 text: "hello?".to_string(),
@@ -3992,6 +4323,7 @@ mod tests {
 
         let mut conversation = ScriptedConversation::new().with_events(vec![
             Ok(Some(IncomingMessage {
+                event_id: uuid::Uuid::nil(),
                 lamport: 1,
                 peer_id: other_peer,
                 text: "ping?".to_string(),
@@ -4306,6 +4638,7 @@ mod tests {
         // UnprimedConversation per [[test-fixtures-are-system-primitives]].
         let mut conversation = ScriptedConversation::new()
             .with_events(vec![Ok(Some(IncomingMessage {
+                event_id: uuid::Uuid::nil(),
                 lamport: 1,
                 peer_id: other_peer,
                 text: "would-be-message".to_string(),
@@ -4346,6 +4679,7 @@ mod tests {
 
         let mut conversation = ScriptedConversation::new().with_events(vec![
             Ok(Some(IncomingMessage {
+                event_id: uuid::Uuid::nil(),
                 lamport: 1,
                 peer_id: persona_peer, // SELF
                 text: "my own echo".to_string(),
@@ -4389,18 +4723,21 @@ mod tests {
             .with_high_water(100) // pre-attach history was up to lamport=100
             .with_events(vec![
                 Ok(Some(IncomingMessage {
+                    event_id: uuid::Uuid::nil(),
                     lamport: 50, // BEFORE attach
                     peer_id: other_peer,
                     text: "ancient".to_string(),
                     room_id: Uuid::nil(),
                 })),
                 Ok(Some(IncomingMessage {
+                    event_id: uuid::Uuid::nil(),
                     lamport: 100, // exactly at the mark — also skipped
                     peer_id: other_peer,
                     text: "boundary".to_string(),
                     room_id: Uuid::nil(),
                 })),
                 Ok(Some(IncomingMessage {
+                    event_id: uuid::Uuid::nil(),
                     lamport: 101, // FRESH
                     peer_id: other_peer,
                     text: "new".to_string(),
@@ -4450,6 +4787,7 @@ mod tests {
         let mut conversation = ScriptedConversation::new().with_events(vec![
             Err("stream lag".to_string()),
             Ok(Some(IncomingMessage {
+                event_id: uuid::Uuid::nil(),
                 lamport: 1,
                 peer_id: other_peer,
                 text: "after lag".to_string(),
@@ -4478,5 +4816,267 @@ mod tests {
         assert_eq!(outcome.turns_errored, 1);
         assert_eq!(outcome.turns_skipped, 0);
         assert_eq!(conversation.said().len(), 1);
+    }
+    // what this catches: the STARVATION RATCHET — a yield being charged the rest
+    // backoff it did not earn. Regression for the live 2026-08-17 measurement (24
+    // hosted citizens, ambient pool of 1, ONE self-tick in 40 minutes on a
+    // healthy decoding lane). If `YieldedNoSlot` ever compounds again, contention
+    // silently becomes permanent slowness and the whole roster degrades as it grows.
+    #[test]
+    fn a_yield_never_costs_her_cadence_but_a_fruitless_cycle_still_rests() {
+        use std::time::Duration;
+        let engaged = Duration::from_millis(SELF_TICK_MS);
+        let cap = Duration::from_millis(SELF_TICK_REST_CAP_MS);
+
+        // A yield leaves the beat EXACTLY where it was — she never ran.
+        let mut beat = engaged;
+        for _ in 0..50 {
+            beat = next_beat_after(BeatOutcome::YieldedNoSlot, beat, engaged, cap);
+        }
+        assert_eq!(
+            beat, engaged,
+            "50 yields must not slow her by a single millisecond — she never ran, \
+             so there is nothing to rest on (the ratchet that pinned 24 citizens at the cap)"
+        );
+
+        // A cycle that found nothing DOES rest deeper, and saturates at the cap.
+        let mut beat = engaged;
+        let once = next_beat_after(BeatOutcome::NothingNew, beat, engaged, cap);
+        assert!(once > engaged, "an earned rest still backs off");
+        for _ in 0..50 {
+            beat = next_beat_after(BeatOutcome::NothingNew, beat, engaged, cap);
+        }
+        assert_eq!(beat, cap, "earned rest saturates at the cap, never beyond");
+
+        // Finding something new snaps her straight back to engaged from full rest.
+        assert_eq!(
+            next_beat_after(BeatOutcome::Engaged, cap, engaged, cap),
+            engaged,
+            "life in the room returns her to the engaged beat immediately"
+        );
+    }
+
+    // what this catches: the LATENCY LAW for held work. A citizen advancing her
+    // OWN claimed card on every self-tick must stay at the engaged beat — working
+    // IS engagement. `run_self_cycle` signals this by bumping `last_burst_fp` on a
+    // held-work turn so the loop reads BeatOutcome::Engaged (never NothingNew).
+    // Regression for the measured 766s/791s gaps (2026-09-02): before the bump, a
+    // held-work turn changed no fingerprint, was judged "nothing new", and backed
+    // off toward the 240s cap — a citizen worked one tick then slept ~13 min. This
+    // pins that a run of work turns holds the fast beat, while the same run of
+    // fruitless musings would have saturated at the cap.
+    #[test]
+    fn a_citizen_working_her_claim_never_backs_off() {
+        use std::time::Duration;
+        let engaged = Duration::from_millis(SELF_TICK_MS);
+        let cap = Duration::from_millis(SELF_TICK_REST_CAP_MS);
+
+        // 50 consecutive held-work turns (each Engaged, as the last_burst_fp bump
+        // guarantees) keep her at the fast beat — no drift toward rest.
+        let mut beat = engaged;
+        for _ in 0..50 {
+            beat = next_beat_after(BeatOutcome::Engaged, beat, engaged, cap);
+        }
+        assert_eq!(
+            beat, engaged,
+            "a citizen who works her card every tick stays at the engaged beat — \
+             virtually no time between contexts while a card is in her hands"
+        );
+
+        // Contrast: had held work been (mis)reported as NothingNew, the SAME run
+        // would have rested to the cap — the exact bug the fp bump fixes.
+        let mut drifted = engaged;
+        for _ in 0..50 {
+            drifted = next_beat_after(BeatOutcome::NothingNew, drifted, engaged, cap);
+        }
+        assert_eq!(
+            drifted, cap,
+            "the pre-fix path (nothing-new) would have slept her at the cap between work turns"
+        );
+    }
+
+    // what this catches: the END-TO-END held-work completion edge, no reboot, no
+    // live model. A citizen holding a Claimed card, driven to settle on a canned
+    // "PASS: done", concludes THAT card via advance_card_to(Closed). This pins the
+    // whole chain the self-tick heartbeat runs: held claim → held-work burst →
+    // drive_to_settle → deliberation_parse (raw-first "PASS:" → reasoned pass) →
+    // SettleStep::Passed{reason} → conclude_from_pass → advance_card_to. Every seam
+    // this session touched, wired together, deterministic.
+    #[tokio::test]
+    async fn held_work_turn_concludes_the_card_on_pass_done() {
+        use airc_work::{CardState, Priority, RepoId, WorkCardId};
+        let persona_peer = Uuid::new_v4();
+        let hosted = hosted_with_heuristic(persona_peer);
+
+        // Register her cognition cycle in the global registry the act-question
+        // reads, wired to a canned adapter that answers "PASS: done" — so the
+        // drive settles on a reasoned pass, not the heuristic echo (a Speak).
+        let recall_meta =
+            Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
+        let admission =
+            Arc::new(crate::persona::admission_state::AdmissionState::new(recall_meta));
+        let cfg = crate::cognition::persona_workspace::PersonaBrainConfig {
+            persona_id: persona_peer,
+            persona_name: "Paige".to_string(),
+            system_prompt: "You are Paige.".to_string(),
+            admission,
+            adapter: Arc::new(HeuristicInferenceAdapter::new().with_canned_response("PASS: done")),
+            capacity: None,
+            grounding_sources: Vec::new(),
+            embedder: None,
+            tool_executor: None,
+            context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
+            defer_recall: false,
+            defer_grounding: false,
+            suppress_recall: false,
+        };
+        crate::cognition::persona_workspace::global().register_from_cfg(cfg);
+
+        // One held (Claimed) card in her hands. A NON-bench title so the
+        // act-question resolves no staged checkout (no hands re-root needed).
+        let card = airc_lib::WorkCard {
+            card_id: WorkCardId::new(),
+            repo: RepoId::new("acme/continuum").expect("valid repo id"),  // test: a literal valid repo id
+            title: "a held work card".to_string(),
+            body: None,
+            priority: Priority::P1,
+            lane_id: None,
+            state: CardState::Claimed,
+            owner: Some(crate::identity::PeerId::from_uuid(persona_peer)),
+            claim_id: None,
+            claim_expires_at_ms: None,
+            last_heartbeat_at_ms: None,
+            pull_request: None,
+            created_by: airc_core::PeerId::new(),
+            created_at_ms: 1_000_000,
+            updated_at_ms: 1_000_000,
+            reviews: None,
+        };
+        let card_id = card.card_id;
+        let stub = StubAircCitizen::new(persona_peer).with_claims(vec![card]);
+        let recorder = stub.advance_recorder();
+        let mut conversation = ScriptedConversation::new()
+            .with_citizen(Arc::new(stub) as Arc<dyn crate::persona::airc_citizen::AircCitizen>);
+
+        // A non-nil room (the burst witness refuses nil).
+        let room = Uuid::from_u128(0xABCD);
+        let drove = crate::persona::act_question::ask_the_act_question(
+            &hosted,
+            &mut conversation,
+            1,
+            room,
+            false,
+        )
+        .await;
+
+        assert!(drove, "she held a card, so a held-work turn must have been driven");
+        let advanced = recorder.lock().unwrap_or_else(|p| p.into_inner()).clone();  // test: poisoned recorder lock still holds the pushes
+        assert_eq!(advanced.len(), 1, "exactly one card transition, got {advanced:?}");
+        assert_eq!(advanced[0].0, card_id, "the HELD card is the one concluded");
+        assert_eq!(
+            advanced[0].1,
+            CardState::Closed,
+            "a reasoned 'PASS: done' concludes the card (Closed)"
+        );
+    }
+
+    // what this catches: kanban PULL — an idle team member grabs the next Open
+    // card off the shared deck (Joel 2026-09-02: a team chooses from the deck,
+    // they don't each work a fixed pushed pile). Pins next_pullable_card (an Open
+    // card in a round the peer is a member of is pullable, puller becomes assignee)
+    // AND the deterministic pull wiring (try_pull_next_card claims it through the
+    // citizen handle — no LLM claim tool). Load-balancing + resilience follow from
+    // this being pull, not push.
+    /// A Claimed card in `owner`'s hands — the minimal held-work fact.
+    fn held_card(owner: Uuid) -> airc_lib::WorkCard {
+        airc_lib::WorkCard {
+            card_id: airc_lib::WorkCardId::new(),
+            repo: airc_lib::RepoId::new("acme/continuum").expect("valid repo id"),  // test: a literal valid repo id
+            title: "a held work card".to_string(),
+            body: None,
+            priority: airc_lib::Priority::P1,
+            lane_id: None,
+            state: airc_lib::CardState::Claimed,
+            owner: Some(crate::identity::PeerId::from_uuid(owner)),
+            claim_id: None,
+            claim_expires_at_ms: None,
+            last_heartbeat_at_ms: None,
+            pull_request: None,
+            created_by: airc_core::PeerId::new(),
+            created_at_ms: 1_000_000,
+            updated_at_ms: 1_000_000,
+            reviews: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn an_idle_member_pulls_the_next_card_off_the_shared_deck() {
+        use crate::cognition::bench_round;
+        let peer = Uuid::new_v4();
+        let round_id = Uuid::new_v4();
+        let card_uuid = Uuid::new_v4();
+        bench_round::open_round(
+            round_id,
+            "swe-bench-verified-mini",
+            bench_round::WorkDriver::Citizen,
+        );
+        // NO team, NO assignee: she is merely RESIDENT in the run room. That alone
+        // makes the deck hers to pull from — the months-old team/assignee gate that
+        // locked 7 of 12 residents out of a "shared" deck is what this pins shut.
+        bench_round::add_card(round_id, card_uuid);
+
+        let resident: std::collections::HashSet<Uuid> = [round_id].into_iter().collect();
+        let deck = bench_round::pullable_cards(peer, &resident);
+        assert_eq!(deck.len(), 1, "the run room's one Open card is on her deck");
+        assert_eq!(deck[0].card, card_uuid);
+        assert_eq!(deck[0].assignee, peer, "the puller becomes the assignee");
+        assert!(
+            bench_round::pullable_cards(peer, &Default::default()).is_empty(),
+            "a citizen standing in no run room pulls nothing — residency is the gate"
+        );
+
+        // BOARD TRUTH: the same card, already held by a teammate on the board (the
+        // stub offers nothing as claimable), is NOT pulled — no retry storm on a
+        // card someone else holds.
+        let hosted = hosted_with_heuristic(peer);
+        let held_elsewhere = StubAircCitizen::new(peer).with_rooms(vec![round_id]);
+        let conversation = ScriptedConversation::new().with_citizen(
+            Arc::new(held_elsewhere) as Arc<dyn crate::persona::airc_citizen::AircCitizen>,
+        );
+        assert!(
+            try_pull_next_card(&hosted, &conversation).await != PullOutcome::Pulled,
+            "a card the board says is held is not pulled"
+        );
+
+        // WIP = 1: a citizen ALREADY holding a card pulls nothing, even with an Open
+        // card on her deck and the board offering it.
+        let busy = StubAircCitizen::new(peer)
+            .with_rooms(vec![round_id])
+            .with_claimable(vec![card_uuid])
+            .with_claims(vec![held_card(peer)]);
+        let conversation = ScriptedConversation::new()
+            .with_citizen(Arc::new(busy) as Arc<dyn crate::persona::airc_citizen::AircCitizen>);
+        assert!(
+            try_pull_next_card(&hosted, &conversation).await != PullOutcome::Pulled,
+            "a citizen holding a card never pulls a second one"
+        );
+
+        // An idle citizen (holds nothing) pulls it through the deterministic path.
+        let stub = StubAircCitizen::new(peer)
+            .with_rooms(vec![round_id])
+            .with_claimable(vec![card_uuid]);
+        let recorder = stub.claim_recorder();
+        let conversation = ScriptedConversation::new()
+            .with_citizen(Arc::new(stub) as Arc<dyn crate::persona::airc_citizen::AircCitizen>);
+
+        let pulled = try_pull_next_card(&hosted, &conversation).await;
+        assert_eq!(pulled, PullOutcome::Pulled, "an idle member pulls the next Open card off the deck");
+        let claimed = recorder.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert_eq!(claimed.len(), 1, "exactly one pull, got {claimed:?}");
+        assert_eq!(
+            claimed[0].as_uuid(),
+            card_uuid,
+            "she pulled the deck's Open card"
+        );
     }
 }

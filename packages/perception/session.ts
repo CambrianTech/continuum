@@ -82,11 +82,13 @@ export class PerceptionSession<V extends ViewSpec = ViewSpec, A extends Action =
   /** Drive the surface, then re-observe — returning the fresh observation AND the `Delta`
    *  from before the actions to after. The before-frame is the last one observed (or a
    *  freshly-rendered one if nothing has been observed yet), so the money signal needs no
-   *  bookkeeping from the caller. */
-  async interact(actions: readonly A[]): Promise<Interaction> {
-    const before = this.last ?? (await this.surface.render());
+   *  bookkeeping from the caller. Pass `view` to re-observe from the SAME viewpoint the
+   *  baseline was observed from (e.g. a selector-scoped region) — before and after then
+   *  frame the same pixels and the Delta measures exactly the interaction's effect there. */
+  async interact(actions: readonly A[], view?: V): Promise<Interaction> {
+    const before = this.last ?? (await this.surface.render(view));
     for (const action of actions) await this.surface.act(action);
-    const observation = await this.observe();
+    const observation = await this.observe(view);
     return { observation, delta: this.surface.diff(before, observation.percept) };
   }
 

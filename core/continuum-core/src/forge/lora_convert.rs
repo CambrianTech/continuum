@@ -229,10 +229,10 @@ pub fn read_mlx_lora_hparams(mlx_config: &Path) -> Result<(String, usize, u32), 
     let lp = v
         .get("lora_parameters")
         .ok_or("MLX adapter config missing `lora_parameters`")?;
-    let rank = lp
-        .get("rank")
-        .and_then(|r| r.as_u64())
-        .ok_or("MLX adapter config missing integer `lora_parameters.rank`")? as usize;
+    let rank =
+        lp.get("rank")
+            .and_then(|r| r.as_u64())
+            .ok_or("MLX adapter config missing integer `lora_parameters.rank`")? as usize;
     let scale = lp
         .get("scale")
         .and_then(|s| s.as_f64())
@@ -449,7 +449,10 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&conv.config_path).unwrap()).unwrap();
         assert_eq!(cfg["r"], 2);
         assert_eq!(cfg["lora_alpha"], 40);
-        assert_eq!(cfg["base_model_name_or_path"], "unsloth/Qwen2.5-0.5B-Instruct");
+        assert_eq!(
+            cfg["base_model_name_or_path"],
+            "unsloth/Qwen2.5-0.5B-Instruct"
+        );
         assert_eq!(cfg["target_modules"], serde_json::json!(["q_proj"]));
 
         let _ = std::fs::remove_dir_all(&tmp);
@@ -467,8 +470,8 @@ mod tests {
         let out = tmp.join("peft");
 
         // tensors imply r=2; declare r=8.
-        let err = mlx_adapters_to_peft(&mlx, &out, "base", 8, 160)
-            .expect_err("rank mismatch must error");
+        let err =
+            mlx_adapters_to_peft(&mlx, &out, "base", 8, 160).expect_err("rank mismatch must error");
         assert!(err.contains("rank mismatch"), "got: {err}");
 
         let _ = std::fs::remove_dir_all(&tmp);
@@ -553,9 +556,9 @@ mod tests {
     fn produce_keystone_gguf_lora() {
         let home = std::env::var("HOME").expect("HOME set");
         let repo = env!("CARGO_MANIFEST_DIR"); // .../core/continuum-core
-        // Path-parameterized via env so the same producer serves any gene; the
-        // defaults target the keystone. The dense-base run sets all three to the
-        // coder-3b-dense paths + the cached HF base config snapshot.
+                                               // Path-parameterized via env so the same producer serves any gene; the
+                                               // defaults target the keystone. The dense-base run sets all three to the
+                                               // coder-3b-dense paths + the cached HF base config snapshot.
         let env_or = |k: &str, default: PathBuf| -> PathBuf {
             std::env::var(k).map(PathBuf::from).unwrap_or(default)
         };

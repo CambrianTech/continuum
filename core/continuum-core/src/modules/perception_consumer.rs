@@ -95,12 +95,17 @@ mod tests {
     use std::io::Cursor;
     use uuid::Uuid;
 
-    const AMBIENT: DestSize = DestSize { width: 32, height: 24 };
+    const AMBIENT: DestSize = DestSize {
+        width: 32,
+        height: 24,
+    };
 
     fn png(w: u32, h: u32) -> Vec<u8> {
         let img = RgbaImage::from_pixel(w, h, Rgba([(w % 256) as u8, 0, 0, 255]));
         let mut out = Cursor::new(Vec::new());
-        DynamicImage::ImageRgba8(img).write_to(&mut out, ImageFormat::Png).unwrap();
+        DynamicImage::ImageRgba8(img)
+            .write_to(&mut out, ImageFormat::Png)
+            .unwrap();
         out.into_inner()
     }
 
@@ -162,13 +167,23 @@ mod tests {
                 reason: crate::resources::ReclaimReason::Pressure,
             })
             .await;
-        assert_eq!(outcome.status, ReclaimStatus::Partial, "kept the head → partial");
-        assert!(outcome.freed_bytes > 0 && outcome.freed_bytes < total, "freed the old, kept the head");
+        assert_eq!(
+            outcome.status,
+            ReclaimStatus::Partial,
+            "kept the head → partial"
+        );
+        assert!(
+            outcome.freed_bytes > 0 && outcome.freed_bytes < total,
+            "freed the old, kept the head"
+        );
         assert_eq!(
             registry.total_resident_bytes(),
             total - outcome.freed_bytes,
             "residency dropped by exactly what was freed (honest)"
         );
-        assert!(registry.total_resident_bytes() > 0, "the head frame survives — never blind");
+        assert!(
+            registry.total_resident_bytes() > 0,
+            "the head frame survives — never blind"
+        );
     }
 }

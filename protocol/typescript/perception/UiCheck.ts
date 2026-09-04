@@ -30,4 +30,13 @@ textContains?: string,
  * Require at least this many matching nodes (default 1) — e.g. "at least 3
  * list items".
  */
-minCount: number, };
+minCount: number, 
+/**
+ * Require the node's text/background CONTRAST RATIO (WCAG relative
+ * luminance, 1.0..=21.0) to be at least this — the first MEASURED-CRAFT
+ * criterion (design-bench V2 tier; 4.5 = WCAG AA body text). Needs the
+ * observation's `style` craft facts; a node with no measurable pair does
+ * not match, so an adapter that omits styles fails the check LOUDLY on
+ * the scorecard instead of green-lighting unmeasured craft.
+ */
+minContrast?: number, };

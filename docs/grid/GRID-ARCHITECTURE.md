@@ -1271,7 +1271,7 @@ GRID-ARCHITECTURE.md (this document)
 
 - [GENOME-ARCHITECTURE.md](../genome/GENOME-ARCHITECTURE.md) — multimodal LoRA genome system
 - [SENTINEL-ARCHITECTURE.md](../sentinel/SENTINEL-ARCHITECTURE.md) — pipeline execution engine (powers Grid job coordination)
-- [UNIVERSAL-PRIMITIVES.md](../../../docs/UNIVERSAL-PRIMITIVES.md) — the two primitives that ARE the Grid protocol
+- [UNIVERSAL-PRIMITIVES.md](../UNIVERSAL-PRIMITIVES.md) — the two primitives that ARE the Grid protocol
 - [CONTINUUM-ARCHITECTURE.md](../CONTINUUM-ARCHITECTURE.md) — full technical architecture
 
 ---
@@ -1279,7 +1279,7 @@ GRID-ARCHITECTURE.md (this document)
 ## References
 
 - [ROOMS-AND-ACTIVITIES.md](../activities/ROOMS-AND-ACTIVITIES.md) — the universal experience model
-- [fSociety.md](../../../ƒSociety.md) — constitutional foundation
+- [fSociety.md](../../ƒSociety.md) — constitutional foundation
 - [Reticulum](https://reticulum.network/) — encrypted mesh networking stack
 
 > **"We rely on validation and auditing, so that it cannot ever be gamed. It is intelligence, and the rule breakers are easily isolated or banished."**

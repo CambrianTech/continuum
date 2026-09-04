@@ -44,7 +44,10 @@ const PROBE_IMAGE_PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91J
 
 /// Which model to verify, by its catalog id.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/model_registry/ModelsTryParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/model_registry/ModelsTryParams.ts"
+)]
 pub struct ModelsTryParams {
     /// The model id as it appears in `models/list` (e.g. `qwen2-vl-7b`). Fails
     /// loud if it is not in the live universe — verify what exists, don't invent.
@@ -111,10 +114,7 @@ crate::action_command! {
 /// `(text_ok, measured_tps, detail)`. A select/generate failure is a verdict
 /// (`text_ok = false` with the reason), not a command error — the point of
 /// `models/try` is to RECORD what happened, not abort.
-async fn run_text_probe(
-    registry: &AdapterRegistry,
-    model_id: &str,
-) -> (bool, Option<f32>, String) {
+async fn run_text_probe(registry: &AdapterRegistry, model_id: &str) -> (bool, Option<f32>, String) {
     let request = TextGenerationRequest {
         messages: vec![ChatMessage {
             role: "user".to_string(),
@@ -164,7 +164,11 @@ async fn run_text_probe(
                 None
             };
             let ok = !resp.text.trim().is_empty();
-            (ok, tps, format!("text: {} tokens in {:.2}s", resp.usage.output_tokens, secs))
+            (
+                ok,
+                tps,
+                format!("text: {} tokens in {:.2}s", resp.usage.output_tokens, secs),
+            )
         }
         Err(e) => (false, None, format!("text generation failed: {e}")),
     }
@@ -218,9 +222,13 @@ async fn run_vision_probe(registry: &AdapterRegistry, model_id: &str) -> (bool, 
     };
 
     match adapter.generate_text(request).await {
-        Ok(resp) if !resp.text.trim().is_empty() => {
-            (true, format!("vision probe answered ({} tokens)", resp.usage.output_tokens))
-        }
+        Ok(resp) if !resp.text.trim().is_empty() => (
+            true,
+            format!(
+                "vision probe answered ({} tokens)",
+                resp.usage.output_tokens
+            ),
+        ),
         Ok(_) => (false, "vision probe returned empty".to_string()),
         Err(e) => (false, format!("vision probe failed: {e}")),
     }
@@ -284,15 +292,26 @@ mod tests {
             registry: empty_registry(),
         };
         let report = cmd
-            .run(&Ctx::default(), ModelsTryParams { model_id: id.clone() })
+            .run(
+                &Ctx::default(),
+                ModelsTryParams {
+                    model_id: id.clone(),
+                },
+            )
             .await
             .expect("known model records a verdict, never errors on no-adapter");
         assert!(!report.text_ok, "no adapter ⇒ text probe fails");
-        assert!(report.vision_ok.is_none(), "text-only model ⇒ no vision verdict");
+        assert!(
+            report.vision_ok.is_none(),
+            "text-only model ⇒ no vision verdict"
+        );
 
         // The verdict was written into the live universe.
         let after = cat.snapshot();
-        assert!(after.generation > gen_before, "attach_verification bumps generation");
+        assert!(
+            after.generation > gen_before,
+            "attach_verification bumps generation"
+        );
         assert!(after.get(&id).unwrap().status.verified.is_some());
     }
 

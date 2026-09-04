@@ -93,6 +93,7 @@ pub struct AvatarSnapshotParams {
     /// streaming-TTS→avatar path drives, so it makes lip-sync developable by eye.
     /// Combine with `expression`/`pose`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub mouth: Option<f32>,
 }

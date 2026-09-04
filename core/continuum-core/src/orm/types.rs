@@ -82,7 +82,10 @@ impl Default for CascadeRule {
 /// TABLE time; queries can JOIN through it; the row-deletion
 /// semantics are enforced by the DB, not by hand-coded cleanup.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
-#[ts(export, export_to = "../../../protocol/typescript/orm/ForeignKeyRef.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/orm/ForeignKeyRef.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ForeignKeyRef {
     /// Target collection name (e.g. "engrams").
@@ -146,7 +149,10 @@ pub struct CollectionSchema {
 
 /// Record metadata - timestamps and versioning
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/orm/RecordMetadata.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/orm/RecordMetadata.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordMetadata {
     pub created_at: String,
@@ -188,7 +194,10 @@ pub struct DataRecord {
 
 /// Storage operation result
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/orm/StorageResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/orm/StorageResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct StorageResult<T> {
     pub success: bool,
@@ -227,7 +236,10 @@ impl<T> StorageResult<T> {
 
 /// Result metadata for queries
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/orm/ResultMetadata.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/orm/ResultMetadata.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ResultMetadata {
     #[ts(optional)]
@@ -240,7 +252,10 @@ pub struct ResultMetadata {
 
 /// Collection statistics
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/orm/CollectionStats.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/orm/CollectionStats.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct CollectionStats {
     pub name: String,
@@ -269,7 +284,10 @@ pub enum BatchOperationType {
 
 /// Batch storage operation
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/orm/BatchOperation.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/orm/BatchOperation.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct BatchOperation {
     pub operation_type: BatchOperationType,

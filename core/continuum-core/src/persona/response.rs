@@ -381,7 +381,8 @@ async fn respond_inner(
     // probe sprinkles #206/#207). Lands on the same JSONL channel as
     // `persona.respond` / `persona.respond.analyze` for full-stack
     // turn breakdowns.
-    let raw_response = crate::time_probe!("persona.respond.run_render", run_render(input, &analysis))?;
+    let raw_response =
+        crate::time_probe!("persona.respond.run_render", run_render(input, &analysis))?;
     let inference_ms = now_ms().saturating_sub(inference_start);
     trace.record(
         SEAM_INFERENCE,
@@ -563,8 +564,8 @@ async fn run_render(
     // source of truth per the OOP-adapter rule. Code never branches on
     // model name. Default applies if the registry has no row (e.g. a
     // brand-new cloud model not yet declared).
-    let resolved_model = crate::model_registry::try_global()
-        .and_then(|reg| reg.model(&input.model).cloned());
+    let resolved_model =
+        crate::model_registry::try_global().and_then(|reg| reg.model(&input.model).cloned());
     let multi_party_strategy = resolved_model
         .as_ref()
         .map(|m| m.multi_party_strategy.clone())
@@ -1183,8 +1184,14 @@ mod tests {
     fn strip_leaked_tool_markup_removes_tool_calls_native_marker() {
         let raw = "[TOOL_CALLS][room-roster] (no one else is present right now)";
         let visible = strip_leaked_tool_markup(raw);
-        assert!(!visible.contains("[TOOL_CALLS]"), "reserved native marker never spoken");
-        assert!(!visible.contains("[room-roster]"), "unparsed tool tag stripped");
+        assert!(
+            !visible.contains("[TOOL_CALLS]"),
+            "reserved native marker never spoken"
+        );
+        assert!(
+            !visible.contains("[room-roster]"),
+            "unparsed tool tag stripped"
+        );
         assert!(
             visible.contains("no one else is present"),
             "the model's actual prose is preserved"

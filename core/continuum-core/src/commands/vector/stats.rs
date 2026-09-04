@@ -5,11 +5,12 @@ use std::sync::Arc;
 use crate::modules::data::{DataState, VectorStats};
 
 /// Params for `vector/stats`.
-#[derive(
-    Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/vector/VectorStatsParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/vector/VectorStatsParams.ts"
+)]
 pub struct VectorStatsParams {
     /// The collection to report on.
     pub collection: String,

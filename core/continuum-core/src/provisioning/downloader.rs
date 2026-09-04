@@ -96,7 +96,9 @@ impl Downloader {
         if dest.exists() {
             match expected_sha256 {
                 None => return Ok(file_len(dest).await),
-                Some(exp) if sha256_file(dest).await.ok().as_deref() == Some(&exp.to_lowercase()) => {
+                Some(exp)
+                    if sha256_file(dest).await.ok().as_deref() == Some(&exp.to_lowercase()) =>
+                {
                     return Ok(file_len(dest).await);
                 }
                 // present but wrong/unknown checksum → re-fetch over it.
@@ -107,7 +109,10 @@ impl Downloader {
         if let Some(parent) = dest.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
-                .map_err(|source| DownloadError::Io { path: parent.to_path_buf(), source })?;
+                .map_err(|source| DownloadError::Io {
+                    path: parent.to_path_buf(),
+                    source,
+                })?;
         }
 
         let part = part_path(dest);
@@ -121,7 +126,10 @@ impl Downloader {
             .send()
             .await
             .and_then(|r| r.error_for_status())
-            .map_err(|source| DownloadError::Http { url: url.to_string(), source })?;
+            .map_err(|source| DownloadError::Http {
+                url: url.to_string(),
+                source,
+            })?;
 
         // We can only APPEND to the partial if the server honored Range (206). A plain
         // 200 means it sent the whole body from byte 0 → restart clean, or we'd corrupt.
@@ -134,25 +142,35 @@ impl Downloader {
         } else {
             opts.truncate(true);
         }
-        let mut file = opts
-            .open(&part)
-            .await
-            .map_err(|source| DownloadError::Io { path: part.clone(), source })?;
+        let mut file = opts.open(&part).await.map_err(|source| DownloadError::Io {
+            path: part.clone(),
+            source,
+        })?;
 
         // Total for progress: Content-Length is the REMAINING body, so add back the
         // already-downloaded prefix on a resume (206).
-        let total = resp
-            .content_length()
-            .map(|remaining| if append { resume_from + remaining } else { remaining });
+        let total = resp.content_length().map(|remaining| {
+            if append {
+                resume_from + remaining
+            } else {
+                remaining
+            }
+        });
         let mut downloaded = if append { resume_from } else { 0 };
         let mut last_emit = downloaded;
 
         let mut stream = resp.bytes_stream();
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|source| DownloadError::Http { url: url.to_string(), source })?;
+            let chunk = chunk.map_err(|source| DownloadError::Http {
+                url: url.to_string(),
+                source,
+            })?;
             file.write_all(&chunk)
                 .await
-                .map_err(|source| DownloadError::Io { path: part.clone(), source })?;
+                .map_err(|source| DownloadError::Io {
+                    path: part.clone(),
+                    source,
+                })?;
             downloaded += chunk.len() as u64;
             // Throttle to ~4 MiB so a 9 GB model gives ~2000 updates, not one per packet.
             if downloaded - last_emit >= (4 << 20) {
@@ -161,15 +179,19 @@ impl Downloader {
             }
         }
         progress.on_progress(downloaded, total); // final tick (100%)
-        file.sync_all()
-            .await
-            .map_err(|source| DownloadError::Io { path: part.clone(), source })?;
+        file.sync_all().await.map_err(|source| DownloadError::Io {
+            path: part.clone(),
+            source,
+        })?;
         drop(file);
 
         if let Some(exp) = expected_sha256 {
             let actual = sha256_file(&part)
                 .await
-                .map_err(|source| DownloadError::Io { path: part.clone(), source })?;
+                .map_err(|source| DownloadError::Io {
+                    path: part.clone(),
+                    source,
+                })?;
             if actual != exp.to_lowercase() {
                 return Err(DownloadError::Checksum {
                     url: url.to_string(),
@@ -181,7 +203,10 @@ impl Downloader {
 
         tokio::fs::rename(&part, dest)
             .await
-            .map_err(|source| DownloadError::Io { path: part.clone(), source })?;
+            .map_err(|source| DownloadError::Io {
+                path: part.clone(),
+                source,
+            })?;
         Ok(file_len(dest).await)
     }
 }
@@ -195,7 +220,10 @@ fn part_path(dest: &Path) -> PathBuf {
 
 /// File length in bytes, or 0 if it doesn't exist.
 async fn file_len(path: &Path) -> u64 {
-    tokio::fs::metadata(path).await.map(|m| m.len()).unwrap_or(0)
+    tokio::fs::metadata(path)
+        .await
+        .map(|m| m.len())
+        .unwrap_or(0)
 }
 
 /// Stream-hash a file (1 MB chunks — safe for multi-GB weights). Lowercase hex.
@@ -210,7 +238,11 @@ async fn sha256_file(path: &Path) -> std::io::Result<String> {
         }
         hasher.update(&buf[..n]);
     }
-    Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
 }
 
 #[cfg(test)]
@@ -255,7 +287,10 @@ mod tests {
     // what this catches: part_path derivation is the sibling ".part", not a mangled name.
     #[test]
     fn part_path_is_dest_dot_part() {
-        assert_eq!(part_path(Path::new("/m/x.gguf")), PathBuf::from("/m/x.gguf.part"));
+        assert_eq!(
+            part_path(Path::new("/m/x.gguf")),
+            PathBuf::from("/m/x.gguf.part")
+        );
     }
 
     // what this catches: LIVE — a real download emits progress (feedback, not a blind
@@ -277,7 +312,10 @@ mod tests {
         }
         let dir = TempDir::new().unwrap();
         let dest = dir.path().join("base_female.zip");
-        let rec = Rec { calls: AtomicU64::new(0), last: AtomicU64::new(0) };
+        let rec = Rec {
+            calls: AtomicU64::new(0),
+            last: AtomicU64::new(0),
+        };
         let bytes = Downloader::default()
             .fetch_with_progress(
                 "https://opengameart.org/sites/default/files/base_female.zip",
@@ -288,7 +326,14 @@ mod tests {
             .await
             .expect("real download");
         assert!(bytes > 1_000_000, "downloaded a real multi-MB file");
-        assert!(rec.calls.load(Ordering::Relaxed) >= 1, "progress was emitted");
-        assert_eq!(rec.last.load(Ordering::Relaxed), bytes, "final progress == total bytes");
+        assert!(
+            rec.calls.load(Ordering::Relaxed) >= 1,
+            "progress was emitted"
+        );
+        assert_eq!(
+            rec.last.load(Ordering::Relaxed),
+            bytes,
+            "final progress == total bytes"
+        );
     }
 }

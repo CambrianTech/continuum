@@ -9,7 +9,10 @@ use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/embedding/SimilarityParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/embedding/SimilarityParams.ts"
+)]
 pub struct SimilarityParams {
     /// First embedding vector.
     pub a: Vec<f32>,
@@ -19,7 +22,10 @@ pub struct SimilarityParams {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/embedding/SimilarityResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/embedding/SimilarityResult.ts"
+)]
 pub struct SimilarityResult {
     /// Cosine similarity in [-1, 1].
     pub similarity: f32,
@@ -40,11 +46,7 @@ impl ActionCommand for EmbeddingSimilarity {
     type Params = SimilarityParams;
     type Output = SimilarityResult;
 
-    async fn run(
-        &self,
-        _ctx: &Ctx,
-        p: SimilarityParams,
-    ) -> Result<SimilarityResult, CommandError> {
+    async fn run(&self, _ctx: &Ctx, p: SimilarityParams) -> Result<SimilarityResult, CommandError> {
         if p.a.len() != p.b.len() {
             return Err(CommandError::Invalid(format!(
                 "dimension mismatch: {} vs {}",

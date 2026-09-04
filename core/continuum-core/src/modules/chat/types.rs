@@ -22,7 +22,10 @@ use uuid::Uuid;
 /// `channel` module rather than dragging room-name semantics into
 /// every consumer of the chat surface.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/chat/ChatPollParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/chat/ChatPollParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatPollParams {
     /// Restrict the poll to a specific room. Optional — omitting it
@@ -61,7 +64,10 @@ pub struct ChatPollParams {
 /// `CommandResponse<ChatPollResult>`, so callers see
 /// `{ success, data: { messages, count }, error? }`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/chat/ChatPollResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/chat/ChatPollResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatPollResult {
     /// Messages returned by the poll, in chronological order
@@ -82,6 +88,7 @@ pub struct ChatPollResult {
     /// pagination/loop ergonomics — the next poll round just keeps
     /// passing the most-recently-seen id.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "string")]
     pub after_message_id: Option<Uuid>,
 
@@ -89,6 +96,7 @@ pub struct ChatPollResult {
     /// scroll-back page passes the OLDEST id it now holds. An empty
     /// `messages` with this set means history is exhausted.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "string")]
     pub before_message_id: Option<Uuid>,
 }
@@ -110,7 +118,10 @@ pub struct ChatPollResult {
 /// stress-tests the dual-write composition (chat → data + chat → airc)
 /// which is the substrate-shaped kink the design needed proof of.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/chat/ChatSendParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/chat/ChatSendParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatSendParams {
     /// Destination room. The kernel command requires an
@@ -153,7 +164,10 @@ pub struct ChatSendParams {
 /// from the handler — the message never reaches the store, no airc
 /// publish is attempted.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/chat/ChatSendResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/chat/ChatSendResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatSendResult {
     /// The stored message's UUID. Always present on success. Callers

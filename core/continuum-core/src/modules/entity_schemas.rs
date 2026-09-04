@@ -139,7 +139,8 @@ pub struct EntitySchema {
 ///   modules/entity_schemas.rs  (this file)
 ///   ../../../../protocol/typescript/entity_schemas.json
 ///     \_ modules -> \_ src -> \_ continuum-core -> \_ workers -> \_ src
-const ENTITY_SCHEMAS_JSON: &str = include_str!("../../../../protocol/typescript/entity_schemas.json");
+const ENTITY_SCHEMAS_JSON: &str =
+    include_str!("../../../../protocol/typescript/entity_schemas.json");
 
 /// Lazy-load the entity schemas. First caller triggers parse + SHA check;
 /// subsequent callers get the cached map. Panics (with a clear message) on

@@ -155,9 +155,21 @@ impl DeferredFaculty {
                 if input.cycle == CycleId::UNSTAMPED {
                     continue; // sentinel / not a real burst
                 }
-                let room_id = input.room_id;
-                let ws = Workspace::in_room(input.world_state, room_id)
-                    .with_cycle(input.cycle);
+                // A real burst always carries a real room (#425 — the sentinel was
+                // already skipped above). If a nil somehow arrives, skip the tick and
+                // say so: this lane degrades, it never panics (concurrency guide).
+                let Ok(room) = crate::identity::ActivityRoom::from_uuid(input.room_id) else {
+                    crate::probe!(
+                        class = "cognition.deferred.roomless_input_skipped",
+                        "deferred faculty received a nil-room input — tick skipped (#425)",
+                    );
+                    continue;
+                };
+                let ws = Workspace::from_burst(crate::cognition::workspace::Burst::raw_in(
+                    room,
+                    input.world_state,
+                ))
+                .with_cycle(input.cycle);
 
                 // The inner faculty's contribute is async (real inference/IPC).
                 // Catch a panic so a flawed backend degrades the lane to stale,
@@ -176,7 +188,7 @@ impl DeferredFaculty {
                         let stamped = finding.map(|mut c| {
                             c.cycle = input.cycle;
                             StampedFinding {
-                                room_id,
+                                room_id: room.as_uuid(),
                                 contribution: c,
                             }
                         });
@@ -470,21 +482,27 @@ mod tests {
     #[tokio::test]
     async fn deferred_faculty_never_blocks_and_lands_late_with_its_own_cycle() {
         let deferred = DeferredFaculty::spawn(Arc::new(SlowRecall));
+        // A real room: the worker (correctly, #425) skips nil-room inputs, so a
+        // nil-room test never exercises the deferred lane at all.
+        let room = Uuid::new_v4();
 
         // Tick 1 (cycle 1): COLD START — the lane self-warms by running the
         // inner synchronously (the 2026-07-10 fix for post-boot blind turns:
         // three observed greeting rounds because first prompts carried no
         // grounding). The first tick pays the inner cost and returns the FRESH
         // finding; it also publishes it as last-good.
-        let ws1 = Workspace::in_room("burst one", Uuid::nil()).with_cycle(CycleId(1));
+        let ws1 = Workspace::in_room("burst one", room).with_cycle(CycleId(1));
         let r1 = deferred.contribute(&ws1).await;
-        assert!(r1.is_some(), "cold start self-warms: the first tick carries grounding");
+        assert!(
+            r1.is_some(),
+            "cold start self-warms: the first tick carries grounding"
+        );
 
         // Tick 2 immediately after (before the worker publishes anything): the
         // warm finding serves as last-good, NON-BLOCKING — the cold cost is
         // paid exactly once, and the steady-state hot path never waits on the
         // slow inner (it sleeps 40ms; we demand <15ms).
-        let ws2 = Workspace::in_room("burst two", Uuid::nil()).with_cycle(CycleId(2));
+        let ws2 = Workspace::in_room("burst two", room).with_cycle(CycleId(2));
         let t = tokio::time::Instant::now();
         let r2 = deferred.contribute(&ws2).await;
         assert!(
@@ -499,7 +517,7 @@ mod tests {
 
         // A later tick (cycle 5): now the last-good is available, and it's stamped
         // with cycle 1 (when it was computed), NOT 5 (now).
-        let ws5 = Workspace::in_room("burst five", Uuid::nil()).with_cycle(CycleId(5));
+        let ws5 = Workspace::in_room("burst five", room).with_cycle(CycleId(5));
         let r5 = deferred.contribute(&ws5).await;
         let late = r5.expect("the slow finding has landed by now");
         assert!(
@@ -580,7 +598,11 @@ mod tests {
         let ws_a2 = Workspace::in_room("back in A", room_a).with_cycle(CycleId(3));
         let in_a = deferred.contribute(&ws_a2).await;
         let found = in_a.expect("the room-A finding is ours to serve back in room A");
-        assert_eq!(found.cycle, CycleId(1), "still stamped with its original cycle");
+        assert_eq!(
+            found.cycle,
+            CycleId(1),
+            "still stamped with its original cycle"
+        );
     }
 
     // what this catches: reproject-to-now (slice 3) — the cheap synchronous "bring
@@ -606,13 +628,17 @@ mod tests {
 
         // On-topic burst (shares "slow late recall finding") → high relevance, the
         // finding keeps most of its salience and is served, cycle preserved.
-        let on_topic =
-            Workspace::in_room("the slow late recall finding is relevant", room).with_cycle(CycleId(4));
+        let on_topic = Workspace::in_room("the slow late recall finding is relevant", room)
+            .with_cycle(CycleId(4));
         let kept = deferred
             .contribute(&on_topic)
             .await
             .expect("same-room finding is served");
-        assert_eq!(kept.cycle, CycleId(1), "reproject preserves the original cycle stamp");
+        assert_eq!(
+            kept.cycle,
+            CycleId(1),
+            "reproject preserves the original cycle stamp"
+        );
         assert!(
             kept.salience > 0.4,
             "on-topic reproject keeps salience high, got {}",

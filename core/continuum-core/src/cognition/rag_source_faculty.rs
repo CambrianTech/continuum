@@ -174,7 +174,11 @@ impl RagSourceFaculty {
             source,
             faculty_id,
             salience: policy.salience(),
-            // Standing framing is session-stable; retrieved grounding is volatile.
+            // Standing framing is session-stable by default; retrieved grounding
+            // is volatile. `with_volatile_content` overrides for framing whose
+            // BYTES mutate per turn (active-work, room-board — convicted by
+            // debug/prompt-reuse 2026-08-22): importance keeps the floor,
+            // placement follows content stability.
             stable: matches!(policy, SaliencePolicy::StandingFraming),
             // Floor default (derived from the substrate serving floor, not a magic
             // number). Production overrides via `with_budget(grounding_budget_for(
@@ -194,6 +198,15 @@ impl RagSourceFaculty {
     /// Override the per-tick token budget handed to the source.
     pub fn with_budget(mut self, budget: u32) -> Self {
         self.budget = budget;
+        self
+    }
+
+    /// Framing whose content mutates per turn: demote OUT of the stable tier
+    /// while keeping the StandingFraming salience floor (see `stable` field doc).
+    pub fn with_volatile_content(mut self, volatile: bool) -> Self {
+        if volatile {
+            self.stable = false;
+        }
         self
     }
 
@@ -263,7 +276,21 @@ impl Faculty for RagSourceFaculty {
         let c = Contribution::context(self.faculty_id.clone(), content, self.salience, reasoning)
             .with_parts(units)
             .with_expand_command(self.source.expand_command());
-        Some(if self.stable { c.session_stable() } else { c })
+        // Volatile-content grounding rides the TRAILING-turn mechanism (#205),
+        // never the system message. The volatile tier of the system context
+        // block was a half-measure: demoted out of the cacheable stable head,
+        // but still rendered BEFORE the entire conversation — so a kanban
+        // claim-flap or a workspace-map change (her own write!) re-prefilled
+        // every conversation token after it. Measured 2026-08-23 from her own
+        // captures on the MirrorCode round: workspace-map content changed
+        // act-over-act and live KV reuse pinned at 18-33% while acts paid
+        // ~35-45k re-prefill (~2 min) each. As a trailing turn the same churn
+        // costs exactly its own tokens.
+        Some(if self.stable {
+            c.session_stable()
+        } else {
+            c.trailing()
+        })
     }
 }
 
@@ -311,15 +338,15 @@ mod tests {
             self.id
         }
 
-    fn expand_command(&self) -> Option<&'static str> {
-        // Test/stub source — nothing further to fetch.
-        None
-    }
+        fn expand_command(&self) -> Option<&'static str> {
+            // Test/stub source — nothing further to fetch.
+            None
+        }
 
-    /// Test/stub source — floorless, so it never encodes a production floor.
-    fn floor_tokens(&self) -> u32 {
-        0
-    }
+        /// Test/stub source — floorless, so it never encodes a production floor.
+        fn floor_tokens(&self) -> u32 {
+            0
+        }
         async fn deliver(
             &self,
             ctx: &RagContext,
@@ -377,6 +404,46 @@ mod tests {
         assert!(c.content.contains("Aria [persona]"));
         assert!(c.content.contains("win-claude [claude] — Busy"));
         assert!(c.salience > 0.0);
+    }
+
+    // what this catches: the KV routing contract (2026-08-23). A session-stable
+    // source's bid lands in the cacheable system prefix (stable, not trailing);
+    // a volatile-content source's bid rides as a TRAILING conversation turn —
+    // never the system message, where its churn (kanban claim-flaps, her own
+    // writes mutating the workspace map) re-prefilled every conversation token
+    // after it (live KV reuse pinned at 18-33% on the MirrorCode round).
+    #[tokio::test]
+    async fn volatile_content_grounding_is_trailing_and_stable_grounding_is_not() {
+        let stable = RagSourceFaculty::new(
+            persona(),
+            Arc::new(StubSource::new("room-roster", &["Aria [persona]"])),
+            SaliencePolicy::StandingFraming,
+        )
+        .with_clock(Arc::new(|| 1_000));
+        let c = stable
+            .contribute(&Workspace::new("hi"))
+            .await
+            .expect("non-empty source bids");
+        assert!(c.stable, "standing framing stays in the cacheable prefix");
+        assert!(!c.trailing, "stable grounding must not double as trailing");
+
+        let volatile = RagSourceFaculty::new(
+            persona(),
+            Arc::new(StubSource::new("workspace-map", &["src/ lib/ tests/"])),
+            SaliencePolicy::StandingFraming,
+        )
+        .with_volatile_content(true)
+        .with_clock(Arc::new(|| 1_000));
+        let c = volatile
+            .contribute(&Workspace::new("hi"))
+            .await
+            .expect("non-empty source bids");
+        assert!(!c.stable, "volatile content leaves the stable tier");
+        assert!(
+            c.trailing,
+            "volatile grounding rides a trailing turn — churn costs its own tokens, \
+             never the conversation's"
+        );
     }
 
     // what this catches: an empty delivery → abstain (None), not an empty bid.
@@ -441,7 +508,7 @@ mod tests {
                         "conditioned on the bridged doctrine grounding",
                     )),
                     None => Some(Contribution::verdict(
-                        Decision::Pass,
+                        Decision::pass(),
                         0.4,
                         "no doctrine in the broadcast",
                     )),

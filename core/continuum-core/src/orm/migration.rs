@@ -55,7 +55,10 @@ impl Default for MigrationConfig {
 
 /// Per-collection migration status
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/orm/MigrationStatus.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/orm/MigrationStatus.ts"
+)]
 #[serde(rename_all = "lowercase")]
 pub enum MigrationStatus {
     Pending,
@@ -103,7 +106,10 @@ impl CollectionMigrationState {
 /// `migration/{start,status,pause,resume}`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/orm/CollectionProgress.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/orm/CollectionProgress.ts"
+)]
 pub struct CollectionProgress {
     pub collection: String,
     /// Lowercased status: `pending` | `inprogress` | `completed` | `failed` | `paused`.
@@ -120,7 +126,10 @@ pub struct CollectionProgress {
 /// of `migration/{start,status,pause,resume}` (replaces the old ad-hoc JSON blob).
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/orm/MigrationProgress.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/orm/MigrationProgress.ts"
+)]
 pub struct MigrationProgress {
     pub total: usize,
     pub migrated: usize,
@@ -133,7 +142,10 @@ pub struct MigrationProgress {
 /// Per-collection source/target count comparison from `migration/verify`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/orm/CollectionVerification.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/orm/CollectionVerification.ts"
+)]
 pub struct CollectionVerification {
     pub collection: String,
     pub source_count: usize,
@@ -147,7 +159,10 @@ pub struct CollectionVerification {
 /// record count matches its source.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/orm/MigrationVerification.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/orm/MigrationVerification.ts"
+)]
 pub struct MigrationVerification {
     pub verified: bool,
     pub collections: Vec<CollectionVerification>,

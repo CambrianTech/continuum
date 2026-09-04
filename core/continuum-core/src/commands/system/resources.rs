@@ -19,7 +19,10 @@ fn default_top_n() -> u32 {
 /// many processes per listing.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/system/ResourcesParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/system/ResourcesParams.ts"
+)]
 pub struct ResourcesParams {
     /// Include the top-by-cpu / top-by-memory process listing (default `false`).
     #[serde(default)]

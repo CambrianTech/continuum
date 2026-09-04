@@ -45,8 +45,8 @@ your system is checkmate framing.
 **Round 1 — tonight (function level, fast, winnable):** humaneval-rs 20-task slice.
 Cells: hermes3-8b×raw, hermes3-8b×ours, devstral-24b×raw, devstral-24b×ours,
 devstral-24b×ours+coder-act-transition (tonight's gene), qwen3.5-4b-forged×ours.
-Runner: `cu benchmark/run` (ours arm) + `benchmarks/coder/oneshot_opponent.py` (raw arm).
-Every cell → `cu benchmark/record` with replication cmd → `cu benchmark/matrix`.
+Runner: `uu benchmark/run` (ours arm) + `benchmarks/coder/oneshot_opponent.py` (raw arm).
+Every cell → `uu benchmark/record` with replication cmd → `uu benchmark/matrix`.
 
 **Round 2 — next (agentic level, the lever):** swe-bench-lite 10-instance slice, same
 cells + hermes-4.3-36b both arms. This is where Axis B matters most: Hermes models are
@@ -104,7 +104,7 @@ the roster.
 - **Tonight:** trainer completes → sentinel eval (gene lift) → release reboot (5 queued
   commits incl. evidence engine) → smoke matrix DETACHED overnight: core six × {raw,
   ours} on humaneval-rs 20-task (~12 cells). Every cell → `benchmark/record`.
-- **Morning:** `cu benchmark/matrix` prints the first comparison table. Triage: any
+- **Morning:** `uu benchmark/matrix` prints the first comparison table. Triage: any
   degenerate-output cells (mean tokens/task floor) re-run before conclusions.
 - **Day 2:** polyglot-rust importer (30 Exercism exercises → EvalTask JSONL, existing
   rustc grader) → HEADLINE run across core six; SWE-lite 10-instance slice on the top

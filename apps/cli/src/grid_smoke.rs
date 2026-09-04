@@ -112,6 +112,27 @@ pub struct GridSmokeSpec {
     /// SingleHop / NotYetWired; v2 starts asserting Composition /
     /// FanOut via probe-trace ingestion.
     pub expectation: ChainShape,
+    /// What the AUTHORIZATION gate is expected to do with this row.
+    pub gate: GateExpectation,
+}
+
+/// The authorization outcome a row expects. An airc caller resolves to
+/// `Provisional` trust until the airc↔grid trust bridge lands (task #38 —
+/// `modules/grid/registry.rs` NOTE): `Provisional` admits `ai/generate` +
+/// AiSafe-declared commands and refuses the `Privileged`/`Owner` tiers.
+/// A refusal is a CORRECT, loud answer — the battery's transport claim is
+/// "typed response, fast", never "everything is authorized". Encoding the
+/// expectation keeps both failure modes visible: a DEADLINE on a
+/// refused-expected row is a transport regression; an ADMITTED result on
+/// one means the trust bridge landed and the battery must be updated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GateExpectation {
+    /// The command is admitted at Provisional; the row passes on a
+    /// validated response.
+    Admitted,
+    /// The command needs `Trusted`+ (unwired until task #38); the row
+    /// passes on a FAST typed refusal.
+    RefusedUntilTrustBridge,
 }
 
 /// Outcome of one row.
@@ -148,9 +169,53 @@ pub struct RunResult {
 /// runtime once we ship a `--only path1,path2` selector.
 pub fn default_battery() -> Vec<GridSmokeSpec> {
     vec![
-        // Substrate alive. The cheapest "is the peer responding to
-        // anything at all?" probe. If THIS fails the rest of the
-        // battery is meaningless.
+        // Substrate alive. AiSafe → admitted at Provisional. If THIS
+        // fails the rest of the battery is meaningless.
+        GridSmokeSpec {
+            name: "ping",
+            path: "ping",
+            params: || serde_json::json!({}),
+            validate: |v| {
+                let obj = v
+                    .as_object()
+                    .ok_or_else(|| "expected ping result object".to_string())?;
+                let sha = obj
+                    .get("buildSha")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("<no buildSha>");
+                Ok(format!("pong build={sha}"))
+            },
+            expectation: ChainShape::SingleHop {
+                peer_label: "target",
+                path: "ping",
+            },
+            gate: GateExpectation::Admitted,
+        },
+        // Capability discovery — the exact question a grid peer asks
+        // before placing work ("what compute do you have?"). AiSafe →
+        // admitted at Provisional.
+        GridSmokeSpec {
+            name: "gpu/stats",
+            path: "gpu/stats",
+            params: || serde_json::json!({}),
+            validate: |v| {
+                let obj = v
+                    .as_object()
+                    .ok_or_else(|| "expected gpu stats object".to_string())?;
+                if obj.is_empty() {
+                    return Err("gpu stats object empty".into());
+                }
+                Ok(format!("{} field(s)", obj.len()))
+            },
+            expectation: ChainShape::SingleHop {
+                peer_label: "target",
+                path: "gpu/stats",
+            },
+            gate: GateExpectation::Admitted,
+        },
+        // Privileged tier — refused at Provisional until the trust
+        // bridge (task #38). The row proves the GATE answers loudly:
+        // a fast typed refusal passes, a deadline fails.
         GridSmokeSpec {
             name: "runtime/metrics/all",
             path: "runtime/metrics/all",
@@ -159,28 +224,20 @@ pub fn default_battery() -> Vec<GridSmokeSpec> {
                 let obj = v.as_object().ok_or_else(|| {
                     "expected object of module->metrics, got non-object".to_string()
                 })?;
-                if obj.is_empty() {
-                    return Err("metrics object empty — no modules report".into());
-                }
                 Ok(format!("{} modules reporting", obj.len()))
             },
             expectation: ChainShape::SingleHop {
                 peer_label: "target",
                 path: "runtime/metrics/all",
             },
+            gate: GateExpectation::RefusedUntilTrustBridge,
         },
-        // AI subsystem alive — no inference required. Lets us
-        // distinguish "the peer is responsive but has no adapter
-        // registered" from "the peer is unreachable". Substrate's
-        // AIProviderModule answers this even when no GGUF / API key
-        // is configured.
+        // Privileged tier — same refusal contract as metrics.
         GridSmokeSpec {
             name: "ai/providers/list",
             path: "ai/providers/list",
             params: || serde_json::json!({}),
             validate: |v| {
-                // Substrate returns {providers: [...]} or {available: [...]}
-                // depending on shape; accept either.
                 let providers = v
                     .get("providers")
                     .or_else(|| v.get("available"))
@@ -197,6 +254,7 @@ pub fn default_battery() -> Vec<GridSmokeSpec> {
                 peer_label: "target",
                 path: "ai/providers/list",
             },
+            gate: GateExpectation::RefusedUntilTrustBridge,
         },
         // Real inference dispatch — the proof PR #1563 covered for
         // HeuristicInferenceAdapter, now run against whatever adapter
@@ -214,7 +272,14 @@ pub fn default_battery() -> Vec<GridSmokeSpec> {
                     "messages": [
                         { "role": "user", "content": "Reply with one short word." }
                     ],
-                    "maxTokens": 16,
+                    // "local" is the designed sentinel for "your best local
+                    // adapter" — an EXPLICIT specifier, so the registry's
+                    // no-specifier guard ([[no-fallbacks-ever]]) admits it.
+                    // Exactly the cross-grid ask: "whatever you serve".
+                    "provider": "local",
+                    // Room for reasoning-style models that spend tokens
+                    // before the visible word — 16 came back empty-text.
+                    "maxTokens": 128,
                 })
             },
             validate: |v| {
@@ -231,22 +296,24 @@ pub fn default_battery() -> Vec<GridSmokeSpec> {
                 let trimmed: String = text.chars().take(50).collect();
                 Ok(format!(
                     "model={model} text={trimmed:?}{}",
-                    if text.chars().count() > 50 { " (truncated)" } else { "" }
+                    if text.chars().count() > 50 {
+                        " (truncated)"
+                    } else {
+                        ""
+                    }
                 ))
             },
             expectation: ChainShape::SingleHop {
                 peer_label: "target",
                 path: "ai/generate",
             },
+            gate: GateExpectation::Admitted,
         },
     ]
 }
 
 /// Dispatch one spec, time the wall-clock, validate.
-async fn run_spec(
-    conn: &Connection<AircIpcTransport>,
-    spec: &GridSmokeSpec,
-) -> RunResult {
+async fn run_spec(conn: &Connection<AircIpcTransport>, spec: &GridSmokeSpec) -> RunResult {
     // NotYetWired rows skip dispatch entirely — the substrate would
     // error on something we already know doesn't cross the wire.
     if let ChainShape::NotYetWired { reason } = &spec.expectation {
@@ -263,12 +330,33 @@ async fn run_spec(
     let dispatch: Result<Value, _> = conn.commands().execute(spec.path, params).await;
     let elapsed = started.elapsed();
 
-    let outcome = match dispatch {
-        Ok(value) => match (spec.validate)(&value) {
+    let outcome = match (dispatch, spec.gate) {
+        (Ok(value), GateExpectation::Admitted) => match (spec.validate)(&value) {
             Ok(summary) => Outcome::Ok(summary),
             Err(reason) => Outcome::Failed(format!("validate: {reason}")),
         },
-        Err(e) => Outcome::Failed(format!("dispatch: {e}")),
+        // The trust bridge landed and this tier is now admitted — the
+        // battery's expectation is stale. Fail LOUDLY so the row gets
+        // flipped to Admitted rather than silently rubber-stamped.
+        (Ok(_), GateExpectation::RefusedUntilTrustBridge) => Outcome::Failed(
+            "UNEXPECTEDLY ADMITTED — trust bridge (task #38) landed? \
+             Flip this row's gate to Admitted and validate the payload."
+                .to_string(),
+        ),
+        (Err(e), gate) => {
+            let msg = e.to_string();
+            // A typed substrate refusal on a refusal-expected row IS the
+            // pass condition: it proves request + gate + reply all cross
+            // the wire fast. Anything else (deadline, transport error)
+            // stays a failure.
+            if gate == GateExpectation::RefusedUntilTrustBridge && msg.contains("refused") {
+                Outcome::Ok(format!(
+                    "refused at the gate as expected until task #38 (Provisional < Privileged)"
+                ))
+            } else {
+                Outcome::Failed(format!("dispatch: {msg}"))
+            }
+        }
     };
 
     RunResult {
@@ -310,12 +398,27 @@ pub fn print_report(target_peer: &str, results: &[RunResult]) {
             Outcome::Skipped(_) => String::from("    -"),
             _ => format!("{:>5}", r.elapsed.as_millis()),
         };
-        println!("  {glyph}  {:width$}  {} ms   {}", r.name, ms, body, width = name_width);
+        println!(
+            "  {glyph}  {:width$}  {} ms   {}",
+            r.name,
+            ms,
+            body,
+            width = name_width
+        );
     }
 
-    let pass = results.iter().filter(|r| matches!(r.outcome, Outcome::Ok(_))).count();
-    let fail = results.iter().filter(|r| matches!(r.outcome, Outcome::Failed(_))).count();
-    let skip = results.iter().filter(|r| matches!(r.outcome, Outcome::Skipped(_))).count();
+    let pass = results
+        .iter()
+        .filter(|r| matches!(r.outcome, Outcome::Ok(_)))
+        .count();
+    let fail = results
+        .iter()
+        .filter(|r| matches!(r.outcome, Outcome::Failed(_)))
+        .count();
+    let skip = results
+        .iter()
+        .filter(|r| matches!(r.outcome, Outcome::Skipped(_)))
+        .count();
     let total = results.len();
 
     println!("\n{pass}/{total} passed  ({fail} failed, {skip} skipped)");
@@ -325,10 +428,7 @@ pub fn print_report(target_peer: &str, results: &[RunResult]) {
 /// battery, prints the report, and returns Ok iff every spec passed.
 /// Failure -> nonzero exit so CI / scripts can gate on grid-smoke
 /// directly without parsing the report.
-pub async fn run(
-    conn: Connection<AircIpcTransport>,
-    target_peer: uuid::Uuid,
-) -> Result<()> {
+pub async fn run(conn: Connection<AircIpcTransport>, target_peer: uuid::Uuid) -> Result<()> {
     let specs = default_battery();
     let results = run_battery(conn, specs).await;
     print_report(&target_peer.to_string(), &results);

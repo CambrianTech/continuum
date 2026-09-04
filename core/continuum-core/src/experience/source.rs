@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::ipc::room_purpose::{RoomPurposeSource, SharedRoomPurpose};
 
-use super::recipe::ExperienceRecipe;
+use super::recipe::{ExperienceRecipe, RecipeId};
 use super::Experience;
 
 /// Resolves a room to its authored [`Experience`] manifest. Membership (live roster)
@@ -82,13 +82,53 @@ impl std::error::Error for RecipeLoadError {
     }
 }
 
+/// Typed names for the recipes that ship IN the binary — the prod-critical set.
+///
+/// Task #274. Constants, deliberately NOT an enum: recipes are open (authored on
+/// disk, installed at runtime, generated on the fly), and an enum is a closed set
+/// that would have to be edited and recompiled for every new activity — the exact
+/// "if authoring an activity requires a compiler, activities get hand-made
+/// instead" failure this module's own header warns about, and which produced a
+/// bring-up room still collecting citizens two weeks after its activity ended.
+///
+/// So: named handles onto an OPEN registry. Core code references a shipped recipe
+/// by constant instead of spelling a magic string, and everything else resolves by
+/// id at runtime. Each constant must equal the `id` authored in its JSON —
+/// `every_shipped_constant_resolves` pins that, so the two can never drift.
+pub mod shipped {
+    use super::RecipeId;
+
+    // Genuine v4 UUIDs, grouped exactly as the canonical form they mirror in the
+    // authored JSON so the two are checkable by eye. Never hand-drawn patterns: an
+    // id with a readable prefix is a name wearing a UUID's costume, and it collides
+    // the moment anyone else picks the same cute stem.
+
+    /// The Rust-coder gym (`benchmark/hard-rs`) — `fed332c3-383c-45bb-a205-b54b02c43916`.
+    pub const BENCHMARK_HARD_RS: RecipeId =
+        RecipeId::from_u128(0xfed332c3_383c_45bb_a205_b54b02c43916);
+    /// Ordinary conversation (`chat`) — `8d0f0435-93be-4468-bd26-4f8cdd4693ee`.
+    pub const CHAT: RecipeId = RecipeId::from_u128(0x8d0f0435_93be_4468_bd26_4f8cdd4693ee);
+    /// A citizen's or user's profile surface (`profile`) — `089ac0da-d65a-4922-8cdc-36e7f589c465`.
+    pub const PROFILE: RecipeId = RecipeId::from_u128(0x089ac0da_d65a_4922_8cdc_36e7f589c465);
+    /// Real-time voice/video (`video-chat`) — `6bc4fc12-a1c3-4482-ab2c-eb48505d52d3`.
+    pub const VIDEO_CHAT: RecipeId = RecipeId::from_u128(0x6bc4fc12_a1c3_4482_ab2c_eb48505d52d3);
+
+    /// Every shipped id, for tests and for enumerating the prod-critical floor.
+    pub const ALL: &[RecipeId] = &[BENCHMARK_HARD_RS, CHAT, PROFILE, VIDEO_CHAT];
+}
+
 /// An [`ExperienceSource`] backed entirely by recipe DATA: a `purpose → recipe`
 /// table, keyed by the room's purpose (resolved through the injected
 /// [`RoomPurposeSource`]). This is the concrete `RoomPurposeSource → Experience`
 /// projection — the manifests are recipe content, not Rust builders.
 pub struct RecipeExperienceSource {
-    /// purpose → authored recipe.
+    /// purpose → authored recipe. Still the RESOLUTION key today: rooms bind by
+    /// purpose on the wall, and #274 migrates that to id in a later slice. This
+    /// slice adds identity without moving resolution, so nothing breaks in flight.
     by_purpose: HashMap<String, ExperienceRecipe>,
+    /// id → authored recipe. The index resolution moves to (#274 step 2), and
+    /// already the honest answer to "which exact recipe is this".
+    by_id: HashMap<RecipeId, ExperienceRecipe>,
     /// room_id → purpose (the existing seam this projection composes on top of).
     purpose: SharedRoomPurpose,
 }
@@ -101,14 +141,34 @@ impl RecipeExperienceSource {
         purpose: SharedRoomPurpose,
         recipes: impl IntoIterator<Item = ExperienceRecipe>,
     ) -> Self {
-        let by_purpose = recipes
+        let by_purpose: HashMap<String, ExperienceRecipe> = recipes
             .into_iter()
             .map(|r| (r.purpose.clone(), r))
             .collect();
+        // Same last-wins semantics as `by_purpose`: an overlay recipe replacing a
+        // built-in replaces it in BOTH indexes, so the two can never disagree about
+        // which recipe won.
+        let by_id = by_purpose
+            .values()
+            .map(|r| (r.id, r.clone()))
+            .collect::<HashMap<_, _>>();
         Self {
             by_purpose,
+            by_id,
             purpose,
         }
+    }
+
+    /// Resolve by identity — what everything moves to in #274 step 2.
+    pub fn by_recipe_id(&self, id: RecipeId) -> Option<&ExperienceRecipe> {
+        self.by_id.get(&id)
+    }
+
+    /// The ids this source can resolve. Companion to [`Self::purposes`]; this is
+    /// the list `activity/spawn` will name when refusing an unknown recipe, so the
+    /// refusal is actionable instead of a silent chat room.
+    pub fn ids(&self) -> impl Iterator<Item = RecipeId> + '_ {
+        self.by_id.keys().copied()
     }
 
     /// The built-in experiences shipped with the core, authored as embedded recipe
@@ -116,6 +176,91 @@ impl RecipeExperienceSource {
     /// is a build-time authoring bug, pinned by the tests.
     pub fn builtins(purpose: SharedRoomPurpose) -> Self {
         Self::new(purpose, Self::embedded())
+    }
+
+    /// Every purpose the SHIPPED recipe set declares. Derived from the SAME
+    /// [`Self::embedded`] iterator the registry is built from, so this list
+    /// and the embedded resolution set cannot drift. Production validation
+    /// goes through [`Self::known_purposes`], which is this PLUS the disk
+    /// overlay — the same union [`Self::builtins_with_overlay`] resolves.
+    pub fn shipped_purposes() -> Vec<String> {
+        Self::embedded().map(|r| r.purpose).collect()
+    }
+
+    /// The ONE directory production overlays recipes from:
+    /// `<continuum_root>/recipes`. Named here so the resolution side
+    /// ([`Self::builtins_with_overlay`] in the positron projection) and the
+    /// validation side (`activity/spawn`'s `validate_recipe`) derive the same
+    /// path from the same root — two hand-built joins would drift, and a
+    /// drifted pair means an authored recipe that RESOLVES gets REFUSED at
+    /// spawn (or the reverse, the #431 silent-chat downgrade).
+    pub fn overlay_dir(continuum_root: &std::path::Path) -> std::path::PathBuf {
+        continuum_root.join("recipes")
+    }
+
+    /// Every purpose the FULL recipe set declares — embedded floor plus the
+    /// disk overlay under `dir` (#432). This is the validation list
+    /// `activity/spawn` refuses against, and it is the same union
+    /// [`Self::builtins_with_overlay`] builds its registry from, so an
+    /// authored on-disk recipe is spawnable the moment the file exists. A
+    /// malformed overlay recipe is an ERROR naming the file, not a silent
+    /// skip — the author believes it is live.
+    pub fn known_purposes(dir: &std::path::Path) -> Result<Vec<String>, RecipeLoadError> {
+        Ok(Self::known_recipes(dir)?.into_iter().map(|r| r.purpose).collect())
+    }
+
+    /// The FULL known recipe set — embedded floor plus the disk overlay, in
+    /// registry order (embedded first, overlay after, so later-wins-by-purpose
+    /// resolution can be applied by any consumer). `activity/spawn` reads
+    /// this to resolve a recipe's PARAM declarations (#433), not just its
+    /// purpose — the same union the projection serves, so what validates is
+    /// what resolves.
+    pub fn known_recipes(
+        dir: &std::path::Path,
+    ) -> Result<Vec<ExperienceRecipe>, RecipeLoadError> {
+        let overlay = Self::load_dir(dir)?;
+        Ok(Self::embedded().chain(overlay).collect())
+    }
+
+    /// The node's RESIDENT roles — the roster as recipe data (#430). Read from
+    /// the DEFAULT experience's `citizens` (the `chat` recipe — the room fresh
+    /// minds land in, #298), embedded floor overlaid by `dir` with the same
+    /// later-wins-by-purpose law the registry uses: author a `chat.json` on
+    /// disk and the node's resident roster changes with zero code.
+    pub fn resident_roles(
+        dir: &std::path::Path,
+    ) -> Result<Vec<crate::persona::role_template::RoleId>, RecipeLoadError> {
+        let overlay = Self::load_dir(dir)?;
+        Ok(Self::resident_roles_from(Self::embedded().chain(overlay)))
+    }
+
+    /// [`Self::resident_roles`] over the EMBEDDED set alone — infallible, for
+    /// tests/fixtures and as the documented loud-refusal arm when the overlay
+    /// directory fails to load (same shape as the positron projection's #432
+    /// refusal: serve the shipped floor, never go dark over one bad file).
+    pub fn resident_roles_embedded() -> Vec<crate::persona::role_template::RoleId> {
+        Self::resident_roles_from(Self::embedded())
+    }
+
+    fn resident_roles_from(
+        recipes: impl Iterator<Item = ExperienceRecipe>,
+    ) -> Vec<crate::persona::role_template::RoleId> {
+        let default_purpose = Self::shipped_purpose(shipped::CHAT)
+            .expect("embedded chat recipe must exist — build-time authoring bug");
+        recipes
+            .filter(|r| r.purpose == default_purpose)
+            .last()
+            .map(|r| r.citizens.into_iter().map(|c| c.role).collect())
+            .unwrap_or_default()
+    }
+
+    /// The declared purpose of a shipped recipe, by its [`shipped`] handle.
+    /// Lets core call sites bind rooms by CONSTANT (`shipped::BENCHMARK_HARD_RS`)
+    /// while the purpose string stays authored in exactly one place — the
+    /// recipe JSON. `None` only if the handle names no embedded recipe, which
+    /// is a build-time authoring bug the shipped-constants test pins.
+    pub fn shipped_purpose(id: RecipeId) -> Option<String> {
+        Self::embedded().find(|r| r.id == id).map(|r| r.purpose)
     }
 
     /// The embedded seed set. These ship IN the binary so a fresh clone has working
@@ -223,6 +368,60 @@ impl ExperienceSource for RecipeExperienceSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// what this catches (#274): every `shipped::` constant must name a recipe that
+    /// actually resolves. The constant and the `id` in the JSON are two hand-authored
+    /// copies of one value; if they drift, core code holds a handle onto nothing and
+    /// the room it spawns projects as plain chat — the exact silent failure that made
+    /// `benchmark` (a purpose that never existed) look plausible for months.
+    #[test]
+    fn every_shipped_constant_resolves() {
+        let source = RecipeExperienceSource::builtins(Arc::new(FixedPurpose("chat")));
+        for id in shipped::ALL {
+            assert!(
+                source.by_recipe_id(*id).is_some(),
+                "shipped::{id} has no recipe — constant and authored JSON id have drifted"
+            );
+        }
+        assert_eq!(shipped::ALL.len(), 4, "all four shipped recipes are named");
+    }
+
+    /// what this catches (#274): ids must be UNIQUE. Two recipes sharing an id would
+    /// make `by_id` silently drop one — a whole activity type vanishing with no error,
+    /// which is how 24 activity types were lost once already.
+    #[test]
+    fn shipped_ids_are_unique_and_match_their_purposes() {
+        let source = RecipeExperienceSource::builtins(Arc::new(FixedPurpose("chat")));
+        let ids: std::collections::HashSet<_> = source.ids().collect();
+        assert_eq!(ids.len(), 4, "four distinct ids, none colliding");
+
+        // The id→purpose pairing is the contract core code relies on when it says
+        // `shipped::BENCHMARK_HARD_RS` and means the Rust gym.
+        let bench = source
+            .by_recipe_id(shipped::BENCHMARK_HARD_RS)
+            .expect("benchmark resolves");
+        assert_eq!(bench.purpose, "benchmark/hard-rs");
+        assert_eq!(
+            source
+                .by_recipe_id(shipped::CHAT)
+                .map(|r| r.purpose.as_str()),
+            Some("chat")
+        );
+    }
+
+    /// what this catches (#274): identity is ADDITIVE in this slice. Rooms still bind
+    /// by purpose on the wall, so purpose resolution must keep working exactly as it
+    /// did — the id index is built alongside, not instead. If this breaks, every
+    /// existing room lost its experience.
+    #[test]
+    fn adding_identity_did_not_move_purpose_resolution() {
+        let source = RecipeExperienceSource::builtins(Arc::new(FixedPurpose("benchmark/hard-rs")));
+        let exp = source
+            .experience_for(Uuid::nil())
+            .expect("purpose still resolves after identity was added");
+        assert_eq!(exp.purpose, "benchmark/hard-rs");
+        assert_eq!(exp.regions.len(), 3);
+    }
     use crate::experience::{RegionRole, RegionScope};
     use crate::modules::grid::node::TrustLevel;
 
@@ -340,6 +539,35 @@ mod tests {
     /// if authoring an activity needs a compiler, people hand-make rooms instead,
     /// and a hand-made room has no recipe and no purpose.
     ///
+    /// what this catches (#430): the resident roster is RECIPE DATA. The
+    /// embedded chat recipe declares the shipped floor (one Helper), and an
+    /// authored on-disk `chat.json` REPLACES it — changing the node's
+    /// resident population with zero code, the same later-wins-by-purpose
+    /// law the registry uses. If this regresses, boot silently reverts to a
+    /// hardcoded roster and authored rosters are dead data.
+    #[test]
+    fn resident_roster_is_recipe_data_and_the_overlay_replaces_it() {
+        use crate::persona::role_template::RoleId;
+        assert_eq!(
+            RecipeExperienceSource::resident_roles_embedded(),
+            vec![RoleId::Helper],
+            "the embedded chat recipe declares the shipped single-Helper floor"
+        );
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("chat.json"),
+            r#"{ "purpose": "chat", "regions": [], "affordances": [],
+                 "citizens": [{ "role": "coder" }] }"#,
+        )
+        .expect("author an overlay chat recipe");
+        assert_eq!(
+            RecipeExperienceSource::resident_roles(dir.path()).expect("overlay loads"),
+            vec![RoleId::Coder],
+            "an authored chat.json replaces the resident roster, zero code"
+        );
+    }
+
     /// The assertion is deliberately about a purpose NOT known to this binary.
     #[test]
     fn an_experience_authored_on_disk_needs_no_rust() {

@@ -1,4 +1,5 @@
 pub mod buffer;
+pub mod emotion_tags;
 pub mod capabilities;
 pub mod mixer;
 pub mod model_root;

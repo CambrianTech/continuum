@@ -164,7 +164,10 @@ pub struct HardwareClass {
 /// in PR-3. PR-1 ships the type so other modules can reference it.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/governor/TierSizes.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/governor/TierSizes.ts"
+)]
 pub struct TierSizes {
     #[ts(type = "number")]
     pub l1_lora_layers: u32,

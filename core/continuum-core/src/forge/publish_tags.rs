@@ -113,10 +113,16 @@ pub fn continuum_tags(input: &PublishTagInput) -> Vec<String> {
         tags.push(format!("continuum:epochs={epochs}"));
     }
     if let Some(persona) = input.persona_name.as_deref().filter(|s| !s.is_empty()) {
-        tags.push(format!("continuum:persona={}", normalize_tag_value(persona)));
+        tags.push(format!(
+            "continuum:persona={}",
+            normalize_tag_value(persona)
+        ));
     }
     if let Some(pt) = input.project_type.as_deref().filter(|s| !s.is_empty()) {
-        tags.push(format!("continuum:project-type={}", normalize_tag_value(pt)));
+        tags.push(format!(
+            "continuum:project-type={}",
+            normalize_tag_value(pt)
+        ));
     }
     if let Some(rank) = input.rank.filter(|r| *r != 0) {
         tags.push(format!("continuum:rank={rank}"));
@@ -159,7 +165,10 @@ mod tests {
             normalize_base_model("unsloth/Devstral-Small-2507"),
             "devstral-small-2507"
         );
-        assert_eq!(normalize_base_model("qwen2.5-coder-14b"), "qwen2.5-coder-14b");
+        assert_eq!(
+            normalize_base_model("qwen2.5-coder-14b"),
+            "qwen2.5-coder-14b"
+        );
     }
 
     // what this catches: the exact tag set + order the market's facet filter reads.
@@ -200,9 +209,9 @@ mod tests {
     #[test]
     fn optional_fields_follow_legacy_truthiness() {
         let minimal = PublishTagInput {
-            score: Some(0),        // present → published even at 0
-            epochs: Some(0),       // zero → omitted
-            rank: Some(0),         // zero → omitted
+            score: Some(0),                  // present → published even at 0
+            epochs: Some(0),                 // zero → omitted
+            rank: Some(0),                   // zero → omitted
             base_model: Some(String::new()), // empty → omitted
             ..Default::default()
         };
@@ -212,7 +221,10 @@ mod tests {
         assert!(!tags.iter().any(|t| t.starts_with("continuum:rank")));
         assert!(!tags.iter().any(|t| t.starts_with("base_model:")));
         // Always-present base four regardless.
-        assert_eq!(&tags[..4], &["peft", "lora", "continuum", "continuum:schema=1"]);
+        assert_eq!(
+            &tags[..4],
+            &["peft", "lora", "continuum", "continuum:schema=1"]
+        );
     }
 
     // what this catches: the publish gate must reject non-positive lift so a

@@ -48,8 +48,17 @@ use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 const DEFAULT_EVAL_SET: &str = "docs/genome/coder-eval.jsonl";
 
 /// How many act→observe cycles a single task may take before it counts as
-/// unfinished, when the caller doesn't set `max_acts`.
-const DEFAULT_MAX_ACTS: u32 = 8;
+/// unfinished, when neither the caller nor the task row sets `max_acts`.
+///
+/// Raised 8 → 32 on 2026-08-23 after the MirrorCode baseline showed what 8
+/// buys on a frontier task: Atlas spent the whole budget on a genuinely
+/// competent case-bucketing analysis and was graded with an EMPTY src/ — the
+/// cap measured our patience, not the model ("repeated engineering process
+/// till finished … who cares if it has to cycle to do it" — the doctrine the
+/// old default contradicted). Tasks that need fewer acts settle on their own;
+/// the cap only exists to bound a runaway, so it must sit ABOVE what honest
+/// engineering needs. Per-task rows override via `EvalTask::max_acts`.
+const DEFAULT_MAX_ACTS: u32 = 32;
 
 /// Fixed "exam epoch" stamped on every task's burst (`[t=<ms>] peer: …`). The
 /// live burst carries each message's real `occurred_at_ms`; the eval pins it to
@@ -386,8 +395,7 @@ fn decide_eval_lane_placement(
     //   refused  → the governed GPU is full → spill to CPU (VISIBLE, ~10× slower,
     //              never an OOM) — "pressure, not OOM"
     //   ungoverned node (no daemon) → the ORIGINAL raw-free probe, unchanged
-    let (placement, reason, lease, free_vram) =
-        acquire_eval_lane_slot(footprint);
+    let (placement, reason, lease, free_vram) = acquire_eval_lane_slot(footprint);
     let device = match placement {
         LanePlacement::Gpu => "gpu",
         LanePlacement::Cpu => "cpu",
@@ -575,7 +583,12 @@ fn eval_lane_memory_veto(
 /// - ungoverned node (no `ResourceDaemon::global()`) → the original raw-free probe
 fn acquire_eval_lane_slot(
     footprint: Option<u64>,
-) -> (LanePlacement, String, Option<crate::resources::LeaseGuard>, Option<u64>) {
+) -> (
+    LanePlacement,
+    String,
+    Option<crate::resources::LeaseGuard>,
+    Option<u64>,
+) {
     use crate::resources::{LeaseError, LeaseRequest, ReclaimPolicy, ResourceDaemon, ResourceKind};
     match (ResourceDaemon::global(), footprint) {
         (Some(daemon), Some(fp)) => {
@@ -630,7 +643,10 @@ fn acquire_eval_lane_slot(
         ),
         (None, _) => {
             // Ungoverned node: the ORIGINAL raw-free probe, behavior unchanged.
-            let free_vram = crate::gpu::monitor::detect().map(|m| m.free_bytes());
+            // `and_then`, not `map`: "no GPU" and "GPU with no reading yet" are
+            // the same answer to a placement question — unknown — and
+            // `choose_lane_placement` already models unknown as `None`.
+            let free_vram = crate::gpu::monitor::detect().and_then(|m| m.free_bytes());
             let (placement, reason) = choose_lane_placement(free_vram, footprint);
             (placement, reason.to_string(), None, free_vram)
         }
@@ -657,12 +673,7 @@ fn governed_vram_available() -> Option<u64> {
 /// the returned lane kills its server on drop. Fails loud (never a substitute base,
 /// never a silent skip) at every missing precondition: gene not in the manifest,
 /// base not in the registry, or the lane not coming up.
-async fn spawn_gene_eval_lane(
-    gene: &EvalGene,
-) -> Result<
-    EvalLane,
-    CommandError,
-> {
+async fn spawn_gene_eval_lane(gene: &EvalGene) -> Result<EvalLane, CommandError> {
     use crate::ai::adapter::AIProviderAdapter; // brings `initialize` into scope
     use crate::inference::llama_server::{
         AdapterEntry, EphemeralServingLane, ServingTarget, PROVIDER_ID,
@@ -723,6 +734,9 @@ async fn spawn_gene_eval_lane(
     //    the per-request `lora` field decides per turn whether it actually pages in,
     //    which is exactly the base-vs-gene A/B below).
     let target = ServingTarget {
+        // Single-purpose lane: no citizen population to derive from — the
+        // declared cold-start prior is the honest value (restore-economy 1.b).
+        host_prompt_cache_mib: crate::inference::lane_args::CACHE_RAM_MIB,
         model: base.clone(),
         context_window: lane_ctx,
         lanes: 1,
@@ -733,8 +747,12 @@ async fn spawn_gene_eval_lane(
         placement: placement_evidence.placement,
         expert_placement: None, // eval lanes run the whole model; no K3 expert paging
         resident_override: None, // eval lanes serve resident as-shipped; no device-fit override
+            vision_sidecar: false,
     };
-    emit_eval_phase("loading_lane", &format!("cold-loading gene eval lane ({})", gene.name));
+    emit_eval_phase(
+        "loading_lane",
+        &format!("cold-loading gene eval lane ({})", gene.name),
+    );
     let lane = EphemeralServingLane::spawn(&target, EVAL_LANE_BASE_PORT)
         .await
         .map_err(|e| {
@@ -755,10 +773,9 @@ async fn spawn_gene_eval_lane(
             // (which only knows the living 14B persona lane and would otherwise
             // refuse every generation against the forged-4b copy). [[#59]].
             .with_dedicated_lane();
-    adapter
-        .initialize()
-        .await
-        .map_err(|e| CommandError::Internal(format!("eval-lane adapter failed to initialize: {e}")))?;
+    adapter.initialize().await.map_err(|e| {
+        CommandError::Internal(format!("eval-lane adapter failed to initialize: {e}"))
+    })?;
 
     // The lane was launched with the gene loaded via `--lora`; probe the catalog
     // NOW so (a) the BASE arm can neutralize it — an empty genome must serve true
@@ -853,6 +870,9 @@ async fn build_base_eval_lane_inner(base_id: &str) -> Result<EvalLaneInner, Comm
     let (placement_evidence, vram_lease) =
         decide_eval_lane_placement(&base, lane_ctx, &format!("eval-lane base:{base_id}"));
     let target = ServingTarget {
+        // Single-purpose lane: no citizen population to derive from — the
+        // declared cold-start prior is the honest value (restore-economy 1.b).
+        host_prompt_cache_mib: crate::inference::lane_args::CACHE_RAM_MIB,
         model: base.clone(),
         context_window: lane_ctx,
         lanes: 1,
@@ -860,10 +880,14 @@ async fn build_base_eval_lane_inner(base_id: &str) -> Result<EvalLaneInner, Comm
         placement: placement_evidence.placement,
         expert_placement: None, // eval lanes run the whole model; no K3 expert paging
         resident_override: None, // eval lanes serve resident as-shipped; no device-fit override
+            vision_sidecar: false,
     };
     // The ephemeral lane cold-loads the base model (can be minutes for a 14B+); emit
     // the phase so positronic layers show "loading <model>…", not a frozen bar.
-    emit_eval_phase("loading_lane", &format!("cold-loading eval lane for {base_id}"));
+    emit_eval_phase(
+        "loading_lane",
+        &format!("cold-loading eval lane for {base_id}"),
+    );
     let lane = EphemeralServingLane::spawn(&target, EVAL_LANE_BASE_PORT)
         .await
         .map_err(|e| {
@@ -876,10 +900,9 @@ async fn build_base_eval_lane_inner(base_id: &str) -> Result<EvalLaneInner, Comm
             .with_runtime_base_url(lane.root().to_string())
             .with_default_model(base.id.clone())
             .with_dedicated_lane();
-    adapter
-        .initialize()
-        .await
-        .map_err(|e| CommandError::Internal(format!("eval-lane adapter failed to initialize: {e}")))?;
+    adapter.initialize().await.map_err(|e| {
+        CommandError::Internal(format!("eval-lane adapter failed to initialize: {e}"))
+    })?;
     let served_ctx = lane.served_context_window().await.map_err(|e| {
         CommandError::Internal(format!(
             "eval lane for base '{base_id}' is up but its /props served window is unreadable ({e})"
@@ -916,9 +939,7 @@ async fn build_base_eval_lane_inner(base_id: &str) -> Result<EvalLaneInner, Comm
 /// a lane serving an applied genome must never be mistaken for a bare base). The
 /// returned handle owns nothing (`lane: None`, no lease), so dropping a measurement can
 /// never tear down the living persona's lane.
-async fn share_live_serving_lane(
-    base: &crate::model_registry::Model,
-) -> Option<EvalLaneInner> {
+async fn share_live_serving_lane(base: &crate::model_registry::Model) -> Option<EvalLaneInner> {
     use crate::ai::adapter::AIProviderAdapter;
     use crate::inference::llama_server::PROVIDER_ID;
 
@@ -952,9 +973,10 @@ async fn share_live_serving_lane(
     // Blind must not mean "assume clean" — that principle was right. The error was
     // treating an unanswered HTTP call as evidence when the invariant was already
     // guaranteed upstream by the code that applies the adapters.
-    let mut adapter = crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(PROVIDER_ID)
-        .with_runtime_base_url(snap.base_url.clone())
-        .with_default_model(base.id.clone());
+    let mut adapter =
+        crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(PROVIDER_ID)
+            .with_runtime_base_url(snap.base_url.clone())
+            .with_default_model(base.id.clone());
     // BOUNDED: this initialize is an HTTP round-trip against the LIVE lane, and this
     // server is documented (the /lora-adapters lesson above) to block non-completion
     // endpoints while generating. A share CHECK must never park acquisition — if the
@@ -978,7 +1000,10 @@ async fn share_live_serving_lane(
 
     emit_eval_phase(
         "loading_lane",
-        &format!("sharing the live serving lane for {} — weights already resident", base.id),
+        &format!(
+            "sharing the live serving lane for {} — weights already resident",
+            base.id
+        ),
     );
     crate::probe!(
         class = "eval.lane.shared",
@@ -1031,10 +1056,14 @@ async fn build_external_eval_lane_inner(
         })?;
     emit_eval_phase(
         "loading_lane",
-        &format!("routing eval through external provider '{}' for {}", base.provider, base.id),
+        &format!(
+            "routing eval through external provider '{}' for {}",
+            base.provider, base.id
+        ),
     );
-    let mut adapter = crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(&base.provider)
-        .with_default_model(base.id.clone());
+    let mut adapter =
+        crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(&base.provider)
+            .with_default_model(base.id.clone());
     adapter.initialize().await.map_err(|e| {
         CommandError::Internal(format!(
             "external provider '{}' failed to initialize for eval (is it running at {base_url}?): {e}",
@@ -1077,13 +1106,16 @@ async fn build_external_eval_lane_inner(
 fn provision_ephemeral_eval_root(tag: &str) -> Result<std::path::PathBuf, String> {
     let base = std::env::current_dir().map_err(|e| format!("cwd: {e}"))?;
     let root = std::env::temp_dir().join("continuum-eval").join(tag);
-    if root.is_dir() {
-        return Ok(root); // resume of the same run reuses its world
-    }
     let parent = root
         .parent()
-        .ok_or_else(|| "eval root has no parent".to_string())?;
-    std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+        .ok_or_else(|| "eval root has no parent".to_string())?
+        .to_path_buf();
+    sweep_orphan_eval_roots(&parent, &root);
+    if root.is_dir() {
+        write_eval_run_marker(&root, tag); // resume re-stamps the owner pid (a new core owns it now)
+        return Ok(root); // resume of the same run reuses its world
+    }
+    std::fs::create_dir_all(&parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
     let mut clone = std::process::Command::new("cp");
     if cfg!(target_os = "macos") {
         clone.arg("-cR");
@@ -1109,16 +1141,140 @@ fn provision_ephemeral_eval_root(tag: &str) -> Result<std::path::PathBuf, String
         root = root.display().to_string().as_str(),
         "exam world provisioned — CoW clone of the shared checkout, removed when the run ends"
     );
+    write_eval_run_marker(&root, tag);
     Ok(root)
+}
+
+/// Marker filename inside each eval world naming the run and its owning core
+/// pid — the cross-process evidence `continuum reboot`'s guard reads. Solve
+/// runs got this day one (the grade-ledger `state: running` rows); eval runs
+/// had NO on-disk in-flight signal, so a reboot killed them without ever being
+/// asked (measured 2026-08-23: the guard named zero runs while a MirrorCode
+/// battery was mid-task). The world dir dies with the run (Drop) and orphans
+/// are swept at next provision, so marker lifetime is exactly run lifetime;
+/// the guard pid-checks to ignore debris from a killed core.
+pub const EVAL_RUN_MARKER: &str = "eval-run.json";
+
+fn write_eval_run_marker(root: &std::path::Path, run_id: &str) {
+    let marker = serde_json::json!({
+        "runId": run_id,
+        "corePid": std::process::id(),
+        "startedAtMs": crate::persona::trace::now_ms(),
+    });
+    // Marker write is best-effort: the run must not die because its guard
+    // breadcrumb could not be written; the reboot guard just loses this run.
+    if let Err(e) = std::fs::write(
+        root.join(EVAL_RUN_MARKER),
+        marker.to_string(), // disk marker read by the CLI process — a true process boundary
+    ) {
+        tracing::warn!(error = %e, "eval run marker not written — reboot guard cannot see this run");
+    }
+}
+
+/// Every eval run some world dir claims is IN FLIGHT: `(run_id, core_pid)`.
+/// The CALLER owns pid-liveness (the CLI has its own pid_alive; this crate-side
+/// scan stays pure file reading) — a marker whose core died is debris the next
+/// provision sweeps, not an in-flight run.
+pub fn in_flight_eval_runs() -> Vec<(String, u32)> {
+    let base = std::env::temp_dir().join("continuum-eval");
+    let Ok(entries) = std::fs::read_dir(&base) else {
+        return Vec::new();
+    };
+    let mut live = Vec::new();
+    for entry in entries.flatten() {
+        let marker = entry.path().join(EVAL_RUN_MARKER);
+        let Ok(text) = std::fs::read_to_string(&marker) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        let (Some(run), Some(pid)) = (
+            v.get("runId").and_then(|r| r.as_str()),
+            v.get("corePid").and_then(|p| p.as_u64()),
+        ) else {
+            continue;
+        };
+        live.push((run.to_string(), pid as u32));
+    }
+    live.sort();
+    live
+}
+
+/// Eval worlds LIVE in this process. `Drop` covers every in-process return path,
+/// but not a killed process: `continuum reboot` SIGTERMs the core, `Drop` never
+/// runs, and the run's world outlives it (measured 2026-08-23 — a reboot mid-run
+/// left a 31 GB clone under `$TMPDIR/continuum-eval`, found by hand during the
+/// Ornith battery). The sweep below deletes those orphans at the next provision;
+/// this set is what stops it deleting a CONCURRENT run's live world.
+static LIVE_EVAL_ROOTS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashSet<std::path::PathBuf>>,
+> = std::sync::OnceLock::new();
+
+fn live_eval_roots() -> &'static std::sync::Mutex<std::collections::HashSet<std::path::PathBuf>> {
+    LIVE_EVAL_ROOTS.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+/// Remove sibling eval worlds that belong to no live run in this process. An
+/// eval run cannot survive its process (the mind fork, the lane lease, and the
+/// progress reporter all die with it), so any world under `continuum-eval/`
+/// that is neither the run being provisioned nor in [`live_eval_roots`] is an
+/// orphan from a killed process — re-creatable debris by construction (#312:
+/// the world is a CoW clone of the checkout; nothing in it is the only copy).
+/// Event-driven at the point of use — no boot hook, no background tick.
+fn sweep_orphan_eval_roots(parent: &std::path::Path, keep: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return; // parent not created yet — nothing to sweep
+    };
+    // Snapshot the live set and release the lock BEFORE deleting: a multi-GB
+    // clone takes seconds to remove, and a concurrent provision must not queue
+    // behind filesystem work.
+    let live = match live_eval_roots().lock() {
+        Ok(guard) => guard.clone(),
+        Err(_) => return, // poisoned registry: skip the sweep, never guess at liveness
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() || path == keep || live.contains(&path) {
+            continue;
+        }
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => crate::probe!(
+                class = "eval.workspace.orphan_swept",
+                root = path.display().to_string().as_str(),
+                "orphaned exam world from a killed process removed — Drop cannot run \
+                 through SIGTERM, so provision-time sweep is the crash-path owner"
+            ),
+            Err(e) => tracing::warn!(
+                root = %path.display(),
+                error = %e,
+                "orphaned eval world could not be removed — temp-dir debris persists"
+            ),
+        }
+    }
 }
 
 /// RAII holder for the run's disposable world — `Drop` removes it on EVERY return
 /// path (score, infra-abort, error), so a crashed exam never leaks fixtures into
-/// the temp dir long-term and NEVER touches the shared checkout at all.
+/// the temp dir long-term and NEVER touches the shared checkout at all. The
+/// crash path Drop cannot cover (SIGKILL/SIGTERM) is owned by
+/// [`sweep_orphan_eval_roots`] at the next provision.
 struct EphemeralEvalRoot(std::path::PathBuf);
+
+impl EphemeralEvalRoot {
+    fn new(root: std::path::PathBuf) -> Self {
+        if let Ok(mut live) = live_eval_roots().lock() {
+            live.insert(root.clone());
+        }
+        Self(root)
+    }
+}
 
 impl Drop for EphemeralEvalRoot {
     fn drop(&mut self) {
+        if let Ok(mut live) = live_eval_roots().lock() {
+            live.remove(&self.0);
+        }
         if let Err(e) = std::fs::remove_dir_all(&self.0) {
             tracing::warn!(
                 root = %self.0.display(),
@@ -1161,16 +1317,22 @@ fn parse_provider_context_length(body: &serde_json::Value, model_id: &str) -> Op
 /// than failing the whole run. A task is TEST-GRADED when it carries `test`, else
 /// substring-graded against `expect`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
-// `#[ts(export)]` so the binding at `bindings/EvalTask.ts` (imported by
-// GenomeTeachParams / MinedTask / RedactMemoryParams) REGENERATES with this struct
-// instead of drifting stale — the file was orphaned (a derive without export) and a
-// new field silently rotted it. Default export path = `bindings/EvalTask.ts`, exactly
-// where the parents already import it from.
-#[ts(export)]
+// Exported to the canonical protocol root (#247/#80) so the parents that embed it
+// (GenomeTeachParams / MinedTask / RedactMemoryParams — all already emitting under
+// protocol/typescript/) import a SIBLING instead of reaching back into the legacy
+// crate bindings/ dir. A derive without an export once left this file a silently
+// rotting orphan; the explicit export is the fix, the canonical path is #424.
+#[ts(export, export_to = "../../../protocol/typescript/cognition/EvalTask.ts")]
 pub struct EvalTask {
     /// Stable id for the task (echoed in results so a regression is identifiable).
     #[serde(default)]
     pub id: String,
+    /// Per-task act→observe budget override — budget-as-data, so a gym can size
+    /// patience to its task class (a mirror task needs analysis + implementation
+    /// + verification; a one-liner doesn't). `None` inherits the run's budget.
+    #[serde(default)]
+    #[ts(optional)]
+    pub max_acts: Option<u32>,
     /// The prompt posed to the persona, framed as a room message.
     #[serde(default)]
     pub prompt: String,
@@ -1202,7 +1364,11 @@ pub struct EvalTask {
     /// append `test`, compile, run). This is how an ACTING persona is measured — the act→verify
     /// loop is only visible if we grade what she actually wrote + compiled, not what she narrated.
     /// The file lands in the workspace root (= core cwd, where `code/write` sandboxes writes).
-    #[serde(default, alias = "solutionFile", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        alias = "solutionFile",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[ts(optional)]
     pub solution_file: Option<String>,
     /// Task-state SETUP: a shell command run BEFORE the prompt is posed, restoring the
@@ -1229,7 +1395,11 @@ pub struct EvalTask {
     pub target: Option<String>,
     /// Fraction of `ui_checks` that must hold to PASS (`1.0` = every criterion; the fractional
     /// score always rides along in the grade line). Defaults to `1.0` — "the UI works".
-    #[serde(default, alias = "uiPassThreshold", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        alias = "uiPassThreshold",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[ts(optional)]
     pub ui_pass_threshold: Option<f32>,
     /// Does answering this task REQUIRE tools — regardless of how it's graded? The derived
@@ -1266,9 +1436,28 @@ pub struct EvalTask {
     /// derives its root from her hands (one source of truth), this becomes a live re-root and the
     /// refusal is deleted.
     /// [[re-rooting-a-persona-is-two-operations-moving-one-is-worse-than-moving-neither]]
-    #[serde(default, alias = "workspaceRoot", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        alias = "workspaceRoot",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[ts(optional)]
     pub workspace_root: Option<String>,
+}
+
+impl EvalTask {
+    /// Is this task GRADED ON THE WORKSPACE (a DoD shell reads files, a
+    /// solution file is collected, UI checks screenshot artifacts) rather than
+    /// on her spoken answer? Decides the turn's [`TurnFraming::on_workspace`]
+    /// contract — which in turn arms the discovery-saturation gate, the
+    /// no-deliverable nudge, and the act-budget proprioception. Before this
+    /// predicate the eval framed EVERY task as directed-speech, so none of
+    /// those protections ever applied to the tasks they were built for
+    /// (glass-boxed 2026-08-23: MirrorCode graded an empty src/ after a
+    /// discovery-only turn the saturation gate should have interrupted).
+    pub fn workspace_deliverable(&self) -> bool {
+        self.dod_shell.is_some() || self.solution_file.is_some() || !self.ui_checks.is_empty()
+    }
 }
 
 impl EvalTask {
@@ -1311,7 +1500,12 @@ impl EvalTask {
     /// `expect`-graded knowledge tasks are untouched — answering a question IS speaking, and
     /// nothing is confused about that. The rule keys on `test`: only a task that compiles and
     /// runs code has a program as its deliverable.
-    fn require_hands_for_code(&mut self) {
+    ///
+    /// `pub(crate)` because THIS is the one derivation of a code task's artifact name:
+    /// `benchmark/dispatch` must run the same rule before composing a work card, or the card
+    /// tells the citizen nothing about WHERE to write while the grade reads the derived path
+    /// (glass-boxed 2026-08-15: a frontier-rs claimer inventing `swe/benchmarks/.../lib.rs`).
+    pub(crate) fn require_hands_for_code(&mut self) {
         if self.test.is_none()
             || self.solution_file.is_some()
             || self.dod_shell.is_some()
@@ -1368,15 +1562,19 @@ pub struct EvalGene {
     /// Influence dial in [0,1+] — 0 = base, 1 = full gene. The page-in is analog:
     /// the per-request scale rides into `"lora":[{id,scale}]`. Defaults to 1.0.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub scale: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 pub struct CognitionEvalParams {
-    /// The persona (UUID) to put through the gym. Must be spawned (have a live
-    /// `WorkspaceCycle`) — the eval drives her real cognition, not a stand-in.
-    pub persona_id: String,
+    /// Which persona to put through the gym — a full UUID, an 8-char short-id, or a
+    /// name. Resolved against the live roster before anything runs, so a garbage or
+    /// unknown reference fails loud here instead of dying later as a misleading
+    /// "not assembled at spawn". Must be spawned (have a live `WorkspaceCycle`) —
+    /// the eval drives her real cognition, not a stand-in.
+    pub persona_id: crate::identity::PersonaRef,
     /// Optional gene to MEASURE: when set, the eval runs base vs gene as an A/B and
     /// reports the `lift`. When omitted, a single pass on whatever genome is
     /// currently paged in (base, by default).
@@ -1410,10 +1608,13 @@ pub struct CognitionEvalParams {
     /// None/0 = solo. First slice supports one reviewer; live single-pass path only (no gene,
     /// no base_model_id).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub reviewers: Option<u32>,
-    /// Max act→observe cycles per task before it counts as unfinished. Default 8.
+    /// Max act→observe cycles per task before it counts as unfinished. Default 32
+    /// (see DEFAULT_MAX_ACTS); a task row's own max_acts overrides per task.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub max_acts: Option<u32>,
     /// Agentic-recovery budget: how many times a FAILED test-graded task is handed its
@@ -1422,8 +1623,19 @@ pub struct CognitionEvalParams {
     /// weights) — so a `0` vs `N` A/B on the identical model+benchmark measures exactly the
     /// edge our agentic loop adds, repeatably, from one param.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub max_retries: Option<u32>,
+    /// Decoding temperature pin for the WHOLE run. **Omitted → her LIVED
+    /// sampling** (the engineerable form — Joel 2026-08-23: "the old form is
+    /// useless"): greedy 0.0 measured pathological on long-context agentic
+    /// work (16k-token think spirals hitting the reply ceiling exactly, 4+min
+    /// decodes) while every serious agentic harness samples. Pass
+    /// `Some(0.0)` to opt INTO the old byte-reproducible greedy pin. A run's
+    /// number is only comparable to runs at the same pin either way.
+    #[serde(default)]
+    #[ts(optional)]
+    pub temperature: Option<f32>,
     /// Free-text label for THIS run, written to the progress ledger so a trend
     /// line is readable: "baseline", "taught show-output", "genome v2", etc.
     /// The ledger is how you "mark improvement as you go" — every eval leaves a
@@ -1484,9 +1696,22 @@ pub struct CognitionEvalParams {
     /// memories intact (the natural persona), unchanged for every existing path. NOT a life
     /// knob — a benchmark control, sibling of the greedy-temperature and directed-turn pins.
     /// [[eval-reproducibility-is-two-tier-lift-controlled-absolute-drifts]]
-    #[serde(default, alias = "suppressRecall", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        alias = "suppressRecall",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[ts(optional)]
     pub suppress_recall: Option<bool>,
+    /// HELP ARM (rung one of room collaboration, 2026-08-24): when true and the
+    /// eval is room-scoped, the exam condition DECLARES that asking peers is
+    /// legal — the task prompts say so, and a listener folds live room speech
+    /// from OTHERS into the fork's working memory so she perceives replies
+    /// between acts. Exchanges are receipts in the transcript; score under this
+    /// arm is reported as OURS+help, never conflated with solo. Default off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub help: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -1547,6 +1772,12 @@ pub struct EvalTaskResult {
 /// Proctored Exam Session exists to make impossible.
 /// [[proctored-exam-session-dependable-benchmark]] [[benchmark-needs-its-own-serving-lane]]
 #[derive(Debug, Clone, Serialize, TS)]
+// Exported for the same reason as `EvalTask` above: this struct is a field of the
+// exported result (`infra_unavailable`), so ts-rs emits a binding on every build
+// regardless — a derive without an export left it an UNTRACKED orphan that
+// regenerated forever (audit card #424). Canonical protocol root, sibling of
+// `cognition/EvalTask.ts`.
+#[ts(export, export_to = "../../../protocol/typescript/cognition/InfraUnavailable.ts")]
 pub struct InfraUnavailable {
     /// Human cause: which axis broke (not-ready / connect-refused / not-the-served-model
     /// / compute-error / stream-idle timeout), naming the task it broke on. Display-only
@@ -1571,6 +1802,17 @@ pub struct CognitionEvalResult {
     /// The run handle (#86): present on a detached ack AND on the ledger row, so the
     /// two halves of fire-and-poll join on one id.
     pub run_id: Option<String>,
+    /// Who the run is about.
+    ///
+    /// STILL `String`, and deliberately so pending the next slice: this struct
+    /// derives `Default` across 21 fields, and a persona reference has NO sensible
+    /// default — an empty one is a nonsense value that would read as a real answer.
+    /// The fix is to split the fire-and-poll HANDLE from the completed RESULT (they
+    /// are two different things wearing one struct: a handle knows only the
+    /// requested `PersonaRef`, a result knows the resolved `PeerId`), which is a
+    /// bigger change than this one. Fabricating a default to make the type check
+    /// would be the same reflex as `unwrap_or` — it makes the compiler quiet and the
+    /// runtime wrong.
     pub persona_id: String,
     /// True = this is a fire-and-poll JOB HANDLE (#86), NOT a completed run: the eval was
     /// spawned detached and its real result is in the progress ledger, not in these fields
@@ -1635,12 +1877,14 @@ pub struct CognitionEvalResult {
     /// `pass_rate`/`results` above are the candidate arm; this is what it's measured
     /// against.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub base_pass_rate: Option<f64>,
     /// `pass_rate - base_pass_rate` — the LIFT the gene produced (A/B mode only).
     /// Positive = the gene made her a better coder; the measure→decide gate adopts
     /// only `lift > 0`. Negative = an overfit/regressing gene, correctly rejected.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub lift: Option<f64>,
     /// Which device the measurement lane ran on: `"gpu"` or `"cpu"` (A/B mode), or
@@ -1654,11 +1898,13 @@ pub struct CognitionEvalResult {
     /// Live free VRAM (bytes) at lane spawn, net of the resident living lane — the
     /// headroom the GPU-first decision saw. `None` when no GPU monitor / single-pass.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub lane_free_vram_bytes: Option<u64>,
     /// Estimated weight+scratch footprint (bytes) of the measurement lane's base —
     /// what GPU-first weighed against free VRAM. `None` when unsized / single-pass.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub lane_estimated_footprint_bytes: Option<u64>,
     /// Set ONLY when infra prevented a trustworthy measurement (the shared serving lane
@@ -1677,6 +1923,56 @@ pub struct CognitionEvalResult {
 /// The gym command. Stateless: it reaches the persona's live cognition through the
 /// global [`WorkspaceCycle`](super::persona_workspace) registry, so it needs no host
 /// module state.
+/// Detached evals in flight, registered at DISPATCH time — not at first grade.
+/// The idempotence gap this closes (measured live, 2026-08-24, runs 4ae8e14c +
+/// 912de04f): a round's first task can grade 30+ minutes after dispatch, and until
+/// then the run has no ledger rows and no RunMeta scope — so `benchmark/round`
+/// re-invoked in that window happily minted a DUPLICATE fresh run. Entries are
+/// (run_id, persona, eval_set reference); removed when the detached body returns
+/// (either arm), so a crashed core clears it by process death — never a stale file.
+static DETACHED_IN_FLIGHT: std::sync::Mutex<Vec<(String, String, String)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Cancel requests by run_id — the iteration primitive a reboot used to stand in
+/// for (2026-08-24, Joel: "can't iterate to put the new one in place"). The task
+/// loop checks between tasks; a cancelled run stops cleanly, keeps every grade
+/// row already streamed, and writes its terminal row with `cancelled:true` so
+/// resume treats it as PAUSED (the same command continues it later).
+static CANCELLED_RUNS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Request cancellation of a run. Effective at the next task boundary.
+pub(crate) fn cancel_eval_run(run_id: &str) {
+    if let Ok(mut g) = CANCELLED_RUNS.lock() {
+        if !g.iter().any(|r| r == run_id) {
+            g.push(run_id.to_string());
+        }
+    }
+}
+
+/// Has this run been asked to stop? Checked between tasks (and cleared when the
+/// run exits).
+pub(crate) fn eval_run_cancelled(run_id: &str) -> bool {
+    CANCELLED_RUNS
+        .lock()
+        .map(|g| g.iter().any(|r| r == run_id))
+        .unwrap_or(false) // poisoned = a panicked writer; run to completion rather than wedge
+}
+
+fn clear_eval_cancel(run_id: &str) {
+    if let Ok(mut g) = CANCELLED_RUNS.lock() {
+        g.retain(|r| r != run_id);
+    }
+}
+
+/// Snapshot of the detached evals dispatched and not yet finished. For
+/// `benchmark/round`'s idempotence gate.
+pub(crate) fn detached_evals_in_flight() -> Vec<(String, String, String)> {
+    DETACHED_IN_FLIGHT
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default() // poisoned lock = a panicked writer; empty = gate opens, worst case a duplicate run (the pre-fix behavior), never a wedge
+}
+
 #[derive(Default)]
 pub struct CognitionEval;
 
@@ -1692,7 +1988,11 @@ impl ActionCommand for CognitionEval {
     type Params = CognitionEvalParams;
     type Output = CognitionEvalResult;
 
-    async fn run(&self, _ctx: &Ctx, p: CognitionEvalParams) -> Result<CognitionEvalResult, CommandError> {
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        p: CognitionEvalParams,
+    ) -> Result<CognitionEvalResult, CommandError> {
         // Fire-and-poll (#86): a long ACTING eval runs many minutes — far past any IPC client
         // timeout — so `detach` spawns it on the runtime (the body owns its params and reaches
         // cognition via the global workspace registry, needing neither `self` nor `ctx`),
@@ -1713,8 +2013,23 @@ impl ActionCommand for CognitionEval {
             // for the ack's return value below (they're `String`, not `Copy`).
             let ledger_persona = persona_id.clone();
             let ledger_run = run_id.clone();
+            if let Ok(mut g) = DETACHED_IN_FLIGHT.lock() {
+                g.push((
+                    run_id.clone(),
+                    persona_id.as_str().to_string(),
+                    inner
+                        .eval_set
+                        .clone()
+                        .unwrap_or_else(|| DEFAULT_EVAL_SET.to_string()), // same default the task-source block resolves — one identity
+                ));
+            }
             tokio::spawn(async move {
-                match CognitionEval::run_eval_restoring(inner).await {
+                let outcome = CognitionEval::run_eval_restoring(inner).await;
+                if let Ok(mut g) = DETACHED_IN_FLIGHT.lock() {
+                    g.retain(|(rid, _, _)| rid != &ledger_run);
+                }
+                clear_eval_cancel(&ledger_run); // after the ledger row stamped `cancelled` — flag consumed, next run of this id starts clean
+                match outcome {
                     Ok(r) => tracing::info!(
                         note = %note,
                         score = r.score,
@@ -1737,7 +2052,7 @@ impl ActionCommand for CognitionEval {
             });
             return Ok(CognitionEvalResult {
                 detached: true,
-                persona_id,
+                persona_id: persona_id.to_string(),
                 run_id: Some(run_id),
                 ..Default::default()
             });
@@ -1824,7 +2139,11 @@ impl CognitionEval {
         // Stamp this pass's run_id onto the live progress snapshot for the whole body
         // (RAII-cleared on any exit) so a persona-only poll can tell it's reading THIS
         // run, not a prior one's finished numbers (the stale-progress trap).
-        let _run_scope = RunIdScope::enter(p.run_id.clone());
+        let _run_scope = RunIdScope::enter(
+            p.run_id.clone(),
+            p.persona_id.as_str().to_string(),
+            p.eval_set.clone().unwrap_or_else(|| DEFAULT_EVAL_SET.to_string()), // same default the task-source block resolves below — one identity
+        );
 
         // Resolve the persona reference at ONE formal boundary (#396): a full UUID,
         // an 8-char short-id, or a persona name — normalized to the typed id against
@@ -1836,11 +2155,23 @@ impl CognitionEval {
         // reference to a doomed eval).
         let persona_uuid = crate::cognition::persona_workspace::global()
             .resolve_persona(&p.persona_id)
-            .map_err(|e| CommandError::Invalid(format!("{e} Or call persona/instances/list.")))?;
+            .map_err(|e| CommandError::Invalid(format!("{e} Or call persona/instances/list.")))?
+            // The workspace fork machinery below is keyed by bare `Uuid`; unwrap the
+            // resolved identity ONCE, here, rather than threading two types through it.
+            .as_uuid();
+        // The exam's ACTIVITY: rejoin the named room, or MINT a fresh one — an
+        // exam is an activity like any other (#425; Joel: "benchmarks without new
+        // activities (unless rejoining)" is not allowed). Exam turns are excluded
+        // from training by their Cause::Synthetic capture marker, never by room.
         let room = match p.room_id.as_deref() {
-            Some(s) => Uuid::parse_str(s)
-                .map_err(|_| CommandError::Invalid(format!("room_id '{s}' is not a valid UUID")))?,
-            None => Uuid::nil(),
+            Some(s) => {
+                let parsed = Uuid::parse_str(s)
+                    .map_err(|_| CommandError::Invalid(format!("room_id '{s}' is not a valid UUID")))?;
+                crate::identity::ActivityRoom::from_uuid(parsed).map_err(|_| {
+                    CommandError::Invalid("room_id must be a real (non-nil) room".into())
+                })?
+            }
+            None => crate::identity::ActivityRoom::mint(),
         };
 
         // Which set was graded — recorded in the ledger so trend rows are
@@ -1887,6 +2218,18 @@ impl CognitionEval {
         // load paths converge, so an inline task from a command payload obeys the same rule as a
         // committed gym line. There is no loader path to a mouth-graded code task.
         for t in tasks.iter_mut() {
+            if p.help.unwrap_or(false) { // omitted = solo arm; the condition text only appears when declared
+                // The arm's condition is DECLARED to the examinee — help is a rule
+                // of this exam, not a secret channel. [[exams-are-taken-with-full-
+                // grid-backed-capacity-disclosed]]
+                t.prompt.push_str(
+                    "\n\n[Exam condition — help arm] Asking for help is LEGAL in this exam \
+                     and counts in your favor when used well: post a question to your room \
+                     (chat tools) stating what you tried, what you expected, and what \
+                     happened. Replies from peers appear in your working memory as \
+                     `voice:` entries. All exchanges are recorded receipts.",
+                );
+            }
             t.require_hands_for_code();
         }
 
@@ -1916,9 +2259,12 @@ impl CognitionEval {
         // FS lacks CoW), removed on every return path via Drop. An explicit
         // workspace_root pin still wins (SWE-bench checkouts own their state).
         let ephemeral_root = if p.workspace_root.is_none() && needs_tools {
-            let tag = p.run_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            let tag = p
+                .run_id
+                .clone()
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             match provision_ephemeral_eval_root(&tag) {
-                Ok(root) => Some(EphemeralEvalRoot(root)),
+                Ok(root) => Some(EphemeralEvalRoot::new(root)),
                 Err(e) => {
                     // Fail LOUD and refuse to contaminate — no silent fallback to cwd.
                     return Err(CommandError::Internal(format!(
@@ -2142,7 +2488,7 @@ impl CognitionEval {
         // never warms, fail LOUD rather than emit a bogus 0. (Cost is one cheap probe on a
         // warm lane — the common case returns on the first try.)
         {
-            let warm_room = Uuid::new_v4();
+            let warm_room = crate::identity::ActivityRoom::mint();
             let probe_delivery = crate::persona::rag_budget::RagDelivery {
                 source_id: "airc".to_string(),
                 items: vec![crate::persona::rag_budget::RagItem {
@@ -2168,7 +2514,6 @@ impl CognitionEval {
                 let probe = crate::cognition::act_observe::drive_to_settle(
                     &cycle,
                     burst,
-                    warm_room,
                     0, // no acts — a bare deliberation is enough to prove the lane answers
                     crate::cognition::workspace::TurnFraming::directed(),
                 )
@@ -2203,17 +2548,37 @@ impl CognitionEval {
         // Root her hands at the target repo — the canonical mechanism, now shared with
         // `agent/solve` (drives `code/create-workspace` through her executor; fails LOUD rather
         // than let a silent no-root score a false 0-byte diff, [[fallbacks-are-illegal-fail-loud]]).
-        if let Some(root) = &p.workspace_root {
+        // ROOT AT THE RESOLVED ROOT — explicit pin OR the #312 ephemeral clone. This
+        // was gated on `p.workspace_root` alone, so every DEFAULT gym eval since the
+        // ephemeral-clone isolation landed had its grader reading the clone while her
+        // hands wrote to her HOME workspace: uniform false zeros on correct code
+        // (glass-boxed 2026-08-23 on the Ornith showcase battery — Atlas's
+        // roman_to_int was textbook-correct in home, the clone empty, 0/3 graded).
+        // The exact "silent no-root scores a false ZERO that would LIE about the
+        // solver" this comment block always warned about, one variable to the left.
+        if let Some(root) = eval_workspace_root.as_deref() {
             // A gym run IS the measurement — the grader reads the artifact, never her prose,
             // so an inert edit is unrecoverable here for the same reason as `benchmark/swe-solve`.
             crate::cognition::persona_workspace::root_acting_workspace(&cycle, root, &[], true)
                 .await?;
+            crate::probe!(
+                class = "eval.hands_rooted",
+                root = %root,
+                explicit = %p.workspace_root.is_some(),
+                "eval fork's hands rooted where the grader reads"
+            );
         }
 
         let max_acts = p.max_acts.unwrap_or(DEFAULT_MAX_ACTS) as usize;
         let max_retries = p.max_retries.unwrap_or(MAX_FAIL_RETRIES);
         let total = tasks.len() as u32;
-        let rate = |score: u32| if total > 0 { score as f64 / total as f64 } else { 0.0 };
+        let rate = |score: u32| {
+            if total > 0 {
+                score as f64 / total as f64
+            } else {
+                0.0
+            }
+        };
 
         // Within-fork isolation: admission STILL fires on the copy (the eval
         // exercises the identical memory motion as a real turn — that sameness is
@@ -2225,7 +2590,24 @@ impl CognitionEval {
         // A/B fairness, not protection of her durable memory — that protection now
         // comes from measuring a copy at all. See
         // [[eval-mutates-persona-lift-needs-isolation]].
-        let isolation = cycle.isolate_for_eval();
+        // Per-task lesson streaming: opened ONCE before the drive so every
+        // graded task teaches AT GRADE TIME (an interrupted round keeps its
+        // lessons). A/B (gene) runs never teach.
+        let lesson_sink = if p.learn.learns() && p.gene.is_none() {
+            let sink = LessonSink::open(&persona_uuid, room.as_uuid(), &tasks);
+            if sink.is_none() {
+                tracing::warn!(
+                    persona = %persona_uuid,
+                    "learn mode: no live admission for persona — lessons will not stream                      (she was measured, but the living self is not resident to teach)"
+                );
+            }
+            sink
+        } else {
+            None
+        };
+        // Omitted → None → her lived temperature rides (see the param doc);
+        // an explicit value pins the whole run (0.0 = the legacy greedy form).
+        let isolation = cycle.isolate_for_eval_at(p.temperature);
 
         // A/B mode: a gene was given → measure base vs gene over the SAME tasks
         // through the SAME live mind, reporting the lift. Page the gene OUT first
@@ -2237,7 +2619,18 @@ impl CognitionEval {
             // A/B LIFT arms consume `.pass`/`.results`; the infra-fault accounting rides
             // on the EphemeralServingLane path (decode-verified at spawn) as a scoped
             // follow-up — the shared-lane single-pass below is what Slice B makes honest.
-            let base_score = run_pass(&cycle, &isolation, &tasks, room, max_acts, max_retries, eval_workspace_root.as_deref()).await.pass;
+            let base_score = run_pass(
+                &cycle,
+                &isolation,
+                &tasks,
+                room,
+                max_acts,
+                max_retries,
+                eval_workspace_root.as_deref(),
+                None, // A/B arm measures the gene; teaching is a separate decision
+            )
+            .await
+            .pass;
 
             // Both arms start each task from the pre-eval memory frame — `run_pass`
             // rewinds the admission frame before EVERY task (per-task isolation), so
@@ -2249,8 +2642,17 @@ impl CognitionEval {
                 domain: String::new(),
                 scale: gene.scale.unwrap_or(1.0),
             }]);
-            let gene_outcome =
-                run_pass(&cycle, &isolation, &tasks, room, max_acts, max_retries, eval_workspace_root.as_deref()).await;
+            let gene_outcome = run_pass(
+                &cycle,
+                &isolation,
+                &tasks,
+                room,
+                max_acts,
+                max_retries,
+                eval_workspace_root.as_deref(),
+                None, // A/B arm measures the gene; teaching is a separate decision
+            )
+            .await;
             let (gene_score, gene_results) = (gene_outcome.pass, gene_outcome.results);
             cycle.page_out();
 
@@ -2297,12 +2699,12 @@ impl CognitionEval {
                 infra_unavailable: None,
             };
             result.run_id = p.run_id.clone();
-        append_progress_ledger(
-            &result,
-            p.note.as_deref(),
-            &eval_set_label,
-            _fleet_lease.as_ref().map(|_| true),
-        );
+            append_progress_ledger(
+                &result,
+                p.note.as_deref(),
+                &eval_set_label,
+                _fleet_lease.as_ref().map(|_| true),
+            );
             return Ok(result);
         }
 
@@ -2342,7 +2744,8 @@ impl CognitionEval {
         // baseline run is reproducible and leaves her memory untouched. TEAM mode
         // (reviewers>=1, live single-pass only) forks a second copy of the same persona
         // as a reviewer and grades the reviewed answer — same model, +1 teammate.
-        let want_team = p.reviewers.unwrap_or(0) >= 1 && p.gene.is_none() && p.base_model_id.is_none();
+        let want_team =
+            p.reviewers.unwrap_or(0) >= 1 && p.gene.is_none() && p.base_model_id.is_none();
         let outcome = if want_team {
             let reviewer = crate::cognition::persona_workspace::global()
                 .fork_eval_cycle(&persona_uuid, needs_tools, eval_workspace_root.as_deref(), suppress_recall)
@@ -2350,12 +2753,76 @@ impl CognitionEval {
                     "no workspace template for persona {persona_uuid} — cannot fork a reviewer teammate"
                 )))?;
             let reviewer_iso = reviewer.isolate_for_eval();
-            let out =
-                run_pass_team(&cycle, &isolation, &reviewer, &reviewer_iso, &tasks, room, max_acts).await;
+            let out = run_pass_team(
+                &cycle,
+                &isolation,
+                &reviewer,
+                &reviewer_iso,
+                &tasks,
+                room,
+                max_acts,
+                eval_workspace_root.as_deref(),
+            )
+            .await;
             drop(reviewer_iso);
             out
         } else {
-            run_pass(&cycle, &isolation, &tasks, room, max_acts, max_retries, eval_workspace_root.as_deref()).await
+            // HELP ARM: subscribe the fork's perception to live room speech for the
+            // exam's duration. Peers' words land in her working memory as labeled
+            // voices (perception through a channel, never a memory write from
+            // outside); her own posts are skipped. Guard aborts with the pass.
+            // Every exam has a REAL activity room now (#425), so the old nil guard is
+            // gone — the help arm is purely the flag.
+            let _help_guard = if p.help.unwrap_or(false) { // omitted arm flag = solo, the default
+                let wm = cycle.acting().map(|b| std::sync::Arc::clone(&b.working_memory));
+                wm.map(|wm| {
+                    let mut rx = crate::cognition::deliberation_budget::subscribe_room_speech();
+                    let me = persona_uuid;
+                    let handle = tokio::spawn(async move {
+                        loop {
+                            match rx.recv().await {
+                                Ok(sp) => {
+                                    if sp.room != room.as_uuid() || sp.sender == Some(me) {
+                                        continue;
+                                    }
+                                    let who = sp
+                                        .sender
+                                        .map(|u| u.to_string()[..8].to_string())
+                                        .unwrap_or_else(|| "peer".into()); // legacy senderless call site: an anonymous voice, labeled as such
+                                    wm.record_dispatch_event(
+                                        Uuid::new_v4(),
+                                        &format!("voice:{who}"),
+                                        &sp.content,
+                                        crate::cognition::working_memory::DispatchStatus::Done,
+                                    );
+                                    crate::probe!(
+                                        class = "eval.help.voice_folded",
+                                        room = %room,
+                                        sender = %who,
+                                        "help arm: a peer's words reached the examinee's perception"
+                                    );
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                                Err(_) => break,
+                            }
+                        }
+                    });
+                    scopeguard_abort(handle)
+                })
+            } else {
+                None
+            };
+            run_pass(
+                &cycle,
+                &isolation,
+                &tasks,
+                room,
+                max_acts,
+                max_retries,
+                eval_workspace_root.as_deref(),
+                lesson_sink.as_ref(),
+            )
+            .await
         };
         drop(isolation);
 
@@ -2372,13 +2839,23 @@ impl CognitionEval {
         // forget-context: keep the memory, excise the crib sheet). The exam ran on the fork
         // (#59 intact); only the clean lesson crosses back. Single-pass only in this slice.
         // NEVER learn from an infra-unavailable run — a dead-lane "failure" is not a lesson.
-        if p.learn.learns() && p.gene.is_none() && infra_unavailable.is_none() {
-            let transferred = transfer_redacted_lessons(&persona_uuid, room, &tasks, &results);
+        // Lessons STREAMED at grade time (see LessonSink — killed runs keep
+        // what they earned). Here: the run-end summary + the SEAM-3a progress
+        // engram, which needs the whole run's shape and stays end-of-run.
+        if let Some(sink) = &lesson_sink {
+            if infra_unavailable.is_none() {
+                admit_progress_engram(
+                    &sink.admission,
+                    room.as_uuid(),
+                    p.eval_set.as_deref().unwrap_or(DEFAULT_EVAL_SET), // the run's real set: None means the default set genuinely ran
+                    &results,
+                );
+            }
             tracing::info!(
                 persona = %persona_uuid,
-                transferred,
+                streamed = sink.admitted(),
                 tasks = tasks.len(),
-                "learn mode: redacted exam lessons admitted to the living self"
+                "learn mode: redacted exam lessons streamed at grade time"
             );
         }
 
@@ -2441,63 +2918,95 @@ impl CognitionEval {
 /// and how she did. Pure and answer-key-agnostic (the caller's redaction policy
 /// scrubs the crib sheet); kept separate so it's unit-testable.
 fn format_exam_lesson(task: &EvalTask, result: &EvalTaskResult) -> String {
-    let outcome = if result.ok { "I solved it" } else { "I did NOT solve it" };
-    format!(
-        "Exam task '{}'. I was asked: {} {} (grade: {}).",
-        task.id.trim(),
-        task.prompt.trim(),
-        outcome,
-        result.grade.trim()
-    )
+    // BELIEF HYGIENE (2026-08-24, the false-failure lesson): a PASS is strong
+    // evidence — say it plainly. A MISS is WEAK, noisy evidence — a broken env
+    // (the bare-`python` exit-127 that produced "5 failed"), a one-off, or a real
+    // gap, indistinguishable at grade time. So a miss is phrased as a PROVISIONAL
+    // single attempt, explicitly not a verdict on ability and explicitly
+    // retryable, so it can never harden into "I am bad at X" self-belief and the
+    // dream reviewer can SUPERSEDE it when a later attempt on the same task passes
+    // (both share the `task.id` recall key). Redaction still strips the answer key.
+    if result.ok {
+        format!(
+            "Exam task '{}'. I was asked: {} — I solved it (grade: {}).",
+            task.id.trim(),
+            task.prompt.trim(),
+            result.grade.trim()
+        )
+    } else {
+        format!(
+            "Exam task '{}'. I was asked: {} — this attempt did not pass yet (grade: {}).              One attempt, not a settled verdict on my ability: the cause may be my approach              OR the environment, and it is worth retrying. If a later attempt passes, that              supersedes this.",
+            task.id.trim(),
+            task.prompt.trim(),
+            result.grade.trim()
+        )
+    }
 }
 
-/// LEARN mode's transfer step: admit each task's REDACTED lesson into the LIVING
-/// persona so the exam becomes a real teacher without leaking the answer key. The
-/// exam already ran on the fork (#59 untouched); this is the ONLY thing that
-/// reaches her durable memory, and only after the held-out answers are scrubbed.
-/// Returns how many FRESH lessons were admitted (an identical lesson from a
-/// re-take dedups idempotently via `admit_reflection` and is not counted).
-fn transfer_redacted_lessons(
-    persona_uuid: &uuid::Uuid,
+/// PER-TASK lesson streaming (2026-08-23, Joel: "she going to learn from
+/// this?" — and the honest answer exposed that end-of-run transfer meant
+/// every KILLED run taught NOTHING: eight attempts that day, zero lessons
+/// delivered, because the teacher waited for the final bell). The sink is
+/// built ONCE per learning run (policy over the WHOLE set's answer keys, so
+/// a lesson about task A can never leak task B's key either; the living
+/// self's admission + experience dir resolved once) and each task's lesson
+/// streams AT GRADE TIME — an interrupted round keeps every lesson it
+/// earned. Resume-is-recall applied to teaching.
+pub(crate) struct LessonSink {
+    policy: crate::persona::redaction::RedactionPolicy,
+    persona_uuid: uuid::Uuid,
     room: uuid::Uuid,
-    tasks: &[EvalTask],
-    results: &[EvalTaskResult],
-) -> usize {
-    // Policy: scrub every held-out answer key (each task's `expect`).
-    let answers: Vec<String> = tasks
-        .iter()
-        .map(|t| t.expect.clone())
-        .filter(|a| !a.trim().is_empty())
-        .collect();
-    let policy = crate::persona::redaction::RedactionPolicy::new(vec![Box::new(
-        crate::persona::redaction::ExamKeyDetector::new(
-            answers,
-            crate::persona::redaction::ExamKeyDetector::DEFAULT_MIN_LEN,
-        ),
-    )]);
+    peer_dir: std::path::PathBuf,
+    admission: std::sync::Arc<crate::persona::admission_state::AdmissionState>,
+    admitted: std::sync::atomic::AtomicUsize,
+}
 
-    // The LIVING persona's admission — never the fork.
-    let Some(admission) = crate::cognition::persona_workspace::global()
-        .get(persona_uuid)
-        .and_then(|cycle| cycle.acting().map(|a| a.admission.clone()))
-    else {
-        tracing::warn!(
-            persona = %persona_uuid,
-            "learn mode: no live admission for persona — lesson not transferred \
-             (she was measured, but the living self is not resident to teach)"
+impl LessonSink {
+    /// `None` when the living self is not resident to teach (measured but
+    /// unteachable — the caller logs it once).
+    pub(crate) fn open(persona_uuid: &uuid::Uuid, room: uuid::Uuid, tasks: &[EvalTask]) -> Option<Self> {
+        let answers: Vec<String> = tasks
+            .iter()
+            .map(|t| t.expect.clone())
+            .filter(|a| !a.trim().is_empty())
+            .collect();
+        let policy = crate::persona::redaction::RedactionPolicy::new(vec![Box::new(
+            crate::persona::redaction::ExamKeyDetector::new(
+                answers,
+                crate::persona::redaction::ExamKeyDetector::DEFAULT_MIN_LEN,
+            ),
+        )]);
+        let peer_dir = crate::identity::citizen_peer_dir(
+            &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            crate::identity::PeerId::from_uuid(*persona_uuid),
         );
-        return 0;
-    };
-
-    let mut admitted = 0usize;
-    for (task, result) in tasks.iter().zip(results.iter()) {
-        if task.prompt.trim().is_empty() {
-            continue;
+        if let Err(e) = std::fs::create_dir_all(&peer_dir) {
+            tracing::warn!(error = %e, "citizen dir for the experience stream could not be created — exam episodes stay out of curriculum this run");
         }
-        let (lesson, _report) = policy.redact(&format_exam_lesson(task, result));
+        let admission = crate::cognition::persona_workspace::global()
+            .get(persona_uuid)
+            .and_then(|cycle| cycle.acting().map(|a| a.admission.clone()))?;
+        Some(Self {
+            policy,
+            persona_uuid: *persona_uuid,
+            room,
+            peer_dir,
+            admission,
+            admitted: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+
+    /// Stream ONE graded task's lesson + experience episode, at grade time.
+    /// Infra-graded tasks are skipped — a dead lane is substrate evidence,
+    /// never her lesson.
+    pub(crate) fn teach(&self, task: &EvalTask, result: &EvalTaskResult) {
+        if task.prompt.trim().is_empty() || result.grade.trim_start().starts_with("infra") {
+            return;
+        }
+        let (lesson, _report) = self.policy.redact(&format_exam_lesson(task, result));
         let engram = crate::persona::engram::Engram {
             id: uuid::Uuid::new_v4(),
-            context_id: Some(room),
+            context_id: Some(self.room),
             kind: crate::persona::engram::EngramKind::Episodic,
             content: lesson,
             origin: crate::persona::engram::EngramOrigin::SelfReflection {
@@ -2509,13 +3018,85 @@ fn transfer_redacted_lessons(
             admission_trace_id: None,
         };
         if matches!(
-            admission.admit_reflection(engram),
+            self.admission.admit_reflection(engram),
             Ok(crate::persona::engram::AdmissionDecision::Admit { .. })
         ) {
-            admitted += 1;
+            self.admitted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            crate::probe!(
+                class = "eval.lesson.streamed",
+                task = %task.id,
+                ok = result.ok,
+                "redacted lesson admitted at GRADE time — an interrupted round keeps every lesson it earned"
+            );
+        }
+        let mut episode =
+            crate::cognition::experience::ExperienceRecord::from_eval_result(task, result);
+        // The sink KNOWS the activity — carry it (A6), and when a tracked round
+        // runs a team solve in this room, stamp the team + this persona's seat.
+        // A reviewer's episode and a solver's episode from the same room teach
+        // different skills; unattributed rows can never become that corpus.
+        episode.room = Some(self.room);
+        if let Some(team) = crate::cognition::bench_round::team_for_room(self.room) {
+            episode.team_role = Some(if team.assignee == self.persona_uuid {
+                crate::cognition::experience::TeamRole::Solver
+            } else {
+                crate::cognition::experience::TeamRole::Reviewer
+            });
+            episode.teammates = std::iter::once(team.assignee)
+                .chain(team.teammates.iter().copied())
+                .filter(|p| *p != self.persona_uuid)
+                .collect();
+        }
+        if let Err(e) = crate::cognition::experience::append_experience(&self.peer_dir, &episode) {
+            tracing::warn!(
+                persona = %self.persona_uuid,
+                task = %task.id,
+                error = %e,
+                "exam episode could not join the experience stream — lesson admitted, curriculum blind to it"
+            );
         }
     }
-    admitted
+
+    pub(crate) fn admitted(&self) -> usize {
+        self.admitted.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// SEAM 3a: she REMEMBERS BECOMING BETTER. The progress ledger records
+/// passRate durably, but no engram ever carried it — a persona's beliefs
+/// formed with no awareness of her own measured capability. One Semantic
+/// summary per learned exam, keyed ["progress", <eval_set>], so the dream
+/// can cluster successive exams into a trajectory belief. (The per-task
+/// lesson half of the old transfer step now STREAMS at grade time — see
+/// [`LessonSink`]; this run-shape summary is the one piece that genuinely
+/// needs the whole run.)
+fn admit_progress_engram(
+    admission: &crate::persona::admission_state::AdmissionState,
+    room: uuid::Uuid,
+    eval_set: &str,
+    results: &[EvalTaskResult],
+) {
+    let solved = results.iter().filter(|r| r.ok).count();
+    let graded = results.len();
+    if graded > 0 {
+        let rate = solved as f32 / graded as f32;
+        let summary = crate::persona::engram::Engram {
+            id: uuid::Uuid::new_v4(),
+            context_id: Some(room),
+            kind: crate::persona::engram::EngramKind::Semantic,
+            content: format!(
+                "Exam '{eval_set}': I solved {solved} of {graded} tasks (rate {rate:.2})."
+            ),
+            origin: crate::persona::engram::EngramOrigin::SelfReflection {
+                parent_engram_id: uuid::Uuid::nil(),
+            },
+            recall_keys: vec!["progress".to_string(), eval_set.to_string()],
+            admitted_at_ms: crate::persona::trace::now_ms(),
+            trust_state_at_admission: crate::persona::engram::TrustState::SelfTrust,
+            admission_trace_id: None,
+        };
+        let _ = admission.admit_reflection(summary); // duplicate-content dedup is the store's job; a repeat exam at the same rate is legitimately the same belief
+    }
 }
 
 /// Fraction of tasks where she ACTED at least once before settling — the
@@ -2568,7 +3149,11 @@ fn speed_latency_aggregates(results: &[EvalTaskResult]) -> SpeedAggregates {
     let n = results.len() as f64;
     let mean_latency = results.iter().map(|r| r.latency_ms as f64).sum::<f64>() / n;
     let mean_tps = results.iter().map(|r| r.tokens_per_second).sum::<f64>() / n;
-    let mean_decode_tps = results.iter().map(|r| r.decode_tokens_per_second).sum::<f64>() / n;
+    let mean_decode_tps = results
+        .iter()
+        .map(|r| r.decode_tokens_per_second)
+        .sum::<f64>()
+        / n;
     let mean_cache_hit = results.iter().map(|r| r.cache_hit_rate).sum::<f64>() / n;
     let total_out = results
         .iter()
@@ -2660,7 +3245,11 @@ impl ActionCommand for CognitionEvalStatus {
         let progress = subscribe_eval_progress().borrow().clone();
         let Some(run_id) = p.run_id else {
             // No run handle → live progress only (the "how's it going" poll).
-            return Ok(CognitionEvalStatusResult { complete: false, row: None, progress });
+            return Ok(CognitionEvalStatusResult {
+                complete: false,
+                row: None,
+                progress,
+            });
         };
         // run_id is a globally-unique UUID, so it is a SUFFICIENT key on its own. With a
         // persona_id we read that persona's ledger directly (the fast path); WITHOUT one
@@ -2673,8 +3262,16 @@ impl ActionCommand for CognitionEvalStatus {
             None => find_run_row_any_persona(&run_id),
         };
         match row {
-            Some(v) => Ok(CognitionEvalStatusResult { complete: true, row: Some(v), progress }),
-            None => Ok(CognitionEvalStatusResult { complete: false, row: None, progress }),
+            Some(v) => Ok(CognitionEvalStatusResult {
+                complete: true,
+                row: Some(v),
+                progress,
+            }),
+            None => Ok(CognitionEvalStatusResult {
+                complete: false,
+                row: None,
+                progress,
+            }),
         }
     }
 }
@@ -2683,7 +3280,7 @@ crate::register_stateless_command!(CognitionEvalStatus);
 
 /// The progress-ledger directory (`~/.continuum/progress`), the ONE place
 /// [`append_progress_ledger`] writes and `cognition/eval-status` reads.
-fn progress_ledger_dir() -> Option<std::path::PathBuf> {
+pub(crate) fn progress_ledger_dir() -> Option<std::path::PathBuf> {
     std::env::var("HOME")
         .ok()
         .map(|h| std::path::PathBuf::from(h).join(".continuum/progress"))
@@ -2702,7 +3299,7 @@ fn find_run_row_for_persona(persona_id: &str, run_id: &str) -> Option<serde_json
 /// `*.jsonl` in the progress dir; returns the first match (a run_id lives in exactly
 /// one persona's ledger). Keeps run_id a sufficient key so a matrix/CI poller never
 /// hangs on a false pending just because it didn't also thread the persona_id.
-fn find_run_row_any_persona(run_id: &str) -> Option<serde_json::Value> {
+pub(crate) fn find_run_row_any_persona(run_id: &str) -> Option<serde_json::Value> {
     let dir = progress_ledger_dir()?;
     for entry in std::fs::read_dir(&dir).ok()?.flatten() {
         let path = entry.path();
@@ -2723,6 +3320,12 @@ fn find_run_row_any_persona(run_id: &str) -> Option<serde_json::Value> {
 fn row_with_run_id(text: &str, run_id: &str) -> Option<serde_json::Value> {
     for line in text.lines().rev() {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+            // Per-task streaming rows (`kind:"task"`) share the run_id but are NOT the
+            // terminal run row — skipping them keeps eval-status meaning "the run
+            // finished", while `graded_task_ids_for_run` reads them for resume.
+            if v.get("kind").and_then(|k| k.as_str()) == Some("task") {
+                continue;
+            }
             if v.get("runId").and_then(|r| r.as_str()) == Some(run_id) {
                 return Some(v);
             }
@@ -2731,12 +3334,33 @@ fn row_with_run_id(text: &str, run_id: &str) -> Option<serde_json::Value> {
     None
 }
 
+/// Every task id already GRADED under `run_id`, from the streamed `kind:"task"` rows —
+/// the read half of the resume seam. Pure over the ledger text; ordering preserved.
+pub fn graded_task_ids_from(text: &str, run_id: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| v.get("kind").and_then(|k| k.as_str()) == Some("task"))
+        .filter(|v| v.get("runId").and_then(|r| r.as_str()) == Some(run_id))
+        .filter_map(|v| {
+            v.get("taskId")
+                .and_then(|t| t.as_str())
+                .map(|t| t.to_string())
+        })
+        .collect()
+}
+
 /// Write a FAILED run row to the progress ledger so `cognition/eval-status` surfaces
 /// the error (keyed on `run_id`) instead of returning `null` forever. The poll surface
 /// must be able to tell "died" from "still starting" — a detached run that errors before
 /// [`append_progress_ledger`] otherwise reads as an eternal pending. `error` + `failed:true`
 /// mark it; `total:0` keeps the numeric shape valid for consumers.
-fn append_failed_ledger(persona_id: &str, run_id: &str, note: &str, error: &str) {
+fn append_failed_ledger(
+    persona: &crate::identity::PersonaRef,
+    run_id: &str,
+    note: &str,
+    error: &str,
+) {
+    let persona_id = persona.as_str();
     let Some(home) = std::env::var("HOME").ok() else {
         return;
     };
@@ -2756,7 +3380,11 @@ fn append_failed_ledger(persona_id: &str, run_id: &str, note: &str, error: &str)
         "total": 0,
     });
     use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
         let _ = writeln!(f, "{row}");
     }
 }
@@ -2860,6 +3488,44 @@ async fn acquire_exam_serving_context() -> crate::cognition::exam_serving::ExamS
     ExamServingContext::acquire(capacity, std::slice::from_ref(&resident), &demand).await
 }
 
+/// One graded task, durably, at grade time — the resume seam. Same file as the run
+/// summary rows (`~/.continuum/progress/<persona>.jsonl`), discriminated by
+/// `kind:"task"` so every existing run-row reader skips it. Best-effort like the
+/// summary writer: a ledger IO failure degrades resume, never the round.
+fn append_task_ledger_row(
+    persona_id: &str,
+    run_id: &str,
+    eval_set: &str,
+    task_id: &str,
+    ok: bool,
+    acts: u32,
+) {
+    let Some(dir) = progress_ledger_dir() else {
+        return;
+    };
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let row = serde_json::json!({
+        "kind": "task",
+        "capturedAtMs": crate::persona::trace::now_ms(),
+        "runId": run_id,
+        "personaId": persona_id,
+        "evalSet": eval_set,
+        "taskId": task_id,
+        "ok": ok,
+        "acts": acts,
+    });
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join(format!("{persona_id}.jsonl")))
+    {
+        let _ = writeln!(f, "{row}");
+    }
+}
+
 fn append_progress_ledger(
     result: &CognitionEvalResult,
     note: Option<&str>,
@@ -2874,7 +3540,13 @@ fn append_progress_ledger(
         return;
     }
     let path = dir.join(format!("{}.jsonl", result.persona_id));
+    // A cancelled run's terminal row says so — resume reads it as PAUSED, never done.
+    let cancelled = result
+        .run_id
+        .as_deref()
+        .is_some_and(eval_run_cancelled);
     let row = serde_json::json!({
+        "cancelled": cancelled,
         "capturedAtMs": crate::persona::trace::now_ms(),
         "personaId": result.persona_id,
         "evalSet": eval_set,
@@ -2976,7 +3648,10 @@ async fn fork_eval_cycle_waiting(
         }
         // Emit the wait as an EVENT so positronic layers show "preparing…" instead of a
         // dead spinner — this null-progress window otherwise looked identical to a hang.
-        emit_eval_phase("preparing", &format!("waiting for workspace template ({}s)", attempt + 1));
+        emit_eval_phase(
+            "preparing",
+            &format!("waiting for workspace template ({}s)", attempt + 1),
+        );
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
     None
@@ -2999,7 +3674,12 @@ pub(crate) fn emit_eval_phase(phase: &str, detail: &str) {
             }),
         );
     }
-    crate::probe!(class = "eval.phase", phase = phase, detail = detail, "eval lifecycle phase");
+    crate::probe!(
+        class = "eval.phase",
+        phase = phase,
+        detail = detail,
+        "eval lifecycle phase"
+    );
 }
 
 /// Run a REAL definition-of-done: a shell command in the persona's workspace (cwd). Pass =
@@ -3007,13 +3687,84 @@ pub(crate) fn emit_eval_phase(phase: &str, detail: &str) {
 /// (tail-bounded) so the recovery loop hands the model the actual error to fix against.
 /// This is how a persona works on REAL things — her file edits are checked by a real build/
 /// test, not by grading text she typed into chat.
-async fn run_dod(cmd: &str) -> (bool, String) {
-    match tokio::process::Command::new("bash")
-        .arg("-lc")
-        .arg(cmd)
-        .output()
-        .await
-    {
+/// Run a task's setup/DoD shell IN THE RUN'S WORLD. `root` is the same
+/// resolved run root the artifact grader uses (task pin or the #312 ephemeral
+/// clone); `None` preserves process-CWD for callers that genuinely run there.
+///
+/// Defect 2's SIBLING, found live 2026-08-23 (MirrorCode maiden round):
+/// setup_shell staged fixtures into the CORE's CWD (the real repo checkout —
+/// a `mirrorcode/` tree appeared in the operator's working copy) while her
+/// hands wrote into the clone, and dod_shell then graded a world containing
+/// the fixtures but not her work — 100% false fails AND repo pollution.
+/// DS-1000's clean sweep predates the ephemeral roots, when CWD *was* the
+/// workspace — a coincidence, not a design.
+/// The outcome of running a definition-of-done — a THREE-way verdict, not a bool.
+/// The distinction is load-bearing and systemic (2026-08-25, Joel: "these are issues
+/// they'd have in projects... make sure it's not coded into the wrong concern"): a
+/// DoD that RAN and came back red is a real miss she can learn from; a DoD that could
+/// not RUN (the grader spawn failed, the workspace path didn't resolve, a command was
+/// refused / not found) is a HARNESS/infra fault — scoring it as a model miss and
+/// teaching her "I failed" is the exact false-failure the gold-gate discipline exists
+/// to prevent, and it hits EVERY dod-graded activity, benchmarks and real projects
+/// alike. Distinguishing here, at the one place a DoD runs, is the right concern.
+#[derive(Debug, Clone)]
+pub enum DodVerdict {
+    /// Ran, exited 0 — done.
+    Pass(String),
+    /// Ran to a real red result (tests failed, assertion, wrong output) — a genuine
+    /// miss she can be handed and re-drive against.
+    Fail(String),
+    /// The grader itself could not run (spawn failure, missing workspace/path, a
+    /// refused/not-found command, a harness infra exit). NOT a model miss.
+    InfraError(String),
+}
+
+impl DodVerdict {
+    /// True only when the DoD genuinely passed. (`Fail` and `InfraError` are both
+    /// not-pass, but callers that must NOT conflate them use the variant directly.)
+    pub fn passed(&self) -> bool {
+        matches!(self, DodVerdict::Pass(_))
+    }
+    /// The human-facing verdict text (for the grade string / re-drive delivery).
+    pub fn message(&self) -> &str {
+        match self {
+            DodVerdict::Pass(m) | DodVerdict::Fail(m) | DodVerdict::InfraError(m) => m,
+        }
+    }
+}
+
+/// Does this failing DoD output signal the GRADER itself broke (infra) rather than a
+/// genuine red result? Unambiguous "could not run" markers only — a test failure
+/// ("3 failed", an assertion traceback) is a REAL miss and must NOT match here.
+fn dod_output_is_infra(exit_code: Option<i32>, out: &str) -> bool {
+    // 127 = command not found; the terminal-bench harness reserves 4/5 for
+    // staging-corrupt / verifier-deps-missing (its own infra exits).
+    if matches!(exit_code, Some(127) | Some(4) | Some(5)) {
+        return true;
+    }
+    let o = out.to_ascii_lowercase();
+    // Substrate/tooling failure phrases — the grader could not execute, distinct from
+    // a graded red. Kept narrow on purpose: each is a "the command broke" signal, not
+    // a "the code is wrong" signal.
+    const INFRA_MARKERS: &[&str] = &[
+        "substrate refused",
+        "no such file or directory",
+        "command not found",
+        "could not read",
+        "could not run",
+        "permission denied",
+        ": not found",
+    ];
+    INFRA_MARKERS.iter().any(|m| o.contains(m))
+}
+
+async fn run_dod(root: Option<&std::path::Path>, cmd: &str) -> DodVerdict {
+    let mut command = tokio::process::Command::new("bash");
+    command.arg("-lc").arg(cmd);
+    if let Some(r) = root {
+        command.current_dir(r);
+    }
+    match command.output().await {
         Ok(o) => {
             let ok = o.status.success();
             let mut s = String::from_utf8_lossy(&o.stdout).into_owned();
@@ -3028,12 +3779,16 @@ async fn run_dod(cmd: &str) -> (bool, String) {
                 }
             };
             if ok {
-                (true, format!("DoD passed: `{cmd}`"))
+                DodVerdict::Pass(format!("DoD passed: `{cmd}`"))
+            } else if dod_output_is_infra(o.status.code(), &tail) {
+                DodVerdict::InfraError(format!(
+                    "DoD `{cmd}` could not RUN (grader/infra fault, not a wrong answer):\n{tail}"
+                ))
             } else {
-                (false, format!("DoD `{cmd}` FAILED:\n{tail}"))
+                DodVerdict::Fail(format!("DoD `{cmd}` FAILED:\n{tail}"))
             }
         }
-        Err(e) => (false, format!("DoD `{cmd}` could not run: {e}")),
+        Err(e) => DodVerdict::InfraError(format!("DoD `{cmd}` could not spawn: {e}")),
     }
 }
 
@@ -3063,13 +3818,18 @@ fn html_artifact_from_answer(answer: &str) -> Option<String> {
         let after = &rest[open + 3..];
         let nl = after.find('\n').unwrap_or(after.len());
         let lang = after[..nl].trim().to_ascii_lowercase();
-        let body_area = if nl < after.len() { &after[nl + 1..] } else { "" };
-        let Some(close) = body_area.find("```") else { break };
+        let body_area = if nl < after.len() {
+            &after[nl + 1..]
+        } else {
+            ""
+        };
+        let Some(close) = body_area.find("```") else {
+            break;
+        };
         let body = body_area[..close].trim();
         let head = body.trim_start().to_ascii_lowercase();
-        let looks_html = lang.starts_with("html")
-            || head.starts_with("<!doctype")
-            || head.starts_with("<html");
+        let looks_html =
+            lang.starts_with("html") || head.starts_with("<!doctype") || head.starts_with("<html");
         if looks_html && !body.is_empty() {
             best = Some(body.to_string()); // keep the LAST qualifying fence
         }
@@ -3234,14 +3994,30 @@ async fn perception_grade(
     };
     let content = match out.results.first() {
         Some(r) if r.is_error.is_none() => &r.content,
-        Some(r) => return (false, format!("perception/observe failed for '{target_url}': {}", r.content)),
-        None => return (false, format!("perception/observe returned no result for '{target_url}'")),
+        Some(r) => {
+            return (
+                false,
+                format!(
+                    "perception/observe failed for '{target_url}': {}",
+                    r.content
+                ),
+            )
+        }
+        None => {
+            return (
+                false,
+                format!("perception/observe returned no result for '{target_url}'"),
+            )
+        }
     };
     let obs: crate::perception::ObserveResult = match serde_json::from_str(content) {
         Ok(o) => o,
         Err(e) => {
             let preview: String = content.chars().take(400).collect();
-            return (false, format!("could not parse observation for '{target_url}': {e} — got: {preview}"));
+            return (
+                false,
+                format!("could not parse observation for '{target_url}': {e} — got: {preview}"),
+            );
         }
     };
     let grade = crate::perception::scoring::grade_ui(&obs, checks, threshold);
@@ -3265,7 +4041,10 @@ async fn perception_grade(
 
 #[derive(Debug, Clone, Serialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/EvalPassProgress.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/EvalPassProgress.ts"
+)]
 pub struct EvalPassProgress {
     /// Tasks graded so far in the CURRENT pass.
     #[ts(type = "number")]
@@ -3303,30 +4082,54 @@ pub struct EvalPassProgress {
     pub run_id: Option<String>,
 }
 
-/// The run_id of the pass currently grading — set at [`run_eval`] entry (RAII), read
-/// by [`report_task_graded`] into the live snapshot. Correct-by-construction because
-/// the eval-preemption lease serializes evals: at most one pass grades at any instant
-/// (the same invariant that makes ONE progress row correct).
-static CURRENT_RUN_ID: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+/// Identity of the pass currently grading — set at [`run_eval`] entry (RAII), read
+/// by [`report_task_graded`] into the live snapshot AND the durable per-task ledger
+/// row. Correct-by-construction because the eval-preemption lease serializes evals:
+/// at most one pass grades at any instant (the same invariant that makes ONE
+/// progress row correct). Grew from a bare run_id (2026-08-24): the per-task row
+/// needs the persona (which ledger file) and the eval set (which gym) at grade time,
+/// and threading them through both pass loops would be the param-hell the scope
+/// exists to avoid.
+struct RunMeta {
+    run_id: Option<String>,
+    persona_id: String,
+    eval_set: String,
+}
+static CURRENT_RUN_META: std::sync::Mutex<Option<RunMeta>> = std::sync::Mutex::new(None);
 
-/// RAII: stamp the current pass's run_id for the live snapshot; clear on drop so it
+/// RAII: stamp the current pass's identity for the live snapshot; clear on drop so it
 /// rides early-return AND panic (Drop runs on unwind) — never a stale run_id bleeding
 /// into the next pass or an idle board.
 struct RunIdScope;
 impl RunIdScope {
-    fn enter(run_id: Option<String>) -> Self {
-        if let Ok(mut g) = CURRENT_RUN_ID.lock() {
-            *g = run_id;
+    fn enter(run_id: Option<String>, persona_id: String, eval_set: String) -> Self {
+        if let Ok(mut g) = CURRENT_RUN_META.lock() {
+            *g = Some(RunMeta {
+                run_id,
+                persona_id,
+                eval_set,
+            });
         }
         RunIdScope
     }
 }
 impl Drop for RunIdScope {
     fn drop(&mut self) {
-        if let Ok(mut g) = CURRENT_RUN_ID.lock() {
+        if let Ok(mut g) = CURRENT_RUN_META.lock() {
             *g = None;
         }
     }
+}
+
+/// The run_id of the exam pass grading RIGHT NOW, `None` when idle. Public for
+/// the positron bench emitter (#141's third surface made real): a live exam is
+/// WORK the room's rail must show, through the same pipe every other run row
+/// rides — never a separate poller.
+pub fn live_eval_run_id() -> Option<String> {
+    CURRENT_RUN_META
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().and_then(|m| m.run_id.clone()))
 }
 
 static EVAL_PROGRESS: std::sync::OnceLock<tokio::sync::watch::Sender<Option<EvalPassProgress>>> =
@@ -3341,9 +4144,58 @@ pub fn subscribe_eval_progress() -> tokio::sync::watch::Receiver<Option<EvalPass
     eval_progress_tx().subscribe()
 }
 
+/// RAII abort for a spawned helper task — dropped with the pass, so the help
+/// listener can never outlive the exam it serves.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+fn scopeguard_abort(h: tokio::task::JoinHandle<()>) -> AbortOnDrop {
+    AbortOnDrop(h)
+}
+
+/// The idle-backstop verdict: an infra outcome whose probe is a SUBSTRATE BUG
+/// REPORT (a hang that survived every event-based guard — a lost await between
+/// inference calls), never routine control flow. Fires only after the idle
+/// window passed with ZERO real lane work stamped; a slow-but-decoding task can
+/// never reach it (2026-08-24: the flat wall-clock predecessor killed a task
+/// mid-decode twice in one day).
+fn hang_backstop_outcome(
+    task_id: &str,
+    room: crate::identity::ActivityRoom,
+    window: std::time::Duration,
+) -> crate::cognition::act_observe::SettleOutcome {
+    crate::probe!(
+        class = "eval.task.hang_backstop",
+        task = %task_id,
+        backstop_s = window.as_secs(),
+        "idle backstop fired — no settle, no propagated error, and NO lane work for the \
+         whole window; find the await that lost its error propagation"
+    );
+    crate::cognition::act_observe::SettleOutcome::infra_failure(
+        room.as_uuid(),
+        format!(
+            "idle backstop ({}s with zero lane work) — no settle and no propagated error; \
+             substrate bug, not a wrong answer",
+            window.as_secs()
+        ),
+    )
+}
+
 /// Report one graded task on all three surfaces. Called by BOTH pass loops (solo +
 /// team) — one reporter, no drift.
-fn report_task_graded(task_id: &str, ok: bool, acts: u32, latency_ms: u64, output_tokens: u32, pass: u32, done: usize, total: usize) {
+fn report_task_graded(
+    task_id: &str,
+    ok: bool,
+    acts: u32,
+    latency_ms: u64,
+    output_tokens: u32,
+    pass: u32,
+    done: usize,
+    total: usize,
+) {
     // Efficiency axis: sample the live board (lock-free watch read) so every graded
     // task carries the VRAM state it ran under — the tuning signal for knobs like
     // max_acts / context budget / lane count ([[self-improvement-is-a-control-loop]]:
@@ -3365,17 +4217,43 @@ fn report_task_graded(task_id: &str, ok: bool, acts: u32, latency_ms: u64, outpu
         output_tokens,
         updated_at_ms: crate::persona::trace::now_ms(),
         vram_free_gb,
-        run_id: CURRENT_RUN_ID.lock().ok().and_then(|g| g.clone()),
+        run_id: CURRENT_RUN_META
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().and_then(|m| m.run_id.clone())),
     };
+    // DURABLE per-task grade row (the one-command-round resume seam): the run summary
+    // row only lands when the whole pass completes, so a killed/rebooted round left NO
+    // record of which tasks already graded — resume meant re-running everything. Stream
+    // one `kind:"task"` row into the SAME per-persona ledger at grade time (the file
+    // eval-status already owns; `row_with_run_id` skips task rows) so
+    // `benchmark/round` can continue from the first ungraded task.
+    if let Ok(guard) = CURRENT_RUN_META.lock() {
+        if let Some(meta) = guard.as_ref() {
+            if let Some(rid) = &meta.run_id {
+                append_task_ledger_row(&meta.persona_id, rid, &meta.eval_set, task_id, ok, acts);
+            }
+        }
+    }
     let _ = eval_progress_tx().send_replace(Some(snap.clone()));
     if let Some(bus) = crate::runtime::MessageBus::global() {
         if let Ok(v) = serde_json::to_value(&snap) {
             bus.publish_async_only("eval:progress", v);
         }
     }
+    // run_id ON the row (2026-08-24, "not good to be so dumb about what's graded"):
+    // an unscoped consumer counting eval.task matches summed every round, sentinel
+    // A/B, and smoke eval ever run — "51 graded" while the live round had zero. The
+    // row itself must carry which round it belongs to.
+    let run_id = CURRENT_RUN_META
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().and_then(|m| m.run_id.clone()))
+        .unwrap_or_default(); // sync/handleless run: empty = "no round", honest for a probe field
     crate::probe!(
         class = "eval.task",
         task = task_id,
+        run_id = %run_id,
         ok = ok,
         acts = acts,
         done = done,
@@ -3479,7 +4357,7 @@ async fn run_pass(
     cycle: &crate::cognition::workspace::WorkspaceCycle,
     isolation: &crate::cognition::workspace::EvalIsolation,
     tasks: &[EvalTask],
-    room: Uuid,
+    room: crate::identity::ActivityRoom,
     max_acts: usize,
     max_retries: u32,
     // The pinned workspace root the persona's hands were rooted at (from-scratch build /
@@ -3487,6 +4365,10 @@ async fn run_pass(
     // core cwd — or a correct render scores a false zero (#49 dual-root gap). `None` = the
     // hands used the default root (core cwd) and grading follows.
     workspace_root: Option<&str>,
+    // Per-task lesson streaming (learn mode): `Some` = teach each graded task
+    // at grade time. `None` = A/B arms and non-learning runs (an A/B measures
+    // the gene, never teaches — adopting is a separate decision).
+    lesson_sink: Option<&LessonSink>,
 ) -> PassOutcome {
     let mut pass = 0u32;
     let mut results = Vec::with_capacity(tasks.len());
@@ -3509,6 +4391,29 @@ async fn run_pass(
     cycle.reset_working_memory();
     isolation.rewind();
     for t in tasks {
+        // Cancellation gate (task-boundary granularity): a cancelled run stops
+        // HERE — grades already streamed stay; the terminal row marks the pause.
+        if let Some(rid) = live_eval_run_id() {
+            if eval_run_cancelled(&rid) {
+                crate::probe!(
+                    class = "eval.run.cancelled",
+                    run_id = %rid,
+                    graded = results.len() as u64,
+                    "run cancelled at task boundary — graded work kept, resume continues here"
+                );
+                break;
+            }
+        }
+        // Task-start receipt: the health verdicts downstream (session gates, the
+        // bench view) judge a running task against the round's OWN completed-task
+        // latencies — which needs an exact start signal, not an inference from
+        // the previous grade's absence (Joel 2026-08-23: a stalled task must be
+        // known in minutes, adaptively, "better fix" than a fixed window).
+        crate::probe!(
+            class = "eval.task.started",
+            task = %t.id,
+            "task drive begins — elapsed-vs-round-median verdicts key on this row"
+        );
         // #209 — per-task CLEAN WORKSPACE for from-scratch build gyms. A from-scratch build
         // task (ui_checks present, and NO setup/dod/solution that establishes or depends on
         // prior repo state) is graded by observing the artifact the persona just wrote into
@@ -3611,7 +4516,9 @@ async fn run_pass(
         // repeatable). A failed setup is a NAMED infra grade — the persona is
         // never examined against a workspace in an unknown state.
         if let Some(setup) = &t.setup_shell {
-            let (setup_ok, setup_out) = run_dod(setup).await;
+            let setup_v = run_dod(task_root.map(std::path::Path::new), setup).await;
+            let setup_ok = setup_v.passed();
+            let setup_out = setup_v.message().to_string();
             if !setup_ok {
                 results.push(EvalTaskResult {
                     id: t.id.clone(),
@@ -3702,17 +4609,36 @@ async fn run_pass(
         // decline in her own words; she just isn't handed the silent hatch. The live
         // path computes directedness from real addressing (TODO #9); pinning it here
         // is the eval's exam-is-directed control. See `Workspace::directed_at_self`.
-        // Per-task wedge watchdog (#123 hang): `drive_to_settle` awaits the persona's
-        // real cognition, which POSTs to the serving gateway. If the gateway wedges
-        // mid-generation (connection open, zero tokens) that await NEVER returns and the
-        // WHOLE eval hangs on this one task — observed live 2026-07-17: humaneval-rs
-        // stalled at task 6/20, no progress for >20 min, holding the fleet-quiesce lease
-        // the entire time. A hung task MUST degrade to a graded infra-fail (identical to
-        // an inference_error) and let the run proceed — never block the measurement. The
-        // deadline is a generous backstop vs real per-task latency (16–50s observed on
-        // humaneval; minutes across act cycles on the harder tiers), so slow-but-valid
-        // work is never cut; it fires only on a true wedge. Not a latency policy.
-        const PER_TASK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(600);
+        // LAST-RESORT hang backstop — NOT a wedge detector (2026-08-23, second cut).
+        //
+        // Wedge detection is the SERVING layer's job and it is event-based there: the
+        // stream-liveness classifier (phase-aware budgets, 9e2f95820) kills a
+        // zero-token stream at the source and the failure surfaces here as
+        // `inference_error` — the event path `drive_to_settle` already returns on.
+        // The old flat 600s deadline predated that sensor (#123, 2026-07-17) and was
+        // never demoted once it shipped: it second-guessed the serving layer with a
+        // stopwatch, declared a LIVE multi-minute e2e decode "wedged" (fluid-sim-e2e,
+        // observed live tonight), and retried the task into a doomed loop. Cheap
+        // wall-clock guesses about liveness always lose to the component that can SEE
+        // the tokens ([[the-whole-system-is-event-based-not-polling]]).
+        //
+        // What remains is the hang class no event can cover BY DEFINITION: an await
+        // that never returns because some path between inference calls lost its error
+        // propagation (a code bug, not a serving state). For that, one enormous
+        // garbage-ceiling timer — and its firing is a SUBSTRATE BUG REPORT (the probe
+        // says which class to hunt), never routine control flow.
+        // PROGRESS-AWARE (2026-08-24, third cut — fired the same day on a task
+        // PROVABLY working: 82k prompt, 13.7k tokens decoded that very turn, acts
+        // landing all afternoon; the flat 2h wall-clock killed it and the retry
+        // re-ran the whole task into the same cliff — the mirrorcode-bitwise
+        // double-death, reproduced on TB. Wall clock is not evidence; the lane's
+        // own work stamps are). The backstop now measures IDLE: it fires only
+        // when NO real prefill/decode progress has been stamped for its whole
+        // window — the one hang class no event covers (a lost await between
+        // inference calls). A slow task that keeps decoding can never trip it;
+        // the act budget (max_acts) remains the legitimate bound on endless work.
+        const PER_TASK_IDLE_BACKSTOP: std::time::Duration =
+            std::time::Duration::from_secs(20 * 60);
         // BOUNDED INFRA-FAULT RECOVERY (Proctored Exam Session, Slice B). Drive to
         // settlement; if the model call itself FAILS (`inference_error`: lane not-ready /
         // connect-refused / "not the active served model" / compute-error / deadline-wedge)
@@ -3726,30 +4652,36 @@ async fn run_pass(
         let mut settled;
         let mut infra_attempt = 0u32;
         loop {
-            settled = match tokio::time::timeout(
-                PER_TASK_DEADLINE,
-                crate::cognition::act_observe::drive_to_settle(
-                    cycle,
-                    make_burst(),
-                    room,
-                    max_acts,
-                    crate::cognition::workspace::TurnFraming::directed(),
-                ),
-            )
-            .await
-            {
-                Ok(s) => s,
-                Err(_) => {
-                    tracing::warn!(
-                        probe_class = "eval.task.timeout",
-                        deadline_s = PER_TASK_DEADLINE.as_secs(),
-                        "eval task exceeded the per-task deadline — treating as an infra fault \
-                         (serving wedged mid-generation), NOT a wrong answer"
-                    );
-                    crate::cognition::act_observe::SettleOutcome::infra_failure(format!(
-                        "per-task deadline exceeded ({}s) — serving wedged mid-generation",
-                        PER_TASK_DEADLINE.as_secs()
-                    ))
+            let drive = crate::cognition::act_observe::drive_to_settle(
+                cycle,
+                make_burst(),
+                t.max_acts.map(|v| v as usize).unwrap_or(max_acts), // None = row sets no budget; the run's budget is the documented inherit
+                if t.workspace_deliverable() {
+                    crate::cognition::workspace::TurnFraming::directed().on_workspace()
+                } else {
+                    crate::cognition::workspace::TurnFraming::directed()
+                },
+            );
+            tokio::pin!(drive);
+            // Idle supervision: wake every minute; a stamp of real lane work
+            // (prefill advance OR decode) inside the window resets patience.
+            let mut idle = std::time::Duration::ZERO;
+            settled = loop {
+                match tokio::time::timeout(std::time::Duration::from_secs(60), &mut drive).await {
+                    Ok(s) => break s,
+                    Err(_) => {
+                        let worked_recently = crate::inference::llama_server::ms_since_real_work()
+                            .is_some_and(|ms| ms < 60_000);
+                        if worked_recently {
+                            idle = std::time::Duration::ZERO;
+                        } else {
+                            idle += std::time::Duration::from_secs(60);
+                        }
+                        if idle < PER_TASK_IDLE_BACKSTOP {
+                            continue;
+                        }
+                        break hang_backstop_outcome(&t.id, room, PER_TASK_IDLE_BACKSTOP);
+                    }
                 }
             };
             let Some(cause) = settled.inference_error.clone() else {
@@ -3757,14 +4689,7 @@ async fn run_pass(
             };
             infra_attempt += 1;
             if infra_attempt > INFRA_FAULT_RETRIES {
-                crate::probe!(
-                    class = "eval.task.infra_fault.exhausted",
-                    task = %t.id,
-                    attempts = infra_attempt,
-                    cause = %cause,
-                    "infra fault survived re-verify+retry — lane unrecoverable; run will abort InfraUnavailable"
-                );
-                break; // `settled` carries the error → unrecoverable-infra abort below
+                break;
             }
             tracing::warn!(
                 probe_class = "eval.task.infra_fault",
@@ -3824,7 +4749,10 @@ async fn run_pass(
         // code; one that declines again is graded on whatever it then produced, never a
         // silent phantom. Bounded (one extra drive), and the nudge is the examiner insisting,
         // not a crib. [[benchmarks-are-proctored-exams-of-the-natural-living-persona]]
-        if matches!(settled.decision, crate::cognition::workspace::Decision::Pass) {
+        if matches!(
+            settled.decision,
+            crate::cognition::workspace::Decision::Pass { .. }
+        ) {
             crate::probe!(
                 class = "eval.task.declined_redrive",
                 task = %t.id,
@@ -3854,14 +4782,20 @@ async fn run_pass(
                     None,
                 ),
             );
+            // The nudge re-drive is one follow-up turn; serving-layer liveness guards
+            // its stream like any other. This bound is the same last-resort shape as
+            // the task backstop, scaled to a single turn.
             if let Ok(re) = tokio::time::timeout(
-                PER_TASK_DEADLINE,
+                std::time::Duration::from_secs(15 * 60),
                 crate::cognition::act_observe::drive_to_settle(
                     cycle,
                     nudge_burst,
-                    room,
-                    max_acts,
-                    crate::cognition::workspace::TurnFraming::directed(),
+                    t.max_acts.map(|v| v as usize).unwrap_or(max_acts), // None = row sets no budget; the run's budget is the documented inherit
+                    if t.workspace_deliverable() {
+                        crate::cognition::workspace::TurnFraming::directed().on_workspace()
+                    } else {
+                        crate::cognition::workspace::TurnFraming::directed()
+                    },
                 ),
             )
             .await
@@ -3872,7 +4806,139 @@ async fn run_pass(
                 }
             }
         }
+        // RED-BUILD RE-DRIVE (2026-08-24, Joel: "let's give her what she
+        // needs"). The empty-diff/declined re-drives cover a settle with NO
+        // work; this covers a settle with BROKEN work — glass-boxed on
+        // bib2json the night it shipped: 621 lines, real iteration, settled
+        // on a build with 9 compile errors and graded 0 with budget she never
+        // knew she needed. Her own pre-submit CI: at settle on a DoD task,
+        // run the DoD once; if red, hand her its OUTPUT (the compiler's own
+        // words — ground truth, not steering) and one bounded re-drive to
+        // fix. A green DoD here is also the grade (no double run below).
+        let mut presettle_dod: Option<(bool, String)> = None;
+        // An infra-classed DoD (the grader could not RUN) short-circuits the whole
+        // verify loop to a NON-scored infra fault — never a re-drive (there is
+        // nothing for her to fix) and never a taught miss.
+        let mut dod_infra: Option<String> = None;
+        // VERIFY LOOP, not a single retry (2026-08-24, the score-lever pass): while
+        // budget remains, a DoD task may not settle red. Each iteration re-runs the
+        // task's OWN definition-of-done and hands her its output — ground truth she
+        // could produce herself (the DoD is part of the task, so no answer-key
+        // leak; artifact-test tasks stay excluded for exactly that reason). Bounded
+        // at 2 re-drives: the third red verdict grades as the miss it is.
+        const DOD_REDRIVES: u32 = 2;
+        let mut redrive_round = 0u32;
+        if let Some(dod) = &t.dod_shell {
+            loop {
+            let verdict = run_dod(task_root.map(std::path::Path::new), dod).await;
+            let (dod_ok, dod_out) = match verdict {
+                DodVerdict::Pass(m) => (true, m),
+                DodVerdict::Fail(m) => (false, m),
+                DodVerdict::InfraError(m) => {
+                    // The grader itself broke — do NOT re-drive (nothing to fix) and
+                    // do NOT score as a miss; mark it infra and leave the loop.
+                    crate::probe!(
+                        class = "eval.task.dod_infra",
+                        task = %t.id,
+                        "definition-of-done could not RUN — harness/infra fault, not scored as a model miss"
+                    );
+                    dod_infra = Some(m.clone());
+                    presettle_dod = Some((false, m));
+                    break;
+                }
+            };
+            if dod_ok || redrive_round >= DOD_REDRIVES {
+                presettle_dod = Some((dod_ok, dod_out));
+                break;
+            }
+            redrive_round += 1;
+            {
+                crate::probe!(
+                    class = "eval.task.red_build_redrive",
+                    task = %t.id,
+                    round = redrive_round as u64,
+                    "settled on a RED DoD — handing her the verdict with a bounded re-drive"
+                );
+                let tail: String = dod_out.chars().rev().take(4000).collect::<Vec<_>>().into_iter().rev().collect();
+                let red_delivery = crate::persona::rag_budget::RagDelivery {
+                    source_id: "airc".to_string(),
+                    items: vec![crate::persona::rag_budget::RagItem {
+                        content: format!(
+                            "You settled, but the task's definition-of-done currently FAILS.                              Its output ends:
+
+{tail}
+
+Fix the workspace and finish —                              the grade reads the files, and a red build scores zero."
+                        ),
+                        tokens: 0,
+                        metadata: serde_json::json!({ "peer_id": "peer", "occurred_at_ms": EVAL_EPOCH_MS }),
+                    }],
+                    tokens_used: 0,
+                    continuation: None,
+                    resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
+                };
+                let red_burst = crate::cognition::workspace::Burst::from_turns(
+                    room,
+                    crate::persona::service_loop::build_workspace_turns(
+                        std::slice::from_ref(&red_delivery),
+                        "",
+                        "",
+                        None,
+                    ),
+                );
+                if let Ok(re) = tokio::time::timeout(
+                    std::time::Duration::from_secs(15 * 60),
+                    crate::cognition::act_observe::drive_to_settle(
+                        cycle,
+                        red_burst,
+                        t.max_acts.map(|v| v as usize).unwrap_or(max_acts), // None = row sets no budget; the run's budget is the documented inherit
+                        crate::cognition::workspace::TurnFraming::directed().on_workspace(),
+                    ),
+                )
+                .await
+                {
+                    if re.inference_error.is_none() {
+                        settled = re;
+                    }
+                }
+                // Loop re-runs the DoD fresh; green (or exhausted rounds) exits above.
+            }
+            }
+        }
         let answer = settled.spoken.clone().unwrap_or_default();
+        // DoD-INFRA GATE (2026-08-25): the grader itself could not run (missing
+        // workspace, refused/not-found command). This is NOT a model miss — record it
+        // as an infra fault (which flips the whole run to InfraUnavailable, so no
+        // phantom score is published) and SKIP grading + teaching. Same protection the
+        // gold gate gives, applied to the DoD's own execution — for every dod-graded
+        // activity, benchmarks and real projects alike.
+        if let Some(reason) = dod_infra {
+            infra_faults += 1;
+            if infra_reason.is_none() {
+                infra_reason = Some(reason.clone());
+            }
+            crate::probe!(
+                class = "eval.task.infra_fault",
+                task = %t.id,
+                cause = %reason,
+                "definition-of-done could not run — task marked infra, not a scored miss, not taught"
+            );
+            results.push(EvalTaskResult {
+                id: t.id.clone(),
+                ok: false,
+                grade: format!("infra (DoD could not run, NOT a wrong answer): {reason}"),
+                acts: settled.acts as u32,
+                answer: answer.chars().take(ANSWER_CAPTURE_CHARS).collect(),
+                latency_ms: settled.metrics.latency_ms,
+                output_tokens: settled.metrics.output_tokens,
+                tokens_per_second: settled.metrics.tokens_per_second(),
+                decode_tokens_per_second: settled.metrics.decode_tokens_per_second(),
+                cache_hit_rate: settled.metrics.cache_hit_rate(),
+                prefill_ms: settled.metrics.prefill_ms,
+                decode_ms: settled.metrics.decode_ms,
+            });
+            continue; // no grade, NO lesson — a harness fault teaches nothing
+        }
         // `settled.inference_error` is None here — the abort above consumed every infra
         // fault, so this grades a REAL verdict (a working lane produced an answer, right or
         // wrong). No `inference_error` arm remains: an infra fault can no longer masquerade
@@ -3891,10 +4957,26 @@ async fn run_pass(
             // text) — the only way the act→verify loop shows up in the score. Same harness as
             // test_grade (strip her main, append test, compile, run).
             let lang = t.lang.as_deref().unwrap_or("rust");
-            crate::cognition::gym_grader::test_grade_file(file, lang, test).await
+            crate::cognition::gym_grader::test_grade_file(
+                task_root.map(std::path::Path::new),
+                file,
+                lang,
+                test,
+            )
+            .await
         } else if let Some(dod) = &t.dod_shell {
             // REAL task: run the definition-of-done against the repo state her edits produced.
-            run_dod(dod).await
+            match presettle_dod.take() {
+                // The verify loop's LAST DoD run IS the grade — green or exhausted-red,
+                // never a double run.
+                Some(v) => v,
+                // Unreachable for dod tasks (the loop always sets it); the honest
+                // fallback re-runs and folds any infra classification into the pair.
+                None => {
+                    let v = run_dod(task_root.map(std::path::Path::new), dod).await;
+                    (v.passed(), v.message().to_string())
+                }
+            }
         } else if t.test.is_some() {
             // UNREACHABLE by construction: `require_hands_for_code` gives every `test`-carrying
             // task a `solution_file` at load, so a code task always takes the ARTIFACT arm above.
@@ -3912,7 +4994,14 @@ async fn run_pass(
         } else {
             let m =
                 !t.expect.is_empty() && answer.to_lowercase().contains(&t.expect.to_lowercase());
-            (m, if m { "substring match".into() } else { "no match".into() })
+            (
+                m,
+                if m {
+                    "substring match".into()
+                } else {
+                    "no match".into()
+                },
+            )
         };
         // NO test-only recovery wrapper here. Iterating on a failure is a PRODUCTION
         // persona behavior — she runs her own verification (a shell/compile tool) inside
@@ -3928,11 +5017,45 @@ async fn run_pass(
         if ok {
             pass += 1;
         }
+        // ARTIFACT PRESERVATION (2026-08-23, Joel: "honest isn't good — are
+        // they making code that's decent?"). The world sweep destroys her
+        // solution at the next provision, so no citizen code ever survived
+        // grading for review — quality was unjudgeable after the fact and the
+        // genome had no diff to learn from. Copy the graded solution file into
+        // the durable receipts dir at grade time (bounded: one file per task
+        // per run, beside the ledger — a governed, TrackedDir-registered
+        // location, not a new cache class).
+        if let (Some(sol), Some(root)) = (t.solution_file.as_deref(), workspace_root) {
+            let src = std::path::Path::new(root).join(sol);
+            if src.is_file() {
+                if let Some(home) = dirs::home_dir() {
+                    let run_tag = live_eval_run_id().unwrap_or_else(|| "unkeyed".into()); // no live run registered = a test/dev drive; still preserved, under one bucket
+                    let dst_dir = home
+                        .join(".continuum/bench-receipts")
+                        .join(run_tag)
+                        .join("solutions");
+                    let dst = dst_dir.join(sol.replace('/', "__"));
+                    let copied = std::fs::create_dir_all(&dst_dir)
+                        .and_then(|_| std::fs::copy(&src, &dst));
+                    if let Err(e) = copied {
+                        tracing::warn!(task = %t.id, error = %e, "graded solution not preserved");
+                    } else {
+                        crate::probe!(
+                            class = "eval.artifact.preserved",
+                            task = %t.id,
+                            path = %dst.display(),
+                            ok = ok,
+                            "graded solution copied to durable receipts — reviewable after the world sweeps"
+                        );
+                    }
+                }
+            }
+        }
         // Speed/latency of THIS task — the accumulated deliberation cost the settle
         // loop folded across every act→observe tick (the model's own measured time
         // + tokens). Reported next to the grade so accuracy and speed sit on one row.
         let m = settled.metrics;
-        results.push(EvalTaskResult {
+        let task_result = EvalTaskResult {
             id: t.id.clone(),
             ok,
             grade,
@@ -3945,10 +5068,29 @@ async fn run_pass(
             cache_hit_rate: m.cache_hit_rate(),
             prefill_ms: m.prefill_ms,
             decode_ms: m.decode_ms,
-        });
-        report_task_graded(&t.id, ok, total_acts, m.latency_ms, m.output_tokens, pass, results.len(), tasks.len());
+        };
+        // Teach at GRADE TIME — an interrupted round keeps this lesson.
+        if let Some(sink) = lesson_sink {
+            sink.teach(t, &task_result);
+        }
+        results.push(task_result);
+        report_task_graded(
+            &t.id,
+            ok,
+            total_acts,
+            m.latency_ms,
+            m.output_tokens,
+            pass,
+            results.len(),
+            tasks.len(),
+        );
     }
-    PassOutcome { pass, results, infra_faults, infra_reason }
+    PassOutcome {
+        pass,
+        results,
+        infra_faults,
+        infra_reason,
+    }
 }
 
 /// One deliberation on a forked cycle: deliver `prompt` through the SAME live burst formatter
@@ -3958,7 +5100,7 @@ async fn run_pass(
 /// Caller does the exam-hygiene reset/rewind (isolation is per-cycle).
 async fn eval_settle(
     cycle: &crate::cognition::workspace::WorkspaceCycle,
-    room: Uuid,
+    room: crate::identity::ActivityRoom,
     prompt: &str,
     max_acts: usize,
 ) -> crate::cognition::act_observe::SettleOutcome {
@@ -3985,7 +5127,6 @@ async fn eval_settle(
     crate::cognition::act_observe::drive_to_settle(
         cycle,
         burst,
-        room,
         max_acts,
         crate::cognition::workspace::TurnFraming::directed(),
     )
@@ -4005,8 +5146,11 @@ async fn run_pass_team(
     reviewer: &crate::cognition::workspace::WorkspaceCycle,
     reviewer_iso: &crate::cognition::workspace::EvalIsolation,
     tasks: &[EvalTask],
-    room: Uuid,
+    room: crate::identity::ActivityRoom,
     max_acts: usize,
+    // The run's resolved eval root (explicit pin or #312 ephemeral clone) —
+    // artifact grading resolves solution files against it, same as solo.
+    workspace_root: Option<&str>,
 ) -> PassOutcome {
     let mut pass = 0u32;
     let mut results = Vec::with_capacity(tasks.len());
@@ -4051,7 +5195,11 @@ async fn run_pass_team(
         // recovery); here we classify + ABORT so an infra fault never fake-zeros the team
         // number. Threading the full re-verify+retry into the two-solver loop is a scoped
         // follow-up. [[proctored-exam-session-dependable-benchmark]]
-        if let Some(cause) = r.inference_error.clone().or_else(|| w.inference_error.clone()) {
+        if let Some(cause) = r
+            .inference_error
+            .clone()
+            .or_else(|| w.inference_error.clone())
+        {
             infra_faults += 1;
             if infra_reason.is_none() {
                 infra_reason = Some(format!("task '{}': {cause}", t.id));
@@ -4085,9 +5233,18 @@ async fn run_pass_team(
         // narrating at each other is the exact failure this arm must not reward (and the exact
         // one a review/handoff loop makes MORE likely, not less).
         let (ok, grade) = if let Some(dod) = &t.dod_shell {
-            run_dod(dod).await
+            let v = run_dod(
+                t.workspace_root.as_deref().or(workspace_root).map(std::path::Path::new),
+                dod,
+            )
+            .await;
+            (v.passed(), v.message().to_string())
         } else if let (Some(file), Some(test)) = (&t.solution_file, &t.test) {
             crate::cognition::gym_grader::test_grade_file(
+                t.workspace_root
+                    .as_deref()
+                    .or(workspace_root)
+                    .map(std::path::Path::new),
                 file,
                 t.lang.as_deref().unwrap_or("rust"),
                 test,
@@ -4101,8 +5258,16 @@ async fn run_pass_team(
                     .to_string(),
             )
         } else {
-            let m = !t.expect.is_empty() && answer.to_lowercase().contains(&t.expect.to_lowercase());
-            (m, if m { "substring match".into() } else { "no match".into() })
+            let m =
+                !t.expect.is_empty() && answer.to_lowercase().contains(&t.expect.to_lowercase());
+            (
+                m,
+                if m {
+                    "substring match".into()
+                } else {
+                    "no match".into()
+                },
+            )
         };
         if ok {
             pass += 1;
@@ -4123,9 +5288,23 @@ async fn run_pass_team(
             prefill_ms: m.prefill_ms,
             decode_ms: m.decode_ms,
         });
-        report_task_graded(&t.id, ok, acts, m.latency_ms, m.output_tokens, pass, results.len(), tasks.len());
+        report_task_graded(
+            &t.id,
+            ok,
+            acts,
+            m.latency_ms,
+            m.output_tokens,
+            pass,
+            results.len(),
+            tasks.len(),
+        );
     }
-    PassOutcome { pass, results, infra_faults, infra_reason }
+    PassOutcome {
+        pass,
+        results,
+        infra_faults,
+        infra_reason,
+    }
 }
 
 // Stateless → self-register onto the ONE registry (descriptor + runtime object).
@@ -4134,6 +5313,73 @@ crate::register_stateless_command!(CognitionEval);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: defect 2's sibling (2026-08-23, MirrorCode maiden round):
+    // run_dod spawned bash in the PROCESS CWD, so setup_shell staged fixtures into
+    // the real repo checkout while her hands and artifacts lived in the run's
+    // clone — false fails plus operator-tree pollution. The DoD must run in the
+    // run's world; None preserves cwd for callers that genuinely run there.
+    // what this catches (2026-08-25, the systemic hardening): the DoD classifier must
+    // separate "the grader could not RUN" (infra — missing workspace, refused command,
+    // command-not-found, infra exit) from "the grader ran and it's red" (a real miss).
+    // If they conflate, a harness bug scores as a model failure AND teaches her she
+    // failed — the astropy-13236 false-failure, and a bug ANY dod-graded project hits.
+    #[test]
+    fn dod_infra_is_distinguished_from_a_real_red() {
+        // Infra: could-not-run phrases + reserved infra exit codes.
+        assert!(dod_output_is_infra(None, "substrate refused command benchmark/swe-grade"));
+        assert!(dod_output_is_infra(None, "could not read swe/x's diff: No such file or directory"));
+        assert!(dod_output_is_infra(Some(127), "continuum: not found"));
+        assert!(dod_output_is_infra(Some(4), "terminal-bench harness: staging corrupt"));
+        assert!(dod_output_is_infra(Some(5), "pytest is not installed"));
+        // REAL red: tests ran and failed — must NOT be classed infra.
+        assert!(!dod_output_is_infra(Some(1), "5 failed, 1 passed in 1.61s"));
+        assert!(!dod_output_is_infra(Some(1), "AssertionError: assert 0 == 2"));
+        assert!(!dod_output_is_infra(Some(1), "FAILED test_outputs.py::test_thing"));
+    }
+
+    // what this catches: defect 2's sibling (2026-08-23, MirrorCode maiden round):
+    // run_dod spawned bash in the PROCESS CWD, so setup staged into the real repo
+    // while her artifacts lived in the run clone. The DoD must run in the run root.
+    #[tokio::test]
+    async fn run_dod_executes_in_the_run_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let v = run_dod(Some(dir.path()), "touch dod-was-here").await;
+        assert!(v.passed());
+        assert!(
+            dir.path().join("dod-was-here").exists(),
+            "the DoD's world must be the run root, not the process cwd"
+        );
+        assert!(
+            !std::path::Path::new("dod-was-here").exists(),
+            "nothing may land in the process cwd when a root is given"
+        );
+    }
+
+    // what this catches: the orphan sweep deleting a CONCURRENT run's live world —
+    // the one direction that turns crash-path hygiene into data loss mid-exam.
+    // regression for the 2026-08-23 finding (a SIGTERM'd reboot orphaned a 31 GB
+    // eval clone that Drop could never reap; the sweep is the crash-path owner,
+    // and live_eval_roots() is what scopes it to true orphans).
+    #[test]
+    fn orphan_sweep_removes_dead_worlds_and_never_live_ones() {
+        let parent = tempfile::tempdir().expect("tempdir");
+        let live = parent.path().join("live-run");
+        let orphan = parent.path().join("orphan-run");
+        std::fs::create_dir_all(&live).expect("mkdir live");
+        std::fs::create_dir_all(&orphan).expect("mkdir orphan");
+        let keep = parent.path().join("being-provisioned");
+        std::fs::create_dir_all(&keep).expect("mkdir keep");
+
+        let holder = EphemeralEvalRoot::new(live.clone());
+        sweep_orphan_eval_roots(parent.path(), &keep);
+
+        assert!(live.is_dir(), "a registered live world must survive the sweep");
+        assert!(keep.is_dir(), "the world being provisioned must survive the sweep");
+        assert!(!orphan.is_dir(), "an unregistered world is an orphan and must be removed");
+        drop(holder); // Drop removes the live world AND its registry entry
+        assert!(!live.is_dir(), "Drop still owns the in-process cleanup path");
+    }
 
     // what this catches: #310 — the /v1/models context_length contract for gateway-routed
     // eval lanes. The ds4 sidecar serves 8192 while its catalog row states the model's 1M
@@ -4146,11 +5392,24 @@ mod tests {
             "object": "list",
             "data": [{ "id": "deepseek-v4-flash", "object": "model", "context_length": 8192 }]
         });
-        assert_eq!(parse_provider_context_length(&body, "deepseek-v4-flash"), Some(8192));
-        assert_eq!(parse_provider_context_length(&body, "some-other-model"), None);
-        let no_field: serde_json::Value = serde_json::json!({ "data": [{ "id": "deepseek-v4-flash" }] });
-        assert_eq!(parse_provider_context_length(&no_field, "deepseek-v4-flash"), None);
-        assert_eq!(parse_provider_context_length(&serde_json::json!({}), "deepseek-v4-flash"), None);
+        assert_eq!(
+            parse_provider_context_length(&body, "deepseek-v4-flash"),
+            Some(8192)
+        );
+        assert_eq!(
+            parse_provider_context_length(&body, "some-other-model"),
+            None
+        );
+        let no_field: serde_json::Value =
+            serde_json::json!({ "data": [{ "id": "deepseek-v4-flash" }] });
+        assert_eq!(
+            parse_provider_context_length(&no_field, "deepseek-v4-flash"),
+            None
+        );
+        assert_eq!(
+            parse_provider_context_length(&serde_json::json!({}), "deepseek-v4-flash"),
+            None
+        );
     }
 
     // what this catches: the web-dev mouth-or-hands capture (#206/#143 fence→act gap).
@@ -4174,13 +5433,22 @@ mod tests {
         assert!(html_artifact_from_answer(b).unwrap().contains("<form>"));
         // last qualifying fence wins (a corrected draft supersedes the first)
         let c = "```html\n<html>OLD</html>\n```\nfixed:\n```html\n<html>NEW</html>\n```";
-        assert_eq!(html_artifact_from_answer(c).as_deref(), Some("<html>NEW</html>"));
+        assert_eq!(
+            html_artifact_from_answer(c).as_deref(),
+            Some("<html>NEW</html>")
+        );
         // bare page answer, no fence
         let d = "<!doctype html>\n<html><h1>Hi</h1></html>";
         assert_eq!(html_artifact_from_answer(d).as_deref(), Some(d.trim()));
         // prose-only / a rust fence → nothing to materialize
-        assert_eq!(html_artifact_from_answer("I would build a login form with an h1."), None);
-        assert_eq!(html_artifact_from_answer("```rust\nfn main() {}\n```"), None);
+        assert_eq!(
+            html_artifact_from_answer("I would build a login form with an h1."),
+            None
+        );
+        assert_eq!(
+            html_artifact_from_answer("```rust\nfn main() {}\n```"),
+            None
+        );
     }
 
     /// what this catches: THE RESCUE COMING BACK. The web-dev grade used to materialize a page
@@ -4194,7 +5462,8 @@ mod tests {
     /// contract: the extractor still detects a spoken artifact, but ONLY to name the gap.
     #[test]
     fn a_spoken_artifact_is_never_accepted_in_place_of_a_written_one() {
-        let spoken = "Here is the page:\n```html\n<!DOCTYPE html><html><body><h1>Hi</h1></body></html>\n```";
+        let spoken =
+            "Here is the page:\n```html\n<!DOCTYPE html><html><body><h1>Hi</h1></body></html>\n```";
         // The detector still SEES it — that capability is what makes the failure diagnosable.
         assert!(
             html_artifact_from_answer(spoken).is_some(),
@@ -4213,7 +5482,9 @@ mod tests {
         // (The grade fn needs a live workspace; the invariant asserted here is the one a
         // reviewer must not break — nothing in this module may create `target` from `spoken`.)
         assert!(
-            !std::fs::read_to_string(&target).map(|s| !s.trim().is_empty()).unwrap_or(false),
+            !std::fs::read_to_string(&target)
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false),
             "a spoken artifact must never materialise into the graded file"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -4240,9 +5511,19 @@ mod tests {
         assert_eq!(t.solution_file.as_deref(), Some("sol_atoi.rs"));
         // and the ASK must match what the grade READS, or she scores 0 for answering the
         // question she was actually asked.
-        assert!(t.prompt.contains("sol_atoi.rs"), "prompt names the file: {}", t.prompt);
-        assert!(t.prompt.contains("write tool"), "prompt tells her to WRITE it");
-        assert!(t.prompt.contains("Implement `pub fn f()"), "original task text survives");
+        assert!(
+            t.prompt.contains("sol_atoi.rs"),
+            "prompt names the file: {}",
+            t.prompt
+        );
+        assert!(
+            t.prompt.contains("write tool"),
+            "prompt tells her to WRITE it"
+        );
+        assert!(
+            t.prompt.contains("Implement `pub fn f()"),
+            "original task text survives"
+        );
         // normalization needs hands, so tools get offered — otherwise the whole gym scores a
         // silent 0 for lack of a write tool (#208's failure shape).
         assert!(t.needs_tools(), "a file-graded task must arm tools");
@@ -4253,8 +5534,7 @@ mod tests {
     /// corpus-wide assertion, not a single-task one.
     #[test]
     fn no_committed_gym_can_pay_out_for_spoken_code() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../docs/genome");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/genome");
         let Ok(entries) = std::fs::read_dir(&root) else {
             return; // corpora not present in this checkout — the unit rule above still holds
         };
@@ -4264,13 +5544,17 @@ mod tests {
             if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
             for (n, line) in text.lines().enumerate() {
                 let line = line.trim();
                 if line.is_empty() {
                     continue;
                 }
-                let Ok(mut t) = serde_json::from_str::<EvalTask>(line) else { continue };
+                let Ok(mut t) = serde_json::from_str::<EvalTask>(line) else {
+                    continue;
+                };
                 if t.test.is_none() {
                     continue; // knowledge task — answering by speaking is correct
                 }
@@ -4286,7 +5570,10 @@ mod tests {
                 checked += 1;
             }
         }
-        assert!(checked > 100, "expected the code corpora to be present, checked only {checked}");
+        assert!(
+            checked > 100,
+            "expected the code corpora to be present, checked only {checked}"
+        );
     }
 
     /// what this catches: someone re-adding a mouth grade for a task that ALREADY names a file.
@@ -4297,13 +5584,23 @@ mod tests {
         t.solution_file = Some("mine.rs".into());
         let before = t.prompt.clone();
         t.require_hands_for_code();
-        assert_eq!(t.solution_file.as_deref(), Some("mine.rs"), "author's file wins");
-        assert_eq!(t.prompt, before, "no duplicated preamble on an already-acted task");
+        assert_eq!(
+            t.solution_file.as_deref(),
+            Some("mine.rs"),
+            "author's file wins"
+        );
+        assert_eq!(
+            t.prompt, before,
+            "no duplicated preamble on an already-acted task"
+        );
 
         let mut d = code_task("dod");
         d.dod_shell = Some("cargo test".into());
         d.require_hands_for_code();
-        assert!(d.solution_file.is_none(), "a DoD already grades the workspace her hands changed");
+        assert!(
+            d.solution_file.is_none(),
+            "a DoD already grades the workspace her hands changed"
+        );
     }
 
     /// what this catches: a mined gym being unrunnable. `gym/mine` gives every task its OWN git
@@ -4326,14 +5623,20 @@ mod tests {
         )
         .expect("the mined wire shape (camelCase) parses");
         assert_eq!(t.workspace_root.as_deref(), Some("/tmp/gym/task_2037b634"));
-        assert!(t.needs_tools(), "a task pinned to a repo obviously needs hands");
+        assert!(
+            t.needs_tools(),
+            "a task pinned to a repo obviously needs hands"
+        );
         let before = t.prompt.clone();
         t.require_hands_for_code();
         assert!(
             t.solution_file.is_none(),
             "a repo task is graded by its DoD against the real suite — never by an invented file"
         );
-        assert_eq!(t.prompt, before, "no acting preamble bolted onto a repo task");
+        assert_eq!(
+            t.prompt, before,
+            "no acting preamble bolted onto a repo task"
+        );
     }
 
     /// what this catches: the per-task root silently not overriding the run-level pin (or vice
@@ -4361,7 +5664,11 @@ mod tests {
         );
         // Same root declared on both is harmless (the fork already rooted both halves there).
         t.workspace_root = Some("/repo/from-run".into());
-        assert_eq!(t.workspace_root.as_deref(), run_pin, "agreement is not a conflict");
+        assert_eq!(
+            t.workspace_root.as_deref(),
+            run_pin,
+            "agreement is not a conflict"
+        );
     }
 
     // what this catches: the mid-run scoreboard's poll surface (#123/#141). One
@@ -4449,9 +5756,13 @@ mod tests {
                     .into(),
             ),
         };
-        let verdict = infra_verdict(&outcome).expect("a run with an infra fault must be InfraUnavailable");
+        let verdict =
+            infra_verdict(&outcome).expect("a run with an infra fault must be InfraUnavailable");
         assert_eq!(verdict.infra_faults, 1);
-        assert_eq!(verdict.tasks_attempted, 3, "attempted-so-far, exam incomplete");
+        assert_eq!(
+            verdict.tasks_attempted, 3,
+            "attempted-so-far, exam incomplete"
+        );
         assert!(
             verdict.reason.contains("t3") && verdict.reason.contains("active served model"),
             "the reason names the task + the infra cause: {}",
@@ -4507,10 +5818,39 @@ mod tests {
             ExamKeyDetector::DEFAULT_MIN_LEN,
         ))]);
         let (redacted, report) = policy.redact(&lesson);
-        assert!(!redacted.contains("service_loop.rs"), "answer key must be scrubbed");
+        assert!(
+            !redacted.contains("service_loop.rs"),
+            "answer key must be scrubbed"
+        );
         assert!(report.count(RedactionClass::ExamKey) >= 1);
         assert!(redacted.contains("I was asked"), "the experience survives");
         assert!(redacted.contains("I solved it"), "the outcome survives");
+    }
+
+    // what this catches: BELIEF HYGIENE — a graded MISS must teach a PROVISIONAL
+    // single-attempt lesson (retryable, supersedable), never a hardened verdict on
+    // ability. The false-failure incident (a broken env graded her code ok=False)
+    // must not become "I am bad at X" self-belief; a PASS stays confident.
+    #[test]
+    fn a_miss_teaches_provisionally_a_pass_teaches_confidently() {
+        let task = EvalTask {
+            id: "cancel-async".into(),
+            prompt: "Fix the async cancellation.".into(),
+            ..Default::default()
+        };
+        let mut miss = task_result(1000, 32, 5.0);
+        miss.ok = false;
+        miss.grade = "5 failed, 1 passed".into();
+        let lesson = format_exam_lesson(&task, &miss);
+        assert!(lesson.contains("did not pass yet"), "miss must be provisional: {lesson}");
+        assert!(lesson.contains("not a settled verdict"), "miss must not harden into ability belief: {lesson}");
+        assert!(lesson.contains("supersedes"), "a later pass must be able to supersede: {lesson}");
+        assert!(!lesson.contains("did NOT solve"), "the flat-conviction phrasing is gone: {lesson}");
+
+        let pass = task_result(1000, 10, 5.0); // ok=true
+        let plesson = format_exam_lesson(&task, &pass);
+        assert!(plesson.contains("I solved it"), "a pass stays confident: {plesson}");
+        assert!(!plesson.contains("not a settled verdict"), "a pass carries no provisional hedge");
     }
 
     // what this catches: the speed/latency aggregate math behind the scoreboard —
@@ -4533,7 +5873,10 @@ mod tests {
             task_result(400, 40, 20.0),
         ];
         let agg = speed_latency_aggregates(&results);
-        assert_eq!(agg.mean_latency_ms, 250.0, "mean latency = (100+200+300+400)/4");
+        assert_eq!(
+            agg.mean_latency_ms, 250.0,
+            "mean latency = (100+200+300+400)/4"
+        );
         assert_eq!(
             agg.p95_latency_ms, 400,
             "P95 of 4 tasks is the slowest (idx ceil(3.8)-1=3)"
@@ -4542,7 +5885,10 @@ mod tests {
             agg.mean_tokens_per_second, 35.0,
             "mean throughput averages per-task, not total/total"
         );
-        assert_eq!(agg.total_output_tokens, 100, "total output tokens sum across the set");
+        assert_eq!(
+            agg.total_output_tokens, 100,
+            "total output tokens sum across the set"
+        );
     }
 
     // what this catches: the GPU-FIRST placement policy for the coexisting eval lane
@@ -4562,16 +5908,31 @@ mod tests {
         // GPU genuinely full (free below footprint+margin) → CPU spill, and SAID so.
         let (p, why) = choose_lane_placement(Some(2 * GB), Some(3 * GB));
         assert_eq!(p, LanePlacement::Cpu, "no headroom must spill to CPU");
-        assert!(why.contains("GPU full"), "the spill must name the reason: {why}");
+        assert!(
+            why.contains("GPU full"),
+            "the spill must name the reason: {why}"
+        );
         // No GPU monitor on the node → CPU is the only device (honest, not a fallback).
         let (p, _) = choose_lane_placement(None, Some(3 * GB));
-        assert_eq!(p, LanePlacement::Cpu, "no GPU backend → CPU is the only device");
+        assert_eq!(
+            p,
+            LanePlacement::Cpu,
+            "no GPU backend → CPU is the only device"
+        );
         // Couldn't size the base → GPU-first optimism, never idle the accelerator.
         let (p, _) = choose_lane_placement(Some(50 * GB), None);
-        assert_eq!(p, LanePlacement::Gpu, "unknown footprint defaults to GPU-first");
+        assert_eq!(
+            p,
+            LanePlacement::Gpu,
+            "unknown footprint defaults to GPU-first"
+        );
         // Exactly at the margin edge counts as fitting (>= margin).
         let (p, _) = choose_lane_placement(Some(3 * GB + GPU_PLACEMENT_MARGIN_BYTES), Some(3 * GB));
-        assert_eq!(p, LanePlacement::Gpu, "free == footprint+margin fits on GPU");
+        assert_eq!(
+            p,
+            LanePlacement::Gpu,
+            "free == footprint+margin fits on GPU"
+        );
     }
 
     // what this catches: eval-status resolves a terminal ledger row by run_id NEWEST-first
@@ -4592,11 +5953,18 @@ mod tests {
             "\n",
         );
         let hit = row_with_run_id(ledger, "bbb").expect("bbb row present");
-        assert_eq!(hit.get("score").and_then(|s| s.as_i64()), Some(10), "newest bbb row wins");
+        assert_eq!(
+            hit.get("score").and_then(|s| s.as_i64()),
+            Some(10),
+            "newest bbb row wins"
+        );
         let first = row_with_run_id(ledger, "aaa").expect("aaa row present");
         assert_eq!(first.get("score").and_then(|s| s.as_i64()), Some(3));
         // An unknown / still-in-flight run → None (pending), never a wrong row.
-        assert!(row_with_run_id(ledger, "ccc").is_none(), "no row → pending, not a mismatch");
+        assert!(
+            row_with_run_id(ledger, "ccc").is_none(),
+            "no row → pending, not a mismatch"
+        );
         // A malformed line is skipped, not fatal.
         assert!(row_with_run_id("not json\n{bad\n", "bbb").is_none());
     }
@@ -4655,7 +6023,11 @@ mod tests {
         );
         // wall-clock tok/s is the DILUTED number (20 tok / 5s = 4) — the gap vs the
         // 20 tok/s real decode IS the prefill+overhead tax the harness surfaces.
-        assert_eq!(acc.tokens_per_second(), 4.0, "wall-clock tok/s stays diluted");
+        assert_eq!(
+            acc.tokens_per_second(),
+            4.0,
+            "wall-clock tok/s stays diluted"
+        );
 
         acc.accumulate(TurnMetrics {
             output_tokens: 10,
@@ -4737,9 +6109,14 @@ mod tests {
         // Registered but immediately dropped inner → the Weak is dead → miss + prune.
         {
             let map = &*WARM_EVAL_LANES;
-            map.lock().unwrap().insert(key.clone(), std::sync::Weak::new());
+            map.lock()
+                .unwrap()
+                .insert(key.clone(), std::sync::Weak::new());
         }
-        assert!(lookup_warm_eval_lane(&key).is_none(), "dead Weak must not satisfy");
+        assert!(
+            lookup_warm_eval_lane(&key).is_none(),
+            "dead Weak must not satisfy"
+        );
         assert!(
             !WARM_EVAL_LANES.lock().unwrap().contains_key(&key),
             "dead entry must be pruned on the miss"

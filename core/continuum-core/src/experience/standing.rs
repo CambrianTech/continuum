@@ -43,7 +43,10 @@ pub const STANDING_WALL_CATEGORY: &str = "standing";
 /// which is the ordinary case and means "live, unprotected".
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/experience/RoomStanding.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/experience/RoomStanding.ts"
+)]
 pub struct RoomStanding {
     /// Concluded: still fully readable, but it should stop recruiting attention —
     /// no longer offered as somewhere to pick up work, and it no longer wakes a
@@ -94,11 +97,9 @@ pub fn project_standing(
     posts: &[airc_core::doctrine::WallPostPublished],
 ) -> Result<RoomStanding, StandingParseError> {
     match posts.last() {
-        Some(post) => {
-            serde_json::from_str(&post.body).map_err(|source| StandingParseError {
-                source_message: source.to_string(),
-            })
-        }
+        Some(post) => serde_json::from_str(&post.body).map_err(|source| StandingParseError {
+            source_message: source.to_string(),
+        }),
         None => Ok(RoomStanding::default()),
     }
 }

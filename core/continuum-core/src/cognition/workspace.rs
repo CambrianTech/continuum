@@ -118,7 +118,25 @@ pub enum Decision {
     /// Nothing worth adding this turn (the persona's own judgment, not a gate).
     /// Together with `Speak`/`RaiseUnprompted`, this is how the organism SETTLES:
     /// the absence of an `Act` bid is the mind's judgment that the work is done.
-    Pass,
+    ///
+    /// `reason` is the mind's OWN words for why it passed, captured verbatim at
+    /// the single text→decision seam (`deliberation_parse::decision_from_response`)
+    /// when she narrates her pass ("done — patch ready", "blocked: the fixture is
+    /// missing", "nothing to add") — `None` for a bare `PASS` token. A pass is an
+    /// accountable decision, not anonymous silence: the benchmark held-work edge
+    /// reads this to tell a gradeable *done* from a *blocker* from a substrate-gap
+    /// *nothing* ([[a-citizen-saying-i-have-nothing-to-contribute-is-a-substrate-gap-report]]),
+    /// and any consumer can surface WHY a turn produced no utterance.
+    Pass { reason: Option<String> },
+}
+
+impl Decision {
+    /// A bare pass with no stated reason — the anonymous silence a plain `PASS`
+    /// token or an empty generation resolves to. Convenience so the common
+    /// construction stays terse and every reasoned pass is visibly the exception.
+    pub fn pass() -> Self {
+        Decision::Pass { reason: None }
+    }
 }
 
 /// The cost of producing ONE deliberation verdict: how long the model took and
@@ -388,7 +406,7 @@ impl Contribution {
             // The mind's narration of WHY it's acting — surfaced/audited like any
             // contribution content; the calls themselves live on the decision.
             Decision::Act { intent, .. } => intent.clone(),
-            Decision::Pass => String::new(),
+            Decision::Pass { reason } => reason.clone().unwrap_or_default(),
         };
         Self {
             faculty: FacultyId::Deliberation,
@@ -603,6 +621,13 @@ impl BurstTurn {
 /// stimulus → a single opaque turn rendered verbatim).
 #[derive(Debug, Clone)]
 pub struct Burst {
+    /// The activity this turn belongs to — REQUIRED at construction, witnessed
+    /// non-nil by [`ActivityRoom`]. The burst carries the room because the burst
+    /// IS the perception the turn responds to: when the room rode as a separate
+    /// parameter beside the burst, a caller could render room A into the header
+    /// and drive the turn in room B (or nil), and nothing detected it — the #425
+    /// roomless-turn shape. Same argument as [`Cause`] living here.
+    pub room: crate::identity::ActivityRoom,
     /// The persona's NOW at assembly (wall-clock ms; eval passes its pinned epoch;
     /// None for raw-string/test bursts). Threaded to the prompt as a [now …] line
     /// (task #125 — the rendered header never reaches the structured-turns prompt).
@@ -614,6 +639,72 @@ pub struct Burst {
     /// The text projection of `turns` (+ room header) — what `world_state` IS.
     /// Materialized once at construction so the hot path never re-renders.
     pub rendered: String,
+    /// WHY this turn is happening — see [`Cause`].
+    ///
+    /// It lives on the `Burst` because the burst IS the perception the turn responds
+    /// to: threading the cause as a separate parameter through every driver would let
+    /// the two drift, and provenance belongs on the thing whose provenance it is.
+    pub cause: Cause,
+}
+
+/// Why a turn is happening — the thing it is a RESPONSE to, and the root of its
+/// causal thread (CAUSAL-MEMORY-GRAPH.md §3a).
+///
+/// Joel's law, 2026-08-18: *any stimulus has a response — that is what comes into a
+/// system, like any input to a channel — therefore needing causal linkage.* A mind
+/// whose acts chain only to each other has instants, not experience; it can say "I ran
+/// a command" but never "I ran a command BECAUSE she asked". Without a head on the
+/// thread there is no path in the graph from a work card to the acts done for it, and
+/// no query can show a link that was never recorded.
+///
+/// This is an ENUM rather than an `Option<Uuid>` on purpose. The optional form made
+/// "nothing caused this" and "nobody wired this up" the same value, so a burst site
+/// that simply forgot was indistinguishable from one being honest — and the compiler
+/// helped it forget. Naming the reasons separately means an uncaused turn is a
+/// measurable fact ([`Cause::Ambient`]) instead of a silence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cause {
+    /// A discrete input to a channel — the message, kickoff or event this turn
+    /// answers — already admitted as an engram. The thread has a head, so the first
+    /// act carries a real `CausedBy` edge back to what provoked it.
+    Stimulus(uuid::Uuid),
+
+    /// A self-directed wake: her own cadence noticed the world had changed, with no
+    /// single admitted input to point at. The idle tick perceives AMBIENT state (a
+    /// re-read of the room, the board, her work) rather than an arrival, so there is
+    /// nothing to root in and inventing one would be a lie.
+    ///
+    /// Honest, but not the end state: the ambient sources are projections that drop
+    /// their items' identity, so an idle turn *cannot yet* name the change that woke
+    /// it. Giving deliveries a handle back to their source item is what would let this
+    /// become a `Stimulus` — see `docs/architecture/CONTENT-TRAVELS-BY-HANDLE.md`.
+    Ambient,
+
+    /// A burst assembled with no live antecedent at all: eval exams, replay fixtures,
+    /// faculty tests. Distinct from [`Ambient`](Self::Ambient) so measurements of how
+    /// many LIVE turns run uncaused are not diluted by fixtures.
+    Synthetic,
+}
+
+impl Cause {
+    /// The engram a chain rooted here begins from — `Some` only for a real stimulus.
+    /// Ambient and synthetic bursts have no antecedent, and reporting one they do not
+    /// have would fabricate an edge.
+    pub fn root(&self) -> Option<uuid::Uuid> {
+        match self {
+            Cause::Stimulus(id) => Some(*id),
+            Cause::Ambient | Cause::Synthetic => None,
+        }
+    }
+
+    /// Short tag for probes and receipts — the vocabulary a measurement groups by.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Cause::Stimulus(_) => "stimulus",
+            Cause::Ambient => "ambient",
+            Cause::Synthetic => "synthetic",
+        }
+    }
 }
 
 impl Burst {
@@ -622,8 +713,12 @@ impl Burst {
     /// `rendered` (so `world_state` is byte-identical to the old
     /// `build_workspace_burst`) but deliberately kept OUT of `turns` — room
     /// identity is standing context for the system prompt, not a conversation turn.
-    pub fn from_turns(room: Uuid, turns: Vec<BurstTurn>) -> Self {
-        Self::from_turns_at(room, turns, None)
+    /// **Not for a live turn.** This constructor states [`Cause::Synthetic`] on your
+    /// behalf, which is true for an exam, a replay fixture or a faculty test and a lie
+    /// for anything a citizen actually lived. A live burst site must call
+    /// [`from_turns_at`](Self::from_turns_at) and say what caused it.
+    pub fn from_turns(room: crate::identity::ActivityRoom, turns: Vec<BurstTurn>) -> Self {
+        Self::from_turns_at(room, turns, None, Cause::Synthetic)
     }
 
     /// Like [`from_turns`](Self::from_turns) but stamps the persona's NOW into the
@@ -634,42 +729,78 @@ impl Burst {
     /// the live path passes wall-clock, the eval passes its pinned epoch (exams stay
     /// byte-reproducible), tests pass fixtures. Rendered at MINUTE granularity so
     /// the prompt prefix — and the serving KV cache — only changes once a minute.
-    pub fn from_turns_at(room: Uuid, turns: Vec<BurstTurn>, now_ms: Option<u64>) -> Self {
+    ///
+    /// `cause` is REQUIRED, not a builder step, because it is the one field a live
+    /// assembly site can silently forget. See [`Cause`].
+    pub fn from_turns_at(
+        room: crate::identity::ActivityRoom,
+        turns: Vec<BurstTurn>,
+        now_ms: Option<u64>,
+        cause: Cause,
+    ) -> Self {
         use std::fmt::Write as _;
         let mut rendered = String::new();
         let _ = writeln!(rendered, "[room {room}]");
-        if let Some(ms) = now_ms {
-            if let Some(dt) = chrono::DateTime::from_timestamp_millis(ms as i64) {
-                let local = dt.with_timezone(&chrono::Local);
-                let _ = writeln!(rendered, "[now {}]", local.format("%Y-%m-%d %H:%M %A"));
-            }
-        }
+        // NO [now …] line here anymore (2026-08-26 glass box): this header is the
+        // FIRST bytes of the conversation, so the minute tick invalidated every
+        // message behind it — measured live as `cached=7945` (the stable system
+        // head) with the ENTIRE 10k-27k tail re-prefilled every act, ~647k fresh
+        // tokens in one boot. Temporal grounding lives in the deliberation
+        // prompt's VOLATILE tier (delivered as the newest turn, zero prefix
+        // cost) fed from `now_ms`, which stays on the Burst for exactly that.
         for turn in &turns {
             turn.write_line(&mut rendered);
         }
-        Self { turns, rendered, now_ms }
-    }
-}
-
-impl From<String> for Burst {
-    /// A raw-string burst → ONE opaque turn, rendered verbatim. Keeps every
-    /// string-passing call site (faculty tests, eval shorthand, replay) compiling
-    /// and byte-identical.
-    fn from(s: String) -> Self {
         Self {
+            room,
+            turns,
+            rendered,
+            now_ms,
+            cause,
+        }
+    }
+
+    /// A raw-string burst IN a named activity — the production path for a
+    /// stimulus that arrives as text (a gate check, a replay line) but still
+    /// belongs to a real room. One opaque turn, rendered verbatim.
+    pub fn raw_in(room: crate::identity::ActivityRoom, s: String) -> Self {
+        Self {
+            room,
             turns: vec![BurstTurn::opaque(s.clone())],
             rendered: s,
             now_ms: None,
+            cause: Cause::Synthetic,
         }
     }
 }
 
+/// Raw-string → Burst conversions are TEST-ONLY: a production burst must name
+/// its activity ([`Burst::raw_in`] / [`Burst::from_turns_at`]) — a string
+/// cannot, so letting it convert was the door #425 walked through. Fixtures
+/// get a deterministic [`ActivityRoom::test_room`](crate::identity::ActivityRoom::test_room).
+#[cfg(test)]
+impl From<String> for Burst {
+    fn from(s: String) -> Self {
+        Self {
+            room: crate::identity::ActivityRoom::test_room(),
+            turns: vec![BurstTurn::opaque(s.clone())],
+            rendered: s,
+            now_ms: None,
+            // A raw string arrives with no channel and no antecedent — a fixture, by
+            // construction. Honest, never invented.
+            cause: Cause::Synthetic,
+        }
+    }
+}
+
+#[cfg(test)]
 impl From<&str> for Burst {
     fn from(s: &str) -> Self {
         Burst::from(s.to_string())
     }
 }
 
+#[cfg(test)]
 impl From<&String> for Burst {
     fn from(s: &String) -> Self {
         Burst::from(s.clone())
@@ -777,7 +908,15 @@ pub struct Workspace {
     /// a phantom `nil` room. `Uuid::nil()` only in faculty-isolation tests that
     /// don't run in a room. NEVER a session id — context is durable, session is
     /// ephemeral and never load-bearing for where an action lands.
+    /// Guaranteed non-nil in production: the only live constructor is
+    /// [`from_burst`](Self::from_burst) and a [`Burst`] carries a witnessed
+    /// [`ActivityRoom`](crate::identity::ActivityRoom) (#425).
     pub room_id: Uuid,
+    /// Why this turn is happening — carried from [`Burst::cause`] so downstream
+    /// receipts (prompt capture, dataset fork-guard #427) can tell a LIVED turn
+    /// ("stimulus"/"ambient") from an eval-fork/fixture tick ("synthetic")
+    /// without inferring it from a nil room (which no longer exists).
+    pub cause: Cause,
     /// Which service tick this workspace IS — the frame index every finding
     /// computed against it gets stamped with. [`CycleId::UNSTAMPED`] for
     /// hand-built / replay-reconstructed workspaces; the cycle loop sets the
@@ -802,6 +941,11 @@ pub struct Workspace {
     /// the conversation turns stay clean). `false` (the default) = message/eval
     /// driven.
     pub self_initiated: bool,
+    /// This turn's deliverable is a change in the workspace (a held card's work
+    /// turn). The deliberation faculty narrows the tool surface to her HANDS for
+    /// such a turn: 37 tool schemas were 8.5k of a ~22k-token prefill per act
+    /// with zero KV reuse (measured 2026-09-05), and a work turn needs a dozen.
+    pub workspace_deliverable: bool,
     /// The persona's NOW at burst assembly (see [`Burst::now_ms`]) — rendered as a
     /// [now …] line in the system prompt so time is a fact she can perceive (#125).
     pub now_ms: Option<u64>,
@@ -822,29 +966,52 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    /// TEST-ONLY faculty-isolation shorthand. Production has no roomless
+    /// workspaces (#425): the burst carries its [`ActivityRoom`](crate::identity::ActivityRoom)
+    /// and [`from_burst`](Self::from_burst) is the one live constructor.
+    #[cfg(test)]
     pub fn new(burst: impl Into<Burst>) -> Self {
-        Self::in_room(burst, Uuid::nil())
+        Self::from_burst(burst.into())
     }
 
-    /// Construct scoped to a specific room/context (the contextId the turn acts
-    /// within). The live persona path always uses this; `new` is the nil-room
-    /// shorthand for faculty-isolation tests. Takes `impl Into<Burst>`: an
-    /// attributed `Burst` (live/eval, carries authorship) or a raw `String`/`&str`
-    /// (collapses to one opaque turn — faculty tests, replay).
+    /// TEST-ONLY compat: construct with an explicit room override. Lets faculty
+    /// tests exercise arbitrary rooms without hand-building attributed bursts.
+    #[cfg(test)]
     pub fn in_room(burst: impl Into<Burst>, room_id: Uuid) -> Self {
-        let burst = burst.into();
+        let mut ws = Self::from_burst(burst.into());
+        ws.room_id = room_id;
+        ws
+    }
+
+    /// Construct from an attributed burst — the ONE production constructor.
+    /// The room comes from the burst itself (witnessed non-nil at burst
+    /// construction), so a workspace whose header renders room A can no longer
+    /// be driven in room B or in nil: there is only one room, stated once.
+    pub fn from_burst(burst: Burst) -> Self {
         let burst_now = burst.now_ms;
         Self {
             world_state: burst.rendered,
             turns: burst.turns,
-            room_id,
+            room_id: burst.room.as_uuid(),
+            cause: burst.cause,
             cycle: CycleId::UNSTAMPED,
             broadcast: Vec::new(),
             directed_at_self: false,
             self_initiated: false,
+            workspace_deliverable: false,
             now_ms: burst_now,
             token_sink: None,
         }
+    }
+
+    /// The activity witness for this turn. Infallible by construction: the only
+    /// production constructor is [`from_burst`](Self::from_burst) and a `Burst`
+    /// cannot exist without a non-nil [`ActivityRoom`](crate::identity::ActivityRoom)
+    /// — so the expect below can only fire if a `#[cfg(test)]` constructor leaked
+    /// a nil room into production, which is exactly the bug it should crash on.
+    pub fn room(&self) -> crate::identity::ActivityRoom {
+        crate::identity::ActivityRoom::from_uuid(self.room_id)
+            .expect("Workspace.room_id is witnessed non-nil at construction (#425)")
     }
 
     /// Attach a per-turn token sink for STREAMING the answer (#169). Builder form,
@@ -873,6 +1040,11 @@ impl Workspace {
     /// framing in the system prompt.
     pub fn self_initiated(mut self, self_initiated: bool) -> Self {
         self.self_initiated = self_initiated;
+        self
+    }
+
+    pub fn workspace_deliverable(mut self, workspace_deliverable: bool) -> Self {
+        self.workspace_deliverable = workspace_deliverable;
         self
     }
 
@@ -1299,6 +1471,30 @@ pub struct WorkspaceCycle {
     /// seam bumps Act. PURE OBSERVABILITY — no decision path ever reads it. `Arc` so the
     /// radiator can hold a cheap clone without the cycle lock. See [`FacultyPulse`].
     faculty_pulse: Arc<super::faculty_pulse::FacultyPulse>,
+    /// #266 KV-PREFILL ECONOMY: lifetime `cache_n` / `prompt_n` for THIS persona,
+    /// folded once per generation at the settle seam. Interior-mutable (like
+    /// `cycle_counter`) because the settle path holds `&self`.
+    ///
+    /// WHY A LIFETIME ACCUMULATOR AND NOT THE LAST TICK: [`Workspace::metrics`]
+    /// carries the winning verdict of ONE tick, and one sample of a live system is
+    /// not a fact about it — a single cold turn reads 0% and a single warm one
+    /// reads 90%. The rate that answers "is this citizen's prefix staying resident"
+    /// is over her turns, not her latest. Same reasoning FacultyPulse applies to
+    /// axis levels; this is its prefill sibling.
+    ///
+    /// SEPARATE COUNTERS, RATIO DERIVED ON READ — never a stored rate. Averaging
+    /// rates lies (the same rule [`TurnMetrics::accumulate`] states for tok/s), so
+    /// the meter divides totals, and a persona whose turns are mostly-warm cannot
+    /// have one cold turn drag the mean.
+    ///
+    /// PURE OBSERVABILITY — no decision path reads these; nothing routes, budgets,
+    /// or gates on them. They exist so live citizens' cache behaviour is visible at
+    /// all: before this, `cache_n` was parsed, typed, threaded through
+    /// [`TurnMetrics`] and then dropped at turn end, and the ONLY consumer that ever
+    /// turned it into a number was the eval harness. Components green, wiring to the
+    /// place it matters absent — the shape that produced `[no reporters]`.
+    kv_cached_tokens: std::sync::atomic::AtomicU64,
+    kv_prefill_tokens: std::sync::atomic::AtomicU64,
 }
 
 /// RAII guard for a memory-isolated measurement window over a cycle's
@@ -1309,8 +1505,7 @@ pub struct WorkspaceCycle {
 pub struct EvalIsolation {
     admission: Option<Arc<crate::persona::admission_state::AdmissionState>>,
     checkpoint: Option<crate::persona::admission_state::AdmissionCheckpoint>,
-    real_sink:
-        Option<Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>>,
+    real_sink: Option<Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>>,
     /// The shared decoding handle the guard forced to greedy on creation — restored
     /// to relaxed (`None`) on drop. Carried even for a no-hands (pure-cognition)
     /// cycle, because a reproducible metric needs deterministic generation whether
@@ -1338,7 +1533,9 @@ impl Drop for EvalIsolation {
         if let Some(decoding) = &self.decoding {
             decoding.store(Arc::new(None));
         }
-        let Some(admission) = &self.admission else { return };
+        let Some(admission) = &self.admission else {
+            return;
+        };
         // Rewind the memory frame, THEN restore the real sink — order matters:
         // restoring the sink first could let a racing observe land a write the
         // rewind was meant to erase. With the sink still muted, the rewind is
@@ -1404,11 +1601,73 @@ impl WorkspaceCycle {
             cycle_counter: std::sync::atomic::AtomicU64::new(0),
             token_sink: std::sync::Mutex::new(None),
             faculty_pulse: Arc::new(super::faculty_pulse::FacultyPulse::new()),
+            kv_cached_tokens: std::sync::atomic::AtomicU64::new(0),
+            kv_prefill_tokens: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
     /// The live cognition-compass accumulator (#186). The tick seam + acting seam bump
     /// it; the vitals radiator samples [`FacultyPulse::levels`]. `Arc` clone is cheap.
+    /// #266 Fold ONE generation's prefill accounting into this persona's lifetime
+    /// KV totals, and emit the per-generation probe. Called once per live turn from
+    /// the settle seam — the single place a completed generation's [`TurnMetrics`]
+    /// is known — so there is exactly one writer and no parallel accumulator.
+    ///
+    /// A generation the lane reported no timings for (cloud provider, older
+    /// endpoint) folds in as 0/0 and moves neither counter: absent stays absent
+    /// rather than being counted as a miss, which would slander a lane that simply
+    /// never told us.
+    pub fn note_generation(&self, m: &TurnMetrics) {
+        use std::sync::atomic::Ordering;
+        if m.cached_tokens == 0 && m.prefill_tokens == 0 {
+            return; // no timings reported — an absence, never a 0% datum
+        }
+        let cached = self
+            .kv_cached_tokens
+            .fetch_add(u64::from(m.cached_tokens), Ordering::Relaxed)
+            + u64::from(m.cached_tokens);
+        let prefill = self
+            .kv_prefill_tokens
+            .fetch_add(u64::from(m.prefill_tokens), Ordering::Relaxed)
+            + u64::from(m.prefill_tokens);
+        let lifetime = cached + prefill;
+        crate::probe!(
+            class = "serving.kv.reuse",
+            turn_cached = m.cached_tokens,
+            turn_prefill = m.prefill_tokens,
+            turn_rate = m.cache_hit_rate(),
+            lifetime_cached = cached,
+            lifetime_prefill = prefill,
+            lifetime_rate = if lifetime == 0 {
+                0.0
+            } else {
+                cached as f64 / lifetime as f64
+            },
+            prefill_ms = m.prefill_ms,
+            decode_ms = m.decode_ms,
+            "KV reuse: {} of {} prompt tokens served from cache this generation",
+            m.cached_tokens,
+            m.cached_tokens.saturating_add(m.prefill_tokens)
+        );
+    }
+
+    /// #266 This persona's lifetime KV-prefix reuse — `cached / (cached + prefilled)`
+    /// across every generation she has run. `None` until at least one generation
+    /// reported timings, so a citizen who has not yet spoken radiates NOTHING rather
+    /// than a fabricated 0% (the honest-empty rule the vitals meters already follow
+    /// for a dark cognition axis and an un-paged genome).
+    ///
+    /// The ratio is derived from totals on every read, never stored and never
+    /// averaged across turns — averaging rates lies, the same reason
+    /// [`TurnMetrics::accumulate`] re-derives tok/s from totals.
+    pub fn kv_reuse(&self) -> Option<f64> {
+        use std::sync::atomic::Ordering;
+        let cached = self.kv_cached_tokens.load(Ordering::Relaxed);
+        let prefill = self.kv_prefill_tokens.load(Ordering::Relaxed);
+        let total = cached + prefill;
+        (total > 0).then(|| cached as f64 / total as f64)
+    }
+
     pub fn faculty_pulse(&self) -> Arc<super::faculty_pulse::FacultyPulse> {
         self.faculty_pulse.clone()
     }
@@ -1432,7 +1691,8 @@ impl WorkspaceCycle {
     /// Act has no `FacultyId` (the hands run AFTER deliberation, not as a workspace
     /// faculty), so it is bumped explicitly rather than through the tick map.
     pub fn note_acting(&self) {
-        self.faculty_pulse.fire(super::faculty_pulse::CognitionAxis::Act);
+        self.faculty_pulse
+            .fire(super::faculty_pulse::CognitionAxis::Act);
     }
 
     /// Share the persona's decoding handle — call with the SAME [`DecodingHandle`]
@@ -1515,7 +1775,10 @@ impl WorkspaceCycle {
     /// clean through the same adapter.
     pub fn current_model_route(
         &self,
-    ) -> Option<(Arc<dyn crate::ai::adapter::AIProviderAdapter>, Option<String>)> {
+    ) -> Option<(
+        Arc<dyn crate::ai::adapter::AIProviderAdapter>,
+        Option<String>,
+    )> {
         self.model_binding.as_ref().map(|handle| {
             let b = handle.load();
             (b.adapter.clone(), b.model.clone())
@@ -1577,7 +1840,8 @@ impl WorkspaceCycle {
     /// the persona's live "thinking tempo" (the roster **ACT** vital): a rising
     /// count = actively servicing concerns, a flat count = idle. Read wait-free.
     pub fn cycle_count(&self) -> u64 {
-        self.cycle_counter.load(std::sync::atomic::Ordering::Relaxed)
+        self.cycle_counter
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Clear the volatile working-memory scratch (the act/reasoning proprioception
@@ -1589,6 +1853,24 @@ impl WorkspaceCycle {
         if let Some(acting) = &self.acting {
             acting.working_memory.clear();
         }
+    }
+
+    /// How many acts these hands have executed, EVER — the monotonic counter, not
+    /// the capacity-bounded receipt ring ([`super::working_memory::WorkingMemory::actions_taken`]).
+    /// `None` for a pure-cognition cycle (no hands, so the question has no answer —
+    /// distinct from `Some(0)`, which is hands that have not acted yet).
+    ///
+    /// Exists so a LONG-RUNNING drive can report its own liveness WHILE it runs.
+    /// `drive_to_settle` returns its act count only at settlement, and a benchmark
+    /// attempt legitimately runs for hours — so every liveness surface downstream
+    /// (`benchmark/runs`, the bench board, the run-room panel) was reading a number
+    /// that could not move until the work was already over. Measured 2026-08-16:
+    /// two dispatched solves read `acts=0, stalled=false` for ten straight minutes
+    /// while their citizens were mid-turn, and the projection whose stated purpose
+    /// is "silence must never be ambiguous with progress" could not tell the two
+    /// apart. A wait-free atomic load, safe to poll on a heartbeat.
+    pub fn actions_taken(&self) -> Option<u64> {
+        self.acting.as_ref().map(|a| a.working_memory.actions_taken())
     }
 
     /// Begin a memory-isolated measurement window over this cycle's hippocampus.
@@ -1606,10 +1888,22 @@ impl WorkspaceCycle {
     /// admitted) yields a no-op guard. See
     /// [[eval-mutates-persona-lift-needs-isolation]].
     pub fn isolate_for_eval(&self) -> EvalIsolation {
+        self.isolate_for_eval_at(Some(0.0))
+    }
+
+    /// [`Self::isolate_for_eval`] with an explicit decoding pin — the
+    /// temperature A/B seam (2026-08-23). Greedy (0.0) buys byte-reproducible
+    /// rewards but measured pathological on long-context agentic work: think
+    /// emissions spiraled 6.9k → 16,384 tokens (the reply ceiling, hit
+    /// exactly) at 4+ min decode per act, while every SOTA agentic harness
+    /// samples ~0.6-0.8 for exactly this reason. `None` = her lived
+    /// temperature. Behavior-before-perplexity applied to our own harness:
+    /// the pin is a MEASURED choice per run, not an axiom.
+    pub fn isolate_for_eval_at(&self, decoding: Option<f32>) -> EvalIsolation {
         // Force greedy decoding for the WHOLE eval window — before the no-hands
         // early return, because a reproducible metric needs deterministic
         // generation even for a pure-speak (no-tools) eval. Restored on drop.
-        self.decoding.store(Arc::new(Some(0.0)));
+        self.decoding.store(Arc::new(decoding));
         let decoding = Some(Arc::clone(&self.decoding));
 
         let Some(acting) = &self.acting else {
@@ -1622,8 +1916,8 @@ impl WorkspaceCycle {
         };
         let admission = acting.admission.clone();
         let checkpoint = admission.checkpoint();
-        let real_sink = admission
-            .swap_persistence(crate::persona::admission_persistence::NoopSink::arc());
+        let real_sink =
+            admission.swap_persistence(crate::persona::admission_persistence::NoopSink::arc());
         EvalIsolation {
             admission: Some(admission),
             checkpoint: Some(checkpoint),
@@ -1678,26 +1972,38 @@ impl WorkspaceCycle {
     /// This is what makes "pull relevant memory, *then* decide" real: the decider
     /// is never blind to recall. Still one tick over the consolidated burst, still
     /// `O(capacity)` for the bounded context — no per-event slowdown.
+    /// TEST-ONLY ambient shorthand: the burst names its room (a raw string
+    /// converts with [`ActivityRoom::test_room`](crate::identity::ActivityRoom::test_room)
+    /// under `#[cfg(test)]`), so even faculty-isolation ticks run in a
+    /// real-shaped room. Production has no roomless ticks (#425) — live callers
+    /// use [`run_framed`](Self::run_framed) / [`run_situated`](Self::run_situated).
+    #[cfg(test)]
     pub async fn run(&self, burst: impl Into<Burst>) -> Workspace {
-        self.run_in_room(burst, Uuid::nil()).await
+        self.run_inner(burst.into(), TurnFraming::ambient(), Situation::FreshContext)
+            .await
     }
 
-    /// Same as [`run_in_room`](Self::run_in_room) but with explicit
-    /// [`TurnFraming`] — the live persona path passes `directed`/`self_initiated`
-    /// here so the deliberation faculty's system prompt reflects whether a question
-    /// was put TO her (suppress the silence escape) and whether this is her own
-    /// heartbeat. `run_in_room` is the ambient shorthand.
-    pub async fn run_framed(
-        &self,
-        burst: impl Into<Burst>,
-        room_id: Uuid,
-        framing: TurnFraming,
-    ) -> Workspace {
+    /// TEST-ONLY compat: ambient tick with an explicit room override.
+    #[cfg(test)]
+    pub async fn run_in_room(&self, burst: impl Into<Burst>, room_id: Uuid) -> Workspace {
+        let mut b: Burst = burst.into();
+        if let Ok(r) = crate::identity::ActivityRoom::from_uuid(room_id) {
+            b.room = r;
+        }
+        self.run_inner(b, TurnFraming::ambient(), Situation::FreshContext)
+            .await
+    }
+
+    /// The live persona path passes `directed`/`self_initiated` here so the
+    /// deliberation faculty's system prompt reflects whether a question was put
+    /// TO her (suppress the silence escape) and whether this is her own
+    /// heartbeat. The room rides ON the burst — one statement of the activity,
+    /// no separate parameter to drift from the rendered header (#425).
+    pub async fn run_framed(&self, burst: Burst, framing: TurnFraming) -> Workspace {
         // Fresh-context default: a bare framed tick is a fresh ask (fuller
         // grounding). The act→observe driver calls [`run_situated`] with
         // `PostAction` on re-perception ticks.
-        self.run_in_room_inner(burst, room_id, framing, Situation::FreshContext)
-            .await
+        self.run_inner(burst, framing, Situation::FreshContext).await
     }
 
     /// Same as [`run_framed`](Self::run_framed) but with the tick's [`Situation`]
@@ -1708,25 +2014,11 @@ impl WorkspaceCycle {
     /// cognition]]).
     pub async fn run_situated(
         &self,
-        burst: impl Into<Burst>,
-        room_id: Uuid,
+        burst: Burst,
         framing: TurnFraming,
         situation: Situation,
     ) -> Workspace {
-        self.run_in_room_inner(burst, room_id, framing, situation)
-            .await
-    }
-
-    /// Same as [`run`](Self::run) but scoped to a room/context (the contextId the
-    /// turn acts within). The live persona path uses THIS so the deliberation
-    /// faculty stamps tool calls with the real room — `run` is the nil-room
-    /// shorthand for tests that aren't room-scoped.
-    pub async fn run_in_room(&self, burst: impl Into<Burst>, room_id: Uuid) -> Workspace {
-        // Ambient default: silence stays first-class, message-driven. A turn put TO
-        // the persona, or her own heartbeat, uses [`run_framed`](Self::run_framed)
-        // with the appropriate [`TurnFraming`].
-        self.run_in_room_inner(burst, room_id, TurnFraming::ambient(), Situation::FreshContext)
-            .await
+        self.run_inner(burst, framing, situation).await
     }
 
     /// The full cognitive tick. [`TurnFraming`] is set on the [`Workspace`] so the
@@ -1734,10 +2026,9 @@ impl WorkspaceCycle {
     /// [`Workspace::directed_at_self`]) and whether to frame the turn as the
     /// persona's own time (see [`Workspace::self_initiated`]); everything else is
     /// identical across framings — framing only reshapes the system prompt.
-    async fn run_in_room_inner(
+    async fn run_inner(
         &self,
-        burst: impl Into<Burst>,
-        room_id: Uuid,
+        burst: Burst,
         framing: TurnFraming,
         situation: Situation,
     ) -> Workspace {
@@ -1750,14 +2041,16 @@ impl WorkspaceCycle {
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 .wrapping_add(1),
         );
-        // Carry the structured burst straight through: `in_room` splits it into the
-        // canonical `turns` (the deliberation faculty's role-attribution source) and
-        // the `world_state` text projection (every other reader). Framing reshapes
-        // only the system prompt — it never touches the conversation turns.
-        let mut ws = Workspace::in_room(burst, room_id)
+        // Carry the structured burst straight through: `from_burst` splits it into
+        // the canonical `turns` (the deliberation faculty's role-attribution source)
+        // and the `world_state` text projection (every other reader) and takes the
+        // ROOM from the burst itself. Framing reshapes only the system prompt — it
+        // never touches the conversation turns.
+        let mut ws = Workspace::from_burst(burst)
             .with_cycle(cycle)
             .directed(framing.directed)
             .self_initiated(framing.self_initiated)
+            .workspace_deliverable(framing.workspace_deliverable)
             // #169: hand this turn the live streaming sink if the caller set one
             // (service_loop, just before a streamed Speak); `None` otherwise.
             .with_token_sink(self.current_token_sink());
@@ -1774,6 +2067,18 @@ impl WorkspaceCycle {
         // `async move` future copies the POINTER (concurrent immutable borrow), never
         // moving the Workspace.
         let mut timings: Vec<FacultyTiming> = Vec::with_capacity(self.faculties.len());
+        // PERCEPTION DEADLINE (2026-08-28, the becalmed-rounds wedge). This is a
+        // BARRIER: one faculty that never returns freezes the whole mind, invisibly
+        // (timings only record finishers). Glass-boxed live: act 1 completed, then
+        // tick 2 hung forever inside this join — recall's neural-embed path awaited
+        // a VRAM lease that never granted (tick 1 rode warm cache; tick 2 embedded
+        // act 1's fresh observation, a guaranteed miss), and the round sat becalmed
+        // while resume re-fires bounced off the in-flight guard (#2554). An RTOS
+        // perception phase has deadlines: a faculty that can't answer in budget
+        // ABSTAINS LOUDLY and the tick proceeds on what did answer — degraded
+        // recall for one tick beats a locked mind forever. The deliberation
+        // generation does NOT run on this barrier and is untouched.
+        const PERCEPTION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
         let perception_timed: Vec<(FacultyId, u128, Option<Contribution>)> =
             join_all(perception.iter().map(|f| {
                 let f = *f;
@@ -1781,11 +2086,29 @@ impl WorkspaceCycle {
                 async move {
                     let id = f.id();
                     let t0 = std::time::Instant::now();
-                    let bid = f.contribute(ws).await;
+                    let bid = match tokio::time::timeout(PERCEPTION_DEADLINE, f.contribute(ws))
+                        .await
+                    {
+                        Ok(bid) => bid,
+                        Err(_) => {
+                            crate::probe!(
+                                class = "faculty.deadline.exceeded",
+                                faculty = ?id,
+                                budget_ms = PERCEPTION_DEADLINE.as_millis() as u64,
+                                "perception faculty blew its deadline — abstaining so the tick proceeds (a hung faculty must never becalm the mind)"
+                            );
+                            None
+                        }
+                    };
                     (id, t0.elapsed().as_micros(), bid)
                 }
             }))
             .await;
+        crate::probe!(
+            class = "workspace.perception.done",
+            faculties = perception_timed.len() as u64,
+            "perception barrier cleared — arbitration next, then deliberation"
+        );
         let mut context_bids: Vec<Contribution> = Vec::with_capacity(perception_timed.len());
         for (id, us, bid) in perception_timed {
             // #186 compass: a perception faculty that surfaced something FIRES its axis
@@ -1971,6 +2294,72 @@ impl WorkspaceCycle {
 mod tests {
     use super::*;
 
+    mod causality {
+        use super::*;
+
+        // what this catches: a `Cause` variant gaining a root it has no right to.
+        // `Stimulus` is the ONLY antecedent — if `Ambient` or `Synthetic` ever
+        // returned an id, the graph would grow `CausedBy` edges pointing at engrams
+        // nothing admitted, which is worse than an unrooted chain: a fabricated cause
+        // reads as evidence. `Cause::root` is the single place that decision lives, so
+        // this pins it there.
+        #[test]
+        fn only_a_real_stimulus_is_ever_an_antecedent() {
+            let id = Uuid::new_v4();
+            assert_eq!(Cause::Stimulus(id).root(), Some(id));
+            assert_eq!(
+                Cause::Ambient.root(),
+                None,
+                "an idle tick has no admitted input — never invent one"
+            );
+            assert_eq!(
+                Cause::Synthetic.root(),
+                None,
+                "a fixture has no live antecedent — never invent one"
+            );
+        }
+
+        // what this catches: the SILENT default coming back. `cause` was once
+        // `Option<Uuid>` defaulting to `None` at construction, which made "nothing
+        // caused this" and "the author forgot" the same value — so the one live site
+        // I wired by hand looked identical to the three I hadn't. Making it a required
+        // constructor argument is the whole fix; this test fails to compile (not
+        // merely fails) if someone reintroduces a defaulted builder, and asserts the
+        // fixture constructors stay honestly Synthetic rather than quietly Ambient,
+        // which would pollute the live ambient-rate measurement with test noise.
+        #[test]
+        fn a_burst_cannot_be_built_without_saying_what_caused_it() {
+            let room = crate::identity::ActivityRoom::mint();
+            let id = Uuid::new_v4();
+
+            let live = Burst::from_turns_at(room, Vec::new(), Some(1), Cause::Stimulus(id));
+            assert_eq!(live.cause.root(), Some(id));
+
+            assert_eq!(
+                Burst::from_turns(room, Vec::new()).cause,
+                Cause::Synthetic,
+                "the no-cause constructor is for fixtures and must say so"
+            );
+            assert_eq!(
+                Burst::from("a raw string".to_string()).cause,
+                Cause::Synthetic,
+                "a raw string arrives through no channel at all"
+            );
+        }
+
+        // what this catches: probe/receipt vocabulary drifting away from the variants,
+        // which would silently break any grouping done on `cause=` rows.
+        #[test]
+        fn every_cause_reports_a_distinct_stable_tag() {
+            let tags = [
+                Cause::Stimulus(Uuid::new_v4()).as_str(),
+                Cause::Ambient.as_str(),
+                Cause::Synthetic.as_str(),
+            ];
+            assert_eq!(tags, ["stimulus", "ambient", "synthetic"]);
+        }
+    }
+
     /// A canned faculty for tests — fixed contribution + salience.
     struct FixedFaculty(Contribution);
     #[async_trait]
@@ -2021,7 +2410,7 @@ mod tests {
                     "conditioned the reply on the recalled context",
                 )),
                 None => Some(Contribution::verdict(
-                    Decision::Pass,
+                    Decision::pass(),
                     0.5,
                     "blind — no context in the broadcast",
                 )),
@@ -2041,7 +2430,10 @@ mod tests {
     #[test]
     fn genome_page_in_and_out_round_trips() {
         let c = cycle(vec![], 4);
-        assert!(c.genome().is_empty(), "a fresh cycle starts on the base model");
+        assert!(
+            c.genome().is_empty(),
+            "a fresh cycle starts on the base model"
+        );
 
         c.page_in(vec![ActiveAdapterRequest {
             name: "coder-0p5b".to_string(),
@@ -2147,7 +2539,10 @@ mod tests {
         let adapter: Arc<dyn crate::ai::adapter::AIProviderAdapter> =
             Arc::new(HeuristicInferenceAdapter::new());
         let default_id = adapter.default_model().to_string();
-        assert!(!default_id.is_empty(), "fixture adapter must carry a default model");
+        assert!(
+            !default_id.is_empty(),
+            "fixture adapter must carry a default model"
+        );
 
         // Boot shape: binding with NO explicit model (the live upstart path).
         let handle = model_binding(Arc::clone(&adapter), None, 20_224);
@@ -2199,8 +2594,15 @@ mod tests {
         // First tick → CycleId(1); both the perception (Recall) and deliberation
         // (verdict) findings must carry it.
         let ws1 = c.run("burst one").await;
-        assert_eq!(ws1.cycle, CycleId(1), "first live cycle is 1, not the 0 sentinel");
-        assert!(ws1.broadcast.len() >= 2, "both faculties contributed this tick");
+        assert_eq!(
+            ws1.cycle,
+            CycleId(1),
+            "first live cycle is 1, not the 0 sentinel"
+        );
+        assert!(
+            ws1.broadcast.len() >= 2,
+            "both faculties contributed this tick"
+        );
         for bid in &ws1.broadcast {
             assert_eq!(
                 bid.cycle,
@@ -2421,7 +2823,7 @@ mod tests {
         let faculties: Vec<Arc<dyn Faculty>> = vec![
             Arc::new(AbstainFaculty(FacultyId::Recall)),
             Arc::new(FixedFaculty(Contribution::verdict(
-                Decision::Pass,
+                Decision::pass(),
                 0.6,
                 "nothing worth adding",
             ))),
@@ -2432,7 +2834,7 @@ mod tests {
             1,
             "the abstaining faculty added nothing"
         );
-        assert_eq!(ws.decision(), Some(&Decision::Pass));
+        assert_eq!(ws.decision(), Some(&Decision::pass()));
     }
 
     // what this catches: a FAILED model call (a deliberation FAULT) is surfaced by
@@ -2632,7 +3034,7 @@ mod tests {
                     !ws.broadcast.is_empty(),
                     "deliberation must only fire after phase 1 assembled context"
                 );
-                Some(Contribution::verdict(Decision::Pass, 0.5, "noted"))
+                Some(Contribution::verdict(Decision::pass(), 0.5, "noted"))
             }
         }
         let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -2665,9 +3067,13 @@ mod tests {
         let arbiter = SituationFocusArbiter::new();
         // A realistic mixed tick: high-salience standing grounding (stable) plus the
         // volatile task context (the just-landed tool result + a recalled fact).
-        let roster =
-            Contribution::context(FacultyId::Custom("roster".into()), "room roster", 0.9, "grounding")
-                .session_stable();
+        let roster = Contribution::context(
+            FacultyId::Custom("roster".into()),
+            "room roster",
+            0.9,
+            "grounding",
+        )
+        .session_stable();
         let doctrine = Contribution::context(
             FacultyId::Custom("doctrine".into()),
             "operating doctrine",
@@ -2675,9 +3081,18 @@ mod tests {
             "grounding",
         )
         .session_stable();
-        let result =
-            Contribution::context(FacultyId::WorldModel, "[action #1] code/read → fn main()...", 0.6, "result");
-        let recall = Contribution::context(FacultyId::Recall, "recalled: the ticket asks for X", 0.5, "recall");
+        let result = Contribution::context(
+            FacultyId::WorldModel,
+            "[action #1] code/read → fn main()...",
+            0.6,
+            "result",
+        );
+        let recall = Contribution::context(
+            FacultyId::Recall,
+            "recalled: the ticket asks for X",
+            0.5,
+            "recall",
+        );
         let candidates = vec![roster, doctrine, result.clone(), recall.clone()];
 
         // Fresh ask: fuller grounding — everything within capacity survives, exactly

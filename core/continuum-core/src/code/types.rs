@@ -44,7 +44,10 @@ pub struct ChangeNode {
 /// File operation types.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 #[serde(rename_all = "snake_case")]
-#[ts(export, export_to = "../../../protocol/typescript/code/FileOperation.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/FileOperation.ts"
+)]
 pub enum FileOperation {
     Create,
     Write,
@@ -172,7 +175,10 @@ pub struct SearchMatch {
 
 /// Result of a code search operation.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/code/SearchResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/SearchResult.ts"
+)]
 pub struct SearchResult {
     pub success: bool,
     pub matches: Vec<SearchMatch>,
@@ -219,7 +225,10 @@ pub struct UndoResult {
 
 /// History query result.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/code/HistoryResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/HistoryResult.ts"
+)]
 pub struct HistoryResult {
     pub success: bool,
     pub nodes: Vec<ChangeNode>,
@@ -230,7 +239,10 @@ pub struct HistoryResult {
 
 /// Git status information.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/code/GitStatusInfo.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/GitStatusInfo.ts"
+)]
 pub struct GitStatusInfo {
     pub success: bool,
     #[ts(optional)]
@@ -272,7 +284,10 @@ pub enum FsEntryKind {
 /// `None` in that case. When `exists: true`, `kind` is always set
 /// (never `None`).
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/code/ExistsResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/ExistsResult.ts"
+)]
 pub struct ExistsResult {
     pub success: bool,
     pub exists: bool,

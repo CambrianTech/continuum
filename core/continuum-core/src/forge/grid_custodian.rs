@@ -212,11 +212,7 @@ mod tests {
     }
     #[async_trait]
     impl GridDispatch for FakeGridDispatch {
-        async fn dispatch(
-            &self,
-            command: &str,
-            params: Value,
-        ) -> Result<Value, GridDispatchError> {
+        async fn dispatch(&self, command: &str, params: Value) -> Result<Value, GridDispatchError> {
             self.calls
                 .lock()
                 .unwrap()
@@ -257,7 +253,11 @@ mod tests {
     async fn health_routes_to_forge_health_and_decodes() {
         let health_json = serde_json::to_value(HealthResponse::gguf_lora(true, 3, 2)).unwrap();
         let dispatch = FakeGridDispatch::returning(Ok(health_json));
-        let cust = GridForgeCustodian::new(dispatch, routable_endpoint(TrustLevel::Trusted), TrustLevel::Trusted);
+        let cust = GridForgeCustodian::new(
+            dispatch,
+            routable_endpoint(TrustLevel::Trusted),
+            TrustLevel::Trusted,
+        );
 
         let h = cust.health().await.expect("decodes the remote health");
         assert_eq!(h.contract_version, CONTRACT_VERSION);
@@ -279,9 +279,16 @@ mod tests {
             ..HealthResponse::ok_gguf_lora()
         };
         let dispatch = FakeGridDispatch::returning(Ok(serde_json::to_value(ahead).unwrap()));
-        let cust = GridForgeCustodian::new(dispatch, routable_endpoint(TrustLevel::Trusted), TrustLevel::Trusted);
+        let cust = GridForgeCustodian::new(
+            dispatch,
+            routable_endpoint(TrustLevel::Trusted),
+            TrustLevel::Trusted,
+        );
 
-        let err = cust.ensure_contract().await.expect_err("version drift must refuse");
+        let err = cust
+            .ensure_contract()
+            .await
+            .expect_err("version drift must refuse");
         match err {
             ForgeCustodianError::Api(m) => assert!(m.contains("version mismatch"), "got: {m}"),
             other => panic!("expected Api mismatch, got {other:?}"),
@@ -303,9 +310,16 @@ mod tests {
             "details": {"tensors": 196},
         });
         let dispatch = FakeGridDispatch::returning(Ok(envelope));
-        let cust = GridForgeCustodian::new(dispatch, routable_endpoint(TrustLevel::Trusted), TrustLevel::Trusted);
+        let cust = GridForgeCustodian::new(
+            dispatch,
+            routable_endpoint(TrustLevel::Trusted),
+            TrustLevel::Trusted,
+        );
 
-        let res = cust.export_gguf_lora(&sample_request()).await.expect("dispatch ok");
+        let res = cust
+            .export_gguf_lora(&sample_request())
+            .await
+            .expect("dispatch ok");
         assert!(res.success, "a successful dispatch ⇒ a successful export");
         assert_eq!(res.message, "converted 196 tensors");
         assert_eq!(res.details["tensors"], 196);
@@ -314,8 +328,14 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, CMD_FORGE_EXPORT, "must route to forge/export");
         let p = &calls[0].1;
-        assert_eq!(p["format"], "gguf-lora", "the format tag routes to the custodian server-side");
-        assert_eq!(p["checkpoint"], "/runs/coder-4b", "checkpoint named in body (stateless)");
+        assert_eq!(
+            p["format"], "gguf-lora",
+            "the format tag routes to the custodian server-side"
+        );
+        assert_eq!(
+            p["checkpoint"], "/runs/coder-4b",
+            "checkpoint named in body (stateless)"
+        );
         assert_eq!(p["base_model_id"], "continuum-ai/qwen3-4b-GGUF");
         assert_eq!(p["outtype"], "f16");
     }
@@ -328,9 +348,16 @@ mod tests {
     async fn export_trust_gate_refuses_below_floor_without_dispatching() {
         // endpoint sits at Trusted; the job demands Owner.
         let dispatch = FakeGridDispatch::returning(Ok(json!({})));
-        let cust = GridForgeCustodian::new(dispatch, routable_endpoint(TrustLevel::Trusted), TrustLevel::Owner);
+        let cust = GridForgeCustodian::new(
+            dispatch,
+            routable_endpoint(TrustLevel::Trusted),
+            TrustLevel::Owner,
+        );
 
-        let err = cust.export_gguf_lora(&sample_request()).await.expect_err("trust floor not met");
+        let err = cust
+            .export_gguf_lora(&sample_request())
+            .await
+            .expect_err("trust floor not met");
         match err {
             ForgeCustodianError::Api(m) => assert!(m.contains("trust"), "got: {m}"),
             other => panic!("expected Api gate refusal, got {other:?}"),
@@ -352,8 +379,13 @@ mod tests {
         let dispatch = FakeGridDispatch::returning(Ok(json!({})));
         let cust = GridForgeCustodian::new(dispatch, ep, TrustLevel::Owner);
 
-        cust.export_gguf_lora(&sample_request()).await.expect_err("Down endpoint refused");
-        assert!(cust.dispatch.calls.lock().unwrap().is_empty(), "no dispatch to a Down endpoint");
+        cust.export_gguf_lora(&sample_request())
+            .await
+            .expect_err("Down endpoint refused");
+        assert!(
+            cust.dispatch.calls.lock().unwrap().is_empty(),
+            "no dispatch to a Down endpoint"
+        );
     }
 
     // what this catches: an UNREACHABLE grid hop maps to ForgeCustodianError::Unreachable
@@ -361,11 +393,19 @@ mod tests {
     // collapsed to Api, the fabric would give up instead of trying another node.
     #[tokio::test]
     async fn unreachable_dispatch_maps_to_unreachable() {
-        let dispatch =
-            FakeGridDispatch::returning(Err(GridDispatchError::Unreachable("connect refused".into())));
-        let cust = GridForgeCustodian::new(dispatch, routable_endpoint(TrustLevel::Owner), TrustLevel::Owner);
+        let dispatch = FakeGridDispatch::returning(Err(GridDispatchError::Unreachable(
+            "connect refused".into(),
+        )));
+        let cust = GridForgeCustodian::new(
+            dispatch,
+            routable_endpoint(TrustLevel::Owner),
+            TrustLevel::Owner,
+        );
 
-        let err = cust.export_gguf_lora(&sample_request()).await.expect_err("hop failed");
+        let err = cust
+            .export_gguf_lora(&sample_request())
+            .await
+            .expect_err("hop failed");
         assert!(
             matches!(err, ForgeCustodianError::Unreachable(_)),
             "grid-unreachable must stay heal-able, got: {err:?}"
@@ -381,9 +421,16 @@ mod tests {
         let dispatch = FakeGridDispatch::returning(Err(GridDispatchError::Remote(
             "Remote command failed: custodian export (gguf-lora) failed: convert exited 1".into(),
         )));
-        let cust = GridForgeCustodian::new(dispatch, routable_endpoint(TrustLevel::Owner), TrustLevel::Owner);
+        let cust = GridForgeCustodian::new(
+            dispatch,
+            routable_endpoint(TrustLevel::Owner),
+            TrustLevel::Owner,
+        );
 
-        let err = cust.export_gguf_lora(&sample_request()).await.expect_err("remote failed");
+        let err = cust
+            .export_gguf_lora(&sample_request())
+            .await
+            .expect_err("remote failed");
         match err {
             ForgeCustodianError::Api(m) => assert!(m.contains("custodian export"), "got: {m}"),
             other => panic!("expected Api (don't-heal), got {other:?}"),

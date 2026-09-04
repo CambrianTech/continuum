@@ -18,7 +18,10 @@ fn default_max_iterations() -> u32 {
 
 /// Inputs to `agent/start`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/agent/AgentStartParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/agent/AgentStartParams.ts"
+)]
 pub struct AgentStartParams {
     /// The task for the agent to accomplish (free-form natural language).
     pub task: String,
@@ -34,7 +37,10 @@ pub struct AgentStartParams {
 
 /// Result of `agent/start`: the handle to poll.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/agent/AgentStartResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/agent/AgentStartResult.ts"
+)]
 pub struct AgentStartResult {
     /// The handle identifying the spawned agent — pass to `status`/`stop`/`wait`.
     pub handle: String,

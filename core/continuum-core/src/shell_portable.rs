@@ -76,7 +76,12 @@ fn windows_bash_candidates() -> Vec<PathBuf> {
         if let Ok(root) = std::env::var(env_key) {
             let base = PathBuf::from(root);
             candidates.push(base.join("Git").join("bin").join("bash.exe"));
-            candidates.push(base.join("Programs").join("Git").join("bin").join("bash.exe"));
+            candidates.push(
+                base.join("Programs")
+                    .join("Git")
+                    .join("bin")
+                    .join("bash.exe"),
+            );
         }
     }
     if let Ok(path) = std::env::var("PATH") {

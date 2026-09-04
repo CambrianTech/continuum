@@ -113,10 +113,7 @@ pub enum RemoteInferenceError {
     /// Response arrived but its correlation_id doesn't match any
     /// outstanding request. Substrate bug — transport's pairing
     /// logic broke. Caller surfaces; substrate logs loudly.
-    CorrelationMismatch {
-        expected: String,
-        actual: String,
-    },
+    CorrelationMismatch { expected: String, actual: String },
     /// Adapter-level failure on the peer side (the peer's local
     /// adapter returned an error). Wraps the peer's error string
     /// so the requester can decide whether to retry or surface.

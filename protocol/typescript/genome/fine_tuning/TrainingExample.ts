@@ -8,4 +8,4 @@
  * noteworthy score). The substrate doesn't dispatch on it; it
  * flows into telemetry + alloy provenance.
  */
-export type TrainingExample = { prompt: string, completion: string, metadata: Record<string, unknown> | undefined, };
+export type TrainingExample = { prompt: string, completion: string, metadata?: Record<string, unknown> | undefined, };

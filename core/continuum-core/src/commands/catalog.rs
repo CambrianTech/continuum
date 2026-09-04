@@ -22,7 +22,10 @@ use crate::sdk_codegen::{command_registry, ActionCommand, CommandError, Ctx, Wir
 /// filter by (so a tray can ask "what `data/*` commands exist?"). Empty ⇒ all.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/commands/CommandsListParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/commands/CommandsListParams.ts"
+)]
 pub struct CommandsListParams {
     /// Optional substring filter on the command name (case-insensitive).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -34,7 +37,10 @@ pub struct CommandsListParams {
 /// adapt to it (name to call, what it does, what it needs, how it's gated).
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/commands/CommandInfo.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/commands/CommandInfo.ts"
+)]
 pub struct CommandInfo {
     /// The command name — the routing key you call (`uu <name>`).
     pub name: String,
@@ -57,7 +63,10 @@ pub struct CommandInfo {
 /// Result of `commands/list` — the live catalog.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/commands/CommandsListResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/commands/CommandsListResult.ts"
+)]
 pub struct CommandsListResult {
     /// How many commands matched — declared FIRST so it serializes at the head of
     /// the JSON (`{"total":N,...}`). A broad `commands/list` result is large and the
@@ -160,7 +169,10 @@ mod tests {
             .await
             .expect("ok");
         assert!(
-            filtered.commands.iter().all(|c| c.name.contains("commands/")),
+            filtered
+                .commands
+                .iter()
+                .all(|c| c.name.contains("commands/")),
             "filter narrows by name substring"
         );
         assert!(!filtered.commands.is_empty());
@@ -222,8 +234,7 @@ mod tests {
 
         // Provisional ⊆ Owner, and everything shown to the Provisional caller is
         // actually authorized at Provisional (listed == callable).
-        let owner_names: HashSet<&str> =
-            owner.commands.iter().map(|c| c.name.as_str()).collect();
+        let owner_names: HashSet<&str> = owner.commands.iter().map(|c| c.name.as_str()).collect();
         for c in &provisional.commands {
             assert!(
                 owner_names.contains(c.name.as_str()),

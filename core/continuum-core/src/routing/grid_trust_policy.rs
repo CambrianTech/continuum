@@ -142,7 +142,11 @@ impl GridTrustAuthPolicy {
                 // unauthenticated socket carries a nil peer_id → no registered
                 // trust → Provisional. A future GH-auth handshake raises this.
                 CallerSource::Airc | CallerSource::Tcp | CallerSource::Ws => {
-                    match self.trust_source.as_ref().and_then(|s| s.trust_of(c.peer_id.as_uuid())) {
+                    match self
+                        .trust_source
+                        .as_ref()
+                        .and_then(|s| s.trust_of(c.peer_id.as_uuid()))
+                    {
                         Some(registered) => registered.min(REMOTE_TRUST_CEILING),
                         None => TrustLevel::Provisional,
                     }
@@ -371,7 +375,10 @@ mod tests {
         // (2) Trusted peer — graduated (≥ Provisional), but Owner commands are
         // local-only: still forbidden data/delete.
         let t = CallerIdentity::airc(crate::identity::PeerId::from_uuid(trusted));
-        assert_eq!(policy.gate(&decision("ai/generate"), Some(&t)), Verdict::Allowed);
+        assert_eq!(
+            policy.gate(&decision("ai/generate"), Some(&t)),
+            Verdict::Allowed
+        );
         assert!(matches!(
             policy.gate(&decision("data/delete"), Some(&t)),
             Verdict::Forbidden { .. }
@@ -381,14 +388,20 @@ mod tests {
         // Owner-only command. The owner is the operator on the box, never a peer.
         let o = CallerIdentity::airc(crate::identity::PeerId::from_uuid(owner_peer));
         assert!(
-            matches!(policy.gate(&decision("data/delete"), Some(&o)), Verdict::Forbidden { .. }),
+            matches!(
+                policy.gate(&decision("data/delete"), Some(&o)),
+                Verdict::Forbidden { .. }
+            ),
             "a remote peer is capped at Trusted — Owner-gated commands stay local-only"
         );
 
         // (3) Unknown peer (not in the bridge) → Provisional default: ai/generate
         // allowed, Owner denied — the cross-grid default is preserved.
         let u = CallerIdentity::airc(crate::identity::PeerId::new());
-        assert_eq!(policy.gate(&decision("ai/generate"), Some(&u)), Verdict::Allowed);
+        assert_eq!(
+            policy.gate(&decision("ai/generate"), Some(&u)),
+            Verdict::Allowed
+        );
         assert!(matches!(
             policy.gate(&decision("data/delete"), Some(&u)),
             Verdict::Forbidden { .. }
@@ -525,14 +538,20 @@ mod tests {
             "Privileged bash — allowed for a local persona (Trusted tier)"
         );
         assert!(
-            matches!(policy.gate(&decision("data/delete"), Some(&asha)), Verdict::Forbidden { .. }),
+            matches!(
+                policy.gate(&decision("data/delete"), Some(&asha)),
+                Verdict::Forbidden { .. }
+            ),
             "Owner-only ops stay the human operator's, even for Asha"
         );
 
         // A remote Provisional airc peer must NOT get bash — the RCE boundary.
         let remote = CallerIdentity::airc(crate::identity::PeerId::new());
         assert!(
-            matches!(policy.gate(&decision("code/shell"), Some(&remote)), Verdict::Forbidden { .. }),
+            matches!(
+                policy.gate(&decision("code/shell"), Some(&remote)),
+                Verdict::Forbidden { .. }
+            ),
             "a remote Provisional peer is denied shell — no cross-grid RCE"
         );
     }
@@ -610,7 +629,10 @@ mod tests {
     fn local_and_substrate_callers_pass() {
         let policy = GridTrustAuthPolicy::new();
         // None = substrate's own code.
-        assert_eq!(policy.gate(&decision("data/delete"), None), Verdict::Allowed);
+        assert_eq!(
+            policy.gate(&decision("data/delete"), None),
+            Verdict::Allowed
+        );
         // Local caller.
         let local = CallerIdentity::local(crate::identity::PeerId::new());
         assert_eq!(

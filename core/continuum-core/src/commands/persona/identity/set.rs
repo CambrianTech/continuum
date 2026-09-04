@@ -46,14 +46,17 @@ use super::{card_view, PersonaCardView};
 /// facets are untouched. `profile` entries MERGE (an empty value DELETES that key).
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/persona/PersonaIdentitySetParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/PersonaIdentitySetParams.ts"
+)]
 pub struct PersonaIdentitySetParams {
     /// Whose identity to edit. Omit to edit YOUR OWN (the authenticated caller). A
     /// persona may only edit herself; an operator may target any persona by id.
     /// Accepts the full id OR the 8-char short form shown in rosters (#164).
     #[serde(default)]
     #[ts(type = "string | null")]
-    pub persona_id: Option<String>,
+    pub persona_id: Option<crate::identity::PersonaRef>,
     /// New gender: `male` | `female` | `neutral` (aka they/them). Presentation facet —
     /// avatar/voice are NOT auto-re-derived (they're independently editable below).
     #[serde(default)]
@@ -143,7 +146,7 @@ crate::action_command! {
         // A short/mistyped id resolves against the personas this process knows
         // (their registered cards) — the ONE id_resolve primitive (#164).
         let caller = ctx.caller.as_ref();
-        let target_id = match p.persona_id.as_deref() {
+        let target_id = match p.persona_id.as_ref().map(|r| r.as_str()) {
             Some(raw) => crate::id_resolve::resolve(raw, &crate::persona::card::ids(), "persona")
                 .map_err(CommandError::Invalid)?,
             None => caller
@@ -229,15 +232,24 @@ mod tests {
         set.insert("bio".to_string(), "I build substrates.".to_string());
         set.insert("goal".to_string(), "ship the grid".to_string());
         apply_edits(&mut card, &params_profile(set)).unwrap();
-        assert_eq!(card.profile.get("bio").map(String::as_str), Some("I build substrates."));
-        assert_eq!(card.profile.get("goal").map(String::as_str), Some("ship the grid"));
+        assert_eq!(
+            card.profile.get("bio").map(String::as_str),
+            Some("I build substrates.")
+        );
+        assert_eq!(
+            card.profile.get("goal").map(String::as_str),
+            Some("ship the grid")
+        );
 
         // Now delete "goal" via empty value, keep "bio".
         let mut del = BTreeMap::new();
         del.insert("goal".to_string(), String::new());
         apply_edits(&mut card, &params_profile(del)).unwrap();
         assert!(card.profile.contains_key("bio"));
-        assert!(!card.profile.contains_key("goal"), "empty value deletes the key");
+        assert!(
+            !card.profile.contains_key("goal"),
+            "empty value deletes the key"
+        );
     }
 
     // what this catches: the spine facets edit independently — gender/avatar/voice/role
@@ -272,7 +284,10 @@ mod tests {
             voice_seed: None,
             profile: BTreeMap::new(),
         };
-        assert!(matches!(apply_edits(&mut card, &p), Err(CommandError::Invalid(_))));
+        assert!(matches!(
+            apply_edits(&mut card, &p),
+            Err(CommandError::Invalid(_))
+        ));
     }
 
     fn params_profile(profile: BTreeMap<String, String>) -> PersonaIdentitySetParams {

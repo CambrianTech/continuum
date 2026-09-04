@@ -110,7 +110,11 @@ async fn team(executor: &Arc<CommandExecutor>, root: &str) -> Vec<(Uuid, Command
         // Identity flows via the transport's CallerIdentity (caller-scoped), not a
         // spoofable persona_id param — create-workspace keys on ctx.caller, same as
         // every other migrated code/* op.
-        let calls = vec![tool("ws", "code/create-workspace", json!({ "workspace_root": root }))];
+        let calls = vec![tool(
+            "ws",
+            "code/create-workspace",
+            json!({ "workspace_root": root }),
+        )];
         let out = client
             .execute_native_batch(&calls, &ctx(id), 8000)
             .await
@@ -152,7 +156,10 @@ async fn profile_op<F>(
                 for r in 0..ROUNDS {
                     let calls = vec![tool("op", command, mk(id, r))];
                     let t0 = Instant::now();
-                    let out = client.execute_native_batch(&calls, &c, 16000).await.unwrap();
+                    let out = client
+                        .execute_native_batch(&calls, &c, 16000)
+                        .await
+                        .unwrap();
                     stats.record(t0.elapsed().as_micros() as u64);
                     if out.results[0].is_error.is_some() {
                         errors.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -179,14 +186,22 @@ async fn profile_op<F>(
 }
 
 /// Build a team of `n` personas sharing `executor`, each workspace-created.
-async fn team_of(executor: &Arc<CommandExecutor>, root: &str, n: usize) -> Vec<(Uuid, CommandToolExecutor)> {
+async fn team_of(
+    executor: &Arc<CommandExecutor>,
+    root: &str,
+    n: usize,
+) -> Vec<(Uuid, CommandToolExecutor)> {
     let mut team = Vec::with_capacity(n);
     for _ in 0..n {
         let id = Uuid::new_v4();
         let client = persona(executor.clone(), id);
         client
             .execute_native_batch(
-                &[tool("ws", "code/create-workspace", json!({ "workspace_root": root }))],
+                &[tool(
+                    "ws",
+                    "code/create-workspace",
+                    json!({ "workspace_root": root }),
+                )],
                 &ctx(id),
                 8000,
             )
@@ -208,8 +223,14 @@ async fn read_scaling_sweep() {
     let root = project.path().to_string_lossy().to_string();
     let executor = substrate();
 
-    println!("\n  cores={}  read scaling ({ROUNDS} reads/persona)", num_cpus::get());
-    println!("  {:>8} │ {:>6} │ {:>8} │ {:>10} │ {:>9} │ {:>9}", "personas", "ops", "wall_ms", "reads/sec", "avg_us", "max_us");
+    println!(
+        "\n  cores={}  read scaling ({ROUNDS} reads/persona)",
+        num_cpus::get()
+    );
+    println!(
+        "  {:>8} │ {:>6} │ {:>8} │ {:>10} │ {:>9} │ {:>9}",
+        "personas", "ops", "wall_ms", "reads/sec", "avg_us", "max_us"
+    );
 
     for &n in &[10usize, 50, 100, 200, 400] {
         let team = team_of(&executor, &root, n).await;
@@ -238,7 +259,12 @@ async fn read_scaling_sweep() {
         let snap = stats.snapshot();
         println!(
             "  {:>8} │ {:>6} │ {:>8.1} │ {:>10.0} │ {:>9} │ {:>9}",
-            n, ops, wall.as_secs_f64() * 1000.0, ops as f64 / wall.as_secs_f64(), snap.avg_duration_us, snap.max_duration_us
+            n,
+            ops,
+            wall.as_secs_f64() * 1000.0,
+            ops as f64 / wall.as_secs_f64(),
+            snap.avg_duration_us,
+            snap.max_duration_us
         );
     }
 }
@@ -277,9 +303,12 @@ async fn realistic_collaborative_tool_load() {
     .await;
 
     // code/tree — orient in the project.
-    profile_op("tree", &team, "code/tree", |id, _r| {
-        json!({ "persona_id": id.to_string(), "max_depth": 5 })
-    })
+    profile_op(
+        "tree",
+        &team,
+        "code/tree",
+        |id, _r| json!({ "persona_id": id.to_string(), "max_depth": 5 }),
+    )
     .await;
 
     // code/write — each persona to its own scratch file (the edit half of work).

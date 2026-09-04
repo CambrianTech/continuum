@@ -350,11 +350,7 @@ mod tests {
         task.await.unwrap();
 
         // Now both leases dropped — gate evicted.
-        assert_eq!(
-            gate.len(),
-            0,
-            "gate evicted after final lease drops"
-        );
+        assert_eq!(gate.len(), 0, "gate evicted after final lease drops");
     }
 
     // what this catches: post-eviction acquire creates a FRESH gate
@@ -494,11 +490,7 @@ mod tests {
             }
 
             // Every lease dropped → all gates auto-evicted.
-            assert_eq!(
-                gate.len(),
-                0,
-                "all leases dropped → all gates auto-evicted"
-            );
+            assert_eq!(gate.len(), 0, "all leases dropped → all gates auto-evicted");
         }
     }
 }

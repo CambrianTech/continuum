@@ -40,7 +40,7 @@ use async_trait::async_trait;
 use futures_util::future::{join, join_all};
 use uuid::Uuid;
 
-use super::embedding::{cosine_similarity, EmbeddingProvider};
+use super::embedding::EmbeddingProvider;
 use super::working_memory::WorkingMemory;
 use super::workspace::{Contribution, Faculty, FacultyId, Workspace};
 use crate::persona::admission_state::AdmissionState;
@@ -51,6 +51,14 @@ use crate::persona::engram::{Engram, EngramOrigin};
 /// can lower it for tests/bench. Generous: the budget, not this, is the real
 /// limiter on a live persona.
 const DEFAULT_RECALL_LIMIT: usize = 16;
+
+/// How many consecutive turns the sticky recall rendering may hold its bytes
+/// against LOW-RANK set churn before a refresh re-renders with accumulated
+/// novelty (a NEW TOP memory always refreshes immediately, countdown or not).
+/// The exploitation half of the ladder's promotion mix, applied at the recall
+/// tier; deliberately small so staleness is bounded at a few acts. Tunable as
+/// the rent ledger accumulates ("tune it as we go", 2026-09-01).
+const RECALL_STICKY_TURNS: u8 = 3;
 
 /// Fallback absolute cosine floor handed to the default [`SignificanceRanker`]
 /// for an UNCALIBRATED embedding space only. An absolute floor can never be the
@@ -63,12 +71,6 @@ const DEFAULT_RECALL_LIMIT: usize = 16;
 /// (significance vs the MEASURED null).
 const RECALL_RELEVANCE_FLOOR: f32 = 0.15;
 
-/// Fraction of the served context window recall may spend, in tokens. Recall is
-/// ONE perception faculty among many (roster, doctrine, working memory) plus the
-/// room transcript and the identity prompt — it must never crowd them out. 10%
-/// keeps the live message dominant while still carrying the relevant past.
-const RECALL_WINDOW_FRACTION: f32 = 0.10;
-
 /// Recall count budgeted by the served model's capability, proxied by its context
 /// window (the metric the registry reliably carries today; param-size feeds in via
 /// #74 when the Model row hydrates it). A small model juggles fewer working items,
@@ -78,10 +80,10 @@ const RECALL_WINDOW_FRACTION: f32 = 0.10;
 fn recall_count_for_window(context_window: u32) -> usize {
     match context_window {
         0 => 5,
-        1..=8_191 => 3,           // ~4B served tight (e.g. 4096)
-        8_192..=32_767 => 5,      // mid (8–32k)
-        32_768..=131_071 => 8,    // large local (e.g. 14B @ 32k+)
-        _ => 12,                  // cloud-class windows
+        1..=8_191 => 3,        // ~4B served tight (e.g. 4096)
+        8_192..=32_767 => 5,   // mid (8–32k)
+        32_768..=131_071 => 8, // large local (e.g. 14B @ 32k+)
+        _ => 12,               // cloud-class windows
     }
 }
 
@@ -90,7 +92,7 @@ fn recall_count_for_window(context_window: u32) -> usize {
 /// token ceiling recall may not exceed in the served window. Derived from the
 /// model's served capability — a small model is not buried under memory it cannot
 /// hold, and recall never eats the window. See [`recall_count_for_window`],
-/// [`RECALL_RELEVANCE_FLOOR`], [`RECALL_WINDOW_FRACTION`].
+/// [`RECALL_RELEVANCE_FLOOR`], [`ContextBudget::recall_tokens`].
 struct RecallBudget {
     max_count: usize,
     token_ceiling: usize,
@@ -101,7 +103,9 @@ impl RecallBudget {
         let token_ceiling = if context_window == 0 {
             usize::MAX // window unknown → don't token-gate (count + floor still apply)
         } else {
-            (((context_window as f32) * RECALL_WINDOW_FRACTION) as usize).max(MIN_RECALL_TOKENS)
+            crate::cognition::context_budget::ContextBudget::from_window(context_window)
+                .recall_tokens()
+                .max(MIN_RECALL_TOKENS)
         };
         Self {
             max_count: recall_count_for_window(context_window),
@@ -231,6 +235,14 @@ pub struct RecallFaculty {
     /// read per tick from the persona focus kernel
     /// ([`crate::persona::focus::registry`]) — one home for focus state.
     focus_policy: Arc<dyn crate::cognition::focus_policy::FocusPolicy>,
+    /// STICKY RENDER CACHE (rung 3): per room, the last surfaced set (ids, in
+    /// order), its rendered block, and the refresh countdown. The block is
+    /// reused byte-identical under the hysteresis rules at the reuse site —
+    /// killing the mutation sources (re-scored ordering, ticking age labels)
+    /// the rent ledger attributed warm KV breaks to, with staleness bounded at
+    /// [`RECALL_STICKY_TURNS`] turns and a new TOP memory always fresh. Tiny:
+    /// N-rooms entries of a few KB each, per persona.
+    sticky: parking_lot::Mutex<std::collections::HashMap<Uuid, (Vec<Uuid>, String, u8)>>,
 }
 
 impl RecallFaculty {
@@ -247,6 +259,7 @@ impl RecallFaculty {
             ranker: None,
             working_memory: None,
             focus_policy: Arc::new(crate::cognition::focus_policy::CalibratedConstants),
+            sticky: parking_lot::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -359,7 +372,10 @@ const NEAR_DUP_HEAD_CHARS: usize = 48;
 
 fn recall_near_duplicate(a: &str, b: &str) -> bool {
     fn norm(s: &str) -> String {
-        s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+        s.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
     }
     let (na, nb) = (norm(a), norm(b));
     if na.is_empty() || nb.is_empty() {
@@ -381,6 +397,13 @@ fn recall_near_duplicate(a: &str, b: &str) -> bool {
 /// act head does.
 // context-budget-exempt: minimum body length for a dedup KEY to be meaningful, never text shown to the model
 const WM_DEDUP_MIN_BODY_CHARS: usize = 24;
+
+/// How many leading chars of an engram's body must appear verbatim in the
+/// current burst for the memory to count as "already in the window" (burst
+/// dedup). Long enough that containment means the SAME text, short enough to
+/// survive the window's own trimming of a long message's tail.
+// context-budget-exempt: a MATCH-WINDOW length for dedup containment (how many chars must appear verbatim to count as the same text), not a prompt/context size — it neither budgets nor clamps any window
+const BURST_DEDUP_HEAD_CHARS: usize = 64;
 
 #[async_trait]
 impl Faculty for RecallFaculty {
@@ -406,7 +429,9 @@ impl Faculty for RecallFaculty {
         // Over-fetch when re-ranking so a relevant-but-lower-salience memory can
         // still win.
         let fetch_n = if self.embedder.is_some() {
-            surface_count.saturating_mul(RERANK_CANDIDATE_MULTIPLIER).max(surface_count)
+            surface_count
+                .saturating_mul(RERANK_CANDIDATE_MULTIPLIER)
+                .max(surface_count)
         } else {
             surface_count
         };
@@ -432,10 +457,7 @@ impl Faculty for RecallFaculty {
         // in via [`with_ranker`](Self::with_ranker) and is A/B'd on the replay
         // bench against A before shipping. No embedder → no relevance signal →
         // everything passes (pure salience×recency, unchanged).
-        let null = self
-            .embedder
-            .as_ref()
-            .and_then(|e| e.unrelated_null());
+        let null = self.embedder.as_ref().and_then(|e| e.unrelated_null());
         let scored: Vec<(f32, Engram, f32, bool, f32)> = match &self.embedder {
             Some(embedder) => {
                 // Embed the query AND every candidate CONCURRENTLY. Each embed is an
@@ -445,7 +467,8 @@ impl Faculty for RecallFaculty {
                 // `join` races the query against the candidate batch as one organic
                 // unit; the cache still collapses repeats to a sync hit.
                 let query_fut = embedder.embed(focused_query(&ws.world_state));
-                let cand_futs = join_all(candidates.iter().map(|(e, _)| embedder.embed(&e.content)));
+                let cand_futs =
+                    join_all(candidates.iter().map(|(e, _)| embedder.embed(&e.content)));
                 let (query, cand_embeds) = join(query_fut, cand_futs).await;
                 // Rank + gate through the adapter (content never crosses the seam —
                 // embeddings and usage signals only, so no ranker CAN regress to
@@ -571,6 +594,32 @@ impl Faculty for RecallFaculty {
                 });
             }
         }
+        // BURST DEDUP (rung 3c, the ledger's third same-evening verdict,
+        // 2026-09-01 night): relevance-ranking against the current burst
+        // surfaces the engrams OF the messages already sitting in the window —
+        // recall re-serving the conversation to itself, 2k tokens below the
+        // original. It cost three ways at once: duplicated content pays rent
+        // twice; the recall top tracked the window's bleeding edge, so it
+        // changed EVERY turn and the sticky cache never engaged (0 fires in
+        // two live windows); and the block stopped being what recall is FOR —
+        // the broader past. Same shape as the WM dedup above, one level up:
+        // an engram whose (stamp-stripped) head the burst already contains is
+        // already perceived — drop it from recall. Head-window containment,
+        // char-boundary safe, zero allocation per check.
+        if !ws.world_state.is_empty() {
+            surfaced.retain(|(_, engram, _, _)| {
+                let body = strip_action_stamp(&engram.content);
+                if body.len() < WM_DEDUP_MIN_BODY_CHARS {
+                    return true; // short memories: containment is coincidence-prone
+                }
+                let head_end = body
+                    .char_indices()
+                    .nth(BURST_DEDUP_HEAD_CHARS)
+                    .map(|(i, _)| i)
+                    .unwrap_or(body.len());
+                !ws.world_state.contains(&body[..head_end])
+            });
+        }
         let scored = surfaced;
 
         // Nothing cleared the closest-match floor — surface nothing rather than
@@ -584,6 +633,7 @@ impl Faculty for RecallFaculty {
         // memories the persona truly used this tick (uplift + persistence).
         let surfaced_ids: Vec<Uuid> = scored.iter().map(|(_, e, _, _)| e.id).collect();
         self.admission_state.record_recall_hits(&surfaced_ids, now);
+        crate::ipc::vitals_emitter::record_recall(self.persona_id, surfaced_ids.len() as u64);
 
         // RTOS probe at the hippocampus seam: WHAT query conditioned recall and
         // WHAT won, with the scores the model never sees. This is how a
@@ -648,6 +698,60 @@ impl Faculty for RecallFaculty {
         // view ought to be more accommodating and ergonomic or we have failed").
         // Structural attribution only: origin variant + speaker identity + age —
         // never content inspection ([[no-hardcoded-heuristics-to-steer-cognition]]).
+        // STICKY RENDERING (mind-major spine — compression-ladder rung 3, driven
+        // by the rent ledger's FIRST verdict, 2026-09-01: warm turns break in
+        // `grounding`, and recall is that run's churner). Two byte-mutation
+        // sources hide in a re-render of the SAME memories: re-scored ordering,
+        // and the humanized ages ("16h ago" → "17h ago") that tick on every
+        // render. So the rendered block is cached per room and reused BYTE-
+        // IDENTICAL for as long as the surfaced set (ids, in order) is
+        // unchanged — the ages freeze at first render, which the frame already
+        // licenses ("They describe the PAST"). A set change (new memory
+        // surfaced, one dropped, order moved) re-renders fresh with fresh ages.
+        // Scoring, uplift, and the bid salience stay live every turn — only the
+        // BYTES the model re-reads go still.
+        // HYSTERESIS, not exact-match (v2, hours after v1): live rooms admit
+        // new engrams every act, so "identical set" NEVER held (0 sticky fires
+        // in the first live window) — the cache must tolerate LOW-RANK churn.
+        // Reuse rules: (a) identical set → reuse and re-arm the countdown;
+        // (b) the fresh TOP memory is already in the cached set and the
+        // countdown is live → reuse (the newcomer is lower-ranked shuffle;
+        // staleness bounded at RECALL_STICKY_TURNS turns); (c) a NEW TOP
+        // memory always renders immediately — answering-relevance never waits
+        // on cache stability. The exploration/exploitation mix of the
+        // promotion doctrine, applied at the recall tier; the countdown is the
+        // tunable ("tune it as we go").
+        {
+            let mut sticky = self.sticky.lock();
+            if let Some((prev_ids, prev_content, remaining)) = sticky.get_mut(&ws.room_id) {
+                let set_equal = *prev_ids == surfaced_ids;
+                let top_already_cached = surfaced_ids
+                    .first()
+                    .is_some_and(|top| prev_ids.contains(top));
+                if set_equal || (*remaining > 0 && top_already_cached) {
+                    if set_equal {
+                        *remaining = RECALL_STICKY_TURNS;
+                    } else {
+                        *remaining -= 1;
+                    }
+                    let reasoning = format!(
+                        "recalled {} memor{} (sticky re-render — bytes held for KV reuse; refresh in {} turn(s))",
+                        scored.len(),
+                        if scored.len() == 1 { "y" } else { "ies" },
+                        remaining,
+                    );
+                    return Some(
+                        Contribution::context(
+                            FacultyId::Recall,
+                            prev_content.clone(),
+                            top_salience,
+                            reasoning,
+                        )
+                        .trailing(),
+                    );
+                }
+            }
+        }
         let now_ms = (self.clock)();
         let lines = scored
             .iter()
@@ -663,6 +767,10 @@ impl Faculty for RecallFaculty {
         // prefix per line already marks WHO/WHEN; this frames the whole block so the
         // pastness is unmissable. Not a directive about what to do — just what this IS.
         let content = format!("{RECALL_MEMORY_FRAME}\n{lines}");
+        self.sticky.lock().insert(
+            ws.room_id,
+            (surfaced_ids, content.clone(), RECALL_STICKY_TURNS),
+        );
         let reasoning = format!(
             "recalled {} memor{} ({}) — salience-uplifted, loop closed",
             scored.len(),
@@ -674,12 +782,21 @@ impl Faculty for RecallFaculty {
             }
         );
 
-        Some(Contribution::context(
-            FacultyId::Recall,
-            content,
-            top_salience,
-            reasoning,
-        ))
+        Some(
+            Contribution::context(FacultyId::Recall, content, top_salience, reasoning)
+                // TRAILING, not stable: recall is re-scored EVERY turn (salience ×
+                // recency, new engrams admitted between turns), so its block churns
+                // mid-list — measured 2026-09-01 as the system prompt mutating at
+                // char ~8.5k between consecutive turns (an insert + a re-fit that
+                // shrank the head 12.3k→10.7k), which invalidated the entire KV
+                // prefix behind it: hit_rate 0.0 with every persona on her OWN
+                // slot and the server's reuse proven perfect the same hour (test
+                // prompt ×2 → cache_n 397/401). The stable_blocks doc already
+                // promises "recall … is separated out as its own .trailing()
+                // turns (#205)"; this makes that promise true for FacultyId::
+                // Recall ([[a-mutating-system-prompt-destroys-kv-reuse-for-everything-after-it]]).
+                .trailing(),
+        )
     }
 }
 
@@ -787,11 +904,17 @@ mod tests {
         // Same restated thought → near-duplicate.
         assert!(recall_near_duplicate(a, b));
         // Prefix relationship → near-duplicate.
-        assert!(recall_near_duplicate("I ran code/tree to explore", "I ran code/tree to explore the whole tree"));
+        assert!(recall_near_duplicate(
+            "I ran code/tree to explore",
+            "I ran code/tree to explore the whole tree"
+        ));
         // Genuinely different memory → NOT collapsed.
         assert!(!recall_near_duplicate(a, c));
         // Short shared lead only (< head window, no prefix) → NOT collapsed.
-        assert!(!recall_near_duplicate("the cat sat on the mat", "the cat ran up the wall today"));
+        assert!(!recall_near_duplicate(
+            "the cat sat on the mat",
+            "the cat ran up the wall today"
+        ));
         // Empty never collapses.
         assert!(!recall_near_duplicate("", a));
     }
@@ -940,6 +1063,10 @@ mod tests {
             .expect("recall should bid when the store is non-empty");
         assert_eq!(c.faculty, FacultyId::Recall);
         assert!(c.decision.is_none(), "recall is context, never a verdict");
+        // Regression for the 2026-09-01 KV-prefix churn: recall is re-scored
+        // every turn, so it must render TRAILING (nearest generation), never in
+        // the cacheable system prefix it would invalidate on every mutation.
+        assert!(c.trailing, "recall must ride the volatile tail, not the stable head");
         // The most salient engram (highest index in the fixture) leads.
         assert!(
             c.content.contains("memory body number 4"),
@@ -947,6 +1074,102 @@ mod tests {
             c.content
         );
         assert!(c.salience > 0.0);
+    }
+
+    // what this catches: burst dedup (rung 3c). A memory whose content the
+    // current window ALREADY shows is re-served duplication — it must drop
+    // from recall (it paid rent twice, and its per-turn novelty as the recall
+    // top is why the sticky cache never engaged: 0 fires across two live
+    // windows). Memories NOT visible in the burst survive; short bodies are
+    // exempt (containment is coincidence-prone).
+    #[tokio::test]
+    async fn burst_dedup_drops_window_visible_memories_but_keeps_the_past() {
+        let now = 1_000_000_000u64;
+        // Own fixture: bodies long enough to clear the dedup floor (the shared
+        // fixture's ~20-char bodies are deliberately exempt as too short).
+        let persona = Uuid::parse_str("00000000-0000-0000-0000-000000000bbb").unwrap();
+        let recall_meta = Arc::new(RecallMetadataRegistry::new());
+        let state = Arc::new(AdmissionState::new(recall_meta.clone()));
+        let body = |i: usize| {
+            format!("long memory number {i} — it stretches well past the dedup floor with detail")
+        };
+        for i in 0..2usize {
+            let id = Uuid::new_v4();
+            state.push_for_test(Engram {
+                context_id: None,
+                id,
+                kind: EngramKind::Episodic,
+                content: body(i),
+                origin: EngramOrigin::Chat(ChatMessageRef {
+                    message_id: Uuid::new_v4(),
+                    room_id: Uuid::new_v4(),
+                    sender_id: Uuid::new_v4(),
+                    posted_at_ms: now,
+                    content_hash: format!("hash-{i}"),
+                }),
+                recall_keys: Vec::new(),
+                admitted_at_ms: now,
+                trust_state_at_admission: TrustState::ApprovedPeer,
+                admission_trace_id: None,
+            });
+            recall_meta.admit(
+                id,
+                RecallMetadata {
+                    salience: 0.9,
+                    access_count: 0,
+                    last_accessed_ms: 0,
+                    protected_until_ms: 0,
+                    last_decayed_ms: now,
+                },
+            );
+        }
+        let faculty = RecallFaculty::new(persona, state).with_clock(Arc::new(move || now));
+        // Memory 1 appears VERBATIM in the burst: already perceived — recall
+        // must not re-serve it. Memory 0 stays recallable.
+        let burst = format!("Alice: earlier someone said\n{}\nAlice: next?", body(1));
+        let c = faculty
+            .contribute(&Workspace::new(burst.as_str()))
+            .await
+            .expect("the non-visible memory still bids");
+        assert!(
+            !c.content.contains("long memory number 1"),
+            "a memory the window already shows must not be re-served: {}",
+            c.content
+        );
+        assert!(
+            c.content.contains("long memory number 0"),
+            "the broader past survives dedup: {}",
+            c.content
+        );
+    }
+
+    // what this catches: sticky rendering (rung 3, from the rent ledger's first
+    // verdict — warm KV breaks die in the recall run). Re-contributing with the
+    // SAME surfaced set must return the byte-identical block even as the clock
+    // ticks (age labels frozen — "16h ago" must not become "17h ago" and
+    // invalidate the KV tail behind it). Admitting a NEW memory changes the set
+    // and re-renders fresh.
+    #[tokio::test]
+    async fn sticky_recall_freezes_bytes_until_the_surfaced_set_changes() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let now = 1_000_000_000u64;
+        let (persona, state, _ids) = fixture(3, now);
+        let tick = Arc::new(AtomicU64::new(now));
+        let t2 = tick.clone();
+        let faculty = RecallFaculty::new(persona, state.clone())
+            .with_clock(Arc::new(move || t2.load(Ordering::Relaxed)));
+        let ws = Workspace::new("what's the status?");
+        let first = faculty.contribute(&ws).await.expect("recall bids");
+        // The clock advances 2 hours — a naive re-render would tick every age
+        // label and mutate the block's bytes.
+        tick.store(now + 2 * 3600 * 1000, Ordering::Relaxed);
+        let second = faculty.contribute(&ws).await.expect("recall bids again");
+        assert_eq!(
+            first.content, second.content,
+            "unchanged set must re-render BYTE-IDENTICAL (ages frozen) — this is \
+             the KV stability the rent ledger attributed warm breaks to"
+        );
+        assert!(second.trailing, "sticky path preserves trailing placement");
     }
 
     // what this catches: empty store → abstain (None), not an empty bid.
@@ -1031,10 +1254,11 @@ mod tests {
             id: Uuid::new_v4(),
             room_id: Uuid::new_v4(),
             sender_id: Uuid::new_v4(),
-            sender_name: "Joel".to_string(),
+            sender_name: "Operator".to_string(),
             sender_type: SenderType::Human,
-            content: "We decided to ship the new auth flow behind a feature flag and ramp to 10% first."
-                .to_string(),
+            content:
+                "We decided to ship the new auth flow behind a feature flag and ramp to 10% first."
+                    .to_string(),
             timestamp: now1,
             priority: 0.8,
             source_modality: None,
@@ -1206,7 +1430,11 @@ mod tests {
                 );
             };
             // The RELEVANT fact — lower salience (it's not the loudest memory):
-            mk("the deploy codename for our next release is BLUEHERON-7", 0.4, 60_000);
+            mk(
+                "the deploy codename for our next release is BLUEHERON-7",
+                0.4,
+                60_000,
+            );
             // HIGH-salience distractors that match the burst's NOISE, not the question:
             mk("lunch is at noon, the corner table is booked", 0.9, 0);
             mk("the game last night was a great finish", 0.9, 0);
@@ -1299,7 +1527,9 @@ mod tests {
 
     // ---- The mind in action: real hippocampus → workspace → informed decision ----
 
-    use super::super::workspace::{Decision, NoopWorkspaceCaptureSink, WorkspaceCaptureSink, WorkspaceCycle, WorkspaceTrace};
+    use super::super::workspace::{
+        Decision, NoopWorkspaceCaptureSink, WorkspaceCaptureSink, WorkspaceCycle, WorkspaceTrace,
+    };
 
     /// A deliberation faculty that conditions its reply on what recall surfaced.
     struct DeliberateOnRecall;
@@ -1331,7 +1561,7 @@ mod tests {
                     ))
                 }
                 None => Some(Contribution::verdict(
-                    Decision::Pass,
+                    Decision::pass(),
                     0.4,
                     "no memory surfaced — nothing to ground a reply on",
                 )),
@@ -1357,7 +1587,11 @@ mod tests {
             }
             println!("\n-- assembled context the decider SAW (context_broadcast) --");
             for c in &t.context_broadcast {
-                println!("  [{:<12}] {}", c.faculty.as_str(), c.content.replace('\n', " / "));
+                println!(
+                    "  [{:<12}] {}",
+                    c.faculty.as_str(),
+                    c.content.replace('\n', " / ")
+                );
             }
             println!("\n-- decision (output of deliberation over that context) --");
             println!("  {:?}", t.decision);
@@ -1379,10 +1613,14 @@ mod tests {
             Arc::new(RecallFaculty::new(persona, state).with_clock(Arc::new(move || now))),
             Arc::new(DeliberateOnRecall),
         ];
-        let ws = WorkspaceCycle::new(faculties, Arc::new(super::super::workspace::SalienceArbiter), 5)
-            .with_capture(Arc::new(PrintingSink))
-            .run("teammate asks: where did we land on the deploy?")
-            .await;
+        let ws = WorkspaceCycle::new(
+            faculties,
+            Arc::new(super::super::workspace::SalienceArbiter),
+            5,
+        )
+        .with_capture(Arc::new(PrintingSink))
+        .run("teammate asks: where did we land on the deploy?")
+        .await;
 
         match ws.decision() {
             Some(Decision::Speak { text }) => assert!(
@@ -1438,7 +1676,11 @@ mod tests {
                     },
                 );
             };
-            mk("ship the auth flow behind a feature flag and ramp the rollout to 10%", 0.4, 60_000);
+            mk(
+                "ship the auth flow behind a feature flag and ramp the rollout to 10%",
+                0.4,
+                60_000,
+            );
             mk("lunch is at noon, someone booked the corner table", 0.6, 0);
             state
         };
@@ -1561,11 +1803,23 @@ mod tests {
     // it can't juggle. `0` (window unknown) keeps the historical default of 5.
     #[test]
     fn recall_count_scales_with_context_window() {
-        assert_eq!(recall_count_for_window(0), 5, "unknown window → historical default");
-        assert_eq!(recall_count_for_window(4096), 3, "tight 4B window → fewer memories");
+        assert_eq!(
+            recall_count_for_window(0),
+            5,
+            "unknown window → historical default"
+        );
+        assert_eq!(
+            recall_count_for_window(4096),
+            3,
+            "tight 4B window → fewer memories"
+        );
         assert_eq!(recall_count_for_window(16384), 5);
         assert_eq!(recall_count_for_window(65536), 8);
-        assert_eq!(recall_count_for_window(262144), 12, "cloud-class window → more memories");
+        assert_eq!(
+            recall_count_for_window(262144),
+            12,
+            "cloud-class window → more memories"
+        );
         // Monotonic non-decreasing across KNOWN windows (0 is the unknown sentinel,
         // excluded — it deliberately returns the historical default, not the floor).
         let windows = [4096u32, 8192, 32768, 131072, 262144];
@@ -1627,7 +1881,10 @@ mod tests {
             .expect("relevant memories should surface");
         assert_eq!(
             // Count MEMORY lines (each starts with "- "), not the section frame header.
-            c.content.lines().filter(|l| l.trim_start().starts_with("- ")).count(),
+            c.content
+                .lines()
+                .filter(|l| l.trim_start().starts_with("- "))
+                .count(),
             3,
             "a 4096-token window caps recall at 3 memories; got:\n{}",
             c.content

@@ -21,7 +21,7 @@ use crate::sdk_codegen::CommandError;
 )]
 pub struct MemoryAppendEventParams {
     /// Which persona's corpus to append to.
-    pub persona_id: String,
+    pub persona_id: crate::identity::PersonaRef,
     /// The timeline event (with optional precomputed embedding) to append.
     pub event: CorpusTimelineEvent,
 }

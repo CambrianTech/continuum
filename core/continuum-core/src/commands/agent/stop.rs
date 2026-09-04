@@ -11,7 +11,10 @@ use crate::modules::agent::AgentService;
 
 /// Inputs to `agent/stop`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/agent/AgentStopParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/agent/AgentStopParams.ts"
+)]
 pub struct AgentStopParams {
     /// The agent handle returned by `agent/start`.
     pub handle: String,
@@ -19,7 +22,10 @@ pub struct AgentStopParams {
 
 /// Result of `agent/stop`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/agent/AgentStopResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/agent/AgentStopResult.ts"
+)]
 pub struct AgentStopResult {
     /// `true` if the handle was found and flagged to stop; `false` if no such agent.
     pub stop_requested: bool,

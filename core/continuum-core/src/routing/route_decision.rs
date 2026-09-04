@@ -251,7 +251,11 @@ mod tests {
         assert_eq!(decision.path(), "inference/llm/generate");
         assert!(decision.is_local());
         match decision {
-            RouteDecision::Local { path, query, fragment } => {
+            RouteDecision::Local {
+                path,
+                query,
+                fragment,
+            } => {
                 assert_eq!(path, "inference/llm/generate");
                 assert!(query.is_none());
                 assert!(fragment.is_none());
@@ -262,11 +266,15 @@ mod tests {
 
     #[test]
     fn local_uri_with_query_and_fragment_preserved() {
-        let uri = CommandUri::parse("airc:///inference/llm/generate?model=qwen#layer-3")
-            .expect("parse");
+        let uri =
+            CommandUri::parse("airc:///inference/llm/generate?model=qwen#layer-3").expect("parse");
         let decision = route(&uri);
         match decision {
-            RouteDecision::Local { path, query, fragment } => {
+            RouteDecision::Local {
+                path,
+                query,
+                fragment,
+            } => {
                 assert_eq!(path, "inference/llm/generate");
                 assert_eq!(query.as_deref(), Some("model=qwen"));
                 assert_eq!(fragment.as_deref(), Some("layer-3"));
@@ -283,7 +291,9 @@ mod tests {
         assert!(!decision.is_local());
         assert_eq!(decision.path(), "inference/llm/generate");
         match decision {
-            RouteDecision::Peer { peer, node, env, .. } => {
+            RouteDecision::Peer {
+                peer, node, env, ..
+            } => {
                 assert_eq!(peer, PeerRef::Name("maya".to_string()));
                 assert!(node.is_none());
                 assert!(env.is_none());
@@ -298,7 +308,13 @@ mod tests {
             .expect("parse");
         let decision = route(&uri);
         match decision {
-            RouteDecision::Peer { peer, node, env, path, .. } => {
+            RouteDecision::Peer {
+                peer,
+                node,
+                env,
+                path,
+                ..
+            } => {
                 assert_eq!(peer, PeerRef::Name("maya".to_string()));
                 assert_eq!(node, Some(NodeId::from("5090-rig")));
                 assert_eq!(env, Some(EnvironmentId::from("vr")));
@@ -329,7 +345,12 @@ mod tests {
         assert_eq!(decision.kind(), RouteKind::Room);
         assert!(!decision.is_local());
         match decision {
-            RouteDecision::Room { room_id: got_id, env, path, .. } => {
+            RouteDecision::Room {
+                room_id: got_id,
+                env,
+                path,
+                ..
+            } => {
                 assert_eq!(got_id, room_id);
                 assert!(env.is_none());
                 assert_eq!(path, "chat/post");
@@ -341,8 +362,7 @@ mod tests {
     #[test]
     fn room_with_env_filter_preserved() {
         let room_id = Uuid::new_v4();
-        let uri = CommandUri::parse(&format!("airc://room:{room_id}:vr/chat/post"))
-            .expect("parse");
+        let uri = CommandUri::parse(&format!("airc://room:{room_id}:vr/chat/post")).expect("parse");
         let decision = route(&uri);
         match decision {
             RouteDecision::Room { env, .. } => {
@@ -359,7 +379,9 @@ mod tests {
         assert_eq!(decision.kind(), RouteKind::Broadcast);
         assert!(!decision.is_local());
         match decision {
-            RouteDecision::Broadcast { peer, node, path, .. } => {
+            RouteDecision::Broadcast {
+                peer, node, path, ..
+            } => {
                 assert_eq!(peer, PeerRef::Name("maya".to_string()));
                 assert!(node.is_none());
                 assert_eq!(path, "notification/send");
@@ -393,8 +415,8 @@ mod tests {
     fn route_is_pure_repeated_calls_identical() {
         // Smell test: route() has no hidden state. Two calls with the
         // same URI produce equal decisions.
-        let uri = CommandUri::parse("airc://maya:vr/inference/llm/generate?token=abc")
-            .expect("parse");
+        let uri =
+            CommandUri::parse("airc://maya:vr/inference/llm/generate?token=abc").expect("parse");
         let d1 = route(&uri);
         let d2 = route(&uri);
         assert_eq!(d1, d2);

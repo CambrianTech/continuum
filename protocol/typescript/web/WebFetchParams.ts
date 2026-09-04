@@ -9,7 +9,16 @@ export type WebFetchParams = {
  */
 url: string, 
 /**
- * Max characters of readable text to return. Defaults to half of what the live served
- * window can hold, and is clamped to that ceiling (never a fixed 6000/12000 pair).
+ * FILTER MODE: a regex; return ONLY the readable lines that match it (+ `context_lines`
+ * around each), like `grep` on the page. The context-saver — don't spend working memory
+ * on a 50KB dump when you want the three lines mentioning an error or an API name.
+ * Omitted → full readable page. If the filter matches nothing you are TOLD so and get
+ * the unfiltered page back (never a silent empty result). An invalid regex fails loud.
  */
-max_chars?: number, };
+filter?: string, 
+/**
+ * With `filter`, how many lines of CONTEXT to keep around each match (like
+ * `grep -C`). Default 0 (matching lines only). Bounded so a huge context can't
+ * defeat the point of filtering.
+ */
+context_lines?: number, };

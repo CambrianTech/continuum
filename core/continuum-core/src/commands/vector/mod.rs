@@ -40,10 +40,18 @@ use stats::VectorStatsCommand;
 /// legacy `vector/` prefix arm (now deleted).
 pub fn command_objects(state: Arc<DataState>) -> Vec<Arc<dyn DynCommand>> {
     vec![
-        Arc::new(VectorSearch { state: state.clone() }),
-        Arc::new(VectorIndex { state: state.clone() }),
-        Arc::new(VectorStatsCommand { state: state.clone() }),
-        Arc::new(VectorInvalidateCache { state: state.clone() }),
+        Arc::new(VectorSearch {
+            state: state.clone(),
+        }),
+        Arc::new(VectorIndex {
+            state: state.clone(),
+        }),
+        Arc::new(VectorStatsCommand {
+            state: state.clone(),
+        }),
+        Arc::new(VectorInvalidateCache {
+            state: state.clone(),
+        }),
         Arc::new(VectorBackfill { state }),
     ]
 }

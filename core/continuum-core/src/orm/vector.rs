@@ -21,7 +21,10 @@ pub type VectorEmbedding = Vec<f32>;
 
 /// Embedding model configuration
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/orm/EmbeddingModel.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/orm/EmbeddingModel.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct EmbeddingModel {
     pub name: String,

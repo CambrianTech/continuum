@@ -111,14 +111,10 @@ pub async fn spawn_persona_service(
     let persona_id = ctx.identity.peer_id.as_uuid();
     Ok(rt_handle.spawn(async move {
         use futures::FutureExt;
-        let outcome = std::panic::AssertUnwindSafe(serve_persona_loop(
-            &ctx,
-            &mut conversation,
-            reader,
-            opts,
-        ))
-        .catch_unwind()
-        .await;
+        let outcome =
+            std::panic::AssertUnwindSafe(serve_persona_loop(&ctx, &mut conversation, reader, opts))
+                .catch_unwind()
+                .await;
         match outcome {
             Ok(r) => r,
             Err(panic) => {
@@ -141,7 +137,9 @@ pub async fn spawn_persona_service(
                     persona_id = %persona_id,
                     reason = %panic_msg
                 );
-                Err(format!("persona '{persona_name}' service loop panicked: {panic_msg}"))
+                Err(format!(
+                    "persona '{persona_name}' service loop panicked: {panic_msg}"
+                ))
             }
         }
     }))
@@ -242,6 +240,15 @@ impl PersonaSpawnSupervisor {
         }
     }
 
+    /// Re-size the roster plan to the identity provider's REAL yield (#432).
+    /// Called by the boot task after constructing `ResumeOrMintProvider`,
+    /// whose `identities_available()` counts every resumed citizen on disk —
+    /// the plan must have a slot for each of them, or resumed citizens beyond
+    /// the mint floor sit on disk unhosted forever.
+    pub fn set_population(&mut self, population: usize) {
+        self.spawner.set_population(population);
+    }
+
     /// Run the full boot pipeline:
     ///
     /// 1. `bootstrap_planned`: provider intents → airc-bootstrapped
@@ -300,6 +307,227 @@ impl PersonaSpawnSupervisor {
             }
         };
 
+        // OPERATOR INTENT GATE (2026-08-23, despawn≠quiesce): this supervisor
+        // stays resident as the hosting reconciler and re-fires on every serving
+        // edge — which is exactly right (reap-or-adopt), and exactly why a
+        // despawn alone dissolved within minutes all night. A standing
+        // [`roster_hold`] names who may be hosted for a bounded window; everyone
+        // else is SKIPPED with a probe, never silently. The same gate guards
+        // EVERY reconciler entrance ([`Self::host_unattended`] too) — placing it
+        // at one call-site was the 2026-08-23 boot bypass: bootstrap registered
+        // the citizens, then the next serving edge hosted them through
+        // host_unattended with zero held_out probes.
+        let plans = Self::filter_by_hold(plans);
+
+        let mut summary = BootSummary::default();
+        self.host_plans(plans, tool_command_executor, &mut summary)
+            .await;
+
+        tracing::info!(
+            hosted = summary.hosted,
+            failed = summary.failed(),
+            "🌐 PersonaSpawnSupervisor: boot composition complete — \
+             {} citizen(s) hosted, {} failed",
+            summary.hosted,
+            summary.failed(),
+        );
+
+        summary
+    }
+
+    /// Apply the standing [`roster_hold`] to a batch of hosting plans —
+    /// the operator-intent gate every RECONCILER entrance passes through
+    /// ([`Self::spawn_all`] at boot, [`Self::host_unattended`] on each
+    /// serving edge). Held-out citizens are skipped with a probe, never
+    /// silently. Explicit `persona/spawn` stays sovereign at BIRTH
+    /// (registration), but hosting always flows through a reconciler
+    /// verb — so under a hold the newborn stays unhosted, loudly, until
+    /// the hold lapses or the operator adds them to it.
+    ///
+    /// regression for the 2026-08-23 boot bypass: the filter lived only
+    /// in spawn_all, so bootstrap registered citizens and the next
+    /// serving edge hosted all of them via host_unattended — a valid
+    /// hold, four adoptions, zero held_out probes.
+    fn filter_by_hold(
+        plans: Vec<crate::persona::spawner_module::MaterializedPersonaPlan>,
+    ) -> Vec<crate::persona::spawner_module::MaterializedPersonaPlan> {
+        Self::filter_by_hold_with(crate::persona::roster_hold::active(), plans)
+    }
+
+    /// The pure half of [`Self::filter_by_hold`] — takes the hold as a
+    /// value so tests can drive it without touching the operator's real
+    /// hold file.
+    fn filter_by_hold_with(
+        hold: Option<crate::persona::roster_hold::RosterHold>,
+        plans: Vec<crate::persona::spawner_module::MaterializedPersonaPlan>,
+    ) -> Vec<crate::persona::spawner_module::MaterializedPersonaPlan> {
+        match hold {
+            Some(hold) => plans
+                .into_iter()
+                .filter(|p| {
+                    let name = p.instance.agent_name.as_str();
+                    let allowed = hold.allows(name);
+                    if !allowed {
+                        Self::probe_held_out_once(name, &hold);
+                    }
+                    allowed
+                })
+                .collect(),
+            None => plans,
+        }
+    }
+
+    /// Emit the `persona.host.held_out` probe ONCE per (agent, hold window).
+    /// The reconciler re-fires on every serving-plan republish (~1/s), and an
+    /// un-deduped probe here wrote a pair of identical rows per second for the
+    /// entire life of a hold (measured 2026-08-23, minutes of pure probe spam
+    /// within the first hour). The skip itself stays per-pass — only the PROBE
+    /// is edge-triggered, keyed by `until_ms` so a renewed hold announces
+    /// itself afresh.
+    fn probe_held_out_once(agent: &str, hold: &crate::persona::roster_hold::RosterHold) {
+        static PROBED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<(String, u64)>>> =
+            std::sync::OnceLock::new();
+        let set = PROBED.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+        let Ok(mut guard) = set.lock() else {
+            return; // poisoned = a prior panic mid-insert; skip the probe, never the filter
+        };
+        if guard.insert((agent.to_string(), hold.until_ms)) {
+            crate::probe!(
+                class = "persona.host.held_out",
+                agent = agent,
+                reason = hold.reason.as_str(),
+                until_ms = hold.until_ms,
+                "roster hold active — reconciler skipping this citizen \
+                 until the hold lapses or is cleared",
+            );
+        }
+    }
+
+    /// Host every REGISTERED citizen whose slot has never had a
+    /// service loop attached (#429 — the mute-citizen re-entry).
+    ///
+    /// `persona/spawn` births share `birth_one` with boot, but birth
+    /// ends at `registry.register` — hosting (adapter + cognition
+    /// loop) only ran from boot's [`Self::spawn_all`]. A command-born
+    /// citizen was on airc, in the commons, carded — and MUTE. This
+    /// is the standing reconciler's verb: scan the registry, derive
+    /// the SAME single-slot plans boot uses (the spawner's roster row
+    /// is the config authority until #430 makes it recipe data), and
+    /// run the shared hosting tail.
+    ///
+    /// Attached slots — running OR finished — are skipped: a finished
+    /// loop is respawn-on-death territory (slice-14), deliberately
+    /// not this verb's concern. Idempotent: calling with nothing
+    /// unattended returns an empty summary.
+    pub async fn host_unattended(
+        &self,
+        tool_command_executor: Option<Arc<crate::runtime::CommandExecutor>>,
+    ) -> BootSummary {
+        let mut summary = BootSummary::default();
+        let mut unattended = Vec::new();
+        for persona_id in self.registry.ids() {
+            // None = no service loop was ever attached. Some(_) — running
+            // (false) or finished (true) — means a host decision was already
+            // made for this slot; not ours to redo here.
+            if self
+                .registry
+                .is_service_loop_finished(persona_id)
+                .await
+                .is_none()
+            {
+                if let Some(rt) = self.registry.get(persona_id) {
+                    unattended.push(rt);
+                }
+            }
+        }
+        if unattended.is_empty() {
+            return summary;
+        }
+
+        // Hold gate BEFORE plan derivation (not only on the materialized plans):
+        // during a hold, held-out citizens are unattended on EVERY serving-plan
+        // republish (~1/s), and deriving a full spawn plan each pass just to
+        // throw it away was a per-second churn loop for the life of the hold.
+        // Same gate, earlier — the probe inside is deduped per hold window.
+        if let Some(hold) = crate::persona::roster_hold::active() {
+            unattended.retain(|rt| {
+                let allowed = hold.allows(rt.agent_name());
+                if !allowed {
+                    Self::probe_held_out_once(rt.agent_name(), &hold);
+                }
+                allowed
+            });
+            if unattended.is_empty() {
+                return summary;
+            }
+        }
+
+        let plan_rows = self.spawner.plan();
+        let Some(desired) = plan_rows.first() else {
+            // An empty roster plan with live unhosted citizens is a
+            // configuration hole, not a skippable state — say so loudly
+            // per [[no-fallbacks-ever]]; no synthetic role is invented.
+            tracing::error!(
+                unattended = unattended.len(),
+                "host_unattended: spawner plan is EMPTY — {} registered \
+                 citizen(s) cannot be hosted (no role/model row to derive \
+                 an inference profile from)",
+                unattended.len()
+            );
+            return summary;
+        };
+
+        let roster: Vec<crate::persona::spawner::RosterEntry> = unattended
+            .iter()
+            .map(|rt| crate::persona::spawner::RosterEntry {
+                role: desired.role,
+                persona_id: rt.persona_id(),
+                persona_name: rt.agent_name().to_string(),
+                model_id: desired.model_id.clone(),
+                serving: crate::persona::profile_builder::ServingParams {
+                    lanes: desired.lanes,
+                    served_context_window: desired.served_context_window,
+                },
+            })
+            .collect();
+        let profiles = crate::persona::spawner::derive_spawn_plan(
+            &roster,
+            &self.tier_id,
+            self.spawner.tier_category(),
+            self.model_registry,
+        );
+        let plans: Vec<crate::persona::spawner_module::MaterializedPersonaPlan> = unattended
+            .iter()
+            .zip(profiles)
+            .map(|(rt, profile)| crate::persona::spawner_module::MaterializedPersonaPlan {
+                role: desired.role,
+                instance:
+                    crate::modules::persona_instance_manager::PersonaInstanceInfo::from_runtime(rt),
+                profile,
+            })
+            .collect();
+
+        // The reconciler's other entrance passes the SAME operator-intent
+        // gate as boot — see [`Self::filter_by_hold`] for the bypass this
+        // closed.
+        let plans = Self::filter_by_hold(plans);
+
+        self.host_plans(plans, tool_command_executor, &mut summary)
+            .await;
+        summary
+    }
+
+    /// Materialize adapters for a batch of plans and attach each
+    /// resulting context's service loop — the shared hosting tail of
+    /// [`Self::spawn_all`] (boot) and [`Self::host_unattended`]
+    /// (post-boot reconcile). One definition: "hosting" IS this
+    /// sequence, whichever verb asks for it.
+    async fn host_plans(
+        &self,
+        plans: Vec<crate::persona::spawner_module::MaterializedPersonaPlan>,
+        tool_command_executor: Option<Arc<crate::runtime::CommandExecutor>>,
+        summary: &mut BootSummary,
+    ) {
         let registry_for_lookup = self.registry.clone();
         // `registry.get` returns `Option<Arc<PersonaAircRuntime>>` —
         // the closure upcoerces to `Option<Arc<dyn AircCitizen>>` so
@@ -311,7 +539,7 @@ impl PersonaSpawnSupervisor {
         // scoped to the persona's identity (so the ACL gates it). Cheap — each is
         // an Arc bump on the shared executor + connection. `None` executor →
         // every persona is speak-only.
-        let tool_exec_source = tool_command_executor.clone();
+        let tool_exec_source = tool_command_executor;
         let hosted_results = materialize_adapters(
             plans,
             &*self.factory,
@@ -322,19 +550,17 @@ impl PersonaSpawnSupervisor {
             },
             move |pid| {
                 tool_exec_source.clone().map(|ex| {
-                    Arc::new(crate::cognition::tool_executor::CommandToolExecutor::for_persona(
-                        ex, pid,
-                    ))
-                        as Arc<dyn crate::cognition::tool_executor::ToolExecutor>
+                    Arc::new(
+                        crate::cognition::tool_executor::CommandToolExecutor::for_persona(ex, pid),
+                    ) as Arc<dyn crate::cognition::tool_executor::ToolExecutor>
                 })
             },
         )
         .await;
 
-        let mut summary = BootSummary::default();
         for (slot_idx, result) in hosted_results.into_iter().enumerate() {
             match result {
-                Ok(ctx) => self.spawn_and_attach(slot_idx, ctx, &mut summary).await,
+                Ok(ctx) => self.spawn_and_attach(slot_idx, ctx, summary).await,
                 Err(err) => {
                     let (slot_index, role) = supervisor_error_facts(&err);
                     summary.failures.push(BootSlotFailure {
@@ -352,17 +578,6 @@ impl PersonaSpawnSupervisor {
                 }
             }
         }
-
-        tracing::info!(
-            hosted = summary.hosted,
-            failed = summary.failed(),
-            "🌐 PersonaSpawnSupervisor: boot composition complete — \
-             {} citizen(s) hosted, {} failed",
-            summary.hosted,
-            summary.failed(),
-        );
-
-        summary
     }
 
     /// Spawn one persona's service loop and attach to the registry.
@@ -487,6 +702,104 @@ fn supervisor_error_facts(err: &SupervisorError) -> (Option<usize>, RoleId) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn plan_named(name: &str) -> crate::persona::spawner_module::MaterializedPersonaPlan {
+        crate::persona::spawner_module::MaterializedPersonaPlan {
+            role: crate::persona::role_template::RoleId::Helper,
+            instance: crate::modules::persona_instance_manager::PersonaInstanceInfo {
+                agent_name: name.to_string(),
+                peer_id: crate::identity::PeerId::from_uuid(uuid::Uuid::new_v4()),
+                home: std::path::PathBuf::from("/tmp/unused"),
+                default_room: uuid::Uuid::new_v4(),
+                source: crate::persona::identity_provider::PersonaIdentitySource::FreshlyMinted,
+            },
+            profile: Err(
+                crate::persona::inference_profile::InferenceProfileError::UnknownModel {
+                    model_id: "fixture".into(),
+                    role_id: "helper".into(),
+                },
+            ),
+        }
+    }
+
+    // what this catches: regression for the 2026-08-23 boot bypass — the
+    // roster-hold gate lived only in spawn_all, so host_unattended (fired on
+    // every serving edge) hosted held-out citizens with zero held_out probes.
+    // Both reconciler entrances now share filter_by_hold; this pins the pure
+    // half's contract: allowed names pass, everyone else is dropped, and no
+    // hold means no filtering.
+    #[test]
+    fn hold_filter_drops_unallowed_plans_and_passes_without_a_hold() {
+        let hold = crate::persona::roster_hold::RosterHold {
+            only: vec!["Atlas".into()],
+            until_ms: u64::MAX,
+            reason: "test measurement window".into(),
+        };
+        let plans = vec![plan_named("Atlas"), plan_named("Kira")];
+        let kept = PersonaSpawnSupervisor::filter_by_hold_with(Some(hold), plans);
+        assert_eq!(kept.len(), 1, "held-out citizen must be dropped");
+        assert_eq!(kept[0].instance.agent_name, "Atlas");
+
+        let plans = vec![plan_named("Atlas"), plan_named("Kira")];
+        let kept = PersonaSpawnSupervisor::filter_by_hold_with(None, plans);
+        assert_eq!(kept.len(), 2, "no hold means every plan passes");
+    }
+
+    // what this catches: the hosting reconciler (#429) runs host_unattended on
+    // EVERY serving-plan edge for the life of the process. With nothing
+    // unattended it must be a QUIET no-op — empty summary, zero failure rows
+    // (a spurious row here would warn-log every ~5s forever), and the adapter
+    // factory must never be consulted (a factory call on an empty scan would
+    // probe /v1 each tick for nothing). Hosting an actual newborn end-to-end
+    // needs a live airc daemon (same limit the registry's own tests document
+    // in clone_shares_roster); the scan + early-return contract is the
+    // unit-pinnable half.
+    #[tokio::test]
+    async fn host_unattended_with_nothing_unattended_is_a_quiet_noop() {
+        struct NeverConsultedFactory;
+        #[async_trait::async_trait]
+        impl PersonaAdapterFactory for NeverConsultedFactory {
+            async fn build_adapter(
+                &self,
+                _profile: &crate::persona::inference_profile::PersonaInferenceProfile,
+            ) -> Result<Arc<dyn crate::ai::adapter::AIProviderAdapter>, String> {
+                panic!("factory must not be consulted when the registry has no unattended citizens");
+            }
+        }
+
+        let registry = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::new();
+        let tmp = std::env::temp_dir().join("host-unattended-noop-test");
+        let instance_manager = Arc::new(
+            crate::modules::persona_instance_manager::PersonaInstanceManagerModule::new(
+                registry,
+                tmp.join("daemon.sock"),
+                tmp,
+            ),
+        );
+        // Idempotent — safe under full-suite parallelism (the singleton's own
+        // doc: "subsequent init_global calls are no-ops").
+        let model_registry =
+            crate::model_registry::init_global().expect("model registry init for test");
+        let supervisor = PersonaSpawnSupervisor::new(
+            PersonaSpawnerModule::new(
+                crate::cognition::model_resolver::types::HwCapabilityTier::CpuOnly,
+                crate::persona::hw_tier_descriptor::HwTierCategory::Compat,
+            ),
+            instance_manager,
+            Arc::new(NeverConsultedFactory),
+            "test-tier",
+            model_registry,
+            tokio::runtime::Handle::current(),
+        );
+
+        let summary = supervisor.host_unattended(None).await;
+        assert_eq!(summary.hosted, 0, "nothing to host → nothing hosted");
+        assert!(
+            summary.failures.is_empty(),
+            "an empty scan must not synthesize failure rows: {:?}",
+            summary.failures
+        );
+    }
 
     #[test]
     fn boot_summary_attempted_sums_hosted_and_failures() {

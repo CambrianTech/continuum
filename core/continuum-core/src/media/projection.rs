@@ -206,7 +206,10 @@ mod tests {
         match p {
             ProjectedMedia::Full { bytes: got, mime } => {
                 assert_eq!(&*got, &bytes, "full projection carries the source bytes");
-                assert!(Arc::ptr_eq(&got, &frame.source()), "shared zero-copy, not a re-clone");
+                assert!(
+                    Arc::ptr_eq(&got, &frame.source()),
+                    "shared zero-copy, not a re-clone"
+                );
                 assert_eq!(mime, "image/png");
             }
             other => panic!("vision+Full must project Full pixels, got {other:?}"),
@@ -220,18 +223,43 @@ mod tests {
     async fn a_scaled_projection_selects_the_shared_cell() {
         let compute = SharedCompute::new();
         let frame = MediaFrame::from_bytes(png(100, 80));
-        let dest = DestSize { width: 20, height: 16 };
+        let dest = DestSize {
+            width: 20,
+            height: 16,
+        };
 
-        let first = project_image(&frame, &vision(), MediaResolution::Scaled(dest), "image/png", &compute, &StubDescriber).await;
-        let second = project_image(&frame, &vision(), MediaResolution::Scaled(dest), "image/png", &compute, &StubDescriber).await;
+        let first = project_image(
+            &frame,
+            &vision(),
+            MediaResolution::Scaled(dest),
+            "image/png",
+            &compute,
+            &StubDescriber,
+        )
+        .await;
+        let second = project_image(
+            &frame,
+            &vision(),
+            MediaResolution::Scaled(dest),
+            "image/png",
+            &compute,
+            &StubDescriber,
+        )
+        .await;
 
         let (a, b) = match (first, second) {
             (ProjectedMedia::Scaled(a), ProjectedMedia::Scaled(b)) => (a, b),
             _ => panic!("vision+Scaled must project Scaled cells"),
         };
-        assert!(Arc::ptr_eq(&a, &b), "same size → SAME cached Arc (computed once)");
+        assert!(
+            Arc::ptr_eq(&a, &b),
+            "same size → SAME cached Arc (computed once)"
+        );
         let bytes = a.as_ref().as_ref().expect("scale should succeed");
-        assert_eq!(image::load_from_memory(bytes).unwrap().dimensions(), (20, 16));
+        assert_eq!(
+            image::load_from_memory(bytes).unwrap().dimensions(),
+            (20, 16)
+        );
     }
 
     // what this catches: Describe forces the text path even on a vision model, and it
@@ -242,12 +270,25 @@ mod tests {
         let compute = SharedCompute::new();
         let frame = MediaFrame::from_bytes(png(24, 24));
 
-        let vision_describe = project_image(&frame, &vision(), MediaResolution::Describe, "image/png", &compute, &StubDescriber).await;
-        let direct = frame.description(&compute, &StubDescriber, "image/png").await;
+        let vision_describe = project_image(
+            &frame,
+            &vision(),
+            MediaResolution::Describe,
+            "image/png",
+            &compute,
+            &StubDescriber,
+        )
+        .await;
+        let direct = frame
+            .description(&compute, &StubDescriber, "image/png")
+            .await;
 
         match vision_describe {
             ProjectedMedia::Description(cell) => {
-                assert!(Arc::ptr_eq(&cell, &direct), "vision Describe shares the ONE description cell");
+                assert!(
+                    Arc::ptr_eq(&cell, &direct),
+                    "vision Describe shares the ONE description cell"
+                );
             }
             other => panic!("Describe must project a Description, got {other:?}"),
         }
@@ -259,7 +300,15 @@ mod tests {
     async fn handle_projects_a_content_addressed_placeholder() {
         let compute = SharedCompute::new();
         let frame = MediaFrame::from_bytes(png(16, 16));
-        let p = project_image(&frame, &vision(), MediaResolution::Handle, "image/png", &compute, &StubDescriber).await;
+        let p = project_image(
+            &frame,
+            &vision(),
+            MediaResolution::Handle,
+            "image/png",
+            &compute,
+            &StubDescriber,
+        )
+        .await;
         match p {
             ProjectedMedia::Handle { content_hash, mime } => {
                 assert_eq!(content_hash, frame.content_hash());
@@ -276,8 +325,24 @@ mod tests {
     async fn is_image_bytes_only_true_for_successful_pixels() {
         let compute = SharedCompute::new();
         let frame = MediaFrame::from_bytes(png(20, 20));
-        let full = project_image(&frame, &vision(), MediaResolution::Full, "image/png", &compute, &StubDescriber).await;
-        let desc = project_image(&frame, &HashSet::new(), MediaResolution::Full, "image/png", &compute, &StubDescriber).await;
+        let full = project_image(
+            &frame,
+            &vision(),
+            MediaResolution::Full,
+            "image/png",
+            &compute,
+            &StubDescriber,
+        )
+        .await;
+        let desc = project_image(
+            &frame,
+            &HashSet::new(),
+            MediaResolution::Full,
+            "image/png",
+            &compute,
+            &StubDescriber,
+        )
+        .await;
         assert!(full.is_image_bytes());
         assert!(!desc.is_image_bytes());
     }

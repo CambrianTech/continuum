@@ -22,12 +22,10 @@
 
 use std::env;
 use std::path::PathBuf;
-use std::sync::Arc;
 
-use airc_lib::Airc;
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
-use continuum_client::{AircIpcTransport, Connection};
+use continuum_client::{attach_local_substrate, AircIpcTransport, Connection};
 use uuid::Uuid;
 
 mod grid_smoke;
@@ -44,9 +42,10 @@ struct Cli {
     #[arg(long, env = "CONTINUUM_AIRC_HOME", global = true)]
     home: Option<PathBuf>,
 
-    /// Target substrate peer UUID. Find it via `airc status` on the
-    /// machine running continuum-core-server. Required for any command
-    /// that talks to the substrate — `--help` works without it.
+    /// Target substrate peer UUID. Defaults to the LOCAL substrate,
+    /// auto-discovered from the airc daemon's Status RPC. Pass
+    /// explicitly (or set CONTINUUM_PEER_ID) to target a REMOTE grid
+    /// peer instead.
     #[arg(long, env = "CONTINUUM_PEER_ID", global = true)]
     peer: Option<Uuid>,
 
@@ -73,10 +72,34 @@ enum Command {
         #[arg(long)]
         prompt: String,
 
-        /// Model name to dispatch to. Optional; the substrate's adapter
-        /// selector picks a default when omitted.
+        /// Model name to dispatch to. Optional — but the substrate's
+        /// selector refuses a request with NEITHER model NOR provider
+        /// ([[no-fallbacks-ever]]: no silent default), so pass this or
+        /// `--provider`. A model-only request must match an adapter's
+        /// registered model prefix on the target.
         #[arg(long)]
         model: Option<String>,
+        /// Provider id to route to (e.g. `llama-server`, `docker-model-runner`,
+        /// `anthropic`). The substrate's `AdapterRegistry::select` accepts an
+        /// explicit provider with NO model and hard-refuses model-only requests
+        /// whose name matches no adapter prefix ([[no-fallbacks-ever]]) — so a
+        /// grid consumer with no local registry needs this to make the one
+        /// request a remote substrate will serve. `local` is the sentinel for
+        /// "best local GPU adapter on the target". Card 94179b72.
+        #[arg(long, env = "CONTINUUM_PROVIDER")]
+        provider: Option<String>,
+
+        /// Cap on generated tokens (`maxTokens` on the request). Without it the
+        /// lane decides, and a measurement that asked for "one word" can get
+        /// 124 tokens — wall-clock then measures decode length, not the wire.
+        /// Card ddd7a7cf.
+        #[arg(long)]
+        max_tokens: Option<u32>,
+
+        /// Sampling temperature (`temperature` on the request). `0` makes
+        /// repeated measurement runs comparable.
+        #[arg(long)]
+        temperature: Option<f32>,
 
         /// Print the raw JSON response instead of just the text field.
         #[arg(long, default_value_t = false)]
@@ -115,23 +138,36 @@ async fn main() -> Result<()> {
         None => default_airc_home()?,
     };
 
-    let peer = cli.peer.ok_or_else(|| {
-        anyhow!(
-            "--peer is required (or set CONTINUUM_PEER_ID). Find it via `airc status` on the \
-             machine running continuum-core-server."
-        )
-    })?;
-
-    tracing::debug!(?home, "opening airc home");
-    let airc = Airc::open(&home)
+    // Attach through the RUNNING airc daemon — `Airc::open` is owner-mode
+    // (no daemon, no routes: every dispatch dies at the command deadline;
+    // the 2026-08-27 grid-smoke 0/3 was exactly that). Socket + local
+    // substrate peer are auto-discovered; --peer overrides for remote
+    // grid targets.
+    tracing::debug!(?home, "attaching to local substrate");
+    let attachment = attach_local_substrate(home.clone(), "ctm", cli.peer)
         .await
-        .with_context(|| format!("open airc home at {}", home.display()))?;
+        .with_context(|| format!("attach to substrate from airc home {}", home.display()))?;
+    let peer = attachment.substrate_peer;
 
-    let conn = Connection::connect(Arc::new(airc), peer);
+    // 120s deadline: the default 30s fits control commands but not a real
+    // generation on a contended lane (grid-smoke's ai/generate row measured
+    // 10s for 16 tokens; 128 tokens blew 30s). Refusals still return in ms —
+    // the deadline is only the ceiling.
+    let conn = Connection::new(
+        AircIpcTransport::new(attachment.airc, peer)
+            .with_deadline(std::time::Duration::from_secs(120)),
+    );
 
     match cli.command {
         Command::Metrics => run_metrics(conn).await,
-        Command::Generate { prompt, model, json } => run_generate(conn, prompt, model, json).await,
+        Command::Generate {
+            prompt,
+            model,
+            provider,
+            max_tokens,
+            temperature,
+            json,
+        } => run_generate(conn, prompt, model, provider, max_tokens, temperature, json).await,
         Command::GridSmoke => grid_smoke::run(conn, peer).await,
     }
 }
@@ -150,6 +186,9 @@ async fn run_generate(
     conn: Connection<AircIpcTransport>,
     prompt: String,
     model: Option<String>,
+    provider: Option<String>,
+    max_tokens: Option<u32>,
+    temperature: Option<f32>,
     json: bool,
 ) -> Result<()> {
     // Construct the minimum-viable TextGenerationRequest shape. The
@@ -175,6 +214,15 @@ async fn run_generate(
     if let Some(m) = model {
         params["model"] = serde_json::Value::String(m);
     }
+    if let Some(p) = provider {
+        params["provider"] = serde_json::Value::String(p);
+    }
+    if let Some(n) = max_tokens {
+        params["maxTokens"] = serde_json::Value::from(n);
+    }
+    if let Some(t) = temperature {
+        params["temperature"] = serde_json::Value::from(t);
+    }
 
     let result: serde_json::Value = conn
         .commands()
@@ -195,20 +243,21 @@ async fn run_generate(
         // mask a substrate-side contract violation as a fake string;
         // surface a typed error instead so substrate bugs get caught
         // loudly.
-        let text = result
-            .get("text")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!(
+        let text = result.get("text").and_then(|v| v.as_str()).ok_or_else(|| {
+            anyhow!(
                 "substrate `ai/generate` response missing required `text` field — \
                  substrate-side contract violation, not a CLI presentation problem"
-            ))?;
+            )
+        })?;
         println!("{text}");
-        let model = result.get("model").and_then(|v| v.as_str()).ok_or_else(|| {
-            anyhow!("substrate response missing required `model` field")
-        })?;
-        let provider = result.get("provider").and_then(|v| v.as_str()).ok_or_else(|| {
-            anyhow!("substrate response missing required `provider` field")
-        })?;
+        let model = result
+            .get("model")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("substrate response missing required `model` field"))?;
+        let provider = result
+            .get("provider")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("substrate response missing required `provider` field"))?;
         let total = result
             .get("usage")
             .and_then(|u| u.get("totalTokens"))
@@ -225,9 +274,20 @@ async fn run_generate(
 /// airc-lib does internally so the CLI doesn't fall back to a system
 /// path the user didn't expect.
 fn default_airc_home() -> Result<PathBuf> {
-    let home = env::var_os("HOME")
-        .ok_or_else(|| anyhow!("$HOME is unset; pass --home explicitly"))?;
-    Ok(PathBuf::from(home).join(".airc"))
+    let home =
+        env::var_os("HOME").ok_or_else(|| anyhow!("$HOME is unset; pass --home explicitly"))?;
+    // ctm gets its OWN scope, never the operator's `~/.airc`. Two reasons,
+    // both learned the hard way (2026-08-27 grid-smoke 0/3): a shared home
+    // would inherit the operator's CURRENT ROOM — request/reply frames are
+    // stamped with the sender's current-room channel, so a scope parked in
+    // #academy talks past a substrate living in #general and every dispatch
+    // deadlines; and steering the shared scope's room to fix that would
+    // mutate the operator's own airc state. A fresh dedicated scope lands
+    // in #general (the substrate's commons) by airc's own default.
+    Ok(PathBuf::from(home)
+        .join(".continuum")
+        .join("ctm")
+        .join("airc"))
 }
 # Main entry point for the CLI application
 fn main() {

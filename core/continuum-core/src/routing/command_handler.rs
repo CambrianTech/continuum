@@ -68,7 +68,7 @@ use airc_core::{Body, PeerId, TranscriptEvent};
 use airc_lib::adapter::{AdapterError, ConsumerAdapter};
 use airc_lib::grid_auth::SignedCapabilityGrant;
 use airc_lib::Airc;
-use airc_protocol::headers_keys::HEADER_AIRC_CAPABILITY_GRANT;
+use airc_protocol::headers_keys::{HEADER_AIRC_CAPABILITY_GRANT, HEADER_AIRC_CHANNEL_NAME};
 use airc_protocol::{HEADER_AIRC_CORRELATION_ID, HEADER_AIRC_REPLY_TO};
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -127,6 +127,16 @@ pub struct ParsedEnvelope {
     pub correlation_id: Uuid,
     /// The typed request body.
     pub request: AircCommandRequest,
+    /// The channel the request ARRIVED on (the envelope's `room_id`).
+    /// The reply must ride this exact channel: the requester awaits on the
+    /// room it asked in, and the responder's own current room may be a
+    /// different room entirely (operator CLI in #general vs citizens landed
+    /// in #academy — the 2026-08-27 grid-smoke 0/3 deadline class).
+    pub request_channel: airc_core::RoomId,
+    /// The request's stamped human channel name
+    /// ([`airc_protocol::HEADER_AIRC_CHANNEL_NAME`]), if present — carried
+    /// onto the reply for the blind-room heal.
+    pub request_channel_name: Option<String>,
     /// A capability grant the caller PRESENTED on the envelope (base64
     /// [`HEADER_AIRC_CAPABILITY_GRANT`], decoded). `None` if absent. Decoded in
     /// [`parse_envelope`](CommandRequestHandler::parse_envelope) so the parse step
@@ -208,7 +218,8 @@ impl CommandRequestHandler {
             Body::Json(v) => v.clone(),
             Body::Binary(_) => {
                 return Err(AdapterError::Consumer(
-                    "inbound command body was Binary; expected Json(AircCommandRequest)".to_string(),
+                    "inbound command body was Binary; expected Json(AircCommandRequest)"
+                        .to_string(),
                 ));
             }
         };
@@ -243,6 +254,8 @@ impl CommandRequestHandler {
             reply_to,
             correlation_id,
             request,
+            request_channel: envelope.room_id,
+            request_channel_name: envelope.headers.get(HEADER_AIRC_CHANNEL_NAME).cloned(),
             presented_grant,
         })
     }
@@ -260,8 +273,7 @@ impl CommandRequestHandler {
         // key; on success its conferred capabilities ride into the gate. Absent /
         // invalid grant → empty caps → pure tier gating (unchanged behavior).
         let granted = self.verify_presented_grant(parsed).await;
-        let caller =
-            CallerIdentity::airc(parsed.caller_peer_id).with_granted_capabilities(granted);
+        let caller = CallerIdentity::airc(parsed.caller_peer_id).with_granted_capabilities(granted);
         Self::dispatch_request(&self.executor, parsed, caller).await
     }
 
@@ -275,9 +287,10 @@ impl CommandRequestHandler {
     /// (the hard gate the review flagged). A non-Authorized outcome logs at debug +
     /// confers nothing; the caller then falls back to tier gating.
     async fn verify_presented_grant(&self, parsed: &ParsedEnvelope) -> Vec<String> {
-        let (Some(authorizer), Some(grant)) =
-            (self.grant_authorizer.as_ref(), parsed.presented_grant.as_ref())
-        else {
+        let (Some(authorizer), Some(grant)) = (
+            self.grant_authorizer.as_ref(),
+            parsed.presented_grant.as_ref(),
+        ) else {
             return Vec::new();
         };
         let Some(presenting) = self.airc.peer_public_key(parsed.caller_peer_id) else {
@@ -420,9 +433,8 @@ impl CommandRequestHandler {
         parsed: &ParsedEnvelope,
         response: &AircCommandResponse,
     ) -> Result<(), AdapterError> {
-        let body_value = serde_json::to_value(response).map_err(|e| {
-            AdapterError::Consumer(format!("serialize AircCommandResponse: {e}"))
-        })?;
+        let body_value = serde_json::to_value(response)
+            .map_err(|e| AdapterError::Consumer(format!("serialize AircCommandResponse: {e}")))?;
         let body = Body::Json(body_value);
 
         let mut headers = airc_core::Headers::new();
@@ -435,8 +447,21 @@ impl CommandRequestHandler {
             COMMAND_RESPONSE_BODY_HINT.to_string(),
         );
 
+        // reply_in, NOT reply: the answer must ride the channel the request
+        // arrived on. The requester awaits on the room it asked in; this
+        // responder's current room can be a different room entirely (citizens
+        // land in #academy, an operator CLI asks in #general) — reply() sent
+        // the answer somewhere the requester never subscribed and every
+        // dispatch died at the command deadline (grid-smoke 0/3, 2026-08-27).
         self.airc
-            .reply(parsed.reply_to, parsed.correlation_id, headers, body)
+            .reply_in(
+                parsed.request_channel,
+                parsed.request_channel_name.as_deref(),
+                parsed.reply_to,
+                parsed.correlation_id,
+                headers,
+                body,
+            )
             .await
             .map_err(|e| AdapterError::Io(format!("airc reply: {e}")))?;
         Ok(())
@@ -576,8 +601,12 @@ mod tests {
     // to present a grant; we don't pretend they didn't.
     #[test]
     fn parse_envelope_rejects_malformed_grant_header() {
-        let mut envelope =
-            make_envelope(PeerId::new(), PeerId::new(), Uuid::new_v4(), &sample_request());
+        let mut envelope = make_envelope(
+            PeerId::new(),
+            PeerId::new(),
+            Uuid::new_v4(),
+            &sample_request(),
+        );
         envelope.headers.insert(
             HEADER_AIRC_CAPABILITY_GRANT.to_string(),
             "!!!not-base64!!!".to_string(),
@@ -644,11 +673,14 @@ mod tests {
         let mut envelope = make_envelope(sender, reply_to, correlation, &request);
         envelope.body = None;
 
-        let err = CommandRequestHandler::parse_envelope(&envelope)
-            .expect_err("missing body should fail");
+        let err =
+            CommandRequestHandler::parse_envelope(&envelope).expect_err("missing body should fail");
         match err {
             AdapterError::Consumer(msg) => {
-                assert!(msg.contains("no body"), "error must name missing body: {msg}");
+                assert!(
+                    msg.contains("no body"),
+                    "error must name missing body: {msg}"
+                );
             }
             other => panic!("expected Consumer error, got {other:?}"),
         }
@@ -663,8 +695,8 @@ mod tests {
         let mut envelope = make_envelope(sender, reply_to, correlation, &request);
         envelope.body = Some(Body::Binary(vec![1, 2, 3]));
 
-        let err = CommandRequestHandler::parse_envelope(&envelope)
-            .expect_err("binary body should fail");
+        let err =
+            CommandRequestHandler::parse_envelope(&envelope).expect_err("binary body should fail");
         match err {
             AdapterError::Consumer(msg) => {
                 assert!(msg.contains("Binary"));
@@ -744,6 +776,8 @@ mod tests {
             reply_to: PeerId::new(),
             correlation_id: Uuid::new_v4(),
             request,
+            request_channel: airc_core::RoomId::from_uuid(Uuid::new_v4()),
+            request_channel_name: None,
             presented_grant: None,
         }
     }
@@ -877,6 +911,8 @@ mod tests {
                 env: None,
                 params: serde_json::Value::Null,
             },
+            request_channel: airc_core::RoomId::from_uuid(Uuid::new_v4()),
+            request_channel_name: None,
             presented_grant: None,
         };
 
@@ -933,10 +969,7 @@ mod tests {
                     tick_interval: None,
                 }
             }
-            async fn initialize(
-                &self,
-                _ctx: &crate::runtime::ModuleContext,
-            ) -> Result<(), String> {
+            async fn initialize(&self, _ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
                 Ok(())
             }
             async fn handle_command(

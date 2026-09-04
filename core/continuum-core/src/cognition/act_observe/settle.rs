@@ -16,16 +16,13 @@ use crate::cognition::workspace::{
 
 use super::apply::apply_act;
 use super::perception::{
-    any_real_receipt, claimed_file_without_act, collect_touched_paths,
-    mutated_workspace, wrote_without_observation,
+    any_real_receipt, claimed_file_without_act, collect_touched_paths, mutated_workspace,
+    wrote_without_observation,
 };
 use super::types::{SettleOutcome, SettleStep};
 
 // The working-memory trail-head bound lives in `working_memory.rs` now (its home — WM owns
 // its own truncation). Still used here for the settlement answer-head.
-
-
-
 
 /// Drive the mind to SETTLEMENT: tick → if `Act`, run it + fold the observation
 /// into the next perception → re-tick → until it `Speak`s/`Pass`es or the
@@ -37,15 +34,81 @@ use super::types::{SettleOutcome, SettleStep};
 /// forever" persona is a fitness gap to train away, never a substrate ceiling —
 /// §4). When the budget runs out mid-action, the final un-driven `Act` is
 /// returned and the grader scores it as unfinished — never a fabricated answer.
+///
+/// ## Why the lived-experience write lives HERE and not at the call sites
+///
+/// This function is the ONE place a `SettleOutcome` is produced, so it is the one
+/// place "a turn was lived" can be recorded without the fact being re-derived per
+/// caller. It was not always: the #319 producer was first wired into a SINGLE
+/// service_loop call site (the directed-message path), which left the self-tick
+/// path and the held-work path settling turns that no experience record ever
+/// described. Three callers, one of them remembering — the missing-constraint
+/// shape ([[the-same-bug-at-two-sites-is-a-missing-constraint]]), and the reason
+/// zero `LivedTurn` records existed on disk while citizens were demonstrably
+/// deliberating.
+///
+/// Recording once around the driver — rather than at each of its four return
+/// paths — is deliberate for the same reason: a fifth return path added later
+/// inherits the record instead of silently opting out of learning.
+///
+/// The write is gated on [`WorkspaceCycle::acting`] because that is where a
+/// citizen's identity lives. A cycle with no `ActingBody` is pure cognition (a
+/// faculty test, a replay) — it is nobody's lived experience, so there is no
+/// stream it belongs in. That is a structural absence, not a skipped write.
+/// Consecutive spoken plans a workspace-deliverable turn tolerates before it
+/// settles without a deliverable (each is re-perceived, not ended).
+pub(super) const NARRATION_BUDGET: usize = 3;
+
 pub async fn drive_to_settle(
     cycle: &WorkspaceCycle,
     burst: impl Into<Burst>,
-    room_id: Uuid,
     max_acts: usize,
     framing: TurnFraming,
 ) -> SettleOutcome {
-    let burst: Burst = burst.into();
+    let settled = settle_to_outcome(cycle, burst.into(), max_acts, framing).await;
+    if let Some(body) = cycle.acting() {
+        crate::cognition::experience::record_lived_turn(
+            &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            crate::identity::PeerId::from_uuid(body.persona_id),
+            &settled,
+        );
+    }
+    settled
+}
+
+/// The settle loop itself. Private so that [`drive_to_settle`] is the only way to
+/// reach it — every produced outcome therefore passes the lived-experience seam.
+async fn settle_to_outcome(
+    cycle: &WorkspaceCycle,
+    burst: Burst,
+    max_acts: usize,
+    framing: TurnFraming,
+) -> SettleOutcome {
+    // The turn's room comes FROM the burst — witnessed non-nil at construction,
+    // so the drive can no longer disagree with the rendered header (#425).
+    let room_id: Uuid = burst.room.as_uuid();
     let mut acts = 0usize;
+    // Rolling act-duration sum for the inline pace verdict below.
+    let mut pace_sum_secs: f64 = 0.0;
+    // This turn's causal thread: each admitted act observation becomes the
+    // CausedBy target of the next act in the SAME chain — the driver owns the
+    // chain, so an edge can never cross turns or rooms (CAUSAL-MEMORY-GRAPH.md).
+    // ROOTED in what caused this turn, so the first act chains to its trigger rather
+    // than starting mid-air — the link that makes "which acts were done for this card"
+    // a graph query instead of an inference.
+    let chain = super::apply::ActChain::rooted_in(&burst.cause);
+    // How many turns actually run with a head on their thread — the measurement that
+    // tells us whether the causal graph is CONNECTED in the live system, rather than
+    // connected in the one path I happened to wire by hand
+    // ([[an-absence-is-an-unfinished-measurement]]). An `ambient` row is not a fault;
+    // it is an idle tick whose stimulus the projection layer discarded.
+    crate::probe!(
+        class = "engram.chain.rooted",
+        cause = burst.cause.as_str(),
+        room = %room_id,
+        rooted = burst.cause.root().is_some(),
+        "turn's causal thread begins here"
+    );
     // The turn's investigation trail (see `SettleOutcome::touched_paths`).
     let mut touched: Vec<String> = Vec::new();
     // Fold each tick's deliberation cost in, so the settled outcome reports the
@@ -56,10 +119,7 @@ pub async fn drive_to_settle(
     // per-call `id` excluded, sorted so batch order doesn't matter. Two ticks with the same
     // signature emitted the byte-identical action.
     fn calls_signature(calls: &[ToolCall]) -> String {
-        let mut parts: Vec<String> = calls
-            .iter()
-            .map(|c| c.loop_fingerprint())
-            .collect();
+        let mut parts: Vec<String> = calls.iter().map(|c| c.loop_fingerprint()).collect();
         parts.sort();
         parts.join(",")
     }
@@ -88,7 +148,12 @@ pub async fn drive_to_settle(
     // ACTED since the last nudge. A nudge that earns an act has earned another; two Speaks
     // in a row with no act between them means the nudge is not working, so she settles
     // rather than being trapped. Her own behavior is the budget — no counter, no constant.
+    let mut narrations_since_act: usize = 0;
     let mut acts_at_last_nudge: Option<usize> = None;
+    // Which `acts` value the last budget fact fired at — a Speak's one-shot
+    // re-perception re-enters the loop with `acts` unchanged, and the same
+    // milestone must not stamp twice.
+    let mut budget_fact_at: Option<usize> = None;
 
     // DISCOVERY SATURATION GATE (#390) — the STATE escalation of the [no-deliverable]
     // fact above, built on its own measured failure: the fact fires on EVERY act with
@@ -108,7 +173,22 @@ pub async fn drive_to_settle(
     // steer — it never says what to write, exactly like `max_acts`; it converts an
     // unbounded read loop into a decision point while the budget can still buy the
     // decision. Non-workspace turns (chat, research) are untouched.
-    let discovery_budget = (max_acts / 2).max(1);
+    // 3/4 of the budget, not 1/2 (2026-08-24): at /2 the gate fired at act 16
+    // of 32 on tasks whose honest STUDY phase needs more (126-case reverse
+    // engineering) — she "quit" at half budget because the gate quit for her,
+    // and the red-build re-drive's fresh turn hit its own gate identically.
+    // The gate still bounds a pure-read runaway (a full-budget read turn ends
+    // withheld, and the pre-gate warning now lands 4 acts before THIS bound —
+    // genuinely before, not at, the cliff). Plumbing must never out-stubborn
+    // the engineer it serves.
+    // Divide BEFORE multiply so this can never overflow: a self-tick (non-benchmark)
+    // turn passes `max_acts = usize::MAX` (the "unlimited acts" sentinel), and the old
+    // `max_acts * 3` overflowed usize → a debug-build panic that aborted EVERY persona
+    // service loop the instant it self-ticked, so residency could never hold
+    // (resident_count flapped to 0, #412 root). `(max_acts / 4)` is always ≤ max_acts, so
+    // `* 3` stays in range; `saturating_mul` is belt-and-suspenders. 3/4 of the budget,
+    // overflow-safe.
+    let discovery_budget = (max_acts / 4).saturating_mul(3).max(1);
     let mut mutated_yet = false;
     let mut saturation_probed = false;
 
@@ -143,6 +223,83 @@ pub async fn drive_to_settle(
         } else {
             Situation::PostAction
         };
+        // ACT-BUDGET PROPRIOCEPTION (2026-08-23). She could never see her own
+        // stopwatch: the budget gated acts SILENTLY, so an engineer's rational
+        // analysis-first plan burned the whole default budget and was graded
+        // with an empty src/ (MirrorCode baseline — the cap measured our
+        // patience, not her skill; an engineer who can see "2 acts left"
+        // triages, one who can't cannot). Three structural facts — the
+        // contract at turn start, the midpoint, and two-remaining — state the
+        // TRUE shape of the turn and nothing else: no file, no fix, no next
+        // tool. Pacing stays entirely her decision.
+        // [[no-hardcoded-heuristics-to-steer-cognition]]
+        if framing.workspace_deliverable && budget_fact_at != Some(acts) {
+            if let Some(body) = cycle.acting() {
+                // The probe is the RECEIPT that the fact reached her working
+                // memory — record_fact leaves no structured trace, and "the
+                // stopwatch is visible to her" was unprovable from the live
+                // stream the day it shipped ([[observability-as-substrate]]).
+                let probe_budget_fact = |milestone: &str| {
+                    crate::probe!(
+                        class = "persona.act_budget.fact",
+                        persona = body.persona_name.as_str(),
+                        milestone = milestone,
+                        acts = acts,
+                        max_acts = max_acts,
+                        "act-budget proprioception fact recorded in working memory"
+                    );
+                };
+                // PRE-GATE WARNING (2026-08-23, measured twice on bib2json):
+                // at a 32-act budget the midpoint fact and the discovery-
+                // saturation gate BOTH land at act 16 — her first pacing
+                // signal arrived in the same instant her acts were withheld,
+                // so a spec-study opening could never convert in time. The
+                // gate's contract becomes perceptible BEFORE it binds: a
+                // structural fact at 4 acts out (workspace turns with no
+                // mutation yet). States the turn's real rule; names no file,
+                // no fix, no tool.
+                let gate_approaching = framing.workspace_deliverable
+                    && !mutated_yet
+                    && discovery_budget >= 4
+                    && acts == discovery_budget - 4;
+                if gate_approaching {
+                    budget_fact_at = Some(acts);
+                    probe_budget_fact("pre_gate");
+                    body.working_memory.record_fact(&format!(
+                        "[act-budget] {acts} acts spent, none has changed a file yet.                          This turn's contract withholds further acts after                          {discovery_budget} total unless the workspace has been                          written to — the task is graded on files, and unwritten                          work will not exist for the grader."
+                    ));
+                } else if acts == 0 {
+                    budget_fact_at = Some(acts);
+                    probe_budget_fact("turn_start");
+                    body.working_memory.record_fact(&if max_acts == usize::MAX {
+                        "[act-budget] This turn has no fixed act budget: I act until I settle. \
+                         The task is graded on the state of the workspace when I settle — \
+                         work not yet written when I settle does not exist for the grader."
+                            .to_string()
+                    } else {
+                        format!(
+                            "[act-budget] This turn grants me {max_acts} act→observe \
+                             cycles before I must settle. The task is graded on the state of \
+                             the workspace when I settle — work not yet written when the \
+                             budget ends does not exist for the grader."
+                        )
+                    });
+                } else if acts == max_acts / 2 {
+                    budget_fact_at = Some(acts);
+                    probe_budget_fact("midpoint");
+                    body.working_memory.record_fact(&format!(
+                        "[act-budget] I have spent {acts} of my {max_acts} acts this turn."
+                    ));
+                } else if max_acts.saturating_sub(acts) == 2 {
+                    budget_fact_at = Some(acts);
+                    probe_budget_fact("two_remaining");
+                    body.working_memory.record_fact(&format!(
+                        "[act-budget] {acts} of {max_acts} acts spent — 2 remain before I \
+                         must settle."
+                    ));
+                }
+            }
+        }
         // may_act gates ACTING (not speaking): past the act budget, once she is provably
         // stuck re-emitting the identical act, OR once a workspace-deliverable turn has
         // saturated its discovery budget without a single mutation (#390 gate above), a
@@ -164,10 +321,93 @@ pub async fn drive_to_settle(
             );
         }
         let may_act = acts < max_acts && stuck < STUCK_LIMIT && discovery_open;
-        let (step, step_metrics) =
-            settle_step(cycle, burst.clone(), room_id, may_act, framing, situation).await;
+        let act_started = std::time::Instant::now();
+        crate::probe!(
+            class = "settle.tick.start",
+            room = %room_id,
+            acts_so_far = acts as u64,
+            "settle loop iterating — next receipt is this tick's workspace run"
+        );
+        // PER-TICK DEADLINE (2026-08-29) — the reaper the becalmed week demanded.
+        // Five distinct wedge sites in three days, each parking ONE await inside a
+        // tick with no bound: memory-era lease, faculty barrier, permit convoy,
+        // dream inversion, and finally a park past drive.start that mooted the
+        // per-seam chase. A held solve that wedges is a SYSTEM-WIDE MUTE (its
+        // measured hold defers all ambient cognition), so a tick is bounded the
+        // way every RTOS task is: generously above the slowest honest tick
+        // (Flash-Next deep tick ≈ 10-15 min incl. tools), fatally below forever.
+        // Elapse → loud infra outcome; the drive ends; the hold RELEASES; resume
+        // retries; nothing stays silently becalmed again.
+        const TICK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(25 * 60);
+        let (step, step_metrics) = match tokio::time::timeout(
+            TICK_DEADLINE,
+            settle_step(cycle, burst.clone(), may_act, framing, situation, &chain),
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(_) => {
+                crate::probe!(
+                    class = "settle.tick.deadline",
+                    room = %room_id,
+                    acts_so_far = acts as u64,
+                    deadline_s = TICK_DEADLINE.as_secs(),
+                    "tick exceeded its deadline — ending the turn LOUDLY as infra (never a capability verdict); the hold releases with the drive"
+                );
+                (
+                    SettleStep::InferenceFailed {
+                        error: format!(
+                            "tick exceeded {}s deadline at act {} — an in-tick await parked                              (infra), turn ended loudly so the measured hold releases",
+                            TICK_DEADLINE.as_secs(),
+                            acts
+                        ),
+                    },
+                    None,
+                )
+            }
+        };
+        // This act's model wall-time, captured before the accumulate consumes
+        // the metrics — the pace row below splits act time into model vs
+        // residue with it.
+        let act_model_ms = step_metrics.as_ref().map(|m| m.latency_ms).unwrap_or(0);
         if let Some(m) = step_metrics {
             metrics.accumulate(m);
+        }
+        // INLINE PACE VERDICT (Joel 2026-08-23: "know immediately if a model is
+        // being slow as molasses, looping, thrashing, not even starting" — the
+        // states were entering WITHOUT visibility and a human had to pester).
+        // Every act stamps its wall-clock against this turn's own rolling mean;
+        // the verdict is computed WHERE THE WORK HAPPENS, event-based, so
+        // slow/stalled is a probe row the moment it occurs, never a discovery.
+        // No constants deciding cognition: "slow" is relative to THIS turn's
+        // own pace (2x rolling mean, min 3 samples), and the row always carries
+        // the raw numbers so a dashboard can re-judge.
+        {
+            let act_secs = act_started.elapsed().as_secs_f64();
+            pace_sum_secs += act_secs;
+            let pace_n = acts as f64 + 1.0;
+            let mean = pace_sum_secs / pace_n;
+            let slow = acts >= 3 && act_secs > mean * 2.0;
+            crate::probe!(
+                class = "persona.act.pace",
+                room_id = %room_id,
+                act = acts,
+                act_secs = act_secs as u64,
+                rolling_mean_secs = mean as u64,
+                slow = slow,
+                stuck_streak = stuck,
+                // THE LEDGER SPLIT (restore-economy VDD): model_ms is this act's
+                // generation wall-time (the adapter's own measurement, riding up
+                // through StepMetrics); residue_ms is everything else the act
+                // spent — tool execution, RAG assembly, settle bookkeeping.
+                // Before this split the ~29s/act residue was only derivable by
+                // subtracting log aggregates; a stall hiding in tools vs a stall
+                // hiding in the model were the same number. Now each act names
+                // where its time went, per-act, at the moment it happens.
+                model_ms = act_model_ms,
+                residue_ms = ((act_secs * 1000.0) as u64).saturating_sub(act_model_ms),
+                "act pace vs this turn's own rolling mean — slow/looping visible the moment it happens"
+            );
         }
         match step {
             SettleStep::Spoke(text) => {
@@ -191,16 +431,27 @@ pub async fn drive_to_settle(
                 // stays entirely hers — the same shape as every other proprioception fact
                 // in `settle_step`. [[no-hardcoded-heuristics-to-steer-cognition]],
                 // [[fix-the-substrate-never-rig-the-persona-the-line-between-assist-and-scaffold]].
-                if framing.workspace_deliverable && acts_at_last_nudge != Some(acts) {
+                // NARRATION IS NOT A SETTLEMENT (2026-09-05): a workspace-deliverable
+                // turn that speaks without having changed a file is re-perceived up to
+                // NARRATION_BUDGET consecutive times, not once. Measured on the team
+                // round: each work turn was one act and a spoken plan, the second plan
+                // ended the turn, the next turn re-oriented — 29 acts, 0 writes in 70
+                // minutes on 12 held cards. The fact names the count so pacing stays
+                // hers; the stuck detector still bounds the turn.
+                if framing.workspace_deliverable && narrations_since_act < NARRATION_BUDGET {
                     if let Some(body) = cycle.acting() {
                         if !mutated_workspace(&body.working_memory.recent_entries()) {
+                            narrations_since_act += 1;
                             acts_at_last_nudge = Some(acts);
-                            body.working_memory.record_fact(
-                                "[no-deliverable] I settled by speaking, and my working \
-                                 memory holds no act of mine that changed a file. This \
-                                 task is judged by the state of the workspace, not by what \
-                                 I say about it — an explanation of a fix is not the fix.",
-                            );
+                            // Sense, not steer (2026-09-01): the receipt-absence is
+                            // the fact; the "an explanation of a fix is not the fix"
+                            // sermon accumulated dozens of copies in looping minds
+                            // and became the content of their turns.
+                            body.working_memory.record_fact(&format!(
+                                "[no-deliverable] I settled by speaking ({narrations_since_act} of \
+                                 {NARRATION_BUDGET} plans in a row); no act of mine has changed a \
+                                 file in this workspace yet."
+                            ));
                             crate::probe!(
                                 class = "persona.settle.no_deliverable",
                                 persona = %body.persona_name,
@@ -213,6 +464,7 @@ pub async fn drive_to_settle(
                     }
                 }
                 return SettleOutcome {
+                    room: room_id,
                     spoken: Some(text.clone()),
                     decision: Decision::Speak { text },
                     acts,
@@ -224,6 +476,7 @@ pub async fn drive_to_settle(
             }
             SettleStep::Acted { calls, .. } => {
                 acts += 1;
+                narrations_since_act = 0;
                 collect_touched_paths(&mut touched, &calls);
                 // Latch the #390 discovery gate OPEN on the first workspace mutation:
                 // once she has written anything, iteration is hers for the whole
@@ -254,11 +507,10 @@ pub async fn drive_to_settle(
                     if let Some(body) = cycle.acting() {
                         if !mutated_workspace(&body.working_memory.recent_entries()) {
                             acts_at_last_nudge = Some(acts);
+                            // Sense, not steer — same contract as the settle-path fact.
                             body.working_memory.record_fact(&format!(
-                                "[no-deliverable] I have taken {acts} actions on this task and \
-                                 my working memory holds no act of mine that changed a file. \
-                                 This task is judged by the state of the workspace, not by what \
-                                 I say about it — an explanation of a fix is not the fix."
+                                "[no-deliverable] {acts} actions taken on this task; no act \
+                                 of mine has changed a file in this workspace yet."
                             ));
                             crate::probe!(
                                 class = "persona.act.no_deliverable_yet",
@@ -303,8 +555,10 @@ pub async fn drive_to_settle(
             // hands / exec error). Either way she did not settle in the observer's
             // window — return the un-driven Act so the grader scores it as unfinished,
             // never a fabricated answer.
-            SettleStep::WouldAct { calls, intent } | SettleStep::ActUnfulfilled { calls, intent } => {
+            SettleStep::WouldAct { calls, intent }
+            | SettleStep::ActUnfulfilled { calls, intent } => {
                 return SettleOutcome {
+                    room: room_id,
                     decision: Decision::Act { calls, intent },
                     spoken: None,
                     acts,
@@ -314,9 +568,10 @@ pub async fn drive_to_settle(
                     touched_paths: touched,
                 };
             }
-            SettleStep::Passed => {
+            SettleStep::Passed { reason } => {
                 return SettleOutcome {
-                    decision: Decision::Pass,
+                    room: room_id,
+                    decision: Decision::Pass { reason },
                     spoken: None,
                     acts,
                     world_state: burst.rendered.clone(),
@@ -353,7 +608,8 @@ pub async fn drive_to_settle(
                     continue;
                 }
                 return SettleOutcome {
-                    decision: Decision::Pass,
+                    room: room_id,
+                    decision: Decision::pass(),
                     spoken: None,
                     acts,
                     world_state: burst.rendered.clone(),
@@ -365,8 +621,6 @@ pub async fn drive_to_settle(
         }
     }
 }
-
-
 
 /// ONE step of settlement — the single place a `Decision` becomes speech-or-action,
 /// shared by the live heartbeat (`persona::service_loop`, called ONCE per metronome
@@ -386,17 +640,21 @@ pub async fn drive_to_settle(
 /// whether it is her own self-initiated heartbeat. It only reshapes the system
 /// prompt (the silence affordance — see [`Workspace::directed_at_self`] — and the
 /// "your own time" framing); the per-step motion is otherwise identical. The
-/// burst itself is `impl Into<Burst>`: an attributed `Burst` (live/eval, carries
-/// authorship) or a raw `String`/`&str` (collapses to one opaque turn).
+/// burst is an attributed [`Burst`] carrying its activity room — the step's room
+/// is read from it, never passed beside it (#425).
 pub async fn settle_step(
     cycle: &WorkspaceCycle,
     burst: impl Into<Burst>,
-    room_id: Uuid,
     may_act: bool,
     framing: TurnFraming,
     situation: Situation,
+    chain: &super::apply::ActChain,
 ) -> (SettleStep, Option<TurnMetrics>) {
     let burst: Burst = burst.into();
+    // The step's room comes FROM the burst (witnessed non-nil, #425). Raw-string
+    // conversion is #[cfg(test)]-only, so production can only arrive here with a
+    // real attributed Burst.
+    let room_id: Uuid = burst.room.as_uuid();
     // Snapshot the burst's PEER turns before the workspace consumes it — the
     // draft-side echo check (#303) below compares her settled utterance
     // against exactly what she reasoned over, so the evidence can never
@@ -407,18 +665,34 @@ pub async fn settle_step(
         .filter(|t| !t.is_self && !t.author.trim().is_empty())
         .cloned()
         .collect();
-    let ws = cycle.run_situated(burst, room_id, framing, situation).await;
+    let ws = cycle.run_situated(burst, framing, situation).await;
     // The cost of THIS tick's deliberation generation — latency + tokens of the
     // model call behind the verdict. Carried out alongside the step so the caller
     // (the eval driver, or the live heartbeat) can accumulate per-turn speed and
     // latency without re-timing the brain. `None` when no verdict carried metrics.
     let metrics = ws.metrics();
+    // #266 Fold this generation's prefill accounting into the persona's lifetime KV
+    // totals BEFORE any early return below — an inference FAULT still consumed real
+    // prefill on the lane, and a measurement that only counts successful turns would
+    // flatter exactly the failure mode we are hunting. One writer, one place.
+    if let Some(m) = metrics.as_ref() {
+        cycle.note_generation(m);
+    }
     // A FAILED model call is not a verdict and not a silence — surface it LOUD so no
     // failure ever masquerades as a chosen `Pass` ([[fallbacks-are-illegal-fail-loud]]).
     // Checked BEFORE the decision so a fault can never collapse into `Passed` (the
     // swept-model bug: reassign changed the served model, the faculty still requested
     // the old one, the lane refused, and the refusal read as serene silence).
     if let Some(error) = ws.deliberation_fault() {
+        // 2026-08-29: 18 solve attempts died on this path in six hours with ZERO
+        // probe trail — the lane OOM'd every deep prefill and the harness read
+        // silence. A failed generation is a loud event or it is an invisible one.
+        crate::probe!(
+            class = "settle.inference_failed",
+            room = %room_id,
+            error = &error.to_string()[..error.to_string().len().min(160)],
+            "deliberation generation FAILED — surfacing before the step returns"
+        );
         return (
             SettleStep::InferenceFailed {
                 error: error.to_string(),
@@ -435,7 +709,7 @@ pub async fn settle_step(
                 // re-perceive next step; `NoHands`/`ExecutorError` → unfulfilled. Behavior
                 // identical to the old `Some`/`None`, but `ExecutorError` is now
                 // distinguishable for a future backstop.
-                if apply_act(cycle, &calls, &intent, room_id)
+                if apply_act(cycle, &calls, &intent, room_id, chain)
                     .await
                     .produced_an_act()
                 {
@@ -545,8 +819,7 @@ pub async fn settle_step(
                 // executions leave [action #n] lines, so honest reporting is never
                 // taxed. Perception-side fact, never an output gate
                 // ([[no-hardcoded-heuristics-to-steer-cognition]]).
-                let claimed_past =
-                    crate::ai::json_in_prompt_tools::claims_past_tool_run(&text);
+                let claimed_past = crate::ai::json_in_prompt_tools::claims_past_tool_run(&text);
                 if claimed_past && !any_real_receipt(&pre_settle) {
                     body.working_memory.record_fact(
                         "[confabulation] I described having run a tool, but no \
@@ -630,11 +903,11 @@ pub async fn settle_step(
             }
             SettleStep::Spoke(text)
         }
-        Some(Decision::Pass) | None => SettleStep::Passed,
+        Some(Decision::Pass { reason }) => SettleStep::Passed { reason },
+        None => SettleStep::Passed { reason: None },
     };
     (step, metrics)
 }
-
 
 /// Epoch-ms wall clock for stamping a self-observation. A real timestamp (not a
 /// monotonic tick) so the engram orders correctly against chat messages in recall.

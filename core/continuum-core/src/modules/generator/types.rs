@@ -73,7 +73,9 @@ pub struct GenerateModuleParams {
 /// Wire-friendly enum mirroring [`crate::runtime::ModulePriority`]'s
 /// public variants. Default is `Normal` to match the most common
 /// module class.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq, TS, schemars::JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq, TS, schemars::JsonSchema,
+)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/generate/PrioritySpec.ts"
@@ -158,8 +160,7 @@ mod tests {
     #[test]
     fn validate_accepts_canonical_names() {
         for ok in ["chat", "ai_provider", "ai-provider", "_internal", "a1"] {
-            validate_module_name(ok)
-                .unwrap_or_else(|e| panic!("expected `{ok}` to validate: {e}"));
+            validate_module_name(ok).unwrap_or_else(|e| panic!("expected `{ok}` to validate: {e}"));
         }
     }
 

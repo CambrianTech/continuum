@@ -16,13 +16,19 @@ use ts_rs::TS;
 
 /// Params for `mcp/refresh`: none.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/mcp/McpRefreshParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/mcp/McpRefreshParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct McpRefreshParams {}
 
 /// Result of `mcp/refresh`: the refresh-deferred acknowledgement.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/mcp/McpRefreshResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/mcp/McpRefreshResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct McpRefreshResult {
     pub message: String,
@@ -57,6 +63,10 @@ mod tests {
             .run(&Ctx::default(), McpRefreshParams {})
             .await
             .expect("refresh is infallible");
-        assert!(out.message.contains("next initialization"), "got: {}", out.message);
+        assert!(
+            out.message.contains("next initialization"),
+            "got: {}",
+            out.message
+        );
     }
 }

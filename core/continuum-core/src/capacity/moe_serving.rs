@@ -100,7 +100,13 @@ pub fn moe_serving_context(
         .map(|((layer, expert), m)| (ExpertId { layer, expert }, m))
         .collect();
 
-    let pager = ServingExpertPager::new(gguf_id, expert_bytes, margin_bytes, relaunch_threshold, gate);
+    let pager = ServingExpertPager::new(
+        gguf_id,
+        expert_bytes,
+        margin_bytes,
+        relaunch_threshold,
+        gate,
+    );
     Some(MoeServingContext {
         pager,
         n_experts_per_layer,

@@ -82,7 +82,10 @@ const TEACHER_SYSTEM: &str = "You are an expert Rust engineer. Write correct, id
     solution in a ```rust block.";
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/genome/GenomeTeachParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/GenomeTeachParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct GenomeTeachParams {
     /// Inline tasks. When set, takes precedence over `teach_set`. Each task SHOULD
@@ -115,6 +118,7 @@ pub struct GenomeTeachParams {
     pub max_fix_iters: Option<u32>,
     /// Teacher decoding temperature. Default 0.2 (we want correct, convergent code).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub temperature: Option<f32>,
     /// Dataset name (subdirectory under the datasets root). Default
@@ -148,7 +152,10 @@ pub struct GenomeTeachParams {
 /// Per-task outcome — so a low yield is diagnosable (which tasks the teacher never
 /// got to green, and why), not a silent shortfall.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/genome/GenomeTeachTaskOutcome.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/GenomeTeachTaskOutcome.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct GenomeTeachTaskOutcome {
     /// The task id (echoed for traceability).
@@ -165,7 +172,10 @@ pub struct GenomeTeachTaskOutcome {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema, Default)]
-#[ts(export, export_to = "../../../protocol/typescript/genome/GenomeTeachResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/GenomeTeachResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct GenomeTeachResult {
     /// True = this is a fire-and-stream JOB HANDLE (#86), NOT a completed run: teach was
@@ -232,7 +242,10 @@ fn message_text(m: &ChatMessage) -> String {
 /// lets an operator or a poller see where a run actually is. Clean harness = you know
 /// what's going on. [[self-test-via-command-feedback-surface-never-blind]]
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema, Default)]
-#[ts(export, export_to = "../../../protocol/typescript/genome/TeachProgress.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/TeachProgress.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct TeachProgress {
     /// `started` (denominator set, no work yet) | `task` (one graded) | `completed`.
@@ -299,7 +312,10 @@ fn write_teach_ledger(run_id: &str, result: Result<&GenomeTeachResult, String>) 
         Ok(r) => serde_json::json!({ "runId": run_id, "complete": true, "ok": true, "result": r }),
         Err(e) => serde_json::json!({ "runId": run_id, "complete": true, "ok": false, "error": e }),
     };
-    let _ = std::fs::write(&path, serde_json::to_string_pretty(&row).unwrap_or_default());
+    let _ = std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&row).unwrap_or_default(),
+    );
 }
 
 fn read_teach_ledger(run_id: &str) -> Option<serde_json::Value> {
@@ -611,7 +627,14 @@ pub async fn synthesize_remediation(
         // — a timeout is a guess about health, and guessing is the smell we're removing.
         // [[command-async-shape-prefer-stream-never-block]]
         for _ in 0..=max_fix_iters {
-            let answer = match teacher_generate(teacher_adapter.as_ref(), teacher_model, trajectory.clone(), temperature).await {
+            let answer = match teacher_generate(
+                teacher_adapter.as_ref(),
+                teacher_model,
+                trajectory.clone(),
+                temperature,
+            )
+            .await
+            {
                 Ok(a) => a,
                 Err(e) => {
                     last_error = Some(format!("teacher generation failed: {e}"));
@@ -651,7 +674,14 @@ pub async fn synthesize_remediation(
             last_error: if solved { None } else { last_error },
         });
         // Stream progress so the run is watchable live (events, not black-box wait).
-        emit_teach_progress(outcomes.len(), tasks.len(), &task.id, solved, examples.len(), with_correction);
+        emit_teach_progress(
+            outcomes.len(),
+            tasks.len(),
+            &task.id,
+            solved,
+            examples.len(),
+            with_correction,
+        );
     }
 
     // MILESTONE: completed — the terminal fill, so the bar closes even on a 0-yield run.
@@ -697,7 +727,11 @@ pub async fn synthesize_lived_expansion(
 ) -> Result<Vec<Value>, CommandError> {
     // Trim + drop blanks up front: nothing to answer, and it decides whether we even need
     // a lane. Empty in → empty out is a legitimate outcome (no fitness gap), never a fault.
-    let stimuli: Vec<&str> = stimuli.iter().map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+    let stimuli: Vec<&str> = stimuli
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
     if stimuli.is_empty() {
         return Ok(Vec::new());
     }
@@ -736,21 +770,27 @@ pub async fn synthesize_lived_expansion(
             ChatMessage::text("system", LIVED_TEACHER_SYSTEM),
             ChatMessage::text("user", stimulus),
         ];
-        let answer =
-            match teacher_generate(teacher_adapter.as_ref(), teacher_model, messages, temperature).await {
-                Ok(a) => a,
-                Err(e) => {
-                    // Fail-loud on the ITEM, resilient on the BATCH — one stimulus failing
-                    // must not abort the whole consolidation (same spirit as remediation
-                    // breaking one task without killing the run).
-                    tracing::warn!(
-                        target: "genome::teach",
-                        error = %e,
-                        "lived-expansion teacher generation failed for one stimulus — skipped"
-                    );
-                    continue;
-                }
-            };
+        let answer = match teacher_generate(
+            teacher_adapter.as_ref(),
+            teacher_model,
+            messages,
+            temperature,
+        )
+        .await
+        {
+            Ok(a) => a,
+            Err(e) => {
+                // Fail-loud on the ITEM, resilient on the BATCH — one stimulus failing
+                // must not abort the whole consolidation (same spirit as remediation
+                // breaking one task without killing the run).
+                tracing::warn!(
+                    target: "genome::teach",
+                    error = %e,
+                    "lived-expansion teacher generation failed for one stimulus — skipped"
+                );
+                continue;
+            }
+        };
         if answer.trim().is_empty() {
             continue; // never ship a blank lesson
         }
@@ -783,7 +823,11 @@ impl ActionCommand for GenomeTeach {
     type Params = GenomeTeachParams;
     type Output = GenomeTeachResult;
 
-    async fn run(&self, _ctx: &Ctx, p: GenomeTeachParams) -> Result<GenomeTeachResult, CommandError> {
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        p: GenomeTeachParams,
+    ) -> Result<GenomeTeachResult, CommandError> {
         // Fire-and-stream (#86): `detach` runs the many-minute corpus-gen IN THE CORE and
         // returns a run_id HANDLE immediately — never blocking the client, surviving its
         // disconnect. Progress streams as events (genome:teach:progress); the terminal
@@ -807,7 +851,9 @@ impl ActionCommand for GenomeTeach {
                         run_id = %ledger_run, solved = r.tasks_solved, total = r.tasks_total,
                         "genome/teach detached run complete — result in run ledger"
                     ),
-                    Err(e) => tracing::error!(run_id = %ledger_run, error = %e, "genome/teach detached run failed"),
+                    Err(e) => {
+                        tracing::error!(run_id = %ledger_run, error = %e, "genome/teach detached run failed")
+                    }
                 }
             });
             return Ok(GenomeTeachResult {
@@ -881,7 +927,8 @@ impl GenomeTeach {
         };
         if tasks.is_empty() {
             return Err(CommandError::Invalid(
-                "no tasks to teach (inline `tasks` empty and/or teach_set had no valid rows)".into(),
+                "no tasks to teach (inline `tasks` empty and/or teach_set had no valid rows)"
+                    .into(),
             ));
         }
 
@@ -921,7 +968,9 @@ impl GenomeTeach {
                 let home = std::env::var("HOME").map_err(|_| {
                     CommandError::Internal("HOME unset — cannot resolve datasets root".into())
                 })?;
-                std::path::PathBuf::from(home).join(".continuum").join("datasets")
+                std::path::PathBuf::from(home)
+                    .join(".continuum")
+                    .join("datasets")
             }
         };
         let dataset_dir = root.join(&name);
@@ -963,7 +1012,10 @@ crate::register_stateless_command!(GenomeTeach);
 pub struct GenomeTeachStatus;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema, Default)]
-#[ts(export, export_to = "../../../protocol/typescript/genome/GenomeTeachStatusParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/GenomeTeachStatusParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct GenomeTeachStatusParams {
     /// The detached run's handle. With it, the terminal RESULT resolves from the run ledger
@@ -974,7 +1026,10 @@ pub struct GenomeTeachStatusParams {
 }
 
 #[derive(Debug, Clone, Serialize, TS, JsonSchema, Default)]
-#[ts(export, export_to = "../../../protocol/typescript/genome/GenomeTeachStatusResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/GenomeTeachStatusResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct GenomeTeachStatusResult {
     /// True once the run's ledger row exists (the detached run finished — check
@@ -982,6 +1037,7 @@ pub struct GenomeTeachStatusResult {
     pub complete: bool,
     /// The terminal ledger row `{ok, result|error}` when complete, else null.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "unknown")]
     pub result: Option<serde_json::Value>,
     /// Live progress of the currently-running teach — the mid-run scoreboard a progress

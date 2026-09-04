@@ -168,8 +168,14 @@ crate::action_command! {
             crate::persona::recorder::record_turn_frame_replay(rec);
         }
 
-        // The room this turn is FOR — carried by the drained frame (the messages' room).
-        let room = inbox_frame.room_id;
+        // The room this turn is FOR — carried by the drained frame (the messages'
+        // room), witnessed non-nil (#425): a frame without a real room is refused,
+        // not run invisibly.
+        let room = crate::identity::ActivityRoom::from_uuid(inbox_frame.room_id)
+            .map_err(|_| CommandError::Invalid(
+                "persona/turn-execute: the drained frame carries no real room — an \
+                 activity without a room is unrepresentable (#425)".into(),
+            ))?;
 
         // Synthesize ONE airc-shaped delivery from the drained messages — the exact
         // envelope `build_workspace_turns` reads (source_id "airc", per-item peer_id +
@@ -242,14 +248,19 @@ crate::action_command! {
         // command-seeded message is put TO the persona, so we withhold the silent-PASS
         // hatch — the same exam-is-directed measurement control the eval driver documents
         // (a structural harness fact fed to the mind, never a filter on her output).
+        // Per-frame causal thread: this surface executes ONE settle step per
+        // invocation, so the chain starts fresh each frame. Cross-frame
+        // CausedBy linking (frame N+1's act → frame N's) needs the chain to
+        // live with the frame session — CAUSAL-MEMORY-GRAPH.md follow-on.
+        let chain = crate::cognition::act_observe::ActChain::new();
         let (step, metrics) = crate::cognition::act_observe::settle_step(
             &cycle,
             burst,
-            room,
             true,
             crate::cognition::workspace::TurnFraming::message(true),
             // One-shot directed tick: a fresh ask, so fuller grounding.
             crate::cognition::workspace::Situation::FreshContext,
+            &chain,
         )
         .await;
 
@@ -282,7 +293,9 @@ fn settle_step_to_json(
         SettleStep::ActUnfulfilled { calls, intent } => serde_json::json!({
             "outcome": "actUnfulfilled", "intent": intent, "calls": calls.len(),
         }),
-        SettleStep::Passed => serde_json::json!({ "outcome": "passed" }),
+        SettleStep::Passed { reason } => serde_json::json!({
+            "outcome": "passed", "reason": reason,
+        }),
         // The model call FAILED — surface it LOUD and NAMED, never as a serene
         // `passed` ([[fallbacks-are-illegal-fail-loud]]). The sweep harness reads
         // this to tell an infra failure (timeout / 5xx / a serving lane refusing an
@@ -323,16 +336,24 @@ mod tests {
             persona_id,
             PersonaCognition::new(persona_id, "Test Persona".to_string(), rag_engine),
         );
-        (TurnExecute { state: state.clone() }, state)
+        (
+            TurnExecute {
+                state: state.clone(),
+            },
+            state,
+        )
     }
 
     fn enqueue_message(state: &CognitionState, persona_id: Uuid, content: &str, timestamp: u64) {
-        let persona = state.personas.get(&persona_id).expect("test persona exists");
+        let persona = state
+            .personas
+            .get(&persona_id)
+            .expect("test persona exists");
         persona.inbox.enqueue(InboxMessage {
             id: Uuid::new_v4(),
             room_id: Uuid::new_v4(),
             sender_id: Uuid::new_v4(),
-            sender_name: "Joel".to_string(),
+            sender_name: "Operator".to_string(),
             sender_type: SenderType::Human,
             content: content.to_string(),
             timestamp,
@@ -381,7 +402,10 @@ mod tests {
             .await
             .expect("absent persona is a no-op, not an error");
         assert!(out.replay_record.is_none(), "no inbox → null replayRecord");
-        assert!(out.inference_response.is_none(), "no inbox → null inferenceResponse");
+        assert!(
+            out.inference_response.is_none(),
+            "no inbox → null inferenceResponse"
+        );
     }
 
     // what this catches: an empty inbox short-circuits to the null pair BEFORE resolving
@@ -395,7 +419,10 @@ mod tests {
             .run(&Ctx::default(), params(persona_id))
             .await
             .expect("empty drain is a no-op, not an error");
-        assert!(out.replay_record.is_none(), "empty drain → null replayRecord");
+        assert!(
+            out.replay_record.is_none(),
+            "empty drain → null replayRecord"
+        );
         assert!(
             out.inference_response.is_none(),
             "empty drain → null inferenceResponse (brain never resolved)"
@@ -421,7 +448,10 @@ mod tests {
         match err {
             CommandError::Invalid(msg) => {
                 assert!(msg.contains("not hosted"), "got: {msg}");
-                assert!(msg.contains(&persona_id.to_string()), "must name the persona: {msg}");
+                assert!(
+                    msg.contains(&persona_id.to_string()),
+                    "must name the persona: {msg}"
+                );
             }
             other => panic!("expected Invalid naming not-hosted, got {other:?}"),
         }
@@ -452,9 +482,12 @@ mod tests {
         assert_eq!(spoke["metrics"]["tokensPerSecond"], 14.0);
 
         // No metrics ⇒ no metrics key (never a fabricated zero-cost row).
-        let passed = settle_step_to_json(&SettleStep::Passed, None);
+        let passed = settle_step_to_json(&SettleStep::Passed { reason: None }, None);
         assert_eq!(passed["outcome"], "passed");
-        assert!(passed.get("metrics").is_none(), "absent metrics must not synthesize a row");
+        assert!(
+            passed.get("metrics").is_none(),
+            "absent metrics must not synthesize a row"
+        );
 
         // A FAILED model call projects a distinct, NAMED `inferenceFailed` outcome —
         // never a serene `passed`. This is what lets the sweep harness tell an infra

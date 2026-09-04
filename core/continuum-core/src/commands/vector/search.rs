@@ -13,11 +13,12 @@ fn default_include_data() -> bool {
 }
 
 /// Params for `vector/search`.
-#[derive(
-    Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/vector/VectorSearchParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/vector/VectorSearchParams.ts"
+)]
 pub struct VectorSearchParams {
     /// The collection to search.
     pub collection: String,

@@ -109,11 +109,7 @@ pub fn install_tracked_dirs(dirs: Vec<Arc<TrackedDir>>) {
 /// before boot installs the registry (tests, tools) — callers treat that
 /// as "class not under management," never a default path guess.
 pub fn tracked_dir(name: &str) -> Option<Arc<TrackedDir>> {
-    TRACKED_DIRS
-        .get()?
-        .iter()
-        .find(|d| d.name == name)
-        .cloned()
+    TRACKED_DIRS.get()?.iter().find(|d| d.name == name).cloned()
 }
 
 impl DiskReporter for TrackedDir {
@@ -192,6 +188,13 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
         TrackedDir::new("cargo-target", home.join(".continuum/cache/cargo-target")),
         TrackedDir::new("genome-models", home.join(".continuum/genome/models")),
         TrackedDir::new("citizens", home.join(".continuum/citizens")),
+        // Per-persona durable mind state: longterm.db + working-set.json, one dir per uuid.
+        // UNTRACKED until 2026-08-20, which made it invisible to BOTH halves of the governed-
+        // disk contract — no size report, and the eviction guard could not flag a missing
+        // decision because that guard iterates THIS list. Exactly the silent-class shape the
+        // 2026-07-13 incident was about, found at 295 dirs / 18 MB with 286 of them under
+        // 100 KB — spawn ghosts (#437), not minds.
+        TrackedDir::new("personas", home.join(".continuum/personas")),
         TrackedDir::new("forge", home.join(".continuum/forge")),
         // Benchmark working set: per-instance repo clones + per-instance venvs. Grows LINEARLY
         // with instances graded — a full SWE-bench Lite sweep is 300 repos, and one sympy
@@ -212,6 +215,28 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
         // `super::rotation_log_pool`.
         TrackedDir::new("logs", home.join(".continuum/logs")),
         TrackedDir::new("probes", home.join(".continuum/probes")),
+        // #312 ephemeral exam worlds: one CoW clone of the checkout per eval run
+        // (~31 GB logical each). RAII drop removes them on every in-process return
+        // path, and the provision-time orphan sweep (`cognition/eval.rs::
+        // sweep_orphan_eval_roots`) owns the crash path a SIGTERM'd reboot leaves
+        // behind — registered 2026-08-23 after exactly that: a mid-run reboot
+        // orphaned a full clone that no reporter could see, the silent-class shape
+        // the 2026-07-13 incident was about.
+        TrackedDir::new("eval-roots", std::env::temp_dir().join("continuum-eval")),
+        // Diagnostic captures: cognition kv-diag snapshots + the wire-request
+        // capture (SERVING_WIRE_CAPTURE_DIR default location). Opt-in writers,
+        // bounded by operator attention in practice — tracked so "in practice"
+        // never becomes the 2026-07-13 silent-class shape.
+        TrackedDir::new("eval-captures", home.join(".continuum/eval-captures")),
+        // KV disk pages (restore economy): one file per activity, overwritten on
+        // each save, under a GEOMETRY-KEYED subdir per serve (model + per-slot
+        // ctx). Bounded by residents × rooms per geometry; stale geometry
+        // generations are swept at lane spawn
+        // (`inference::llama_server::sweep_stale_page_generations` — the owner
+        // of this class's eviction decision). A page at 20-40k tokens of q8_0
+        // KV is hundreds of MB, so the class is small in COUNT but real in
+        // bytes — exactly what must never be an untracked writer.
+        TrackedDir::new("kv-pages", home.join(".continuum/cache/kv-pages")),
     ];
     // Present only when its real location is KNOWN (see the warn above). Kept
     // CONDITIONAL rather than defaulted: fabricating a path here is how a class
@@ -391,7 +416,13 @@ mod tests {
     fn standard_dirs_cover_the_incident_cache_classes() {
         let dirs = standard_tracked_dirs(std::path::Path::new("/home/u"));
         let names: Vec<&str> = dirs.iter().map(|d| d.name).collect();
-        for must in ["cargo-target", "genome-models", "hf-hub", "citizens", "forge"] {
+        for must in [
+            "cargo-target",
+            "genome-models",
+            "hf-hub",
+            "citizens",
+            "forge",
+        ] {
             assert!(names.contains(&must), "missing cache class: {must}");
         }
     }

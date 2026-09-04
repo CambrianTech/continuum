@@ -50,8 +50,12 @@ pub const MAX_AVATAR_SLOTS: u8 = 16;
 pub const AVATAR_WIDTH: u32 = 640;
 pub const AVATAR_HEIGHT: u32 = 360;
 
-/// Target framerate for avatar rendering.
-const AVATAR_FPS: f64 = 15.0;
+/// Target framerate for avatar rendering — the live-call bar is 30 (Joel,
+/// 2026-08-31: "live 30fps rendering for avatar scenes in the live video
+/// calls"; LIVE-AVATAR-BUDGET's speaker lane). The idle-cadence system keeps
+/// non-speakers throttled (see `sync_idle_cadence`), so this is the SPEAKER'S
+/// rate, never 16 slots × 30 — the budget doc's engines-not-percentages shape.
+const AVATAR_FPS: f64 = 30.0;
 
 /// HD render target resolution.
 const HD_WIDTH: u32 = 1280;

@@ -285,7 +285,11 @@ impl<D: CommandDispatch> McpServer<D> {
                 result: value,
             })
             .unwrap_or_else(|e| {
-                error_response(Value::Null, codes::INTERNAL_ERROR, &format!("serialize: {e}"))
+                error_response(
+                    Value::Null,
+                    codes::INTERNAL_ERROR,
+                    &format!("serialize: {e}"),
+                )
             }),
             Err(e) => error_response(id, e.code, &e.message),
         })
@@ -330,10 +334,12 @@ impl<D: CommandDispatch> McpServer<D> {
             .map_err(|e| McpError::new(codes::INVALID_PARAMS, format!("tools/call params: {e}")))?;
 
         let command = tool_name_to_command(&params.name);
-        Ok(match self.dispatch.execute(&command, params.arguments).await {
-            Ok(result) => CallToolResult::text(&result, false),
-            Err(reason) => CallToolResult::text(&serde_json::json!({ "error": reason }), true),
-        })
+        Ok(
+            match self.dispatch.execute(&command, params.arguments).await {
+                Ok(result) => CallToolResult::text(&result, false),
+                Err(reason) => CallToolResult::text(&serde_json::json!({ "error": reason }), true),
+            },
+        )
     }
 }
 
@@ -464,7 +470,10 @@ mod tests {
         let tools = v["result"]["tools"].as_array().expect("tools array");
         assert_eq!(tools.len(), 2);
         assert_eq!(tools[0]["name"], "ping");
-        assert_eq!(tools[1]["inputSchema"]["type"], "object", "typed MCPTool round-trip");
+        assert_eq!(
+            tools[1]["inputSchema"]["type"], "object",
+            "typed MCPTool round-trip"
+        );
         assert_eq!(s.dispatch.calls.lock().unwrap()[0].0, "mcp/list-tools");
     }
 
@@ -529,7 +538,9 @@ mod tests {
     async fn tools_call_missing_name_is_invalid_params() {
         let s = server(MockDispatch::new());
         let resp = s
-            .handle_message(r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"arguments":{}}}"#)
+            .handle_message(
+                r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"arguments":{}}}"#,
+            )
             .await
             .unwrap();
         let v: Value = serde_json::from_str(&resp).unwrap();

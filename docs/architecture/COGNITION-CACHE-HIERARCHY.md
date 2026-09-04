@@ -589,5 +589,5 @@ the implementation slice scoping.
 - [`COGNITION-ALGORITHMS.md`](COGNITION-ALGORITHMS.md) — the seven algorithms that operate on this storage substrate
 - [`BRAIN-REGIONS-SUBSTRATE.md`](BRAIN-REGIONS-SUBSTRATE.md) — region trait, ready-buffer contract, sleep-policy region cadence
 - [`GENOME-FOUNDRY-SENTINEL.md`](GENOME-FOUNDRY-SENTINEL.md) — parallel L1–L5 cache architecture for genome adapters
-- [`PERSONA-CONVERGENCE-ROADMAP.md`](PERSONA-CONVERGENCE-ROADMAP.md) — how the autonomous loop, self-managed queues, and genome paging compose with this storage substrate
+- [`PERSONA-CONVERGENCE-ROADMAP.md`](../personas/PERSONA-CONVERGENCE-ROADMAP.md) — how the autonomous loop, self-managed queues, and genome paging compose with this storage substrate
 - [`CBAR-SUBSTRATE-ARCHITECTURE.md`](CBAR-SUBSTRATE-ARCHITECTURE.md) — runtime contract, pressure handling, telemetry; this cache hierarchy is one of the substrate's standard "for free" capabilities

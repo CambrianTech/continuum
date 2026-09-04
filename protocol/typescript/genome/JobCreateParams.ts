@@ -15,7 +15,7 @@ export type JobCreateParams = {
  * if that provider is in the capable set; otherwise the outcome is
  * `success=false` — never a silent fallback to a different provider.
  */
-preferredProvider?: string | null, 
+preferredProvider?: string, 
 /**
  * Name of an on-disk dataset under the datasets root
  * (`~/.continuum/datasets/<name>/train.jsonl`, the chat `{messages}` JSONL
@@ -24,7 +24,7 @@ preferredProvider?: string | null,
  * populated dataset. Mutually exclusive with inlining `dataset` examples —
  * exactly one of the two must be provided.
  */
-datasetName?: string | null, 
+datasetName?: string, 
 /**
  * Owning persona — the layer is paged into this persona's working
  * set when the matching skill activates.
@@ -69,18 +69,18 @@ dataset: TrainingDataset,
  * manual spot-checks; that default is a command affordance, not an
  * adoption gate.
  */
-evalSet: string | null, 
+evalSet?: string, 
 /**
  * LoRA-specific hyperparams (rank, alpha, dropout, target
  * modules). `None` lets the adapter pick its provider defaults —
  * `Some` overrides them.
  */
-lora: LoRAHyperparams | null, 
+lora?: LoRAHyperparams, 
 /**
  * Training schedule (epochs, batch size, learning rate, sequence
  * length). `None` lets the adapter pick provider defaults.
  */
-schedule: ScheduleParams | null, 
+schedule?: ScheduleParams, 
 /**
  * Where the resulting artifact should land on local disk.
  * `None` lets the adapter pick — usually
@@ -88,4 +88,4 @@ schedule: ScheduleParams | null,
  * Provider artifacts (OpenAI's `ft:gpt-4o-mini:...`) don't have a
  * local path; the field is `None` in their [`TrainingArtifact`].
  */
-localArtifactDir: string | null, };
+localArtifactDir?: string, };

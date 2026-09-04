@@ -5,11 +5,12 @@ use std::sync::Arc;
 use crate::modules::data::{DataState, MigrationRollback};
 
 /// Params for `migration/rollback`.
-#[derive(
-    Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/migration/MigrationRollbackParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/migration/MigrationRollbackParams.ts"
+)]
 pub struct MigrationRollbackParams {
     /// The connection string that was swapped in (to remove and revert from).
     pub current: String,

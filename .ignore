@@ -1,0 +1,32 @@
+# Search-path exclusions — read by ripgrep, fd, and the agent tooling built on them.
+#
+# WHY THIS FILE EXISTS (Joel, 2026-08-14: "if you're finding code that misleads you
+# we need to move it to legacy or somewhere out of path so you cant keep finding it"):
+#
+# On 2026-08-14 an agent spent an hour concluding the Continuum UI had been LOST.
+# It had not. The searches were drowning in decoys:
+#   - 2,865 .ts files under legacy/ — the retired Node widget shell, whose
+#     SidebarWidget / MainWidget / RightPanelWidget look EXACTLY like the live UI
+#     and outnumber it ~20:1 in any grep for a panel name.
+#   - 6 full tree copies under .claude/worktrees/, so every find for a core path
+#     returned 7 answers and the real one was not first.
+# Result: "the sidebars are in legacy/, the UI was demoted" — a fabricated
+# regression, reported as fact, about an app that was running fine the whole time.
+#
+# Quarantining code by DIRECTORY only works if the directory is also out of the
+# SEARCH path. legacy/ was moved (#83) and then kept answering every query.
+# A decoy you can still grep is not quarantined.
+#
+# To search these deliberately: `rg --no-ignore <pattern> legacy/`.
+
+# The retired Node/TS shell. Superseded by core/continuum-positron (ViewStates)
+# + the per-target renderers (apps/web Lit, apps/mobile Flutter, apps/tui ratatui).
+# Kept in tree for reference per #318 ("quarantine, never delete"); NOT the live UI.
+legacy/
+
+# Agent worktrees — full duplicate checkouts. Never the file you want.
+.claude/worktrees/
+
+# Vendored build output (llama.cpp ships a whole web UI under build/ that answers
+# to index.html searches and has nothing to do with this project's client).
+core/vendor/*/build/

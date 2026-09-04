@@ -40,7 +40,10 @@ pub struct ModuleMetrics {
 
 /// Aggregate statistics for a module
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/runtime/ModuleStats.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/runtime/ModuleStats.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleStats {
     pub module_name: String,

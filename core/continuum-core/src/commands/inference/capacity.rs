@@ -10,14 +10,20 @@ use crate::system_resources::local_inference_capacity;
 /// Params for `inference/capacity` — none (a system fact, no inputs).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/inference/InferenceCapacityParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/inference/InferenceCapacityParams.ts"
+)]
 pub struct InferenceCapacityParams {}
 
 /// Result of `inference/capacity` — how many parallel generate requests the
 /// hardware can service at once (matches the BatchScheduler's `n_seq_max`).
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/inference/InferenceCapacityResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/inference/InferenceCapacityResult.ts"
+)]
 pub struct InferenceCapacityResult {
     /// Concurrency cap — number of simultaneous generate requests. Always >= 1.
     pub capacity: u64,
@@ -66,6 +72,10 @@ mod tests {
             .run(&Ctx::default(), InferenceCapacityParams {})
             .await
             .expect("ok");
-        assert!(out.capacity >= 1, "capacity must be >= 1, got {}", out.capacity);
+        assert!(
+            out.capacity >= 1,
+            "capacity must be >= 1, got {}",
+            out.capacity
+        );
     }
 }

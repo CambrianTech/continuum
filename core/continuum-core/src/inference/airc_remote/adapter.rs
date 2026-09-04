@@ -16,9 +16,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::ai::adapter::{
-    AIProviderAdapter, AdapterCapabilities, ApiStyle, InferenceDevice,
-};
+use crate::ai::adapter::{AIProviderAdapter, AdapterCapabilities, ApiStyle, InferenceDevice};
 use crate::ai::types::{
     HealthState, HealthStatus, ModelInfo, TextGenerationRequest, TextGenerationResponse,
 };
@@ -320,8 +318,7 @@ mod tests {
         // local HeuristicInferenceAdapter produces exactly what a
         // direct call to the heuristic would produce. The substrate
         // can't tell the difference between local and remote.
-        let heuristic: Arc<dyn AIProviderAdapter> =
-            Arc::new(HeuristicInferenceAdapter::new());
+        let heuristic: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
         let transport = LocalAdapterTransport::new(heuristic);
         let adapter = AircRemoteInferenceAdapter::new(transport);
 
@@ -343,15 +340,19 @@ mod tests {
         // produces byte-identical responses. The remote adapter
         // routing to it inherits that determinism: this proves
         // replay-safety across the wire.
-        let heuristic1: Arc<dyn AIProviderAdapter> =
-            Arc::new(HeuristicInferenceAdapter::new());
-        let heuristic2: Arc<dyn AIProviderAdapter> =
-            Arc::new(HeuristicInferenceAdapter::new());
+        let heuristic1: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+        let heuristic2: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
         let adapter1 = AircRemoteInferenceAdapter::new(LocalAdapterTransport::new(heuristic1));
         let adapter2 = AircRemoteInferenceAdapter::new(LocalAdapterTransport::new(heuristic2));
 
-        let r1 = adapter1.generate_text(req("identical prompt")).await.unwrap();
-        let r2 = adapter2.generate_text(req("identical prompt")).await.unwrap();
+        let r1 = adapter1
+            .generate_text(req("identical prompt"))
+            .await
+            .unwrap();
+        let r2 = adapter2
+            .generate_text(req("identical prompt"))
+            .await
+            .unwrap();
         assert_eq!(r1.text, r2.text);
     }
 
@@ -359,11 +360,10 @@ mod tests {
 
     #[tokio::test]
     async fn transport_error_surfaces_as_adapter_error_string() {
-        let transport = StubInferenceTransport::always_failing(
-            RemoteInferenceError::NoPeerReachable {
+        let transport =
+            StubInferenceTransport::always_failing(RemoteInferenceError::NoPeerReachable {
                 message: "all peers down".to_string(),
-            },
-        );
+            });
         let adapter = AircRemoteInferenceAdapter::new(transport);
         let err = adapter.generate_text(req("hi")).await.unwrap_err();
         assert!(err.contains("no remote peer reachable"));
@@ -372,9 +372,9 @@ mod tests {
 
     #[tokio::test]
     async fn timeout_error_surfaces_with_elapsed_ms() {
-        let transport = StubInferenceTransport::always_failing(
-            RemoteInferenceError::Timeout { elapsed_ms: 5_000 },
-        );
+        let transport = StubInferenceTransport::always_failing(RemoteInferenceError::Timeout {
+            elapsed_ms: 5_000,
+        });
         let adapter = AircRemoteInferenceAdapter::new(transport);
         let err = adapter.generate_text(req("hi")).await.unwrap_err();
         assert!(err.contains("timed out"));
@@ -383,11 +383,10 @@ mod tests {
 
     #[tokio::test]
     async fn policy_denied_surfaces_through_adapter() {
-        let transport = StubInferenceTransport::always_failing(
-            RemoteInferenceError::PolicyDenied {
+        let transport =
+            StubInferenceTransport::always_failing(RemoteInferenceError::PolicyDenied {
                 reason: "persona scope mismatch".to_string(),
-            },
-        );
+            });
         let adapter = AircRemoteInferenceAdapter::new(transport);
         let err = adapter.generate_text(req("hi")).await.unwrap_err();
         assert!(err.contains("policy denied"));
@@ -426,8 +425,8 @@ mod tests {
                 },
             })
         });
-        let adapter = AircRemoteInferenceAdapter::new(transport)
-            .with_target_peer("test-remote-peer");
+        let adapter =
+            AircRemoteInferenceAdapter::new(transport).with_target_peer("test-remote-peer");
         let _ = adapter.generate_text(req("anything")).await.unwrap();
         // The test verifies via the stub's served_by echo; the
         // adapter overwrites response.provider to airc-remote, so
@@ -476,24 +475,25 @@ mod tests {
         // R1 BLOCK on PR #1560: a remote adapter that reports
         // Healthy by construction lies to the AdapterRegistry's
         // selector. Pre-observation: pessimistic Unhealthy.
-        let transport = StubInferenceTransport::always_failing(
-            RemoteInferenceError::Transport {
-                message: "not used".to_string(),
-            },
-        );
+        let transport = StubInferenceTransport::always_failing(RemoteInferenceError::Transport {
+            message: "not used".to_string(),
+        });
         let adapter = AircRemoteInferenceAdapter::new(transport);
         let h = adapter.health_check().await;
         assert!(matches!(h.status, HealthState::Unhealthy));
         assert!(!h.api_available);
-        assert!(h.message.as_deref().unwrap_or("").contains("no observed round-trip"));
+        assert!(h
+            .message
+            .as_deref()
+            .unwrap_or("")
+            .contains("no observed round-trip"));
     }
 
     #[tokio::test]
     async fn health_check_flips_to_healthy_after_first_successful_round_trip() {
         // Use the heuristic adapter as the peer; one round-trip
         // should flip the observation flag.
-        let heuristic: Arc<dyn AIProviderAdapter> =
-            Arc::new(HeuristicInferenceAdapter::new());
+        let heuristic: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
         let transport = LocalAdapterTransport::new(heuristic);
         let adapter = AircRemoteInferenceAdapter::new(transport);
 
@@ -508,8 +508,10 @@ mod tests {
         let h_after = adapter.health_check().await;
         assert!(matches!(h_after.status, HealthState::Healthy));
         assert!(h_after.api_available);
-        assert!(
-            h_after.message.as_deref().unwrap_or("").contains("successful round-trip"),
-        );
+        assert!(h_after
+            .message
+            .as_deref()
+            .unwrap_or("")
+            .contains("successful round-trip"),);
     }
 }

@@ -19,7 +19,114 @@
  */
 
 import { html, nothing, type TemplateResult } from 'lit';
-import type { BenchContentBody, BenchRunVM, BenchVerdictVM } from '@continuum/patterns';
+import type { BenchContentBody, BenchRoundCardVM, BenchRoundVM, BenchRunVM, BenchVerdictVM } from '@continuum/patterns';
+
+/** One in-flight ROUND row — the tracker's own lifecycle truth (#371), not a
+ *  client-side count over run rows. settled/dispatched IS the round's progress. */
+function roundRow(round: BenchRoundVM): TemplateResult {
+  const pct =
+    round.dispatched > 0 ? Math.round((round.settled / round.dispatched) * 100) : 0;
+  return html`<div class="bench-round" data-stage=${round.stage}>
+    <span class="bench-round-name" title=${round.roundId}>${round.benchmark}</span>
+    <span class="bench-round-stage${round.stage === 'working' ? ' wave-active' : ''}">${round.stage}</span>
+    ${round.verdict !== '' && round.verdict !== round.stage
+      ? html`<span
+          class="bench-round-verdict bench-verdict-${round.verdict}"
+          title=${round.verdict === 'unstarted'
+            ? 'no card has produced a work artifact yet — deliberation without a workspace is invisible to grading'
+            : round.verdict === 'stalled'
+              ? 'work exists but nothing has acted within the stall window'
+              : round.verdict === 'grinding'
+                ? `an unsettled card acted ${round.idleSecs !== null ? age(round.idleSecs) : ''} ago`
+                : round.verdict}
+          >${round.verdict}${round.verdict === 'grinding' && round.idleSecs !== null
+            ? html` <i>${age(round.idleSecs)}</i>`
+            : nothing}</span
+        >`
+      : nothing}
+    <span class="bench-round-count" title="cards settled / dispatched">
+      ${round.settled}/${round.dispatched}</span>
+    <div class="bench-bar" role="progressbar" aria-label="round settle progress">
+      <div class="bench-bar-fill" style="width:${pct}%"></div>
+    </div>
+    ${round.driver === 'citizen'
+      ? html`<span class="bench-round-driver" title="worked in the room — turns feed the curriculum">citizens</span>`
+      : html`<span class="bench-round-driver bench-round-detached" title="detached solve — produces no room turns">detached</span>`}
+    ${round.stage === 'working'
+      ? html`<button
+          class="bench-round-ctl"
+          title="hold this round — in-flight solves finish, no new card fires until resume"
+          @click=${(e: Event) => emitRoundControl(e, 'pause', round.roundId)}
+        >⏸</button>`
+      : round.stage === 'paused'
+        ? html`<button
+            class="bench-round-ctl bench-round-ctl-resume"
+            title="lift the hold — the driver fires the next card immediately"
+            @click=${(e: Event) => emitRoundControl(e, 'resume', round.roundId)}
+          >▶</button>`
+        : nothing}
+  </div>`;
+}
+
+/** Round pause/resume, as a composed event — the renderer stays pure; the
+ *  host (which owns the transport) binds `bench-round-control` to
+ *  `benchmark/pause` / `benchmark/resume`. Same seam discipline as
+ *  historyHandler: rendering never talks to the wire directly. */
+function emitRoundControl(e: Event, action: 'pause' | 'resume', roundId: string): void {
+  e.stopPropagation();
+  (e.currentTarget as HTMLElement).dispatchEvent(
+    new CustomEvent('bench-round-control', {
+      detail: { action, roundId },
+      bubbles: true,
+      composed: true,
+    }),
+  );
+}
+
+/** The cards a run row can NOT show: the ones that never started. Before this
+ *  strip they rendered as nothing at all, so `working 0/8` was pixel-identical
+ *  for three hours of thrash and a healthy grind (2026-09-01). One compact row
+ *  per unstarted card: WHAT waits and on WHOM. */
+const HELD_COLUMNS = new Set(['claimed', 'in_progress', 'review']);
+
+/** BOARD truth wins over the tracker: a card the board shows CLAIMED / IN PROGRESS /
+ *  REVIEW is in someone's hands even when the tracker (which never records a claim)
+ *  still says "unstarted". Seen live 2026-09-03: a round nine citizens were working
+ *  rendered as "12 not started · unassigned". */
+function inHands(c: BenchRoundCardVM): boolean {
+  return HELD_COLUMNS.has(c.boardState);
+}
+
+function whoHolds(c: BenchRoundCardVM): string {
+  return c.owner !== '' ? c.owner : c.assignee;
+}
+
+function rollCall(round: BenchRoundVM): TemplateResult | typeof nothing {
+  const held = round.cards.filter((c) => c.state === 'unstarted' && inHands(c));
+  const unstarted = round.cards.filter((c) => c.state === 'unstarted' && !inHands(c));
+  if (held.length === 0 && unstarted.length === 0) return nothing;
+  return html`${held.length > 0
+      ? html`<div class="bench-rollcall" role="group" aria-label="cards in hands">
+          <span class="bench-rollcall-head">${held.length} in hands</span>
+          ${held.map(
+            (c) => html`<span class="bench-rollcall-card" title=${c.boardState}>
+              ${c.instance !== '' ? c.instance : c.cardId.slice(0, 8)} <i>· ${whoHolds(c)}</i>
+              ${c.lastActSecs !== null ? html`<small>${age(c.lastActSecs)}</small>` : nothing}</span>`,
+          )}
+        </div>`
+      : nothing}
+    ${unstarted.length > 0
+      ? html`<div class="bench-rollcall" role="group" aria-label="cards not yet started">
+          <span class="bench-rollcall-head">${unstarted.length} not started</span>
+          ${unstarted.map(
+            (c) => html`<span class="bench-rollcall-card" title=${c.solveRoomName !== '' ? c.solveRoomName : c.cardId}>
+              ${c.instance !== '' ? c.instance : c.cardId.slice(0, 8)}${whoHolds(c) !== ''
+                ? html` <i>· ${whoHolds(c)}</i>`
+                : nothing}</span>`,
+          )}
+        </div>`
+      : nothing}`;
+}
 
 /** Compact seconds → "12s" / "3m" / "2h" — board legibility, not precision. */
 function age(seconds: number): string {
@@ -44,18 +151,58 @@ function verdictCell(v: BenchVerdictVM): TemplateResult {
   </div>`;
 }
 
+/** Open the run's activity room — the composed-event seam (same discipline as
+ *  `emitRoundControl`): the renderer stays pure, the host binds navigation. */
+function emitRunOpen(e: Event, roomId: string, roomName?: string): void {
+  (e.currentTarget as HTMLElement).dispatchEvent(
+    new CustomEvent('bench-run-open', {
+      detail: { roomId, roomName },
+      bubbles: true,
+      composed: true,
+    }),
+  );
+}
+
 function runCard(run: BenchRunVM, maxGens: number): TemplateResult {
   // Acts bar normalized to the board's busiest run — relative shape, no
   // invented budget denominator (the wire carries no per-run act budget).
   const pct = maxGens > 0 ? Math.max(4, Math.round((run.generations / maxGens) * 100)) : 0;
-  return html`<div class="bench-card bench-state-${run.state}">
+  const door = run.roomId;
+  return html`<div
+    class="bench-card bench-state-${run.state}"
+    ?data-door=${door !== undefined}
+    title=${door !== undefined ? 'open this run\'s room — watch the work live' : nothing}
+    tabindex=${door !== undefined ? '0' : nothing}
+    @click=${door !== undefined ? (e: Event): void => emitRunOpen(e, door, run.roomName) : nothing}
+    @keydown=${door !== undefined
+      ? (e: KeyboardEvent): void => {
+          if (e.key === 'Enter') emitRunOpen(e, door, run.roomName);
+        }
+      : nothing}
+  >
     <div class="bench-card-head">
       <span class="bench-dot" title=${run.state}></span>
       <span class="bench-instance" title=${run.runId}>${run.instance}</span>
       <span class="bench-attempt" title="attempt N of M">${run.attempt}<i>/</i>${run.maxAttempts}</span>
     </div>
     <div class="bench-card-meta">
-      <span class="bench-persona">${run.persona}</span>
+      <span
+        class="bench-persona element-link"
+        role="button"
+        tabindex="0"
+        title="Open ${run.persona}'s profile"
+        @click=${(e: Event): void => {
+          e.stopPropagation();
+          (e.currentTarget as HTMLElement).dispatchEvent(
+            new CustomEvent('persona-open-by-name', {
+              detail: { name: run.persona },
+              bubbles: true,
+              composed: true,
+            }),
+          );
+        }}
+        >${run.persona}</span
+      >
       ${run.selfClaimed ? html`<span class="bench-selfclaimed">self-claimed</span>` : nothing}
       ${run.lastGenAgeS === null
         ? html`<span class="bench-nogen">no generations yet</span>`
@@ -74,11 +221,30 @@ function runCard(run: BenchRunVM, maxGens: number): TemplateResult {
 }
 
 /** The bench board content — pure fragments of the projected body. */
-export function renderBench(body: BenchContentBody): TemplateResult {
+export interface BenchRenderOptions {
+  /** \'full\' (run rooms — every settled run listed) vs \'digest\' (the academy
+   *  landing — live work + one settled-count line per PAGES-IA.md: history
+   *  lives in run rooms and on citizens' Work tabs, not on the campus page). */
+  readonly history?: 'full' | 'digest';
+}
+
+export function renderBench(body: BenchContentBody, opts?: BenchRenderOptions): TemplateResult {
+  // Rounds render even with zero run rows: a freshly staged round has no run
+  // ledger yet, and the board saying "nothing here" while the tracker holds a
+  // working round would be the launch-and-pray blindness this region kills.
+  const rounds =
+    body.rounds.length > 0
+      ? html`<div class="bench-rounds" role="group" aria-label="in-flight rounds">
+          ${body.rounds.map((rd) => html`${roundRow(rd)}${rollCall(rd)}`)}
+        </div>`
+      : nothing;
   if (body.runs.length === 0) {
-    return html`<div class="bench-awaiting">
-      <p>No benchmark runs on this board yet.</p>
-      <p class="bench-awaiting-sub">Rows appear when a run starts — operator-launched or claimed by a citizen. The frame is the promise.</p>
+    return html`<div class="bench-board">
+      ${rounds}
+      <div class="bench-awaiting">
+        <p>No benchmark runs on this board yet.</p>
+        <p class="bench-awaiting-sub">Rows appear when a run starts — operator-launched or claimed by a citizen. The frame is the promise.</p>
+      </div>
     </div>`;
   }
   const resolved = body.runs.filter((r) => r.state === 'resolved').length;
@@ -92,9 +258,37 @@ export function renderBench(body: BenchContentBody): TemplateResult {
   const failed = body.runs.filter((r) => r.state === 'failed').length;
   const stalled = body.runs.filter((r) => r.state === 'stalled').length;
   const maxGens = Math.max(...body.runs.map((r) => r.generations));
+  // GROUPED NAVIGATION (Joel, 2026-08-31: "how do we navigate and group...
+  // it's kind of confusing"): each round is a SECTION holding its own runs —
+  // live work first, settled history folded away. Runs that predate round
+  // linkage keep an ungrouped bucket at the tail; nothing is hidden.
+  const LIVE_STATES = new Set(['working', 'grading', 'queued', 'stalled']);
+  const orderInside = (a: BenchRunVM, b: BenchRunVM): number =>
+    Number(LIVE_STATES.has(b.state)) - Number(LIVE_STATES.has(a.state));
+  const runsOf = (rawId?: string): BenchRunVM[] =>
+    body.runs.filter((r) => r.roundId !== undefined && r.roundId === rawId).sort(orderInside);
+  const grouped = new Set(
+    body.rounds.flatMap((rd) => runsOf(rd.rawId).map((r) => r.runId)),
+  );
+  const loose = body.runs.filter((r) => !grouped.has(r.runId)).sort(orderInside);
+  const digest = opts?.history === 'digest';
+  const section = (runs: BenchRunVM[]): TemplateResult => {
+    const live = runs.filter((r) => LIVE_STATES.has(r.state));
+    const done = runs.filter((r) => !LIVE_STATES.has(r.state));
+    const wins = done.filter((r) => r.state === 'resolved').length;
+    return html`${live.map((r) => runCard(r, maxGens))}
+    ${done.length === 0
+      ? nothing
+      : digest
+        ? html`<div class="bench-digest">${wins}✓ of ${done.length} settled — full history in the run room</div>`
+        : html`<details class="bench-history">
+            <summary>${done.length} settled</summary>
+            ${done.map((r) => runCard(r, maxGens))}
+          </details>`}`;
+  };
   return html`<div class="bench-board">
     ${body.feedLive ? nothing : html`<div class="bench-snapshot-banner">snapshot — no live feed attached</div>`}
-    <div class="bench-score" role="group" aria-label="round scoreboard">
+    <div class="bench-score" role="group" aria-label="run scoreboard">
       <div class="bench-stat bench-stat-resolved">
         <span class="bench-stat-n">${resolved}</span><span class="bench-stat-l">resolved</span>
       </div>
@@ -113,6 +307,15 @@ export function renderBench(body: BenchContentBody): TemplateResult {
       ? html`<div class="bench-lanes" title="serving lanes vs lanes of demand — contention at a glance">
           lanes ${body.lanePressure.serving} serving · ${body.lanePressure.demanding} demanding</div>`
       : nothing}
-    ${body.runs.map((r) => runCard(r, maxGens))}
+    ${body.rounds.map(
+      (rd) => html`<section class="bench-round-group">
+        ${roundRow(rd)}
+        ${rollCall(rd)}
+        ${section(runsOf(rd.rawId))}
+      </section>`,
+    )}
+    ${loose.length > 0
+      ? html`<section class="bench-round-group bench-ungrouped">${section(loose)}</section>`
+      : nothing}
   </div>`;
 }

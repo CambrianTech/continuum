@@ -24,7 +24,9 @@ use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use continuum_positron::serving::{ServingArmView, ServingEventCard, ServingHeaderView, ServingViewState};
+use continuum_positron::serving::{
+    ServingArmView, ServingEventCard, ServingHeaderView, ServingViewState,
+};
 use continuum_positron::system_metrics::MetricSeriesView;
 use continuum_positron::{StateBuilder, Substrate};
 
@@ -68,7 +70,9 @@ fn normalized(ring: &[f32]) -> Vec<f32> {
     if max <= 0.0 {
         return vec![0.0; ring.len()];
     }
-    ring.iter().map(|v| (v / max * 100.0).clamp(0.0, 100.0)).collect()
+    ring.iter()
+        .map(|v| (v / max * 100.0).clamp(0.0, 100.0))
+        .collect()
 }
 
 /// The pager half's fold state — rings + last-seen policy signals.
@@ -275,7 +279,11 @@ pub fn spawn_serving_emitter(rt: &tokio::runtime::Handle, substrate: Substrate) 
                 // of a pre-existing file replays it, which is the correct
                 // catch-up for a source that just learned where to look).
                 (t, Some(path)) if t.as_ref().map(|t| &t.path) != Some(&path) => {
-                    *t = Some(CaptureTail { path, offset: 0, last_len: 0 });
+                    *t = Some(CaptureTail {
+                        path,
+                        offset: 0,
+                        last_len: 0,
+                    });
                 }
                 (t @ Some(_), None) => *t = None,
                 _ => {}
@@ -346,7 +354,11 @@ mod tests {
         let kinds: Vec<&str> = fold.events.iter().map(|e| e.kind.as_str()).collect();
         assert_eq!(kinds, ["decay-switch", "residency-shift"]);
         let chosen: Vec<bool> = fold.arms.iter().map(|a| a.chosen).collect();
-        assert_eq!(chosen.iter().filter(|c| **c).count(), 1, "exactly one chosen arm");
+        assert_eq!(
+            chosen.iter().filter(|c| **c).count(),
+            1,
+            "exactly one chosen arm"
+        );
         assert!(fold.arms.iter().any(|a| a.label == "0.30" && a.chosen));
     }
 
@@ -359,7 +371,11 @@ mod tests {
         assert_eq!(port_of("http://127.0.0.1:58057/v1"), Some(58057));
         assert_eq!(port_of("http://localhost:8080"), Some(8080));
         assert_eq!(port_of("127.0.0.1:9001/v1"), Some(9001));
-        assert_eq!(port_of("http://remote.example/v1"), None, "no explicit port");
+        assert_eq!(
+            port_of("http://remote.example/v1"),
+            None,
+            "no explicit port"
+        );
         assert_eq!(port_of(""), None);
     }
 
@@ -377,7 +393,10 @@ mod tests {
         let series = fold.series();
         assert_eq!(series.len(), 3);
         assert_eq!(series[0].current, "62%");
-        assert!(fold.arms.is_empty(), "no decision feed → no fabricated arms");
+        assert!(
+            fold.arms.is_empty(),
+            "no decision feed → no fabricated arms"
+        );
     }
 
     // what this catches: the tailer consumes only COMPLETE lines (torn tail
@@ -392,7 +411,11 @@ mod tests {
             "{\"token\":0,\"hit_rate\":0.5,\"fault_wait_ms\":1,\"tok_per_s\":0.4,\"bytes_fetched_mb\":10,\"fetch_mb_s\":100,\"resident_experts\":100}\n{\"token\":1,\"hit_rate\":0.6,\"fault_wait",
         )
         .expect("write");
-        let mut tail = CaptureTail { path: path.clone(), offset: 0, last_len: 0 };
+        let mut tail = CaptureTail {
+            path: path.clone(),
+            offset: 0,
+            last_len: 0,
+        };
         let (events, reset) = tail.poll();
         assert!(!reset);
         assert_eq!(events.len(), 1, "torn second line must NOT be consumed");

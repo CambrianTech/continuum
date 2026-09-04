@@ -11,11 +11,11 @@ export type JobMetrics = { trainedTokens: number,
  * substrate uses this to decide if the layer is worth shipping
  * into the mesh.
  */
-finalLoss: number | null, finalValidationLoss: number | null, wallClockMs: number, 
+finalLoss?: number, finalValidationLoss?: number, wallClockMs: number, 
 /**
  * Trillion-token-cost USD reported by the provider, if it tells
  * us. Helps the substrate's economic dispatcher
  * ([[forge-alloy-secures-commodity-zero-trust-plus-reputation]])
  * pick the cheapest viable provider per request.
  */
-costUsd: number | null, };
+costUsd?: number, };

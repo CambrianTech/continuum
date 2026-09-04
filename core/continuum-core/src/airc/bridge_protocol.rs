@@ -194,7 +194,10 @@ pub fn summarize_bridge_response(text: &str, max_chars: usize) -> String {
     }
     // Match the TS: keep the first (max_chars - 32) chars, trim trailing
     // whitespace, append the marker. Char-based to stay UTF-8 safe.
-    let keep: String = normalized.chars().take(max_chars.saturating_sub(32)).collect();
+    let keep: String = normalized
+        .chars()
+        .take(max_chars.saturating_sub(32))
+        .collect();
     format!("{}\n... [truncated]", keep.trim_end())
 }
 
@@ -250,7 +253,11 @@ fn non_empty(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|t| !t.is_empty())
 }
 
-fn parse_directive(ctx: &ParseContext, mut tokens: Vec<String>, prefix: &str) -> ParsedBridgeMessage {
+fn parse_directive(
+    ctx: &ParseContext,
+    mut tokens: Vec<String>,
+    prefix: &str,
+) -> ParsedBridgeMessage {
     if tokens.is_empty() {
         return ctx.parsed(BridgeAction::Unknown, |p| {
             p.error = Some(format!("Missing directive after {prefix}"));
@@ -546,10 +553,8 @@ mod tests {
     /// honored by the tokenizer.
     #[test]
     fn explicit_chat_directive_keeps_message_and_room() {
-        let p = parse_airc_bridge_message(
-            "!continuum chat --room general \"hello there\"",
-            &opts(),
-        );
+        let p =
+            parse_airc_bridge_message("!continuum chat --room general \"hello there\"", &opts());
         assert_eq!(p.action, BridgeAction::Chat);
         assert!(p.is_directive);
         assert_eq!(p.room, "general");
@@ -568,7 +573,10 @@ mod tests {
     /// falls back when empty.
     #[test]
     fn channel_to_room_strips_hash_and_falls_back() {
-        assert_eq!(room_from_airc_channel(Some("#general"), DEFAULT_ROOM), "general");
+        assert_eq!(
+            room_from_airc_channel(Some("#general"), DEFAULT_ROOM),
+            "general"
+        );
         assert_eq!(room_from_airc_channel(Some("  "), "fallback"), "fallback");
         assert_eq!(room_from_airc_channel(None, "fallback"), "fallback");
     }

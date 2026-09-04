@@ -200,12 +200,20 @@ impl RagSource for ActiveWorkSource {
         if claims.is_empty() && items.is_empty() {
             return Self::empty();
         }
+        // ONE card is this turn's (`work_focus`); the rest are held, not worked now —
+        // said in the line itself, so two held cards never read as two jobs at once.
+        let focus = crate::persona::work_focus::focus_card(claims.iter()).map(|c| c.card_id);
         for card in &claims {
             let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
             // Human-readable line; structured parts also ride in metadata so
             // prompt-assembly / verifiers can render without re-parsing.
+            let stance = if claims.len() > 1 {
+                if focus == Some(card.card_id) { " — THIS TURN" } else { " — held, not this turn" }
+            } else {
+                ""
+            };
             let content = format!(
-                "card {id8} [{state:?}] \"{title}\" (priority {prio:?})",
+                "card {id8} [{state:?}] \"{title}\" (priority {prio:?}){stance}",
                 state = card.state,
                 title = card.title,
                 prio = card.priority,
@@ -266,7 +274,6 @@ impl RagSource for ActiveWorkSource {
 pub(crate) fn renders_held_in_progress(active_work_content: &str) -> bool {
     active_work_content.contains("[InProgress]")
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -354,15 +361,23 @@ mod tests {
         );
 
         let src = source(persona, vec![Ok(vec![]), Ok(vec![])]);
-        let delivery = src.deliver(&ctx(persona), 10_000, ResolutionPreference::Raw).await;
-        assert_eq!(delivery.items.len(), 1, "rejection fact renders with zero claims");
+        let delivery = src
+            .deliver(&ctx(persona), 10_000, ResolutionPreference::Raw)
+            .await;
+        assert_eq!(
+            delivery.items.len(),
+            1,
+            "rejection fact renders with zero claims"
+        );
         assert!(delivery.items[0].content.contains("44ebaa41"));
         assert!(delivery.items[0].content.contains("REJECTED"));
         assert_eq!(delivery.items[0].metadata["fact"], "claim_rejected");
 
         // Another persona's source never sees it.
         let src_other = source(other, vec![Ok(vec![])]);
-        let delivery = src_other.deliver(&ctx(other), 10_000, ResolutionPreference::Raw).await;
+        let delivery = src_other
+            .deliver(&ctx(other), 10_000, ResolutionPreference::Raw)
+            .await;
         assert!(delivery.items.is_empty());
     }
 
@@ -381,22 +396,31 @@ mod tests {
         );
 
         // Read 1: holds the card — normal grounding line, no facts.
-        let d1 = src.deliver(&ctx(persona), 1_000, ResolutionPreference::Raw).await;
+        let d1 = src
+            .deliver(&ctx(persona), 1_000, ResolutionPreference::Raw)
+            .await;
         assert_eq!(d1.items.len(), 1);
         assert!(d1.items[0].metadata.get("fact").is_none());
 
         // Read 2: the card vanished → the transition fact, once, loud.
-        let d2 = src.deliver(&ctx(persona), 1_000, ResolutionPreference::Raw).await;
+        let d2 = src
+            .deliver(&ctx(persona), 1_000, ResolutionPreference::Raw)
+            .await;
         assert_eq!(d2.items.len(), 1);
         assert_eq!(d2.items[0].metadata["fact"], "claim_lost");
-        assert!(d2.items[0].content.contains("Millbrook"), "names the lost card");
+        assert!(
+            d2.items[0].content.contains("Millbrook"),
+            "names the lost card"
+        );
         assert!(
             d2.items[0].content.contains("no longer held by you"),
             "states the transition plainly"
         );
 
         // Read 3: baseline adopted — silence, not a nag loop.
-        let d3 = src.deliver(&ctx(persona), 1_000, ResolutionPreference::Raw).await;
+        let d3 = src
+            .deliver(&ctx(persona), 1_000, ResolutionPreference::Raw)
+            .await;
         assert!(d3.items.is_empty());
     }
 
@@ -412,16 +436,27 @@ mod tests {
             vec![Ok(vec![c.clone()]), Err(()), Ok(vec![c]), Ok(vec![])],
         );
 
-        let _hold = src.deliver(&ctx(persona), 1_000, ResolutionPreference::Raw).await;
+        let _hold = src
+            .deliver(&ctx(persona), 1_000, ResolutionPreference::Raw)
+            .await;
         // Degraded read: empty delivery, NO loss facts, baseline preserved.
-        let err = src.deliver(&ctx(persona), 1_000, ResolutionPreference::Raw).await;
-        assert!(err.items.is_empty(), "degraded read stays empty — never a fake loss");
+        let err = src
+            .deliver(&ctx(persona), 1_000, ResolutionPreference::Raw)
+            .await;
+        assert!(
+            err.items.is_empty(),
+            "degraded read stays empty — never a fake loss"
+        );
         // Recovered read still holding: no facts (nothing was ever lost).
-        let ok = src.deliver(&ctx(persona), 1_000, ResolutionPreference::Raw).await;
+        let ok = src
+            .deliver(&ctx(persona), 1_000, ResolutionPreference::Raw)
+            .await;
         assert_eq!(ok.items.len(), 1);
         assert!(ok.items[0].metadata.get("fact").is_none());
         // NOW it's genuinely gone → the fact fires from the preserved baseline.
-        let lost = src.deliver(&ctx(persona), 1_000, ResolutionPreference::Raw).await;
+        let lost = src
+            .deliver(&ctx(persona), 1_000, ResolutionPreference::Raw)
+            .await;
         assert_eq!(lost.items.len(), 1);
         assert_eq!(lost.items[0].metadata["fact"], "claim_lost");
     }
@@ -432,7 +467,12 @@ mod tests {
     async fn first_read_carries_no_loss_facts() {
         let persona = Uuid::new_v4();
         let src = source(persona, vec![Ok(vec![])]);
-        let d = src.deliver(&ctx(persona), 1_000, ResolutionPreference::Raw).await;
-        assert!(d.items.is_empty(), "empty first read = empty delivery, no facts");
+        let d = src
+            .deliver(&ctx(persona), 1_000, ResolutionPreference::Raw)
+            .await;
+        assert!(
+            d.items.is_empty(),
+            "empty first read = empty delivery, no facts"
+        );
     }
 }

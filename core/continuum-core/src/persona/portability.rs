@@ -91,11 +91,7 @@ impl PersonaHomeBundle {
 
 /// Recursively read every file under `dir`, storing each by its path relative
 /// to `root` (forward-slashed for cross-platform restore).
-fn collect_files(
-    root: &Path,
-    dir: &Path,
-    out: &mut BTreeMap<String, String>,
-) -> io::Result<()> {
+fn collect_files(root: &Path, dir: &Path, out: &mut BTreeMap<String, String>) -> io::Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let path = entry?.path();
         if path.is_dir() {
@@ -107,10 +103,7 @@ fn collect_files(
                 .to_string_lossy()
                 .replace('\\', "/");
             let bytes = std::fs::read(&path)?;
-            out.insert(
-                rel,
-                base64::engine::general_purpose::STANDARD.encode(bytes),
-            );
+            out.insert(rel, base64::engine::general_purpose::STANDARD.encode(bytes));
         }
     }
     Ok(())

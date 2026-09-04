@@ -36,12 +36,18 @@ const MAX_TIMEOUT_SECS: u64 = 60;
 /// Params for `code/run`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/code/CodeRunParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/CodeRunParams.ts"
+)]
 pub struct CodeRunParams {
-    /// Language to run. `rust` (alias `rs`) only — any other value fails loud rather
-    /// than guessing a toolchain. This is a Rust organism; its exec hand is `rustc`.
+    /// Language to run: `rust` (alias `rs`) → `rustc` a complete program, or
+    /// `python` (alias `py`/`python3`) → run a Python script. SWE-bench and most repos
+    /// are Python — use `python`, never `rust` for Python code. Any other value fails
+    /// loud naming both supported paths (use code/shell for anything else).
     pub lang: String,
-    /// A COMPLETE Rust program (with its own `fn main`) to compile and run. Passed
+    /// A COMPLETE program in the chosen `lang` (Rust needs its own `fn main`; Python is a
+    /// plain script). Passed
     /// through verbatim — no markdown-fence stripping, no wrapping: the command runs
     /// exactly what it is given. (Cleaning up model formatting is the deliberation
     /// layer's job, never the hand's — a hand that second-guesses its input is a
@@ -56,7 +62,10 @@ pub struct CodeRunParams {
 /// Result of `code/run` — the ground truth of what running the code produced.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/code/CodeRunResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/CodeRunResult.ts"
+)]
 pub struct CodeRunResult {
     /// Process exit code; `None` if the process was killed (timeout / signal).
     #[ts(optional)]
@@ -84,29 +93,46 @@ impl ActionCommand for CodeRun {
     const ALIASES: &'static [&'static str] = &["run_code"];
     const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
-        "Compile and run a complete Rust program (lang \"rust\", code must have its own \
-         `fn main`) and return its stdout, stderr, exit code, and duration. A compile \
-         error comes back as the result (ok=false) with rustc's errors in stderr. Use \
-         this to actually RUN and test your own code instead of guessing whether it \
-         works. For workspace-scoped grading use code/cargo/check and code/cargo/test.";
+        "Run code and return its stdout, stderr, exit code, and duration. lang=\"rust\" \
+         compiles a complete program (needs its own `fn main`); lang=\"python\" runs a \
+         Python script (use this for Python tasks/repos — do NOT pass Python as lang=rust). \
+         A compile error or traceback comes back as the result (ok=false) in stderr. Use it \
+         to actually RUN and test your own code instead of guessing. For workspace-scoped \
+         Rust grading use code/cargo/check and code/cargo/test.";
     type Params = CodeRunParams;
     type Output = CodeRunResult;
 
     async fn run(&self, _ctx: &Ctx, params: CodeRunParams) -> Result<CodeRunResult, CommandError> {
-        // Rust only — this is a Rust organism's hand. Unknown language fails loud,
-        // never guesses a toolchain.
+        let timeout = std::time::Duration::from_secs(
+            params
+                .timeout_secs
+                .unwrap_or(DEFAULT_TIMEOUT_SECS)
+                .clamp(1, MAX_TIMEOUT_SECS),
+        );
+        // Rust + Python. Glass-boxed 2026-08-24 from her own capture stream: she
+        // reached for Python TWENTY-THREE times in one night — every analysis
+        // scratch-tool she builds is Python — and the Rust-only refusal burned
+        // each of those acts before she found the bash-heredoc workaround. A
+        // hand that refuses the language its owner thinks in is harness
+        // friction, not principle; every serious harness runs both. Unknown
+        // languages still fail loud, now naming BOTH supported paths.
         match params.lang.as_str() {
             "rust" | "rs" => {}
-            other => {
-                return Err(CommandError::Invalid(format!(
-                    "code/run: unsupported lang '{other}' (Rust only — give a complete Rust program)"
-                )))
+            "python" | "python3" | "py" => {
+                let dir =
+                    std::env::temp_dir().join(format!("cu-coderun-{}", uuid::Uuid::new_v4()));
+                std::fs::create_dir_all(&dir).map_err(|e| {
+                    CommandError::Internal(format!("code/run: temp dir create failed: {e}"))
+                })?;
+                let result = run_python(&dir, &params.code, timeout).await;
+                let _ = std::fs::remove_dir_all(&dir);
+                return result;
             }
+            other => return Err(CommandError::Invalid(format!(
+                "code/run: unsupported lang '{other}' — supported: rust, python. \
+                 For anything else use code/shell (any command; long runs hand back a handle)"
+            ))),
         }
-
-        let timeout = std::time::Duration::from_secs(
-            params.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS).clamp(1, MAX_TIMEOUT_SECS),
-        );
 
         // Fresh temp dir per run, removed afterward. The code is written verbatim — no
         // fence-stripping, no wrapping: the persona hands a complete program and we run
@@ -114,8 +140,9 @@ impl ActionCommand for CodeRun {
         // the hand's — a hand that second-guesses its input is a heuristic steering
         // cognition).
         let dir = std::env::temp_dir().join(format!("cu-coderun-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| CommandError::Internal(format!("code/run: temp dir create failed: {e}")))?;
+        std::fs::create_dir_all(&dir).map_err(|e| {
+            CommandError::Internal(format!("code/run: temp dir create failed: {e}"))
+        })?;
 
         let result = compile_and_run_rust(&dir, &params.code, timeout).await;
         let _ = std::fs::remove_dir_all(&dir);
@@ -129,6 +156,62 @@ impl ActionCommand for CodeRun {
 /// rustc's stderr), not hidden — the persona reads the compiler's errors and
 /// self-corrects exactly as she would a runtime panic. `Err` is reserved for a
 /// failure to spawn the toolchain at all (e.g. `rustc` absent).
+/// Run a complete Python program under the same wall-clock + kill_on_drop
+/// contract as the Rust path. Same ground-truth shape: a traceback is the run
+/// result (ok=false), never hidden; `Err` is reserved for a missing
+/// interpreter. python3 resolves from PATH like rustc does.
+async fn run_python(
+    dir: &std::path::Path,
+    code: &str,
+    timeout: std::time::Duration,
+) -> Result<CodeRunResult, CommandError> {
+    let src = dir.join("main.py");
+    std::fs::write(&src, code)
+        .map_err(|e| CommandError::Internal(format!("code/run: write failed: {e}")))?;
+    let mut cmd = tokio::process::Command::new("python3");
+    cmd.arg(&src)
+        .current_dir(dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let child = cmd
+        .spawn()
+        .map_err(|e| CommandError::Internal(format!("code/run: python3 spawn failed: {e}")))?;
+    let started = std::time::Instant::now();
+    let waited = tokio::time::timeout(timeout, child.wait_with_output()).await;
+    let duration_ms = started.elapsed().as_millis() as u64;
+    let out = match waited {
+        Err(_) => {
+            // Same honest shape as the Rust path: a timeout is a RESULT (she
+            // reads it and adjusts), never a hidden kill.
+            return Ok(CodeRunResult {
+                ok: false,
+                stdout: String::new(),
+                stderr: format!(
+                    "killed: exceeded the {}s run timeout (raise timeout_secs up to {}s, \
+                     or use code/shell for long-running work)",
+                    timeout.as_secs(),
+                    MAX_TIMEOUT_SECS
+                ),
+                exit_code: None,
+                duration_ms,
+                timed_out: true,
+            });
+        }
+        Ok(r) => {
+            r.map_err(|e| CommandError::Internal(format!("code/run: python wait failed: {e}")))?
+        }
+    };
+    Ok(CodeRunResult {
+        ok: out.status.success(),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        exit_code: out.status.code(),
+        duration_ms,
+        timed_out: false,
+    })
+}
+
 async fn compile_and_run_rust(
     dir: &std::path::Path,
     code: &str,
@@ -173,7 +256,10 @@ async fn compile_and_run_rust(
                 exit_code: None,
                 ok: false,
                 stdout: String::new(),
-                stderr: format!("rustc killed by safety timeout after {}s", timeout.as_secs()),
+                stderr: format!(
+                    "rustc killed by safety timeout after {}s",
+                    timeout.as_secs()
+                ),
                 duration_ms: started.elapsed().as_millis() as u64,
                 timed_out: true,
             })
@@ -261,7 +347,11 @@ mod tests {
             .expect("command itself succeeds even when the code panics");
         assert!(!out.ok, "code that panics is not ok");
         assert_ne!(out.exit_code, Some(0));
-        assert!(out.stderr.contains("panicked"), "the panic is visible: {}", out.stderr);
+        assert!(
+            out.stderr.contains("panicked"),
+            "the panic is visible: {}",
+            out.stderr
+        );
         assert!(out.stderr.contains("boom"));
     }
 
@@ -284,8 +374,15 @@ mod tests {
             .expect("a compile failure is a result, not a command error");
         assert!(!out.ok, "code that doesn't compile is not ok");
         assert_ne!(out.exit_code, Some(0), "rustc exits nonzero");
-        assert!(out.stderr.contains("error"), "rustc's diagnostics are visible: {}", out.stderr);
-        assert!(out.stdout.is_empty(), "the binary never ran, so no program stdout");
+        assert!(
+            out.stderr.contains("error"),
+            "rustc's diagnostics are visible: {}",
+            out.stderr
+        );
+        assert!(
+            out.stdout.is_empty(),
+            "the binary never ran, so no program stdout"
+        );
     }
 
     // what this catches: the safety timeout ACTUALLY kills the child process — not
@@ -308,7 +405,11 @@ mod tests {
         let out = CodeRun
             .run(
                 &Ctx::default(),
-                CodeRunParams { lang: "rust".into(), code, timeout_secs: Some(2) },
+                CodeRunParams {
+                    lang: "rust".into(),
+                    code,
+                    timeout_secs: Some(2),
+                },
             )
             .await
             .expect("timeout is a result, not an error");
@@ -339,7 +440,10 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
-        assert!(dead, "child pid {pid} survived the safety timeout — orphan leak regressed");
+        assert!(
+            dead,
+            "child pid {pid} survived the safety timeout — orphan leak regressed"
+        );
     }
 
     // what this catches: a non-Rust language fails LOUD (an error naming the cause),
@@ -351,13 +455,40 @@ mod tests {
             .run(
                 &Ctx::default(),
                 CodeRunParams {
-                    lang: "python".into(),
-                    code: "print(1)".into(),
+                    // PREMISE CHANGED 2026-08-24: python is now SUPPORTED (she
+                    // reached for it 23 times in one night and every refusal
+                    // burned an act). A genuinely unknown lang still fails loud.
+                    lang: "cobol".into(),
+                    code: "DISPLAY '1'.".into(),
                     timeout_secs: None,
                 },
             )
             .await
             .expect_err("must reject, not guess");
-        assert!(format!("{err:?}").contains("unsupported lang"), "names the cause: {err:?}");
+        assert!(
+            format!("{err:?}").contains("unsupported lang"),
+            "names the cause: {err:?}"
+        );
+    }
+
+    // what this catches: the python path actually RUNS a program end-to-end and
+    // returns ground truth (stdout + ok) — the 2026-08-24 harness-friction fix
+    // (23 refused python acts in one night) staying real, not just an accepted
+    // lang string.
+    #[tokio::test]
+    async fn python_runs_and_returns_ground_truth() {
+        let r = CodeRun
+            .run(
+                &Ctx::default(),
+                CodeRunParams {
+                    lang: "python".into(),
+                    code: "print(2+2)".into(),
+                    timeout_secs: None,
+                },
+            )
+            .await
+            .expect("python must run");
+        assert!(r.ok, "clean exit: {r:?}");
+        assert_eq!(r.stdout.trim(), "4");
     }
 }

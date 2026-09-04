@@ -21,7 +21,10 @@ use crate::sdk_codegen::{ActionCommand, CommandError, Ctx};
 /// Params for `capacity/io-probe`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/capacity/CapacityIoProbeParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/capacity/CapacityIoProbeParams.ts"
+)]
 pub struct CapacityIoProbeParams {
     /// Size of one record read, in bytes — from the container manifest
     /// (`record_bytes`), never a typed model constant. Must be > 0.
@@ -47,7 +50,10 @@ pub struct CapacityIoProbeParams {
 /// One depth's measurement.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/capacity/CapacityIoProbeRow.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/capacity/CapacityIoProbeRow.ts"
+)]
 pub struct CapacityIoProbeRow {
     pub threads: u32,
     /// Sustained uncached random-read throughput at this depth.
@@ -57,7 +63,10 @@ pub struct CapacityIoProbeRow {
 /// Result of `capacity/io-probe`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/capacity/CapacityIoProbeResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/capacity/CapacityIoProbeResult.ts"
+)]
 pub struct CapacityIoProbeResult {
     /// The probed bank file's path (deleted after the run).
     pub probed_path: String,
@@ -188,7 +197,9 @@ fn probe(
                         x ^= x >> 7;
                         x ^= x << 17;
                         let rec = x % bank_records;
-                        if crate::fs_portable::read_exact_at(&f, &mut buf, rec * record_bytes).is_ok() {
+                        if crate::fs_portable::read_exact_at(&f, &mut buf, rec * record_bytes)
+                            .is_ok()
+                        {
                             done.fetch_add(record_bytes, Ordering::Relaxed);
                         }
                     }

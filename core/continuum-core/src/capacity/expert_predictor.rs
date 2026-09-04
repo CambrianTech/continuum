@@ -85,7 +85,10 @@ impl CrossLayerExpertPredictor {
         for ((p, n), c) in cooccur {
             nested.entry(p).or_default().insert(n, c);
         }
-        Self { seen, cooccur: nested }
+        Self {
+            seen,
+            cooccur: nested,
+        }
     }
 
     /// `P(successor n | predecessor p)` — the learned conditional, or `0.0` if `p` was
@@ -95,7 +98,12 @@ impl CrossLayerExpertPredictor {
             Some(&s) if s > 0 => s as f32,
             _ => return 0.0,
         };
-        let co = self.cooccur.get(p).and_then(|m| m.get(n)).copied().unwrap_or(0) as f32;
+        let co = self
+            .cooccur
+            .get(p)
+            .and_then(|m| m.get(n))
+            .copied()
+            .unwrap_or(0) as f32;
         co / seen
     }
 
@@ -113,7 +121,9 @@ impl CrossLayerExpertPredictor {
         // Candidate set: every successor any fired expert has ever preceded.
         let mut miss_prob: HashMap<ExpertId, f32> = HashMap::new();
         for p in &fired {
-            let Some(succs) = self.cooccur.get(p) else { continue };
+            let Some(succs) = self.cooccur.get(p) else {
+                continue;
+            };
             for n in succs.keys() {
                 if fired.contains(n) {
                     continue; // already resident this pass
@@ -146,7 +156,10 @@ pub fn per_token_experts(layer: u32, flat: &[i32], n_expert_used: usize) -> Vec<
         .map(|row| {
             row.iter()
                 .filter(|&&e| e >= 0)
-                .map(|&e| ExpertId { layer, expert: e as u32 })
+                .map(|&e| ExpertId {
+                    layer,
+                    expert: e as u32,
+                })
                 .collect()
         })
         .collect()
@@ -158,8 +171,12 @@ pub fn per_token_experts(layer: u32, flat: &[i32], n_expert_used: usize) -> Vec<
 /// per transition that yielded ≥1 successor (so `P(n|p) = cooccur[p][n] / seen[p]` stays a
 /// proper fraction). The predictor calls it with HashMap bumps; the live observer calls it
 /// with lock-cheap DashMap bumps on the hot path — same counting, no drift.
-pub fn fold_transition<F, G>(prev: &[ExpertId], next: &[ExpertId], mut bump_cooccur: F, mut bump_seen: G)
-where
+pub fn fold_transition<F, G>(
+    prev: &[ExpertId],
+    next: &[ExpertId],
+    mut bump_cooccur: F,
+    mut bump_seen: G,
+) where
     F: FnMut(ExpertId, ExpertId),
     G: FnMut(ExpertId),
 {
@@ -240,8 +257,16 @@ mod tests {
         p.observe_transition(&[a], &[x]); //    pass 2: A preceded X only
 
         let pred = p.predict(&[a]);
-        assert_eq!(pred.get(&x).copied(), Some(1.0), "X followed A in both passes → P=1.0");
-        assert_eq!(pred.get(&y).copied(), Some(0.5), "Y followed A in one of two → P=0.5");
+        assert_eq!(
+            pred.get(&x).copied(),
+            Some(1.0),
+            "X followed A in both passes → P=1.0"
+        );
+        assert_eq!(
+            pred.get(&y).copied(),
+            Some(0.5),
+            "Y followed A in one of two → P=0.5"
+        );
     }
 
     // what this catches: noisy-OR combination — two independent predecessors each weakly
@@ -262,8 +287,15 @@ mod tests {
         p.observe_transition(&[b], &[eid(2, 0)]);
 
         let both = p.predict(&[a, b]);
-        assert_eq!(both.get(&x).copied(), Some(0.75), "noisy-OR: 1-(1-0.5)(1-0.5)=0.75");
-        assert!(both.values().all(|&c| (0.0..=1.0).contains(&c)), "clamp invariant holds");
+        assert_eq!(
+            both.get(&x).copied(),
+            Some(0.75),
+            "noisy-OR: 1-(1-0.5)(1-0.5)=0.75"
+        );
+        assert!(
+            both.values().all(|&c| (0.0..=1.0).contains(&c)),
+            "clamp invariant holds"
+        );
 
         // One predecessor alone gives the weaker signal.
         let one = p.predict(&[a]);
@@ -280,10 +312,16 @@ mod tests {
         let mut p = CrossLayerExpertPredictor::new();
         p.observe_transition(&[a], &[x, a]); // self-transition A→A must be ignored
 
-        assert!(p.predict(&[eid(5, 5)]).is_empty(), "an unseen predecessor predicts nothing");
+        assert!(
+            p.predict(&[eid(5, 5)]).is_empty(),
+            "an unseen predecessor predicts nothing"
+        );
         let pred = p.predict(&[a]);
         assert_eq!(pred.get(&x).copied(), Some(1.0), "X predicted from A");
-        assert!(!pred.contains_key(&a), "A is fired/resident — never predict it");
+        assert!(
+            !pred.contains_key(&a),
+            "A is fired/resident — never predict it"
+        );
     }
 
     // what this catches: the row-major [n_expert_used, n_tokens] unpack — token t's experts
@@ -298,7 +336,10 @@ mod tests {
         assert_eq!(rows[0], vec![eid(4, 5), eid(4, 7)]);
         assert_eq!(rows[1], vec![eid(4, 5)], "the -1 padding slot is dropped");
         assert_eq!(rows[2], vec![eid(4, 2), eid(4, 7)]);
-        assert!(per_token_experts(4, &[], 0).is_empty(), "n_expert_used=0 → empty, no panic");
+        assert!(
+            per_token_experts(4, &[], 0).is_empty(),
+            "n_expert_used=0 → empty, no panic"
+        );
     }
 
     // what this catches: the batch trajectory capture — within one forward pass (layers in
@@ -314,13 +355,17 @@ mod tests {
         // Pass 1: one token, layer 0 fires expert 3, layer 1 fires expert 7.
         acc.observe_layer(0, vec![vec![eid(0, 3)]], &mut pred); // first layer: no prev, just stores
         acc.observe_layer(1, vec![vec![eid(1, 7)]], &mut pred); // 1>0: learns (0,3)→(1,7)
-        // Pass 2 begins: layer index DROPS to 0 → reset, must NOT learn (1,7)→(0,3) across passes.
+                                                                // Pass 2 begins: layer index DROPS to 0 → reset, must NOT learn (1,7)→(0,3) across passes.
         acc.observe_layer(0, vec![vec![eid(0, 3)]], &mut pred);
         acc.observe_layer(1, vec![vec![eid(1, 7)]], &mut pred); // learns (0,3)→(1,7) again
 
         // (0,3) precedes (1,7) in both passes → P=1.0; nothing learned backwards or across.
         let out = pred.predict(&[eid(0, 3)]);
-        assert_eq!(out.get(&eid(1, 7)).copied(), Some(1.0), "forward transition learned each pass");
+        assert_eq!(
+            out.get(&eid(1, 7)).copied(),
+            Some(1.0),
+            "forward transition learned each pass"
+        );
         // The cross-pass bleed (1,7)→(0,3) must NOT exist: predicting from (1,7) yields nothing.
         assert!(
             pred.predict(&[eid(1, 7)]).is_empty(),

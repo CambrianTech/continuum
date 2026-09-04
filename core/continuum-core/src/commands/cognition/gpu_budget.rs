@@ -25,7 +25,10 @@ use crate::modules::cognition::CognitionState;
 
 /// `cognition/gpu-budget` takes no input — it reports the current GPU authority state.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/GpuBudgetParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/GpuBudgetParams.ts"
+)]
 pub struct GpuBudgetParams {}
 
 /// The GPU budget snapshot a genome initializer reads to size its adapter working set.
@@ -33,7 +36,10 @@ pub struct GpuBudgetParams {}
 /// plus the module's derived per-persona budget. On a CPU-only deploy every VRAM field is
 /// zero and `gpu_name` is `"unknown"` — the honest "no GPU present" reading.
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/GpuBudgetInfo.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/GpuBudgetInfo.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct GpuBudgetInfo {
     /// Device name, or `"unknown"` when no GPU manager is wired (CPU-only deploy).

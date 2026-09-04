@@ -82,7 +82,10 @@ impl AlloyHash {
 /// duplicate `node` as a sibling field on [`GeneHandle`] (a top-level `node`
 /// would have to lie — point at self — for a local gene); ask [`GeneHandle::node`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/forge/GeneLocator.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/forge/GeneLocator.ts"
+)]
 #[serde(tag = "where", rename_all = "lowercase")]
 pub enum GeneLocator {
     /// Bytes on this node's filesystem — no remote fetch needed.
@@ -220,7 +223,11 @@ mod tests {
         let back: GeneHandle =
             serde_json::from_value(serde_json::to_value(&remote).unwrap()).unwrap();
         assert_eq!(remote, back);
-        assert_eq!(back.node(), Some(peer), "remote gene names its holding peer");
+        assert_eq!(
+            back.node(),
+            Some(peer),
+            "remote gene names its holding peer"
+        );
         assert!(!back.is_local());
     }
 

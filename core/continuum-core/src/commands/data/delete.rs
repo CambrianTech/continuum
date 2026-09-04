@@ -6,11 +6,12 @@ use crate::modules::data::DataState;
 use crate::orm::types::{StorageResult, UUID};
 
 /// Params for `data/delete`.
-#[derive(
-    Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/data/DataDeleteParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/data/DataDeleteParams.ts"
+)]
 pub struct DataDeleteParams {
     /// The collection holding the record.
     pub collection: String,

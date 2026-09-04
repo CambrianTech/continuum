@@ -52,7 +52,24 @@ export type { GridContentBody, GridNodeVM } from './gridContent';
 // The Academy's live BENCHMARK BOARD (`purpose === BENCH_PURPOSE`) — one row
 // per run (operator + citizen-claimed), progress-not-liveness (#374/#329).
 export { BENCH_PURPOSE } from './benchContent';
-export type { BenchContentBody, BenchRunVM, BenchRunState, BenchVerdictVM } from './benchContent';
+export type { BenchContentBody, BenchRoundVM, BenchRoundCardVM, BenchRunVM, BenchRunState, BenchVerdictVM } from './benchContent';
+// The design-bench run room's CANVAS region (`purpose === CANVAS_PURPOSE`) —
+// the persona's RENDERED page live on stage, re-observed on her writes
+// (DESIGN-BENCH-VISUAL-CRAFT.md §5: the walk-in sees the design evolve).
+export { CANVAS_PURPOSE } from './canvasContent';
+export type {
+  CanvasContentBody,
+  CanvasArtifactVM,
+  CanvasScoreVM,
+  CanvasCheckVM,
+  CanvasViewportVM,
+} from './canvasContent';
+// Recipe purpose → render family (benchmark/hard-rs → bench, video-chat → live):
+// the ONE resolver between hierarchical recipe purposes and registry families.
+export { contentFamilyOf } from './contentFamily';
+// The SETTINGS activity (operator panel: covenant consent, HF identity, gene registry).
+export { SETTINGS_PURPOSE } from './settingsContent';
+export type { SettingsContentBody, SettingsGeneVM } from './settingsContent';
 export type {
   LiveContentBody,
   LiveParticipantVM,
@@ -103,6 +120,15 @@ export interface ListingCell {
   readonly count?: number;
   /** Optional grouping/category key (the "bookmarked menus + categories" axis). */
   readonly group?: string;
+  /** Optional: the viewer has this item OPEN (a nav tab they selected and have
+   *  not closed). A tab strip renders only opened cells; a rail lists them all.
+   *  Absent = not opened. */
+  readonly opened?: boolean;
+  /** Optional hierarchical parent — the `id` of another cell in the SAME
+   *  listing this one nests under (an activity room under its parent room,
+   *  #2632 rail tree). A target orders children after their parent and
+   *  indents; absent = a root row. */
+  readonly parent?: string;
   /** Optional longer description of the item — a citizen's published BIO, a
    *  model's card description, a room's charter line. The prose sibling of
    *  `subtitle` (one line vs a sentence); a target surfaces it as hover text
@@ -213,6 +239,15 @@ export interface PanelWidget<Body = unknown> {
  *  Rooms/DMs listing that may share the rail. Single-sourced so the RAG + mobile rules
  *  can find the roster among several listing widgets without a magic string each. */
 export const ROSTER_LISTING_ID = 'roster';
+
+/** The chat-room rail's "who is here NOW" listing — every cell a DOOR to that
+ *  member's persona home (same verb as a roster pick). Single-sourced so the
+ *  select router and the projection agree without a magic string each. */
+export const HERE_NOW_LISTING_ID = 'room-here-now';
+
+/** The chat-room rail's "who is WORKING now" listing — every cell a DOOR to
+ *  that run's solve room (`group: 'room'`, same verb as a run-card click). */
+export const WORKING_NOW_LISTING_ID = 'room-working-now';
 
 /** A metrics `PanelWidget` body — a small, pre-formatted readout the rail draws as a
  *  labelled stat row (+ an optional sparkline). The projection owns the numbers AND
@@ -339,6 +374,11 @@ export interface ContinuonView {
   readonly ticker: readonly string[];
   /** Whether the substrate feed is live — drives the breathing mark's state. */
   readonly alive: boolean;
+  /** The state feed's connection status (`live` | `connecting` | `cached` |
+   *  `reconnecting` | `closed`) — the continuon orb + favicon ARE the status
+   *  channel (never a text banner; the raw retry bar was the anti-pattern,
+   *  2026-08-31). Absent = unknown, rendered as connecting. */
+  readonly feed?: string;
 }
 
 /** Wrap a `ListingView` as a `kind:'listing'` `PanelWidget` — the common case (the

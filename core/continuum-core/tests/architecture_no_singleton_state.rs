@@ -110,8 +110,8 @@ fn scan_for_singletons(src_root: &Path) -> Vec<Violation> {
                 let rest_of_line = &trimmed["#[cfg(test)]".len()..];
                 if rest_of_line.contains("mod ") && raw_line.contains('{') {
                     in_test_mod = true;
-                    test_mod_depth =
-                        (raw_line.matches('{').count() as i32) - (raw_line.matches('}').count() as i32);
+                    test_mod_depth = (raw_line.matches('{').count() as i32)
+                        - (raw_line.matches('}').count() as i32);
                     if test_mod_depth <= 0 {
                         // Single-line mod block (`#[cfg(test)] mod x {}`),
                         // already balanced — nothing to exempt.

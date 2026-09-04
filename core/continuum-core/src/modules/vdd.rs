@@ -117,7 +117,6 @@ impl ServiceModule for VddModule {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     //! The module now owns only config + the artifact root + the dep-holding

@@ -54,8 +54,16 @@ pub struct Vec3Desc {
 }
 
 impl Vec3Desc {
-    pub const ZERO: Self = Self { x: 0.0, y: 0.0, z: 0.0 };
-    pub const ONE: Self = Self { x: 1.0, y: 1.0, z: 1.0 };
+    pub const ZERO: Self = Self {
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    };
+    pub const ONE: Self = Self {
+        x: 1.0,
+        y: 1.0,
+        z: 1.0,
+    };
 
     pub const fn new(x: f32, y: f32, z: f32) -> Self {
         Self { x, y, z }
@@ -70,7 +78,11 @@ impl From<Vec3Desc> for Vec3 {
 
 impl From<Vec3> for Vec3Desc {
     fn from(v: Vec3) -> Self {
-        Self { x: v.x, y: v.y, z: v.z }
+        Self {
+            x: v.x,
+            y: v.y,
+            z: v.z,
+        }
     }
 }
 
@@ -85,7 +97,12 @@ pub struct QuatDesc {
 }
 
 impl QuatDesc {
-    pub const IDENTITY: Self = Self { x: 0.0, y: 0.0, z: 0.0, w: 1.0 };
+    pub const IDENTITY: Self = Self {
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+        w: 1.0,
+    };
 
     /// Build from XYZ Euler angles (radians) — the idiom the light rig uses.
     pub fn from_euler_xyz(x: f32, y: f32, z: f32) -> Self {
@@ -107,7 +124,12 @@ impl From<QuatDesc> for Quat {
 
 impl From<Quat> for QuatDesc {
     fn from(q: Quat) -> Self {
-        Self { x: q.x, y: q.y, z: q.z, w: q.w }
+        Self {
+            x: q.x,
+            y: q.y,
+            z: q.z,
+            w: q.w,
+        }
     }
 }
 
@@ -124,8 +146,18 @@ pub struct ColorDesc {
 }
 
 impl ColorDesc {
-    pub const WHITE: Self = Self { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
-    pub const BLACK: Self = Self { r: 0.0, g: 0.0, b: 0.0, a: 1.0 };
+    pub const WHITE: Self = Self {
+        r: 1.0,
+        g: 1.0,
+        b: 1.0,
+        a: 1.0,
+    };
+    pub const BLACK: Self = Self {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 1.0,
+    };
 }
 
 impl From<ColorDesc> for Color {
@@ -137,7 +169,12 @@ impl From<ColorDesc> for Color {
 impl From<Color> for ColorDesc {
     fn from(c: Color) -> Self {
         let lin = c.to_linear();
-        Self { r: lin.red, g: lin.green, b: lin.blue, a: lin.alpha }
+        Self {
+            r: lin.red,
+            g: lin.green,
+            b: lin.blue,
+            a: lin.alpha,
+        }
     }
 }
 
@@ -164,13 +201,19 @@ impl Default for TransformDesc {
 impl TransformDesc {
     /// A translation-only transform (identity rotation, unit scale).
     pub fn from_translation(translation: Vec3Desc) -> Self {
-        Self { translation, ..Default::default() }
+        Self {
+            translation,
+            ..Default::default()
+        }
     }
 
     /// A rotation-only transform (identity translation, unit scale) — the shape
     /// directional lights use.
     pub fn from_rotation(rotation: QuatDesc) -> Self {
-        Self { rotation, ..Default::default() }
+        Self {
+            rotation,
+            ..Default::default()
+        }
     }
 }
 
@@ -236,12 +279,18 @@ pub struct AssetRef {
 impl AssetRef {
     /// A path-backed asset with inferred kind.
     pub fn path(source: impl Into<String>) -> Self {
-        Self { source: source.into(), kind: None }
+        Self {
+            source: source.into(),
+            kind: None,
+        }
     }
 
     /// A path-backed asset with an explicit representation.
     pub fn of(source: impl Into<String>, kind: AssetKind) -> Self {
-        Self { source: source.into(), kind: Some(kind) }
+        Self {
+            source: source.into(),
+            kind: Some(kind),
+        }
     }
 }
 
@@ -263,7 +312,11 @@ pub enum LightKind {
     /// Omnidirectional point light. `intensity` is lumens.
     Point { range: f32 },
     /// Cone light. `intensity` is lumens.
-    Spot { range: f32, inner_angle: f32, outer_angle: f32 },
+    Spot {
+        range: f32,
+        inner_angle: f32,
+        outer_angle: f32,
+    },
 }
 
 /// A light payload. Backend-neutral; the Bevy backend currently instantiates a
@@ -288,17 +341,29 @@ pub fn default_portrait_lights() -> Vec<(LightDesc, TransformDesc)> {
     vec![
         // Ambient — base illumination so no face is completely dark.
         (
-            LightDesc { kind: LightKind::Ambient, color: ColorDesc::WHITE, intensity: 500.0 },
+            LightDesc {
+                kind: LightKind::Ambient,
+                color: ColorDesc::WHITE,
+                intensity: 500.0,
+            },
             TransformDesc::default(),
         ),
         // Key — upper-right-front, strong primary illumination.
         (
-            LightDesc { kind: LightKind::Directional, color: ColorDesc::WHITE, intensity: 30000.0 },
+            LightDesc {
+                kind: LightKind::Directional,
+                color: ColorDesc::WHITE,
+                intensity: 30000.0,
+            },
             TransformDesc::from_rotation(QuatDesc::from_euler_xyz(-0.5, PI - 0.4, 0.0)),
         ),
         // Fill — front-left, softer to balance.
         (
-            LightDesc { kind: LightKind::Directional, color: ColorDesc::WHITE, intensity: 15000.0 },
+            LightDesc {
+                kind: LightKind::Directional,
+                color: ColorDesc::WHITE,
+                intensity: 15000.0,
+            },
             TransformDesc::from_rotation(QuatDesc::from_euler_xyz(-0.2, PI + 0.4, 0.0)),
         ),
         // Rim — behind and above, cool edge separation.
@@ -537,14 +602,21 @@ mod tests {
         let (key_light, key_xf) = default_portrait_lights()[1];
         let scene = SceneDescription {
             version: SCENE_DESCRIPTION_VERSION,
-            backdrop: ColorDesc { r: 0.1, g: 0.2, b: 0.3, a: 1.0 },
+            backdrop: ColorDesc {
+                r: 0.1,
+                g: 0.2,
+                b: 0.3,
+                a: 1.0,
+            },
             root: SceneNode::group("root")
                 .with_child(
                     SceneNode::leaf(
                         "camera",
                         NodePayload::Camera(CameraPayload { head_lock: true }),
                     )
-                    .with_transform(TransformDesc::from_translation(Vec3Desc::new(0.0, 1.5, 2.0))),
+                    .with_transform(TransformDesc::from_translation(
+                        Vec3Desc::new(0.0, 1.5, 2.0),
+                    )),
                 )
                 .with_child(
                     SceneNode::leaf("key", NodePayload::Light(key_light)).with_transform(key_xf),
@@ -556,10 +628,7 @@ mod tests {
                         .with_child(SceneNode::leaf(
                             "asha",
                             NodePayload::Avatar(AvatarPayload {
-                                asset: AssetRef::of(
-                                    "models/avatars/asha.vrm",
-                                    AssetKind::Humanoid,
-                                ),
+                                asset: AssetRef::of("models/avatars/asha.vrm", AssetKind::Humanoid),
                                 display_name: "Asha".to_string(),
                                 animation: AnimationProfileKind::Portrait,
                             }),
@@ -568,7 +637,10 @@ mod tests {
                             SceneNode::leaf(
                                 "cloud",
                                 NodePayload::Prop(PropPayload {
-                                    asset: AssetRef::of("props/cloud.ply", AssetKind::GaussianSplat),
+                                    asset: AssetRef::of(
+                                        "props/cloud.ply",
+                                        AssetKind::GaussianSplat,
+                                    ),
                                 }),
                             )
                             .with_physics(PhysicsDesc {

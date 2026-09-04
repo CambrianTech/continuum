@@ -59,10 +59,7 @@ pub enum SafetensorsIoError {
 /// Both tensors are pulled out of the [`candle_core::Var`] wrappers
 /// before write — `Var` exists for autograd participation; the
 /// serialized form is the bare `Tensor`.
-pub fn write_lora_safetensors(
-    module: &LoRAModule,
-    path: &Path,
-) -> Result<(), SafetensorsIoError> {
+pub fn write_lora_safetensors(module: &LoRAModule, path: &Path) -> Result<(), SafetensorsIoError> {
     let parent = path
         .parent()
         .ok_or_else(|| SafetensorsIoError::MissingParentDir {
@@ -106,8 +103,7 @@ mod tests {
 
         write_lora_safetensors(&module, &path).expect("write");
 
-        let loaded =
-            candle_core::safetensors::load(&path, &Device::Cpu).expect("load back");
+        let loaded = candle_core::safetensors::load(&path, &Device::Cpu).expect("load back");
         assert!(loaded.contains_key(LORA_A_KEY));
         assert!(loaded.contains_key(LORA_B_KEY));
 
@@ -190,7 +186,8 @@ mod tests {
 
             // Original module with overridden A and B (non-zero
             // pattern so the delta path is engaged).
-            let original = LoRAModule::new(base_original, rank, alpha, DType::F32, &device).unwrap();
+            let original =
+                LoRAModule::new(base_original, rank, alpha, DType::F32, &device).unwrap();
             let a_vec: Vec<f32> = (0..(rank as usize * in_features))
                 .map(|i| ((i as f32 * 0.17) + 0.3).sin())
                 .collect();
@@ -212,10 +209,12 @@ mod tests {
             // loaded A/B. The loaded tensors must round-trip into
             // Vars cleanly.
             let fresh = LoRAModule::new(base_loaded, rank, alpha, DType::F32, &device).unwrap();
-            fresh.lora_a()
+            fresh
+                .lora_a()
                 .set(loaded.get(LORA_A_KEY).expect("A key present"))
                 .unwrap();
-            fresh.lora_b()
+            fresh
+                .lora_b()
                 .set(loaded.get(LORA_B_KEY).expect("B key present"))
                 .unwrap();
 
@@ -258,19 +257,12 @@ mod tests {
         }
 
         fn assert_var_eq(a: &Var, b: &Var, label: &str) {
-            let a_flat: Vec<f32> = a
-                .as_tensor()
-                .flatten_all()
-                .unwrap()
-                .to_vec1()
-                .unwrap();
-            let b_flat: Vec<f32> = b
-                .as_tensor()
-                .flatten_all()
-                .unwrap()
-                .to_vec1()
-                .unwrap();
-            assert_eq!(a_flat, b_flat, "VDD: {label} tensors must round-trip bit-exact");
+            let a_flat: Vec<f32> = a.as_tensor().flatten_all().unwrap().to_vec1().unwrap();
+            let b_flat: Vec<f32> = b.as_tensor().flatten_all().unwrap().to_vec1().unwrap();
+            assert_eq!(
+                a_flat, b_flat,
+                "VDD: {label} tensors must round-trip bit-exact"
+            );
         }
     }
 }

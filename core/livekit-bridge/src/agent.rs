@@ -20,7 +20,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, RwLock};
-use tracing::{info, warn, error};
+use tracing::{info, warn};
 
 /// Event with optional binary payload (e.g., PCM audio samples).
 pub struct EventWithPayload {
@@ -200,10 +200,6 @@ impl Agent {
         &self.audio_track_sid
     }
 
-    pub fn identity(&self) -> &str {
-        &self.identity
-    }
-
     pub async fn disconnect(&self) {
         info!("🔊 Agent '{}' disconnecting", self.identity);
         let _ = self.shutdown_tx.send(true);
@@ -222,20 +218,28 @@ pub struct AgentManager {
     agents: RwLock<HashMap<AgentKey, Arc<Agent>>>,
     listeners: RwLock<HashMap<String, Arc<Room>>>,
     livekit_url: String,
-    /// Channel to send audio frames from STT listeners back to core.
+    /// Channel to send CONTROL events back to core (JSON plane).
     audio_tx: mpsc::UnboundedSender<EventWithPayload>,
+    /// Channel to send continuous MEDIA frames back to core (binary plane —
+    /// identity bound once via MediaChannelOpened, then [magic][kind][ch]+payload).
+    media_tx: mpsc::UnboundedSender<(continuum_bridge_protocol::MediaKind, u16, Vec<u8>)>,
 }
+
+/// Bridge-assigned inbound channel ids (its own send-direction namespace).
+static NEXT_IN_CHANNEL: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(1);
 
 impl AgentManager {
     pub fn new(
         livekit_url: String,
         audio_tx: mpsc::UnboundedSender<EventWithPayload>,
+        media_tx: mpsc::UnboundedSender<(continuum_bridge_protocol::MediaKind, u16, Vec<u8>)>,
     ) -> Self {
         Self {
             agents: RwLock::new(HashMap::new()),
             listeners: RwLock::new(HashMap::new()),
             livekit_url,
             audio_tx,
+            media_tx,
         }
     }
 
@@ -356,6 +360,7 @@ impl AgentManager {
         });
 
         let audio_tx = self.audio_tx.clone();
+        let media_plane_tx = self.media_tx.clone();
         let call_id_owned = call_id.to_string();
 
         // Spawn event handler — subscribes to audio tracks and forwards PCM to core
@@ -383,6 +388,7 @@ impl AgentManager {
                                 info!("🎤 Subscribed to audio from '{}' ({})", speaker_name, &speaker_id[..8.min(speaker_id.len())]);
 
                                 let tx = audio_tx.clone();
+                                let mtx = media_plane_tx.clone();
                                 let cid = call_id_owned.clone();
                                 let sid = speaker_id.clone();
                                 let sname = speaker_name.clone();
@@ -392,7 +398,7 @@ impl AgentManager {
                                 // and sends raw PCM to core for VAD/STT processing
                                 tokio::spawn(async move {
                                     forward_audio_to_core(
-                                        audio_track, tx, cid, sid, sname, tsid,
+                                        audio_track, tx, mtx, cid, sid, sname, tsid,
                                     ).await;
                                 });
                             }
@@ -407,12 +413,14 @@ impl AgentManager {
                                 info!("👁 Subscribed to video from '{}' ({})", speaker_name, &speaker_id[..8.min(speaker_id.len())]);
 
                                 let tx = audio_tx.clone();
+                                let mtx = media_plane_tx.clone();
                                 let cid = call_id_owned.clone();
                                 let sid = speaker_id.clone();
                                 let sname = speaker_name.clone();
 
                                 tokio::spawn(async move {
-                                    forward_video_to_core(video_track, tx, cid, sid, sname).await;
+                                    forward_video_to_core(video_track, tx, mtx, cid, sid, sname)
+                                        .await;
                                 });
                             }
                         }
@@ -479,6 +487,7 @@ impl AgentManager {
 async fn forward_audio_to_core(
     audio_track: RemoteAudioTrack,
     tx: mpsc::UnboundedSender<EventWithPayload>,
+    media_tx: mpsc::UnboundedSender<(continuum_bridge_protocol::MediaKind, u16, Vec<u8>)>,
     call_id: String,
     speaker_id: String,
     speaker_name: String,
@@ -493,6 +502,23 @@ async fn forward_audio_to_core(
         1, // mono
     );
 
+    // BIND ONCE, THEN STREAM (binary plane, 2026-09-01): the old shape sent a
+    // JSON `AudioFrame` event — four identity strings, a serialize here and a
+    // DOUBLE parse in core — 50×/sec/speaker. Identity now binds once; every
+    // frame after is [magic][kind][channel] + raw PCM.
+    let channel = NEXT_IN_CHANNEL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let _ = tx.send(EventWithPayload {
+        event: continuum_bridge_protocol::BridgeEvent::MediaChannelOpened {
+            channel,
+            kind: continuum_bridge_protocol::MediaKind::AudioPcm,
+            call_id,
+            speaker_id,
+            speaker_name: speaker_name.clone(),
+            track_sid,
+        },
+        binary: None,
+    });
+
     let mut frame_count: u64 = 0;
     while let Some(frame) = stream.next().await {
         frame_count += 1;
@@ -500,29 +526,26 @@ async fn forward_audio_to_core(
 
         if frame_count == 1 {
             info!(
-                "🎤 First audio frame from '{}': {} samples, sr={}",
-                speaker_name, samples.len(), frame.sample_rate
+                "🎤 First audio frame from '{}': {} samples, sr={} → binary ch {}",
+                speaker_name, samples.len(), frame.sample_rate, channel
             );
         }
 
-        // Send raw PCM to core — core does VAD/STT
-        let pcm_bytes: Vec<u8> = samples.iter()
-            .flat_map(|s| s.to_le_bytes())
-            .collect();
+        // Raw PCM to core (LE bytes) — core does VAD/STT.
+        let mut pcm_bytes: Vec<u8> = Vec::with_capacity(samples.len() * 2);
+        for s in samples {
+            pcm_bytes.extend_from_slice(&s.to_le_bytes());
+        }
 
-        let payload = EventWithPayload {
-            event: continuum_bridge_protocol::BridgeEvent::AudioFrame {
-                call_id: call_id.clone(),
-                speaker_id: speaker_id.clone(),
-                speaker_name: speaker_name.clone(),
-                track_sid: track_sid.clone(),
-                sample_count: samples.len() as u32,
-            },
-            binary: Some(pcm_bytes),
-        };
-
-        if tx.send(payload).is_err() {
-            warn!("🎤 Audio channel closed for '{}'", speaker_name);
+        if media_tx
+            .send((
+                continuum_bridge_protocol::MediaKind::AudioPcm,
+                channel,
+                pcm_bytes,
+            ))
+            .is_err()
+        {
+            warn!("🎤 Media channel closed for '{}'", speaker_name);
             break;
         }
     }
@@ -537,9 +560,11 @@ async fn forward_audio_to_core(
 /// Capture video frames from a LiveKit participant, convert to JPEG,
 /// and forward to core for vision processing.
 /// Rate-limited to 1 fps — AI vision doesn't need every frame.
+#[allow(clippy::too_many_arguments)]
 async fn forward_video_to_core(
     video_track: RemoteVideoTrack,
     tx: mpsc::UnboundedSender<EventWithPayload>,
+    media_tx: mpsc::UnboundedSender<(continuum_bridge_protocol::MediaKind, u16, Vec<u8>)>,
     call_id: String,
     speaker_id: String,
     speaker_name: String,
@@ -549,6 +574,23 @@ async fn forward_video_to_core(
 
     let video_stream = NativeVideoStream::new(video_track.rtc_track());
     let mut pinned_stream = std::pin::pin!(video_stream);
+
+    // BIND ONCE, THEN STREAM (binary plane — same concept as audio): identity
+    // rides one MediaChannelOpened; every sampled JPEG after is
+    // [magic][kind][channel][w][h] + bytes. Vision cognition samples at 1fps —
+    // 30fps HD into a mind that perceives once a second is pure waste.
+    let channel = NEXT_IN_CHANNEL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let _ = tx.send(EventWithPayload {
+        event: continuum_bridge_protocol::BridgeEvent::MediaChannelOpened {
+            channel,
+            kind: continuum_bridge_protocol::MediaKind::VideoJpeg,
+            call_id: call_id.clone(),
+            speaker_id: speaker_id.clone(),
+            speaker_name: speaker_name.clone(),
+            track_sid: String::new(),
+        },
+        binary: None,
+    });
 
     let min_interval = std::time::Duration::from_secs(1); // 1 fps
     let mut last_capture = std::time::Instant::now() - min_interval;
@@ -574,10 +616,7 @@ async fn forward_video_to_core(
         }
 
         // Convert I420 → RGBA on blocking thread
-        let sid = speaker_id.clone();
-        let sname = speaker_name.clone();
-        let cid = call_id.clone();
-        let tx_clone = tx.clone();
+        let mtx_clone = media_tx.clone();
 
         let i420_data = frame.buffer.to_i420();
         let (data_y, data_u, data_v) = i420_data.data();
@@ -628,22 +667,20 @@ async fn forward_video_to_core(
                 return;
             }
 
-            // Content hash for dedup
-            use std::hash::{Hash, Hasher};
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            jpeg[..jpeg.len().min(1024)].hash(&mut hasher);
-            let hash = format!("{:016x}", hasher.finish());
-
-            let _ = tx_clone.send(EventWithPayload {
-                event: continuum_bridge_protocol::BridgeEvent::VideoFrame {
-                    call_id: cid,
-                    speaker_id: sid,
-                    speaker_name: sname,
-                    width,
-                    height,
-                },
-                binary: Some(jpeg),
-            });
+            // Binary plane: [w][h] + jpeg on the bound channel — no JSON,
+            // no identity strings, no core-side double parse.
+            let mut payload = Vec::new();
+            continuum_bridge_protocol::encode_video_payload_into(
+                &mut payload,
+                width as u16,
+                height as u16,
+                &jpeg,
+            );
+            let _ = mtx_clone.send((
+                continuum_bridge_protocol::MediaKind::VideoJpeg,
+                channel,
+                payload,
+            ));
         });
 
         last_capture = std::time::Instant::now();

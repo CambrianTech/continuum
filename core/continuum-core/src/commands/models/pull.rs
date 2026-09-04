@@ -42,7 +42,10 @@ use crate::sdk_codegen::CommandError;
 
 /// Which model to acquire, and (optionally) which quant tier to prefer.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/model_registry/ModelsPullParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/model_registry/ModelsPullParams.ts"
+)]
 pub struct ModelsPullParams {
     /// The model id as it appears in `models/list`. Fails loud if it is unknown,
     /// or if it has no `gguf_hint` (a cloud model has nothing to pull).
@@ -86,7 +89,10 @@ pub struct ModelsPullParams {
 /// What `models/pull` landed: the chosen file, where it lives, its size, and the
 /// projector if one came too. The command's return DTO — not stored on status.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/model_registry/PullReport.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/model_registry/PullReport.ts"
+)]
 pub struct PullReport {
     /// The repo file that was pulled (e.g. `Qwen2-VL-7B-Instruct-Q4_K_M.gguf`).
     pub gguf_file: String,
@@ -428,9 +434,10 @@ impl ModelsPull {
                 .map_err(|e| CommandError::Internal(format!("hf-hub init failed: {e}")))?
         };
         let repo = api.model(repo_id.clone());
-        let info = repo.info().await.map_err(|e| {
-            CommandError::Internal(format!("could not list repo '{repo_id}': {e}"))
-        })?;
+        let info = repo
+            .info()
+            .await
+            .map_err(|e| CommandError::Internal(format!("could not list repo '{repo_id}': {e}")))?;
         let files: Vec<String> = info.siblings.into_iter().map(|s| s.rfilename).collect();
 
         // 4. Choose the weight format, then the entrypoint file (and, for vision GGUF, the
@@ -580,7 +587,6 @@ impl ModelsPull {
         Ok(report)
     }
 }
-
 
 /// Turn a `gguf_hint` into the `<owner>/<repo>` id hf-hub's API needs. Returns
 /// `None` for a non-HuggingFace hint (e.g. a `docker.io/...` reference) — the
@@ -772,7 +778,9 @@ impl PullFormat {
         let has_gguf = files
             .iter()
             .any(|f| f.to_lowercase().ends_with(".gguf") && !is_mmproj(f));
-        let has_st = files.iter().any(|f| f.to_lowercase().ends_with(".safetensors"));
+        let has_st = files
+            .iter()
+            .any(|f| f.to_lowercase().ends_with(".safetensors"));
         let available = || {
             let mut which = Vec::new();
             if has_gguf {
@@ -932,7 +940,10 @@ mod tests {
         let set = expand_shard_set(&sharded[0], &sharded);
         assert_eq!(set.len(), 6, "all 6 IQ1 shards, and NOT the Q4 set");
         assert!(set.contains(&sharded[5]), "the last shard is included");
-        assert!(!set.contains(&sharded[6]), "a different quant's shards are excluded");
+        assert!(
+            !set.contains(&sharded[6]),
+            "a different quant's shards are excluded"
+        );
 
         // Single-file model → just itself.
         let single = vec!["qwen3-coder-compacted.Q4_K_M.gguf".to_string()];
@@ -1009,7 +1020,10 @@ mod tests {
         // Asked for GGUF, repo has none → refuse, and SAY what the repo actually has.
         let err = PullFormat::resolve(Some("gguf"), &st_only).unwrap_err();
         let msg = format!("{err:?}");
-        assert!(msg.contains("safetensors"), "names what IS available: {msg}");
+        assert!(
+            msg.contains("safetensors"),
+            "names what IS available: {msg}"
+        );
 
         // An unknown format is a caller error, not a silent default.
         assert!(PullFormat::resolve(Some("onnx"), &both).is_err());

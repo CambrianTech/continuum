@@ -37,7 +37,10 @@ use crate::cognition::context_budget::ContextBudget;
 /// values show up in `commands/help`, so the persona sees the menu of filters.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-#[ts(export, export_to = "../../../protocol/typescript/tool/OutputFilter.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/tool/OutputFilter.ts"
+)]
 pub enum OutputFilter {
     /// Everything that looks like a hard failure — the default "what broke?" filter.
     Errors,
@@ -72,7 +75,10 @@ impl OutputFilter {
 /// else selects WHAT to pull back.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/tool/ToolOutputParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/tool/ToolOutputParams.ts"
+)]
 pub struct ToolOutputParams {
     /// The output id from the elision marker (e.g. `"deadbeefcafe0001"`). This is
     /// the spill the preview told you was saved.
@@ -109,7 +115,10 @@ pub struct ToolOutputParams {
 /// bounded, line-numbered slice you asked for.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/tool/ToolOutputResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/tool/ToolOutputResult.ts"
+)]
 pub struct ToolOutputResult {
     /// Echo of the handle read.
     pub handle: String,
@@ -138,6 +147,20 @@ pub struct ToolOutput;
 #[async_trait]
 impl ActionCommand for ToolOutput {
     const NAME: &'static str = "tool/output";
+    // THE RECOVERY VERB MUST BE IN HER VOCABULARY. Measured 2026-08-28: the
+    // elision marker tells her to "jump straight to what broke" with
+    // `tool/output`, and this command declared NO aliases — so under
+    // `OfferStyle::TrainedReflex` (which offers each command's PRIMARY alias,
+    // `code/read` → `read_file`) it never landed on the menu in a name her
+    // training reaches for, and across every log on this box it had been called
+    // exactly ZERO times. The substrate was handing her a handle and naming a
+    // verb she did not hold: the tail of every flood-sized error — which is
+    // usually the actual failure — was unreadable to her.
+    //
+    // Inbound resolution accepts every style (`from_wire_name`), so adding
+    // aliases can only widen what she can say, never narrow it.
+    const ALIASES: &'static [&'static str] =
+        &["read_output", "grep_output", "tail_output", "search_output"];
     const DESCRIPTION: &'static str =
         "Page or grep a large tool result that was saved to disk because it was too big \
          to show in full. Pass the `handle` from the elision marker. EASIEST: set \
@@ -244,10 +267,18 @@ mod tests {
         }
         let log = "   Compiling foo\nerror[E0308]: mismatched types\nwarning: unused var\n\
                    test result: FAILED. 1 passed; 2 failed";
-        assert!(Regex::new(OutputFilter::Errors.pattern()).unwrap().is_match(log));
-        assert!(Regex::new(OutputFilter::Warnings.pattern()).unwrap().is_match(log));
-        assert!(Regex::new(OutputFilter::Failures.pattern()).unwrap().is_match(log));
-        assert!(Regex::new(OutputFilter::Summary.pattern()).unwrap().is_match(log));
+        assert!(Regex::new(OutputFilter::Errors.pattern())
+            .unwrap()
+            .is_match(log));
+        assert!(Regex::new(OutputFilter::Warnings.pattern())
+            .unwrap()
+            .is_match(log));
+        assert!(Regex::new(OutputFilter::Failures.pattern())
+            .unwrap()
+            .is_match(log));
+        assert!(Regex::new(OutputFilter::Summary.pattern())
+            .unwrap()
+            .is_match(log));
     }
 
     // what this catches: with no authenticated caller there is no persona to

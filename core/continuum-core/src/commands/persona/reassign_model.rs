@@ -64,7 +64,10 @@ use crate::sdk_codegen::Ctx;
 
 /// Which persona to reassign, and to which base model.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/PersonaReassignModelParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/PersonaReassignModelParams.ts"
+)]
 pub struct PersonaReassignModelParams {
     /// The persona's agent name as it appears on disk (e.g. `"Asha"`) — the
     /// `<name>` segment of her home dir. Fails loud if no such persona has a home.
@@ -82,7 +85,10 @@ pub struct PersonaReassignModelParams {
 /// What `persona/reassign-model` did: the durable assignment that now sticks, and
 /// the live host change that backs it.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/ReassignModelReport.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/ReassignModelReport.ts"
+)]
 pub struct ReassignModelReport {
     /// The persona reassigned — echoed so the caller can confirm.
     pub persona: String,
@@ -287,7 +293,7 @@ mod tests {
                 PersonaReassignModelParams {
                     persona: "Asha".to_string(),
                     model_id: "qwen3-coder-14b".to_string(),
-                    set_by: Some("joel".to_string()),
+                    set_by: Some("operator".to_string()),
                 },
             )
             .await

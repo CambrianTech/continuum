@@ -99,7 +99,8 @@ pub async fn ingest_expert_sets(
             artifact: id,
             offset: PageOffset::Whole,
         };
-        tier.write(page, blob, Provenance::minimal(id, now_ms)).await?;
+        tier.write(page, blob, Provenance::minimal(id, now_ms))
+            .await?;
         artifacts.push(page);
     }
 
@@ -226,7 +227,10 @@ mod tests {
         let (page0, blob0, prov0) = &writes[0];
         assert_eq!(page0.kind, PageKind::MoEExpert);
         assert_eq!(page0.offset, PageOffset::Whole);
-        assert_eq!(page0.artifact, expert_set_artifact_id("qwen3moe-test@v1", 0));
+        assert_eq!(
+            page0.artifact,
+            expert_set_artifact_id("qwen3moe-test@v1", 0)
+        );
         assert_eq!(prov0.artifact_id, page0.artifact);
 
         // The blob is Mapped over layer 0's 3 projections; expert 3 resolves to

@@ -253,9 +253,17 @@ mod tests {
     #[test]
     fn apportion_admits_all_when_budget_covers_eligible() {
         let s = OrientationShares::first_best_guess();
-        let eligible = OrientationCounts { reactive: 3, self_directed: 2, speciation: 1 };
+        let eligible = OrientationCounts {
+            reactive: 3,
+            self_directed: 2,
+            speciation: 1,
+        };
         assert_eq!(apportion(&s, eligible, 100), eligible);
-        assert_eq!(apportion(&s, eligible, 6), eligible, "budget == total still admits all");
+        assert_eq!(
+            apportion(&s, eligible, 6),
+            eligible,
+            "budget == total still admits all"
+        );
     }
 
     // what this catches: proportional split under scarcity. Equal tickets + ample
@@ -263,10 +271,21 @@ mod tests {
     #[test]
     fn apportion_splits_proportionally_equal_tickets() {
         let s = OrientationShares::new(1, 1, 1);
-        let eligible = OrientationCounts { reactive: 10, self_directed: 10, speciation: 10 };
+        let eligible = OrientationCounts {
+            reactive: 10,
+            self_directed: 10,
+            speciation: 10,
+        };
         let got = apportion(&s, eligible, 6);
         assert_eq!(got.total(), 6);
-        assert_eq!(got, OrientationCounts { reactive: 2, self_directed: 2, speciation: 2 });
+        assert_eq!(
+            got,
+            OrientationCounts {
+                reactive: 2,
+                self_directed: 2,
+                speciation: 2
+            }
+        );
     }
 
     // what this catches: ticket ratios drive the split. 7:2:1 over a budget of 10 with
@@ -274,11 +293,21 @@ mod tests {
     #[test]
     fn apportion_follows_ticket_ratios() {
         let s = OrientationShares::first_best_guess(); // 7,2,1
-        let eligible = OrientationCounts { reactive: 100, self_directed: 100, speciation: 100 };
+        let eligible = OrientationCounts {
+            reactive: 100,
+            self_directed: 100,
+            speciation: 100,
+        };
         let got = apportion(&s, eligible, 10);
         assert_eq!(got.total(), 10);
-        assert!(got.reactive > got.self_directed, "reactive (7) outweighs self_directed (2)");
-        assert!(got.self_directed >= got.speciation, "self_directed (2) ≥ speciation (1)");
+        assert!(
+            got.reactive > got.self_directed,
+            "reactive (7) outweighs self_directed (2)"
+        );
+        assert!(
+            got.self_directed >= got.speciation,
+            "self_directed (2) ≥ speciation (1)"
+        );
     }
 
     // what this catches: per-class capacity caps + leftover redistribution. Reactive has
@@ -287,7 +316,11 @@ mod tests {
     #[test]
     fn apportion_caps_at_eligible_and_redistributes() {
         let s = OrientationShares::new(7, 2, 1);
-        let eligible = OrientationCounts { reactive: 1, self_directed: 10, speciation: 10 };
+        let eligible = OrientationCounts {
+            reactive: 1,
+            self_directed: 10,
+            speciation: 10,
+        };
         let got = apportion(&s, eligible, 6);
         assert_eq!(got.reactive, 1, "capped at its single eligible pair");
         assert_eq!(got.total(), 6, "leftover redistributed, full budget used");
@@ -299,7 +332,11 @@ mod tests {
     #[test]
     fn apportion_never_selects_zero_ticket_class() {
         let s = OrientationShares::new(1, 1, 0); // speciation off
-        let eligible = OrientationCounts { reactive: 5, self_directed: 5, speciation: 5 };
+        let eligible = OrientationCounts {
+            reactive: 5,
+            self_directed: 5,
+            speciation: 5,
+        };
         let got = apportion(&s, eligible, 4);
         assert_eq!(got.speciation, 0, "0 tickets → never scheduled");
         assert_eq!(got.reactive + got.self_directed, 4);
@@ -310,7 +347,11 @@ mod tests {
     #[test]
     fn apportion_is_deterministic() {
         let s = OrientationShares::first_best_guess();
-        let eligible = OrientationCounts { reactive: 20, self_directed: 20, speciation: 20 };
+        let eligible = OrientationCounts {
+            reactive: 20,
+            self_directed: 20,
+            speciation: 20,
+        };
         let a = apportion(&s, eligible, 13);
         let b = apportion(&s, eligible, 13);
         assert_eq!(a, b);

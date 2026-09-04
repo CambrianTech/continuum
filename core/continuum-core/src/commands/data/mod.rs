@@ -56,17 +56,39 @@ use update::DataUpdate;
 /// legacy `data/` prefix arm (which shrinks toward deletion as arms migrate).
 pub fn command_objects(state: Arc<DataState>) -> Vec<Arc<dyn DynCommand>> {
     vec![
-        Arc::new(DataList { state: state.clone() }),
-        Arc::new(DataRead { state: state.clone() }),
-        Arc::new(DataCreate { state: state.clone() }),
-        Arc::new(DataUpdate { state: state.clone() }),
-        Arc::new(DataDelete { state: state.clone() }),
-        Arc::new(DataCount { state: state.clone() }),
-        Arc::new(DataListCollections { state: state.clone() }),
-        Arc::new(DataCollectionStats { state: state.clone() }),
-        Arc::new(DataBatch { state: state.clone() }),
-        Arc::new(DataEnsureSchema { state: state.clone() }),
-        Arc::new(DataTruncate { state: state.clone() }),
+        Arc::new(DataList {
+            state: state.clone(),
+        }),
+        Arc::new(DataRead {
+            state: state.clone(),
+        }),
+        Arc::new(DataCreate {
+            state: state.clone(),
+        }),
+        Arc::new(DataUpdate {
+            state: state.clone(),
+        }),
+        Arc::new(DataDelete {
+            state: state.clone(),
+        }),
+        Arc::new(DataCount {
+            state: state.clone(),
+        }),
+        Arc::new(DataListCollections {
+            state: state.clone(),
+        }),
+        Arc::new(DataCollectionStats {
+            state: state.clone(),
+        }),
+        Arc::new(DataBatch {
+            state: state.clone(),
+        }),
+        Arc::new(DataEnsureSchema {
+            state: state.clone(),
+        }),
+        Arc::new(DataTruncate {
+            state: state.clone(),
+        }),
         Arc::new(DataClearAll { state }),
     ]
 }

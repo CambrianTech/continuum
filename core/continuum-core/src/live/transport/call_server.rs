@@ -8,9 +8,9 @@ use crate::live::audio::capabilities::ModelCapabilityRegistry;
 use crate::live::audio::mixer::{AudioMixer, ParticipantStream};
 use crate::live::audio::router::{AudioRouter, RoutedParticipant};
 use crate::live::audio::stt;
-use crate::runtime::handle::Handle;
 use crate::live::types::FrameKind;
 use crate::live::video::source::{TestPatternSource, VideoSource};
+use crate::runtime::handle::Handle;
 use crate::utils::audio::{
     base64_decode_i16, bytes_to_i16, i16_to_f32, is_silence, resample_to_16k,
 };
@@ -353,7 +353,20 @@ pub struct CallManager {
     /// installs it; a call still works without it, it is just not registered — which
     /// is precisely the state the live-call view now renders instead of hiding.
     session_registrar: Option<SessionRegistrar>,
+    /// Where a HUMAN's transcribed utterance goes so the CITIZENS can perceive
+    /// it (closed 2026-09-01 — the second STT dead link: transcriptions
+    /// forwarded to WebSocket SUBTITLES only, so even a heard human was never
+    /// answered; the words reached screens and no minds). The call id IS the
+    /// airc RoomId, so the sink posts the utterance as a ROOM MESSAGE from the
+    /// human — and the whole existing pipeline (perception, directedness,
+    /// turns, voice-out) fires as if she had typed it. Same callback shape and
+    /// reason as [`SessionRegistrar`]: transport announces a fact, never
+    /// learns what cognition does with it.
+    transcript_sink: Option<TranscriptSink>,
 }
+
+/// `(call_id/room, speaker user_id, speaker display name, transcribed text)`.
+pub type TranscriptSink = Arc<dyn Fn(&str, &str, &str, &str) + Send + Sync>;
 
 /// Told when a participant joins a live call, so the CORE can register the session
 /// itself (#58).
@@ -369,14 +382,19 @@ pub struct CallManager {
 /// did, in Node, in `legacy/` — and iOS/Android/TUI citizens were structurally
 /// voiceless. The legacy bridge documents the consequence: "Without this, isInCall()
 /// returns false and AI responses are silently dropped."
-pub type SessionRegistrar =
-    Arc<dyn Fn(&str, &str, &str, bool) + Send + Sync>;
+pub type SessionRegistrar = Arc<dyn Fn(&str, &str, &str, bool) + Send + Sync>;
 
 impl CallManager {
     /// Install the core-side registrar. Called once at boot, where the session service
     /// and the call manager both exist; absent in tests, where a call needs no session.
     pub fn set_session_registrar(&mut self, registrar: SessionRegistrar) {
         self.session_registrar = Some(registrar);
+    }
+
+    /// Install the transcript→room sink. Called once at boot beside the
+    /// registrar; absent in tests, where subtitles alone are the contract.
+    pub fn set_transcript_sink(&mut self, sink: TranscriptSink) {
+        self.transcript_sink = Some(sink);
     }
 
     /// Every LIVE call and how many participants are in it — the read side the live-call
@@ -413,6 +431,7 @@ impl CallManager {
             capability_registry: Arc::new(ModelCapabilityRegistry::new()),
             persona_audio_handles: RwLock::new(HashMap::new()),
             session_registrar: None,
+            transcript_sink: None,
         }
     }
 
@@ -830,15 +849,23 @@ impl CallManager {
                         let semaphore = TRANSCRIPTION_SEMAPHORE.clone();
                         match semaphore.clone().try_acquire_owned() {
                             Ok(permit) => {
-                                // Spawn transcription task with permit
+                                // Spawn transcription task with permit. The sink
+                                // (when installed) turns the utterance into a ROOM
+                                // message so citizens PERCEIVE speech — subtitles
+                                // alone reached screens and no minds (2026-09-01).
+                                let sink = self.transcript_sink.clone();
+                                let room = call_id.clone();
                                 tokio::spawn(async move {
-                                    Self::transcribe_and_broadcast(
+                                    let text = Self::transcribe_and_broadcast(
                                         transcription_tx,
-                                        user_id,
-                                        display_name,
+                                        user_id.clone(),
+                                        display_name.clone(),
                                         speech_samples,
                                     )
                                     .await;
+                                    if let (Some(sink), Some(text)) = (sink, text) {
+                                        sink(&room, &user_id, &display_name, &text);
+                                    }
                                     // Permit automatically released when dropped
                                     drop(permit);
                                 });
@@ -971,14 +998,54 @@ impl CallManager {
         // call recreation). AI participants carry a ring buffer sized for whole
         // utterances dumped at once — exactly this path.
         if call.mixer.find_user_id_by_handle(&handle).is_none() {
-            call.mixer.add_participant(crate::live::audio::mixer::ParticipantStream::new_ai(
-                handle,
-                user_id.to_string(),
-                display_name.to_string(),
-            ));
+            call.mixer
+                .add_participant(crate::live::audio::mixer::ParticipantStream::new_ai(
+                    handle,
+                    user_id.to_string(),
+                    display_name.to_string(),
+                ));
         }
         // Dump the whole utterance; the audio loop drains it frame-by-frame at cadence.
         let _ = call.push_audio(&handle, samples);
+    }
+
+    /// Bridge-fed HUMAN audio (the LiveKit media lane): route a remote
+    /// participant's 16k PCM into the SAME VAD → speech-end → transcription
+    /// pipeline the WS lane has always used.
+    ///
+    /// This closes the STT dead leg (found live 2026-09-01: the bridge heard
+    /// the first audio frame and nothing followed — `bridge_client`'s frame
+    /// loop accumulated perfect VAD-sized chunks into a `TODO` and dropped
+    /// them, so citizens never answered speech). The human's handle + VAD
+    /// already exist from her WS-control `join_call`; media frames just never
+    /// reached them. One lookup, then the existing `push_audio` does speech-end
+    /// detection and spawns transcription exactly as before — no second
+    /// pipeline ([[the-same-bug-at-two-sites-is-a-missing-constraint-not-two-bugs]]).
+    pub async fn push_remote_human_audio(
+        &self,
+        call_id: &str,
+        user_id: &str,
+        samples: Vec<i16>,
+    ) {
+        let call = {
+            let calls = self.calls.read().await;
+            calls.get(call_id).cloned()
+        };
+        let Some(call) = call else {
+            return; // no native Call — nobody has this call open on this node
+        };
+        let handle = {
+            let call = call.read().await;
+            call.mixer.find_handle_by_user_id(user_id)
+        };
+        let Some(handle) = handle else {
+            // Media arrived before (or without) the WS-control join that mints
+            // her handle + VAD — a real ordering that self-heals when the join
+            // lands; frames until then are honestly droppable (they predate
+            // her being a participant here).
+            return;
+        };
+        self.push_audio(&handle, samples).await;
     }
 
     /// Broadcast a CallMessage to all participants in a call (avatar updates, etc.)
@@ -997,16 +1064,19 @@ impl CallManager {
     }
 
     /// Transcribe speech samples and broadcast to all participants
+    /// Returns the transcribed text (when non-empty) so the caller can also
+    /// deliver it to cognition via the [`TranscriptSink`] — the broadcast here
+    /// reaches SCREENS (subtitles); the sink reaches MINDS.
     async fn transcribe_and_broadcast(
         transcription_tx: broadcast::Sender<TranscriptionEvent>,
         user_id: String,
         display_name: String,
         samples: Vec<i16>,
-    ) {
+    ) -> Option<String> {
         // Check if STT is initialized
         if !stt::is_initialized() {
             clog_warn!("STT adapter not initialized - skipping transcription");
-            return;
+            return None;
         }
 
         clog_info!(
@@ -1057,12 +1127,15 @@ impl CallManager {
 
                         // Critical issue already logged via tracing::error above
                     }
+                    Some(text.to_string())
                 } else {
                     clog_info!("📝 Empty transcription result from {}", display_name);
+                    None
                 }
             }
             Err(e) => {
                 clog_error!("Transcription failed for {}: {}", display_name, e);
+                None
             }
         }
     }
@@ -1118,10 +1191,21 @@ impl CallManager {
             (handle, display_name)
         };
 
-        // Step 2: Synthesize (async — runs in current tokio context)
-        let synthesis = tts_service::synthesize_speech_async(text, voice, adapter, None)
-            .await
-            .map_err(|e| format!("TTS failed: {e}"))?;
+        // Step 2: Synthesize (async — runs in current tokio context).
+        //
+        // EMOTION RIDES THE SAME SENTIMENT THE FACE USES (Stage A of
+        // VOICE-ENGINE-PLAN's native-audio ladder, Joel 2026-09-02:
+        // "intimately control the speech mannerisms"): the avatar's
+        // sub-microsecond sentiment extraction maps to Orpheus emotion tags,
+        // so voice and face express ONE state from one source — never two
+        // analyzers drifting apart. Tag injection is Orpheus-only: other
+        // engines would read the tag aloud as text.
+        let spoken_text =
+            crate::live::audio::emotion_tags::decorate_for_adapter(text, adapter);
+        let synthesis =
+            tts_service::synthesize_speech_async(&spoken_text, voice, adapter, None)
+                .await
+                .map_err(|e| format!("TTS failed: {e}"))?;
 
         let num_samples = synthesis.samples.len();
         let duration_ms = synthesis.duration_ms;
@@ -1649,12 +1733,25 @@ mod tests {
     // canonical key, so two peers dialing the same room meet in the same call.
     #[test]
     fn require_airc_room_refuses_names_and_canonicalizes_uuid_spellings() {
-        assert!(CallManager::require_airc_room("general").is_err(), "a name is not an airc room id");
-        assert!(CallManager::require_airc_room("persona-call").is_err(), "no rogue call_id namespace");
-        assert!(CallManager::require_airc_room("").is_err(), "empty is refused");
-        let dashed = CallManager::require_airc_room("22222222-2222-2222-2222-222222222222").unwrap();
+        assert!(
+            CallManager::require_airc_room("general").is_err(),
+            "a name is not an airc room id"
+        );
+        assert!(
+            CallManager::require_airc_room("persona-call").is_err(),
+            "no rogue call_id namespace"
+        );
+        assert!(
+            CallManager::require_airc_room("").is_err(),
+            "empty is refused"
+        );
+        let dashed =
+            CallManager::require_airc_room("22222222-2222-2222-2222-222222222222").unwrap();
         let simple = CallManager::require_airc_room("22222222222222222222222222222222").unwrap();
-        assert_eq!(dashed, simple, "dashed + 32-char spellings of one RoomId ⇒ one canonical key");
+        assert_eq!(
+            dashed, simple,
+            "dashed + 32-char spellings of one RoomId ⇒ one canonical key"
+        );
     }
 
     #[test]
@@ -1672,7 +1769,8 @@ mod tests {
         // Join a call (false = not AI)
         let join = manager
             .join_call(TEST_ROOM, "user-1", "Alice", false)
-            .await.unwrap();
+            .await
+            .unwrap();
 
         // Check stats
         let stats = manager.get_stats(&join.handle).await;
@@ -1695,8 +1793,12 @@ mod tests {
         // Two participants join (humans)
         let join_a = manager
             .join_call(TEST_ROOM, "user-a", "Alice", false)
-            .await.unwrap();
-        let join_b = manager.join_call(TEST_ROOM, "user-b", "Bob", false).await.unwrap();
+            .await
+            .unwrap();
+        let join_b = manager
+            .join_call(TEST_ROOM, "user-b", "Bob", false)
+            .await
+            .unwrap();
 
         // Check count
         let stats = manager.get_stats(&join_a.handle).await;
@@ -1724,7 +1826,8 @@ mod tests {
 
         let join = manager
             .join_call(TEST_ROOM, "user-1", "Alice", false)
-            .await.unwrap();
+            .await
+            .unwrap();
 
         // Mute
         manager.set_mute(&join.handle, true).await;
@@ -1742,8 +1845,12 @@ mod tests {
         // Two participants join
         let join_a = manager
             .join_call(TEST_ROOM, "user-a", "Alice", false)
-            .await.unwrap();
-        let mut join_b = manager.join_call(TEST_ROOM, "user-b", "Bob", false).await.unwrap();
+            .await
+            .unwrap();
+        let mut join_b = manager
+            .join_call(TEST_ROOM, "user-b", "Bob", false)
+            .await
+            .unwrap();
 
         // Alice sends a video frame
         let fake_frame = vec![0x00; 20]; // 16 byte header + 4 byte payload
@@ -1784,10 +1891,12 @@ mod tests {
         // Two PERSONAS (is_ai = true) join the same call — no browser, no UI.
         let asha = manager
             .join_call(TEST_ROOM, "@persona:asha", "Asha", true)
-            .await.unwrap();
+            .await
+            .unwrap();
         let mut anwen = manager
             .join_call(TEST_ROOM, "@persona:anwen", "Anwen", true)
-            .await.unwrap();
+            .await
+            .unwrap();
         // Snapshot Asha's video stream from the start so we catch every frame (incl. her own
         // echo, which mix-minus must let us skip).
         let mut asha_video = asha.video_rx.resubscribe();

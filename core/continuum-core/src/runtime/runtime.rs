@@ -190,7 +190,8 @@ impl Runtime {
         let mut failures: Vec<String> = Vec::new();
         for name in &modules {
             if let Some(module) = self.registry.get_by_name(name) {
-                match tokio::time::timeout(PER_MODULE_INIT_DEADLINE, module.initialize(&ctx)).await {
+                match tokio::time::timeout(PER_MODULE_INIT_DEADLINE, module.initialize(&ctx)).await
+                {
                     Ok(Ok(_)) => {
                         info!("  {} initialized", name);
                     }
@@ -269,9 +270,8 @@ impl Runtime {
         crate::probe!(class = "ready.awaiting", module = module_name);
         loop {
             if rx.changed().await.is_err() {
-                let err = format!(
-                    "module '{module_name}' ready watch closed before publishing ready"
-                );
+                let err =
+                    format!("module '{module_name}' ready watch closed before publishing ready");
                 crate::probe!(class = "ready.watch_closed", module = module_name);
                 return Err(err);
             }
@@ -516,8 +516,7 @@ impl Runtime {
                 },
                 None => None,
             };
-            let result =
-                dispatch_with_panic_guard(&module, &full_cmd, params, module_name).await;
+            let result = dispatch_with_panic_guard(&module, &full_cmd, params, module_name).await;
             drop(permit);
             let _ = tx.send(result);
         });
@@ -578,21 +577,92 @@ impl Runtime {
         &self.compute
     }
 
-    /// Shutdown all modules gracefully.
+    /// Broadcast `load_state` to every module — the symmetric boot half of
+    /// the CBAR contract, called once after module initialization. Receipted
+    /// per node so "which modules restored state" is a boot fact, not a hope.
+    pub async fn load_all_state(&self) {
+        // PARALLEL fork/join — nobody waits on anyone (Joel 2026-09-02: "they
+        // all load/store state in parallel so no one waits… join/fork threads").
+        // Symmetric with `shutdown`'s save-and-join: total wall time = the
+        // slowest single concern, never the SUM. The first cut was a sequential
+        // for-loop — a boot tax that grew with every module added.
+        const PER_MODULE: std::time::Duration = std::time::Duration::from_secs(2);
+        let futs = self.registry.list_modules().into_iter().filter_map(|name| {
+            self.registry.get_by_name(&name).map(|module| async move {
+                let t = std::time::Instant::now();
+                let outcome = match tokio::time::timeout(PER_MODULE, module.load_state()).await {
+                    Ok(Ok(())) => "ok",
+                    Ok(Err(_)) => "error",
+                    Err(_) => "timeout",
+                };
+                crate::probe!(
+                    class = "boot.load_state",
+                    module = %name,
+                    outcome = outcome,
+                    ms = t.elapsed().as_millis() as u64,
+                    "module state load"
+                );
+            })
+        });
+        futures::future::join_all(futs).await;
+    }
+
+    /// Shutdown all modules — PARALLEL, BOUNDED, RECEIPTED (the CBAR shape,
+    /// Joel 2026-09-02: "they all follow the same pattern, they gracefully
+    /// and quickly save and join threads"). Every module gets the SAME
+    /// contract: 2 seconds to save-and-return; a laggard is receipted as
+    /// timed-out and abandoned (its state discipline is save-on-write, so a
+    /// timeout loses nothing durable). Total wall time = the slowest module
+    /// capped at 2s — never the SUM the old sequential loop paid.
+    ///
+    /// Until 2026-09-02 nothing on the production stop path called this at
+    /// all: the SIGTERM handler killed sentinels, slept a flat 2s, and
+    /// `_exit`ed — so no module ever saved on a real stop. The handler now
+    /// runs this first ([`install_signal_shutdown`]).
     pub async fn shutdown(&self) {
+        const PER_MODULE: std::time::Duration = std::time::Duration::from_secs(2);
         let modules = self.registry.list_modules();
-        info!("Shutting down {} modules...", modules.len());
-
-        for name in &modules {
-            if let Some(module) = self.registry.get_by_name(name) {
-                match module.shutdown().await {
-                    Ok(_) => info!("  {} shutdown complete", name),
-                    Err(e) => warn!("  {} shutdown error: {}", name, e),
+        info!("Shutting down {} modules (parallel, 2s bound each)...", modules.len());
+        let started = std::time::Instant::now();
+        let futs = modules.iter().filter_map(|name| {
+            self.registry.get_by_name(name).map(|module| {
+                let name = name.clone();
+                async move {
+                    let t = std::time::Instant::now();
+                    // Save first, then join — each half under the bound.
+                    let saved = tokio::time::timeout(PER_MODULE, module.save_state()).await;
+                    let joined = tokio::time::timeout(PER_MODULE, module.shutdown()).await;
+                    let outcome = match (saved, joined) {
+                        (Ok(Ok(())), Ok(Ok(()))) => "ok",
+                        (Err(_), _) | (_, Err(_)) => "timeout",
+                        _ => "error",
+                    };
+                    crate::probe!(
+                        class = "shutdown.step",
+                        module = %name,
+                        outcome = outcome,
+                        ms = t.elapsed().as_millis() as u64,
+                        "module save-and-join"
+                    );
+                    (name, outcome)
                 }
+            })
+        });
+        let reports = futures::future::join_all(futs).await;
+        let slow: Vec<String> = reports
+            .iter()
+            .filter(|(_, o)| *o != "ok")
+            .map(|(n, _)| n.to_string())
+            .collect();
+        info!(
+            "All modules shut down in {}ms{}",
+            started.elapsed().as_millis(),
+            if slow.is_empty() {
+                String::new()
+            } else {
+                format!(" (non-ok: {})", slow.join(", "))
             }
-        }
-
-        info!("All modules shut down");
+        );
     }
 
     /// Verify all required modules are registered for the given
@@ -873,7 +943,10 @@ pub(crate) async fn dispatch_object_with_panic_guard(
         Ok(r) => r,
         Err(panic) => {
             let panic_msg = panic_message(&*panic);
-            error!("Command '{}' panicked in DynCommand object: {}", name, panic_msg);
+            error!(
+                "Command '{}' panicked in DynCommand object: {}",
+                name, panic_msg
+            );
             crate::probe!(
                 class = "command.dispatch.panicked",
                 command = name,
@@ -982,17 +1055,37 @@ pub const MODULES: &[ModuleSpec] = &[
     ModuleSpec::new("data", ServiceGroup::RuntimeShell, ModuleCategory::Core),
     // ResourceGov — hardware governance
     ModuleSpec::new("gpu", ServiceGroup::ResourceGov, ModuleCategory::Core),
-    ModuleSpec::new("resource-broker", ServiceGroup::ResourceGov, ModuleCategory::Core),
-    ModuleSpec::new("pressure-broker", ServiceGroup::ResourceGov, ModuleCategory::Core),
+    ModuleSpec::new(
+        "resource-broker",
+        ServiceGroup::ResourceGov,
+        ModuleCategory::Core,
+    ),
+    ModuleSpec::new(
+        "pressure-broker",
+        ServiceGroup::ResourceGov,
+        ModuleCategory::Core,
+    ),
     // Inference — the engine. (The bare `inference` shell module was deleted in
     // 89519a899 when its sole command `inference/capacity` became a stateless
     // self-routing command; this MODULES entry is dropped to match — leaving it
     // made `required_modules()` demand a module that no longer registers, which
     // hard-failed boot with "missing [inference]". The engine is now carried by
     // the coordinator / handle / llm / ai_provider modules below.)
-    ModuleSpec::new("inference-coordinator", ServiceGroup::Inference, ModuleCategory::Core),
-    ModuleSpec::new("ai-inference-handle", ServiceGroup::Inference, ModuleCategory::Core),
-    ModuleSpec::new("inference-llm", ServiceGroup::Inference, ModuleCategory::Core),
+    ModuleSpec::new(
+        "inference-coordinator",
+        ServiceGroup::Inference,
+        ModuleCategory::Core,
+    ),
+    ModuleSpec::new(
+        "ai-inference-handle",
+        ServiceGroup::Inference,
+        ModuleCategory::Core,
+    ),
+    ModuleSpec::new(
+        "inference-llm",
+        ServiceGroup::Inference,
+        ModuleCategory::Core,
+    ),
     ModuleSpec::new("ai_provider", ServiceGroup::Inference, ModuleCategory::Core),
     ModuleSpec::new("embedding", ServiceGroup::Inference, ModuleCategory::Core),
     // (`search` was retired here: its commands migrated onto the DynCommand
@@ -1002,7 +1095,11 @@ pub const MODULES: &[ModuleSpec] = &[
     // made `required_modules()` demand a module that no longer registers, which
     // hard-failed boot with "missing [search]" — the same trap as the retired
     // `inference` shell above.)
-    ModuleSpec::new("tool-parsing", ServiceGroup::Inference, ModuleCategory::Core),
+    ModuleSpec::new(
+        "tool-parsing",
+        ServiceGroup::Inference,
+        ModuleCategory::Core,
+    ),
     ModuleSpec::new("vision", ServiceGroup::Inference, ModuleCategory::Core),
     ModuleSpec::new("models", ServiceGroup::Inference, ModuleCategory::Core),
     // Cognition — the brain (always-built modules + the persona-host conditionals)
@@ -1010,7 +1107,11 @@ pub const MODULES: &[ModuleSpec] = &[
     ModuleSpec::new("rag", ServiceGroup::Cognition, ModuleCategory::Core),
     ModuleSpec::new("cognition", ServiceGroup::Cognition, ModuleCategory::Core),
     ModuleSpec::new("channel", ServiceGroup::Cognition, ModuleCategory::Core),
-    ModuleSpec::new("persona_allocator", ServiceGroup::Cognition, ModuleCategory::Core),
+    ModuleSpec::new(
+        "persona_allocator",
+        ServiceGroup::Cognition,
+        ModuleCategory::Core,
+    ),
     ModuleSpec::new("agent", ServiceGroup::Cognition, ModuleCategory::Core),
     // Cognition — AIRC-Healthy-conditional persona hosting (registers only when
     // discovery succeeded across all four sub-steps)
@@ -1227,6 +1328,25 @@ pub fn all_known_modules() -> Vec<&'static str> {
 // and `all_known_modules` both derive from it. No parallel list to
 // drift against.
 
+/// The runtime the SIGNAL handlers shut down. Installed once at wiring (after
+/// modules register), read by main.rs's SIGTERM/SIGINT arms. Until 2026-09-02
+/// those arms killed sentinels, slept a flat 2s, and `_exit`ed — the graceful
+/// broadcast existed and NOTHING on the production stop path called it, so no
+/// module ever saved on a real stop ("no lifecycle at all, random bullshit").
+static SIGNAL_RUNTIME: std::sync::OnceLock<Arc<Runtime>> = std::sync::OnceLock::new();
+
+pub fn install_signal_shutdown(rt: Arc<Runtime>) {
+    let _ = SIGNAL_RUNTIME.set(rt);
+}
+
+/// Run the save-and-join broadcast from a signal handler, bounded overall —
+/// a stop must complete in seconds even if the runtime misbehaves.
+pub async fn run_signal_shutdown() {
+    if let Some(rt) = SIGNAL_RUNTIME.get() {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), rt.shutdown()).await;
+    }
+}
+
 #[cfg(test)]
 mod conditional_modules_tests {
     use super::*;
@@ -1352,7 +1472,11 @@ mod conditional_modules_tests {
             ServiceGroup::ResourceGov,
         ] {
             for name in modules_in_group(g) {
-                assert!(!req.contains(&name), "excluded {:?} module {name:?} must NOT be hosted", g);
+                assert!(
+                    !req.contains(&name),
+                    "excluded {:?} module {name:?} must NOT be hosted",
+                    g
+                );
             }
         }
     }
@@ -1379,7 +1503,10 @@ mod conditional_modules_tests {
         assert!(p.hosts(ServiceGroup::RuntimeShell)); // always
         assert!(!p.hosts(ServiceGroup::Live));
 
-        assert_eq!(ServiceProfile::from_str("all").unwrap(), ServiceProfile::all());
+        assert_eq!(
+            ServiceProfile::from_str("all").unwrap(),
+            ServiceProfile::all()
+        );
         assert_eq!(ServiceProfile::from_str("").unwrap(), ServiceProfile::all());
 
         let err = ServiceProfile::from_str("grid,bogus").unwrap_err();
@@ -1418,10 +1545,16 @@ mod conditional_modules_tests {
             "group sizes must sum to the total — every module grouped exactly once"
         );
         for name in all_known_modules() {
-            assert!(group_of(name).is_some(), "module {name:?} has no ServiceGroup");
+            assert!(
+                group_of(name).is_some(),
+                "module {name:?} has no ServiceGroup"
+            );
         }
         for g in all_groups {
-            assert!(!modules_in_group(g).is_empty(), "ServiceGroup {g:?} is empty");
+            assert!(
+                !modules_in_group(g).is_empty(),
+                "ServiceGroup {g:?} is empty"
+            );
         }
     }
 
@@ -1436,7 +1569,10 @@ mod conditional_modules_tests {
             "auth", "data", "events", "health", "logger", "mcp", "runtime", "system",
         ];
         expected.sort();
-        assert_eq!(shell, expected, "RuntimeShell must be exactly the addressable core");
+        assert_eq!(
+            shell, expected,
+            "RuntimeShell must be exactly the addressable core"
+        );
     }
 
     /// Live = Bevy render + LiveKit SFU — the CO-LOCATED group (must share the
@@ -1445,7 +1581,11 @@ mod conditional_modules_tests {
     fn live_group_is_the_colocated_gpu_pair() {
         let mut live = modules_in_group(ServiceGroup::Live);
         live.sort();
-        assert_eq!(live, vec!["avatar", "live"], "Live = the co-located Bevy+LiveKit pair");
+        assert_eq!(
+            live,
+            vec!["avatar", "live"],
+            "Live = the co-located Bevy+LiveKit pair"
+        );
     }
 
     /// ServiceGroup (concern) and ModuleCategory (conditionality) are
@@ -1454,7 +1594,10 @@ mod conditional_modules_tests {
     #[test]
     fn group_and_category_are_orthogonal() {
         let cognition = modules_in_group(ServiceGroup::Cognition);
-        assert!(cognition.contains(&"cognition"), "Cognition holds the always-on brain");
+        assert!(
+            cognition.contains(&"cognition"),
+            "Cognition holds the always-on brain"
+        );
         assert!(
             cognition.contains(&"persona_instance_manager"),
             "Cognition also holds the PersonaHosting-conditional modules"
@@ -1945,9 +2088,14 @@ mod piece_2_pr3_dispatch_tests {
         {
             Some(Ok(CommandResult::Json(v))) => {
                 assert_eq!(v["success"], true);
-                assert_eq!(v["echoedTarget"], "https://x", "forwarded params reached the eye-node");
+                assert_eq!(
+                    v["echoedTarget"], "https://x",
+                    "forwarded params reached the eye-node"
+                );
             }
-            _ => panic!("the socket route must forward a Provided command to its connected provider"),
+            _ => {
+                panic!("the socket route must forward a Provided command to its connected provider")
+            }
         }
     }
 }
@@ -2038,10 +2186,12 @@ mod ready_edge_tests {
     async fn default_ready_edge_resolves_immediately() {
         let runtime = Runtime::new();
         runtime.register(ReadyModule::without_ready_edge("no-edge"));
-        let result =
-            tokio::time::timeout(std::time::Duration::from_millis(50), runtime.wait_for_ready("no-edge"))
-                .await
-                .expect("default ready_edge must NOT block");
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            runtime.wait_for_ready("no-edge"),
+        )
+        .await
+        .expect("default ready_edge must NOT block");
         assert!(result.is_ok());
     }
 

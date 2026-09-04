@@ -164,7 +164,8 @@ fn service_cycle_with_n_chat_messages_yields_one_input() {
         other => panic!("expected CoherentInput::Chat, got {other:?}"),
     };
     assert_eq!(
-        burst.burst_message_count, N,
+        burst.burst_message_count,
+        N,
         "the burst dropped messages — consolidation lost {} items",
         N - burst.burst_message_count
     );

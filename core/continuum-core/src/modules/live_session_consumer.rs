@@ -60,7 +60,8 @@ use async_trait::async_trait;
 use crate::gpu::{GpuMemoryManager, GpuSubsystem};
 use crate::live::audio::resource_lifecycle::AudioResourceLifecycle;
 use crate::resources::{
-    ConsumerFootprint, ReclaimOutcome, ReclaimReason, ReclaimRequest, ResourceConsumer, ResourceKind,
+    ConsumerFootprint, ReclaimOutcome, ReclaimReason, ReclaimRequest, ResourceConsumer,
+    ResourceKind,
 };
 
 /// The lever the consumer pulls to actually free voice residency: shut the idle
@@ -112,7 +113,11 @@ impl VoiceConsumer {
     /// shared GPU manager.
     pub fn new(lifecycle: Arc<AudioResourceLifecycle>, gpu: Arc<GpuMemoryManager>) -> Self {
         let shed = Arc::new(AdapterShutdownLever::new(gpu.clone()));
-        Self { lifecycle, gpu, shed }
+        Self {
+            lifecycle,
+            gpu,
+            shed,
+        }
     }
 
     /// Inject a custom shed lever — tests drive the reclaim path (and assert it is
@@ -122,7 +127,11 @@ impl VoiceConsumer {
         gpu: Arc<GpuMemoryManager>,
         shed: Arc<dyn VoiceReclaimLever>,
     ) -> Self {
-        Self { lifecycle, gpu, shed }
+        Self {
+            lifecycle,
+            gpu,
+            shed,
+        }
     }
 }
 
@@ -192,7 +201,10 @@ mod tests {
     }
     impl CountingLever {
         fn new(freed: u64) -> Arc<Self> {
-            Arc::new(Self { freed, pulls: AtomicU32::new(0) })
+            Arc::new(Self {
+                freed,
+                pulls: AtomicU32::new(0),
+            })
         }
         fn pulls(&self) -> u32 {
             self.pulls.load(Ordering::SeqCst)
@@ -215,7 +227,12 @@ mod tests {
     }
 
     fn pressure(kind: ResourceKind, bytes: u64) -> ReclaimRequest {
-        ReclaimRequest { kind, target_bytes: bytes, deadline_ms: 0, reason: ReclaimReason::Pressure }
+        ReclaimRequest {
+            kind,
+            target_bytes: bytes,
+            deadline_ms: 0,
+            reason: ReclaimReason::Pressure,
+        }
     }
 
     // what this catches: THE anti-kick core — a live call refuses a pressure
@@ -232,8 +249,15 @@ mod tests {
 
         assert_eq!(out.status, ReclaimStatus::Refused);
         assert_eq!(out.freed_bytes, 0, "a live call frees nothing");
-        assert!(out.detail.unwrap().contains("would drop a call"), "named refusal");
-        assert_eq!(lever.pulls(), 0, "the shed lever is never pulled while a call is live");
+        assert!(
+            out.detail.unwrap().contains("would drop a call"),
+            "named refusal"
+        );
+        assert_eq!(
+            lever.pulls(),
+            0,
+            "the shed lever is never pulled while a call is live"
+        );
         assert_eq!(lifecycle.active_count(), 1, "the call is untouched");
     }
 
@@ -309,11 +333,17 @@ mod tests {
         let fp = loaded.footprint();
         assert_eq!(fp.len(), 1);
         assert_eq!(fp[0].kind, ResourceKind::Vram);
-        assert_eq!(fp[0].bytes, 60_000, "measured from the GPU manager's TTS subsystem");
+        assert_eq!(
+            fp[0].bytes, 60_000,
+            "measured from the GPU manager's TTS subsystem"
+        );
         assert!(fp[0].detail.contains("1 live voice session"));
 
         let unloaded = VoiceConsumer::new(lifecycle.clone(), gpu(0));
-        assert!(unloaded.footprint().is_empty(), "nothing resident → report nothing");
+        assert!(
+            unloaded.footprint().is_empty(),
+            "nothing resident → report nothing"
+        );
     }
 
     // ---- the crown jewel: end-to-end through the real ResourceDaemon -----------
@@ -328,7 +358,11 @@ mod tests {
     }
     impl ReleasablePeer {
         fn new(id: &str, held: u64) -> Arc<Self> {
-            Arc::new(Self { id: id.into(), held: AtomicU64::new(held), reclaims: AtomicU32::new(0) })
+            Arc::new(Self {
+                id: id.into(),
+                held: AtomicU64::new(held),
+                reclaims: AtomicU32::new(0),
+            })
         }
     }
     #[async_trait]
@@ -362,7 +396,10 @@ mod tests {
         }
     }
 
-    async fn settle(daemon: &ResourceDaemon, mut pred: impl FnMut(&crate::resources::LeaseBoard) -> bool) -> bool {
+    async fn settle(
+        daemon: &ResourceDaemon,
+        mut pred: impl FnMut(&crate::resources::LeaseBoard) -> bool,
+    ) -> bool {
         for _ in 0..200 {
             if pred(&daemon.board()) {
                 return true;
@@ -388,7 +425,11 @@ mod tests {
         let lifecycle = Arc::new(AudioResourceLifecycle::new());
         lifecycle.on_session_start();
         let lever = CountingLever::new(3_000);
-        let voice = Arc::new(VoiceConsumer::with_lever(lifecycle.clone(), gpu(3_000), lever.clone()));
+        let voice = Arc::new(VoiceConsumer::with_lever(
+            lifecycle.clone(),
+            gpu(3_000),
+            lever.clone(),
+        ));
 
         // Serving: fully reclaimable, Graceful.
         let serving = ReleasablePeer::new("serving", 8_000);
@@ -399,12 +440,19 @@ mod tests {
             DaemonConfig {
                 tick_interval: Duration::from_millis(20),
                 min_reclaim_budget: Duration::from_millis(100),
-                governor: GovernorConfig { min_dwell_ms: 0, graceful_grace_ms: 50 },
+                governor: GovernorConfig {
+                    min_dwell_ms: 0,
+                    graceful_grace_ms: 50,
+                },
             },
         );
 
-        daemon.acquire(&lease("serving", 8_000, ReclaimPolicy::Graceful)).unwrap();
-        let call = daemon.acquire(&lease("voice", 3_000, ReclaimPolicy::Pinned)).unwrap();
+        daemon
+            .acquire(&lease("serving", 8_000, ReclaimPolicy::Graceful))
+            .unwrap();
+        let call = daemon
+            .acquire(&lease("voice", 3_000, ReclaimPolicy::Pinned))
+            .unwrap();
         assert_eq!(daemon.board().leases.len(), 2);
 
         // Squeeze VRAM to 5GB — granted (11GB) is now 6GB over the ceiling.
@@ -412,7 +460,10 @@ mod tests {
 
         // The daemon settles by reclaiming serving down to within the ceiling.
         let settled = settle(&daemon, |b| !board_over(b, 5_000)).await;
-        assert!(settled, "daemon should reclaim serving to get back within budget");
+        assert!(
+            settled,
+            "daemon should reclaim serving to get back within budget"
+        );
 
         // The live call was never touched — the whole point.
         let board = daemon.board();
@@ -422,9 +473,20 @@ mod tests {
             Some(3_000),
             "the live call's Pinned lease is never shrunk"
         );
-        assert_eq!(lever.pulls(), 0, "VoiceConsumer's shed lever was never pulled");
-        assert_eq!(lifecycle.active_count(), 1, "the human is still on the call");
-        assert!(serving.reclaims.load(Ordering::SeqCst) >= 1, "serving is what got reclaimed");
+        assert_eq!(
+            lever.pulls(),
+            0,
+            "VoiceConsumer's shed lever was never pulled"
+        );
+        assert_eq!(
+            lifecycle.active_count(),
+            1,
+            "the human is still on the call"
+        );
+        assert!(
+            serving.reclaims.load(Ordering::SeqCst) >= 1,
+            "serving is what got reclaimed"
+        );
         assert!(
             serving.held.load(Ordering::SeqCst) < 8_000,
             "serving gave up VRAM (tiered down) — it is the reclaimable one, not the call"

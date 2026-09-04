@@ -80,7 +80,7 @@ pub struct CognitionReplayParams {
     /// The persona (UUID) whose faculties + live cycle to replay. Must be
     /// spawned (have a live `WorkspaceCycle`) — replay drives a measured COPY of
     /// her real cognition, never a stand-in.
-    pub persona_id: String,
+    pub persona_id: crate::identity::PersonaRef,
     /// Isolate ONE faculty by kebab tag (`recall`, `salience`, `world-model`,
     /// `deliberation`, …). Omit to replay every faculty in her cycle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -95,6 +95,7 @@ pub struct CognitionReplayParams {
     /// Which captured turn to reconstruct when `world_state` is not supplied.
     /// Negative counts from the end (`-1` = most recent, the default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub turn: Option<i64>,
     /// Room scope for the reconstructed workspace. Overrides the captured turn's
@@ -172,7 +173,7 @@ pub struct PromptBudget {
 
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct CognitionReplayResult {
-    pub persona_id: String,
+    pub persona_id: crate::identity::PersonaRef,
     /// Where the burst came from: `"supplied"` or `"capture@<turn> (<ms>)"`.
     pub source: String,
     /// The exact burst replayed — echoed back so the result is self-explaining.
@@ -239,7 +240,12 @@ fn resolve_burst(
     persona_id: &Uuid,
 ) -> Result<ResolvedBurst, CommandError> {
     if let Some(ws) = &p.world_state {
-        let room = p.room_id.clone().unwrap_or_else(|| Uuid::nil().to_string());
+        // A replay is an activity too: rejoin the named room or mint a fresh
+        // synthetic one — never nil (#425).
+        let room = p
+            .room_id
+            .clone()
+            .unwrap_or_else(|| crate::identity::ActivityRoom::mint().as_uuid().to_string()); // replay of a pre-room capture: mint a fresh room so the replay is never nil-roomed
         return Ok(ResolvedBurst {
             world_state: ws.clone(),
             room,
@@ -329,7 +335,7 @@ impl ActionCommand for CognitionReplay {
         _ctx: &Ctx,
         p: CognitionReplayParams,
     ) -> Result<CognitionReplayResult, CommandError> {
-        let persona_uuid = Uuid::parse_str(&p.persona_id).map_err(|_| {
+        let persona_uuid = Uuid::parse_str(p.persona_id.as_str()).map_err(|_| {
             CommandError::Invalid(format!("persona_id '{}' is not a valid UUID", p.persona_id))
         })?;
 
@@ -384,7 +390,11 @@ impl ActionCommand for CognitionReplay {
         // ledger of every layer she saw, in the RAG sources' own token unit.
         let budget = build_budget(&burst.world_state, &burst.broadcast);
 
-        let mut ws = Workspace::in_room(burst.world_state.clone(), room);
+        let mut ws = Workspace::from_burst(crate::cognition::workspace::Burst::raw_in(
+            crate::identity::ActivityRoom::from_uuid(room)
+                .expect("replay room is parsed-or-minted above, never nil"), // parsed-or-minted two lines up; nil is unreachable here
+            burst.world_state.clone(),
+        ));
         ws.broadcast = burst.broadcast;
         let bids = cycle.replay(&ws, only.as_ref()).await;
 
@@ -427,7 +437,7 @@ impl ActionCommand for CognitionReplay {
             .collect();
 
         Ok(CognitionReplayResult {
-            persona_id: persona_uuid.to_string(),
+            persona_id: persona_uuid.to_string().into(),
             source: burst.source,
             world_state: burst.world_state,
             room_id: room.to_string(),
@@ -453,7 +463,7 @@ mod tests {
         // No world_state supplied; nil persona has no trace file → must error,
         // and the error must name the missing input (point the operator at the fix).
         let p = CognitionReplayParams {
-            persona_id: persona.to_string(),
+            persona_id: persona.to_string().into(),
             faculty: None,
             world_state: None,
             turn: None,
@@ -473,7 +483,7 @@ mod tests {
     fn resolve_burst_uses_supplied_world_state() {
         let persona = Uuid::nil();
         let p = CognitionReplayParams {
-            persona_id: persona.to_string(),
+            persona_id: persona.to_string().into(),
             faculty: Some("recall".to_string()),
             world_state: Some("what was the auth migration codename?".to_string()),
             turn: None,
@@ -482,7 +492,9 @@ mod tests {
         let b = resolve_burst(&p, &persona).unwrap();
         assert_eq!(b.world_state, "what was the auth migration codename?");
         assert_eq!(b.source, "supplied");
-        assert_eq!(b.room, Uuid::nil().to_string());
+        // #425: a replay with no named room MINTS a real activity — never nil.
+        let minted = Uuid::parse_str(&b.room).expect("room is a real uuid");
+        assert!(!minted.is_nil(), "an unnamed replay room is minted, not nil");
         // A bare supplied burst carries NO broadcast — this is the invariant the
         // run() guard relies on to refuse a blind deliberation replay.
         assert!(
@@ -512,7 +524,10 @@ mod tests {
         ];
         let b = build_budget("hello there", &broadcast);
         assert_eq!(b.world_state_tokens, estimate_prompt_tokens("hello there"));
-        assert_eq!(b.context_tokens, b.layers.iter().map(|l| l.tokens).sum::<u32>());
+        assert_eq!(
+            b.context_tokens,
+            b.layers.iter().map(|l| l.tokens).sum::<u32>()
+        );
         assert_eq!(b.total_tokens, b.world_state_tokens + b.context_tokens);
         // sorted most-expensive first → recall (400 chars) leads roster (40).
         assert_eq!(b.layers[0].faculty, "recall");
@@ -520,6 +535,9 @@ mod tests {
         // shares are computed against the total (sum ≈ context share of 100%).
         let layer_share: f32 = b.layers.iter().map(|l| l.share_pct).sum();
         let ws_share = b.world_state_tokens as f32 / b.total_tokens as f32 * 100.0;
-        assert!((layer_share + ws_share - 100.0).abs() < 0.5, "shares must sum to ~100%");
+        assert!(
+            (layer_share + ws_share - 100.0).abs() < 0.5,
+            "shares must sum to ~100%"
+        );
     }
 }

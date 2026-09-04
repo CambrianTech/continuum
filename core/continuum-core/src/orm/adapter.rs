@@ -46,7 +46,10 @@ impl Default for AdapterConfig {
 
 /// Storage adapter capabilities
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../protocol/typescript/orm/AdapterCapabilities.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/orm/AdapterCapabilities.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct AdapterCapabilities {
     pub supports_transactions: bool,
@@ -137,7 +140,10 @@ pub trait StorageAdapter: Send + Sync {
 /// Result of clear_all operation
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/orm/ClearAllResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/orm/ClearAllResult.ts"
+)]
 pub struct ClearAllResult {
     pub tables_cleared: Vec<String>,
     #[ts(type = "number")]

@@ -172,26 +172,13 @@ async fn scheduler_reports_per_seq_kv_bytes_for_persona() {
             content: MessageContent::Text("Reply with just the word OK.".to_string()),
             name: None,
         }],
-        system_prompt: None,
         model: Some(adapter.default_model().to_string()),
         provider: Some("local".to_string()),
         temperature: Some(0.0),
         max_tokens: Some(8),
-        top_p: None,
-        top_k: None,
-        repeat_penalty: None,
-        frequency_penalty: None,
-        repeat_last_n: None,
-        stop_sequences: None,
-        tools: None,
-        tool_choice: None,
-        response_format: None,
-        active_adapters: None,
-        request_id: None,
-        user_id: None,
-        room_id: None,
         purpose: Some("kv-reporting-integration-test".to_string()),
         persona_id: Some(persona_id.to_string()),
+        ..Default::default()
     };
 
     eprintln!("[ftp-int] dispatching generate_text with persona_id={persona_id}");

@@ -68,9 +68,17 @@ mirroring the model catalog. `benchmark/run` is a thin wrapper over `cognition/e
 grader, never reimplemented.
 
 ```bash
-continuum benchmark/list                                              # the catalog (name, grader, tasks, runnable)
-continuum benchmark/run --persona_id <UUID> --name humaneval-rs --limit 40
+continuum benchmark/list                                                 # the catalog (name, grader, tasks, runnable)
+continuum benchmark/round --benchmark humaneval-rs --persona <id> --limit 40   # run a GYM on a persona (resume-able)
 ```
+
+**Running a SWE-bench round?** SWE is NOT a gym — `benchmark/round`/`benchmark/run` refuse it.
+It goes through the kanban adapter `benchmark/dispatch`, and there is a step-by-step,
+failure-mode-annotated runbook: **[`swe/RUNBOOK.md`](swe/RUNBOOK.md)** (the readiness check,
+the exact `benchmark/dispatch --instances` command, how to read a verdict, and the residency /
+airc / zombie-round gotchas that cost a full session on 2026-08-25). Gym-format benchmarks
+(Terminal-Bench, DS-1000, …) replicate via `continuum benchmark/round --benchmark <gym>.jsonl
+--persona <id>` — see each result row's `Replication:` note.
 
 Add a respected collection (SWE-bench, LiveCodeBench, MBPP, …) = one `BenchmarkSpec` row in
 `benchmark.rs`. Big datasets pull + cache like a model (follow-up: `benchmark/pull`); the

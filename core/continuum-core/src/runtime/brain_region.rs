@@ -83,7 +83,10 @@ impl std::fmt::Display for RegionId {
 /// regions to throttle first under memory pressure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "kebab-case")]
-#[ts(export, export_to = "../../../protocol/typescript/runtime/MemoryClass.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/runtime/MemoryClass.ts"
+)]
 pub enum MemoryClass {
     /// Lightweight — small in-memory structures, no large caches.
     Light,
@@ -125,7 +128,10 @@ pub enum ComputeClass {
 /// line stays uncrossed — the governor allocates *time*, the region stays causal).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "kebab-case")]
-#[ts(export, export_to = "../../../protocol/typescript/runtime/Orientation.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/runtime/Orientation.ts"
+)]
 pub enum Orientation {
     /// Serving external stimulus — perception, recall-for-a-turn, responding. The
     /// outward-facing work; floors above zero so a being is never deaf.
@@ -188,7 +194,10 @@ pub struct PressureProfile {
 /// final policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "kebab-case")]
-#[ts(export, export_to = "../../../protocol/typescript/runtime/CadenceHint.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/runtime/CadenceHint.ts"
+)]
 pub enum CadenceHint {
     /// Tick faster than current cadence (region has urgent work).
     Faster,
@@ -209,7 +218,10 @@ pub enum CadenceHint {
 /// output is being consumed by handlers and downweight regions whose
 /// output is ignored.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/runtime/TickOutcome.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/runtime/TickOutcome.ts"
+)]
 pub struct TickOutcome {
     /// Items the region pre-staged this tick (publishes to ready-buffers).
     #[ts(type = "number")]
@@ -270,7 +282,10 @@ pub enum PersonaLifecycle {
 /// their tick body (active vs idle vs sleep consolidation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "kebab-case")]
-#[ts(export, export_to = "../../../protocol/typescript/runtime/SleepPhase.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/runtime/SleepPhase.ts"
+)]
 pub enum SleepPhase {
     /// Persona is actively servicing — tick at high cadence, shallow consolidation.
     Active,

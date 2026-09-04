@@ -75,6 +75,11 @@ pub struct ScriptedConversation {
     /// When set, `next_message` returns Err if called before `prime`
     /// — mirrors `AircPersonaConversation`'s caller-primes contract.
     require_prime: bool,
+    /// The citizen `stream_citizen()` hands back — `None` by default (most
+    /// tests don't drive the citizen handle). A held-work test seeds a
+    /// `StubAircCitizen::with_claims` so the act-question can read her claims
+    /// and record her card transitions.
+    citizen: Option<std::sync::Arc<dyn crate::persona::airc_citizen::AircCitizen>>,
 }
 
 impl Default for ScriptedConversation {
@@ -94,7 +99,19 @@ impl ScriptedConversation {
             primed: AtomicUsize::new(0),
             prime_result: Mutex::new(Ok(())),
             require_prime: false,
+            citizen: None,
         }
+    }
+
+    /// Hand `stream_citizen()` this citizen — for tests that drive the held-work
+    /// act-question (which reads `active_claims` and calls `advance_card_to`
+    /// through the citizen handle).
+    pub fn with_citizen(
+        mut self,
+        citizen: std::sync::Arc<dyn crate::persona::airc_citizen::AircCitizen>,
+    ) -> Self {
+        self.citizen = Some(citizen);
+        self
     }
 
     /// Replace the queued events. Each entry is what `next_message`
@@ -105,10 +122,7 @@ impl ScriptedConversation {
     ///
     /// When the queue drains, subsequent `next_message` calls yield
     /// `Ok(None)` so the loop never hangs.
-    pub fn with_events(
-        self,
-        events: Vec<Result<Option<IncomingMessage>, String>>,
-    ) -> Self {
+    pub fn with_events(self, events: Vec<Result<Option<IncomingMessage>, String>>) -> Self {
         *self.events.lock().unwrap() = VecDeque::from(events);
         self
     }
@@ -198,16 +212,18 @@ impl PersonaConversation for ScriptedConversation {
                 None => Ok(None),
             };
         }
-        self.events
-            .lock()
-            .unwrap()
-            .pop_front()
-            .unwrap_or(Ok(None))
+        self.events.lock().unwrap().pop_front().unwrap_or(Ok(None))
     }
 
     async fn say_in(&self, room_id: Uuid, text: &str) -> Result<(), String> {
         self.said.lock().unwrap().push((room_id, text.to_string()));
         Ok(())
+    }
+
+    fn stream_citizen(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::persona::airc_citizen::AircCitizen>> {
+        self.citizen.clone()
     }
 }
 
@@ -217,6 +233,7 @@ mod tests {
 
     fn one_msg() -> IncomingMessage {
         IncomingMessage {
+            event_id: uuid::Uuid::nil(),
             lamport: 1,
             peer_id: Uuid::new_v4(),
             text: "hello".into(),
@@ -234,8 +251,7 @@ mod tests {
 
     #[tokio::test]
     async fn with_prime_failure_returns_err() {
-        let mut c = ScriptedConversation::new()
-            .with_prime_failure("simulated daemon unreachable");
+        let mut c = ScriptedConversation::new().with_prime_failure("simulated daemon unreachable");
         let err = c.prime().await.expect_err("must err");
         assert!(err.contains("simulated daemon unreachable"));
         assert_eq!(c.primed_count(), 1, "prime still counts attempts");
@@ -243,8 +259,7 @@ mod tests {
 
     #[tokio::test]
     async fn events_drain_then_yield_none() {
-        let mut c = ScriptedConversation::new()
-            .with_events(vec![Ok(Some(one_msg())), Ok(None)]);
+        let mut c = ScriptedConversation::new().with_events(vec![Ok(Some(one_msg())), Ok(None)]);
         assert!(c.next_message().await.unwrap().is_some());
         assert!(c.next_message().await.unwrap().is_none());
         // Past end → still Ok(None), never hangs.

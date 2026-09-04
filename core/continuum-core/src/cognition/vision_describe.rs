@@ -255,10 +255,8 @@ fn select_vision_model(opts: &VisionDescribeOptions) -> Option<(String, String)>
         .filter_map(|m| {
             let provider = registry.provider(&m.provider)?;
             if let Err(why) = candidate_servable(m) {
-                runtime::logger("cognition").info(&format!(
-                    "vision-describe: skipping {:?} — {why}",
-                    m.id
-                ));
+                runtime::logger("cognition")
+                    .info(&format!("vision-describe: skipping {:?} — {why}", m.id));
                 return None;
             }
             Some(VisionCandidate {
@@ -393,7 +391,9 @@ pub async fn describe_image(
         "temperature": 0.3,
     });
 
-    let response_value = executor.execute_json("ai/generate", generate_params).await?;
+    let response_value = executor
+        .execute_json("ai/generate", generate_params)
+        .await?;
 
     // ai/generate's wire format serializes FinishReason via Display
     // (`modules/ai_provider.rs::response_to_json`); the sentinel string
@@ -694,7 +694,10 @@ mod tests {
         snap.vision_model = Some("vl-model".into());
         assert!(llama_server_row_ready("vl-model", &snap).is_ok());
         let err = llama_server_row_ready("coder-14b", &snap).unwrap_err();
-        assert!(err.contains("vl-model"), "names the endpoint's real model: {err}");
+        assert!(
+            err.contains("vl-model"),
+            "names the endpoint's real model: {err}"
+        );
 
         // MAIN-LANE shape: a VL mind — the endpoint IS the active model.
         snap.active_model = Some("vl-model".into());

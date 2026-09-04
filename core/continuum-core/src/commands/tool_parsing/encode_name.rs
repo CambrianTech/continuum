@@ -20,7 +20,10 @@ use crate::tool_parsing::ToolNameCodec;
 
 /// The encoded, API-safe tool name.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/tool_parsing/EncodedToolName.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/tool_parsing/EncodedToolName.ts"
+)]
 pub struct EncodedToolName {
     /// The tool name with slashes replaced by underscores (API transmission form).
     pub encoded: String,

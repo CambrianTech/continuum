@@ -51,9 +51,7 @@
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 
-use crate::ai::adapter::{
-    AIProviderAdapter, AdapterCapabilities, ApiStyle, InferenceDevice,
-};
+use crate::ai::adapter::{AIProviderAdapter, AdapterCapabilities, ApiStyle, InferenceDevice};
 use crate::ai::types::{
     ChatMessage, ContentPart, CostPer1kTokens, FinishReason, HealthState, HealthStatus,
     MessageContent, ModelInfo, TextGenerationRequest, TextGenerationResponse, UsageMetrics,
@@ -120,6 +118,13 @@ pub struct HeuristicInferenceAdapter {
     /// Same shape for `generate_text` — counts substrate-side hot-path
     /// inference calls so tests can assert per-turn counts.
     generate_observer: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
+    /// If Some, `generate_text` returns THIS text verbatim instead of the
+    /// hash-echo heuristic — so a test can drive a real cognition cycle to a
+    /// SPECIFIC decision (e.g. "PASS: done" to exercise the held-work completion
+    /// edge end-to-end). The heuristic echo is a Speak shape and can't express a
+    /// reasoned pass; this makes the deterministic adapter able to produce any
+    /// decision the parser recognizes.
+    canned_response: Option<String>,
 }
 
 impl HeuristicInferenceAdapter {
@@ -154,6 +159,14 @@ impl HeuristicInferenceAdapter {
         counter: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     ) -> Self {
         self.warmup_observer = Some(counter);
+        self
+    }
+
+    /// Return `text` verbatim from every `generate_text` instead of the
+    /// hash-echo — lets a test drive a real cognition cycle to a chosen
+    /// decision (e.g. `"PASS: done"` for the held-work completion edge).
+    pub fn with_canned_response(mut self, text: impl Into<String>) -> Self {
+        self.canned_response = Some(text.into());
         self
     }
 
@@ -267,8 +280,14 @@ impl HeuristicInferenceAdapter {
     pub fn build_response_text(req: &TextGenerationRequest) -> String {
         let prefix = Self::determinism_prefix(req);
         let last = Self::last_user_text(&req.messages);
-        let echoed: String = last.chars().rev().take(ECHO_CHARS).collect::<String>()
-            .chars().rev().collect();
+        let echoed: String = last
+            .chars()
+            .rev()
+            .take(ECHO_CHARS)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
         let plain = if echoed.is_empty() {
             format!("[heuristic:{prefix}] ack: (no user text in prompt)")
         } else {
@@ -282,11 +301,8 @@ impl HeuristicInferenceAdapter {
             // the rag_inspect inference probe's JSON parser is
             // exercised end-to-end. `will_respond: true` keeps the
             // happy path going.
-            let inner =
-                serde_json::to_string(&plain).expect("plain string serializes");
-            return format!(
-                "{{\"will_respond\":true,\"response\":{inner}}}"
-            );
+            let inner = serde_json::to_string(&plain).expect("plain string serializes");
+            return format!("{{\"will_respond\":true,\"response\":{inner}}}");
         }
         plain
     }
@@ -313,7 +329,6 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
     fn is_production_capable(&self) -> bool {
         false
     }
-
 
     fn capabilities(&self) -> AdapterCapabilities {
         // Heuristic adapter intentionally advertises only text I/O — tool
@@ -381,14 +396,16 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
         // future simulated-network adapters. Production callers use
         // `new()` with delay=0 and pay zero overhead.
         if self.inject_delay_ms > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(self.inject_delay_ms))
-                .await;
+            tokio::time::sleep(std::time::Duration::from_millis(self.inject_delay_ms)).await;
         }
         let model = request
             .model
             .clone()
             .unwrap_or_else(|| HEURISTIC_DEFAULT_MODEL.to_string());
-        let text = Self::build_response_text(&request);
+        let text = self
+            .canned_response
+            .clone()
+            .unwrap_or_else(|| Self::build_response_text(&request));
 
         // Token accounting: input = system + all message text;
         // output = response text. Same chars/4 heuristic the rest
@@ -628,7 +645,9 @@ mod tests {
     async fn usage_metrics_are_populated_and_nonzero_for_nonempty_prompt() {
         let adapter = HeuristicInferenceAdapter::new();
         let resp = adapter
-            .generate_text(req_with(vec![user_msg("a long-ish prompt here for token estimation")]))
+            .generate_text(req_with(vec![user_msg(
+                "a long-ish prompt here for token estimation",
+            )]))
             .await
             .unwrap();
         assert!(resp.usage.input_tokens > 0);
@@ -712,8 +731,7 @@ mod tests {
         use crate::genome::working_set::ArtifactId;
         use crate::identity::PeerId;
         use crate::inference::llm_module::{
-            CompositionPlan, GenerationBudget, InferenceRequest, InferenceRequestId,
-            SamplingParams,
+            CompositionPlan, GenerationBudget, InferenceRequest, InferenceRequestId, SamplingParams,
         };
         use crate::inference::llm_module_service::{InferenceLlmModule, COMMAND_REQUEST};
         use crate::runtime::service_module::{CommandResult, ServiceModule};

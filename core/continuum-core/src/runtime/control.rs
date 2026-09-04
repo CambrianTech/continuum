@@ -14,7 +14,10 @@ use ts_rs::TS;
 
 /// Complete module information for UI/Ares control
 #[derive(Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/runtime/ModuleInfo.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/runtime/ModuleInfo.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleInfo {
     pub name: String,

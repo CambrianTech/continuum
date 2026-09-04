@@ -11,7 +11,10 @@ use crate::modules::auth::{ExternalWebviewAuthService, ProviderList};
 
 /// `auth/oauth/providers` takes no input.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/auth/AuthProvidersParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/auth/AuthProvidersParams.ts"
+)]
 pub struct AuthProvidersParams {}
 
 crate::action_command! {

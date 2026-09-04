@@ -180,18 +180,31 @@ mod tests {
     #[test]
     fn reclaim_score_separates_tiers_and_breaks_ties_by_age() {
         let a = TieredArbiter::default();
-        let ctx = ArbiterContext { now_ms: 100_000, pressure: 0.0 };
+        let ctx = ArbiterContext {
+            now_ms: 100_000,
+            pressure: 0.0,
+        };
 
         let expired = a.reclaim_score(&lease("e", ReclaimPolicy::Graceful, 0, 50_000), &ctx);
         let hard = a.reclaim_score(&lease("h", ReclaimPolicy::Hard, 0, u64::MAX), &ctx);
-        let graceful_old = a.reclaim_score(&lease("g_old", ReclaimPolicy::Graceful, 0, u64::MAX), &ctx);
-        let graceful_new = a.reclaim_score(&lease("g_new", ReclaimPolicy::Graceful, 90_000, u64::MAX), &ctx);
+        let graceful_old =
+            a.reclaim_score(&lease("g_old", ReclaimPolicy::Graceful, 0, u64::MAX), &ctx);
+        let graceful_new = a.reclaim_score(
+            &lease("g_new", ReclaimPolicy::Graceful, 90_000, u64::MAX),
+            &ctx,
+        );
 
         // tiers never cross, even though graceful_old is maximally aged
         assert!(expired > hard, "expired outranks hard");
-        assert!(hard > graceful_old, "hard outranks even the oldest graceful");
+        assert!(
+            hard > graceful_old,
+            "hard outranks even the oldest graceful"
+        );
         // within the graceful tier, older (LRU) scores higher
-        assert!(graceful_old > graceful_new, "older graceful reclaimed first");
+        assert!(
+            graceful_old > graceful_new,
+            "older graceful reclaimed first"
+        );
 
         // active pinned is the never-reclaim guard
         assert_eq!(
@@ -207,13 +220,19 @@ mod tests {
     #[test]
     fn demand_urgency_rises_with_wait_until_it_crosses_a_fresh_higher_tier() {
         let a = TieredArbiter::default();
-        let ctx = ArbiterContext { now_ms: 0, pressure: 0.0 };
+        let ctx = ArbiterContext {
+            now_ms: 0,
+            pressure: 0.0,
+        };
 
         let fresh_pinned = a.demand_urgency(&req(ReclaimPolicy::Pinned), 0, &ctx);
         let fresh_graceful = a.demand_urgency(&req(ReclaimPolicy::Graceful), 0, &ctx);
         let waited_graceful = a.demand_urgency(&req(ReclaimPolicy::Graceful), 120_000, &ctx);
 
-        assert!(fresh_pinned > fresh_graceful, "at equal wait, pinned outranks graceful");
+        assert!(
+            fresh_pinned > fresh_graceful,
+            "at equal wait, pinned outranks graceful"
+        );
         assert!(
             waited_graceful > fresh_pinned,
             "a long-waited graceful eventually crosses a fresh pinned — nothing waits forever"
@@ -227,8 +246,14 @@ mod tests {
     #[test]
     fn pressure_scales_demand_urgency_but_not_reclaim_order() {
         let a = TieredArbiter::default();
-        let calm = ArbiterContext { now_ms: 10_000, pressure: 0.0 };
-        let busy = ArbiterContext { now_ms: 10_000, pressure: 1.0 };
+        let calm = ArbiterContext {
+            now_ms: 10_000,
+            pressure: 0.0,
+        };
+        let busy = ArbiterContext {
+            now_ms: 10_000,
+            pressure: 1.0,
+        };
 
         let u_calm = a.demand_urgency(&req(ReclaimPolicy::Graceful), 5_000, &calm);
         let u_busy = a.demand_urgency(&req(ReclaimPolicy::Graceful), 5_000, &busy);

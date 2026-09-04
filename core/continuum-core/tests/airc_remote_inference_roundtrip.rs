@@ -279,24 +279,9 @@ async fn airc_remote_inference_adapter_round_trips_against_substrate() {
         }],
         system_prompt: Some("you are a substrate-side echo".to_string()),
         model: Some("qwen3.5-4b-code-forged".to_string()),
-        provider: None,
         temperature: Some(0.7),
         max_tokens: Some(64),
-        top_p: None,
-        top_k: None,
-        repeat_penalty: None,
-        frequency_penalty: None,
-        repeat_last_n: None,
-        stop_sequences: None,
-        tools: None,
-        tool_choice: None,
-        response_format: None,
-        active_adapters: None,
-        request_id: None,
-        user_id: None,
-        room_id: None,
-        purpose: None,
-        persona_id: None,
+        ..Default::default()
     };
 
     let response: TextGenerationResponse = adapter

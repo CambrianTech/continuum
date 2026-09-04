@@ -162,7 +162,10 @@ pub struct Engram {
 /// across kinds, and the discriminator is cheap. Per the airc design
 /// discussion 2026-05-13.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/EngramKind.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/EngramKind.ts"
+)]
 pub enum EngramKind {
     Episodic,
     Semantic,
@@ -407,6 +410,19 @@ pub enum AdmissionDecision {
 }
 
 impl AdmissionDecision {
+    /// The engram this decision actually formed, if any.
+    ///
+    /// `Some` only for [`Admit`](Self::Admit). A `Drop` (dedup / policy) and a
+    /// `Quarantine` did not put anything in the store the rest of the system may
+    /// point at — so callers wiring causal edges get `None` and record no edge,
+    /// rather than linking to something that was never admitted.
+    pub fn admitted_engram_id(&self) -> Option<Uuid> {
+        match self {
+            Self::Admit { engram, .. } => Some(engram.id),
+            Self::Drop { .. } | Self::Quarantine { .. } => None,
+        }
+    }
+
     /// Short funnel label for log lines + metrics. Lives next to the
     /// enum so adding a new variant is a compile-fail at this match
     /// rather than a silent fall-through (per claude-tab-2 review nit
@@ -526,7 +542,10 @@ pub enum AdmissionError {
 /// Ordered roughly from least to most trusted; `PartialOrd` derives so
 /// admission gates can compare `source_trust >= threshold` directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/TrustState.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/TrustState.ts"
+)]
 pub enum TrustState {
     /// Anonymous / unauthenticated — signature missing or fails.
     Untrusted,

@@ -36,7 +36,10 @@ use crate::sdk_codegen::CommandError;
 
 /// Which model to permit back into the serving candidate pool.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/model_registry/ServingLoadParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/model_registry/ServingLoadParams.ts"
+)]
 pub struct ServingLoadParams {
     /// The model id as it appears in `models/list`. Fails loud if unknown.
     pub model_id: String,
@@ -46,7 +49,10 @@ pub struct ServingLoadParams {
 /// daemon is serving at the moment the pin was lifted (the planner may or may not
 /// pick this model on its next tick, by budget).
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/model_registry/LoadReport.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/model_registry/LoadReport.ts"
+)]
 pub struct LoadReport {
     /// True if the model was pinned off and this command lifted the pin; false if
     /// it was never unloaded (nothing changed).

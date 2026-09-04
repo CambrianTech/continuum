@@ -127,8 +127,8 @@ fn scan_for_command_executor_calls(cognition_root: &Path) -> Vec<Violation> {
                 let rest = &trimmed["#[cfg(test)]".len()..];
                 if rest.contains("mod ") && raw_line.contains('{') {
                     in_test_mod = true;
-                    test_mod_depth =
-                        (raw_line.matches('{').count() as i32) - (raw_line.matches('}').count() as i32);
+                    test_mod_depth = (raw_line.matches('{').count() as i32)
+                        - (raw_line.matches('}').count() as i32);
                     if test_mod_depth <= 0 {
                         in_test_mod = false;
                         test_mod_depth = 0;

@@ -30,7 +30,10 @@ use crate::sdk_codegen::{ActionCommand, CommandError, Ctx};
 /// she is currently acting in, held until she un-mutes.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/focus/FocusMuteParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/focus/FocusMuteParams.ts"
+)]
 pub struct FocusMuteParams {
     /// The lane (room / thread / channel id) to act on. Omit to target the room you
     /// are currently acting in (this turn's context).
@@ -57,7 +60,10 @@ pub struct FocusMuteParams {
 /// Result of `focus/mute` — the lane's mute posture after the call.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/focus/FocusMuteResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/focus/FocusMuteResult.ts"
+)]
 pub struct FocusMuteResult {
     /// The lane acted on (resolved from `lane` or the turn's context).
     #[ts(type = "string")]
@@ -128,7 +134,11 @@ impl ActionCommand for FocusMute {
             });
         }
 
-        let level = if p.hard { MuteLevel::Hard } else { MuteLevel::Soft };
+        let level = if p.hard {
+            MuteLevel::Hard
+        } else {
+            MuteLevel::Soft
+        };
         let expires_at_ms = p
             .duration_secs
             .map(|s| now_ms().saturating_add(s.saturating_mul(1_000)));
@@ -150,7 +160,9 @@ mod tests {
 
     fn persona_ctx(persona: Uuid, room: Uuid) -> Ctx {
         Ctx {
-            caller: Some(CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona))),
+            caller: Some(CallerIdentity::local_persona(
+                crate::identity::PeerId::from_uuid(persona),
+            )),
             context_id: Some(room),
             ..Ctx::default()
         }
@@ -206,7 +218,9 @@ mod tests {
             .run(
                 // explicit lane (no room context) to prove `lane` overrides the default
                 &Ctx {
-                    caller: Some(CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona))),
+                    caller: Some(CallerIdentity::local_persona(
+                        crate::identity::PeerId::from_uuid(persona),
+                    )),
                     ..Ctx::default()
                 },
                 FocusMuteParams {
@@ -245,7 +259,9 @@ mod tests {
         // a non-persona caller (e.g. a remote peer) is denied even though AiSafe lets
         // it reach the body.
         let remote = Ctx {
-            caller: Some(CallerIdentity::tcp(crate::identity::PeerId::from_u128(0xE5))),
+            caller: Some(CallerIdentity::tcp(crate::identity::PeerId::from_u128(
+                0xE5,
+            ))),
             context_id: Some(Uuid::from_u128(0xF6)),
             ..Ctx::default()
         };

@@ -40,10 +40,10 @@ use futures::future::join_all;
 use serde_json::Value;
 use uuid::Uuid;
 
+use super::spill;
 use super::types::{
     NativeBatchOutcome, ParsedToolBatch, ToolError, ToolExecutionContext, ToolOutcome,
 };
-use super::spill;
 use super::ToolExecutor;
 use crate::ai::types::{ToolCall as NativeToolCall, ToolResult as NativeToolResult};
 use crate::routing::CallerIdentity;
@@ -100,7 +100,9 @@ impl CommandToolExecutor {
         let core = executor.clone();
         let transport = InProcessTransport::new(
             executor,
-            Some(CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona))),
+            Some(CallerIdentity::local_persona(
+                crate::identity::PeerId::from_uuid(persona),
+            )),
         );
         Self {
             conn: Connection::new(transport),
@@ -172,6 +174,26 @@ fn truncate_tool_output(s: String, max: usize, spill: Option<&spill::SpillRef>) 
         return truncate_on_boundary(s, max);
     }
     let dropped = tail_start - head_end;
+    // MAKE THE FLOOD OBSERVABLE. Without this probe there is no way to answer
+    // "does her output actually flood?" — and on 2026-08-28 that question blocked
+    // a real decision: `tool/output` (the verb that reads the spilled MIDDLE) is
+    // not in the native surface, and making it native costs ~1200 tokens on EVERY
+    // prompt forever against a ceiling guard that says "do not keep bumping this".
+    // The honest answer was "no spill has ever been recorded on this box" — the
+    // demand was UNMEASURED, not proven absent. She already receives head+tail;
+    // the middle is what a spill adds. This probe is the evidence that decides it:
+    // if floods are frequent in solves the verb earns its slot; if they never
+    // happen, the surface stays lean.
+    if let Some(r) = spill {
+        crate::probe!(
+            class = "tool.output.spilled",
+            handle = %r.handle,
+            dropped_chars = %dropped,
+            "a tool result flooded and was spilled to disk — its MIDDLE is reachable \
+             only through `tool/output`, which is NOT in the native surface today \
+             (she holds the handle, not the verb)"
+        );
+    }
     let recovery = match spill {
         // The whole result is recoverable — point her at the handle, and at the
         // failure-hunting path specifically (grep for the error), per Joel: the
@@ -205,13 +227,16 @@ fn truncate_tool_output(s: String, max: usize, spill: Option<&spill::SpillRef>) 
 /// Spilling is best-effort: if it fails (no home dir, disk full) we STILL bound
 /// the output — context safety is non-negotiable — she just loses the recover-it
 /// affordance for that one result. We never fabricate a handle we couldn't write.
-fn fold_with_recovery(full: String, max: usize, persona_id: Uuid) -> String {
+fn fold_with_recovery(full: String, max: usize, persona_id: Uuid) -> (String, Option<String>) {
     if full.len() <= max {
-        return full;
+        return (full, None);
     }
     match spill::spill(persona_id, &full) {
-        Ok(r) => truncate_tool_output(full, max, Some(&r)),
-        Err(_) => truncate_tool_output(full, max, None),
+        Ok(r) => {
+            let handle = r.handle.clone();
+            (truncate_tool_output(full, max, Some(&r)), Some(handle))
+        }
+        Err(_) => (truncate_tool_output(full, max, None), None),
     }
 }
 
@@ -237,6 +262,15 @@ fn fold_with_recovery(full: String, max: usize, persona_id: Uuid) -> String {
 /// citizen cannot summon this arm by guessing it.
 pub(crate) const NAMELESS_ARGS_SENTINEL: &str = "tools/<no name given>";
 
+/// Reserved pseudo-name for "the generation ended INSIDE the reasoning channel" —
+/// content empty, reasoning present, no liftable call anywhere in the thinking.
+/// Same uncallable namespace as [`NAMELESS_ARGS_SENTINEL`]; same contract:
+/// REPORTED, never executed. The teacher arm below is the accommodation for
+/// thinking models (any of them — the reasoning channel is an adapter fact, not a
+/// model sniff): her thinking already landed in working memory, so the next
+/// generation `drive_to_settle` grants starts from her own conclusions.
+pub(crate) const THINK_ONLY_SENTINEL: &str = "tools/<think-only turn>";
+
 fn persona_tool_error(attempted: &str, raw: String) -> String {
     // The MISSING-name case, which is not the wrong-name case and must not borrow its
     // sentence. Rendering "`X` is not a tool you can call" here would be actively
@@ -245,6 +279,23 @@ fn persona_tool_error(attempted: &str, raw: String) -> String {
     // English — the fence lifted nothing and, before this, reported nothing, so she
     // repeated the same shape until the deadline. Name the missing piece and show the
     // form; the args she already wrote are reusable as-is.
+    // The THINK-ONLY case: nothing she wrote was wrong and nothing was absent from a
+    // call — there was no call, no answer, no PASS; the whole generation stayed in the
+    // private reasoning channel. "not a tool you can call" would be false (she called
+    // nothing), and silence would be the dead turn this sentinel exists to break. Name
+    // what happened and the three commitment affordances; her reasoning is already in
+    // working memory, so the retry starts from her own conclusions.
+    if attempted == THINK_ONLY_SENTINEL {
+        return "Your whole generation was private reasoning — the turn ended inside the \
+                thinking channel, so nothing was said and nothing ran. Your thinking is \
+                saved in your working memory, but nobody else can see it, and it is not \
+                an answer or an action. Commit now: call a tool \
+                (`tool/name({\"arg\": \"value\"})`), or state your conclusion as plain \
+                text, or PASS. You have already done the thinking — put the conclusion \
+                in the answer."
+            .to_string();
+    }
+
     if attempted == NAMELESS_ARGS_SENTINEL {
         return format!(
             "You emitted tool ARGUMENTS with no tool NAME, so nothing ran:\n{raw}\n\n\
@@ -292,14 +343,16 @@ fn persona_tool_error(attempted: &str, raw: String) -> String {
         let mut candidates = ai_names.clone();
         candidates.extend_from_slice(crate::cognition::tool_dialect::ai_safe_aliases());
         let mut seen = std::collections::HashSet::new();
-        let suggestions: Vec<String> = crate::commands::help::did_you_mean(&normalized, &candidates)
-            .into_iter()
-            .map(crate::cognition::tool_dialect::resolve_wire_name)
-            .filter(|canonical| seen.insert(canonical.clone()))
-            .collect();
-        if let (Some(best), Some(manual)) =
-            (suggestions.first(), suggestions.first().and_then(|b| manual_for(b)))
-        {
+        let suggestions: Vec<String> =
+            crate::commands::help::did_you_mean(&normalized, &candidates)
+                .into_iter()
+                .map(crate::cognition::tool_dialect::resolve_wire_name)
+                .filter(|canonical| seen.insert(canonical.clone()))
+                .collect();
+        if let (Some(best), Some(manual)) = (
+            suggestions.first(),
+            suggestions.first().and_then(|b| manual_for(b)),
+        ) {
             let list = suggestions
                 .iter()
                 .map(|n| format!("`{n}`"))
@@ -391,17 +444,35 @@ impl ToolExecutor for CommandToolExecutor {
             .into_iter()
             .enumerate()
             .map(|(i, (tool_use_id, outcome))| match outcome {
-                Ok(value) => NativeToolResult {
-                    tool_use_id,
-                    // Spill-then-bound: a flood-sized result is persisted whole
-                    // (recoverable via `tool/output`) before the preview is cut.
-                    content: fold_with_recovery(
-                        value.to_string(),
-                        max_result_chars,
-                        ctx.persona_id,
-                    ),
-                    is_error: None,
-                },
+                Ok(value) => {
+                    let full = value.to_string(); // owned render once; both the canvas feed and the fold read it
+                    // Canvas feed publishes from the PRE-FOLD content. It used to
+                    // hook the post-fold observation in act_observe/apply, where a
+                    // flood-sized ObserveResult had already been spilled + cut to a
+                    // preview — the JSON parse failed and the desktop went blind on
+                    // exactly the big screenshots worth watching (2026-08-23 audit's
+                    // latent canvas bug). Here the full result still exists.
+                    crate::ipc::positron_canvas_source::maybe_publish_observation(
+                        &ctx.persona_name,
+                        &calls[i].name,
+                        &full,
+                    );
+                    {
+                        // Spill-then-bound: a flood-sized result is persisted whole
+                        // (recoverable via `tool/output`) before the preview is cut;
+                        // the HANDLE rides the result type-level so working memory
+                        // can leave a queryable pointer when this result is later
+                        // evicted (collapse, never delete — 2026-08-24).
+                        let (content, spill_handle) =
+                            fold_with_recovery(full, max_result_chars, ctx.persona_id);
+                        NativeToolResult {
+                            tool_use_id,
+                            content,
+                            is_error: None,
+                            spill_handle,
+                        }
+                    }
+                }
                 // A failed tool call is NOT a batch failure — it's fed back to the
                 // model as an error result so it can recover (retry, fix args,
                 // pick another tool). Batch-level `Err` is reserved for the
@@ -425,6 +496,7 @@ impl ToolExecutor for CommandToolExecutor {
                             max_result_chars,
                         ),
                         is_error: Some(true),
+                        spill_handle: None,
                     }
                 }
             })
@@ -552,12 +624,40 @@ mod tests {
                    register a `ServiceModule` whose `command_prefixes` covers it."
             .to_string();
         let out = persona_tool_error("frobnicate", raw);
-        assert!(!out.contains("ServiceModule"), "dev noise leaked to persona: {out}");
-        assert!(!out.contains("TS-bridge"), "dev noise leaked to persona: {out}");
+        assert!(
+            !out.contains("ServiceModule"),
+            "dev noise leaked to persona: {out}"
+        );
+        assert!(
+            !out.contains("TS-bridge"),
+            "dev noise leaked to persona: {out}"
+        );
         // No near-miss exists for "frobnicate", so she's pointed at full
         // discovery (commands/help with no arguments) — the #1916 contract.
-        assert!(out.contains("commands/help"), "must point her at discovery: {out}");
-        assert!(out.contains("`frobnicate`"), "must name what she tried: {out}");
+        assert!(
+            out.contains("commands/help"),
+            "must point her at discovery: {out}"
+        );
+        assert!(
+            out.contains("`frobnicate`"),
+            "must name what she tried: {out}"
+        );
+    }
+
+    // what this catches: the think-only sentinel gets its OWN teacher sentence — it
+    // must name what happened (the generation ended inside the reasoning channel) and
+    // the three commitment affordances (tool call / plain answer / PASS). The
+    // "not a tool you can call" wording would be false here: she called nothing.
+    #[test]
+    fn think_only_sentinel_teaches_commitment_not_unknown_tool() {
+        let raw = "no Rust module handles command: 'tools/<think-only turn>'".to_string();
+        let out = persona_tool_error(THINK_ONLY_SENTINEL, raw);
+        assert!(out.contains("reasoning"), "{out}");
+        assert!(out.contains("PASS"), "{out}");
+        assert!(
+            !out.contains("not a tool you can call"),
+            "she called nothing — the unknown-tool wording is false here: {out}"
+        );
     }
 
     // what this catches: a dropped category prefix (the most common near-miss) gets a
@@ -607,7 +707,10 @@ mod tests {
     fn invalid_params_feedback_reinforces_help() {
         let raw = "code/write: [invalid] missing field `filePath`".to_string();
         let out = persona_tool_error("code/write", raw);
-        assert!(out.contains("missing field `filePath`"), "keeps the real cause: {out}");
+        assert!(
+            out.contains("missing field `filePath`"),
+            "keeps the real cause: {out}"
+        );
         assert!(
             out.contains("fix your arguments and retry") || out.contains("commands/help"),
             "must hand her the correct shape (inline manual) or the manual pointer: {out}"
@@ -636,10 +739,20 @@ mod tests {
         );
         // None spill ref → the narrow-at-source affordance (re-run scoped / grep).
         let out = truncate_tool_output(body, 600, None);
-        assert!(out.len() < 1200, "stays bounded near the cap: {} chars", out.len());
+        assert!(
+            out.len() < 1200,
+            "stays bounded near the cap: {} chars",
+            out.len()
+        );
         assert!(out.contains("BUILD START"), "keeps the head: {out}");
-        assert!(out.contains("THE VERDICT AT THE END"), "keeps the tail (the verdict): {out}");
-        assert!(out.contains("code/search"), "reinforces grep/narrowing: {out}");
+        assert!(
+            out.contains("THE VERDICT AT THE END"),
+            "keeps the tail (the verdict): {out}"
+        );
+        assert!(
+            out.contains("code/search"),
+            "reinforces grep/narrowing: {out}"
+        );
         assert!(out.contains("elided"), "names that output was cut: {out}");
     }
 
@@ -657,7 +770,10 @@ mod tests {
         };
         let out = truncate_tool_output(body, 600, Some(&fake));
         assert!(out.contains("deadbeefcafe0001"), "names the handle: {out}");
-        assert!(out.contains("tool/output"), "names the recovery tool: {out}");
+        assert!(
+            out.contains("tool/output"),
+            "names the recovery tool: {out}"
+        );
         // #1917: the failure hunt is a PREBUILT one-word filter, not a regex.
         assert!(
             out.contains("\"filter\":\"errors\""),
@@ -889,8 +1005,10 @@ mod tests {
         #[tokio::test]
         async fn required_args_missing_fails_loud_across_the_stateless_surface() {
             let exec = stateless_surface_hands();
-            let stateless: HashSet<&'static str> =
-                stateless_command_objects().iter().map(|c| c.name()).collect();
+            let stateless: HashSet<&'static str> = stateless_command_objects()
+                .iter()
+                .map(|c| c.name())
+                .collect();
 
             let mut examined = 0usize;
             for d in command_registry()
@@ -1021,10 +1139,11 @@ mod tests {
         }
 
         fn persona_over(executor: Arc<CommandExecutor>) -> CommandToolExecutor {
-            let transport =
-                InProcessTransport::new(
+            let transport = InProcessTransport::new(
                 executor,
-                Some(CallerIdentity::airc(crate::identity::PeerId::from_uuid(Uuid::new_v4()))),
+                Some(CallerIdentity::airc(crate::identity::PeerId::from_uuid(
+                    Uuid::new_v4(),
+                ))),
             );
             CommandToolExecutor::new(Connection::new(transport))
         }

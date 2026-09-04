@@ -219,7 +219,10 @@ mod tests {
             "total on disk {total} exceeded the {ceiling} ceiling"
         );
         // And the bound is meaningful — the test really did push far past it.
-        assert!(total < 50_000, "the cap must actually discard, not accumulate");
+        assert!(
+            total < 50_000,
+            "the cap must actually discard, not accumulate"
+        );
     }
 
     // what this catches: rotation keeps the NEWEST bytes. An incident is diagnosed from what

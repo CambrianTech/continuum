@@ -47,9 +47,7 @@ pub(crate) fn classify_files(files: &[&str]) -> CommitShape {
     let mut shape = CommitShape::default();
     for f in files {
         let is_rs = f.ends_with(".rs");
-        let is_testy = f.contains("tests/")
-            || f.ends_with("_test.rs")
-            || f.ends_with("_tests.rs");
+        let is_testy = f.contains("tests/") || f.ends_with("_test.rs") || f.ends_with("_tests.rs");
         if is_rs && is_testy {
             shape.test_files.push(f.to_string());
         } else if is_rs {
@@ -121,7 +119,11 @@ fn cargo_test(dir: &Path) -> (bool, String) {
 fn shared_target_dir() -> String {
     std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| {
         dirs::home_dir()
-            .map(|h| h.join(".continuum/cache/cargo-target").display().to_string())
+            .map(|h| {
+                h.join(".continuum/cache/cargo-target")
+                    .display()
+                    .to_string()
+            })
             .unwrap_or_else(|| "target".to_string())
     })
 }
@@ -156,7 +158,10 @@ pub struct MinedTask {
 /// Params for `gym/mine`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/gym/GymMineParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/gym/GymMineParams.ts"
+)]
 pub struct GymMineParams {
     /// Local path to the crate's git clone (the operator/persona clones; the
     /// miner stays network-free and testable).
@@ -174,7 +179,10 @@ pub struct GymMineParams {
 /// Result of `gym/mine`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/gym/GymMineResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/gym/GymMineResult.ts"
+)]
 pub struct GymMineResult {
     /// Verified tasks emitted.
     #[ts(type = "number")]
@@ -218,13 +226,12 @@ impl ActionCommand for GymMine {
             )));
         }
         let limit = p.limit.unwrap_or(10) as usize;
-        let tasks_dir = repo
-            .parent()
-            .unwrap_or(Path::new("."))
-            .join(format!(
-                "{}-gym",
-                repo.file_name().map(|s| s.to_string_lossy()).unwrap_or_default()
-            ));
+        let tasks_dir = repo.parent().unwrap_or(Path::new(".")).join(format!(
+            "{}-gym",
+            repo.file_name()
+                .map(|s| s.to_string_lossy())
+                .unwrap_or_default()
+        ));
         std::fs::create_dir_all(&tasks_dir)
             .map_err(|e| CommandError::Internal(format!("tasks dir: {e}")))?;
         let out_path = p
@@ -234,17 +241,16 @@ impl ActionCommand for GymMine {
 
         // The mining walk is blocking (git + cargo shell-outs, potentially
         // minutes) — off the async worker, one spawn_blocking for the batch.
-        let mined = tokio::task::spawn_blocking(move || {
-            mine(&repo, &tasks_dir, limit)
-        })
-        .await
-        .map_err(|e| CommandError::Internal(format!("mining task panicked: {e}")))??;
+        let mined = tokio::task::spawn_blocking(move || mine(&repo, &tasks_dir, limit))
+            .await
+            .map_err(|e| CommandError::Internal(format!("mining task panicked: {e}")))??;
 
         let mut lines = String::new();
         for t in &mined.tasks {
-            lines.push_str(&serde_json::to_string(t).map_err(|e| {
-                CommandError::Internal(format!("task serialize: {e}"))
-            })?);
+            lines.push_str(
+                &serde_json::to_string(t)
+                    .map_err(|e| CommandError::Internal(format!("task serialize: {e}")))?,
+            );
             lines.push('\n');
         }
         std::fs::write(&out_path, lines)
@@ -293,7 +299,11 @@ fn mine(repo: &Path, tasks_dir: &Path, limit: usize) -> Result<MineOutcome, Comm
 
         // Shape gate: file list + diff stats, cheap before any checkout.
         let files_raw = git(repo, &["show", "--name-only", "--pretty=format:", commit])?;
-        let files: Vec<&str> = files_raw.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+        let files: Vec<&str> = files_raw
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
         let shape = classify_files(&files);
         let diff = git(repo, &["show", "--pretty=format:", commit])?;
         let added_lines = diff.lines().filter(|l| l.starts_with('+')).count();
@@ -301,9 +311,7 @@ fn mine(repo: &Path, tasks_dir: &Path, limit: usize) -> Result<MineOutcome, Comm
         let adds_inline_test = diff
             .lines()
             .any(|l| l.starts_with('+') && l.contains("#[test]"));
-        if !is_candidate(&shape, adds_inline_test)
-            || added_lines + removed_lines > MAX_DIFF_LINES
-        {
+        if !is_candidate(&shape, adds_inline_test) || added_lines + removed_lines > MAX_DIFF_LINES {
             continue;
         }
         // Root-commit guard: a first commit has no parent to revert to.
@@ -317,8 +325,27 @@ fn mine(repo: &Path, tasks_dir: &Path, limit: usize) -> Result<MineOutcome, Comm
         // Materialize: worktree at the FIX commit (tests present), then revert
         // the source file to the parent (broken). Worktrees share the object
         // store — N tasks ≈ working files only.
-        let _ = git(repo, &["worktree", "remove", "--force", &task_dir.display().to_string()]);
-        if git(repo, &["worktree", "add", "--detach", &task_dir.display().to_string(), commit]).is_err() {
+        let _ = git(
+            repo,
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                &task_dir.display().to_string(),
+            ],
+        );
+        if git(
+            repo,
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                &task_dir.display().to_string(),
+                commit,
+            ],
+        )
+        .is_err()
+        {
             rejected += 1;
             continue;
         }
@@ -354,7 +381,15 @@ fn mine(repo: &Path, tasks_dir: &Path, limit: usize) -> Result<MineOutcome, Comm
             // Reverting the "fix" didn't break the suite → not a real bugfix
             // (or tests don't cover it). Not a task.
             rejected += 1;
-            let _ = git(repo, &["worktree", "remove", "--force", &task_dir.display().to_string()]);
+            let _ = git(
+                repo,
+                &[
+                    "worktree",
+                    "remove",
+                    "--force",
+                    &task_dir.display().to_string(),
+                ],
+            );
             continue;
         }
         if !run_sh(&fix_cmd) {
@@ -364,7 +399,15 @@ fn mine(repo: &Path, tasks_dir: &Path, limit: usize) -> Result<MineOutcome, Comm
         let (fixed_green, _) = cargo_test(&task_dir);
         if !fixed_green {
             rejected += 1;
-            let _ = git(repo, &["worktree", "remove", "--force", &task_dir.display().to_string()]);
+            let _ = git(
+                repo,
+                &[
+                    "worktree",
+                    "remove",
+                    "--force",
+                    &task_dir.display().to_string(),
+                ],
+            );
             continue;
         }
         // Leave the checkout BROKEN — that's the exam's starting state.
@@ -429,17 +472,29 @@ mod tests {
         assert!(is_candidate(&c, false), "1 source + test file: candidate");
 
         let c = classify_files(&["src/lib.rs"]);
-        assert!(!is_candidate(&c, false), "no test evidence: not a candidate");
+        assert!(
+            !is_candidate(&c, false),
+            "no test evidence: not a candidate"
+        );
         assert!(is_candidate(&c, true), "inline #[test] added: candidate");
 
         let c = classify_files(&["src/lib.rs", "src/parser.rs", "tests/basic.rs"]);
-        assert!(!is_candidate(&c, false), "two sources = refactor, not a localized fix");
+        assert!(
+            !is_candidate(&c, false),
+            "two sources = refactor, not a localized fix"
+        );
 
         let c = classify_files(&["src/lib.rs", "Cargo.toml", "tests/basic.rs"]);
-        assert!(!is_candidate(&c, false), "config churn excluded — tasks stay pure");
+        assert!(
+            !is_candidate(&c, false),
+            "config churn excluded — tasks stay pure"
+        );
 
         let c = classify_files(&["src/util_tests.rs", "src/lib.rs"]);
-        assert!(is_candidate(&c, false), "_tests.rs classifies as test evidence");
+        assert!(
+            is_candidate(&c, false),
+            "_tests.rs classifies as test evidence"
+        );
     }
 
     // what this catches: the "superset of the EvalTask wire fields" claim on the
@@ -500,10 +555,18 @@ mod tests {
         )
         .unwrap();
         // Commit 1: the bug (add returns a-b).
-        std::fs::write(repo.join("src/lib.rs"), "pub fn add(a: i32, b: i32) -> i32 { a - b }\n").unwrap();
+        std::fs::write(
+            repo.join("src/lib.rs"),
+            "pub fn add(a: i32, b: i32) -> i32 { a - b }\n",
+        )
+        .unwrap();
         sh("git init -q && git add -A && git -c user.email=t@t -c user.name=t commit -qm bug");
         // Commit 2: the fix + the test that specifies it.
-        std::fs::write(repo.join("src/lib.rs"), "pub fn add(a: i32, b: i32) -> i32 { a + b }\n").unwrap();
+        std::fs::write(
+            repo.join("src/lib.rs"),
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n",
+        )
+        .unwrap();
         std::fs::write(
             repo.join("tests/add.rs"),
             "#[test]\nfn adds() { assert_eq!(mini::add(2, 3), 5); }\n",
@@ -528,7 +591,12 @@ mod tests {
             "the broken state's failing output is recorded as proof"
         );
         // The checkout is left BROKEN (the exam's starting state).
-        let src = std::fs::read_to_string(out.tasks_dir.join(format!("task_{}", &t.commit[..10])).join("src/lib.rs")).unwrap();
+        let src = std::fs::read_to_string(
+            out.tasks_dir
+                .join(format!("task_{}", &t.commit[..10]))
+                .join("src/lib.rs"),
+        )
+        .unwrap();
         assert!(src.contains("a - b"), "task dir starts broken");
     }
 }

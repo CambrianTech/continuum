@@ -41,7 +41,11 @@ pub struct ExpertKey {
 impl ExpertKey {
     /// Tier-0 (sharpest / v1) key — the pre-tier call shape.
     pub fn sharp(layer: u16, expert: u16) -> Self {
-        Self { layer, expert, tier: 0 }
+        Self {
+            layer,
+            expert,
+            tier: 0,
+        }
     }
 
     /// Packed form (`layer<<32 | expert<<16 | tier`). Widened from WASTE's
@@ -285,7 +289,11 @@ impl ExpertEcache {
 
     pub fn hit_rate(&self) -> f64 {
         let t = self.hits + self.misses;
-        if t == 0 { 0.0 } else { self.hits as f64 / t as f64 }
+        if t == 0 {
+            0.0
+        } else {
+            self.hits as f64 / t as f64
+        }
     }
 
     pub fn resident(&self) -> usize {
@@ -312,8 +320,7 @@ impl ExpertEcache {
         // conservative: a warm guess never over-fills the byte budget.
         let bytes = self.default_record_bytes;
         for (key, hits) in usage {
-            if self.slots.len() >= self.max_slots || self.resident_bytes + bytes > self.max_bytes
-            {
+            if self.slots.len() >= self.max_slots || self.resident_bytes + bytes > self.max_bytes {
                 break;
             }
             if self.index.contains_key(&key) {
@@ -433,7 +440,12 @@ mod tests {
         // DIFFERENT record — sharp and cruft copies must never alias.
         assert_ne!(
             key(3, 417).packed(),
-            ExpertKey { layer: 3, expert: 417, tier: 1 }.packed()
+            ExpertKey {
+                layer: 3,
+                expert: 417,
+                tier: 1
+            }
+            .packed()
         );
 
         let budget = EcacheBudget::derive(100, 2, 10).expect("10 slots");
@@ -462,7 +474,14 @@ mod tests {
         // Fill with cruft (tier 1, half-size): byte budget holds 16 of them,
         // but slot count (8) caps first — both accounts are enforced.
         for e in 0..8u16 {
-            assert!(!c.touch_sized(ExpertKey { layer: 0, expert: e, tier: 1 }, 2048));
+            assert!(!c.touch_sized(
+                ExpertKey {
+                    layer: 0,
+                    expert: e,
+                    tier: 1
+                },
+                2048
+            ));
         }
         assert_eq!(c.resident(), 8);
         assert_eq!(c.resident_bytes(), 8 * 2048);
@@ -483,7 +502,14 @@ mod tests {
             c.touch_sized(ExpertKey::sharp(1, e), 4096);
         }
         assert_eq!(c.resident_bytes(), 3 * 4096);
-        assert!(!c.touch_sized(ExpertKey { layer: 1, expert: 200, tier: 0 }, 3 * 4096));
+        assert!(!c.touch_sized(
+            ExpertKey {
+                layer: 1,
+                expert: 200,
+                tier: 0
+            },
+            3 * 4096
+        ));
         assert_eq!(c.evictions, 2, "oversized admit must free enough BYTES");
         assert!(
             c.resident_bytes() <= 4 * 4096,
@@ -491,7 +517,14 @@ mod tests {
             c.resident_bytes()
         );
         assert!(
-            c.touch_sized(ExpertKey { layer: 1, expert: 200, tier: 0 }, 3 * 4096),
+            c.touch_sized(
+                ExpertKey {
+                    layer: 1,
+                    expert: 200,
+                    tier: 0
+                },
+                3 * 4096
+            ),
             "and it is resident"
         );
     }
@@ -515,7 +548,10 @@ mod tests {
         let mut after = ExpertEcache::new(budget, EvictionPolicy::Lfru);
         after.warm(snapshot);
         for &k in &hot {
-            assert!(after.touch(k), "warm-started key {k:?} must hit on first touch");
+            assert!(
+                after.touch(k),
+                "warm-started key {k:?} must hit on first touch"
+            );
         }
         assert_eq!(after.misses, 0, "zero cold misses after warm-start");
 

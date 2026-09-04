@@ -38,7 +38,10 @@ pub struct StaticModel {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/model_registry/CostPer1kTokens.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/model_registry/CostPer1kTokens.ts"
+)]
 pub struct CostPer1kTokens {
     pub input: f64,
     pub output: f64,
@@ -47,7 +50,10 @@ pub struct CostPer1kTokens {
 /// Discovered model metadata — the raw `/v1/models` (or provider-API) listing
 /// before it is folded into a `Model` and registered in the live catalog.
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/model_registry/DiscoveredModel.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/model_registry/DiscoveredModel.ts"
+)]
 pub struct DiscoveredModel {
     #[serde(rename = "modelId")]
     pub model_id: String,

@@ -7,7 +7,7 @@
 //! length-prefixed frames. Commands have `request_id`; events don't.
 
 use crate::agent::{AgentManager, EventWithPayload};
-use continuum_bridge_protocol::{BridgeCommand, BridgeEvent, BridgeResponse};
+use continuum_bridge_protocol::{BridgeCommand, BridgeResponse};
 
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -23,7 +23,17 @@ pub async fn run(socket_path: &str, livekit_url: &str) -> Result<(), Box<dyn std
 
     // Event channel — AgentManager sends events here, we forward to core
     let (event_tx, event_rx) = mpsc::unbounded_channel::<EventWithPayload>();
-    let manager = Arc::new(AgentManager::new(livekit_url.to_string(), event_tx));
+    // MEDIA plane (binary, 2026-09-01): continuous frames (PCM, video) ride
+    // their own channel into the SAME writer — identity was bound once via a
+    // MediaChannelOpened control event, so each frame is [magic][kind][ch] +
+    // payload: no JSON, no strings, no per-frame serialize.
+    let (media_tx, media_rx) =
+        mpsc::unbounded_channel::<(continuum_bridge_protocol::MediaKind, u16, Vec<u8>)>();
+    let manager = Arc::new(AgentManager::new(
+        livekit_url.to_string(),
+        event_tx,
+        media_tx,
+    ));
 
     let rt = tokio::runtime::Handle::current();
 
@@ -47,29 +57,47 @@ pub async fn run(socket_path: &str, livekit_url: &str) -> Result<(), Box<dyn std
                 let writer = Arc::new(std::sync::Mutex::new(write_stream));
                 let writer_for_events = writer.clone();
 
-                // Spawn event forwarder — pushes bridge events to core
+                // Spawn event forwarder — pushes bridge events AND binary media
+                // frames to core over one socket, two planes. One reused encode
+                // buffer: the media hot path allocates nothing once warm.
                 let mut event_rx_moved = event_rx;
+                let mut media_rx_moved = media_rx;
                 let event_handle = handle.clone();
                 std::thread::spawn(move || {
                     event_handle.block_on(async move {
-                        while let Some(payload) = event_rx_moved.recv().await {
-                            let json = match serde_json::to_vec(&payload.event) {
-                                Ok(j) => j,
-                                Err(e) => {
-                                    warn!("🌉 Event serialize error: {}", e);
-                                    continue;
+                        let mut media_buf: Vec<u8> = Vec::new();
+                        loop {
+                            tokio::select! {
+                                payload = event_rx_moved.recv() => {
+                                    let Some(payload) = payload else { break };
+                                    let json = match serde_json::to_vec(&payload.event) {
+                                        Ok(j) => j,
+                                        Err(e) => {
+                                            warn!("🌉 Event serialize error: {}", e);
+                                            continue;
+                                        }
+                                    };
+                                    let frame = continuum_bridge_protocol::encode_frame(
+                                        &json,
+                                        payload.binary.as_deref(),
+                                    );
+                                    let mut w = writer_for_events.lock().unwrap();
+                                    if let Err(e) = w.write_all(&frame) {
+                                        warn!("🌉 Event write error (core disconnected?): {}", e);
+                                        break;
+                                    }
                                 }
-                            };
-
-                            let frame = continuum_bridge_protocol::encode_frame(
-                                &json,
-                                payload.binary.as_deref(),
-                            );
-
-                            let mut w = writer_for_events.lock().unwrap();
-                            if let Err(e) = w.write_all(&frame) {
-                                warn!("🌉 Event write error (core disconnected?): {}", e);
-                                break;
+                                media = media_rx_moved.recv() => {
+                                    let Some((kind, channel, payload)) = media else { break };
+                                    continuum_bridge_protocol::encode_media_frame_into(
+                                        &mut media_buf, kind, channel, &payload,
+                                    );
+                                    let mut w = writer_for_events.lock().unwrap();
+                                    if let Err(e) = w.write_all(&media_buf) {
+                                        warn!("🌉 Media write error (core disconnected?): {}", e);
+                                        break;
+                                    }
+                                }
                             }
                         }
                     });
@@ -112,6 +140,13 @@ fn handle_client(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = vec![0u8; 4 * 1024 * 1024]; // 4MB read buffer (video frames can be large)
     let mut pending = Vec::new();
+    // Core-assigned OUTBOUND media channels (binary plane): channel →
+    // (kind, call_id, user_id), bound once by OpenMediaOut. Media frames then
+    // route here with zero JSON and zero identity strings per frame.
+    let mut out_channels: std::collections::HashMap<
+        u16,
+        (continuum_bridge_protocol::MediaKind, String, String),
+    > = std::collections::HashMap::new();
 
     loop {
         let n = match read_stream.read(&mut buf) {
@@ -135,6 +170,55 @@ fn handle_client(
                 break;
             }
 
+            // BINARY MEDIA plane first — one byte decides, and the frame is
+            // processed as a BORROW of the socket buffer: at 30fps HD RGBA
+            // (~3.7MB/frame/persona) every avoidable copy is real CPU
+            // (forward-on, no copies — the airc law, 2026-09-01). The only
+            // copy on this path is the I420 transform physics requires.
+            if let Some((kind, channel, payload)) =
+                continuum_bridge_protocol::parse_media_frame(&pending[4..4 + frame_len])
+            {
+                match out_channels.get(&channel) {
+                    Some((_, call_id, user_id)) => match kind {
+                        continuum_bridge_protocol::MediaKind::AudioPcm => {
+                            let samples: Vec<i16> = payload
+                                .chunks_exact(2)
+                                .map(|c| i16::from_le_bytes([c[0], c[1]]))
+                                .collect();
+                            if let Err(e) =
+                                rt.block_on(manager.speak(call_id, user_id, samples))
+                            {
+                                warn!("🌉 media speak failed on ch {}: {}", channel, e);
+                            }
+                        }
+                        continuum_bridge_protocol::MediaKind::VideoRgba => {
+                            if let Some((w, h, rgba)) =
+                                continuum_bridge_protocol::parse_video_payload(payload)
+                            {
+                                if let Err(e) = rt.block_on(manager.publish_video_frame(
+                                    call_id,
+                                    user_id,
+                                    rgba,
+                                    w as u32,
+                                    h as u32,
+                                )) {
+                                    warn!("🌉 media video failed on ch {}: {}", channel, e);
+                                }
+                            }
+                        }
+                        continuum_bridge_protocol::MediaKind::VideoJpeg => {
+                            warn!("🌉 VideoJpeg is an inbound-only kind — dropped");
+                        }
+                    },
+                    None => {
+                        warn!("🌉 media frame on unbound out-channel {} — dropped", channel)
+                    }
+                }
+                pending.drain(..4 + frame_len);
+                continue;
+            }
+
+            // JSON control plane (low rate): the owned copy here is fine.
             let frame_data = pending[4..4 + frame_len].to_vec();
             pending.drain(..4 + frame_len);
 
@@ -142,6 +226,38 @@ fn handle_client(
 
             match serde_json::from_slice::<CommandEnvelope>(json_bytes) {
                 Ok(envelope) => {
+                    // Channel binding is a CONTROL act, handled here where the
+                    // out-channel map lives (once per stream, never per frame).
+                    if let BridgeCommand::OpenMediaOut {
+                        channel,
+                        kind,
+                        call_id,
+                        user_id,
+                    } = envelope.command
+                    {
+                        info!(
+                            "🌉 out-channel {} bound: {:?} for {}/{}",
+                            channel,
+                            kind,
+                            &call_id[..8.min(call_id.len())],
+                            &user_id[..8.min(user_id.len())]
+                        );
+                        out_channels.insert(channel, (kind, call_id, user_id));
+                        let response = BridgeResponse {
+                            request_id: envelope.request_id,
+                            success: true,
+                            error: None,
+                            data: Some(serde_json::json!({ "opened": true })),
+                        };
+                        let resp_json = serde_json::to_vec(&response).unwrap_or_default();
+                        let resp_frame =
+                            continuum_bridge_protocol::encode_frame(&resp_json, None);
+                        let mut w = writer.lock().unwrap();
+                        if w.write_all(&resp_frame).is_err() {
+                            return Ok(());
+                        }
+                        continue;
+                    }
                     let response = rt.block_on(dispatch_command(
                         &manager,
                         envelope.request_id,
@@ -228,6 +344,11 @@ async fn dispatch_command(
         BridgeCommand::AddAmbient { .. } |
         BridgeCommand::InjectAmbient { .. } |
         BridgeCommand::RemoveAmbient { .. } => Ok(serde_json::json!({ "ack": true })),
+        // Bound inline in handle_client (where the out-channel map lives);
+        // reaching here means a caller bypassed that path — refuse loudly.
+        BridgeCommand::OpenMediaOut { channel, .. } => {
+            Err(format!("OpenMediaOut ch {channel} must bind in handle_client"))
+        }
         BridgeCommand::SnapshotRoom | BridgeCommand::SnapshotParticipant { .. } => {
             Ok(serde_json::json!({ "snapshot": "not_implemented" }))
         }

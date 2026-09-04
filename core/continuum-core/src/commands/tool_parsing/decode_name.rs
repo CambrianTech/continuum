@@ -20,7 +20,10 @@ use crate::tool_parsing::ToolNameCodec;
 
 /// The decoded canonical name and whether decoding changed the input.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/tool_parsing/DecodedToolName.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/tool_parsing/DecodedToolName.ts"
+)]
 pub struct DecodedToolName {
     /// The canonical, slash-namespaced tool name.
     pub decoded: String,

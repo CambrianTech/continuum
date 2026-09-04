@@ -427,7 +427,6 @@ impl ServiceModule for CognitionModule {
             // `Arc<CognitionState>` and delegates to `get_or_create_persona` +
             // the per-persona `message_cache` / `content_dedup`). They reach the
             // registry via `CognitionModule::commands()`. All `access: Internal`.
-
             _ => Err(format!("Unknown cognition command: {command}")),
         }
     }
@@ -523,7 +522,7 @@ mod turn_frame_recording_tests {
             id: Uuid::new_v4(),
             room_id,
             sender_id: Uuid::new_v4(),
-            sender_name: "Joel".to_string(),
+            sender_name: "Operator".to_string(),
             sender_type: SenderType::Human,
             content: content.to_string(),
             timestamp,
@@ -541,9 +540,9 @@ mod turn_frame_recording_tests {
 
         assert_eq!(
             record.consolidated_inbox.transcript,
-            "Joel: record the frame"
+            "Operator: record the frame"
         );
-        assert_eq!(record.rag_seed.query_text, "Joel: record the frame");
+        assert_eq!(record.rag_seed.query_text, "Operator: record the frame");
         assert_eq!(record.inbox_frame.metrics.messages_drained, 1);
     }
 

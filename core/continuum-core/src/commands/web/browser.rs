@@ -15,7 +15,7 @@ use tokio::process::Command;
 use crate::sdk_codegen::CommandError;
 
 /// A believable desktop UA — some engines vary output by UA even for a real browser.
-const RENDER_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
+pub(crate) const RENDER_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
      AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
 /// Hard ceiling on a single render (a stuck page can't hang the tool forever).

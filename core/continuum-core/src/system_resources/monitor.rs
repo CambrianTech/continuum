@@ -41,7 +41,10 @@ pub struct CpuStats {
 
 /// Memory statistics snapshot.
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/system/MemoryStats.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/system/MemoryStats.ts"
+)]
 pub struct MemoryStats {
     /// Total physical RAM in bytes
     #[ts(type = "number")]
@@ -64,7 +67,10 @@ pub struct MemoryStats {
 
 /// A single process's resource usage.
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/system/TopProcess.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/system/TopProcess.ts"
+)]
 pub struct TopProcess {
     /// Process ID
     pub pid: u32,
@@ -79,7 +85,10 @@ pub struct TopProcess {
 
 /// Top processes by resource usage.
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/system/ProcessStats.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/system/ProcessStats.ts"
+)]
 pub struct ProcessStats {
     /// Top N processes by CPU usage
     pub top_by_cpu: Vec<TopProcess>,

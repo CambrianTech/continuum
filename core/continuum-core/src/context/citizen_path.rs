@@ -108,15 +108,9 @@ pub fn citizens_kind_dir(continuum_root: &Path, kind: IdentityKind) -> PathBuf {
 /// - Personas: `<continuum_root>/personas/<label>/airc/`
 /// - Claude (the only Agent-equivalent pre-refactor):
 ///   `<continuum_root>/claudes/<label>/airc/`
-pub fn legacy_home_path(
-    continuum_root: &Path,
-    kind: IdentityKind,
-    label: &str,
-) -> Option<PathBuf> {
+pub fn legacy_home_path(continuum_root: &Path, kind: IdentityKind, label: &str) -> Option<PathBuf> {
     match kind {
-        IdentityKind::Persona => {
-            Some(continuum_root.join("personas").join(label).join("airc"))
-        }
+        IdentityKind::Persona => Some(continuum_root.join("personas").join(label).join("airc")),
         IdentityKind::Agent => {
             // Pre-Slice-4 there was only Claude under `claudes/`.
             // Codex/Gemini/etc. didn't have layouts to migrate; they
@@ -166,23 +160,13 @@ mod tests {
     #[test]
     fn agent_path_carries_provider_segment() {
         let root = PathBuf::from("/r");
-        let path = citizen_home_path(
-            &root,
-            IdentityKind::Agent,
-            Some("claude"),
-            "default",
-        );
+        let path = citizen_home_path(&root, IdentityKind::Agent, Some("claude"), "default");
         assert_eq!(
             path,
             PathBuf::from("/r/citizens/agents/claude/default/airc")
         );
 
-        let codex_path = citizen_home_path(
-            &root,
-            IdentityKind::Agent,
-            Some("codex"),
-            "default",
-        );
+        let codex_path = citizen_home_path(&root, IdentityKind::Agent, Some("codex"), "default");
         assert_eq!(
             codex_path,
             PathBuf::from("/r/citizens/agents/codex/default/airc")
@@ -190,12 +174,7 @@ mod tests {
 
         // Same provider + same label across kinds: provider is the
         // discriminator. Different providers DON'T collide.
-        let gemini_path = citizen_home_path(
-            &root,
-            IdentityKind::Agent,
-            Some("gemini"),
-            "default",
-        );
+        let gemini_path = citizen_home_path(&root, IdentityKind::Agent, Some("gemini"), "default");
         assert_ne!(path, gemini_path);
     }
 
@@ -203,8 +182,8 @@ mod tests {
     fn human_jtag_web_paths_skip_provider_segment() {
         let root = PathBuf::from("/r");
         assert_eq!(
-            citizen_home_path(&root, IdentityKind::Human, None, "joel-laptop"),
-            PathBuf::from("/r/citizens/humans/joel-laptop/airc")
+            citizen_home_path(&root, IdentityKind::Human, None, "operator-laptop"),
+            PathBuf::from("/r/citizens/humans/operator-laptop/airc")
         );
         assert_eq!(
             citizen_home_path(&root, IdentityKind::Jtag, None, "inv-001"),
@@ -243,11 +222,6 @@ mod tests {
     #[test]
     #[should_panic(expected = "provider is REQUIRED when kind == Agent")]
     fn agent_without_provider_panics() {
-        let _ = citizen_home_path(
-            &PathBuf::from("/r"),
-            IdentityKind::Agent,
-            None,
-            "default",
-        );
+        let _ = citizen_home_path(&PathBuf::from("/r"), IdentityKind::Agent, None, "default");
     }
 }

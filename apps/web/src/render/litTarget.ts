@@ -12,6 +12,7 @@
 import { html, nothing, type TemplateResult } from 'lit';
 import {
   LIVE_PURPOSE,
+  SETTINGS_PURPOSE,
   ROSTER_LISTING_ID,
   type ContinuonView,
   type RenderTarget,
@@ -27,11 +28,10 @@ import {
   fireListingSelect,
   fireLiveFaceToggle,
   fireNavTabClose,
+  fireSettingsFaceToggle,
   renderListing,
   resizeHandle,
 } from './parts';
-import { renderBench } from '../bench/renderBench';
-import type { BenchContentBody } from '@continuum/patterns';
 import { webContentRegistry } from '../content/registry';
 import { webWidgetRegistry } from './widgets';
 
@@ -161,6 +161,10 @@ export const webTarget: RenderTarget<TemplateResult> = {
     // The focused room is the ACTIVE nav cell — with the live room set the
     // listing carries every room, so cells[0] is arbitrary order, not focus.
     const room = ws.nav.cells.find((c) => c.status === 'active') ?? ws.nav.cells[0];
+    // The strip is the citizen's OPEN tabs; the rail is the whole set. A
+    // listing that predates `opened` (single-cell roomsListing) is all open.
+    const anyOpened = ws.nav.cells.some((c) => c.opened === true);
+    const openTabs = anyOpened ? ws.nav.cells.filter((c) => c.opened === true) : ws.nav.cells;
     const roster = rosterOf(ws);
     const memberCount = roster?.cells.length ?? 0;
     const activeCount = roster?.cells.filter((c) => c.status === 'active').length ?? 0;
@@ -172,9 +176,9 @@ export const webTarget: RenderTarget<TemplateResult> = {
         </aside>
         ${resizeHandle('who')}
         <section class="center" aria-label="focused activity">
-          ${ws.nav.cells.length > 0
+          ${openTabs.length > 0
             ? html`<div class="tab-bar" role="tablist" aria-label="open activities">
-                ${ws.nav.cells.map(navTab)}
+                ${openTabs.map(navTab)}
               </div>`
             : nothing}
           <header class="room">
@@ -201,7 +205,16 @@ export const webTarget: RenderTarget<TemplateResult> = {
                 <button class="hdr-btn" @click=${cycleUniverse} title="cycle universe skin (?universe=)">
                   Theme
                 </button>
-                <button class="hdr-btn" disabled title="coming soon">Settings</button>
+                <button
+                  class="hdr-btn"
+                  data-active=${ws.content.purpose === SETTINGS_PURPOSE ? '' : nothing}
+                  @click=${(e: Event): void => {
+                    fireSettingsFaceToggle(e, ws.content.purpose !== SETTINGS_PURPOSE);
+                  }}
+                  title="operator settings — genome commons, HF identity, gene registry"
+                >
+                  Settings
+                </button>
                 <button class="hdr-btn" disabled title="coming soon">Browser</button>
                 <button class="hdr-btn" disabled title="coming soon">Help</button>
               </span>
@@ -218,12 +231,7 @@ export const webTarget: RenderTarget<TemplateResult> = {
                   ${renderListing(l)}
                 </section>`,
               )}
-              ${(ws.context.widgets ?? []).map(
-                (w) => html`<section class="rail-widget" data-widget=${w.kind}>
-                  <div class="who-head"><span class="who-title">${w.title}</span></div>
-                  ${w.kind === 'bench' ? renderBench(w.body as BenchContentBody) : nothing}
-                </section>`,
-              )}
+              ${(ws.context.widgets ?? []).map((w) => this.widget(w))}
             </aside>`
           : nothing}
       </div>

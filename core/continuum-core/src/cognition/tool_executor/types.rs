@@ -228,7 +228,10 @@ pub struct ParsedToolBatch {
 // can `if (err.error === 'ToolNotFound')` directly. `data` holds
 // the structured fields. Same pattern as `AdmissionDecision`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/ToolError.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/ToolError.ts"
+)]
 #[serde(tag = "error", content = "data")]
 pub enum ToolError {
     /// Caller named a tool that isn't in the registry.

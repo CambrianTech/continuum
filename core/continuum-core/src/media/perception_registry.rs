@@ -160,7 +160,10 @@ mod tests {
         let reg = PerceptionRegistry::new();
         let p = Uuid::new_v4();
 
-        assert!(reg.get(&p).is_none(), "peek before touch → None (no create)");
+        assert!(
+            reg.get(&p).is_none(),
+            "peek before touch → None (no create)"
+        );
         let _ = reg.handle(p);
         assert!(reg.get(&p).is_some(), "resolved → peekable");
         reg.remove(&p);

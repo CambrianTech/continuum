@@ -62,6 +62,10 @@ export interface ProbeNode {
   readonly text?: string;
   /** Projected 2D bounds in the rendered frame — how a persona reasons about position. */
   readonly box?: { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
+  /** A declared subset of computed style — the CRAFT FACTS a design grade measures
+   *  (color, background, type scale, spacing box, overflow, z-index). DOM surfaces
+   *  fill it; surfaces with no style system (a scene graph) omit it. */
+  readonly style?: Readonly<Record<string, string>>;
   /** A curated set of load-bearing attributes (`id`, `class`, `data-*`, `href`; for a
    *  scene node: `position`, `scale`, `kind`). */
   readonly attrs?: Readonly<Record<string, string>>;

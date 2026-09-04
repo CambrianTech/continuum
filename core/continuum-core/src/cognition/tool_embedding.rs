@@ -131,6 +131,7 @@ pub struct SemanticSearchToolsRequest {
     /// Max results to return. PR-2 defaults to
     /// [`DEFAULT_SEARCH_LIMIT`] when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "number")]
     pub limit: Option<u32>,
     /// Minimum cosine similarity to include in results. PR-2 defaults

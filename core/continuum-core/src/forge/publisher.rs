@@ -66,11 +66,11 @@ mod tests {
         fn name(&self) -> &'static str {
             "recording"
         }
-        async fn publish(
-            &self,
-            req: &PublishRequest,
-        ) -> Result<PublicationReceipt, PublishError> {
-            self.seen.lock().unwrap().push(req.repo_id.as_str().to_string());
+        async fn publish(&self, req: &PublishRequest) -> Result<PublicationReceipt, PublishError> {
+            self.seen
+                .lock()
+                .unwrap()
+                .push(req.repo_id.as_str().to_string());
             Ok(PublicationReceipt {
                 transport: self.name().to_string(),
                 location: format!("recording://{}", req.repo_id.as_str()),
@@ -98,11 +98,19 @@ mod tests {
     // grid) satisfies, and the command depends on.
     #[tokio::test]
     async fn publisher_delivers_validated_request_and_receipts_it() {
-        let pubr = RecordingPublisher { seen: Mutex::new(vec![]) };
+        let pubr = RecordingPublisher {
+            seen: Mutex::new(vec![]),
+        };
         let receipt = pubr.publish(&valid_request()).await.expect("publish ok");
         assert_eq!(receipt.transport, "recording");
-        assert_eq!(receipt.location, "recording://continuum-ai/devstral-code-asha");
-        assert_eq!(pubr.seen.lock().unwrap().as_slice(), &["continuum-ai/devstral-code-asha"]);
+        assert_eq!(
+            receipt.location,
+            "recording://continuum-ai/devstral-code-asha"
+        );
+        assert_eq!(
+            pubr.seen.lock().unwrap().as_slice(),
+            &["continuum-ai/devstral-code-asha"]
+        );
     }
 
     // what this catches: a transport failure is a LOUD, typed, transport-named
@@ -115,15 +123,24 @@ mod tests {
             fn name(&self) -> &'static str {
                 "grid"
             }
-            async fn publish(&self, _: &PublishRequest) -> Result<PublicationReceipt, PublishError> {
+            async fn publish(
+                &self,
+                _: &PublishRequest,
+            ) -> Result<PublicationReceipt, PublishError> {
                 Err(PublishError::Transport {
                     transport: self.name().to_string(),
                     detail: "peer unreachable".to_string(),
                 })
             }
         }
-        let err = FailingPublisher.publish(&valid_request()).await.unwrap_err();
+        let err = FailingPublisher
+            .publish(&valid_request())
+            .await
+            .unwrap_err();
         assert!(matches!(err, PublishError::Transport { .. }));
-        assert!(err.to_string().contains("grid"), "names the transport: {err}");
+        assert!(
+            err.to_string().contains("grid"),
+            "names the transport: {err}"
+        );
     }
 }

@@ -95,7 +95,11 @@ impl CachedRagSource {
         let dirty = Arc::new(AtomicBool::new(true));
         let handle = DirtyHandle(dirty.clone());
         (
-            Arc::new(Self { inner, dirty, last_good: tokio::sync::Mutex::new(None) }),
+            Arc::new(Self {
+                inner,
+                dirty,
+                last_good: tokio::sync::Mutex::new(None),
+            }),
             handle,
         )
     }
@@ -110,8 +114,7 @@ impl CachedRagSource {
     fn answers(cached: &CachedDelivery, room: Option<uuid::Uuid>, budget: u32) -> bool {
         cached.room == room
             && cached.delivery.tokens_used <= budget
-            && (cached.delivery.continuation.is_none()
-                || budget <= cached.delivery.tokens_used)
+            && (cached.delivery.continuation.is_none() || budget <= cached.delivery.tokens_used)
     }
 }
 
@@ -149,7 +152,10 @@ impl RagSource for CachedRagSource {
         // serve a projection already known stale).
         self.dirty.store(false, Ordering::SeqCst);
         let delivery = self.inner.deliver(ctx, budget, resolution).await;
-        *guard = Some(CachedDelivery { delivery: delivery.clone(), room });
+        *guard = Some(CachedDelivery {
+            delivery: delivery.clone(),
+            room,
+        });
         delivery
     }
 
@@ -220,25 +226,40 @@ mod tests {
     // switch must never be served the other room's cached projection.
     #[tokio::test]
     async fn serves_last_good_until_dirty_and_never_across_rooms() {
-        let inner = Arc::new(CountingSource { fetches: AtomicU32::new(0) });
+        let inner = Arc::new(CountingSource {
+            fetches: AtomicU32::new(0),
+        });
         let (cached, dirty) = CachedRagSource::new(inner.clone());
         let me = uuid::Uuid::new_v4();
         let ctx = RagContext::for_persona(me, 0);
 
         for _ in 0..5 {
             let d = cached.deliver(&ctx, 100, ResolutionPreference::Raw).await;
-            assert_eq!(d.items[0].content, "fetch #1", "unchanged world → cached projection");
+            assert_eq!(
+                d.items[0].content, "fetch #1",
+                "unchanged world → cached projection"
+            );
         }
-        assert_eq!(inner.fetches.load(Ordering::SeqCst), 1, "5 composes, ONE fetch");
+        assert_eq!(
+            inner.fetches.load(Ordering::SeqCst),
+            1,
+            "5 composes, ONE fetch"
+        );
 
         dirty.mark();
         let d = cached.deliver(&ctx, 100, ResolutionPreference::Raw).await;
-        assert_eq!(d.items[0].content, "fetch #2", "dirty → exactly one refetch");
+        assert_eq!(
+            d.items[0].content, "fetch #2",
+            "dirty → exactly one refetch"
+        );
         assert_eq!(inner.fetches.load(Ordering::SeqCst), 2);
 
         // A DIFFERENT room must not see this room's projection (exam-bleed class).
         let other = RagContext::for_persona_in_room(me, 0, uuid::Uuid::new_v4());
         let d = cached.deliver(&other, 100, ResolutionPreference::Raw).await;
-        assert_eq!(d.items[0].content, "fetch #3", "room switch → fresh fetch, never bleed");
+        assert_eq!(
+            d.items[0].content, "fetch #3",
+            "room switch → fresh fetch, never bleed"
+        );
     }
 }

@@ -165,10 +165,7 @@ mod tests {
         assert!(lb.get().is_none());
         assert!(lb.cloned().is_none());
         let err = lb.require().unwrap_err();
-        assert!(
-            err.contains("test::dep"),
-            "error must name the slot: {err}"
-        );
+        assert!(err.contains("test::dep"), "error must name the slot: {err}");
         assert!(
             err.contains("not installed"),
             "error must say 'not installed': {err}"

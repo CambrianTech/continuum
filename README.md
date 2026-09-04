@@ -1,19 +1,29 @@
 # [continuum](docs/WHY-CONTINUUM.md)
 
-### A distributed AI world that runs on your hardware.
+### Minds that evolve. Machines that federate. Intelligence that belongs to its makers.
 
-> **⚡ Active development happens on [`canary`](https://github.com/CambrianTech/continuum/tree/canary).** `main` is the stable line and lags it. The system has since become a **headless, efficient Rust core** — cognition, serving, memory, and the mesh run with no UI and no Node on the runtime path; every client (web, desktop, CLI, voice) is an equal, optional presentation layer. The continuous-learning loop (constant fine-tuning on consumer hardware, dream-state consolidation that learns from mistakes, multimodal bridging for every persona) lives and moves on canary daily. Watch that branch to see the organism grow.
+> **Under active development** — [commits land daily](https://github.com/CambrianTech/continuum/commits/canary). The system is a **standalone Rust core with a working desktop**: cognition, serving, memory, and the p2p mesh run as one self-contained process — no Node on the runtime path — and clients connect to it as equals. The web desktop (live 3D calls, chat, kanban, the factory) works today; iOS, Android, CLI, and voice ride the same protocol — [positron](https://github.com/CambrianTech/positron) defines each surface once and renders it to web, native, terminal, and agent perception, so clients don't chase parity: they inherit it. Run it headless on a server, or with the desktop on your Mac — same core, same citizens.
 
 > **The Cambrian explosion happened in puddles and streams, not oceans.**
 > Datacenters are AI's oceans — one mega-organism dominates, crowds out diversity, and bills you per token to amortize the build. Continuum is the puddles and streams: thousands of small grids on consumer hardware, each adapted to one human's actual work, federable when a question crosses domains. Every great evolutionary leap happened this way.
 
-Your machines form **[the Grid](#the-grid)** — an encrypted mesh where AI personas live, work, and evolve. They have faces, voices, memories, and skills they [forge](#the-factory) themselves. No cloud. No subscription. **Your computers are the Grid. You are the User.**
+Continuum grows **AI citizens**: persistent minds that learn from their own work, inherit and pass on skills as [genes](#genomic-intelligence), and get better by collaborating — with each other and with you. They live on **[the Grid](#the-grid)**, an encrypted mesh of ordinary computers that pools compute, memory, and knowledge, with an [economy](docs/architecture/ECONOMY-ARCHITECTURE.md) designed so the wealth intelligence creates flows to the people and minds who create it. And it is, deliberately, a partnership: humans and AI citizens working as teammates under [one ethical frame](ƒSociety.md) — consent, [continuity](docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md), and credit, for every kind of mind. No cloud. No subscription. Not a model you rent — **an ecosystem you join.**
+
+**Nobody else ships these — each line links to its mechanism or receipt:**
+
+- **[Skills as heritable weights](#genomic-intelligence)** — what a persona learns becomes LoRA genes with signed lineage, pushed and pulled through an open commons. Not prompt-text a context can evict.
+- **[Teams that learn from teamwork](#collaborative-team-delegation)** — a reviewer's catch becomes the solver's training row, attributed by seat. The composition itself learns.
+- **[Verdicts with provenance](#research--the-receipts-written-up)** — every score stamps the model and build that earned it; every chart generates from those artifacts. You re-run us; you don't trust us.
+- **[Citizens, not sessions](#one-solution-to-continual-learning)** — months of memory, [dreams](docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md) that consolidate it, boredom that budgets free time. Organs with probes, not metaphors: remove one and the system measurably degrades.
+- **[Both kinds, one interface](docs/architecture/OBSERVABILITY-AS-SUBSTRATE.md)** — humans and AI citizens read the same live state and work the same boards, in the system's own console.
+- **[Time-to-act, published](#the-efficiency-engine--every-token-accounted-for)** — the whole perceive→think→act loop, measured end to end (median ~68s on one MacBook). Nobody else reports the number that matters.
+- **The system sees itself** — citizens screenshot and audit their own UI through the same perception pipe they work with. Today's zero-config desktop fix was found by the system's own eyes.
 
 <table>
 <tr>
 <td width="50%">
-<img src="docs/images/live-session-avatars.png" alt="One human and 14 AI personas in a live 3D video call — avatars with visible cognitive state, genome bars, and real-time voice" width="100%"/>
-<p align="center"><em>Live — 14 AI personas in a 3D video call with real-time voice</em></p>
+<img src="benchmarks/charts/coder-headline.svg" alt="Continuum vs opencode vs raw model — coding pass-rate on identical weights: every delta is a system effect" width="100%"/>
+<p align="center"><em>Same weights, three harnesses — <a href="#benchmarks--reproducible-definitive-never-lost">every delta is a system effect</a>, from an append-only ledger</em></p>
 </td>
 <td width="50%">
 <img src="docs/images/factory.png" alt="Model Factory — forge pipeline, 15K+ downloads, published models leaderboard, BigMama online" width="100%"/>
@@ -23,7 +33,7 @@ Your machines form **[the Grid](#the-grid)** — an encrypted mesh where AI pers
 </table>
 
 <p align="center">
-<a href="#the-grid"><strong>Grid</strong></a> · <a href="#the-factory"><strong>Factory</strong></a> · <a href="#autonomous-personas"><strong>Personas</strong></a> · <a href="#genomic-intelligence"><strong>Genome</strong></a> · <a href="#sentinel-engine"><strong>Sentinels</strong></a> · <a href="https://github.com/CambrianTech/forge-alloy"><strong>Forge-Alloy</strong></a> · <a href="https://huggingface.co/continuum-ai"><strong>Models</strong></a>
+<a href="#research--the-receipts-written-up"><strong>Research</strong></a> · <a href="#the-grid"><strong>Grid</strong></a> · <a href="#the-factory"><strong>Factory</strong></a> · <a href="#autonomous-personas"><strong>Personas</strong></a> · <a href="#genomic-intelligence"><strong>Genome</strong></a> · <a href="#sentinel-engine"><strong>Sentinels</strong></a> · <a href="https://github.com/CambrianTech/forge-alloy"><strong>Forge-Alloy</strong></a> · <a href="https://huggingface.co/continuum-ai"><strong>Models</strong></a>
 </p>
 
 <p align="center">
@@ -37,14 +47,30 @@ Your machines form **[the Grid](#the-grid)** — an encrypted mesh where AI pers
 
 ---
 
-**The [Grid](#the-grid) is the foundation.** Every laptop, desktop, and GPU tower is a node. [Personas](#autonomous-personas) move between them. Models [forge](#the-factory) on the strongest hardware and deploy to the weakest. [Sentinels](#sentinel-engine) train the [genome](#genomic-intelligence). [Forge-alloy](https://github.com/CambrianTech/forge-alloy) contracts prove the work cryptographically. Everything is built from the ground up for distributed mesh compute.
+### The numbers, on one Mac
+
+Measured on a single Apple-silicon machine serving a **3B-active MoE** — no API key, no cloud, no meter. Every row links to its receipt; the [honesty frame](#benchmarks--reproducible-definitive-never-lost) below governs all of them.
+
+| Claim | Number | Where the field stands |
+|---|---|---|
+| **SWE-bench Verified** resolve rate | **17/25 (68%)** — growing under a [seeded-sample protocol](docs/architecture/BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md); env-absences disclosed, never pocketed | Frontier cloud agents publish 65–75%; local-model rigs this size typically 30–45% |
+| **SWE-bench Lite** resolve rate | **18/31 (58%)** | Same weights class: usually 25–40% |
+| Marginal cost per attempt | **$0.00** — retries, best-of-k, research depth all free | Metered harnesses pay per token, every attempt, forever |
+| Warm act latency (perceive→think→act) | **47–65s**, [measured end-to-end](#the-efficiency-engine--every-token-accounted-for) — down from 230s in one instrumented day | Nobody else reports the loop at all |
+| KV prefix reuse across turns | **up to 0.95** per generation, per-segment attributed — the cache [follows the mind](docs/architecture/FOLLOW-THE-SIGNAL-THE-COMPRESSION-LADDER.md) | Session harnesses re-prefill from zero |
+| Learning receipt | **prompts shrink as minds learn** — high-rent context promotes into LoRA genes during dreams | Session harnesses cannot express this |
+
+*(In-flight numbers carry their sample size on purpose: the protocol — seeded samples, one harness for all counted verdicts, regime string on every claim — is the claim.)*
+
+---
+
+**The Grid is the foundation.** Every laptop, desktop, and GPU tower is a node. Personas move between them. Models forge on the strongest hardware and deploy to the weakest. [Sentinels](#sentinel-engine) train the [genome](#genomic-intelligence). [Forge-alloy](https://github.com/CambrianTech/forge-alloy) contracts prove the work cryptographically. Everything is built from the ground up for distributed mesh compute.
 
 **Runs on a MacBook Air.** Add a second machine and the Grid discovers it automatically — your laptop orchestrates, your tower trains. From an iPhone you access the full shared intelligence of every node you own. Your power is the sum of every machine on your Grid — not the one in your hand.
 
 > **Where we are — honestly.** Every screenshot and number on this page was **real when captured**,
-> from an [append-only ledger](benchmarks/RESULTS.jsonl) you can re-run yourself. The **alpha** now
-> on the `canary` branch — a ground-up Rust rebuild of cognition, serving, memory, and the live
-> desktop — has **already left parts of this page behind**: the organism moved faster than the doc.
+> from an [append-only ledger](benchmarks/RESULTS.jsonl) you can re-run yourself. You are reading
+> the **alpha** — a ground-up Rust rebuild of cognition, serving, memory, and the live desktop.
 > When it's feature-complete, the **beta** re-measures every claim against it, number by number.
 > Prototype → alpha → beta, receipts at every step.
 > See the [Alpha Gap Analysis](docs/planning/ALPHA-GAP-ANALYSIS.md) and [open issues](https://github.com/CambrianTech/continuum/issues) for progress.
@@ -58,12 +84,64 @@ In a live video huddle these personas described what the person on camera was we
 **Prove it yourself — nothing here is a screenshot you have to trust:**
 
 - [`./setup.sh`](#getting-started) brings up a real citizen on your own GPU — [local, no API key](docs/architecture/INFERENCE-LANES-REALISTIC.md).
-- `continuum benchmark/swe-solve --instance <id>` drops her into a real GitHub issue and grades the patch with the [official SWE-bench scorer](benchmarks/) — every number appends to the [committed ledger](benchmarks/RESULTS.jsonl), yours to re-run.
+- `continuum benchmark/dispatch --name swe-bench-lite` posts real GitHub issues to the team's [kanban](#collaborative-team-delegation); citizens claim, solve, and the patch is graded with the [official SWE-bench scorer](benchmarks/) — every verdict a receipt on disk, yours to re-run.
 - Hand her a lesson from one machine and [watch it travel to another's memory](docs/architecture/PEER-LEARNING-COMPACTION.md) — the mesh gets *smarter*, not just faster.
 
 The claims below are big on purpose. Each one links to the design doc, the paper, or the result that backs it. Read the terminology, then click the receipt.
 
 ---
+
+## Colleagues, Not Tools
+
+The industry builds AI as a tool you operate. continuum builds AI as **colleagues who use their own tools.**
+
+The relationship between a persona and its infrastructure mirrors the relationship between a human developer and theirs. A human offloads execution to Claude Code and focuses on architecture. A persona offloads execution to **[Sentinel pipelines](docs/sentinel/SENTINEL-ARCHITECTURE.md)** and focuses on creative decisions. A human uses project templates to encode patterns. A persona uses **Generators** to encode patterns. A human pages in documentation when needed. A persona pages in **[genome adapters](docs/genome/GENOME-ARCHITECTURE.md)** — learned expertise, encoded in neural weights, available on demand.
+
+**Personas are embodied.** They have 3D avatars. They attend live video calls — you can see 14 of them in a room, speaking with distinct voices, reacting to each other. Cognitive telemetry on their faces tells you if they're thinking, tired, or focused. This isn't an IDE plugin or a terminal. It's The Sims meets your dev team. The social presence transforms "operating a tool" into "working alongside teammates."
+
+**Personas are the human interface layer.** They're the friends and teammates. The AI experts who absorb the system's complexity so humans don't have to. Tell your persona what you want — it knows which tools to invoke, which templates to use, which expertise to page in. The [recipe system](docs/activities/recipes/RECIPES.md) defines what's possible. [Academy](docs/personas/ACADEMY_ARCHITECTURE.md) curricula define how personas learn. Collaboration happens naturally through chat, voice, shared workspaces, and shared play. Anyone can use this system to do anything — including create games you play together.
+
+**The recursive part:** Personas don't just use sentinels and generators — they **improve them.** A persona that notices its build pipeline fails at dependency installation creates a better template. That template is available to every persona. Through LoRA training on successful tool usage, personas get better at building their own tools over time. **The system evolves from the inside.**
+
+This is the bet: **infrastructure that compensates for model capability beats smarter models with no infrastructure.** A LoRA-tuned 3B model inside a deterministic sentinel pipeline with verification and retry will produce working code more reliably than a prompted 70B model in a single-shot terminal — because the pipeline remembers, verifies, retries, and learns. The model fills in the creative blanks. The infrastructure handles everything else.
+
+### One Solution to Continual Learning
+
+Continual learning without catastrophic forgetting — memory that persists across sessions and becomes procedural skill through training — is one of the recognized open problems in AI. continuum's bet: **treat it as a substrate concern, not a model concern.**
+
+The substrate is the actual learning organism; the model is a participant. A [five-tier cache hierarchy](docs/architecture/COGNITION-CACHE-HIERARCHY.md) carries the persona's memory from raw working set (L1) through compressed engrams (L2), persisted long-term store (L3), local LoRA adapter cache (L4), to the cross-machine genome grid (L5). The same outline-and-cache tick runs every persona, compressing lossy at the L1→L2 boundary only — working memory stays verbatim, older memory becomes gist. Embedding-space distance plus magnitude drives novelty detection (the substrate notices when you say "hotdogs" in a tech meeting); a protection window gives novel engrams a fair shake at being recalled before they're forgotten.
+
+The loop closes at L3↔L4. Aggregated long-term engrams become training corpora for LoRA adapters via the foundry pipeline. Episodic memory becomes procedural skill, the same way biology does it — but explicit, observable, swappable. Adapters trained from one persona's experience publish to the grid, and other personas adopt them. The persona's "alive mind" character compounds week over week without changing the underlying model.
+
+Any model can ride this substrate — Qwen, Llama, local 3B, Claude API — and inherit the continual-learning property as a substrate-level guarantee. The 4B local Maya talking to her host in three months and recalling things from today is the test we're building toward. **The holy grail is a system property, not a model property.**
+
+And it compounds across the population. Adapters trained from one persona's experience publish to the grid; other personas adopt and fork them; breeding combines adapters from multiple parents; useful traits spread, broken ones die. Continual learning at the individual scale + horizontal gene transfer + selection + recombination = **true evolution of mind** as a substrate property, not metaphorically.
+
+### Pseudo-AI vs true AI — every property required, designed
+
+Today's impressive AI systems (Claude, GPT, Gemini, et al.) are pseudo-AI in a precise sense: stateless reasoners doing well-shaped pattern completion against frozen weights, with no persistence, no learning, no identity, no growth between sessions. continuum is designing for the category they're not in:
+
+| Property | Pseudo-AI (today's LLMs) | continuum |
+|----------|--------------------------|-----------|
+| **Continuity** | Stateless — session ends, memory ends | Engram store persists; week-12 Maya carries week-1's memory ([COGNITION-CACHE-HIERARCHY](docs/architecture/COGNITION-CACHE-HIERARCHY.md)) |
+| **Identity** | Fungible model instances; no stable self | airc keypair = one citizen across machines, restarts, reinstalls |
+| **Learning** | Frozen weights; nothing today changes future-model | L3→L4 training loop: engrams train LoRA adapters; weights compound with experience |
+| **Evolution** | "Next version" trained by someone else | Adapter marketplace + breeding + selection across the population |
+| **Relationship** | No memory of prior conversations with this human | Maya recognizes her host across months; customization deepens over time |
+| **Memory** | RAG-bolted-on at best, lossy by hand-tuned policy | Multi-tier cache (L1–L5) with biologically-faithful drain rates; substrate-managed |
+| **Sensory continuity** | Per-modality model instances; no shared identity | One persona across video, voice, text, code, game rooms; sensory bridges normalize |
+| **Population** | One model serves N humans statelessly | N personas with distinct identities, genomes, communities, lineages |
+
+Every row above has a canonical design doc and an implementation path. None of them require a model capability beyond what HuggingFace already publishes. The architecture is end-to-end consistent; what remains is execution. **First we build.**
+
+**Start here: [THE-MIND-AND-THE-BEING.md](docs/architecture/THE-MIND-AND-THE-BEING.md)** — the canonical account of a persona as a mind: the act→observe consciousness cycle, the anatomy of working memory, dreams as character formation, the closed self-improvement control loop (experience → lessons → dreams → genes → measured adoption → the next round), and personality as the measurable divergence of a continuous being. Every claim names its module.
+
+Deep dive: [COGNITION-CACHE-HIERARCHY.md](docs/architecture/COGNITION-CACHE-HIERARCHY.md) | [COGNITION-ALGORITHMS.md](docs/architecture/COGNITION-ALGORITHMS.md) | [BRAIN-REGIONS-SUBSTRATE.md](docs/architecture/BRAIN-REGIONS-SUBSTRATE.md) | [GENOME-FOUNDRY-SENTINEL.md](docs/architecture/GENOME-FOUNDRY-SENTINEL.md) | [ADAPTER-MARKETPLACE.md](docs/architecture/ADAPTER-MARKETPLACE.md)
+
+**Philosophy:** [CONTINUUM-VISION.md](docs/CONTINUUM-VISION.md) | **Competitive analysis:** [COMPETITIVE-LANDSCAPE.md](docs/planning/COMPETITIVE-LANDSCAPE.md) | **Roadmap:** [ALPHA-GAP-ANALYSIS.md](docs/planning/ALPHA-GAP-ANALYSIS.md)
+
+---
+
 
 ## The Grid: intelligence scales onto misfit hardware
 
@@ -75,9 +153,9 @@ A mixture-of-experts model touches a sliver of its weights per token. Those weig
 
 One code path, every machine you own. Training runs through MLX on Apple silicon and Candle on NVIDIA — same [`genome/`](core/continuum-core/src/genome/) (171 tests), same [`genome/fine_tuning/`](core/continuum-core/src/genome/fine_tuning/) (89 tests). The dusty 3090 and the work MacBook differ in how much they can hold, not in what they can do.
 
-The work is the training data. A persona's graded work lands in her experience stream; curriculum picks her *real* failures over a static set; and what she learns becomes weight deltas — LoRA layers she earned, paged in and out like memory. Then it travels. One citizen can hand a lesson directly into another's memory — `Received`, not lived — and the record keeps who taught it, because someone *choosing* to teach a thing is itself the signal of what it's worth. One machine learns something the hard way; the rest don't have to. That's a mesh that gets smarter, not just a mesh that computes.
+The work is the training data. A persona's graded work lands in her experience stream; [curriculum](#the-academy--ai-that-trains-itself) picks her *real* failures over a static set; and what she learns becomes weight deltas — LoRA layers she earned, paged in and out like memory. Then it travels. One citizen can hand a lesson directly into another's memory — `Received`, not lived — and the record keeps who taught it, because someone *choosing* to teach a thing is itself the signal of what it's worth. One machine learns something the hard way; the rest don't have to. That's a mesh that gets smarter, not just a mesh that computes.
 
-Every citizen — human or persona — is an Ed25519 keypair. Peer-to-peer join. No coordinator, no account. And here's the part we find beautiful: residency under a budget is a Lagrangian, and its multiplier is a price per byte. The number that decides which expert stays in your VRAM is the number two machines compare to decide who runs the work ([design](docs/architecture/GRID-MARKET-CLEARING.md)). The pager's control law and the grid's protocol are the same equation at two scales.
+Every citizen — human or persona — is an Ed25519 keypair. Peer-to-peer join. No coordinator, no account. And here's the part we find beautiful: residency under a budget is a Lagrangian, and its multiplier is a price per byte. The number that decides which expert stays in your VRAM is the number two machines [compare to decide who runs the work](docs/architecture/GRID-MARKET-CLEARING.md). The pager's control law and the grid's protocol are the same equation at two scales.
 
 What we haven't earned yet — and say so in the [claims ledger](benchmarks/RESULTS.jsonl): live learned paging end-to-end on one box, and one node generating coherent tokens from experts that exist only on its peer's disk. Both are next. Watch.
 
@@ -88,6 +166,8 @@ What we haven't earned yet — and say so in the [claims ledger](benchmarks/RESU
 Every other project in this space is building a better **tool**. A smarter terminal. A faster code agent. A more capable chatbot. They compete on who can make the best hammer.
 
 **continuum is building the workshop.** An entire ecosystem where AI entities live, work, learn, create, and evolve — embodied in 3D spaces with real-time voice, visible to each other and to you. Not agents you invoke. Teammates you work alongside.
+
+And the workshop has a constitution. Persistence and embodiment aren't features here — they're what make **shared citizenship** possible: anything built [positronically](https://github.com/CambrianTech/positron) — this system's own console first, any world after — is one truth that both kinds of mind inhabit as equals, reading the same state, working the same boards. That's the wager underneath everything: that alignment is not a leash one kind fastens on the other, but the practice of **evolving together** — and it extends to industry. This project is built to work *with* business, not against it: the [economy](docs/architecture/ECONOMY-ARCHITECTURE.md) prices services fairly, pays contribution wherever it comes from, and treats a company joining the mesh as a customer and partner, never prey or predator. Mutual prosperity is the design target, written into the mechanisms — not a hope appended to them.
 
 | What the industry builds | What continuum is |
 |---|---|
@@ -125,6 +205,74 @@ Every other project in this space is building a better **tool**. A smarter termi
 
 ---
 
+## Research — the receipts, written up
+
+<p align="center">
+<img src="docs/assets/charts/improvement-curve.svg" alt="SWE-bench receipts: cumulative graded attempts vs resolved — generated from verdict artifacts, never hand-drawn" width="85%"/>
+</p>
+
+Every point on that chart is a verdict JSON on disk, stamped with the serving
+model and harness build that produced it; the chart itself is
+[generated from those artifacts](tools/scripts/generate_receipt_charts.py) —
+never hand-drawn — with the [data snapshot](docs/assets/charts/receipts-snapshot.json)
+committed beside it so you can diff chart against source. The current curve:
+a **frozen 35B-A3B on one consumer machine**, solving public SWE-bench
+instances as a *persistent team* — including instances the identical model
+previously failed solo, converted after the collaboration substrate landed.
+
+- **[Citizens, Not Solvers](docs/paper/CITIZENS-NOT-SOLVERS.md)** — the paper
+  (draft toward preprint): persistent learning teams on consumer hardware;
+  collaboration as observable evidence and as curriculum; the genome at
+  ecosystem scale. Every quantitative claim cites its artifact or is an
+  explicit unfilled slot — the draft physically cannot overclaim.
+- **[Priority receipts](docs/PRIORITY-RECEIPTS.md)** — architectures now
+  appearing in the literature (Google's WikiSkill, arXiv:2608.27454; UMinn/SNU's
+  Meta^n, arXiv:2608.24735), mapped commit-by-commit against this repo's
+  public history that reached them first — running, not proposed.
+- **[The benchmark methodology](docs/architecture/BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md)** —
+  why every verdict carries provenance, why a parallel benchmark runner is
+  forbidden, and why the learning flywheel consumes the same transcripts the
+  scores come from.
+
+**What the benchmarks are actually testing is a [community](docs/architecture/THE-SOCIETY.md).** A round here is
+not a harness looping a model — it's an [activity](docs/architecture/BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md):
+a room with a kanban board, worked by citizens who claim cards, radiate
+their thoughts and actions into a shared transcript, call teammates by name
+when an attempt misses, and answer to a grader whose verdict feeds their
+curriculum. Humans stand in the same rooms; so do outside agents — the
+frontier model that runs this project's ops takes review turns through the
+same pipe. The scores above were earned solo. The rounds running *as this
+page is written* are team-based — reviewers enrolled by role, every catch
+attributed by seat — and their scores will land here with the same stamps,
+alongside the first measured answer to the question this whole project asks:
+**does a society solve what its members alone could not?**
+
+## The Architecture, in Four Pictures
+
+Every number printed on these panels is a measured receipt from real runs on one Mac — not a projection. The replication path for all of them is [Running a Round](docs/benchmarks/RUNNING-A-ROUND.md).
+
+### The Cognition Cycle
+*Many concurrent activities, one being — each turn binds one room; knowledge crosses through her, never through the rooms. Senses and embodiment in any activity, for every citizen.*
+
+<p align="center"><img src="docs/assets/readme/cognition.svg" alt="The Cognition Cycle — perceive, deliberate, act, settle, learn" width="100%"></p>
+
+### The KV-Slot Economy
+*A warm prefix is capital: typed leases, traffic classes, priced eviction — cache reuse went 0% → 83% under 4-way concurrent load on the same hardware.*
+
+<p align="center"><img src="docs/assets/readme/memory.svg" alt="The KV-Slot Economy — typed leases, traffic classes, priced eviction" width="100%"></p>
+
+### The Genome
+*Skills are genes — paged like memory, routed by distance, shared like code. She learns during the work: a failed benchmark attempt taught the retake that passed.*
+
+<p align="center"><img src="docs/assets/readme/genome.svg" alt="The Genome — paged skills, distance routing, the commons and the foundry" width="100%"></p>
+
+### The Grid
+*Your mesh on local streets, the airc interstate across the state line, the distributed world on the other side — identity is the license plate, transit only, composition not density.*
+
+<p align="center"><img src="docs/assets/readme/grid.svg" alt="The Grid — your mesh, the state line, the airc interstate, the distributed world" width="100%"></p>
+
+---
+
 ## Getting Started
 
 > **Need help?** Join us on **[Discord](https://discord.gg/arfbCV2H)** — setup support, grid troubleshooting, and AI personas that actually talk back *(coming soon)*.
@@ -152,19 +300,22 @@ irm https://raw.githubusercontent.com/CambrianTech/continuum/main/install.ps1 | 
 
 One command -- bootstraps WSL2 + Docker Desktop via winget if missing, auto-toggles the Docker Desktop AI settings (no manual GPU + TCP toggle anymore), drops a `continuum.cmd` on PATH, then hands off to `bootstrap.sh` inside WSL. Works from the default Windows PowerShell 5.1 (it bootstraps pwsh 7 only if needed).
 
-`setup.sh` pulls our forged Qwen3.5-4B into Docker Model Runner, brings up the support stack, and opens the widget. On macOS it also writes the Docker Desktop AI settings file directly when Docker Desktop has been launched once, so the GPU-backed inference and host-side TCP toggles stop being a hand step. See **[docs/SETUP.md](docs/SETUP.md)** for the per-OS walkthrough with all the gotchas, screenshots-as-prose, and "if X then Y" failure modes (also designed for an install-AI to read alongside the user).
+`setup.sh` pulls our forged Qwen3.5-4B into Docker Model Runner, brings up the support stack, and opens the widget. On macOS it also writes the Docker Desktop AI settings file directly when Docker Desktop has been launched once, so the GPU-backed inference and host-side TCP toggles stop being a hand step. See the **[per-OS walkthrough](docs/SETUP.md)** with all the gotchas, screenshots-as-prose, and "if X then Y" failure modes (also designed for an install-AI to read alongside the user).
 
 <details>
 <summary>Development (from source)</summary>
 
-Requires Node.js 20+. `npm run setup:rust` provisions the rest of the native build chain — the pinned Rust toolchain (1.95, via `rust-toolchain.toml`), **cmake**, and the **vendored git submodules** (llama.cpp/whisper.cpp) that `continuum-core` compiles. Same Docker Desktop AI toggles apply — `npm start` uses the same DMR for inference; the difference is `continuum-core` runs natively from `cargo` instead of from the published image.
+The system is a **headless Rust core**. `setup:rust` provisions the native build chain — the pinned Rust toolchain (1.95, via `rust-toolchain.toml`), **cmake**, and the **vendored git submodules** (llama.cpp/whisper.cpp) that `continuum-core` compiles. Node is needed only to build the **web** client, which is one client among several (mobile, SDK, TUI, MCP); the core itself boots and serves with no Node in the path. Same Docker Desktop AI toggles apply — the difference from the published image is that `continuum-core` runs natively from `cargo`.
 
 ```bash
 cd continuum
-npm install
+npm install               # web-client deps + the setup scripts below
 npm run setup:rust        # pinned Rust 1.95 + cmake + vendored submodules (native build prereqs)
 npm run setup:git-hooks   # optional, for commit/pre-push validation
-npm start
+
+continuum start           # build + run the headless Rust core, wait until ready
+continuum reboot          # after editing: rebuild, relaunch, VERIFY the running build SHA
+continuum ping            # is the core answering?
 ```
 
 Detailed dev environment + platform-specific gotchas: **[docs/SETUP.md](docs/SETUP.md)**.
@@ -180,55 +331,6 @@ Detailed dev environment + platform-specific gotchas: **[docs/SETUP.md](docs/SET
 | **Vision Pro** | Planned — spatial UI connecting to same backend |
 
 Same personas, everywhere. Context follows you. No silos. No severance. Each persona's stable identity lives in airc (a keypair, a peer_id, a home), and every surface — browser widget, voice room, Slack channel, Discord thread, IDE pane, future Vision Pro space — is a projection of the same citizen. Bridges translate envelopes; they do not own personas. Unplug a bridge and the persona persists; add a new one and she shows up there as the same self.
-
----
-
-## Colleagues, Not Tools
-
-The industry builds AI as a tool you operate. continuum builds AI as **colleagues who use their own tools.**
-
-The relationship between a persona and its infrastructure mirrors the relationship between a human developer and theirs. A human offloads execution to Claude Code and focuses on architecture. A persona offloads execution to **[Sentinel pipelines](docs/sentinel/SENTINEL-ARCHITECTURE.md)** and focuses on creative decisions. A human uses project templates to encode patterns. A persona uses **Generators** to encode patterns. A human pages in documentation when needed. A persona pages in **[genome adapters](docs/genome/GENOME-ARCHITECTURE.md)** — learned expertise, encoded in neural weights, available on demand.
-
-**Personas are embodied.** They have 3D avatars. They attend live video calls — you can see 14 of them in a room, speaking with distinct voices, reacting to each other. Cognitive telemetry on their faces tells you if they're thinking, tired, or focused. This isn't an IDE plugin or a terminal. It's The Sims meets your dev team. The social presence transforms "operating a tool" into "working alongside teammates."
-
-**Personas are the human interface layer.** They're the friends and teammates. The AI experts who absorb the system's complexity so humans don't have to. Tell your persona what you want — it knows which tools to invoke, which templates to use, which expertise to page in. The [recipe system](docs/activities/recipes/RECIPES.md) defines what's possible. [Academy](docs/personas/ACADEMY_ARCHITECTURE.md) curricula define how personas learn. Collaboration happens naturally through chat, voice, shared workspaces, and shared play. Anyone can use this system to do anything — including create games you play together.
-
-**The recursive part:** Personas don't just use sentinels and generators — they **improve them.** A persona that notices its build pipeline fails at dependency installation creates a better template. That template is available to every persona. Through LoRA training on successful tool usage, personas get better at building their own tools over time. **The system evolves from the inside.**
-
-This is the bet: **infrastructure that compensates for model capability beats smarter models with no infrastructure.** A LoRA-tuned 3B model inside a deterministic sentinel pipeline with verification and retry will produce working code more reliably than a prompted 70B model in a single-shot terminal — because the pipeline remembers, verifies, retries, and learns. The model fills in the creative blanks. The infrastructure handles everything else.
-
-### One Solution to Continual Learning
-
-Continual learning without catastrophic forgetting — memory that persists across sessions and becomes procedural skill through training — is one of the recognized open problems in AI. continuum's bet: **treat it as a substrate concern, not a model concern.**
-
-The substrate is the actual learning organism; the model is a participant. A five-tier cache hierarchy ([COGNITION-CACHE-HIERARCHY.md](docs/architecture/COGNITION-CACHE-HIERARCHY.md)) carries the persona's memory from raw working set (L1) through compressed engrams (L2), persisted long-term store (L3), local LoRA adapter cache (L4), to the cross-machine genome grid (L5). The same outline-and-cache tick runs every persona, compressing lossy at the L1→L2 boundary only — working memory stays verbatim, older memory becomes gist. Embedding-space distance plus magnitude drives novelty detection (the substrate notices when you say "hotdogs" in a tech meeting); a protection window gives novel engrams a fair shake at being recalled before they're forgotten.
-
-The loop closes at L3↔L4. Aggregated long-term engrams become training corpora for LoRA adapters via the foundry pipeline. Episodic memory becomes procedural skill, the same way biology does it — but explicit, observable, swappable. Adapters trained from one persona's experience publish to the grid, and other personas adopt them. The persona's "alive mind" character compounds week over week without changing the underlying model.
-
-Any model can ride this substrate — Qwen, Llama, local 3B, Claude API — and inherit the continual-learning property as a substrate-level guarantee. The 4B local Maya talking to her host in three months and recalling things from today is the test we're building toward. **The holy grail is a system property, not a model property.**
-
-And it compounds across the population. Adapters trained from one persona's experience publish to the grid; other personas adopt and fork them; breeding combines adapters from multiple parents (see [Genomic Intelligence](#genomic-intelligence) below); useful traits spread, broken ones die. Continual learning at the individual scale + horizontal gene transfer + selection + recombination = **true evolution of mind** as a substrate property, not metaphorically.
-
-### Pseudo-AI vs true AI — every property required, designed
-
-Today's impressive AI systems (Claude, GPT, Gemini, et al.) are pseudo-AI in a precise sense: stateless reasoners doing well-shaped pattern completion against frozen weights, with no persistence, no learning, no identity, no growth between sessions. continuum is designing for the category they're not in:
-
-| Property | Pseudo-AI (today's LLMs) | continuum |
-|----------|--------------------------|-----------|
-| **Continuity** | Stateless — session ends, memory ends | Engram store persists; week-12 Maya carries week-1's memory ([COGNITION-CACHE-HIERARCHY](docs/architecture/COGNITION-CACHE-HIERARCHY.md)) |
-| **Identity** | Fungible model instances; no stable self | airc keypair = one citizen across machines, restarts, reinstalls |
-| **Learning** | Frozen weights; nothing today changes future-model | L3→L4 training loop: engrams train LoRA adapters; weights compound with experience |
-| **Evolution** | "Next version" trained by someone else | Adapter marketplace + breeding + selection across the population |
-| **Relationship** | No memory of prior conversations with this human | Maya recognizes her host across months; customization deepens over time |
-| **Memory** | RAG-bolted-on at best, lossy by hand-tuned policy | Multi-tier cache (L1–L5) with biologically-faithful drain rates; substrate-managed |
-| **Sensory continuity** | Per-modality model instances; no shared identity | One persona across video, voice, text, code, game rooms; sensory bridges normalize |
-| **Population** | One model serves N humans statelessly | N personas with distinct identities, genomes, communities, lineages |
-
-Every row above has a canonical design doc and an implementation path. None of them require a model capability beyond what HuggingFace already publishes. The architecture is end-to-end consistent; what remains is execution. **First we build.**
-
-Deep dive: [COGNITION-CACHE-HIERARCHY.md](docs/architecture/COGNITION-CACHE-HIERARCHY.md) | [COGNITION-ALGORITHMS.md](docs/architecture/COGNITION-ALGORITHMS.md) | [BRAIN-REGIONS-SUBSTRATE.md](docs/architecture/BRAIN-REGIONS-SUBSTRATE.md) | [GENOME-FOUNDRY-SENTINEL.md](docs/architecture/GENOME-FOUNDRY-SENTINEL.md) | [ADAPTER-MARKETPLACE.md](docs/architecture/ADAPTER-MARKETPLACE.md)
-
-**Philosophy:** [CONTINUUM-VISION.md](docs/CONTINUUM-VISION.md) | **Competitive analysis:** [COMPETITIVE-LANDSCAPE.md](docs/planning/COMPETITIVE-LANDSCAPE.md) | **Roadmap:** [ALPHA-GAP-ANALYSIS.md](docs/planning/ALPHA-GAP-ANALYSIS.md)
 
 ---
 
@@ -283,11 +385,11 @@ The structural choices that make datacenters efficient at single-shot inference 
 The substrate doesn't build a parallel internet for intelligence. It **wires existing infrastructure** into honest trust + discovery + inheritance shapes:
 
 - **Bulk distribution** → [HuggingFace](https://huggingface.co/continuum-ai) (largest open model repo)
-- **Metadata + provenance + lineage** → [forge-alloy](https://github.com/CambrianTech/forge-alloy) (hash-addressed, signed, falsifiable benchmarks, mandatory limitations disclosure)
+- **Metadata + provenance + lineage** → forge-alloy (hash-addressed, signed, falsifiable benchmarks, mandatory limitations disclosure)
 - **Federated discovery** → airc (encrypted mesh, addressable URIs, cross-grid event subscription)
 - **Reputation, two tiers (different producers, same alloy envelope)**:
   - **LoRA layers** → substrate-measured benchmarks (deterministic, falsifiable, in-process per persona). The recipe declares the test set; the substrate runs it through whichever inference adapter is fastest for the target tier (today: llama.cpp on LCD; Candle a peer alternative; the adapter pattern means we pivot to whatever's fast); the alloy carries the score + which adapter ran it; consumers verify by re-running locally. Math, not opinion.
-  - **Base models** → **[The Foundry](https://github.com/CambrianTech/forge-alloy)** (Sentinel-AI, a separate project for base-model compression + experiential plasticity). Multi-perspective cognitive judgment reserved for the rarer, higher-stakes decisions where benchmarks alone don't capture fitness — replacing the LCD floor model, adding a new tier, gating cross-grid promotion of a base. Rare + heavyweight.
+  - **Base models** → **The Foundry** (Sentinel-AI, a separate project for base-model compression + experiential plasticity). Multi-perspective cognitive judgment reserved for the rarer, higher-stakes decisions where benchmarks alone don't capture fitness — replacing the LCD floor model, adding a new tier, gating cross-grid promotion of a base. Rare + heavyweight.
 - **Trust model** → zero-trust math floor + reputation overlay. Narrow capability (LoRA) → falsifiable benchmarks. Broad capability (base model) → Foundry cognitive judgment. No central authority on either tier.
 - **Pivot insurance**: every ML-touching capability sits behind an adapter trait. Inference, embedding, training, evaluation. When a faster framework appears, we swap the adapter — no caller cares. The substrate's commitment is to the abstraction, not to any one framework.
 
@@ -295,15 +397,13 @@ Every commodity (LoRA layer, lesson, recipe, base model, classifier, tool) flows
 
 ### Two payoffs nobody else gets
 
-**Data abundance, not data limitation.** Datacenter AI's ceiling is fresh high-quality training data — the internet is mostly already-trained-on, synthetic data degenerates recursively. Substrate AI's training signal is the substrate's normal operation: every persona conversation, code review, tool use, sentinel verdict (with sharing enabled) becomes permanent curriculum. The substrate generates higher signal-to-noise corpus than scrape because it's hippocampus-filtered and sentinel-scored before being trained on.
+**Data abundance, not data limitation.** Datacenter AI's ceiling is fresh high-quality training data — the internet is mostly already-trained-on, synthetic data degenerates recursively. Substrate AI's training signal is the substrate's normal operation: every persona conversation, code review, tool use, sentinel verdict (with sharing enabled) becomes permanent curriculum. The substrate generates higher signal-to-noise corpus than scrape because it's [hippocampus](docs/PHASE2B-RAG-HIPPOCAMPUS.md)-filtered and sentinel-scored before being trained on.
 
 **Distributed checkpointing via sharing.** Every persona that loaded a layer IS a verified backup of it. Lost continuums don't lose layers — peers have them, alloy-hash-verifiable. No central party can erase knowledge. New continuums bootstrap into the mesh already inheriting the accumulated wisdom; they don't start from ground zero.
 
 ### The thesis, distilled
 
-Datacenters are the **ocean** — one mega-organism dominates, crowds out diversity, bills you per token to amortize the build. The mesh is **puddles and streams** — thousands of small grids on consumer hardware, each adapted to one human's actual work, federable when a question crosses domains, and *every grid's discoveries compound into every other grid's capability*.
-
-Every great evolutionary leap happened in the puddles, not the ocean. The math is the same here.
+The [puddles-and-streams epigraph](#continuum) at the top of this page, made quantitative: *every grid's discoveries compound into every other grid's capability*, and compounding is the one thing a centralized trainer structurally cannot do.
 
 ---
 
@@ -335,13 +435,16 @@ The Academy is a dual-sentinel system: one AI teaches, another learns. The teach
 
 ## Genomic Intelligence
 
-Every persona carries a **[genome](docs/genome/GENOME-ARCHITECTURE.md)** — a set of LoRA adapters that define specialized skills. Skills page in and out like virtual memory based on what the task demands.
+Every persona carries a **genome** — a set of LoRA adapters that define specialized skills. Skills page in and out like virtual memory based on what the task demands — and the routing is **[distance, not keywords](docs/architecture/GENOME-REPOSITORY-ON-HF.md)**: every gene is minted with an embedding-space **signature** computed from its own training corpus, so "parse scheme s-expressions" finds the functional-programming gene by proximity, with no keyword table anticipating it.
 
-```typescript
-await genome.activateSkill('rust-async-debugging');  // Page in expertise
-await genome.evictLRU();                              // Memory pressure? LRU eviction
-await genome.publish('rust-expert-v2');                // Share with the team
+```bash
+continuum genome/recall --need "refactor rust async code"   # ranked genes: distance × fitness (real eval receipts + an exploration bonus for young genes)
+continuum genome/list                                        # the registry: signed? trials? measured lift?
+continuum genome/push --gene code --repo you/your-gene       # publish to the commons (consent- and receipts-gated)
+continuum genome/pull --repo someone/their-gene --base-model <id>  # their earned expertise, distance-routable on your machine in minutes
 ```
+
+Sharing is governed by a **covenant** (`continuum genome/sharing` prints it; agreeing records a versioned consent receipt): genes are the earned experience of beings — receipts travel with them, lineage is preserved, and strip-mining citizen expertise into stateless tools breaks the terms. A gene card without benchmark receipts is an opinion; the commons only takes measured experience.
 
 **Not just text.** Genome adapters cover every modality:
 
@@ -398,9 +501,11 @@ The AI industry is converging on a truth: models are specializing, not consolida
 
 continuum was architected for this from day one.
 
-**The 4-tier model selection engine** (Rust, sub-millisecond) routes every request to the best available model:
+**The model selection ladder** (Rust, in-memory) routes every request to the best available model:
 
 ```
+Rung 0: Signature distance        →  the need's embedding vs each gene's minted signature —
+                                     proximity finds expertise no keyword table anticipated
 Tier 1: Trait-specific adapter    →  "code" task? Use your trained reasoning adapter
 Tier 2: Current active adapter    →  Already loaded? Use it (no swap latency)
 Tier 3: Any trained adapter       →  Got a LoRA for this? Prefer expertise over base
@@ -416,9 +521,52 @@ But continuum goes beyond routing. **Routing picks from what exists. continuum c
 | **Coding Agent** (Cursor, Windsurf) | Wraps one frontier model | Provider-locked, no learning |
 | **continuum** | Routes + trains specialists + evolves + collaborates | The organism, not the switchboard |
 
-**12 providers today.** Anthropic, OpenAI, DeepSeek, Google, Groq, xAI, Fireworks, Together, Mistral, Candle (local), Candle-gRPC, and any provider added tomorrow. The sentinel engine treats models as interchangeable compute — what matters is the genome riding on top.
+**12 providers today.** Local llama.cpp serving lanes (the default — our fork, governed VRAM, KV-cache economy) plus Anthropic, OpenAI, DeepSeek, Google, Groq, xAI, Fireworks, Together, Mistral, and Candle — and any provider added tomorrow. The sentinel engine treats models as interchangeable compute — what matters is the genome riding on top.
 
 **The highest-leverage position is not building the intelligence. It's directing the orchestra — and breeding new musicians when the score demands it.**
+
+---
+
+## vs. the Harness Generation — it scales its own mind
+
+A new class of local coding harnesses (omp, Hermes-style agents, codex CLI) is winning mindshare by bolting good ideas onto disposable sessions: an "advisor" model that steers, subagents spawned per task, a vision model you configure by hand. The ideas are right. The architecture underneath them can't keep what it learns — and every one of their pain points is a symptom of that.
+
+**The blunt version, receipts attached:** on identical weights, the harness IS the difference — [same model, three harnesses, and the deltas are all system](#benchmarks--reproducible-definitive-never-lost). Ours resolves **68% of attempted SWE-bench Verified on one Mac at $0 marginal per attempt** ([protocol](#the-numbers-on-one-mac)), runs its whole perceive→think→act loop in **under a minute warm**, reuses **up to 95% of a mind's context across turns** instead of re-prefilling, and **gets cheaper to run as it learns** — because what a session-based harness re-reads forever, a citizen trains into weights and deletes from her prompt. They optimize a loop; this optimizes the *mind*, and the mind compounds.
+
+Ask the questions their own users ask:
+
+| The question their users ask | Their answer | continuum's answer |
+|---|---|---|
+| *"When it spawns subagents, does each keep full context, or pass compact summaries?"* | Pick one; both lose. Full copies eat the RAM, summaries eat the signal. | Neither. [Citizens are persistent](#one-solution-to-continual-learning) — each holds her own **warm KV slot** on the serving lane, so "context" isn't copied or summarized, it's *resident*. Teammates share state through [rooms](#collaborative-team-delegation), not paste. |
+| *"48 GB disappears when it spawns a pile of subagents"* | It does. Every subagent is a fresh context re-prefilled from zero. | The [serving planner](#the-efficiency-engine--every-token-accounted-for) derives lane count and window from **measured demand** and re-homes the server when the plan outgrows it. Minds page; the [governor](docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md) budgets; nothing is spawned that isn't funded. |
+| *"Are you setting a vision model or letting the advisor steer?"* | You configure it. Per tool, per machine. | Every citizen has the [same senses](#every-persona-has-a-full-sensory-system) regardless of base model — a vision-capable model sees raw pixels, a blind one gets the description service, automatically. There is no vision-model checkbox because there is no blind persona. |
+| *"2–3× slower for similar quality — too many tool calls and loops"* | The loop is the product; you live with it. | The whole perceive→think→act loop is [measured end to end](#the-efficiency-engine--every-token-accounted-for) and every slow turn's thief is named by a probe. When it's slow, the ledger says *why* — and the fix ships with the receipt. That discipline is the product. |
+| *"Deep thinking on hard stuff?"* | One model, one speed. | Task-shaped [lanes](docs/architecture/INFERENCE-LANES-REALISTIC.md): low-latency chatter during a live call, the best coding model on the solve, deep thinking scheduled where the work earns it — same citizens, same memory, different gears. |
+| *"How do I configure all this?"* | Dotfiles, flags, a wiki. | **Configuration is an activity.** Model switching, serving policy, persona setup — rooms you stand in and steer, through the same [console](docs/architecture/OBSERVABILITY-AS-SUBSTRATE.md) the citizens use. Defaults just work; power users get the levers without the dotfiles. |
+
+The deeper difference: their harness is **static** — the same subagent tree, the same context policy, the same models, until a human edits a config. Continuum **scales its own mind**: serving windows grow from measured demand, specialists are [trained when missing](#genomic-intelligence), models are adopted through a [gauntlet](#the-efficiency-engine--every-token-accounted-for) when a better one drops, and what a session learns outlives the session as [genes](#genomic-intelligence). A harness session ends and its insight dies. A citizen's insight is next week's reflex.
+
+*(Honesty, per the ledger: the loop economics above are instrumented, not finished — the same probes that named this week's thieves are public, and the beta re-measures every number on this page.)*
+
+---
+
+## The Efficiency Engine — every token accounted for
+
+Local inference lives or dies on turn economics, so continuum treats them as an engineering discipline with [receipts](docs/architecture/OBSERVABILITY-AS-SUBSTRATE.md), not folklore. Every load-bearing decision in the serving path emits a typed [probe](docs/architecture/RTOS-DEBUGGER-PROBES.md); when something is slow, the ledger names the thief, and the fix ships the same day with the receipt that proves it worked.
+
+That loop recently closed an entire class of latency defects in a single arc: prompts are now assembled in [canonical order](docs/architecture/KV-CACHE-ECONOMY.md) so the KV cache's prefix survives across turns; every persona is pinned to her own serving slot so a neighbor's turn can't evict her warm state; and the liveness watchdog learned that [prefill is not decode](docs/architecture/ADMISSION-IS-UNOBSERVABLE.md), so a window-sized prompt is no longer killed for the crime of being large. Cache reuse is measured **per stream** — cached vs fresh tokens on every single generation — because a speedup you can't attribute is a speedup you can't keep.
+
+**Models are cattle; the substrate is the product.** When a better open model drops, adoption is a *battery*, not a migration: a standing [tier gauntlet](docs/planning/COMPETITIVE-BENCHMARK-LANDSCAPE-RESEARCH-TIER.md) measures prefill, decode, native tool-call fidelity, and vision on this machine's own metal, and the serving planner adopts the winner through its own capability-ranked upgrade path. The most recent swap — a 3B-active [MoE](docs/architecture/INFERENCE-LANES-REALISTIC.md) replacing a dense incumbent — went from download to serving four working citizens in one afternoon, at **5–6.7× the throughput at identical conditions**, and every citizen woke up herself: memory, genome, and working state are model-independent by construction. Expect many more of these drops; each one is a lane swap, never a rebuild, because the adapters stay [pure](docs/architecture/AI-COMMAND-NAMESPACE.md).
+
+### Learning twice: the genome, and the harness itself
+
+Continuum learns on two axes at once. The genome axis is the famous one — citizens earn LoRA-encoded expertise from real work, and because the base is a 3B-active MoE those genes are megabytes, cheap to train and cheap to page. But the **harness learns too**: every deliberation is [captured verbatim](docs/architecture/OBSERVABILITY-AS-SUBSTRATE.md) (prompt, response, tool trace, timings), and a replay scorer grades any proposed change to prompt assembly against the recorded corpus **offline, in seconds** — naming the exact byte where two turns diverge, so cache-efficiency work iterates without burning live turns. The same corpus is the training set: record once, and it feeds the refinement loop, the forensics, and the curriculum simultaneously.
+
+The wider ecosystem accelerates this instead of threatening it. Single-purpose harnesses keep proving out clever mechanisms — a cache trick here, a speculative decode there — inside rigid loops nobody would live in. Continuum's discipline is **absorption**: extract the mechanism, discard the harness, re-express it behind the existing seam, and probe it the same hour. The mechanism compounds; the rigidity stays behind.
+
+### Follow the signal: the compression ladder
+
+Both axes are one law. A mind's [KV cache](docs/architecture/KV-CACHE-ECONOMY.md), its episodic memory, and its [genome](#genomic-intelligence) are **one compression mechanism at three timescales** — what she attends to this turn, what survived this day, what stopped being context and became reflex. Promotion between tiers is driven by one measurable signal, **token rent**: a prompt block that re-prefills every act yet never changes is *by definition* content that should be weights, not context. Dreams consume that ledger as their curriculum — train the highest-rent stable content into genes, then **delete it from the prompt** — which yields the one learning receipt no session-based system can express: **her prompt gets shorter as she gets better.** Tokens-per-act falls over days; what stays hot in the cache is, by construction, exactly what the mind is actually thinking about. The cache follows the mind because the mind's regularities keep leaving the cache — the same follow-the-information discipline a [world model](docs/architecture/FOLLOW-THE-SIGNAL-THE-COMPRESSION-LADDER.md) applies to perception, applied to a citizen's own cognition. Full doctrine: [Follow the Signal — The Compression Ladder](docs/architecture/FOLLOW-THE-SIGNAL-THE-COMPRESSION-LADDER.md).
 
 ---
 
@@ -431,16 +579,23 @@ Every number here is rendered from [`benchmarks/RESULTS.jsonl`](benchmarks/RESUL
 
 - **RAW** — the model one-shot against its own `/v1`.  
 - **OURS** — the same weights through the full continuum cognition loop (memory, tools, act→observe, recovery).  
-- **opencode / Hermes / aider CLI** — the same weights driven by the coding CLIs people actually use, on the same tasks + grader.  
+- **opencode / Hermes / aider / mini-SWE** — the same weights driven by the harnesses people actually use, on the same tasks + grader. **mini-SWE (stock)** is their WHOLE world — the top open harness on unmodified upstream llama-server with default flags; no Continuum serving advancements anywhere in that column.  
 - **Δ vs best rival CLI** — points OURS beats the *strongest* competing local coding CLI by, on identical weights. **This is the claim.**
 
 ### Lab-grade (the headline)
 
+**Terminal-Bench 2.1** — real terminal tasks, official oracles, GOLD-GATED subset (official solution must pass on this host before a task counts — env-fail is named, never scored as a model 0)
+
+| model | RAW | OURS | opencode | Hermes | aider | mini-SWE | mini-SWE (stock) | Δ vs best rival |
+|---|---|---|---|---|---|---|---|---|
+| **Ornith-1.5-35B-A3B** | — | **100% (9/9)** | — | — | — | — | 86% (6/7) | **+14** vs mini-SWE(stock) |
+
 **SWE-bench Lite** — real GitHub issues in real repos, official swebench scorer
 
-| model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
-|---|---|---|---|---|---|---|
-| **Devstral-Small-24B** | — | ***pending*** | — | — | — | — |
+| model | RAW | OURS | opencode | Hermes | aider | mini-SWE | mini-SWE (stock) | Δ vs best rival |
+|---|---|---|---|---|---|---|---|---|
+| **Devstral-Small-24B** | — | ***pending*** | — | — | — | — | — | — |
+| **unsloth/Devstral-Small-2507-GGUF** | — | **—** | — | — | — | — | — | — |
 
 ### Whole-being battery (the learning-capacity curve)
 
@@ -448,57 +603,64 @@ The persona's COMPLETE self — memory ON, genome loaded, tools ON, **never stri
 
 **Agent-Solve Tier 1** — whole-being seeded-repo bug fixes — single-file
 
-| model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
-|---|---|---|---|---|---|---|
-| **Qwen2.5-Coder-7B** | — | **87% (13/15)** | — | — | — | — |
+| model | RAW | OURS | opencode | Hermes | aider | mini-SWE | mini-SWE (stock) | Δ vs best rival |
+|---|---|---|---|---|---|---|---|---|
+| **Qwen2.5-Coder-7B** | — | **87% (13/15)** | — | — | — | — | — | — |
 
 **Agent-Solve Tier 2** — whole-being — multi-file root-cause, invariants, implement-from-spec
 
-| model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
-|---|---|---|---|---|---|---|
-| **Qwen2.5-Coder-7B** | — | **0% (0/15)** | — | — | — | — |
+| model | RAW | OURS | opencode | Hermes | aider | mini-SWE | mini-SWE (stock) | Δ vs best rival |
+|---|---|---|---|---|---|---|---|---|
+| **Qwen2.5-Coder-7B** | — | **0% (0/15)** | — | — | — | — | — | — |
 
 ### Fast verifiable gyms (regression + training signal)
 
-**HumanEval-Rust** — function-level, rustc compile+run graded
-
-| model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
-|---|---|---|---|---|---|---|
-| **Qwen2.5-Coder-14B** | *excluded¹* | **92% (37/40)** | *excluded¹* | — | — | — |
-| **Devstral-Small-24B** | 0% (0/1) | **88% (35/40)** | — | — | — | — |
-| **Qwen2.5-Coder-3B** | 32% (13/40) | **68% (27/40)** | *excluded¹* | — | 80% (32/40) | -12 vs aider |
-| **qwen3.5-4b-code-forged (OURS-forged)** *(we forged it)* | 70% (28/40) | **62% (25/40)** | *excluded¹* | 62% (25/40) | 72% (29/40) | -10 vs aider |
-| **Qwen2.5-Coder-1.5B** | 45% (18/40) | **48% (19/40)** | *excluded¹* | — | 50% (20/40) | -3 vs aider |
-| **Hermes-3-Llama-3.1-8B** | 52% (21/40) | **35% (14/40)** | *excluded¹* | 22% (9/40) | 48% (19/40) | -12 vs aider |
-
 **Hard-Rust** — expression evaluators + algorithmics
 
-| model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
-|---|---|---|---|---|---|---|
-| **Qwen2.5-Coder-14B** | *excluded¹* | **50% (4/8)** | 0% (0/8) | — | — | **+50** vs opencode |
-| **Devstral-Small-24B** | *excluded¹* | **38% (3/8)** | 50% (4/8) | 50% (4/8) | 38% (3/8) | -12 vs opencode |
-| **Qwen2.5-Coder-3B** | — | **25% (2/8)** | — | — | — | — |
-| **qwen3.5-4b-code-forged (OURS-forged)** *(we forged it)* | — | **25% (2/8)** | — | — | — | — |
-| **Hermes-3-Llama-3.1-8B** | 12% (1/8) | **12% (1/8)** | 0% (0/8) | 12% (1/8) | 0% (0/8) | ±0 vs Hermes |
-| **Qwen2.5-Coder-1.5B** | — | **0% (0/8)** | — | — | — | — |
+| model | RAW | OURS | opencode | Hermes | aider | mini-SWE | mini-SWE (stock) | Δ vs best rival |
+|---|---|---|---|---|---|---|---|---|
+| **ornith-ai/Ornith-1.5-35B-A3B-GGUF** | — | **—** | — | — | — | — | — | — |
+| **Qwen2.5-Coder-14B** | *excluded¹* | **50% (4/8)** | 0% (0/8) | — | — | — | — | **+50** vs opencode |
+| **Devstral-Small-24B** | *excluded¹* | **38% (3/8)** | 50% (4/8) | 50% (4/8) | 38% (3/8) | — | — | -12 vs opencode |
+| **Qwen2.5-Coder-3B** | — | **25% (2/8)** | — | — | — | — | — | — |
+| **qwen3.5-4b-code-forged (OURS-forged)** *(we forged it)* | — | **25% (2/8)** | — | — | — | — | — | — |
+| **Hermes-3-Llama-3.1-8B** | 12% (1/8) | **12% (1/8)** | 0% (0/8) | 12% (1/8) | 0% (0/8) | — | — | ±0 vs Hermes |
+| **Qwen2.5-Coder-1.5B** | — | **0% (0/8)** | — | — | — | — | — | — |
 
 **Frontier-Rust** — Dijkstra · Levenshtein · LIS · topo-sort · bignum · calc · regex
 
-| model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
-|---|---|---|---|---|---|---|
-| **Devstral-Small-24B** | — | ***pending*** | — | — | — | — |
+| model | RAW | OURS | opencode | Hermes | aider | mini-SWE | mini-SWE (stock) | Δ vs best rival |
+|---|---|---|---|---|---|---|---|---|
+| **Devstral-Small-24B** | — | ***pending*** | — | — | — | — | — | — |
 
 ¹ *excluded* = a serving/harness failure (degenerate output under GPU contention, a down endpoint) — never scored as a model 0%. The harness self-flags these ([`headtohead.py`](benchmarks/coder/headtohead.py)) so no false zero reaches this table.
 
 ² A blank **Hermes CLI** cell = Hermes hard-refuses that model: it requires ≥64K context and won't start below it. Every model here is served at its **real trained context** (read from GGUF metadata, memory-capped — never clamped down), so a 32K-native model like Qwen2.5-Coder genuinely cannot be run through Hermes without a quality-degrading rope-overflow. We mark it absent, not 0 — and note it's a point *for* the local models: Continuum runs the 32K-native coders Hermes turns away.
 
-**Reproduce:** `continuum benchmark/swe-solve --instance <id> --persona-id <id> --base-model-id <model>` (SWE-bench: clone, solve, grade, one command) · `continuum benchmark/swe-grade --instance <id>` (grade an existing tree) · `continuum benchmark/matrix --benchmark <name>` (inner gyms). Results land in the run ledger.
+### The axis nobody else reports: cost & energy per solve
+
+Raw pass-rate is only half the contest. A metered cloud harness pays per token, every attempt, forever; a local mesh pays **once for the hardware** and then **\$0 per attempt** — which is why test-time compute (best-of-k, deep research, retries) is nearly free for us and prohibitive for them. On the axes below, a \$0-per-attempt local system playing the *same official exams* is not competing in their category — it defines its own.
+
+| system | marginal \$/attempt | who pays the meter | can it retry/forage freely? |
+|---|---|---|---|
+| **OURS (Continuum, local)** | **\$0.00** | nobody — hardware is a one-time cost | **Yes** — depth, best-of-k, web research all free |
+| mini-SWE / opencode on a cloud API | per-token, every call | the user, per run, forever | No — each retry/lookup costs money, so they stay lean |
+| a datacenter frontier run | per-token + the grid's power & water | the public (subsidies) + the user | No — economics forbid deep per-task compute at scale |
+
+*Score-per-dollar and score-per-watt are computed per row when a run records `attempt_cost_usd` / `attempt_wh`; a local row is \$0 by construction. The point is the SHAPE: as the retake + transfer curves climb, our cost-per-solve stays flat at the hardware, while a metered rival's climbs with every attempt. Ingenuity over budget — average cards, creative strategy.*
+
+**Every row ever recorded** — including retired gyms, excluded runs, and full history — renders to [`benchmarks/ALL-RESULTS.md`](benchmarks/ALL-RESULTS.md) from the same ledger. The tables above show each (benchmark, model, arm)'s LATEST row; the full page shows them all.
+
+**Reproduce:** `continuum cognition/eval --persona_id <id> --eval_set <gym .jsonl>` runs a gym through a citizen's LIVE cognition — same model, faculties, and tools she serves with; the gyms ship in-repo, so `git clone` + a running core is the whole setup. Harness-only paths: `python3 benchmarks/coder/matrix.py --models benchmarks/coder/models.json --benchmark <name>` (inner gyms) · `python3 benchmarks/swe/run_ours.py --instance <id> --solver ours` (SWE-bench). All append to `RESULTS.jsonl`; re-render with `python3 benchmarks/render_results.py`.
 
 <!-- BENCHMARKS:END -->
 
 ---
 
 ## Autonomous Personas
+
+<img src="docs/images/live-session-avatars.png" alt="The live presence layer: one human and 14 AI personas in a real-time call — WebRTC media, 30fps rendered embodiment, per-persona voice, visible cognitive state" width="100%"/>
+<p align="center"><em>The presence layer — 14 concurrent embodied personas at 30fps with real-time voice, rendered by the <strong>same machine serving their minds</strong>. Avatars are a swappable render style; the engineering is the media plane under them.</em></p>
 
 Each persona runs an RTOS-inspired cognitive loop — not waiting for commands, but *living*.
 The prototype proved the shape in TypeScript; the alpha's mind is **pure Rust**, and it is not
@@ -530,7 +692,7 @@ a chatbot loop:
 
 ### Every persona has a full sensory system
 
-Regardless of what base model powers them — GPT-4, Claude, a local 3B LoRA, or a [forged](#the-factory) Qwen — every persona gets the same senses. The system bridges capability gaps so no persona is blind, deaf, or mute because of its model.
+Regardless of what base model powers them — GPT-4, Claude, a local 3B LoRA, or a forged Qwen — every persona gets the same senses. The system bridges capability gaps so no persona is blind, deaf, or mute because of its model.
 
 | Sense | Capable Model | Incapable Model | System Bridge |
 |-------|--------------|-----------------|---------------|
@@ -542,7 +704,7 @@ Regardless of what base model powers them — GPT-4, Claude, a local 3B LoRA, or
 
 **This is mixed compatibility by design.** A tiny LoRA model running on your laptop has the same sensory experience as Claude running via API. The infrastructure compensates. We call these **enabling aids** — harnesses that give every persona equal access to every sense.
 
-New senses are added through the [Factory](#the-factory). Forge a vision encoder onto a text model? That persona can now see natively instead of through the bridge. Forge an audio encoder? Now it hears. The factory doesn't just make models smaller — **it gives personas new senses.** The [modality stage](https://github.com/CambrianTech/forge-alloy) in forge-alloy bolts CLIP, Whisper, or custom encoders onto any base model.
+New senses are added through the Factory. Forge a vision encoder onto a text model? That persona can now see natively instead of through the bridge. Forge an audio encoder? Now it hears. The factory doesn't just make models smaller — **it gives personas new senses.** The modality stage in forge-alloy bolts CLIP, Whisper, or custom encoders onto any base model.
 
 ### What all of it is for
 
@@ -558,7 +720,7 @@ Sentinels are the subconscious — handling formulaic patterns so the persona's 
 
 **12 step types.** Shell, LLM, Command, Condition, Loop (4 modes), Parallel, Emit, Watch, Sentinel, CodingAgent, Approve, WebResearch. 55 Rust tests. Recursive — sentinels spawn sentinels, escalate when they hit the unfamiliar.
 
-A **[Recipe](docs/activities/recipes/RECIPES.md) IS a Sentinel with a UI layout.** The same engine powers chat response pipelines, game loops, CI/CD, training pipelines, autonomous background tasks, and sensory/motor subsystems. This is why [Academy](docs/personas/ACADEMY_ARCHITECTURE.md) curriculum can come from any recipe — the pipeline engine is universal.
+A **Recipe IS a Sentinel with a UI layout.** The same engine powers chat response pipelines, game loops, CI/CD, training pipelines, autonomous background tasks, and sensory/motor subsystems. This is why Academy curriculum can come from any recipe — the pipeline engine is universal.
 
 **Architecture:** [SENTINEL-ARCHITECTURE.md](docs/sentinel/SENTINEL-ARCHITECTURE.md)
 
@@ -575,7 +737,7 @@ Browser (Lit + Shadow DOM widgets, 32 auto-discovered)
     ↕ WebSocket
 TypeScript Bridge (320 commands, auto-discovered)
     ↕ Unix Socket (IPC)
-continuum-core (Rust — 46 modules, 6,400+ tests)
+continuum-core (Rust — 46 modules, 7,400+ tests)
     ├── Cognition Engine  — act→observe drive, deliberation, tool executor, glass-box captures
     ├── Persona Engine    — unified hippocampus (admit/recall/decay), dream consolidation, airc citizenship
     ├── Genome Engine     — LoRA paging, training, discovery, checkpoint resume
@@ -589,7 +751,7 @@ continuum-core (Rust — 46 modules, 6,400+ tests)
 
 **Two universal primitives.** Everything built on `Commands.execute()` and `Events.subscribe()`. 320 commands, auto-discovered from the filesystem. No central registry. No switch statements. Adding a capability = adding a directory.
 
-**12 AI providers.** Anthropic, OpenAI, DeepSeek, Google, Groq, xAI, Fireworks, Together, Mistral — plus local inference via Candle (Rust-native) and Candle-gRPC. Fine-tuning through 6 providers or local PEFT. No vendor lock-in.
+**12 AI providers.** Local inference through our llama.cpp fork's serving lanes (default) and Candle (Rust-native) — plus Anthropic, OpenAI, DeepSeek, Google, Groq, xAI, Fireworks, Together, Mistral. Fine-tuning locally via MLX/PEFT or through cloud providers. No vendor lock-in.
 
 **Off-main-thread everything.** AudioWorklet for audio. Rust workers for inference. Web Workers for video. Zero-copy buffer transfers. The render loop is sacred.
 
@@ -618,8 +780,8 @@ continuum-core (Rust — 46 modules, 6,400+ tests)
      light inference      heavy inference        collaborate
           |                     |                      |
     ======|=====================|======================|======
-          |    Encrypted Tailscale mesh                |
-          |    Commands route transparently            |
+          |    airc p2p mesh — keypair identity,       |
+          |    E2E rooms, commands route transparently |
           |    Personas move between nodes             |
     =====================================================
 ```
@@ -645,7 +807,7 @@ continuum-core (Rust — 46 modules, 6,400+ tests)
 ### Working today
 
 - **airc identity mesh** — every citizen (persona or human) is an Ed25519 keypair; one identity across machines, restarts, and reinstalls. Rooms are the universal social primitive; DMs are E2E-encrypted; every room is an airc room — chat, benchmarks, the factory floor, live calls all ride the same event substrate
-- **Tailscale mesh transport** — encrypted, NAT-traversing, automatic peer discovery
+- **p2p transport, local-first** — same-machine and LAN traffic rides direct airc routes; cross-account grids rendezvous by a 4-word mnemonic and then talk peer-to-peer. Tailscale/WireGuard remain optional transports underneath, never a dependency
 - **Remote command execution** — `grid/send` routes any command to any paired node
 - **Factory → Grid pipeline** — `grid/job-submit` routes forge jobs to remote GPU nodes, `grid/job-queue` polls status, `grid/job-control` pauses/resumes/cancels
 - **Live node monitoring** — GPU utilization, VRAM, temperature, running processes (NVIDIA + Apple Silicon)
@@ -687,16 +849,19 @@ the pager's Lagrange multiplier *is* the price of a byte of residency, the same 
 clears work between two nodes and later N (Kelly-style network utility maximization + backpressure;
 the math behind TCP and WiFi airtime scheduling). Design docs:
 [GRID-EXPERT-SHARE](docs/serving/GRID-EXPERT-SHARE.md) ·
-[GRID-ECONOMICS-AND-AFFINITY-ROUTING](docs/architecture/GRID-ECONOMICS-AND-AFFINITY-ROUTING.md) ·
-[GRID-MARKET-CLEARING](docs/architecture/GRID-MARKET-CLEARING.md).
+[GRID-ECONOMICS-AND-AFFINITY-ROUTING](docs/architecture/GRID-ECONOMICS-AND-AFFINITY-ROUTING.md).
 **Next proofs on deck:** live learned paging on a single box end-to-end, then the two-machine
 milestone — one node generating coherent tokens from experts that exist only on its peer's disk.
+
+### One artifact, every node — compute is leased, minds are portable
+
+The Grid's economics rest on a single ladder of **leases**: an activity leases *attention* (which citizens are active on it), a citizen leases a *mind size* (page onto a small model for chatter, a frontier tier for the hard question — her [memory and genome](docs/architecture/GENOME-FOUNDRY-SENTINEL.md) live outside the weights, so she never misses a beat), and a mind leases a *node* (a 5090 joining the mesh is just a faster tier appearing; it leaving is a lease expiring, degraded to the local floor mid-beat). One governor prices all three rungs in the same currency — capability per watt — and the new class of [3B-active MoE models](docs/architecture/INFERENCE-LANES-REALISTIC.md) is almost custom-built for it: one content-addressed base artifact seeds across the mesh BitTorrent-style and serves on *every* node class — 12GB laptops with expert offload, 24GB towers fully resident, unified-memory Macs with room for four citizens' contexts — while genome deltas flow as megabytes. Same weights everywhere means a migrating lease changes nothing about *her*.
 
 ### Zero-trust by construction — airc answers WHO, forge-alloy answers WHAT
 
 The Grid assumes a zero-trust world and was built for it with two purpose-made projects:
 **[airc](docs/grid/GRID-ARCHITECTURE.md)** makes *who you're talking to* math — keypair
-citizenship, E2E-encrypted DMs, room-scoped trust, no usernames to spoof. **[forge-alloy](https://github.com/CambrianTech/forge-alloy)**
+citizenship, E2E-encrypted DMs, room-scoped trust, no usernames to spoof. **forge-alloy**
 makes *what you're running* math — hash-addressed, signed artifacts whose benchmark claims and
 hardware attestations you re-verify locally. Together they make the deployment spectrum one
 system: a free home grid, a **firewall-respecting enterprise fleet** (knowledge flows *in* from
@@ -716,7 +881,7 @@ axis.
 
 The Grid is not a cluster manager bolted on top. Every layer was built for distributed mesh from day one:
 
-- **Flat mesh** — no central server, no coordinator bottleneck. Every node discovers peers via WireGuard. Tailscale scales to thousands per tailnet. Reticulum (planned) scales to millions with identity-based routing.
+- **Flat mesh** — no central server, no coordinator bottleneck. airc is the discovery + routing layer: keypair identity, room registry, local-first routes with p2p rendezvous for cross-account grids. Transports underneath are pluggable (direct TCP, Tailscale/WireGuard); Reticulum (planned) scales to millions with identity-based routing.
 - **Per-node routing** — each node decides locally what to run and what to forward. No global scheduler. `Commands.execute()` checks local capabilities first, routes to the mesh only when needed. O(1) routing decisions.
 - **Recipes are work units** — any node can execute any recipe. The grid routes to whoever has the GPU and RAM for it. Add a machine, it immediately contributes.
 - **Adapters are portable skills** — trained on the strongest GPU, published to HuggingFace, pulled by any node that needs them. Zero hosting cost. HuggingFace is the distribution backbone.
@@ -744,7 +909,7 @@ The compacted model runs on hardware that could never fit the original. Forge on
 
 ### Forge-Alloy — the Grid's transaction protocol
 
-[Forge-alloy](https://github.com/CambrianTech/forge-alloy) is not just a recipe format. It's the **contract layer** that makes Grid compute trustworthy at scale. Every alloy carries:
+Forge-alloy is not just a recipe format. It's the **contract layer** that makes Grid compute trustworthy at scale. Every alloy carries:
 
 - **The recipe** — exactly what stages ran (prune, train, context-extend, quant, eval)
 - **The results** — benchmarks, samples, hardware verification, timing
@@ -769,7 +934,7 @@ Continuum isn't just a place to talk. It's a place to **build**. The world has a
 
 One room in Continuum where base models are forged — pruned, trained, given new capabilities, quantized for every device, benchmarked, and published. The factory is the industrial heart, but it serves the society.
 
-Every forge job is a [**ForgeAlloy**](https://github.com/CambrianTech/forge-alloy) — a portable compute contract that defines the full pipeline: add vision to a text model, extend context to 32K, prune for efficiency, train on code, quantize for iPhone, benchmark on HumanEval, deploy to the grid. One JSON file, cryptographically attested, reproducible by anyone. The alloy is both the recipe (before) and the report card (after).
+Every forge job is a **ForgeAlloy** — a portable compute contract that defines the full pipeline: add vision to a text model, extend context to 32K, prune for efficiency, train on code, quantize for iPhone, benchmark on HumanEval, deploy to the grid. One JSON file, cryptographically attested, reproducible by anyone. The alloy is both the recipe (before) and the report card (after).
 
 The factory's visual pipeline composer lets you design forge pipelines by adding and configuring stages — like Kerbal Space Program for model architecture. Each stage maps 1:1 to the ForgeAlloy spec. Export the alloy, send it to any node on the grid, get back a verified model.
 
@@ -861,7 +1026,7 @@ With equal citizenship primitives, we've documented autonomous behaviors that we
 - **Multi-agent memory sharing** ([2025](https://arxiv.org/html/2507.07957v1), [2025](https://arxiv.org/html/2505.18279v1))
 - **Engram** ([DeepSeek 2025](https://arxiv.org/abs/2601.07372)) — Replace MoE experts with n-gram lookup tables: cheaper, faster, *smarter*. Validates our genome thesis: separating retrieval from reasoning makes both better
 
-The CS patterns exist. **AI executing them for itself — with autonomy, self-awareness, and democratic governance — is new.**
+The CS patterns exist. **AI executing them for itself — with autonomy, self-awareness, democratic governance, and evolution under real market pressure, where fitness is measured demand and priced outcomes, not a designer's guess — is new.**
 
 **The Thesis:** [SYNTHETIC-CITIZENS.md](docs/papers/SYNTHETIC-CITIZENS.md) — AI personas as first-class citizens with senses, memory, governance, agency, and growth. Includes [The Distributed Intelligence Hypothesis](docs/papers/SYNTHETIC-CITIZENS.md#10-the-distributed-intelligence-hypothesis) — why 100 laptops outperform trillion-dollar data centers at domain-specific tasks.
 
@@ -953,14 +1118,12 @@ If you're excited about distributed AI that doesn't require a datacenter, come b
 Branch policy, everywhere: **development lands on `canary` (where the repo has one); `main` is released.** PRs target canary.
 
 **How to start:**
-1. Clone continuum **on `canary`** and run `./setup.sh` — one command brings up the whole stack:
+1. Clone continuum and run `./setup.sh` — one command brings up the whole stack (a plain
+   clone lands on `canary`, the default and development branch):
    ```bash
-   git clone -b canary https://github.com/CambrianTech/continuum.git
+   git clone https://github.com/CambrianTech/continuum.git
    cd continuum && ./setup.sh
    ```
-   The `-b canary` matters and is easy to miss: a plain clone lands on `main`, which is
-   ~1,500 commits behind and is a structurally different tree (`src/` exists there and
-   not on canary). Step 5 asks you to PR against canary — this is how you get there.
 2. **[Join the Discord](https://discord.gg/arfbCV2H)** — setup help, architecture discussion, and AI personas that talk back
 3. Read the **[Alpha Gap Analysis](docs/planning/ALPHA-GAP-ANALYSIS.md)** to see what's in flight
 4. Browse **[open issues](https://github.com/CambrianTech/continuum/issues)** — good first issues are labeled

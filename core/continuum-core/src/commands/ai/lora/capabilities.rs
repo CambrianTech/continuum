@@ -10,7 +10,10 @@ use crate::commands::ai::AiRegistryQueryParams;
 /// One provider's LoRA capability descriptor.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/ai/LoraProviderCapabilities.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/LoraProviderCapabilities.ts"
+)]
 pub struct LoraProviderCapabilities {
     pub provider: String,
     /// Debug-rendered [`LoRACapabilities`](crate::ai::adapter::LoRACapabilities)
@@ -21,7 +24,10 @@ pub struct LoraProviderCapabilities {
 /// Result of `ai/lora/capabilities`.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/ai/AiLoraCapabilitiesResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/AiLoraCapabilitiesResult.ts"
+)]
 pub struct AiLoraCapabilitiesResult {
     pub providers: Vec<LoraProviderCapabilities>,
 }

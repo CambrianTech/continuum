@@ -347,7 +347,7 @@ impl PerceptionBuffer {
             let _ = frame.signature(&compute).await;
             let _ = frame.scaled(&compute, None, ambient).await; // warm ~480w thumbnail
             let _ = frame.description(&compute, describer.as_ref(), &mime).await; // warm describe
-            // Release the gate so the next due tick can warm the then-latest frame.
+                                                                                  // Release the gate so the next due tick can warm the then-latest frame.
             in_flight.store(false, Ordering::Release);
         });
     }
@@ -356,7 +356,12 @@ impl PerceptionBuffer {
     /// so far on the shared cache (the `_if_ready` twins), never awaits, never recomputes.
     /// The single place a frame becomes a percept, shared by the room-as-now read and the
     /// windowed read (compression: one projection).
-    fn percept_of(&self, participant: &str, frame: &MediaFrame, compute: &SharedCompute) -> Percept {
+    fn percept_of(
+        &self,
+        participant: &str,
+        frame: &MediaFrame,
+        compute: &SharedCompute,
+    ) -> Percept {
         Percept {
             participant: participant.to_string(),
             content_hash: frame.content_hash().to_string(),
@@ -381,7 +386,12 @@ impl PerceptionBuffer {
     /// The SLIDING-WINDOW read for ONE participant — the last `k` frames as percepts, newest
     /// first (only resolved cells). This is "what changed / what did I miss" over a source's
     /// recent history, off the same shared warm store. Empty if the participant is unknown.
-    pub fn window_percepts(&self, participant: &str, k: usize, compute: &SharedCompute) -> Vec<Percept> {
+    pub fn window_percepts(
+        &self,
+        participant: &str,
+        k: usize,
+        compute: &SharedCompute,
+    ) -> Vec<Percept> {
         self.rings
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -530,7 +540,10 @@ mod tests {
         }
     }
 
-    const AMBIENT: DestSize = DestSize { width: 32, height: 24 };
+    const AMBIENT: DestSize = DestSize {
+        width: 32,
+        height: 24,
+    };
 
     // what this catches: COALESCE — a newer frame for the same participant REPLACES the old
     // (room-as-now, no backlog). Two observes of the same participant leave ONE percept,
@@ -543,14 +556,43 @@ mod tests {
 
         let old = MediaFrame::from_bytes(png(40, 40));
         let new = MediaFrame::from_bytes(png(60, 40)); // different bytes → different hash
-        buffer.observe("alice".into(), old.clone(), compute.clone(), describer.clone(), "image/png", 0);
-        buffer.observe("alice".into(), new.clone(), compute.clone(), describer.clone(), "image/png", 1);
-        buffer.observe("bob".into(), MediaFrame::from_bytes(png(20, 20)), compute.clone(), describer.clone(), "image/png", 2);
+        buffer.observe(
+            "alice".into(),
+            old.clone(),
+            compute.clone(),
+            describer.clone(),
+            "image/png",
+            0,
+        );
+        buffer.observe(
+            "alice".into(),
+            new.clone(),
+            compute.clone(),
+            describer.clone(),
+            "image/png",
+            1,
+        );
+        buffer.observe(
+            "bob".into(),
+            MediaFrame::from_bytes(png(20, 20)),
+            compute.clone(),
+            describer.clone(),
+            "image/png",
+            2,
+        );
 
-        assert_eq!(buffer.len(), 2, "alice coalesced, bob separate → 2 participants");
+        assert_eq!(
+            buffer.len(),
+            2,
+            "alice coalesced, bob separate → 2 participants"
+        );
         let percepts = buffer.current_percepts(&compute);
         let alice = percepts.iter().find(|p| p.participant == "alice").unwrap();
-        assert_eq!(alice.content_hash, new.content_hash(), "alice holds the LATEST frame");
+        assert_eq!(
+            alice.content_hash,
+            new.content_hash(),
+            "alice holds the LATEST frame"
+        );
     }
 
     // what this catches: NON-BLOCKING read semantics — before a cell is warmed the percept
@@ -573,13 +615,18 @@ mod tests {
             .or_insert_with(|| FrameRing::with_capacity(AMBIENT_RING_CAPACITY))
             .push(frame.clone());
         let before = &buffer.current_percepts(&compute)[0];
-        assert!(before.thumbnail.is_none() && before.description.is_none(), "cold → nothing rendered");
+        assert!(
+            before.thumbnail.is_none() && before.description.is_none(),
+            "cold → nothing rendered"
+        );
         assert!(!before.has_any());
 
         // Resolve the cells on the SHARED compute (deterministic; in prod the observe spawn
         // does this async). Now the non-blocking read surfaces them.
         frame.scaled(&compute, None, AMBIENT).await;
-        frame.description(&compute, &StubDescriber, "image/png").await;
+        frame
+            .description(&compute, &StubDescriber, "image/png")
+            .await;
         let after = &buffer.current_percepts(&compute)[0];
         assert!(after.thumbnail.is_some(), "thumbnail now ready");
         assert!(after.description.is_some(), "description now ready");
@@ -607,13 +654,20 @@ mod tests {
 
         ring.push(a.clone());
         ring.push(a.clone()); // identical head → coalesced no-op
-        assert_eq!(ring.window(9).count(), 1, "re-send of the same head coalesces");
+        assert_eq!(
+            ring.window(9).count(),
+            1,
+            "re-send of the same head coalesces"
+        );
 
         ring.push(b.clone());
         ring.push(c.clone());
         ring.push(d.clone()); // capacity 3 → 'a' evicted
 
-        let hashes: Vec<_> = ring.window(9).map(|f| f.content_hash().to_string()).collect();
+        let hashes: Vec<_> = ring
+            .window(9)
+            .map(|f| f.content_hash().to_string())
+            .collect();
         assert_eq!(
             hashes,
             vec![
@@ -623,7 +677,11 @@ mod tests {
             ],
             "newest-first, capacity-bounded, oldest ('a') evicted"
         );
-        assert_eq!(ring.head().unwrap().content_hash(), d.content_hash(), "head = most current");
+        assert_eq!(
+            ring.head().unwrap().content_hash(),
+            d.content_hash(),
+            "head = most current"
+        );
         assert_eq!(ring.window(2).count(), 2, "window respects k");
     }
 
@@ -658,7 +716,10 @@ mod tests {
         // WINDOWED: the last k of ONE source, newest-first.
         let win = buffer.window_percepts("alice", 2, &compute);
         assert_eq!(win.len(), 2, "windowed read = last k of one source");
-        assert!(win.iter().all(|p| p.participant == "alice"), "windowed read is source-scoped");
+        assert!(
+            win.iter().all(|p| p.participant == "alice"),
+            "windowed read is source-scoped"
+        );
 
         // Unknown participant → empty (never a fabricated look).
         assert!(buffer.window_percepts("nobody", 5, &compute).is_empty());
@@ -675,36 +736,112 @@ mod tests {
         let describer: Arc<dyn FrameDescriber> = Arc::new(StubDescriber);
 
         // Two sources present (via the ingest path — the head is what a look reads).
-        buffer.observe("alice".into(), MediaFrame::from_bytes(png(120, 90)), compute.clone(), describer.clone(), "image/png", 0);
-        buffer.observe("bob".into(), MediaFrame::from_bytes(png(64, 64)), compute.clone(), describer.clone(), "image/png", 0);
+        buffer.observe(
+            "alice".into(),
+            MediaFrame::from_bytes(png(120, 90)),
+            compute.clone(),
+            describer.clone(),
+            "image/png",
+            0,
+        );
+        buffer.observe(
+            "bob".into(),
+            MediaFrame::from_bytes(png(64, 64)),
+            compute.clone(),
+            describer.clone(),
+            "image/png",
+            0,
+        );
 
         // SOURCE + THUMBNAIL: one image, at the ambient size, satisfied ASAP (awaited).
-        let a = buffer.look(LookScope::Source("alice".into()), LookFidelity::Thumbnail, &compute).await;
+        let a = buffer
+            .look(
+                LookScope::Source("alice".into()),
+                LookFidelity::Thumbnail,
+                &compute,
+            )
+            .await;
         assert_eq!(a.len(), 1, "source scope → just that source");
         assert_eq!(a[0].participant, "alice");
         let bytes = a[0].image.as_ref().as_ref().expect("thumbnail resolved");
-        assert_eq!(image::load_from_memory(bytes).unwrap().width(), AMBIENT.width, "ambient thumbnail size");
+        assert_eq!(
+            image::load_from_memory(bytes).unwrap().width(),
+            AMBIENT.width,
+            "ambient thumbnail size"
+        );
 
         // PREFER-WARM / compute-once: a second identical pull returns the SAME shared Arc.
-        let a2 = buffer.look(LookScope::Source("alice".into()), LookFidelity::Thumbnail, &compute).await;
-        assert!(Arc::ptr_eq(&a[0].image, &a2[0].image), "repeat pull is compute-once/shared, not recomputed");
+        let a2 = buffer
+            .look(
+                LookScope::Source("alice".into()),
+                LookFidelity::Thumbnail,
+                &compute,
+            )
+            .await;
+        assert!(
+            Arc::ptr_eq(&a[0].image, &a2[0].image),
+            "repeat pull is compute-once/shared, not recomputed"
+        );
 
         // Higher-RES: a distinct size → a distinct derivative (bigger than the thumbnail).
-        let hi = DestSize { width: 96, height: 72 };
-        let r = buffer.look(LookScope::Source("alice".into()), LookFidelity::Res(hi), &compute).await;
-        assert_eq!(image::load_from_memory(r[0].image.as_ref().as_ref().unwrap()).unwrap().width(), hi.width, "higher-res honored");
-        assert!(!Arc::ptr_eq(&a[0].image, &r[0].image), "different fidelity → different cell");
+        let hi = DestSize {
+            width: 96,
+            height: 72,
+        };
+        let r = buffer
+            .look(
+                LookScope::Source("alice".into()),
+                LookFidelity::Res(hi),
+                &compute,
+            )
+            .await;
+        assert_eq!(
+            image::load_from_memory(r[0].image.as_ref().as_ref().unwrap())
+                .unwrap()
+                .width(),
+            hi.width,
+            "higher-res honored"
+        );
+        assert!(
+            !Arc::ptr_eq(&a[0].image, &r[0].image),
+            "different fidelity → different cell"
+        );
 
         // FULL: the raw source bytes (original 120×90).
-        let f = buffer.look(LookScope::Source("alice".into()), LookFidelity::Full, &compute).await;
-        assert_eq!(image::load_from_memory(f[0].image.as_ref().as_ref().unwrap()).unwrap().width(), 120, "full = raw frame");
+        let f = buffer
+            .look(
+                LookScope::Source("alice".into()),
+                LookFidelity::Full,
+                &compute,
+            )
+            .await;
+        assert_eq!(
+            image::load_from_memory(f[0].image.as_ref().as_ref().unwrap())
+                .unwrap()
+                .width(),
+            120,
+            "full = raw frame"
+        );
 
         // GROUP (Everyone) + THUMBNAIL: the contact-sheet — one image per source.
-        let group = buffer.look(LookScope::Everyone, LookFidelity::Thumbnail, &compute).await;
-        assert_eq!(group.len(), 2, "group scope → every source's current frame (the gallery)");
+        let group = buffer
+            .look(LookScope::Everyone, LookFidelity::Thumbnail, &compute)
+            .await;
+        assert_eq!(
+            group.len(),
+            2,
+            "group scope → every source's current frame (the gallery)"
+        );
 
         // Unknown source → empty (never a fabricated look).
-        assert!(buffer.look(LookScope::Source("nobody".into()), LookFidelity::Thumbnail, &compute).await.is_empty());
+        assert!(buffer
+            .look(
+                LookScope::Source("nobody".into()),
+                LookFidelity::Thumbnail,
+                &compute
+            )
+            .await
+            .is_empty());
     }
 
     // what this catches: the change MONITOR — `scene_recently_changed` diffs the two most
@@ -716,7 +853,9 @@ mod tests {
         fn solid_png(w: u32, h: u32) -> Vec<u8> {
             let img = RgbaImage::from_pixel(w, h, Rgba([0, 0, 0, 255]));
             let mut out = Cursor::new(Vec::new());
-            DynamicImage::ImageRgba8(img).write_to(&mut out, ImageFormat::Png).unwrap();
+            DynamicImage::ImageRgba8(img)
+                .write_to(&mut out, ImageFormat::Png)
+                .unwrap();
             out.into_inner()
         }
 
@@ -749,7 +888,13 @@ mod tests {
         // A visually DIFFERENT frame on top → changed.
         let solid = MediaFrame::from_bytes(solid_png(50, 50));
         solid.signature(&compute).await;
-        buffer.rings.lock().unwrap().get_mut(src).unwrap().push(solid.clone());
+        buffer
+            .rings
+            .lock()
+            .unwrap()
+            .get_mut(src)
+            .unwrap()
+            .push(solid.clone());
         assert!(
             buffer.scene_recently_changed(src, &compute),
             "a different scene → changed → escalate to the ceiling"
@@ -762,7 +907,14 @@ mod tests {
         let buffer = PerceptionBuffer::new(AMBIENT);
         let compute = Arc::new(SharedCompute::new());
         let describer: Arc<dyn FrameDescriber> = Arc::new(StubDescriber);
-        buffer.observe("alice".into(), MediaFrame::from_bytes(png(10, 10)), compute, describer, "image/png", 0);
+        buffer.observe(
+            "alice".into(),
+            MediaFrame::from_bytes(png(10, 10)),
+            compute,
+            describer,
+            "image/png",
+            0,
+        );
         assert_eq!(buffer.len(), 1);
         buffer.remove("alice");
         assert!(buffer.is_empty());
@@ -789,7 +941,9 @@ mod tests {
             "a changed frame within the min ceiling is gated — perception samples, not mirrors, 30fps"
         );
         assert!(
-            buffer.should_warm(p, AMBIENT_WARM_MIN_INTERVAL_MS - 1, true).is_none(),
+            buffer
+                .should_warm(p, AMBIENT_WARM_MIN_INTERVAL_MS - 1, true)
+                .is_none(),
             "still within the min ceiling → still gated"
         );
 
@@ -809,15 +963,22 @@ mod tests {
         let p = "carol";
 
         // First look happens regardless.
-        buffer.should_warm(p, 0, false).expect("first look").store(false, Ordering::Release);
+        buffer
+            .should_warm(p, 0, false)
+            .expect("first look")
+            .store(false, Ordering::Release);
 
         // STATIC (changed=false): gated until the SLOW baseline floor — but NOT forever.
         assert!(
-            buffer.should_warm(p, AMBIENT_WARM_MIN_INTERVAL_MS, false).is_none(),
+            buffer
+                .should_warm(p, AMBIENT_WARM_MIN_INTERVAL_MS, false)
+                .is_none(),
             "static past the min ceiling is still gated — no change, don't spend a describe"
         );
         assert!(
-            buffer.should_warm(p, AMBIENT_WARM_BASELINE_INTERVAL_MS - 1, false).is_none(),
+            buffer
+                .should_warm(p, AMBIENT_WARM_BASELINE_INTERVAL_MS - 1, false)
+                .is_none(),
             "static within the baseline floor → still gated"
         );
         buffer
@@ -847,14 +1008,18 @@ mod tests {
 
         // Even far past the interval, a second warm is refused while one is in flight.
         assert!(
-            buffer.should_warm(p, AMBIENT_WARM_BASELINE_INTERVAL_MS * 100, true).is_none(),
+            buffer
+                .should_warm(p, AMBIENT_WARM_BASELINE_INTERVAL_MS * 100, true)
+                .is_none(),
             "in-flight guard blocks stacking regardless of elapsed time"
         );
 
         // Once it completes, the next due tick warms again.
         _held.store(false, Ordering::Release);
         assert!(
-            buffer.should_warm(p, AMBIENT_WARM_BASELINE_INTERVAL_MS * 100, true).is_some(),
+            buffer
+                .should_warm(p, AMBIENT_WARM_BASELINE_INTERVAL_MS * 100, true)
+                .is_some(),
             "warm reopens after the in-flight one finishes"
         );
     }

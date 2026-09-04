@@ -3,10 +3,19 @@ import type { PersonaRosterEntry } from "./PersonaRosterEntry";
 
 export type PersonaRosterResult = { 
 /**
- * How many citizens are online right now (the roster `benchmark/dispatch` targets when
- * `--assignees` is omitted). Zero means dispatch would be Denied — spawn a persona.
+ * How many citizens are REGISTERED on this machine. This is an inventory count, not a
+ * readiness signal — read `resident_count` before staging any work.
  */
 count: number, 
+/**
+ * How many are RESIDENT — service loop live, perception stream primed, able to take a
+ * turn. THIS is the number a caller staging work must gate on.
+ *
+ * `count > 0 && resident_count == 0` is the exact state that silently ate a benchmark
+ * round on 2026-08-18: two citizens listed, neither in the room (hosting parked while
+ * the serving lane proved it could decode), cards + kickoffs posted anyway, zero turns.
+ */
+resident_count: number, 
 /**
  * Every live citizen, sorted by name (the stable round-robin order).
  */

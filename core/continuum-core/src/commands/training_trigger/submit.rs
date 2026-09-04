@@ -145,7 +145,11 @@ impl SubmitOutcome {
         }
     }
 
-    fn job_dispatched(examples_used: u32, selected_provider: String, job_handle: JobHandle) -> Self {
+    fn job_dispatched(
+        examples_used: u32,
+        selected_provider: String,
+        job_handle: JobHandle,
+    ) -> Self {
         Self {
             outcome: Some("JobDispatched".into()),
             examples_used: Some(examples_used),
@@ -366,7 +370,10 @@ mod tests {
     // not AiSafe.
     #[test]
     fn name_and_access_wired() {
-        assert_eq!(TrainingTriggerSubmit::NAME, "genome/training-trigger/submit");
+        assert_eq!(
+            TrainingTriggerSubmit::NAME,
+            "genome/training-trigger/submit"
+        );
         assert!(matches!(
             TrainingTriggerSubmit::ACCESS,
             AccessLevel::Privileged
@@ -392,7 +399,9 @@ mod tests {
         assert_eq!(json["currentCount"], 1);
         assert_eq!(json["threshold"], 5);
         assert_eq!(
-            trigger.state.bucket_example_count(persona, "test-trait", "synthetic"),
+            trigger
+                .state
+                .bucket_example_count(persona, "test-trait", "synthetic"),
             Some(1)
         );
     }
@@ -419,7 +428,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            trigger.state.bucket_example_count(persona, "test-trait", "synthetic"),
+            trigger
+                .state
+                .bucket_example_count(persona, "test-trait", "synthetic"),
             Some(4)
         );
 
@@ -439,7 +450,9 @@ mod tests {
 
         // Bucket must be cleared.
         assert_eq!(
-            trigger.state.bucket_example_count(persona, "test-trait", "synthetic"),
+            trigger
+                .state
+                .bucket_example_count(persona, "test-trait", "synthetic"),
             None
         );
         assert_eq!(trigger.state.pending_bucket_count(), 0);
@@ -488,16 +501,23 @@ mod tests {
             .unwrap();
         // No more InconsistentBucket — the second submit succeeds because it lives in
         // its own bucket.
-        assert_eq!(json["success"], true, "second-base submit must succeed: {json}");
+        assert_eq!(
+            json["success"], true,
+            "second-base submit must succeed: {json}"
+        );
         assert_eq!(json["outcome"], "BatchAppended");
 
         // Two distinct buckets pending, one example each.
         assert_eq!(
-            trigger.state.bucket_example_count(persona, "test-trait", "synthetic"),
+            trigger
+                .state
+                .bucket_example_count(persona, "test-trait", "synthetic"),
             Some(1)
         );
         assert_eq!(
-            trigger.state.bucket_example_count(persona, "test-trait", "synthetic-tiny"),
+            trigger
+                .state
+                .bucket_example_count(persona, "test-trait", "synthetic-tiny"),
             Some(1)
         );
         assert_eq!(trigger.state.pending_bucket_count(), 2);
@@ -547,7 +567,9 @@ mod tests {
         assert_eq!(json["errorKind"], "InconsistentBucket");
         // First-arrival's bucket survives intact.
         assert_eq!(
-            trigger.state.bucket_example_count(persona, "test-trait", "synthetic"),
+            trigger
+                .state
+                .bucket_example_count(persona, "test-trait", "synthetic"),
             Some(1)
         );
     }
@@ -577,7 +599,8 @@ mod tests {
             .await
             .unwrap();
 
-        let mut wrong_schedule = submit_params(persona, "test-trait", vec![ex("c", "d")], Some(100));
+        let mut wrong_schedule =
+            submit_params(persona, "test-trait", vec![ex("c", "d")], Some(100));
         wrong_schedule.as_object_mut().unwrap().insert(
             "schedule".into(),
             serde_json::to_value(ScheduleParams {
@@ -626,7 +649,9 @@ mod tests {
         assert_eq!(json["errorKind"], "InconsistentBucket");
         // First-arrival's source survives intact.
         assert_eq!(
-            trigger.state.bucket_example_count(persona, "test-trait", "synthetic"),
+            trigger
+                .state
+                .bucket_example_count(persona, "test-trait", "synthetic"),
             Some(1)
         );
     }
@@ -644,7 +669,12 @@ mod tests {
         let json = executor
             .execute_json(
                 "genome/training-trigger/submit",
-                submit_params(persona, "test-trait", vec![ex("a", "b"), ex("c", "d")], Some(2)),
+                submit_params(
+                    persona,
+                    "test-trait",
+                    vec![ex("a", "b"), ex("c", "d")],
+                    Some(2),
+                ),
             )
             .await
             .unwrap();
@@ -652,7 +682,9 @@ mod tests {
         assert_eq!(json["errorKind"], "DispatchFailed");
         // The two examples must STILL be in the bucket.
         assert_eq!(
-            trigger.state.bucket_example_count(persona, "test-trait", "synthetic"),
+            trigger
+                .state
+                .bucket_example_count(persona, "test-trait", "synthetic"),
             Some(2)
         );
     }
@@ -676,17 +708,26 @@ mod tests {
         let _ = executor
             .execute_json(
                 "genome/training-trigger/submit",
-                submit_params(b, "shared-trait", vec![ex("a2", "b2"), ex("c2", "d2")], Some(5)),
+                submit_params(
+                    b,
+                    "shared-trait",
+                    vec![ex("a2", "b2"), ex("c2", "d2")],
+                    Some(5),
+                ),
             )
             .await
             .unwrap();
 
         assert_eq!(
-            trigger.state.bucket_example_count(a, "shared-trait", "synthetic"),
+            trigger
+                .state
+                .bucket_example_count(a, "shared-trait", "synthetic"),
             Some(1)
         );
         assert_eq!(
-            trigger.state.bucket_example_count(b, "shared-trait", "synthetic"),
+            trigger
+                .state
+                .bucket_example_count(b, "shared-trait", "synthetic"),
             Some(2)
         );
         assert_eq!(trigger.state.pending_bucket_count(), 2);
@@ -754,7 +795,10 @@ mod tests {
                 .execute_json("genome/training-trigger/submit", params)
                 .await
                 .unwrap();
-            assert_eq!(json["success"], true, "VDD: submit must succeed; got {json}");
+            assert_eq!(
+                json["success"], true,
+                "VDD: submit must succeed; got {json}"
+            );
             assert_eq!(
                 json["examplesUsed"], n,
                 "VDD: every submitted example must be in the dispatched job"
@@ -774,7 +818,11 @@ mod tests {
 
             // CONSERVATION CHECK — exactly one job dispatched, exactly n examples
             // captured, examples match submitted set in ORDER.
-            assert_eq!(recorder.captured_job_count(), 1, "VDD: exactly one job dispatched");
+            assert_eq!(
+                recorder.captured_job_count(),
+                1,
+                "VDD: exactly one job dispatched"
+            );
             assert_eq!(
                 recorder.captured_example_count(),
                 n,
@@ -1011,7 +1059,9 @@ mod tests {
                             persona,
                             "race-trait",
                             (0..FIRE_EXAMPLES)
-                                .map(|i| ex(&format!("fire{fire}-p{i}"), &format!("fire{fire}-c{i}")))
+                                .map(|i| {
+                                    ex(&format!("fire{fire}-p{i}"), &format!("fire{fire}-c{i}"))
+                                })
                                 .collect(),
                             5,
                         ),

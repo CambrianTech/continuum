@@ -253,8 +253,12 @@ fn nvidia_sm_tier(device_name: &str, platform: &str) -> Result<HwCapabilityTier,
         Ok(HwCapabilityTier::Sm75)
     } else if upper.contains("V100") {
         Ok(HwCapabilityTier::Sm70)
-    } else if upper.contains("GTX 10") || upper.contains("P100") || upper.contains("P40")
-        || upper.contains("P4") || upper.contains("TITAN X") || upper.contains("TITAN XP")
+    } else if upper.contains("GTX 10")
+        || upper.contains("P100")
+        || upper.contains("P40")
+        || upper.contains("P4")
+        || upper.contains("TITAN X")
+        || upper.contains("TITAN XP")
     {
         // Pascal generation (compute capability 6.x). GTX 1080 Ti /
         // 1080 / 1070 Ti / 1070 / 1060 / 1050 Ti; Tesla P-series.
@@ -308,8 +312,8 @@ mod tests {
             fn total_bytes(&self) -> u64 {
                 1
             }
-            fn free_bytes(&self) -> u64 {
-                1
+            fn free_bytes(&self) -> Option<u64> {
+                Some(1)
             }
             fn process_bytes(&self) -> u64 {
                 0
@@ -440,8 +444,7 @@ mod tests {
     fn metal_tier_routes_apple_silicon_to_uma_branch() {
         // M3 Pro / 32GB → M3UmaProMax + UnifiedMemory. Confirms the
         // wrapper still routes Apple Silicon to the existing buckets.
-        let (tier, silicon) =
-            metal_tier("Apple M3 Pro", "Apple M3 Pro", 32_000, "metal").unwrap();
+        let (tier, silicon) = metal_tier("Apple M3 Pro", "Apple M3 Pro", 32_000, "metal").unwrap();
         assert_eq!(tier, HwCapabilityTier::M3UmaProMax);
         assert_eq!(silicon, TargetSilicon::UnifiedMemory);
     }
@@ -498,10 +501,12 @@ mod tests {
         // surfaces UnknownGpuDevice naming all the inputs so the
         // operator can add a tier rather than getting silent CpuOnly
         // (or worse, silent M1Uma16Gb like the pre-fix Mac Intel bug).
-        let err = metal_tier("Some Other CPU brand", "Mystery GPU", 16_000, "metal")
-            .unwrap_err();
+        let err = metal_tier("Some Other CPU brand", "Mystery GPU", 16_000, "metal").unwrap_err();
         match err {
-            ProbeError::UnknownGpuDevice { platform, device_name } => {
+            ProbeError::UnknownGpuDevice {
+                platform,
+                device_name,
+            } => {
                 assert_eq!(platform, "metal");
                 assert!(
                     device_name.contains("Mystery GPU"),

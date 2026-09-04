@@ -50,19 +50,27 @@ export interface DomViewSpec extends ViewSpec {
 
 /** The DOM surface's act-verbs (outlier A): the universal base `Action` (`setViewport`)
  *  plus the web driver — click/type/hot-swap CSS. `injectCss` is the hot-swap seam
- *  (retheme/relayout the LIVE page, no redeploy) that makes design iteration fast. */
+ *  (retheme/relayout the LIVE page, no redeploy) that makes design iteration fast;
+ *  `hotPatchCss` is its idempotent sibling — ONE named hot-patch layer
+ *  (`<style data-continuum-hot-edit>`) REPLACED wholesale each call (empty css clears
+ *  it), so `perception/hot-edit` can re-apply a persona's full accumulated stylesheet
+ *  without stacking style tags. */
 export type DomAction =
   | SetViewportAction
   | { readonly kind: 'click'; readonly selector: string }
   | { readonly kind: 'type'; readonly selector: string; readonly text: string }
   | { readonly kind: 'press'; readonly key: string }
   | { readonly kind: 'hover'; readonly selector: string }
-  | { readonly kind: 'injectCss'; readonly css: string };
+  | { readonly kind: 'injectCss'; readonly css: string }
+  | { readonly kind: 'hotPatchCss'; readonly css: string };
 
 export interface DomSurfaceOptions {
   readonly url: string;
   readonly viewport?: { readonly width: number; readonly height: number };
   readonly headless?: boolean;
+  /** Pixel density of the capture. Default 1 — retina (2) is an opt-in for
+   *  tasks grading fine detail; it quadruples every screenshot's bytes. */
+  readonly deviceScaleFactor?: number;
   /** Force a specific Chromium binary (Opera GX / Brave / Chromium / any). Highest priority.
    *  Env fallbacks: `PERCEPTION_CHROME`, then `CHROME`. */
   readonly executablePath?: string;
@@ -145,7 +153,11 @@ export class DomSurface implements Surface<DomViewSpec, DomAction> {
     });
     const page = await browser.newPage({
       viewport: opts.viewport ?? { width: 1440, height: 900 },
-      deviceScaleFactor: 2,
+      // 1 by default (2026-08-23 pixel audit): the hardcoded 2 quadrupled every
+      // screenshot's pixels for consumers that render thumbnails — retina
+      // capture is an OPT-IN for tasks that grade fine detail, never a tax on
+      // every observation.
+      deviceScaleFactor: opts.deviceScaleFactor ?? 1,
     });
     // esbuild's `keepNames` (tsx, vite, ts-node all use it) wraps named functions with a
     // `__name(fn, 'name')` helper. When Playwright serializes our `domWalk` into the page,
@@ -156,7 +168,46 @@ export class DomSurface implements Surface<DomViewSpec, DomAction> {
       const g = globalThis as { __name?: (fn: unknown) => unknown };
       g.__name = g.__name ?? ((fn) => fn);
     });
+    // GLASS-BOX the page's own voice: console lines (warnings, [Violation]s,
+    // errors) and page crashes stream to OUR stderr, so an operator/agent
+    // reading the eye-node log sees exactly what a human sees in devtools
+    // (2026-08-31: "the site draws at 5fps — are you able to get these
+    // warnings?" — now yes).
+    page.on('console', (msg) => {
+      const type = msg.type();
+      if (type === 'warning' || type === 'error') {
+        console.error(`[page-console:${type}] ${msg.text().slice(0, 400)}`);
+      }
+    });
+    page.on('pageerror', (err) => {
+      console.error(`[page-error] ${String(err).slice(0, 400)}`);
+    });
     await page.goto(opts.url, { waitUntil: 'networkidle' });
+    // networkidle is not "at rest": an app that routes on a websocket envelope
+    // (a deep link resolving once the nav state arrives) is still repainting
+    // after the network goes quiet — caught live 2026-09-03 as a frame of the
+    // landing room with the deep-linked page already in the structure. Wait
+    // for the DOM to stop mutating (a quiet window, bounded) before observing.
+    await page.evaluate(
+      ({ quietMs, capMs }) =>
+        new Promise<void>((resolve) => {
+          let timer = window.setTimeout(resolve, quietMs);
+          const cap = window.setTimeout(() => {
+            observer.disconnect();
+            resolve();
+          }, capMs);
+          const observer = new MutationObserver(() => {
+            window.clearTimeout(timer);
+            timer = window.setTimeout(() => {
+              observer.disconnect();
+              window.clearTimeout(cap);
+              resolve();
+            }, quietMs);
+          });
+          observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+        }),
+      { quietMs: 600, capMs: 5000 },
+    );
     return new DomSurface(browser, page);
   }
 
@@ -225,6 +276,21 @@ export class DomSurface implements Surface<DomViewSpec, DomAction> {
         // Hot-swap: retheme/relayout the LIVE page, no redeploy — the fast-iteration seam.
         await this.page.addStyleTag({ content: action.css });
         return;
+      case 'hotPatchCss':
+        // The ONE hot-patch layer: find-or-create `<style data-continuum-hot-edit>` and
+        // REPLACE its content (append would stack patches and make re-applying a full
+        // stylesheet non-idempotent). Empty css leaves an empty layer = patch cleared.
+        await this.page.evaluate((css) => {
+          const attr = 'data-continuum-hot-edit';
+          let el = document.querySelector<HTMLStyleElement>(`style[${attr}]`);
+          if (!el) {
+            el = document.createElement('style');
+            el.setAttribute(attr, '');
+            document.head.appendChild(el);
+          }
+          el.textContent = css;
+        }, action.css);
+        return;
       case 'setViewport':
         await this.page.setViewportSize({ width: action.width, height: action.height });
         return;
@@ -260,8 +326,21 @@ interface AxNode {
  */
 function domWalk(maxDepth: number): unknown {
   const ATTRS = ['id', 'class', 'href', 'role', 'aria-label', 'data-kind', 'data-status'];
+  // The craft-fact subset a design grade measures (contrast, type scale, rhythm,
+  // reflow). DECLARED, not the whole computed style — the observation stays a
+  // bounded fact sheet, never a style dump.
+  const STYLE_PROPS = [
+    'color', 'background-color', 'font-size', 'font-weight', 'font-family',
+    'margin', 'padding', 'display', 'overflow', 'z-index',
+  ];
   function walk(el: Element, depth: number): unknown {
     const rect = el.getBoundingClientRect();
+    const ownStyle = getComputedStyle(el);
+    const style: Record<string, string> = {};
+    for (const prop of STYLE_PROPS) {
+      const v = ownStyle.getPropertyValue(prop);
+      if (v) style[prop] = v;
+    }
     const attrs: Record<string, string> = {};
     for (const a of ATTRS) {
       const v = el.getAttribute(a);
@@ -294,6 +373,7 @@ function domWalk(maxDepth: number): unknown {
         height: Math.round(rect.height),
       },
       ...(Object.keys(attrs).length ? { attrs } : {}),
+      ...(Object.keys(style).length ? { style } : {}),
       children,
     };
   }

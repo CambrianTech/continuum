@@ -12,11 +12,12 @@ fn default_batch_size() -> usize {
 }
 
 /// Params for `vector/backfill`.
-#[derive(
-    Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/vector/VectorBackfillParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/vector/VectorBackfillParams.ts"
+)]
 pub struct VectorBackfillParams {
     /// The collection to backfill embeddings for.
     pub collection: String,
@@ -32,6 +33,7 @@ pub struct VectorBackfillParams {
     /// Optional record filter (same shape as `data/list` filters). Restricts which
     /// records get backfilled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     #[ts(optional, type = "Record<string, unknown>")]
     pub filter: Option<serde_json::Map<String, serde_json::Value>>,
     /// Storage handle. Defaults to "main" (the shared DB). Accepts the legacy

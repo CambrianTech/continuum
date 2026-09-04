@@ -35,6 +35,14 @@ box?: ProbeBox,
  */
 attrs?: { [key in string]: string }, 
 /**
+ * The CRAFT FACTS a design grade measures — a DECLARED subset of computed
+ * style (color, background-color, font-size/-weight/-family, margin,
+ * padding, display, overflow, z-index). DOM surfaces fill it; surfaces
+ * with no style system (a scene graph) omit it. Additive + optional, so
+ * every adapter that predates it stays wire-compatible.
+ */
+style?: { [key in string]: string }, 
+/**
  * Child nodes, in document/scene order.
  */
 children: Array<ProbeNode>, };

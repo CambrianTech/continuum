@@ -30,6 +30,8 @@
 //! - Runs as tokio task, shared across all sentinels
 //! - Port stored in SERVER_PORT for IPC query
 
+pub mod desktop;
+
 pub mod anthropic_compat;
 
 use anthropic_compat::{

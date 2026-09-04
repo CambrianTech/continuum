@@ -15,7 +15,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::modules::mcp::{McpCatalog, MCPTool};
+use crate::modules::mcp::{MCPTool, McpCatalog};
 
 /// Params for `mcp/list-tools`: none — the catalog is machine-wide, not
 /// caller-scoped. An empty struct keeps the typed contract explicit (rather than

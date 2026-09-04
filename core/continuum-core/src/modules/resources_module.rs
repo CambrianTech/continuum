@@ -66,7 +66,11 @@ impl ServiceModule for ResourcesModule {
     /// `route_object` against the objects `commands()` contributes. Reaching this arm
     /// means the typed path failed to register — fail loud naming the cause rather than
     /// silently re-handling (there is no legacy `resources/*` handler to fall back to).
-    async fn handle_command(&self, command: &str, _params: serde_json::Value) -> Result<CommandResult, String> {
+    async fn handle_command(
+        &self,
+        command: &str,
+        _params: serde_json::Value,
+    ) -> Result<CommandResult, String> {
         Err(format!(
             "resources: '{command}' is a typed-registry command — it must route via \
              route_object (commands/resources/), not the legacy handle_command path"

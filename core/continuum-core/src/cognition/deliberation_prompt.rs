@@ -96,18 +96,40 @@ pub(super) fn compose_split(p: &SystemPromptParts<'_>) -> ComposedSystemPrompt {
     for block in stable_blocks(p) {
         stable.push_str(&block);
     }
-    let mut trailing = String::with_capacity(p.context.len() + 512);
-    for block in volatile_blocks(p) {
+    ComposedSystemPrompt {
+        stable,
+        trailing: compose_trailing(p.now_ms, p.self_initiated, p.directed, p.holds_live_work),
+    }
+}
+
+/// The volatile framing alone — clock + own-time/presence — composable WITHOUT
+/// the assembled context, because none of its blocks read it. This is what lets
+/// the live prompt path render the framing as a conversation turn (facts-phase,
+/// before the ask) while the stable half still waits for the fitted context.
+pub(super) fn compose_trailing(
+    now_ms: Option<u64>,
+    self_initiated: bool,
+    directed: bool,
+    holds_live_work: bool,
+) -> String {
+    let mut trailing = String::with_capacity(512);
+    for block in volatile_blocks(now_ms, self_initiated, directed, holds_live_work) {
         trailing.push_str(&block);
     }
-    ComposedSystemPrompt { stable, trailing }
+    trailing
 }
 
 /// Assemble the WHOLE system prompt as one string — `stable ++ trailing`, byte-identical
-/// to the pre-split output. Kept so callers/tests that want the composed whole are
-/// unchanged; the live message builder uses [`compose_split`] to place `stable` in the
-/// cacheable system message and `trailing` on the newest turn (the #266 KV-reuse fix).
-pub(super) fn compose(p: &SystemPromptParts<'_>) -> String {
+/// to the pre-split output.
+///
+/// TEST-ONLY, and gated so it says so: production has exactly one composer,
+/// [`compose_split`], which places `stable` in the cacheable system message and `trailing`
+/// on the newest turn (the #266 KV-reuse fix). This exists because the assertions below
+/// are about prompt CONTENT — what appears, in what order — which is easier to state
+/// against the whole string than against the halves. It is not a second composer: it is
+/// [`compose_split`]'s own output concatenated, so it cannot drift from it.
+#[cfg(test)]
+fn compose(p: &SystemPromptParts<'_>) -> String {
     let c = compose_split(p);
     let mut s = c.stable;
     s.push_str(&c.trailing);
@@ -134,19 +156,6 @@ fn stable_blocks<'a>(p: &'a SystemPromptParts<'a>) -> impl Iterator<Item = Cow<'
         // "standing framing reaches the system message" contract
         // (`trailing_proprioception_renders_in_the_tail_not_the_system_prefix`).
         working_context_block(p.context).map(Cow::Owned),
-        // Her NOW — a one-line clock (minute granularity), LAST in the stable prefix and
-        // nearest the framing that follows: freshest temporal grounding at the write point.
-        // Per-minute churn costs at most one re-prefill per minute (turns are seconds
-        // apart), versus the per-TURN flip the framing below would cause if it stayed here.
-        // Eval passes its pinned epoch; tests pass None.
-        p.now_ms
-            .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms as i64))
-            .map(|dt| {
-                Cow::Owned(format!(
-                    "\n\n[now {}]",
-                    dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M %A")
-                ))
-            }),
     ]
     .into_iter()
     .flatten()
@@ -159,10 +168,33 @@ fn stable_blocks<'a>(p: &'a SystemPromptParts<'a>) -> impl Iterator<Item = Cow<'
 /// It MUST NOT sit in the cacheable system prefix; the message builder renders it as the
 /// newest trailing turn — same text, nearest generation (the #205 trailing placement),
 /// where its volatility no longer invalidates the cached identity + tools + context prefix.
-fn volatile_blocks<'a>(p: &'a SystemPromptParts<'a>) -> impl Iterator<Item = Cow<'a, str>> {
+fn volatile_blocks(
+    now_ms: Option<u64>,
+    self_initiated: bool,
+    directed: bool,
+    holds_live_work: bool,
+) -> impl Iterator<Item = Cow<'static, str>> {
     [
+        // Her NOW — a one-line clock (minute granularity). MOVED out of the stable
+        // prefix (plan B4): it sat LAST in the stable blocks, priced as "at most one
+        // re-prefill per minute" back when turns were seconds apart — but acts now run
+        // MINUTES, so the minute tick invalidated the ENTIRE conversation tail behind
+        // the system prefix nearly every act. Measured 2026-08-26 alongside this: the
+        // server restores a byte-identical 20k conversation from its prompt cache in
+        // ~0.1s vs ~33s re-prefill — byte-stability of the prefix is worth ~330×, and
+        // a clock is the cheapest thing to keep OUT of it. Here it rides the volatile
+        // framing that renders as the newest trailing turn: same temporal grounding,
+        // nearest generation, zero prefix invalidation. Eval passes its pinned epoch.
+        now_ms
+            .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms as i64))
+            .map(|dt| {
+                Cow::Owned(format!(
+                    "[now {}]",
+                    dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M %A")
+                ))
+            }),
         // Self-directed free time — only on a self-initiated heartbeat turn.
-        p.self_initiated.then_some(Cow::Borrowed(OWN_TIME_BLOCK)),
+        self_initiated.then_some(Cow::Borrowed(OWN_TIME_BLOCK)),
         // Conversational presence — the AMBIENT block on undirected turns; the DIRECTED
         // variant when a message names her. Directed no longer strips her choice entirely:
         // never ghost a QUESTION (explicit in the block), but a pure appreciation/closing
@@ -173,9 +205,9 @@ fn volatile_blocks<'a>(p: &'a SystemPromptParts<'a>) -> impl Iterator<Item = Cow
         // 2026-08-07: four citizens with perfect windows yielded every ambient turn
         // under the conversational contract while acting fine under the eval
         // harness's work framing — the contract was the variable, not the model).
-        Some(Cow::Borrowed(if p.directed {
+        Some(Cow::Borrowed(if directed {
             crate::persona::prompt_assembly::DIRECTED_PRESENCE_BLOCK
-        } else if p.holds_live_work {
+        } else if holds_live_work {
             crate::persona::prompt_assembly::WORKING_PRESENCE_BLOCK
         } else {
             SILENCE_AFFORDANCE_BLOCK
@@ -399,8 +431,8 @@ mod tests {
     #[test]
     fn framing_flip_never_perturbs_the_cacheable_prefix() {
         let expanded = BTreeSet::new();
-        let parts = |directed, self_initiated, holds_live_work, now_ms, context| {
-            SystemPromptParts {
+        let parts =
+            |directed, self_initiated, holds_live_work, now_ms, context| SystemPromptParts {
                 system_prompt: "IDENTITY-PROMPT",
                 persona_name: "Asha",
                 tools: &[],
@@ -410,8 +442,7 @@ mod tests {
                 self_initiated,
                 now_ms,
                 holds_live_work,
-            }
-        };
+            };
         let stable = |p: &SystemPromptParts| compose_split(p).stable;
         // Context held CONSTANT — only the per-turn FRAMING dimensions flip.
         let baseline = stable(&parts(false, false, false, None, "CTX"));
@@ -432,7 +463,8 @@ mod tests {
         );
         // The hard-flipping framing carries NONE of its markers in the cacheable prefix…
         assert!(
-            !baseline.contains("[Conversational Presence]") && !baseline.contains("[Your own time]"),
+            !baseline.contains("[Conversational Presence]")
+                && !baseline.contains("[Your own time]"),
             "the per-turn framing must not sit in the cacheable prefix: {baseline}"
         );
         // …the STANDING grounding, by contrast, DOES stay in the cacheable prefix (its head
@@ -480,11 +512,22 @@ mod tests {
         // Identity leads; context tail trails; presence block present (undirected).
         let id = s.find("IDENTITY").expect("identity present");
         let turn = s.find("[Taking your turn]").expect("turn block present");
-        let ctx = s.find("[What you are working with right now]").expect("ctx block");
-        assert!(id < turn && turn < ctx, "identity → turn → context order: {s}");
+        let ctx = s
+            .find("[What you are working with right now]")
+            .expect("ctx block");
+        assert!(
+            id < turn && turn < ctx,
+            "identity → turn → context order: {s}"
+        );
         assert!(s.contains("Asha"), "persona name interpolated: {s}");
-        assert!(s.contains("[Conversational Presence]"), "undirected ⇒ silence block");
-        assert!(!s.contains("[Your own time]"), "not self-initiated ⇒ no own-time block");
+        assert!(
+            s.contains("[Conversational Presence]"),
+            "undirected ⇒ silence block"
+        );
+        assert!(
+            !s.contains("[Your own time]"),
+            "not self-initiated ⇒ no own-time block"
+        );
         assert!(!s.contains("[Your tools]"), "no tools ⇒ no tools block");
 
         // A DIRECTED turn carries the DIRECTED presence variant: never ghost a question,
@@ -516,7 +559,10 @@ mod tests {
             "being addressed outranks the work contract: {directed_working}"
         );
 
-        let directed = compose(&SystemPromptParts { directed: true, ..base });
+        let directed = compose(&SystemPromptParts {
+            directed: true,
+            ..base
+        });
         assert!(
             directed.contains("This message names you"),
             "directed ⇒ DIRECTED presence variant: {directed}"
@@ -527,9 +573,15 @@ mod tests {
         );
 
         // A SELF-INITIATED turn carries the own-time framing.
-        let own = compose(&SystemPromptParts { holds_live_work: false,
-            self_initiated: true, ..base });
-        assert!(own.contains("[Your own time]"), "self-initiated ⇒ own-time block: {own}");
+        let own = compose(&SystemPromptParts {
+            holds_live_work: false,
+            self_initiated: true,
+            ..base
+        });
+        assert!(
+            own.contains("[Your own time]"),
+            "self-initiated ⇒ own-time block: {own}"
+        );
     }
 
     // what this catches: #139 context-split — the minute-volatile [now] clock must render
@@ -554,8 +606,12 @@ mod tests {
             self_initiated: false,
             now_ms: Some(1_700_000_000_000),
         });
-        let ctx = s.find("[What you are working with right now]").expect("ctx block present");
-        let now = s.find("[now ").expect("now clock present when now_ms is set");
+        let ctx = s
+            .find("[What you are working with right now]")
+            .expect("ctx block present");
+        let now = s
+            .find("[now ")
+            .expect("now clock present when now_ms is set");
         assert!(
             ctx < now,
             "the volatile [now] clock must trail the context block (stable prefix stays cacheable): {s}"
@@ -595,11 +651,19 @@ mod tests {
             self_initiated: false,
             now_ms: None,
         });
-        assert!(s.contains("[Your tools]"), "tools present ⇒ tools block: {s}");
+        assert!(
+            s.contains("[Your tools]"),
+            "tools present ⇒ tools block: {s}"
+        );
         // The exact false-refusal phrases the base model reaches for are named + forbidden.
-        assert!(s.contains("can't execute tools"), "names the false refusal to forbid it");
-        assert!(s.contains("NO \n     knowledge cutoff") || s.contains("NO knowledge cutoff"),
-            "denies the training-cutoff prior: {s}");
+        assert!(
+            s.contains("can't execute tools"),
+            "names the false refusal to forbid it"
+        );
+        assert!(
+            s.contains("NO \n     knowledge cutoff") || s.contains("NO knowledge cutoff"),
+            "denies the training-cutoff prior: {s}"
+        );
         assert!(
             s.contains("embodied in this system"),
             "asserts embodiment, not hosted-chat-model: {s}"

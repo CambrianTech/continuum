@@ -90,9 +90,7 @@ pub enum LoRAError {
 
     /// The frozen base weight's shape doesn't match the
     /// `[out_features, in_features]` contract.
-    #[error(
-        "base_weight expected 2-D [out_features, in_features], got shape {actual:?}"
-    )]
+    #[error("base_weight expected 2-D [out_features, in_features], got shape {actual:?}")]
     BaseWeightShape { actual: Vec<usize> },
 
     /// Tensor creation failed at the Candle level (device OOM,
@@ -163,8 +161,8 @@ impl LoRAModule {
         // bound = √(6 / ((1 + 5) · fan_in)) = √(1 / fan_in)
         // where fan_in = in_features for A.
         let bound = (1.0 / in_features as f64).sqrt();
-        let lora_a_init = Tensor::rand(-bound, bound, (rank as usize, in_features), device)?
-            .to_dtype(dtype)?;
+        let lora_a_init =
+            Tensor::rand(-bound, bound, (rank as usize, in_features), device)?.to_dtype(dtype)?;
         let lora_a = Var::from_tensor(&lora_a_init)?;
 
         // B is initialized to zeros so the initial delta (B @ A) is
@@ -319,7 +317,10 @@ mod tests {
             .unwrap()
             .to_scalar::<f32>()
             .unwrap();
-        assert_eq!(max_abs, 0.0, "B must be all zeros at init, got max |B| = {max_abs}");
+        assert_eq!(
+            max_abs, 0.0,
+            "B must be all zeros at init, got max |B| = {max_abs}"
+        );
 
         // And as a consequence, the LoRA delta (B @ A) is exactly
         // zero — the initial forward equals the base forward.
@@ -411,20 +412,21 @@ mod tests {
         let rank = 1;
         let alpha = 2;
         // base_weight = identity-ish: [[1, 0], [0, 1]]
-        let base = Tensor::from_slice(&[1.0f32, 0.0, 0.0, 1.0], (out_features, in_features), &cpu())
-            .unwrap();
-        let module =
-            LoRAModule::new(base.clone(), rank, alpha, DType::F32, &cpu()).unwrap();
+        let base = Tensor::from_slice(
+            &[1.0f32, 0.0, 0.0, 1.0],
+            (out_features, in_features),
+            &cpu(),
+        )
+        .unwrap();
+        let module = LoRAModule::new(base.clone(), rank, alpha, DType::F32, &cpu()).unwrap();
 
         // Force A and B to known values:
         // A = [[1, 0]]              shape [rank=1, in_features=2]
         // B = [[1], [0]]            shape [out_features=2, rank=1]
         // Expected delta = scale * (B @ A) = 2 * [[1, 0], [0, 0]]
         //                                  = [[2, 0], [0, 0]]
-        let a = Tensor::from_slice(&[1.0f32, 0.0], (rank as usize, in_features), &cpu())
-            .unwrap();
-        let b = Tensor::from_slice(&[1.0f32, 0.0], (out_features, rank as usize), &cpu())
-            .unwrap();
+        let a = Tensor::from_slice(&[1.0f32, 0.0], (rank as usize, in_features), &cpu()).unwrap();
+        let b = Tensor::from_slice(&[1.0f32, 0.0], (out_features, rank as usize), &cpu()).unwrap();
         module.lora_a().set(&a).unwrap();
         module.lora_b().set(&b).unwrap();
 
@@ -627,8 +629,10 @@ mod tests {
             //   x · A^T = [1*1 + 0*1] = [1] (batch=1, rank=1)
             //   (x · A^T) · B^T = [1] · [1, 1] = [1, 1]
             //   delta = scale * [1, 1] = [scale, scale]
-            let a = Tensor::from_slice(&[1.0f32, 1.0], (rank as usize, in_features), &device).unwrap();
-            let b = Tensor::from_slice(&[1.0f32, 1.0], (out_features, rank as usize), &device).unwrap();
+            let a =
+                Tensor::from_slice(&[1.0f32, 1.0], (rank as usize, in_features), &device).unwrap();
+            let b =
+                Tensor::from_slice(&[1.0f32, 1.0], (out_features, rank as usize), &device).unwrap();
             module.lora_a().set(&a).unwrap();
             module.lora_b().set(&b).unwrap();
 

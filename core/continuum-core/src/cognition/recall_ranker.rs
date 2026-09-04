@@ -196,16 +196,34 @@ mod tests {
         let junk = [0.28f32, 0.96]; // cos = 0.28 ≈ the null
         let matching = [0.8f32, 0.6]; // cos = 0.8 → z ≈ 13
         let cands = [
-            RecallCandidate { embedding: &junk, salience: 0.99 },
-            RecallCandidate { embedding: &matching, salience: 0.4 },
+            RecallCandidate {
+                embedding: &junk,
+                salience: 0.99,
+            },
+            RecallCandidate {
+                embedding: &matching,
+                salience: 0.4,
+            },
         ];
 
         // Calibrated space (μ=0.27, σ=0.04): junk fails, match passes.
         let v = ranker
-            .rank(&query, &cands, SpaceCalibration { unrelated_null: Some((0.27, 0.04)) })
+            .rank(
+                &query,
+                &cands,
+                SpaceCalibration {
+                    unrelated_null: Some((0.27, 0.04)),
+                },
+            )
             .await;
-        assert!(!v[0].passes, "null-scoring junk must fail even at salience 0.99");
-        assert!(v[1].passes, "a significant match must pass from low salience");
+        assert!(
+            !v[0].passes,
+            "null-scoring junk must fail even at salience 0.99"
+        );
+        assert!(
+            v[1].passes,
+            "a significant match must pass from low salience"
+        );
         // Attention honors evidence: the z≈13 match must bid ABOVE the 0.9
         // standing-framing floor (Φ(13)≈1.0) so it holds its seat in the bounded
         // workspace; the z≈0.25 junk must bid well below it (Φ(0.25)≈0.6).
@@ -223,8 +241,17 @@ mod tests {
         // Uncalibrated space: absolute-floor fallback (both clear 0.15 here —
         // legacy behavior preserved for spaces whose null genuinely sits near 0).
         let v = ranker
-            .rank(&query, &cands, SpaceCalibration { unrelated_null: None })
+            .rank(
+                &query,
+                &cands,
+                SpaceCalibration {
+                    unrelated_null: None,
+                },
+            )
             .await;
-        assert!(v[0].passes && v[1].passes, "uncalibrated space keeps the legacy floor");
+        assert!(
+            v[0].passes && v[1].passes,
+            "uncalibrated space keeps the legacy floor"
+        );
     }
 }

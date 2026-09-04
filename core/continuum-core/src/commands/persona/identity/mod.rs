@@ -30,7 +30,10 @@ use set::PersonaIdentitySet;
 /// and open self-authored profile. Echoed by `set` and returned by `get`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/persona/PersonaCardView.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/PersonaCardView.ts"
+)]
 pub struct PersonaCardView {
     #[ts(type = "string")]
     pub persona_id: Uuid,

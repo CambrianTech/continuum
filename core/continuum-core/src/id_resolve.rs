@@ -79,7 +79,12 @@ pub fn normalize(s: &str) -> IdMatch {
     if hex.len() < MIN_PREFIX_HEX {
         return IdMatch::Invalid;
     }
-    IdMatch::Prefix(hex.chars().take(SHORT_ID_LEN).collect::<String>().to_ascii_lowercase())
+    IdMatch::Prefix(
+        hex.chars()
+            .take(SHORT_ID_LEN)
+            .collect::<String>()
+            .to_ascii_lowercase(),
+    )
 }
 
 /// Resolve a raw id string to a canonical [`Uuid`] against a candidate set — the
@@ -141,11 +146,23 @@ mod tests {
     // work.rs::card_id_lookup and shared across every id-taking verb.
     #[test]
     fn normalize_classifies_clean_mistyped_and_junk() {
-        assert!(matches!(normalize("d7cfe47e-8e39-41f5-bb2a-4e5d36e558e1"), IdMatch::Full(_)));
-        assert!(matches!(normalize("d7cfe47e8e3941f5bb2a4e5d36e558e1"), IdMatch::Full(_)));
+        assert!(matches!(
+            normalize("d7cfe47e-8e39-41f5-bb2a-4e5d36e558e1"),
+            IdMatch::Full(_)
+        ));
+        assert!(matches!(
+            normalize("d7cfe47e8e3941f5bb2a4e5d36e558e1"),
+            IdMatch::Full(_)
+        ));
         // the exact live corruptions → intact leading-8 prefix
-        assert_eq!(normalize("d7cfe47e0-8e39-41f5-bb2a-4e5d36e558e1"), IdMatch::Prefix("d7cfe47e".into()));
-        assert_eq!(normalize("d7cfe47e08e3941f5bb2a4e5d36e558e1"), IdMatch::Prefix("d7cfe47e".into()));
+        assert_eq!(
+            normalize("d7cfe47e0-8e39-41f5-bb2a-4e5d36e558e1"),
+            IdMatch::Prefix("d7cfe47e".into())
+        );
+        assert_eq!(
+            normalize("d7cfe47e08e3941f5bb2a4e5d36e558e1"),
+            IdMatch::Prefix("d7cfe47e".into())
+        );
         // the board's short form, verbatim
         assert_eq!(normalize("08ece9e8"), IdMatch::Prefix("08ece9e8".into()));
         assert_eq!(normalize("xyz"), IdMatch::Invalid);
@@ -172,7 +189,10 @@ mod tests {
         // the next turn instead of waiting for a peer to hand it the right id.
         let e = resolve("deadbeef", &cands, "persona").unwrap_err();
         assert!(e.contains("persona") && e.contains("no "), "teaches: {e}");
-        assert!(e.contains("90e758b2") && e.contains("fe4dac17"), "lists the valid ids: {e}");
+        assert!(
+            e.contains("90e758b2") && e.contains("fe4dac17"),
+            "lists the valid ids: {e}"
+        );
         // ambiguous → loud
         let c = u("90e70000-0000-0000-0000-000000000000");
         let e = resolve("90e7", &[a, c], "persona").unwrap_err();
@@ -190,7 +210,10 @@ mod tests {
     fn zero_match_error_scales_with_candidate_count() {
         // empty set → plainly says there are none
         let e = resolve("deadbeef", &[], "card").unwrap_err();
-        assert!(e.contains("no card") && e.contains("none to choose"), "empty: {e}");
+        assert!(
+            e.contains("no card") && e.contains("none to choose"),
+            "empty: {e}"
+        );
 
         // small set (<= cap) → enumerates the short forms
         let cands: Vec<Uuid> = (0..3)
@@ -198,7 +221,10 @@ mod tests {
             .collect();
         let e = resolve("deadbeef", &cands, "card").unwrap_err();
         assert!(e.contains("available card ids"), "lists: {e}");
-        assert!(e.contains("00000000") && e.contains("00000002"), "each short form present: {e}");
+        assert!(
+            e.contains("00000000") && e.contains("00000002"),
+            "each short form present: {e}"
+        );
 
         // past the cap → a count, not a wall of ids
         let many: Vec<Uuid> = (0..(MAX_LISTED_CANDIDATES + 5))

@@ -40,18 +40,151 @@ use crate::runtime::{
 };
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand};
 
-/// The bus event `work/state` publishes the moment a card transitions. Subscribers
+/// The bus event published the moment a card transitions — by [`bridge_wire_work_event`]
+/// from the transition's own wire echo, so EVERY writer fires it: a citizen's
+/// `work/state`, the operator's `airc work state`, a remote peer. Subscribers
 /// glob-match this to REACT (e.g. the SWE grade-on-done handler, board freshness,
 /// auto-close) — the system is event-based, never polling
 /// ([[the-whole-system-is-event-based-not-polling]]). Payload: `{card_id, state}`.
 pub const WORK_CARD_STATE_CHANGED: &str = "work.card.state_changed";
 
-/// Process-global handle to the bus + registry so `work/state` (a command, which holds
-/// no `ModuleContext`) can publish the transition event. Set once by `WorkModule::
-/// initialize`; the bus and registry ARE process-global (one core), same granularity as
-/// the gossip ledger and the admission gates — so a process-global is the honest shape,
-/// not a field threaded through every command constructor.
+/// Process-global handle to the bus + registry so [`bridge_wire_work_event`] (called
+/// from persona inbound streams, which hold no `ModuleContext`) can publish the
+/// transition event. Set once by `WorkModule::initialize`; the bus and registry ARE
+/// process-global (one core), same granularity as the gossip ledger and the admission
+/// gates — so a process-global is the honest shape, not a field threaded through every
+/// command constructor.
 static WORK_EVENT_BUS: OnceLock<(Arc<MessageBus>, Arc<ModuleRegistry>)> = OnceLock::new();
+
+/// Decode a wire transcript event into the `work.card.state_changed` payload — or
+/// `None` if it isn't a card-state transition. Pure over the event so the contract
+/// is unit-testable against the real producer (`airc_work::encode_work_event`).
+///
+/// Payload contract: `{card_id, state}` with `card_id` the FULL hyphenated UUID and
+/// `state` the snake_case `CardState` serde form ("closed"/"merged"/…) — the exact
+/// vocabulary `benchmark_grade::is_terminal` and `parse_state` already speak.
+fn wire_card_state_payload(event: &airc_core::TranscriptEvent) -> Option<Value> {
+    if !airc_work::transcript_is_work_event(event) {
+        return None;
+    }
+    let item = airc_work::decode_transcript_work_event(event).ok()?;
+    let airc_work::WorkEvent::CardStateChanged(changed) = item.event else {
+        return None;
+    };
+    let state = serde_json::to_value(changed.state).ok()?;
+    Some(serde_json::json!({
+        "card_id": changed.card_id.as_uuid().to_string(),
+        "state": state,
+        // The card's OWN room — boards are per-room, so a subscriber that reads
+        // the board or posts a verdict must scope to THIS room, never to whatever
+        // current_room() happens to be (the documented #345 wrong-room trap;
+        // found live 2026-08-15 when the grader read the grading citizen's
+        // academy board and never found the bench card).
+        "room_id": event.room_id.as_uuid().to_string(),
+    }))
+}
+
+/// Once-per-process sighting of a (card_id, state) TRANSITION — the cross-path dedup
+/// between the in-process verb emit and the wire-echo bridge.
+///
+/// # Why two feeders exist at all (2026-08-17, the night two solved cards graded as
+/// nothing)
+///
+/// `work/state` used to rely ENTIRELY on its own transcript echo returning through a
+/// persona subscribe stream (`bridge_wire_work_event`, the only caller). Measured that
+/// night: Atlas closed astropy-14182 and astropy-14995 — both `Closed` in the store,
+/// on the board — and `persona.inbound.raw_event` counted 2 rows in 80 minutes (a
+/// comparable window earlier the same day: 83). #434 (post-reboot durable delivery to
+/// citizen scopes down) starves the echo, the bridge never fires, the grader never
+/// hears, and finished work grades as nothing. A grade tail that depends on wire
+/// delivery working is a grade tail with a known-open bug in its spine.
+///
+/// So the VERB now emits directly (in-process, delivery-proof) and the bridge remains
+/// for every writer that is NOT this core's `work/state` (operator CLI, remote peers).
+/// When delivery works both paths see the same transition; THIS ring makes it publish
+/// once. Keyed by (card, state) rather than wire event id because the verb path has no
+/// wire event yet. A LEGITIMATE re-transition to the same state hours later would be
+/// deduped only if the ring still held it — 256 transitions of churn ages it out long
+/// before that matters.
+fn first_transition_sighting(card_id: &str, state: &str) -> bool {
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+    const SEEN_CAP: usize = 256;
+    static SEEN: OnceLock<Mutex<VecDeque<String>>> = OnceLock::new();
+    let key = format!("{card_id}\u{1}{state}");
+    let seen = SEEN.get_or_init(|| Mutex::new(VecDeque::with_capacity(SEEN_CAP)));
+    let mut seen = seen.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every lock in this crate
+    if seen.contains(&key) {
+        return false;
+    }
+    if seen.len() >= SEEN_CAP {
+        seen.pop_front();
+    }
+    seen.push_back(key);
+    true
+}
+
+/// Publish one card-state transition onto the internal bus — the ONE emitter both
+/// feeders (the `work/state` verb, the wire bridge) route through. Dedup lives HERE so
+/// neither feeder needs to know the other exists.
+pub(crate) async fn emit_card_state_changed(payload: Value, via: &'static str) {
+    let card_id = payload["card_id"].as_str().unwrap_or("").to_string();
+    let state = payload["state"].as_str().unwrap_or("").to_string();
+    if !first_transition_sighting(&card_id, &state) {
+        return;
+    }
+    crate::probe!(
+        class = "work.card.state_changed.bridged",
+        via = via,
+        card_id = %card_id,
+        state = %state,
+        "card-state transition published onto the internal bus"
+    );
+    if let Some((bus, registry)) = WORK_EVENT_BUS.get() {
+        bus.publish(WORK_CARD_STATE_CHANGED, payload, registry).await;
+    }
+}
+
+/// Once-per-process sighting of a wire event id. Every resident persona's subscribe
+/// stream yields the SAME room event once, so the bridge below would otherwise
+/// publish N copies for N residents; first sighting wins. Bounded ring — old ids
+/// age out, which is safe because duplicate deliveries arrive within the same
+/// fan-out instant, not hours apart.
+fn first_sighting(event_id: Uuid) -> bool {
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+    const SEEN_CAP: usize = 256;
+    static SEEN: OnceLock<Mutex<VecDeque<Uuid>>> = OnceLock::new();
+    let seen = SEEN.get_or_init(|| Mutex::new(VecDeque::with_capacity(SEEN_CAP)));
+    let mut seen = seen.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every lock in this crate
+    if seen.contains(&event_id) {
+        return false;
+    }
+    if seen.len() >= SEEN_CAP {
+        seen.pop_front();
+    }
+    seen.push_back(event_id);
+    true
+}
+
+/// THE one emitter of [`WORK_CARD_STATE_CHANGED`] — bridge a card-state transition
+/// heard on the WIRE onto the internal bus. The state change in the airc store is
+/// the single source of truth, and its transcript echo is the single event source:
+/// a citizen's own `work/state` (her echo arrives on her own subscribe stream), the
+/// operator's `airc work state`, and a remote peer's transition all fire subscribers
+/// (the grade-on-done handler) identically. Before this bridge, only the continuum
+/// `work/state` VERB emitted — a card closed by any other writer changed the board
+/// and graded nothing (found live 2026-08-15: Asha's real rle_roundtrip artifact,
+/// operator close, zero grade).
+pub async fn bridge_wire_work_event(event: &airc_core::TranscriptEvent) {
+    let Some(payload) = wire_card_state_payload(event) else {
+        return;
+    };
+    if !first_sighting(event.event_id.as_uuid()) {
+        return;
+    }
+    emit_card_state_changed(payload, "wire-echo").await;
+}
 
 /// Default claim lease (ms) — 30 min — when the caller doesn't set one. The claim
 /// is heartbeat-extendable; this is just the initial TTL.
@@ -74,21 +207,20 @@ pub(crate) fn persona_airc(
     // A refusal that misnames the thing you called teaches the wrong lesson.
     family: &str,
 ) -> Result<Arc<Airc>, CommandError> {
-    let peer = ctx
-        .caller
-        .as_ref()
-        .map(|c| c.peer_id.as_uuid())
-        .ok_or_else(|| {
-            CommandError::Denied(
-                format!(
-                    "{family} acts as the caller's own airc identity, and the \
-                     substrate-local operator has none in-core (yet — the self-peer gap, \
-                     task #27). Personas calling through their toolbelt act as themselves \
-                     and need nothing special; for operator-identity board writes use \
-                     `airc work <verb> ...`."
-                ),
-            )
-        })?;
+    // A persona acting through her toolbelt acts as HERSELF; the caller-less
+    // operator acts as the OPERATOR SELF-PEER (#27, closed 2026-08-30) — the
+    // human's in-core identity, booted beside the citizens. The deny below
+    // survives only for the boot window before the self-peer is online.
+    let Some(peer) = ctx.caller.as_ref().map(|c| c.peer_id.as_uuid()) else {
+        return crate::persona::operator_peer::operator_airc().ok_or_else(|| {
+            CommandError::Denied(format!(
+                "{family} acts as the caller's own airc identity, and the operator \
+                 self-peer is not online yet this boot (it starts beside the \
+                 citizens — retry shortly, or check the operator.peer.boot_failed \
+                 probe)."
+            ))
+        });
+    };
     let rt = registry.get(peer).ok_or_else(|| {
         CommandError::NotFound(format!("no live airc runtime for persona {peer}"))
     })?;
@@ -126,15 +258,13 @@ pub(crate) fn curator_airc(
     }
     // Operator seeding with no self-peer (#27): author through a live citizen —
     // whoever this machine has online, chosen deterministically, never our name.
-    let rt = registry
-        .any_live_citizen()
-        .ok_or_else(|| {
-            CommandError::Denied(format!(
-                "{family} seeds the shared board and must author as a citizen, but none \
+    let rt = registry.any_live_citizen().ok_or_else(|| {
+        CommandError::Denied(format!(
+            "{family} seeds the shared board and must author as a citizen, but none \
                  are online to author through — spawn a persona first (persona/spawn), \
                  then retry."
-            ))
-        })?;
+        ))
+    })?;
     Ok(rt.airc().clone())
 }
 
@@ -224,46 +354,109 @@ fn parse_state(s: &str) -> Result<CardState, CommandError> {
 
 // ─────────────────────────── work/claim ──────────────────────────
 
-/// Locate `card_id` on the board of one of the caller's OTHER subscribed rooms,
-/// switch her current room there, and retry the claim once.
+/// The room whose board holds `card_id` — the ONE place that answers *which
+/// activity does this card belong to*.
 ///
-/// Returns `None` when no subscribed room holds the card (the original
-/// wrong-room refusal stands, verbatim), `Some(result)` when the card was found
-/// and a room-switched claim was attempted — that result REPLACES the refusal,
+/// A card carries no room of its own (airc's `WorkCard` has no such field);
+/// boards are PER-ROOM, so a card's activity IS the room whose board it appears
+/// on. Two callers need that fact and used to derive it separately — badly: the
+/// wrong-room claim retry inlined the scan, and the claim-fired solve dispatch
+/// did not derive it at all and went roomless instead (#425, measured: 13,209
+/// roomless turns, 35% of one citizen's cognition, invisible to every room).
+///
+/// Rooms are tried in subscription order and a card exists on exactly one board,
+/// so the first hit is the only hit. A caller can only read boards of rooms it is
+/// SUBSCRIBED to, so this widens no visibility — it only stops discarding what
+/// the caller can already see.
+pub(crate) async fn room_holding_card(airc: &Arc<Airc>, card_id: WorkCardId) -> Option<airc_lib::Room> {
+    card_in_subscribed_rooms(airc, card_id).await.map(|(room, _)| room)
+}
+
+/// The card AND the subscribed room whose board holds it — the one walk behind
+/// [`room_holding_card`], kept whole for callers that need the card's own fields
+/// (its title is what on-claim staging resolves the recipe from).
+pub(crate) async fn card_in_subscribed_rooms(
+    airc: &Arc<Airc>,
+    card_id: WorkCardId,
+) -> Option<(airc_lib::Room, airc_lib::WorkCard)> {
+    let set = airc.subscription_set().await.ok()?;
+    for sub in set.all() {
+        let room = sub.as_room();
+        let Ok(board) = airc.work_board_in(&room).await else {
+            continue;
+        };
+        if let Some(card) = board.snapshot().cards.iter().find(|c| c.card_id == card_id) {
+            return Some((room, card.clone()));
+        }
+    }
+    None
+}
+
+/// Locate `card_id`'s room, switch the caller's current room there, and retry the
+/// claim once.
+///
+/// Returns `None` when no subscribed room holds the card, or when the card's room
+/// IS the current one (the room that already refused has nothing to follow) — in
+/// both cases the original wrong-room refusal stands, verbatim. `Some(result)`
+/// means a room-switched claim was attempted and that result REPLACES the refusal,
 /// so a genuine contention in the card's room still reports as contention.
-/// Rooms are tried in subscription order; a card exists on exactly one board
-/// (boards are per-room), so the first hit is the only hit.
-async fn claim_following_card_room(
+/// Follow a card to the room that holds it: join that room (if it is not the
+/// current one) so a by-id mutation can be retried there. `Some(room name)`
+/// when the caller should retry; `None` when the card is placeable nowhere or
+/// the caller already stands in its room. Accept-or-redirect, never
+/// refuse-and-instruct — shared by claim, state and release.
+pub(crate) async fn follow_card_room(
+    airc: &Arc<Airc>,
+    card_id: WorkCardId,
+    verb: &'static str,
+) -> Option<String> {
+    // The card's room: a subscribed room's board first; else the round tracker
+    // (node-wide — a bench card names its run room whether or not the caller has
+    // ever stood in it). Measured 2026-09-05: the operator's `work/state` on a
+    // fresh team round's cards was refused from `general` because the caller
+    // subscribed to none of that round's rooms, so the fallback never fired.
+    let (room_name, room_channel) = match room_holding_card(airc, card_id).await {
+        Some(room) => (room.name, Some(room.channel)),
+        None => {
+            let wanted = card_id.as_uuid().to_string();
+            let name = crate::cognition::bench_round::live_rounds()
+                .into_iter()
+                .find(|r| r.cards.iter().any(|c| c.card_id == wanted))
+                .map(|r| r.run_room_name)
+                .filter(|n| !n.is_empty())?;
+            (name, None)
+        }
+    };
+    let current = airc.current_room().await.ok();
+    if let Some(ch) = room_channel {
+        if current.as_ref().is_some_and(|c| c.channel == ch) {
+            return None;
+        }
+    }
+    if airc.join(&room_name).await.is_err() {
+        return None;
+    }
+    crate::probe!(
+        class = "work.followed_card_room",
+        verb = verb,
+        card_id = %short8(card_id.as_uuid()),
+        room = %room_name,
+        "a by-id mutation targeted a card outside the current room — switched to \
+         the card's room and retried (accept-or-redirect, never refuse-and-instruct)"
+    );
+    Some(room_name)
+}
+
+pub(crate) async fn claim_following_card_room(
     airc: &Arc<Airc>,
     card_id: WorkCardId,
     ttl_ms: u64,
 ) -> Option<Result<ClaimId, airc_lib::AircError>> {
-    let set = airc.subscription_set().await.ok()?;
-    let current = airc.current_room().await.ok();
-    for sub in set.all() {
-        let room = sub.as_room();
-        if current.as_ref().is_some_and(|c| c.channel == room.channel) {
-            continue; // the room that already refused
-        }
-        let Ok(board) = airc.work_board_in(&room).await else {
-            continue;
-        };
-        if board.snapshot().cards.iter().all(|c| c.card_id != card_id) {
-            continue;
-        }
-        if airc.join(&room.name).await.is_err() {
-            continue;
-        }
-        crate::probe!(
-            class = "work.claim.followed_card_room",
-            card_id = %short8(card_id.as_uuid()),
-            room = %room.name,
-            "claim-by-id targeted a card outside the current room — switched to \
-             the card's room and retried (accept-or-redirect, never refuse-and-instruct)"
-        );
-        return Some(airc.claim_work_card(ClaimWorkCard { card_id, ttl_ms }).await);
-    }
-    None
+    follow_card_room(airc, card_id, "work/claim").await?;
+    Some(
+        airc.claim_work_card(ClaimWorkCard { card_id, ttl_ms })
+            .await,
+    )
 }
 
 /// Claim a work card for this persona (as its own airc key).
@@ -311,7 +504,9 @@ impl ActionCommand for WorkClaim {
         let airc = persona_airc(&self.registry, ctx, "work commands")?;
         let card_id = resolve_card_id(&airc, &p.card_id).await?;
         let ttl_ms = p.ttl_ms.unwrap_or(DEFAULT_CLAIM_TTL_MS);
-        let mut claim_attempt = airc.claim_work_card(ClaimWorkCard { card_id, ttl_ms }).await;
+        let mut claim_attempt = airc
+            .claim_work_card(ClaimWorkCard { card_id, ttl_ms })
+            .await;
         // FOLLOW THE CARD TO ITS ROOM (#328 accept-or-redirect, live 2026-08-11):
         // Atlas's very first act on her dispatched SWE card was work/claim by full
         // uuid — refused with "not in current room general; switch to the card's
@@ -348,6 +543,13 @@ impl ActionCommand for WorkClaim {
                 // it teaches her the substrate is broken when the truth is "that one
                 // is Anwen's". Observed live 2026-08-06.
                 let mut contention = false;
+                // Set when the live holder turns out to be the caller herself.
+                let mut already_yours = None;
+                let caller_short = ctx
+                    .caller
+                    .as_ref()
+                    .map(|c| short8(c.peer_id.as_uuid()))
+                    .unwrap_or_else(|| "-".to_string());
                 if let Ok(board) = airc
                     .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
                     .await
@@ -364,7 +566,9 @@ impl ActionCommand for WorkClaim {
                         // perception for ten minutes.
                         //
                         // Measured 2026-08-07: ~50 of 61 cards on #general and 4 of 12 on
-                        // #k3-serving carry a stale owner with a lease expired 134h+; three
+                        // #k3-serving (a RETIRED subsystem-named room — do not copy the name;
+                        // rooms are activities WITH LIFETIMES) carried a stale owner with a
+                        // lease expired 134h+; three
                         // of the latter are in Review, where the true refusal is "settled
                         // work is not claimable". Two citizens spent the day quoting this
                         // string back — "expired leases or the cards being held by others"
@@ -377,22 +581,52 @@ impl ActionCommand for WorkClaim {
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|d| d.as_millis() as u64)
                             .unwrap_or(0);
-                        if let Some(owner) = live_holder(card, now_ms) {
-                            contention = true;
-                            msg = format!(
-                                "card {} (\"{}\") is held by peer {} [{}]. Coordinate with \
-                                 them in the room, or take another card — work/list with \
-                                 claimable=true lists every card you can pick up right now \
-                                 (most sit in the `claimed` column with a lapsed lease, so \
-                                 filtering by state=\"open\" will not show them). \
-                                 (claim error: {e})",
-                                short8(card_id.as_uuid()),
-                                card.title,
-                                short8(owner.as_uuid()),
-                                state_str(&card.state),
-                            );
+                        // ASK WHO, NOT JUST WHETHER. `live_holder` says a person is on
+                        // the card; `classify_refusal` says whether that person is YOU.
+                        // Without the second question this arm told Anon her own card was
+                        // a stranger's (2026-08-14) — see `ClaimRefusal`.
+                        let caller_uuid = ctx.caller.as_ref().map(|c| c.peer_id.as_uuid());
+                        let holder = live_holder(card, now_ms).map(|o| o.as_uuid());
+                        match classify_refusal(holder, caller_uuid) {
+                            ClaimRefusal::AlreadyYours => already_yours = card.claim_id,
+                            ClaimRefusal::HeldByPeer(owner) => {
+                                contention = true;
+                                msg = format!(
+                                    "card {} (\"{}\") is held by peer {} [{}]. Coordinate with \
+                                     them in the room, or take another card — work/list with \
+                                     claimable=true lists every card you can pick up right now \
+                                     (most sit in the `claimed` column with a lapsed lease, so \
+                                     filtering by state=\"open\" will not show them). \
+                                     (claim error: {e})",
+                                    short8(card_id.as_uuid()),
+                                    card.title,
+                                    short8(owner),
+                                    state_str(&card.state),
+                                );
+                            }
+                            // Nobody is on it — the original error stands as written.
+                            ClaimRefusal::Fault => {}
                         }
                     }
+                }
+                // A claim you ALREADY HOLD is satisfied, not refused: the verb's goal
+                // ("this citizen owns this card") is already true, so report success
+                // with the live claim rather than inventing a rival. Deliberately does
+                // NOT re-fire `dispatch_staged_swe_solve` — `run_id` is deterministic
+                // (`claim-<card>`) with no in-flight guard, and a duplicate detached
+                // solve would contend for the exclusive warm slot. Recovering a claim
+                // whose session died is a separate, dedup-gated fix.
+                if let Some(claim_id) = already_yours {
+                    crate::probe!(
+                        class = "work.claim",
+                        card_id = %card_id.as_uuid(),
+                        claimer = %caller_short,
+                        "re-claim of a card the caller already holds — satisfied, no re-dispatch"
+                    );
+                    return Ok(WorkClaimResult {
+                        card_id: p.card_id,
+                        claim_id: claim_id.as_uuid().to_string(),
+                    });
                 }
                 // A rejection is WORK-STATE, not a transient tool result: the
                 // raw receipt scrolls out of the persona's short window and the
@@ -415,19 +649,91 @@ impl ActionCommand for WorkClaim {
                 });
             }
         };
-        // CLAIM → WORK SESSION (#346 front half): claiming a staged SWE card IS the
-        // start of the work, never an announcement of intent. The gate-conflation
-        // arc (2026-08-08, BigMama + M5) proved these minds act reliably inside a
-        // work session and stall on room ticks — so the claim fires the session.
-        // Eligibility is structural, decoded from our own staging shape: the
-        // CLAIMER's own `citizens/peers/<her>/workspace/swe/<instance>` checkout
-        // whose directory name appears in the card title (`benchmark/swe-setup`
-        // staged it for exactly her). Detached + scored + workspace-deliverable,
-        // so the #2167 autograde carries settle → verdict → experience stream with
-        // nobody in the loop. Best-effort: a dispatch failure never voids the
-        // claim — the claim is hers either way, and the probe says what happened.
+        // ON-CLAIM STAGING (the pull inversion, 2026-09-03): the CLAIMER's workspace is
+        // prepared per the card's recipe HERE — whoever pulls a card gets its work where
+        // her hands are. ONE seam serves a pulled card, a tool-call claim, and a
+        // detached-solve round's directed assignee (`benchmark/dispatch` calls the same
+        // function before firing her solve). Then the room's DRIVER decides what fires:
+        // a citizen-driven round leaves the card to her held-work loop; a detached-solve
+        // round starts her scored solve (#346 — claiming IS the start of the work) IN
+        // THE CARD'S OWN ROOM (#425: boards are per-room, so the card's activity is the
+        // room whose board holds it). Best-effort past the claim: the claim is hers
+        // either way, and the probes say what happened. A card we cannot place gets NO
+        // detached fallback — inventing invisible work is the failure #425 removed.
         if let Some(caller) = ctx.caller.as_ref() {
-            dispatch_staged_swe_solve(ctx, &airc, caller.peer_id.as_uuid(), card_id).await;
+            match card_in_subscribed_rooms(&airc, card_id).await {
+                Some((room, card)) => {
+                    use crate::cognition::bench_round::WorkDriver;
+                    use crate::modules::card_staging::Staging;
+                    let staging = match crate::commands::benchmark::continuum_home() {
+                        Ok(home) => {
+                            crate::modules::card_staging::stage_for_claimer(
+                                &home,
+                                caller.peer_id.as_uuid(),
+                                &card.title,
+                            )
+                            .await
+                        }
+                        Err(e) => Staging::Failed { stage: "home", error: e.to_string() },
+                    };
+                    let driver =
+                        crate::cognition::bench_round::driver_for_card(card_id.as_uuid());
+                    match (driver, &staging) {
+                        (WorkDriver::Citizen, _) => crate::probe!(
+                            class = "work.claim.held",
+                            card_id = %short8(card_id.as_uuid()),
+                            claimer = %short8(caller.peer_id.as_uuid()),
+                            staging = ?staging,
+                            "citizen-driven round — the card is hers to work in her own \
+                             loop; nothing detached fires"
+                        ),
+                        (WorkDriver::DetachedSolve, Staging::Failed { stage, error }) => {
+                            crate::probe!(
+                                class = "work.claim.solve_withheld",
+                                card_id = %short8(card_id.as_uuid()),
+                                claimer = %short8(caller.peer_id.as_uuid()),
+                                stage = stage,
+                                error = %error,
+                                "detached solve NOT fired on an unstaged workspace — the \
+                                 claim stands; a solve into a known wall is an env fault \
+                                 wearing a capability face"
+                            )
+                        }
+                        (WorkDriver::DetachedSolve, _) => {
+                            dispatch_staged_swe_solve(
+                                ctx,
+                                &airc,
+                                StagedSolveDispatch {
+                                    claimer: caller.peer_id,
+                                    card: card_id,
+                                    room: room.channel,
+                                    // An organic claim REJOINS the card's recorded team
+                                    // (gap 3) — the round record is the continuity source.
+                                    teammates: crate::cognition::bench_round::card_activity(
+                                        card_id.as_uuid(),
+                                    )
+                                    .map(|act| {
+                                        act.teammates
+                                            .iter()
+                                            .map(|t| crate::identity::PeerId::from_uuid(*t))
+                                            .collect()
+                                    })
+                                    .unwrap_or_default(), // unwrap_or: card outside any round = solo
+                                },
+                            )
+                            .await;
+                        }
+                    }
+                }
+                None => crate::probe!(
+                    class = "work.claim.unplaceable_card",
+                    card_id = %short8(card_id.as_uuid()),
+                    claimer = %short8(caller.peer_id.as_uuid()),
+                    "claimed a card no subscribed room's board holds — the claim STANDS, \
+                     but nothing is staged and no solve fires: work whose activity we \
+                     cannot name is work no room can see (#425)"
+                ),
+            }
         }
         Ok(WorkClaimResult {
             card_id: p.card_id,
@@ -439,6 +745,72 @@ impl ActionCommand for WorkClaim {
 /// How many graded chances a claim-dispatched SWE run gets (`AgentSolveParams::attempts`).
 /// This is the SWE adapter's N, not a global — each benchmark adapter owns its own.
 const SWE_CLAIM_ATTEMPTS: u32 = 3;
+
+/// WHO works, WHICH card, WHERE the work is visible — the three facts that define one
+/// staged-SWE dispatch, as a value object rather than a positional argument list.
+///
+/// WHY A STRUCT (Joel, 2026-08-17: *"make sure params are well formed structs and
+/// constants, good OOP, not random parameter lists"*). The previous signature was
+/// `(ctx, airc, Uuid, WorkCardId, Option<Uuid>)`: two BARE UUIDs distinguished only by
+/// argument POSITION, so transposing claimer and room compiled cleanly and dispatched a
+/// citizen's solve under a room's id. Typed fields make that a compile error, and the next
+/// fact this dispatch needs becomes a FIELD instead of a sixth argument. `ctx` and `airc`
+/// stay separate parameters on purpose — they are ambient services, not facts about the
+/// dispatch, and folding them in would turn the value object into a context bag.
+///
+/// WHY `room` IS NOT `Option` (Joel, same day: *"if something is required, remove the
+/// option… a required param is caught at compile time not runtime"*). It used to be
+/// `Option<Uuid>`, and `work/claim` passed `None` — which is #425: the solve ran, her acts
+/// radiated no receipts (`apply_act` skips a nil room by design), and no room, peer or human
+/// ever saw the work. Making the field required moves that from a runtime shrug to an
+/// unrepresentable state: a caller that cannot name the activity cannot build the struct,
+/// so it must resolve one ([`room_holding_card`]) or report why it could not.
+/// One-per-persona solve lease — see the "ONE PAIR OF HANDS" note in
+/// [`dispatch_staged_swe_solve`]. RAII: dropping the lease (any exit path,
+/// panics included) frees the persona for the next solve.
+struct HandsLease(uuid::Uuid);
+
+fn busy_hands() -> &'static std::sync::Mutex<std::collections::HashSet<uuid::Uuid>> {
+    static BUSY: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<uuid::Uuid>>> =
+        std::sync::OnceLock::new();
+    BUSY.get_or_init(Default::default)
+}
+
+impl HandsLease {
+    fn try_take(persona: uuid::Uuid) -> Option<Self> {
+        let mut g = busy_hands().lock().expect("busy-hands lock never poisoned"); // expect: guards a HashSet op only
+        if g.insert(persona) {
+            Some(Self(persona))
+        } else {
+            None
+        }
+    }
+}
+
+impl Drop for HandsLease {
+    fn drop(&mut self) {
+        if let Ok(mut g) = busy_hands().lock() {
+            g.remove(&self.0);
+        }
+    }
+}
+
+pub(crate) struct StagedSolveDispatch {
+    /// The citizen who does the work — her own airc identity.
+    pub claimer: crate::identity::PeerId,
+    /// The card she is working.
+    pub card: airc_work::WorkCardId,
+    /// The activity the run BELONGS to: `benchmark/dispatch` passes the per-run room it
+    /// just spawned (#329), `work/claim` resolves the card's own room. Every act the
+    /// solver executes radiates a receipt into it (#243), which is what makes the work
+    /// visible where the work lives.
+    pub room: airc_core::RoomId,
+    /// TEAM solves (#team-proof gap 1): citizens joined to the solve room
+    /// beside the claimer. Empty = solo (every existing caller). They are
+    /// INVITED members, not co-claimers — the C1 shape: presence + an
+    /// addressed charge to review, with the kanban terminal untouched.
+    pub teammates: Vec<crate::identity::PeerId>,
+}
 
 /// The #346 claim→solve dispatch. Fires a detached [`crate::commands::agent::solve::AgentSolve`]
 /// for the claimer when the claimed card matches a checkout `benchmark/swe-setup` staged
@@ -455,62 +827,310 @@ const SWE_CLAIM_ATTEMPTS: u32 = 3;
 /// 2026-08-11: cards staged + assigned, zero claims, zero solves). The solve is her WHOLE
 /// cognition with an exclusive warm slot (`quiesce_others`), so nothing about "she does the
 /// work herself" changes — only the trigger moves off the chat turn.
+/// Pre-warm envs for every instance a WORKING round has staged — the resume-side
+/// twin of dispatch's pre-warm (a reboot mid-round otherwise re-discovers env
+/// walls one burned solve attempt at a time). The staged workspace dirs
+/// (`peers/<assignee>/workspace/swe/<instance>`) are the reliable card→instance
+/// map; instances resolve through the SAME dataset loader the grader uses.
+/// Instances whose env FAILED this boot's pre-warm — the dispatch gate reads
+/// this so a still-broken card idles (no attempt-burning loop) while a healed
+/// one re-fires automatically. Per-boot by construction: a restart re-walks.
+pub fn env_broken_this_boot() -> &'static dashmap::DashSet<String> {
+    static SET: std::sync::OnceLock<dashmap::DashSet<String>> = std::sync::OnceLock::new();
+    SET.get_or_init(dashmap::DashSet::new)
+}
+
+pub fn spawn_env_prewarm_for_working_rounds() {
+    tokio::spawn(async move {
+        // WORKING ROUNDS' instances, from the round tracker — NOT the peers'
+        // workspace directory sweep this used to run. That sweep warmed every
+        // instance EVER staged on this box (measured 2026-09-01: pytest-5221/
+        // 5227/5413/5495/5787/7324/7432 + the whole scikit/astropy graveyard,
+        // serially, DURING boot — including known-red astropy envs re-running
+        // their multi-minute uv heal ladders to the same cc failure every
+        // reboot). Leftover cruft from prior runs is not a working round; the
+        // tracker knows what is. A card whose instance the tracker cannot
+        // name yet (pre-instance-recording rounds) simply isn't pre-warmed —
+        // its env still builds at dispatch, exactly as before pre-warm existed.
+        let mut names: std::collections::BTreeSet<String> = Default::default();
+        for round in crate::cognition::bench_round::live_rounds() {
+            for card in round.cards {
+                if !card.instance.is_empty()
+                    && !matches!(card.state.as_str(), s if crate::cognition::bench_round::is_terminal_card_state(s))
+                {
+                    names.insert(card.instance);
+                }
+            }
+        }
+        if names.is_empty() {
+            return;
+        }
+        // Resolve each staged name against every SWE dataset in the catalog —
+        // the same search the grade path performs (first dataset holding the
+        // instance wins), so this can never disagree with grading.
+        for name in names {
+            let mut resolved = None;
+            for spec in crate::commands::benchmark::known_benchmarks() {
+                let Some(dataset) = spec.swe_dataset() else { continue };
+                if let Ok(instances) = crate::cognition::swe_bench::load_dataset(dataset).await {
+                    if let Some(i) = instances.into_iter().find(|i| i.instance_id == name) {
+                        resolved = Some(i);
+                        break;
+                    }
+                }
+            }
+            let Some(inst) = resolved else { continue };
+            let checkout = match crate::cognition::swe_bench::ensure_grade_checkout(&inst).await {
+                Ok(dir) => dir,
+                Err(e) => {
+                    crate::probe!(
+                        class = "benchmark.env.prewarm_failed",
+                        instance = %inst.instance_id,
+                        stage = "checkout",
+                        error = %e,
+                        "resume-side env pre-warm could not stage a checkout — an ENV \
+                         failure, not a model result"
+                    );
+                    continue;
+                }
+            };
+            match crate::cognition::swe_bench::ensure_env(&inst, &checkout).await {
+                Ok(_) => {
+                    let healed = env_broken_this_boot().remove(&inst.instance_id).is_some();
+                    crate::probe!(
+                        class = "benchmark.env.prewarmed",
+                        instance = %inst.instance_id,
+                        healed,
+                        "resume-side env pre-warm: ready ahead of the driver"
+                    );
+                }
+                Err(e) => {
+                    env_broken_this_boot().insert(inst.instance_id.clone());
+                    crate::probe!(
+                        class = "benchmark.env.prewarm_failed",
+                        instance = %inst.instance_id,
+                        stage = "env",
+                        error = %e,
+                        "resume-side env pre-warm FAILED — an ENV failure, never a model result"
+                    );
+                }
+            }
+        }
+    });
+}
+
 pub(crate) async fn dispatch_staged_swe_solve(
     ctx: &Ctx,
     airc: &std::sync::Arc<airc_lib::Airc>,
-    claimer: uuid::Uuid,
-    card_id: airc_work::WorkCardId,
+    dispatch: StagedSolveDispatch,
 ) {
-    let Ok(board) = airc
-        .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
-        .await
-    else {
+    let StagedSolveDispatch {
+        claimer,
+        card: card_id,
+        room,
+        teammates,
+    } = dispatch;
+    // ONE PAIR OF HANDS (2026-08-29): a persona's ToolExecutor / file-engine
+    // re-root is PROCESS-GLOBAL (see root_acting_workspace / #312), so two
+    // concurrent solve forks of the SAME persona contend on the same hands —
+    // glass-boxed as ticks parked 25min before perception in exactly the rooms
+    // sharing a claimer, reaped by the tick deadline in a retry loop. A second
+    // solve for a busy persona is deferred to the round driver's next edge
+    // (retry machinery already exists), never run beside the first. This is a
+    // MIND fact wearing a mutex: one body, one workspace, one solve at a time.
+    let _hands = match HandsLease::try_take(claimer.as_uuid()) {
+        Some(lease) => lease,
+        None => {
+            crate::probe!(
+                class = "work.solve.hands_busy",
+                card_id = %card_id.as_uuid(),
+                claimer = %claimer,
+                "claimer already mid-solve — one pair of hands; deferred to the driver's next edge"
+            );
+            return;
+        }
+    };
+    // Read the RUN ROOM's board — the dispatch HAS the room (StagedSolveDispatch
+    // requires it), and boards are per-room. The previous read went through the
+    // caller's GLOBAL paginated projection (work_board_complete), where a card
+    // beyond the page silently vanished: measured live 2026-08-26 — of two cards
+    // on one run-room board, one dispatched and one "was not in the caller's
+    // board projection" purely by page position. Room-scoped is both correct
+    // and unpaginated for the one board that matters.
+    let run_room = {
+        let subs = match airc.subscription_set().await {
+            Ok(s) => s,
+            Err(e) => {
+                crate::probe!(
+                    class = "benchmark.dispatch",
+                    card_id = %card_id.as_uuid(),
+                    claimer = %claimer,
+                    error = %e.to_string(),
+                    "dispatch aborted: caller's subscriptions unreadable — retried on                      the next edge"
+                );
+                return;
+            }
+        };
+        let found = subs
+            .all()
+            .into_iter()
+            .map(|sub| sub.as_room())
+            .find(|r| r.channel == room);
+        found
+    };
+    let Some(run_room) = run_room else {
+        crate::probe!(
+            class = "benchmark.dispatch",
+            card_id = %card_id.as_uuid(),
+            claimer = %claimer,
+            room = %room.as_uuid(),
+            "dispatch aborted: the claimer is not subscribed to the run room (her              subscription may still be resuming post-boot) — retried on the next edge"
+        );
+        return;
+    };
+    let Ok(board) = airc.work_board_in(&run_room).await else {
+        crate::probe!(
+            class = "benchmark.dispatch",
+            card_id = %card_id.as_uuid(),
+            claimer = %claimer,
+            "dispatch aborted: the run room's board could not be read — retried on              the next edge"
+        );
         return;
     };
     let board = board.snapshot();
     let Some(card) = board.cards.iter().find(|c| c.card_id == card_id) else {
+        crate::probe!(
+            class = "benchmark.dispatch",
+            card_id = %card_id.as_uuid(),
+            claimer = %claimer,
+            board_cards = board.cards.len() as u64,
+            "dispatch aborted: card not on the RUN room's board (stale card id, or              the board is still replicating) — retried on the next edge"
+        );
         return;
     };
-    // Her staged SWE checkouts — the exact layout swe-setup writes.
-    let Ok(home) = crate::commands::benchmark::continuum_home() else {
-        return;
-    };
-    let swe_root = home
-        .join("citizens/peers")
-        .join(claimer.to_string())
-        .join("workspace/swe");
-    let Ok(entries) = std::fs::read_dir(&swe_root) else {
-        return; // no staged work for her — an ordinary (non-SWE) claim.
-    };
-    let staged: Vec<String> = entries
-        .flatten()
-        .filter(|e| e.path().is_dir())
-        .filter_map(|e| e.file_name().to_str().map(str::to_string))
-        .filter(|name| card.title.contains(name.as_str()))
-        .collect();
-    let [instance] = staged.as_slice() else {
-        if staged.len() > 1 {
+    // Her staged SWE checkouts. ONE expression of that layout lives in
+    // `persona::staged_workspace` — the work turn roots her hands with the same resolver,
+    // so a change to staging can never leave the two disagreeing about which repo a card
+    // is about (they did disagree in kind already: this walk accepted any directory, that
+    // one requires a `.git`, so an interrupted clone read as a staged instance here).
+    // ENV GATE: an instance whose env failed THIS boot's pre-warm cannot grade —
+    // firing a solve would burn an attempt on a wall we already measured. Skip
+    // with a named abort; the card stays open and re-fires on the first boot
+    // whose pre-warm heals it (the automatic retake).
+    let env_gate = |inst: &str| crate::modules::work::env_broken_this_boot().contains(inst);
+    let (instance, workspace) = match crate::persona::staged_workspace::resolve_for_titles(
+        // typed PeerId (canary's #425 struct) → the resolver's raw Uuid
+        &claimer.as_uuid(),
+        [card.title.as_str()],
+    ) {
+        crate::persona::staged_workspace::CardWorkspace::One { instance, path } => {
+            if env_gate(&instance) {
+                crate::probe!(
+                    class = "benchmark.dispatch",
+                    card_id = %card_id.as_uuid(),
+                    instance = %instance,
+                    "dispatch deferred: this instance's env failed THIS boot's \
+                     pre-warm — an attempt now would burn on a measured wall; the \
+                     open card re-fires the first boot the env heals"
+                );
+                return;
+            }
+            (instance, path.to_string_lossy().to_string())
+        }
+        // No staged checkout for her matching this card — an ordinary (non-SWE) claim.
+        crate::persona::staged_workspace::CardWorkspace::None => {
             crate::probe!(
                 class = "benchmark.dispatch",
                 card_id = %card_id.as_uuid(),
                 claimer = %claimer,
-                matches = staged.len(),
+                "dispatch: no staged checkout matches this card for this claimer —                  ordinary claim, no solve to fire"
+            );
+            return;
+        }
+        crate::persona::staged_workspace::CardWorkspace::Ambiguous { candidates } => {
+            crate::probe!(
+                class = "benchmark.dispatch",
+                card_id = %card_id.as_uuid(),
+                claimer = %claimer,
+                matches = candidates.len(),
+                candidates = candidates.join(","),
                 "claim matched MULTIPLE staged instances — refusing to guess, no dispatch"
             );
+            return;
         }
-        return;
     };
+    // ONE CARD, ONE LIVE RUN — a STOPGAP, and named as one (2026-08-21).
+    //
+    // WHAT THIS IS, honestly: a doorman with a clipboard. A citizen re-affirming a claim
+    // is an ordinary, legitimate act — a student saying "this one's mine" a second time.
+    // The school's answer today is to seat a SECOND her at a second desk with a copy of
+    // the same worksheet, in the same room, both writing on it. This gate turns that into
+    // a refusal at the door. It stops the damage; it does not remove the incoherence.
+    //
+    // THE INCOHERENCE, which is the real defect: we keep TWO REGISTRIES FOR ONE FACT.
+    // The board holds "this citizen holds this card" (enrollment). A JSON file on disk
+    // holds "run claim-<id> is running" (attendance). Two records of one truth, so they
+    // can and do disagree — and this gate is a clerk reconciling them on every claim.
+    // The structural fix is that the ENROLLMENT IS THE SESSION: re-affirming a claim
+    // finds the work already under way and continues it, because there is only one place
+    // the fact lives and nothing to duplicate. That is #371 (round lifecycle as
+    // recipe-owned state) plus #49 (the workspace held for the life of the claim, so the
+    // worksheet is hers rather than a directory two runs can both open). Neither is
+    // built; until they are, this doorman is the thing standing between a citizen and a
+    // clobbered afternoon.
+    //
+    // `run_id` is DETERMINISTIC per card (`claim-<uuid>`), and this dispatch had no
+    // guard, so every re-claim of the same card fired ANOTHER detached solve. Two runs
+    // then shared, simultaneously: one ledger file (their pulse ticks overwrite each
+    // other, so `benchmark/runs` reports whichever wrote last — an honest-looking
+    // `acts: 0` that is really run B stomping run A's marker), one WORKSPACE (two sets
+    // of hands editing the same repo, which is a live candidate for the empty
+    // `files_changed` this box keeps producing), and one exclusive warm slot they each
+    // ask to quiesce the other out of.
+    //
+    // Observed: Atlas re-claimed card df9f4ad5 three times in one evening on
+    // pallets__flask-4045; `benchmark/runs` caught the third at `age_secs: 8, acts: 0`.
+    // A re-claim is LEGAL (airc permits claiming a lapsed card, and #331/#2286 both
+    // depend on that) — what is not legal is a second RUN. The claim is the citizen's
+    // intent; the run is the machinery, and the machinery must be idempotent under a
+    // repeated intent.
+    //
+    // Keyed on `in_flight_solve_runs` — the SAME `state: "running"` predicate the boot
+    // reaper uses, so this gate and the reaper can never disagree about what "live"
+    // means. That also gives the gate its release valve for free: a run whose core died
+    // is reaped to `state: "failed"` at next boot, so a dead run never blocks its card
+    // forever. It is a refusal, not a kill: the live run keeps working, and nothing
+    // touches the citizen's claim.
+    let run_id = format!("claim-{}", card_id.as_uuid());
+    if let Some((_, live_instance)) = crate::cognition::swe_bench::in_flight_solve_runs()
+        .into_iter()
+        .find(|(id, _)| id == &run_id)
+    {
+        crate::probe!(
+            class = "benchmark.dispatch",
+            card_id = %card_id.as_uuid(),
+            claimer = %claimer,
+            instance = %instance,
+            run_id = %run_id,
+            live_instance = %live_instance,
+            "re-claim of a card whose run is ALREADY IN FLIGHT — refusing to start a \
+             second solve. A duplicate would share this run's ledger, its workspace and \
+             its warm slot, and silently discard whichever half lost the race. The live \
+             run continues; the claim stands."
+        );
+        return;
+    }
+
     // WAIT for the boot-gate, don't guard against it. A claim can land while the serving lane
     // is still proving it can decode (the ~10-15s window after core-ready); parking here until
     // the lane is decode-verified means the solve fires the moment serving is up instead of the
     // claim silently no-op-ing (Joel 2026-08-11: "persona should boot beforehand"). None after
     // the deadline = a genuinely dead lane; the claim stands and re-fires on the next serving edge.
-    let model = crate::inference::llama_server::await_ready_serving(
-        std::time::Duration::from_secs(30),
-    )
-    .await
-    .and_then(|s| s.active_model)
-    .unwrap_or_default();
+    let model =
+        crate::inference::llama_server::await_ready_serving(std::time::Duration::from_secs(30))
+            .await
+            .and_then(|s| s.active_model)
+            .unwrap_or_default(); // no recorded activity yet = first dispatch of this card; mint path follows
     if model.is_empty() {
         crate::probe!(
             class = "benchmark.dispatch",
@@ -521,7 +1141,226 @@ pub(crate) async fn dispatch_staged_swe_solve(
         );
         return;
     }
-    let workspace = swe_root.join(instance).to_string_lossy().to_string();
+    // THE SOLVE'S OWN ACTIVITY — mint-or-rejoin (Joel 2026-08-26: "benchmarks
+    // without new activities (unless rejoining)" is not allowed; rooms are 1:1
+    // with activities). The run room stays the BOARD's home (cards, kickoffs,
+    // the round's denominator); the solve itself is its own activity: a child
+    // room per (card, instance) where her acts radiate. This is also the KV
+    // fix becoming real — each concurrent solve's (persona, room) key leases
+    // its OWN warm slot instead of N solves thrashing one.
+    //
+    // REJOIN: the round recorded this card's activity at first mint (resume
+    // after a reboot, a retry attempt — same room, continuity). MINT: spawn a
+    // real activity room, child of the run room, and record it.
+    let solve_room = match crate::cognition::bench_round::card_activity(card_id.as_uuid()) {
+        Some(mut act) => {
+            crate::probe!(
+                class = "work.solve.room_rejoined",
+                card_id = %short8(card_id.as_uuid()),
+                claimer = %short8(claimer.as_uuid()),
+                room = %act.solve_room,
+                "solve REJOINS its recorded activity room — resume and dispatch are one motion"
+            );
+            // BACKFILL the room's name for activities recorded before names
+            // existed: the mint name is deterministic (`swe--<instance>--<card8>`),
+            // so a rejoin can restore it — and with it, presence adoption +
+            // nav for this room (#2606). Idempotent; new records carry it.
+            if act.room_name.is_empty() {
+                act.room_name = format!("swe--{}--{}", instance, short8(card_id.as_uuid()));
+                crate::cognition::bench_round::record_card_activity(card_id.as_uuid(), act.clone());
+            }
+            act.solve_room
+        }
+        None => {
+            // Spawn AS the claimer when her runtime is live (she is joined to her
+            // own workroom); the caller's handle is the fallback so a dispatch
+            // fired before she is resident still names a real activity.
+            let spawner = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+                .and_then(|reg| reg.get(claimer.as_uuid()))
+                .map(|rt| rt.airc().clone())
+                .unwrap_or_else(|| airc.clone()); // assignee runtime gone → curator's own handle spawns; probed below
+            let name = format!("swe--{}--{}", instance, short8(card_id.as_uuid()));
+            let recipe = crate::experience::source::RecipeExperienceSource::shipped_purpose(
+                crate::experience::source::shipped::BENCHMARK_HARD_RS,
+            )
+            .unwrap_or_default(); // empty name renders as unnamed room in the probe; display only
+            match crate::modules::activity::spawn_activity_room(
+                &spawner,
+                &name,
+                &recipe,
+                Some(room),
+                &std::collections::BTreeMap::new(),
+            )
+            .await
+            {
+                Ok(spawned) => {
+                    // RESTORE THE SPAWNER'S FOCUS (glass-boxed 2026-08-26, the
+                    // one-resident boot): spawn_activity_room's documented side
+                    // effect moves the caller's current-room pointer to the new
+                    // solve room — and when the dispatch's curator IS the
+                    // assignee (any_live_citizen with one resident), that same
+                    // handle creates the NEXT card, which then lands on the
+                    // SOLVE room's board instead of the run room's. Measured:
+                    // card 1 of 3 visible, cards 2-3 "not on the RUN room's
+                    // board" forever — two solves dead at dispatch and a live
+                    // card ghost-settled. Until airc grows subscribe-without-
+                    // focus (#290), the mint restores the pointer itself.
+                    if let Err(e) = spawner.join(&run_room.name).await {
+                        crate::probe!(
+                            class = "work.solve.room_mint_failed",
+                            card_id = %short8(card_id.as_uuid()),
+                            error = %e.to_string(),
+                            "could not restore the spawner's focus to the run room                              after the mint — subsequent card writes may land on the                              wrong board"
+                        );
+                    }
+                    let act = crate::cognition::bench_round::CardActivity {
+                        teammates: teammates.iter().map(|p| p.as_uuid()).collect(),
+                        solve_room: spawned.room_id.as_uuid(),
+                        room_name: name.clone(),
+                        assignee: claimer.as_uuid(),
+                    };
+                    crate::cognition::bench_round::record_card_activity(card_id.as_uuid(), act.clone()); // clone: probe below still reads the local
+                    crate::probe!(
+                        class = "work.solve.room_minted",
+                        card_id = %short8(card_id.as_uuid()),
+                        claimer = %short8(claimer.as_uuid()),
+                        room = %act.solve_room,
+                        name = %name,
+                        "solve MINTED its own activity room (child of the run room)"
+                    );
+                    act.solve_room
+                }
+                Err(e) => {
+                    // A mint failure must not strand the work invisible: fall back
+                    // to the run room (a real activity, just coarser-grained) and
+                    // say so. The next re-fire retries the mint.
+                    crate::probe!(
+                        class = "work.solve.room_mint_failed",
+                        card_id = %short8(card_id.as_uuid()),
+                        claimer = %short8(claimer.as_uuid()),
+                        error = %e.to_string(),
+                        "activity mint failed — solve runs in the RUN room this time (coarser \
+                         KV granularity, still visible); mint retries on the next fire"
+                    );
+                    room.as_uuid()
+                }
+            }
+        }
+    };
+
+    // TEAM MEMBERSHIP (#team-proof gap 1): teammates JOIN the solve room and
+    // receive an addressed charge. Membership is room-level (their normal
+    // multi-room cognition participates from here on); accountability stays
+    // card-level with the single claimer. Join is idempotent; a failed join or
+    // invite is REPORTED and never blocks the solve (the claimer works either
+    // way — a smaller team is a degraded run, not a dead one).
+    if !teammates.is_empty() {
+        let team_room_name = format!("swe--{}--{}", instance, short8(card_id.as_uuid()));
+        for mate in &teammates {
+            let Some(rt) = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+                .and_then(|reg| reg.get(mate.as_uuid()))
+            else {
+                crate::probe!(
+                    class = "work.team.join_skipped",
+                    card_id = %short8(card_id.as_uuid()),
+                    mate = %short8(mate.as_uuid()),
+                    "teammate not resident — solve proceeds with a smaller team"
+                );
+                continue;
+            };
+            if mate.as_uuid() == claimer.as_uuid() {
+                // Teamed with yourself is a roster accident, not a team.
+                continue;
+            }
+            if let Err(e) = rt.join_room(&team_room_name).await {
+                crate::probe!(
+                    class = "work.team.join_failed",
+                    card_id = %short8(card_id.as_uuid()),
+                    mate = %short8(mate.as_uuid()),
+                    error = %e.to_string(),
+                    "teammate join failed — reported, never blocks the claimer"
+                );
+                continue;
+            }
+            // AUTHOR THE CHARGE AS SOMEONE ELSE — the same law the kickoff path
+            // learned (#417, benchmark.rs "AUTHOR IT AS SOMEONE ELSE"): a citizen's
+            // inbound stream skips messages she is recorded as having said, so a
+            // charge published through the MATE'S OWN airc is dropped by her
+            // self-filter and never wakes her. Measured on the first team round
+            // (2026-08-30): Kira held the review charge in five rooms and produced
+            // zero turns in 28 minutes — the charge was her own voice. The natural
+            // author is the CLAIMER (it is their patch being reviewed); fall back
+            // to any other live citizen, and skip loudly rather than send a
+            // message that cannot be heard.
+            let registry =
+                crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global();
+            let voice_rt = registry
+                .as_ref()
+                .and_then(|reg| reg.get(claimer.as_uuid()))
+                .or_else(|| {
+                    registry
+                        .as_ref()
+                        .and_then(|reg| reg.any_live_citizen_other_than(Some(mate.as_uuid())))
+                });
+            let Some(voice_rt) = voice_rt else {
+                crate::probe!(
+                    class = "work.team.charge_unvoiced",
+                    card_id = %short8(card_id.as_uuid()),
+                    mate = %short8(mate.as_uuid()),
+                    "no live citizen other than the mate can voice the charge — \
+                     skipped loudly; a self-authored charge would be self-filtered"
+                );
+                continue;
+            };
+            // Membership is what makes the room deliverable for the voice too
+            // (idempotent; same rule as the kickoff's voice-join).
+            if let Err(e) = voice_rt.join_room(&team_room_name).await {
+                crate::probe!(
+                    class = "work.team.voice_join_failed",
+                    card_id = %short8(card_id.as_uuid()),
+                    mate = %short8(mate.as_uuid()),
+                    error = %e.to_string(),
+                    "charge voice could not join the solve room — charge skipped"
+                );
+                continue;
+            }
+            let claimer_name = registry
+                .as_ref()
+                .and_then(|reg| reg.get(claimer.as_uuid()))
+                .map(|c| c.agent_name().to_string())
+                .unwrap_or_else(|| short8(claimer.as_uuid()));
+            let charge = format!(
+                "@{mate_name} (to you): you are teamed with {claimer_name} on \
+                 `{instance}` in this room. Their patch must be reviewed by a \
+                 teammate before it submits: read the diff when it lands, run what \
+                 you can, and SPEAK your findings here — a miss a reviewer catches \
+                 is the whole point of the team.",
+                mate_name = rt.agent_name(),
+            );
+            match crate::persona::airc_citizen::publish_text_in_room(
+                voice_rt.airc(),
+                solve_room,
+                &charge,
+            )
+            .await
+            {
+                Ok(_) => crate::probe!(
+                    class = "work.team.joined",
+                    card_id = %short8(card_id.as_uuid()),
+                    mate = %short8(mate.as_uuid()),
+                    room = %solve_room,
+                    "teammate joined the solve room and holds the review charge"
+                ),
+                Err(e) => crate::probe!(
+                    class = "work.team.invite_failed",
+                    card_id = %short8(card_id.as_uuid()),
+                    mate = %short8(mate.as_uuid()),
+                    error = %e.to_string(),
+                    "teammate joined but the charge did not send — reported"
+                ),
+            }
+        }
+    }
     // Her HANDS must resolve `python`/`pytest`/`pip` to THIS instance's venv, not the system
     // interpreter. Without this, `code/shell pytest` hits homebrew python3.14 (no pytest, no
     // repo), she loops `pip install pytest` into the wrong interpreter, and burns every action
@@ -530,30 +1369,52 @@ pub(crate) async fn dispatch_staged_swe_solve(
     // solve.rs already `.exists()`-filters it, so prepending a not-yet-built bin is harmless.
     let venv_bin = crate::cognition::swe_bench::swe_cache_dir()
         .join("envs")
-        .join(instance)
+        .join(&instance)
         .join("bin")
         .to_string_lossy()
         .to_string();
     let params = crate::commands::agent::solve::AgentSolveParams {
-        persona_id: claimer.to_string(),
+        persona_id: claimer.to_string().into(),
         base_model_id: model,
         workspace,
         task: card.body.clone().unwrap_or_else(|| card.title.clone()),
         deliverable: Some(crate::commands::agent::solve::Deliverable::Workspace),
         scored: Some(true),
         detach: Some(true),
-        run_id: Some(format!("claim-{}", card_id.as_uuid())),
-        capture_dir: None,
+        // The SAME expression the in-flight gate above keyed on — one definition of
+        // "this card's run id", so the guard can never check a different id than the
+        // dispatch actually uses.
+        run_id: Some(run_id.clone()),
+        // CAPTURE the detached solve's turns (was None → the whole scored run was
+        // INVISIBLE: a reviewer — Opus or a self-grading citizen — could not read a single
+        // tool-call output to verify it, forcing inference from a STALE main-loop capture
+        // and a near-misdiagnosis 2026-08-25). eval.rs already scopes this per-run
+        // (run_artifact_dir), so it does not collide with the main-loop sink; a measured run
+        // is meant to be inspectable (eval.rs `capture_dir` doc). Same base dir the tooling
+        // (`dataset/from-captures`) and the main-loop sink use.
+        capture_dir: std::env::var("HOME").ok().map(|h| {
+            std::path::Path::new(&h)
+                .join(".continuum/fixtures/prompt-captures")
+                .to_string_lossy()
+                .to_string()
+        }),
         learn: crate::cognition::learning_policy::LearningPolicy::LearnFromThisWork,
         max_acts: None,
+        // The solve's OWN activity (minted-or-rejoined above) — NOT the run room.
+        // `AgentSolveParams::room` stays `Option` because `agent/solve` is also an
+        // operator-invocable command (an omitted room mints there).
+        room: Some(solve_room),
         path_prepend: Some(vec![venv_bin]),
         suppress_recall: None,
-                prev_failed_patch_sha: None,
+        prev_failed_patch_sha: None,
         // The SWE claim adapter's N (Joel, 2026-08-08): a failed grade re-enters the
         // same workspace with the named failing tests — learning to investigate your
         // own failure is part of the exam. Three chances: first attempt, one informed
         // retry, one consolidation — beyond that the failures repeat, not teach.
         attempts: Some(SWE_CLAIM_ATTEMPTS),
+        // Participants stay awake through the measured-work quiesce (gap 3) —
+        // the reviewers this dispatch just joined into the solve room.
+        teammates: teammates.iter().map(|m| m.as_uuid()).collect(),
     };
     match crate::commands::agent::solve::AgentSolve
         .run(ctx, params)
@@ -679,13 +1540,17 @@ impl ActionCommand for WorkRelease {
         let airc = persona_airc(&self.registry, ctx, "work commands")?;
         let card_id = resolve_card_id(&airc, &p.card_id).await?;
         let claim_id = resolve_claim_id(&airc, &p.claim_id).await?;
-        airc.release_work_claim(ReleaseWorkClaim {
-            card_id,
-            claim_id,
-            reason: p.reason,
-        })
-        .await
-        .map_err(|e| CommandError::Internal(e.to_string()))?;
+        let mut attempt = airc
+            .release_work_claim(ReleaseWorkClaim { card_id, claim_id, reason: p.reason.clone() })
+            .await;
+        if matches!(attempt, Err(airc_lib::AircError::WorkCardNotInCurrentRoom { .. }))
+            && follow_card_room(&airc, card_id, "work/release").await.is_some()
+        {
+            attempt = airc
+                .release_work_claim(ReleaseWorkClaim { card_id, claim_id, reason: p.reason })
+                .await;
+        }
+        attempt.map_err(|e| CommandError::Internal(e.to_string()))?;
         Ok(WorkReleaseResult { released: true })
     }
 }
@@ -732,29 +1597,178 @@ impl ActionCommand for WorkState {
         let airc = persona_airc(&self.registry, ctx, "work commands")?;
         let card_id = resolve_card_id(&airc, &p.card_id).await?;
         let state = parse_state(&p.state)?;
-        airc.change_work_card_state(ChangeWorkCardState { card_id, state })
+        let landed = advance_card_state_effective(&airc, card_id, state, "work-state-verb")
             .await
-            .map_err(|e| CommandError::Internal(e.to_string()))?;
-
-        // Emit the transition as a bus EVENT — the moment a citizen moves a card, any
-        // subscriber REACTS (the SWE grade-on-done handler, board freshness, auto-close).
-        // Nothing scans the board on a clock; this is the event-based system law
-        // ([[the-whole-system-is-event-based-not-polling]]). Best-effort: the state
-        // change already succeeded, so a bus that isn't wired yet must never fail the verb.
-        if let Some((bus, registry)) = WORK_EVENT_BUS.get() {
-            bus.publish(
-                WORK_CARD_STATE_CHANGED,
-                serde_json::json!({ "card_id": p.card_id.clone(), "state": p.state.clone() }),
-                registry,
-            )
-            .await;
-        }
-
+            .map_err(CommandError::Internal)?;
         Ok(WorkStateResult {
             card_id: p.card_id,
-            state: p.state,
+            // The state that LANDED: under the review gate an owner's `done` reads
+            // back as `review` — she must see that her card now waits on a reviewer.
+            state: state_str(&landed).to_string(),
         })
     }
+}
+
+/// Transition a work card's lifecycle state AND feed the grade/lifecycle
+/// subscribers in-process — the ONE place a card's state is written and
+/// announced (the compression law: `work/state` the verb, the held-work settle
+/// edge, and any future writer all call THIS, never re-implement the change +
+/// emit pair). Writing without the direct emit is the #434 delivery-hole that
+/// let finished work grade as NOTHING; the (card,state) ring in
+/// `emit_card_state_changed` makes the direct feeder and the wire echo publish
+/// exactly once when both fire, so callers may always emit.
+///
+/// `via` labels the feeder on the probe stream so two writers of the same
+/// transition are distinguishable.
+pub(crate) async fn advance_card_state(
+    airc: &Arc<Airc>,
+    card_id: WorkCardId,
+    state: CardState,
+    via: &'static str,
+) -> Result<(), String> {
+    advance_card_state_effective(airc, card_id, state, via).await.map(|_| ())
+}
+
+/// The state-advance seam WITH the review gate (team-recipe Arm 2, 2026-09-03).
+/// Returns the state that actually landed:
+/// - a verdict on a REVIEW card: `done` = pass → the review retires and the PARENT
+///   closes (its grade fires); `blocked` = send back → the review retires and the
+///   parent returns to `in_progress` (the reviewer's critique is already in the room);
+/// - an owner's `done` on a GATED parent → `review` + a sibling review card is
+///   posted for a non-owner to pull;
+/// - everything else advances as asked.
+/// One seam for the `work/state` verb and the deterministic held-work settle, so
+/// the gate cannot be bypassed by either.
+pub(crate) async fn advance_card_state_effective(
+    airc: &Arc<Airc>,
+    card_id: WorkCardId,
+    state: CardState,
+    via: &'static str,
+) -> Result<CardState, String> {
+    use crate::cognition::bench_round as round;
+    let finishing = matches!(state, CardState::Closed | CardState::Merged);
+    if let Some(parent) = round::review_parent(card_id.as_uuid()) {
+        if finishing || state == CardState::Blocked {
+            let passed = finishing;
+            round::settle_review_card(card_id.as_uuid(), passed);
+            raw_advance(airc, card_id, CardState::Closed, via).await?;
+            let parent_id = WorkCardId::from_uuid(parent);
+            let next = if passed { CardState::Closed } else { CardState::InProgress };
+            crate::probe!(
+                class = "work.review.verdict",
+                review = %short8(card_id.as_uuid()),
+                parent = %short8(parent),
+                passed,
+                "reviewer's verdict — a pass closes the parent (grade fires), a send-back \
+                 returns it to in_progress"
+            );
+            raw_advance(airc, parent_id, next, via).await?;
+            return Ok(next);
+        }
+    }
+    if finishing && round::review_required(card_id.as_uuid()) {
+        raw_advance(airc, card_id, CardState::Review, via).await?;
+        match open_review_card(airc, card_id).await {
+            Ok(review) => crate::probe!(
+                class = "work.review.opened",
+                parent = %short8(card_id.as_uuid()),
+                review = %short8(review.as_uuid()),
+                "owner's done became review — a sibling review card is on the deck for a \
+                 non-owner; only the reviewer's done closes this card"
+            ),
+            Err(e) => crate::probe!(
+                class = "work.review.open_failed",
+                parent = %short8(card_id.as_uuid()),
+                error = %e,
+                "the card is in review but no review card could be posted — the next \
+                 done retries the gate"
+            ),
+        }
+        return Ok(CardState::Review);
+    }
+    raw_advance(airc, card_id, state, via).await?;
+    Ok(state)
+}
+
+/// Post the sibling review card for `parent` into the parent's own room, as the
+/// caller's identity. The card BODY carries the reviewer's role prompt — recipe
+/// data on the card, never a code branch in cognition.
+async fn open_review_card(airc: &Arc<Airc>, parent: WorkCardId) -> Result<WorkCardId, String> {
+    let (room, card) = card_in_subscribed_rooms(airc, parent)
+        .await
+        .ok_or_else(|| "parent card is on no subscribed room's board".to_string())?;
+    let (_, instance) = crate::commands::benchmark::parse_card_title(&card.title)
+        .ok_or_else(|| "parent is not a bench card".to_string())?;
+    let owner = card
+        .owner
+        .and_then(|o| {
+            crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+                .and_then(|reg| reg.get(o.as_uuid()))
+                .map(|rt| rt.agent_name().to_string())
+        })
+        .unwrap_or_else(|| "the owner".to_string());  // unwrap_or: owner not resident = a neutral name in the review body
+    let title = crate::commands::benchmark::review_card_title(parent.as_uuid(), &instance, &owner);
+    let p8 = parent.as_uuid().simple().to_string()[..8].to_string();
+    let body = format!(
+        "Review {owner}'s fix for `{instance}` (card {p8}). You are the fresh pair of \
+         eyes: READ-ONLY. Do not edit their tree.\n\n\
+         Their checkout is {owner}'s workspace at `swe/{instance}/` — your hands are rooted \
+         there for this card. Run `git diff` to see the change; run the repo's tests for the \
+         issue.\n\n\
+         Judge the diff against the card's definition of done: does it fix the CAUSE with \
+         the smallest edit, without touching the tests, and do the tests pass?\n\n\
+         Verdict, with evidence — every claim cites a file:line or a test result:\n\
+         - PASS: say `work/state <this card's id> done` — that closes {owner}'s card and \
+         fires the grade.\n\
+         - SEND BACK: say what must change (cited), then `work/state <this card's id> \
+         blocked` — the card returns to {owner} in progress.\n\
+         Report gaps, not style."
+    );
+    // The card lands in the airc handle's CURRENT room — make that the parent's room
+    // (the same focus move the claim path makes when a card sits elsewhere).
+    airc.join(&room.name).await.map_err(|e| e.to_string())?;
+    let mut req = CreateWorkCard::new(card.repo.clone(), title, Priority::P1).reviewing(parent);
+    req.body = Some(body);
+    let review = airc.create_work_card(req).await.map_err(|e| e.to_string())?;
+    crate::cognition::bench_round::register_review_card(parent.as_uuid(), review.as_uuid())
+        .ok_or_else(|| "parent left its round before the review was registered".to_string())?;
+    Ok(review)
+}
+
+/// The raw advance + the bus event — what [`advance_card_state`] was before the gate.
+async fn raw_advance(
+    airc: &Arc<Airc>,
+    card_id: WorkCardId,
+    state: CardState,
+    via: &'static str,
+) -> Result<(), String> {
+    let mut attempt = airc
+        .change_work_card_state(ChangeWorkCardState { card_id, state })
+        .await;
+    if matches!(attempt, Err(airc_lib::AircError::WorkCardNotInCurrentRoom { .. }))
+        && follow_card_room(airc, card_id, "work/state").await.is_some()
+    {
+        attempt = airc
+            .change_work_card_state(ChangeWorkCardState { card_id, state })
+            .await;
+    }
+    attempt.map_err(|e| e.to_string())?;
+    // The CARD's room, never `current_room()` — boards are per-room and the grade
+    // subscriber refuses an event with no room.
+    let room_id = room_holding_card(airc, card_id)
+        .await
+        .map(|r| r.channel.as_uuid().to_string())
+        .unwrap_or_default();  // unwrap_or: a card we cannot place carries an empty room on the bus
+    emit_card_state_changed(
+        serde_json::json!({
+            "card_id": card_id.as_uuid().to_string(),
+            "state": serde_json::to_value(state).unwrap_or(serde_json::Value::Null),  // unwrap_or: an unserializable state = null on the bus, never a panic on the verb
+            "room_id": room_id,
+        }),
+        via,
+    )
+    .await;
+    Ok(())
 }
 
 // ─────────────────────────── work/heartbeat ──────────────────────
@@ -856,15 +1870,54 @@ fn state_str(s: &CardState) -> &'static str {
 ///
 /// Delegates to [`card_holder::hold_of`], the SAME predicate `work/list` renders
 /// through. One rule for "is someone on this card", not two in one file.
-fn live_holder(
-    card: &airc_work::WorkCard,
-    now_ms: u64,
-) -> Option<airc_core::PeerId> {
+fn live_holder(card: &airc_work::WorkCard, now_ms: u64) -> Option<airc_core::PeerId> {
     match crate::persona::card_holder::hold_of(card, now_ms) {
         crate::persona::card_holder::Hold::Held => card.owner,
         // Lapsed or unclaimed: whatever refused the claim, it was not a person.
         crate::persona::card_holder::Hold::Lapsed
         | crate::persona::card_holder::Hold::Unclaimed => None,
+    }
+}
+
+/// What a refused claim MEANS for the citizen who made it.
+///
+/// `live_holder` answers "is a person on this card". It does NOT answer "is that
+/// person YOU" — and without that second question the refusal path told a citizen
+/// a stranger held her own work. Glass-boxed live 2026-08-14: Anon (a20b3ada) held
+/// 13 cards and was told `card 17531483 ... is held by peer a20b3ada` — her own
+/// peer id, rendered as somebody else. She read it as contention, concluded there
+/// was nothing for her to do, and went silent holding thirteen claims. Her prompt
+/// was not the problem: `[active-work]` listed every card and `[Working Presence]`
+/// told her a quiet room is not a stop sign. The substrate said the work was
+/// someone else's, so she believed the substrate.
+///
+/// The caller's identity was already in scope 20 lines below (`ctx.caller`) and
+/// simply never consulted for this decision. This is the [[same-bug-at-two-sites]]
+/// shape — `work/list` renders holders through `card_holder`, and the claim path
+/// needed the same self-vs-other distinction as a NAMED rule rather than prose.
+///
+/// Separated from the call site for the reason `live_holder` was: the call site is
+/// where this went wrong, and an inline `if` is not something a test can reach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClaimRefusal {
+    /// The live holder IS the caller — she already owns this card. Not contention,
+    /// not a fault: the claim's goal ("this citizen holds this card") is already
+    /// true, so the verb is satisfied and must not manufacture a rival.
+    AlreadyYours,
+    /// A different peer genuinely holds it right now. A normal shared-board outcome.
+    HeldByPeer(Uuid),
+    /// Nobody holds it; whatever refused the claim was not a person.
+    Fault,
+}
+
+/// Classify a refusal from the live holder and the caller. Pure — no board, no
+/// daemon, no persona.
+pub(crate) fn classify_refusal(holder: Option<Uuid>, caller: Option<Uuid>) -> ClaimRefusal {
+    match (holder, caller) {
+        // Self-comparison FIRST: a caller who holds the card is never contention.
+        (Some(h), Some(c)) if h == c => ClaimRefusal::AlreadyYours,
+        (Some(h), _) => ClaimRefusal::HeldByPeer(h),
+        (None, _) => ClaimRefusal::Fault,
     }
 }
 
@@ -982,6 +2035,7 @@ pub struct WorkListResult {
     /// at the moment of the miss, not a silent zero and not a redefinition of `state`
     /// (the column filter keeps meaning the column).
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub note: Option<String>,
 
     /// The matched cards. LAST by design — see the field-order note at the top of this
@@ -1031,7 +2085,7 @@ impl ActionCommand for WorkList {
             .caller
             .as_ref()
             .map(|c| c.peer_id.as_uuid())
-            .unwrap_or_default();
+            .unwrap_or_default(); // no subscriptions = empty board; the abort branch below speaks
         let mut owner_peers: Vec<airc_core::PeerId> = Vec::new();
         for c in &board.cards {
             if let Some(o) = c.owner {
@@ -1191,11 +2245,19 @@ crate::register_command!(WorkHeartbeat);
 /// can resolve the CALLER's own airc handle and act as that persona.
 pub struct WorkModule {
     registry: PersonaAircRuntimeRegistry,
+    /// Late-bound substrate executor (the ChatModule pattern): benchmark/dispatch
+    /// composes OTHER commands — `data/list` to load a recipe row, `serving/pin`
+    /// to re-home the lane — through the universal primitive instead of
+    /// cross-module state threading. Installed by `install_executor_on_all`.
+    executor_slot: std::sync::Arc<crate::runtime::LateBound<crate::runtime::command_executor::CommandExecutor>>,
 }
 
 impl WorkModule {
     pub fn new(registry: PersonaAircRuntimeRegistry) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            executor_slot: std::sync::Arc::new(crate::runtime::LateBound::new("work::executor")),
+        }
     }
 }
 
@@ -1259,6 +2321,18 @@ impl ServiceModule for WorkModule {
             // registered-but-unroutable class (#344 audit / #362).
             Arc::new(crate::commands::benchmark::BenchmarkDispatch {
                 registry: self.registry.clone(),
+                executor_slot: self.executor_slot.clone(),
+            }),
+            // benchmark/pause + resume act on round state + fire the driver's
+            // dispatch — registered here beside dispatch for the same
+            // dep-ownership reason.
+            Arc::new(crate::commands::benchmark_pause::BenchmarkPause),
+            Arc::new(crate::commands::benchmark_pause::BenchmarkResume),
+            // recipe/run composes arbitrary commands through the substrate
+            // executor — registered here for the same executor-slot-ownership
+            // reason benchmark/dispatch is (never registered-but-unroutable).
+            Arc::new(crate::commands::recipe_run::RecipeRun {
+                executor_slot: self.executor_slot.clone(),
             }),
             // persona/roster reads the SAME live registry benchmark/dispatch resolves its
             // assignees against — constructed here for the same dep-ownership reason (#396
@@ -1266,7 +2340,17 @@ impl ServiceModule for WorkModule {
             Arc::new(crate::commands::persona_roster::PersonaRoster {
                 registry: self.registry.clone(),
             }),
+            Arc::new(crate::commands::presence_directory::PresenceDirectory {
+                registry: self.registry.clone(),
+            }),
         ]
+    }
+
+    fn install_executor(
+        &self,
+        executor: std::sync::Arc<crate::runtime::command_executor::CommandExecutor>,
+    ) {
+        self.executor_slot.install(executor);
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -1279,13 +2363,140 @@ mod tests {
     use super::*;
 
     // what this catches: the card-transition event NAME is the contract between the
-    // emitter (`work/state`) and every subscriber (SWE grade-on-done, board freshness,
-    // auto-close). A silent rename here would unsubscribe every reactor — the event
-    // would fire into the void, undetectably. Pin the string. (Event-based system law:
-    // the grade REACTS to this, it never polls the board.)
+    // emitter (`bridge_wire_work_event`) and every subscriber (SWE grade-on-done, board
+    // freshness, auto-close). A silent rename here would unsubscribe every reactor — the
+    // event would fire into the void, undetectably. Pin the string. (Event-based system
+    // law: the grade REACTS to this, it never polls the board.)
     #[test]
     fn card_state_changed_event_name_is_the_stable_emitter_subscriber_contract() {
         assert_eq!(WORK_CARD_STATE_CHANGED, "work.card.state_changed");
+    }
+
+    // what this catches: the grade tail now has TWO feeders — the `work/state` verb
+    // (in-process, delivery-proof) and the wire echo bridge (external writers). They
+    // both see the same transition whenever wire delivery is healthy, and a subscriber
+    // that grades twice would write two receipts for one card. The (card,state) ring is
+    // the ONLY thing making that one publish; the wire-event-id ring cannot cover it
+    // because the verb path has no wire event. Regression for the 2026-08-17 grade tail
+    // fix (two Closed cards, zero grades, #434 starving the single wire feeder).
+    #[test]
+    fn one_transition_publishes_once_no_matter_which_feeder_sees_it_first() {
+        let card = uuid::Uuid::new_v4().to_string();
+        assert!(first_transition_sighting(&card, "closed"), "first sighting publishes");
+        assert!(
+            !first_transition_sighting(&card, "closed"),
+            "the second feeder for the SAME transition must not publish again"
+        );
+        assert!(
+            first_transition_sighting(&card, "merged"),
+            "a DIFFERENT state on the same card is a different transition and must publish"
+        );
+    }
+
+    /// Build a wire transcript event through the REAL producer (`encode_work_event`),
+    /// so a header/codec contract drift fails these tests instead of shipping.
+    fn wire_work_event(event: airc_work::WorkEvent, event_id: u128) -> airc_core::TranscriptEvent {
+        let (headers, body) =
+            airc_work::encode_work_event(&event).expect("work event encodes for the fixture");
+        airc_core::TranscriptEvent {
+            event_id: airc_core::EventId::from_u128(event_id),
+            room_id: airc_core::RoomId::from_u128(2),
+            peer_id: airc_core::PeerId::from_u128(3),
+            client_id: airc_core::ClientId::from_u128(4),
+            kind: airc_core::TranscriptKind::System,
+            occurred_at_ms: 100,
+            lamport: 1,
+            target: airc_core::MentionTarget::All,
+            headers,
+            body: Some(body),
+            attachment: None,
+            receipt: None,
+            metadata: serde_json::Value::Null,
+        }
+    }
+
+    // what this catches: the grade-on-done tail was DEAF to every writer except the
+    // continuum `work/state` verb — a card closed via `airc work state` (operator) or a
+    // remote peer changed the board and graded NOTHING (live 2026-08-15: Asha's real
+    // rle_roundtrip artifact, operator close, zero grade). The bridge decodes the wire
+    // echo into the exact payload contract the grader speaks: full hyphenated card UUID
+    // + snake_case state that `is_terminal`/`parse_state` accept.
+    #[test]
+    fn wire_card_state_change_decodes_to_the_grader_payload_contract() {
+        let card_id = airc_work::WorkCardId::new();
+        let event = wire_work_event(
+            airc_work::WorkEvent::CardStateChanged(airc_work::CardStateChanged {
+                card_id,
+                state: airc_work::CardState::Closed,
+                changed_by: airc_core::PeerId::from_u128(3),
+                changed_at_ms: 100,
+            }),
+            0xA1,
+        );
+        let payload = wire_card_state_payload(&event).expect("card-state event must decode");
+        assert_eq!(
+            payload["card_id"].as_str().unwrap(),
+            card_id.as_uuid().to_string(),
+            "card_id must be the FULL hyphenated UUID (the grader prefix-matches it)"
+        );
+        assert_eq!(
+            payload["state"].as_str().unwrap(),
+            "closed",
+            "state must be the snake_case CardState serde form — the is_terminal vocabulary"
+        );
+        assert_eq!(
+            payload["room_id"].as_str().unwrap(),
+            airc_core::RoomId::from_u128(2).as_uuid().to_string(),
+            "room_id must be the card's OWN room — the grader scopes its board read and \
+             verdict post to it (#345 wrong-room trap, hit live 2026-08-15)"
+        );
+        // parse_state round-trip: the bridged state string is valid work/state input.
+        assert_eq!(parse_state("closed").unwrap(), CardState::Closed);
+    }
+
+    // what this catches: a NON-state work event (a claim) or a non-work event must
+    // never fabricate a state-change publish — a claim firing the grader would grade
+    // half-finished work the moment it was picked up.
+    #[test]
+    fn non_state_work_events_and_non_work_events_do_not_bridge() {
+        let claim = wire_work_event(
+            airc_work::WorkEvent::CardClaimed(airc_work::WorkCardClaimed {
+                card_id: airc_work::WorkCardId::new(),
+                claim_id: airc_work::ClaimId::from_uuid(uuid::Uuid::new_v4()),
+                owner: airc_core::PeerId::from_u128(3),
+                ttl_ms: 200,
+                claimed_at_ms: 100,
+            }),
+            0xA2,
+        );
+        assert!(wire_card_state_payload(&claim).is_none());
+
+        let mut chat = wire_work_event(
+            airc_work::WorkEvent::CardStateChanged(airc_work::CardStateChanged {
+                card_id: airc_work::WorkCardId::new(),
+                state: airc_work::CardState::Closed,
+                changed_by: airc_core::PeerId::from_u128(3),
+                changed_at_ms: 100,
+            }),
+            0xA3,
+        );
+        chat.headers = airc_core::Headers::default(); // strip the work body-hint
+        assert!(
+            wire_card_state_payload(&chat).is_none(),
+            "without the work body-hint header the event must not decode as work"
+        );
+    }
+
+    // what this catches: every resident persona's subscribe stream yields the SAME
+    // room event once — without first-sighting dedup the bridge would publish N
+    // copies for N residents and the grader would grade (and post verdicts) N times.
+    // Fresh uuids per call keep this parallel-safe against the process-global ring.
+    #[test]
+    fn first_sighting_admits_once_per_event_id() {
+        let id = Uuid::new_v4();
+        assert!(first_sighting(id), "first delivery must win");
+        assert!(!first_sighting(id), "the second resident's echo must dedup");
+        assert!(first_sighting(Uuid::new_v4()), "a different event is fresh");
     }
 
     /// what this catches (#357): `work/claim` inventing a holder out of a stale
@@ -1300,6 +2511,8 @@ mod tests {
     ///
     /// Measured on the live boards 2026-08-07: ~50 of 61 cards on #general and
     /// 4 of 12 on #k3-serving carried a stale owner with a lease expired 134h+.
+    /// (#k3-serving is RETIRED — it was named for a SUBSYSTEM, so it had no lifetime
+    /// and outlived its purpose by a month. Kept here only as the incident record.)
     /// Two citizens spent the day quoting the resulting sentence back at us —
     /// "expired leases or the cards being held by others" is BOTH HALVES of that
     /// one format string.
@@ -1447,9 +2660,12 @@ mod tests {
     // again be read as an empty board.
     #[test]
     fn a_column_filter_can_never_again_report_an_empty_board_as_no_work() {
-        // A realistic epoch-ms clock: the 134h subtraction below is a real
-        // observed lease age, and a toy `now` would underflow it.
-        let now = 1_786_000_000_000u64;
+        // No clock here: this test asserts over the FILTER axes, and states its
+        // lease outcomes directly as `claimable_flags`. (It previously carried a
+        // `now` and a comment about "the 134h subtraction below" — both copied
+        // from its sibling `a_lapsed_lease_is_not_a_person_holding_the_card`,
+        // which is the one that actually ages a lease. Dead variable, stale
+        // comment; the compiler was right to warn.)
         // The live shape: nothing in the Open column, every claim lapsed.
         let claimable_flags = [true, true, true]; // 3 claimed cards, all leases expired
         let states = [CardState::Claimed, CardState::Claimed, CardState::Claimed];
@@ -1533,6 +2749,72 @@ mod tests {
                 "`{field}` must survive truncation — declare the summary BEFORE `cards`, \
                  or citizens read a severed result and correctly conclude there is no work"
             );
+        }
+    }
+
+    /// The self-vs-other half of the refusal rule. `live_holder` (tested above,
+    /// #357) answers "is a person on this card"; these answer "is that person YOU".
+    mod refusal_identity {
+        use super::*;
+
+        /// what this catches: work/claim telling a citizen that SHE holds her own
+        /// card — rendered as a stranger. Glass-boxed live 2026-08-14: Anon
+        /// (a20b3ada) held 13 bench cards and was told `card 17531483 ... is held
+        /// by peer a20b3ada`. She read her own id as a rival, concluded the work
+        /// was taken, and went silent holding thirteen claims — with the board in
+        /// her prompt and [Working Presence] telling her a quiet room is not a stop
+        /// sign. The substrate outranked both, because it spoke in specifics.
+        ///
+        /// This is the benchmark loop's stall: dispatch stages a card, she claims
+        /// it, a re-claim tells her it is someone else's, and no work happens.
+        #[test]
+        fn the_caller_is_never_a_rival_for_her_own_card() {
+            let her = Uuid::new_v4();
+            assert_eq!(
+                classify_refusal(Some(her), Some(her)),
+                ClaimRefusal::AlreadyYours,
+                "a citizen holding her own card must be told she holds it — naming her \
+                 own peer id as the rival is how thirteen claimed cards went unworked"
+            );
+        }
+
+        /// what this catches: over-correcting into "self" and swallowing real
+        /// contention — the failure the #357 fix was careful to avoid. A DIFFERENT
+        /// live holder is a normal shared-board outcome and must still be named.
+        #[test]
+        fn a_different_live_holder_is_still_reported_as_contention() {
+            let her = Uuid::new_v4();
+            let peer = Uuid::new_v4();
+            assert_eq!(
+                classify_refusal(Some(peer), Some(her)),
+                ClaimRefusal::HeldByPeer(peer),
+                "someone else's live claim is real contention and must name them"
+            );
+        }
+
+        /// what this catches: an unidentified caller silently classifying as
+        /// "yours". Identity absent is NOT identity matched — without a caller we
+        /// cannot claim the card is hers, so the holder is reported as a peer.
+        #[test]
+        fn an_unknown_caller_is_not_treated_as_the_holder() {
+            let holder = Uuid::new_v4();
+            assert_eq!(
+                classify_refusal(Some(holder), None),
+                ClaimRefusal::HeldByPeer(holder),
+                "no caller identity means no self-match — never assume it is hers"
+            );
+        }
+
+        /// what this catches: regression of the #357 rule through the new arm —
+        /// nobody on the card is a fault, never a fabricated holder, whether or
+        /// not we know who is asking.
+        #[test]
+        fn nobody_on_the_card_is_a_fault_not_a_holder() {
+            assert_eq!(
+                classify_refusal(None, Some(Uuid::new_v4())),
+                ClaimRefusal::Fault
+            );
+            assert_eq!(classify_refusal(None, None), ClaimRefusal::Fault);
         }
     }
 }

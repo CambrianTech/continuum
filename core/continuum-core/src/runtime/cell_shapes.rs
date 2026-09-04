@@ -114,7 +114,10 @@ use uuid::Uuid;
 /// state map; the remote call carries the ID, A executes the op
 /// locally, returns the result.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
-#[ts(export, export_to = "../../../protocol/typescript/runtime/HandleRef.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/runtime/HandleRef.ts"
+)]
 pub struct HandleRef {
     /// Module that owns the state behind this handle. Kernel routes
     /// any command taking this handle through the module's registered
@@ -152,11 +155,7 @@ impl HandleRef {
     /// self.sessions.insert(id, session_state);
     /// Ok(CommandResult::Handle(HandleRef::with_id("ai/inference", id, "ai::InferenceSession")))
     /// ```
-    pub fn with_id(
-        owner: impl Into<String>,
-        id: Uuid,
-        type_tag: impl Into<String>,
-    ) -> Self {
+    pub fn with_id(owner: impl Into<String>, id: Uuid, type_tag: impl Into<String>) -> Self {
         Self {
             owner: owner.into(),
             id: id.into(),
@@ -259,7 +258,10 @@ fn now_ms() -> u64 {
 /// external code; internal code uses [`StreamPlaceholder::new`] to
 /// construct rather than the field-init shorthand.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
-#[ts(export, export_to = "../../../protocol/typescript/runtime/StreamPlaceholder.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/runtime/StreamPlaceholder.ts"
+)]
 #[non_exhaustive]
 pub struct StreamPlaceholder {
     /// Correlation ID a future wire protocol will use to tie incoming
@@ -290,7 +292,10 @@ impl StreamPlaceholder {
 /// that prepare a context and return "now call THIS with the rest of
 /// your input."
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
-#[ts(export, export_to = "../../../protocol/typescript/runtime/LambdaPlaceholder.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/runtime/LambdaPlaceholder.ts"
+)]
 #[non_exhaustive]
 pub struct LambdaPlaceholder {
     /// Name of the curried command the lambda will dispatch when
@@ -322,7 +327,11 @@ mod tests {
     fn handle_ref_with_id_preserves_uuid() {
         let id = Uuid::new_v4();
         let h = HandleRef::with_id("ai/inference", id, "ai::InferenceSession");
-        assert_eq!(h.id.as_uuid(), id, "with_id must preserve the producer-allocated UUID");
+        assert_eq!(
+            h.id.as_uuid(),
+            id,
+            "with_id must preserve the producer-allocated UUID"
+        );
         assert_eq!(h.owner, "ai/inference");
         assert_eq!(h.type_tag, "ai::InferenceSession");
         assert!(h.created_at_ms > 0, "constructor must capture a timestamp");
@@ -342,7 +351,10 @@ mod tests {
         let back: HandleRef = serde_json::from_str(&json).expect("HandleRef must deserialize");
         assert_eq!(h, back);
         // Spot-check the UUID survives the round-trip.
-        assert_eq!(h.id, back.id, "UUID must round-trip byte-identical through JSON");
+        assert_eq!(
+            h.id, back.id,
+            "UUID must round-trip byte-identical through JSON"
+        );
     }
 
     #[test]
@@ -353,8 +365,7 @@ mod tests {
         // TypeScript consumers can echo handles back as strings.
         let id = Uuid::new_v4();
         let h = HandleRef::with_id("chat", id, "chat::MessageHandle");
-        let json: serde_json::Value =
-            serde_json::to_value(&h).expect("HandleRef must serialize");
+        let json: serde_json::Value = serde_json::to_value(&h).expect("HandleRef must serialize");
         let id_field = json.get("id").expect("id field present");
         assert!(
             id_field.is_string(),

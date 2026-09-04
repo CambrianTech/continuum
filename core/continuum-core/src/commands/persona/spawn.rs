@@ -45,7 +45,10 @@ use crate::persona::identity_provider::{PersonaIdentityIntent, PersonaIdentitySo
 /// Optional inputs to a spawn. All optional — the zero-arg call births ONE persona
 /// with a random name and everything else derived from her id.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/PersonaSpawnParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/PersonaSpawnParams.ts"
+)]
 pub struct PersonaSpawnParams {
     /// Explicit name for the (single) persona. Omit for a random name from the pool.
     /// Ignored when `count > 1` — a batch is all-random (one name can't name many).
@@ -60,7 +63,10 @@ pub struct PersonaSpawnParams {
 /// The immediate receipt: who is being born. Births run in the background — each
 /// completion fires `persona:born`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/PersonaSpawnReceipt.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/PersonaSpawnReceipt.ts"
+)]
 pub struct PersonaSpawnReceipt {
     /// The names being birthed, in order.
     pub birthing: Vec<String>,
@@ -83,8 +89,9 @@ fn plan_intents(name: Option<String>, count: Option<u32>) -> Vec<PersonaIdentity
         .map(|_| {
             let persona_id = Uuid::new_v4();
             let agent_name = if count == 1 {
-                name.clone()
-                    .unwrap_or_else(|| agent_name_from_identity(&persona_id.to_string()).to_string())
+                name.clone().unwrap_or_else(|| {
+                    agent_name_from_identity(&persona_id.to_string()).to_string()
+                })
             } else {
                 agent_name_from_identity(&persona_id.to_string()).to_string()
             };

@@ -111,8 +111,7 @@ impl PersonaCard {
     ) -> Self {
         let agent_name = agent_name.into();
         let id_str = persona_id.to_string();
-        let gender =
-            gender_from_name(&agent_name).unwrap_or_else(|| gender_from_identity(&id_str));
+        let gender = gender_from_name(&agent_name).unwrap_or_else(|| gender_from_identity(&id_str));
         Self {
             persona_id,
             agent_name,
@@ -203,9 +202,21 @@ mod tests {
         assert_eq!(gender_from_name(female_name), Some(AvatarGender::Female));
         let id = Uuid::new_v4();
         let card = PersonaCard::genesis(id, female_name, 1000, None);
-        assert_eq!(card.gender, AvatarGender::Female, "gender agrees with the name");
-        assert_eq!(card.pronouns().subject, "she", "pronouns cohere with gender");
-        assert_eq!(card.voice_seed, id.to_string(), "voice seeds on the identity");
+        assert_eq!(
+            card.gender,
+            AvatarGender::Female,
+            "gender agrees with the name"
+        );
+        assert_eq!(
+            card.pronouns().subject,
+            "she",
+            "pronouns cohere with gender"
+        );
+        assert_eq!(
+            card.voice_seed,
+            id.to_string(),
+            "voice seeds on the identity"
+        );
         assert_eq!(card.persona_id, id);
         assert_eq!(card.created_at_ms, 1000);
         assert!(card.role.is_none(), "role unknown at genesis");
@@ -230,7 +241,10 @@ mod tests {
         remove(&a.to_string());
         remove(&b.to_string());
         let after = ids();
-        assert!(!after.contains(&a) && !after.contains(&b), "removed ids drop out");
+        assert!(
+            !after.contains(&a) && !after.contains(&b),
+            "removed ids drop out"
+        );
     }
 
     // what this catches: a unisex/custom name (not in either gendered pool) falls
@@ -261,7 +275,11 @@ mod tests {
         register(card.clone());
         assert_eq!(get(&key), Some(card));
         assert_eq!(gender_of(&key), Some(AvatarGender::Male));
-        assert_eq!(gender_of(&Uuid::new_v4().to_string()), None, "unknown id → None");
+        assert_eq!(
+            gender_of(&Uuid::new_v4().to_string()),
+            None,
+            "unknown id → None"
+        );
         remove(&key);
         assert_eq!(get(&key), None, "removed card is gone");
     }

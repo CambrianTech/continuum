@@ -1,4 +1,5 @@
 {
+<<<<<<<< HEAD:legacy/src/commands/ai/key/diff/package.json
   "name": "@jtag-commands/ai/key/diff",
   "version": "1.0.0",
   "description": "Compare redacted AI key status entries and produce a value-free merge plan for trusted grid reconciliation.",
@@ -8,6 +9,17 @@
     "test": "npm run test:unit && npm run test:integration",
     "test:unit": "npx vitest run test/unit/*.test.ts",
     "test:integration": "npx tsx test/integration/AiKeyDiffIntegration.test.ts",
+========
+  "name": "@jtag-commands/ai/key/status",
+  "version": "1.0.0",
+  "description": "Report redacted API-key availability and fingerprints without exposing raw or masked secret values.",
+  "main": "server/AiKeyStatusServerCommand.ts",
+  "types": "shared/AiKeyStatusTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/AiKeyStatusIntegration.test.ts",
+>>>>>>>> origin/main:legacy/src/commands/ai/key/status/package.json
     "lint": "npx eslint **/*.ts",
     "typecheck": "npx tsc --noEmit"
   },
@@ -24,7 +36,11 @@
   "keywords": [
     "jtag",
     "command",
+<<<<<<<< HEAD:legacy/src/commands/ai/key/diff/package.json
     "ai/key/diff"
+========
+    "ai/key/status"
+>>>>>>>> origin/main:legacy/src/commands/ai/key/status/package.json
   ],
   "license": "MIT",
   "author": "",

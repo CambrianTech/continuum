@@ -26,13 +26,21 @@ use super::{Experience, Member, Standing};
 /// (human / persona / agent, via its `runtime`) intentionally does NOT affect the
 /// projection — the type has no second-class seat; kind is a *render* concern, not
 /// a membership one.
-pub fn project_membership(members: &[RoomMember], roles: &BTreeMap<String, Standing>) -> Vec<Member> {
+pub fn project_membership(
+    members: &[RoomMember],
+    roles: &BTreeMap<String, Standing>,
+) -> Vec<Member> {
     members
         .iter()
         .map(|m| {
-            let peer_id = m.peer_id.as_uuid().to_string();
-            let standing = roles.get(&peer_id).copied().unwrap_or(Standing::Member);
-            Member { peer_id, standing }
+            let standing = roles
+                .get(&m.peer_id.as_uuid().to_string())
+                .copied()
+                .unwrap_or(Standing::Member);
+            Member {
+                peer_id: m.peer_id,
+                standing,
+            }
         })
         .collect()
 }
@@ -79,8 +87,14 @@ mod tests {
         let projected = project_membership(&members, &roles);
         assert_eq!(projected.len(), 2);
         // The human was given Owner; the persona — no role — defaults to Member.
-        let h = projected.iter().find(|m| m.peer_id == human.to_string()).unwrap();
-        let p = projected.iter().find(|m| m.peer_id == persona.to_string()).unwrap();
+        let h = projected
+            .iter()
+            .find(|m| m.peer_id.as_uuid() == human)
+            .unwrap();
+        let p = projected
+            .iter()
+            .find(|m| m.peer_id.as_uuid() == persona)
+            .unwrap();
         assert_eq!(h.standing, Standing::Owner);
         assert_eq!(p.standing, Standing::Member);
     }

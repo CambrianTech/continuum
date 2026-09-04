@@ -1306,9 +1306,11 @@ impl SamplerChainBuilder {
     }
 
     /// Repetition/frequency/presence penalties, llama.cpp style.
-    /// `last_n` = number of recent tokens to consider (0 disables, -1 = n_ctx).
-    pub fn penalties(self, last_n: i32, repeat: f32, freq: f32, presence: f32) -> Self {
-        let s = unsafe { sys::llama_sampler_init_penalties(last_n, repeat, freq, presence) };
+    /// `n_vocab` = the model's vocab size (upstream b10636 added it back to the
+    /// signature); `last_n` = number of recent tokens to consider (0 disables,
+    /// -1 = n_ctx).
+    pub fn penalties(self, n_vocab: i32, last_n: i32, repeat: f32, freq: f32, presence: f32) -> Self {
+        let s = unsafe { sys::llama_sampler_init_penalties(n_vocab, last_n, repeat, freq, presence) };
         self.add(s)
     }
 

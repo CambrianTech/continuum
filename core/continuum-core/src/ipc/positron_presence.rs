@@ -58,9 +58,9 @@ use uuid::Uuid;
 
 use crate::ipc::positron_source::{roster_slot_from_member, AircPresenceUpdate, PRESENCE_UPDATED};
 use crate::persona::room_roster_source::AircRosterReader;
+use crate::persona::room_roster_source::{PRESENCE_WINDOW, ROSTER_SCAN};
 use crate::runtime::MessageBus;
 use tokio::sync::broadcast::error::RecvError;
-use crate::persona::room_roster_source::{PRESENCE_WINDOW, ROSTER_SCAN};
 
 /// How often the emitter re-reads the roster. Presence is Session-tier
 /// (a human-perceivable roster delta, not a sub-second signal), and the
@@ -94,6 +94,59 @@ fn directory_path(room_id: &Uuid) -> Option<PathBuf> {
             .join("state")
             .join(format!("room-directory-{room_id}.json"))
     })
+}
+
+/// Every slot in EVERY room directory on this node — the scope-wide "who
+/// exists" read `presence/directory` unions (duplicates across rooms
+/// included; the caller merges by member id, newest sighting winning).
+/// Files, not daemon paging: existence must survive restarts and benchmark
+/// bursts, and the recent-events page provably doesn't (2026-08-31: a
+/// 4000-event page during a solve burst hid every quiet peer).
+pub fn scope_directory_slots() -> Vec<RosterSlotView> {
+    let Some(state) = dirs::home_dir().map(|h| h.join(".continuum").join("state")) else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(&state) else {
+        return Vec::new();
+    };
+    let mut slots = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Some(room) = name
+            .strip_prefix("room-directory-")
+            .and_then(|r| r.strip_suffix(".json"))
+        else {
+            continue;
+        };
+        let Ok(room_id) = Uuid::parse_str(room) else {
+            continue;
+        };
+        slots.extend(load_directory(&room_id).into_values());
+    }
+    slots
+}
+
+/// Is this peer a HUMAN on this node — a directory slot whose runtime is the
+/// interactive client (`SenderKind::from_runtime`)? The ONE directory
+/// (`scope_directory_slots`), memoised for a minute: the persona loop head
+/// asks it per drained line, and a work-holding citizen wakes for a human
+/// line or an @mention, never for agent status traffic (2026-09-04: every
+/// agent line in #academy woke all twelve holders — 8 work turns an hour).
+pub fn is_human_peer(peer: Uuid) -> bool {
+    static HUMANS: std::sync::LazyLock<std::sync::Mutex<(Option<std::time::Instant>, std::collections::HashSet<Uuid>)>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new((None, std::collections::HashSet::new())));
+    let mut memo = HUMANS.lock().unwrap_or_else(|e| e.into_inner()); // poisoned lock = read the last state, same policy as every lock in this crate
+    let stale = memo.0.is_none_or(|at| at.elapsed() > Duration::from_secs(60));
+    if stale {
+        memo.1 = scope_directory_slots()
+            .into_iter()
+            .filter(|s| matches!(s.kind, continuum_positron::SenderKind::Human))
+            .map(|s| s.member_id)
+            .collect();
+        memo.0 = Some(std::time::Instant::now());
+    }
+    memo.1.contains(&peer)
 }
 
 fn load_directory(room_id: &Uuid) -> HashMap<Uuid, RosterSlotView> {
@@ -259,6 +312,15 @@ pub(crate) fn request_presence_resync(bus: &MessageBus) {
 /// presence emitter is the ONE place this disk fact meets the wire — the
 /// shared [`roster_slot_from_member`] projection stays pure (no I/O), and the
 /// persona-grounding rail (which has no use for pixels) never pays for it.
+/// The directory verb's read of the same store — one scan implementation,
+/// exposed for `presence/directory` (the stream's enrichment only rides
+/// changed-roster publishes; the directory flows every poll).
+pub(crate) fn scan_avatar_store_for_directory() -> HashMap<Uuid, String> {
+    avatar_store_dir()
+        .map(|d| scan_avatar_store(&d))
+        .unwrap_or_default()
+}
+
 fn avatar_store_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".continuum").join("avatars"))
 }
@@ -366,7 +428,7 @@ async fn run_presence_loop(
             .await
             .unwrap_or_default();
     match reader
-        .room_roster_cards(MEMBERSHIP_WINDOW, MEMBERSHIP_SCAN)
+        .room_roster_cards(MEMBERSHIP_WINDOW, MEMBERSHIP_SCAN, Some(room_id))
         .await
     {
         Ok(members) => {
@@ -483,7 +545,7 @@ async fn emit_once(
     directory: &mut HashMap<Uuid, RosterSlotView>,
     force: bool,
 ) -> bool {
-    let members = match reader.room_roster_cards(PRESENCE_WINDOW, ROSTER_SCAN).await {
+    let members = match reader.room_roster_cards(PRESENCE_WINDOW, ROSTER_SCAN, Some(room_id)).await {
         Ok(m) => m,
         Err(err) => {
             tracing::warn!(
@@ -562,6 +624,7 @@ pub fn spawn_node_presence_emitter(
             );
             return;
         }
+        let registry_socket = daemon_socket.clone();
         let airc = match airc_lib::Airc::attach_as(
             node_home.clone(),
             NODE_PRESENCE_READER_NAME,
@@ -592,24 +655,103 @@ pub fn spawn_node_presence_emitter(
             );
             return;
         }
+        // MULTI-ROOM presence (#2606): one attached reader serves EVERY room in
+        // the durable registry — the single-bootstrap-room emitter left every
+        // other room's roster empty (the who-panel changed per tab; academy
+        // rendered blank; Joel, 2026-08-30). Safe now because the chat
+        // projection pins focus after nav/select (`pinned_away_from`) instead
+        // of adopting whichever room's update lands. Reads are room-scoped
+        // (`Some(room_id)`), so N loops on one reader never cross streams.
+        let mut rooms: Vec<(Uuid, String)> = vec![(room_id, room_name.clone())];
+        match airc_ipc::DaemonClient::new(registry_socket.clone()).list_rooms().await {
+            Ok(response) => {
+                for room in response.rooms {
+                    let id = room.room_id.as_uuid();
+                    if id != room_id {
+                        rooms.push((id, room.name));
+                    }
+                }
+            }
+            Err(err) => tracing::warn!(
+                %err,
+                "positron_presence: room-registry list failed — presence serves the                  bootstrap room only until next boot (degraded, not silent)"
+            ),
+        }
+        for (id, name) in &rooms {
+            if *id != room_id {
+                if let Err(err) = airc.join(name).await {
+                    tracing::warn!(%err, room = %name, "positron_presence: join failed — this room's roster stays directory-only");
+                }
+            }
+        }
+        let airc = Arc::new(airc);
         let reader: Arc<dyn AircRosterReader> = Arc::new(
-            crate::context::airc_adapter::AircHandleAdapter::new(Arc::new(airc)),
+            crate::context::airc_adapter::AircHandleAdapter::new(airc.clone()),
         );
         tracing::info!(
-            %room_id,
-            room = %room_name,
-            "positron_presence: node reader attached — emitting presence:updated"
+            rooms = rooms.len(),
+            bootstrap = %room_name,
+            "positron_presence: node reader attached — emitting presence:updated for every registry room"
         );
-        run_presence_loop(reader, room_id, room_name, bus).await;
+        let mut known: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
+        for (id, name) in rooms {
+            known.insert(id);
+            // Bridge the room's transcript too — presence without a chat
+            // bridge is a roster over an empty room.
+            if let Some(reg) = crate::airc::inbound_attach::AttachRegistry::try_global() {
+                reg.ensure_attached(airc_core::RoomId::from_uuid(id));
+            }
+            tokio::spawn(run_presence_loop(reader.clone(), id, name, bus.clone()));
+        }
+        // REFRESHER: activity rooms mint mid-run (a solve room per card) and new
+        // rooms join the registry after boot. Every tick, any room this emitter
+        // doesn't serve yet gets joined (by NAME) and its presence loop spawned —
+        // so a benchmark run's roster/transcript reaches the interface the same
+        // minute it exists, not at next boot. Loops are per-room and idempotent
+        // by the `known` set; a failed join retries next tick (degraded, loud).
+        const REFRESH: Duration = Duration::from_secs(30);
+        let mut ticker = tokio::time::interval(REFRESH);
+        loop {
+            ticker.tick().await;
+            let mut fresh: Vec<(Uuid, String)> =
+                crate::cognition::bench_round::activity_rooms();
+            if let Ok(response) =
+                airc_ipc::DaemonClient::new(registry_socket.clone()).list_rooms().await
+            {
+                for room in response.rooms {
+                    fresh.push((room.room_id.as_uuid(), room.name));
+                }
+            }
+            for (id, name) in fresh {
+                if known.contains(&id) || name.is_empty() {
+                    continue;
+                }
+                if let Err(err) = airc.join(&name).await {
+                    tracing::warn!(%err, room = %name, "positron_presence: refresher join failed — retrying next tick");
+                    continue;
+                }
+                known.insert(id);
+                if let Some(reg) = crate::airc::inbound_attach::AttachRegistry::try_global() {
+                    reg.ensure_attached(airc_core::RoomId::from_uuid(id));
+                }
+                crate::probe!(
+                    class = "presence.room.adopted",
+                    room_id = %id,
+                    room = %name,
+                    "presence emitter adopted a new room — roster + presence now project for it"
+                );
+                tokio::spawn(run_presence_loop(reader.clone(), id, name, bus.clone()));
+            }
+        }
     });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use airc_lib::RoomMember;
     use airc_core::PeerId;
     use airc_lib::AircError;
+    use airc_lib::RoomMember;
     use async_trait::async_trait;
     // The module proper no longer names `SenderKind` (the coarse kind is
     // derived inside the shared `roster_slot_from_member` projection now);
@@ -632,6 +774,7 @@ mod tests {
             &self,
             _within: Duration,
             _window: usize,
+            _room: Option<uuid::Uuid>,
         ) -> Result<Vec<RoomMember>, AircError> {
             Ok(self
                 .members
@@ -650,6 +793,7 @@ mod tests {
             &self,
             _within: Duration,
             _window: usize,
+            _room: Option<uuid::Uuid>,
         ) -> Result<Vec<airc_lib::RoomMemberCard>, AircError> {
             Ok(self.members.clone())
         }
@@ -684,7 +828,7 @@ mod tests {
             vec![
                 member(named, "claude", Some("win-claude")),
                 member(unnamed, "codex", None),
-                member(human, "interactive", Some("Joel")),
+                member(human, "interactive", Some("Operator")),
             ],
             Uuid::from_u128(0xa),
             "general".into(),
@@ -749,7 +893,7 @@ mod tests {
         let live = vec![crate::ipc::positron_source::roster_slot_from_card(&member(
             local,
             "interactive",
-            Some("Joel"),
+            Some("Operator"),
         ))];
         let published = union_with_directory(live.clone(), &dir);
         let ghost = published
@@ -862,7 +1006,7 @@ mod tests {
     fn self_is_included_in_the_widget_roster() {
         let me = PeerId::new();
         let update = project_presence(
-            vec![member(me, "interactive", Some("Joel"))],
+            vec![member(me, "interactive", Some("Operator"))],
             Uuid::from_u128(0xb),
             "general".into(),
             &HashMap::new(),

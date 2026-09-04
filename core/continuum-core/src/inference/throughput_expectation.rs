@@ -29,6 +29,37 @@ pub struct ThroughputBaseline {
     pub accelerator: &'static str,
     pub expected_tok_s: f64,
     pub source: &'static str,
+    /// The SERVED WINDOW this rate was measured at, in tokens.
+    ///
+    /// Load-bearing, and its absence was a live mis-attribution (measured
+    /// 2026-08-20, Qwen3.8-27B on this M5): the catalog carried 17.2 tok/s
+    /// taken at a 19,712 window, the live lane was serving at 89,280 — 4.5×
+    /// the KV to walk per decoded token on UMA — and three samples came in at
+    /// 2.7/6.2/7.8 tok/s. The collapse alarm's own text names CPU fallback,
+    /// pager thrash and GPU contention as the suspects, so a reader would
+    /// have gone hunting a defect that was not there. Decode rate is a
+    /// function of KV size; a rate without its window is not a comparable
+    /// quantity, and the struct already refuses to "present an unsourced
+    /// baseline as fact" — an unwindowed one is the same class.
+    ///
+    /// `None` means the window was genuinely not recorded when the number was
+    /// taken. That is an honest absence, NOT a zero ([[unknown-is-not-a-quantity]]).
+    ///
+    /// This field is PROVENANCE — it says what the number describes. It does not
+    /// come with a comparability predicate, and that omission is deliberate:
+    /// deciding whether two operating points are comparable is a CONSUMER's
+    /// judgement, made against the lease/handle it already holds, not a rule this
+    /// data struct gets to assert for every caller in the tree.
+    ///
+    /// (Removed 2026-08-20, same day it landed: this carried a
+    /// `comparable_at(live_window)` predicate gated on a bare
+    /// `WINDOW_COMPARABILITY_FACTOR: f64 = 2.0`. It had ZERO production callers,
+    /// the 2× was invented, and the doc comments on the seed rows below promised
+    /// that "consumers get `comparable_at() == false`" — describing consumers
+    /// that did not exist. Speculative interface + magic number + a comment
+    /// asserting a reader that was never written. When a real consumer needs
+    /// this, it reads the field and decides through its own interface.)
+    pub measured_at_window: Option<u32>,
 }
 
 /// How measured decode throughput compares to the expected baseline. `ratio`
@@ -37,13 +68,25 @@ pub struct ThroughputBaseline {
 pub enum ThroughputVerdict {
     /// At or above expected (ratio ≥ 1.0 − a small over-delivery is still
     /// "on par"; only meaningfully-above trips this).
-    AbovePar { measured_tok_s: f64, expected_tok_s: f64, ratio: f64 },
+    AbovePar {
+        measured_tok_s: f64,
+        expected_tok_s: f64,
+        ratio: f64,
+    },
     /// Within tolerance of expected — healthy.
-    OnPar { measured_tok_s: f64, expected_tok_s: f64, ratio: f64 },
+    OnPar {
+        measured_tok_s: f64,
+        expected_tok_s: f64,
+        ratio: f64,
+    },
     /// Below tolerance — investigate (CPU fallback, thermal throttle, a
     /// scheduler stall, the wrong model loaded, …). This is the signal that
     /// must never sit silent in a log.
-    Degraded { measured_tok_s: f64, expected_tok_s: f64, ratio: f64 },
+    Degraded {
+        measured_tok_s: f64,
+        expected_tok_s: f64,
+        ratio: f64,
+    },
 }
 
 impl ThroughputVerdict {
@@ -139,6 +182,10 @@ pub const SEED_BASELINES: &[ThroughputBaseline] = &[
         accelerator: "apple-m5",
         expected_tok_s: 67.8,
         source: "MEASURED: continuum tests/llamacpp_metal_throughput.rs single-seq, 2026-06",
+        // Window not recorded when this number was taken (pre-#440). Honest
+        // absence: the window this rate was taken at was never written down,
+        // and stating that plainly beats inventing one.
+        measured_at_window: None,
     },
     ThroughputBaseline {
         model: "qwen3-8b",
@@ -149,6 +196,10 @@ pub const SEED_BASELINES: &[ThroughputBaseline] = &[
         // prompt-eval was ~960 tok/s. This anchors the 4B estimate below.
         expected_tok_s: 221.7,
         source: "MEASURED: DMR llama.cpp-cuda slot timing, RTX 5090 32GB, 2026-06-15",
+        // Window not recorded when this number was taken (pre-#440). Honest
+        // absence: the window this rate was taken at was never written down,
+        // and stating that plainly beats inventing one.
+        measured_at_window: None,
     },
     ThroughputBaseline {
         model: "qwen3.5-4b",
@@ -161,6 +212,10 @@ pub const SEED_BASELINES: &[ThroughputBaseline] = &[
         // fallen-off-GPU regression worth screaming about.
         expected_tok_s: 180.0,
         source: "ESTIMATE: conservative floor (8B measured 221.7 same GPU); REFINE with a 4B run",
+        // Window not recorded when this number was taken (pre-#440). Honest
+        // absence: the window this rate was taken at was never written down,
+        // and stating that plainly beats inventing one.
+        measured_at_window: None,
     },
 ];
 
@@ -173,9 +228,9 @@ pub fn baseline_for(
     quant: &str,
     accelerator: &str,
 ) -> Option<&'static ThroughputBaseline> {
-    SEED_BASELINES.iter().find(|b| {
-        b.model == model && b.quant == quant && b.accelerator == accelerator
-    })
+    SEED_BASELINES
+        .iter()
+        .find(|b| b.model == model && b.quant == quant && b.accelerator == accelerator)
 }
 
 #[cfg(test)]

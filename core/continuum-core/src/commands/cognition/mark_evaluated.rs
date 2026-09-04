@@ -16,7 +16,10 @@ use crate::modules::cognition::CognitionState;
 use crate::sdk_codegen::CommandError;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/MarkEvaluatedParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/MarkEvaluatedParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct MarkEvaluatedParams {
     /// Persona whose evaluation ledger records the message.
@@ -28,7 +31,10 @@ pub struct MarkEvaluatedParams {
 }
 
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/MarkEvaluatedResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/MarkEvaluatedResult.ts"
+)]
 pub struct MarkEvaluatedResult {
     pub marked: bool,
 }

@@ -18,7 +18,10 @@ use crate::modules::code::CodeState;
 /// Inputs to `code/cargo/check`. All optional — the bare call checks the whole
 /// workspace with default features.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/code/CargoCheckParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/CargoCheckParams.ts"
+)]
 pub struct CargoCheckParams {
     /// Scope the check to one workspace package (`cargo check -p <package>`), e.g.
     /// `"continuum-core"`. Omit to check the whole workspace (slower).
@@ -38,7 +41,10 @@ pub struct CargoCheckParams {
 /// Result of a `cargo check` run: the at-a-glance verdict plus every error/warning
 /// the compiler emitted, each with its location.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/code/CargoCheckResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/CargoCheckResult.ts"
+)]
 pub struct CargoCheckResult {
     /// `true` iff cargo exited 0 AND no error diagnostics — "does it compile?".
     pub ok: bool,

@@ -153,13 +153,34 @@ pub fn produce(
     tokio::spawn(async move {
         let classifier = CLASSIFIER.get_or_init(DomainClassifier::new);
         let Some(plan) = plan(classifier, &prompt, &completion) else {
-            // Gated out — a trivial/low-substance turn not worth training on.
+            crate::probe!(
+                class = "training.example.skipped",
+                persona = %persona_name,
+                prompt_chars = prompt.len() as u64,
+                completion_chars = completion.len() as u64,
+                "live turn below the training-quality floor — not buffered"
+            );
             return;
         };
+        crate::probe!(
+            class = "training.example.produced",
+            persona = %persona_name,
+            domain = %plan.trait_kind,
+            quality = plan.quality as f64,
+            "live turn buffered as a training example (L2)"
+        );
 
         // One submit path, N experience sources — the live turn is the "live-turn"
         // provenance into the shared flywheel entry.
-        submit_plan(persona_id, persona_name, base_model, executor, plan, "live-turn").await;
+        submit_plan(
+            persona_id,
+            persona_name,
+            base_model,
+            executor,
+            plan,
+            "live-turn",
+        )
+        .await;
     });
 }
 
@@ -209,7 +230,15 @@ pub fn produce_received(
     tokio::spawn(async move {
         let classifier = CLASSIFIER.get_or_init(DomainClassifier::new);
         let plan = plan_received(classifier, &topic, &lesson);
-        submit_plan(persona_id, persona_name, base_model, executor, plan, "received-lesson").await;
+        submit_plan(
+            persona_id,
+            persona_name,
+            base_model,
+            executor,
+            plan,
+            "received-lesson",
+        )
+        .await;
     });
 }
 
@@ -346,7 +375,10 @@ mod tests {
             the test passes against the typescript interface.";
         let p = plan(&classifier, "Why does my Rust function panic?", code_reply)
             .expect("a substantive code reply must clear the quality gate");
-        assert_eq!(p.trait_kind, "code", "a code turn must bucket as the code trait");
+        assert_eq!(
+            p.trait_kind, "code",
+            "a code turn must bucket as the code trait"
+        );
         assert_eq!(
             crate::cognition::gym::gym_for_trait(&p.trait_kind),
             Some("docs/genome/coder-eval.jsonl"),
@@ -369,8 +401,17 @@ mod tests {
         // still produces a plan, because plan_received returns SubmitPlan, not Option.
         let p = plan_received(&classifier, "airc", "the call room IS the airc room");
         assert_eq!(p.prompt, "airc", "the topic frames the lesson");
-        assert_eq!(p.completion, "the call room IS the airc room", "the lesson is the trained-in completion");
-        assert_eq!(p.quality, 1.0, "provenance IS the quality signal — a deliberately shared lesson is not gated");
-        assert!(!p.trait_kind.is_empty(), "still classified into a bucket so it maps to a measuring gym");
+        assert_eq!(
+            p.completion, "the call room IS the airc room",
+            "the lesson is the trained-in completion"
+        );
+        assert_eq!(
+            p.quality, 1.0,
+            "provenance IS the quality signal — a deliberately shared lesson is not gated"
+        );
+        assert!(
+            !p.trait_kind.is_empty(),
+            "still classified into a bucket so it maps to a measuring gym"
+        );
     }
 }

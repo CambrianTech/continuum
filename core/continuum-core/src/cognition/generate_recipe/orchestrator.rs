@@ -31,19 +31,23 @@ const DEFAULT_TEMPERATURE: f32 = 0.4;
 /// `provider = 'anthropic'` default at line 29.
 const DEFAULT_PROVIDER: &str = "anthropic";
 
-/// Default model per provider. Mirrors TS `defaultModelForProvider()`
-/// switch statement at lines 360–369. Pulled into a const-fn so PR-2's
-/// orchestrator picks the same default the TS path picked.
-fn default_model_for_provider(provider: &str) -> &'static str {
-    match provider {
-        "anthropic" => "claude-sonnet-4-5-20250929",
-        "openai" => "gpt-4o",
-        "groq" => "llama-3.3-70b-versatile",
-        "deepseek" => "deepseek-chat",
-        "google" => "gemini-2.5-flash",
-        "xai" => "grok-3",
-        _ => "claude-sonnet-4-5-20250929",
+/// Resolve the model to generate with: the caller's explicit choice, else the
+/// provider's `default_model` from THE model registry — the one hand-authored
+/// source (#74/#77). An unknown provider (or one with no declared default) is
+/// the caller's configuration error and fails loud; inventing a cross-provider
+/// fallback here is exactly the drift this replaced (a Node-era switch whose
+/// copies had already diverged from the registry on openai and groq).
+fn resolve_model_id(provider_id: &str, model: Option<String>) -> Result<String, String> {
+    if let Some(model) = model {
+        return Ok(model);
     }
+    crate::ai::registry_bridge::default_model_for_provider(provider_id).ok_or_else(|| {
+        format!(
+            "generate-recipe: provider `{provider_id}` has no default model in the model \
+             registry — pass `model` explicitly, or declare `default_model` on the \
+             provider's registry row"
+        )
+    })
 }
 
 /// Orchestrator request — extends `RecipeGenerationRequest` with optional
@@ -52,14 +56,7 @@ fn default_model_for_provider(provider: &str) -> &'static str {
 /// `cognition/generate-recipe` (the whole `{ request, provider?, model?,
 /// temperature? }` payload deserializes into it), so it carries the full wire
 /// derive set + camelCase serde.
-#[derive(
-    Debug,
-    Clone,
-    serde::Serialize,
-    serde::Deserialize,
-    ts_rs::TS,
-    schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -107,7 +104,7 @@ pub async fn generate_recipe_with_ai(
     let (system_prompt, user_prompt) = build_prompts(&request);
 
     let provider_id = provider.as_deref().unwrap_or(DEFAULT_PROVIDER).to_string();
-    let model_id = model.unwrap_or_else(|| default_model_for_provider(&provider_id).to_string());
+    let model_id = resolve_model_id(&provider_id, model)?;
 
     let inference_request = TextGenerationRequest {
         messages: vec![
@@ -181,30 +178,30 @@ mod tests {
     use super::*;
     use crate::cognition::generate_recipe::types::RecipeDefinitionShape;
 
-    /// What this catches: default model selection per provider matches TS.
-    /// If the TS-side `defaultModelForProvider` ever changes (e.g. anthropic
-    /// upgrades default to claude-opus-4-7), this test catches the drift
-    /// before the migration silently picks a different model than the TS
-    /// caller would have.
+    /// What this catches: default-model resolution DELEGATES to the model
+    /// registry instead of re-owning a per-provider switch (#424 fix 1 — the
+    /// old hand-rolled copy had already drifted from the registry on openai
+    /// and groq, the exact failure mode of a second source of truth). An
+    /// explicit model always wins; an unknown provider fails LOUD instead of
+    /// silently falling back to anthropic. regression for #424
     #[test]
-    fn default_model_per_provider_matches_ts() {
+    fn model_resolution_delegates_to_the_registry_and_fails_loud() {
+        let _ = crate::model_registry::init_global();
+        // Explicit model wins, registry not consulted.
         assert_eq!(
-            default_model_for_provider("anthropic"),
-            "claude-sonnet-4-5-20250929"
+            resolve_model_id("anthropic", Some("my-model".into())).as_deref(),
+            Ok("my-model")
         );
-        assert_eq!(default_model_for_provider("openai"), "gpt-4o");
+        // Default comes from the registry row — the SAME answer
+        // registry_bridge gives, not a duplicated literal.
         assert_eq!(
-            default_model_for_provider("groq"),
-            "llama-3.3-70b-versatile"
+            resolve_model_id("anthropic", None),
+            crate::ai::registry_bridge::default_model_for_provider("anthropic").ok_or_else(String::new)
         );
-        assert_eq!(default_model_for_provider("deepseek"), "deepseek-chat");
-        assert_eq!(default_model_for_provider("google"), "gemini-2.5-flash");
-        assert_eq!(default_model_for_provider("xai"), "grok-3");
-        // Unknown provider falls back to anthropic default — matches TS.
-        assert_eq!(
-            default_model_for_provider("unknown-provider"),
-            "claude-sonnet-4-5-20250929"
-        );
+        // Unknown provider = caller's config error, loud — no invented fallback.
+        assert!(resolve_model_id("unknown-provider", None)
+            .unwrap_err()
+            .contains("unknown-provider"));
     }
 
     /// What this catches: the default temperature stays at the documented

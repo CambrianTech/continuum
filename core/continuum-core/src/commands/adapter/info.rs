@@ -5,11 +5,12 @@ use std::sync::Arc;
 use crate::modules::data::{AdapterInfo, DataState};
 
 /// Params for `adapter/info`.
-#[derive(
-    Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/adapter/AdapterInfoParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/adapter/AdapterInfoParams.ts"
+)]
 pub struct AdapterInfoParams {
     /// Storage handle. Defaults to "main" (the shared DB). Accepts the legacy
     /// `dbPath` field name as an alias.

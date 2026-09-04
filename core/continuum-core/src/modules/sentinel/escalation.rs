@@ -656,10 +656,7 @@ mod tests {
             json.get("assigneeId").is_some(),
             "assigneeId must be camelCase"
         );
-        assert!(
-            json.get("taskType").is_some(),
-            "taskType must be camelCase"
-        );
+        assert!(json.get("taskType").is_some(), "taskType must be camelCase");
         assert!(
             json.get("contextId").is_some(),
             "contextId must be camelCase"
