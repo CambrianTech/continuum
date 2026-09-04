@@ -293,6 +293,15 @@ jobs:
         with:
           shared-key: continuum-rust-windows-1.95
           cache-on-failure: true
-      - name: cargo check (lib + test harness)
+      # `--features test-fixtures` (card 9d249bd6): every `[[test]]` in
+      # continuum-core/Cargo.toml with `required-features = ["test-fixtures"]`
+      # (airc_remote_inference_end_to_end, persona_command_inbound_pump, the
+      # architecture_* battery, …) is SKIPPED by cargo when the feature is
+      # absent — so without it this job compiles none of them and the linux
+      # job (`--lib`) never sees tests/ at all. #1952 broke
+      # persona_command_inbound_pump's fixture and canary stayed green for
+      # weeks; found by an IntelMac cold-start check (#3692). Compile-only,
+      # so the cost is one extra check pass, not a test run.
+      - name: cargo check (lib + test harness, incl. test-fixtures targets)
         if: github.event_name != 'pull_request' || steps.gate.outputs.relevant == 'true'
-        run: cargo check -p continuum-core --lib --tests
+        run: cargo check -p continuum-core --lib --tests --features test-fixtures
