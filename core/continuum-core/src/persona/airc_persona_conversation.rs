@@ -81,11 +81,36 @@ const SEEN_RING: usize = 128;
 /// after the daemon drops a `message`, so a max-seen mark leaps past the line.
 #[derive(Default)]
 struct SeenRooms {
+    /// Per-room ring of (peer, text) fingerprints — the same line under two ids.
+    texts: std::collections::HashMap<Uuid, std::collections::VecDeque<u64>>,
     floor_ms: std::collections::HashMap<Uuid, u64>,
     seen: std::collections::HashMap<Uuid, std::collections::VecDeque<Uuid>>,
 }
 
 impl SeenRooms {
+    fn fingerprint(peer: Uuid, text: &str) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        peer.hash(&mut h);
+        text.hash(&mut h);
+        h.finish()
+    }
+
+    fn note_text(&mut self, room: Uuid, fp: u64) {
+        let ring = self.texts.entry(room).or_default();
+        if ring.contains(&fp) {
+            return;
+        }
+        if ring.len() == SEEN_RING {
+            ring.pop_front();
+        }
+        ring.push_back(fp);
+    }
+
+    fn was_seen_text(&self, room: Uuid, fp: u64) -> bool {
+        self.texts.get(&room).is_some_and(|r| r.contains(&fp))
+    }
+
     fn note(&mut self, room: Uuid, event_id: Uuid) {
         let ring = self.seen.entry(room).or_default();
         if !ring.contains(&event_id) {
@@ -126,6 +151,29 @@ fn signal_if_directed(own: uuid::Uuid, event: &airc_core::TranscriptEvent) {
     }
 }
 
+/// A durable chat row as the transcript event the inbound seam admits: kind
+/// Message, a text body, wall time, the row id as the event id. Lamport is 0 —
+/// the loop head judges staleness by event id, never by this clock.
+fn event_from_row(room: Uuid, row: crate::persona::durable_history::RoomRow) -> TranscriptEvent {
+    use airc_core::{Body, ClientId, EventId, Headers, MentionTarget, PeerId, RoomId, TranscriptKind};
+    let room_id = RoomId::from_uuid(room);
+    TranscriptEvent {
+        event_id: EventId::from_uuid(row.id),
+        room_id,
+        peer_id: PeerId::from_uuid(row.sender),
+        client_id: ClientId::new(),
+        kind: TranscriptKind::Message,
+        occurred_at_ms: row.occurred_at_ms,
+        lamport: 0,
+        target: MentionTarget::Room(room_id),
+        headers: Headers::default(),
+        body: Some(Body::text(&row.text)),
+        attachment: None,
+        receipt: None,
+        metadata: serde_json::Value::Null,
+    }
+}
+
 async fn catch_up_from_store(
     runtime: &dyn AircCitizen,
     seen: &std::sync::Mutex<SeenRooms>,
@@ -142,11 +190,11 @@ async fn catch_up_from_store(
     let room_list = rooms.iter().map(short).collect::<Vec<_>>().join(",");
     let mut empty: Vec<String> = Vec::new();
     for room in rooms {
-        let mut events = match runtime
-            .page_recent_in(Some(airc_core::RoomId::from_uuid(room)), CATCH_UP_PAGE)
-            .await
-        {
-            Ok(events) => events,
+        // THE CORE'S OWN CHAT STORE is the durable page (see
+        // `durable_history::room_rows`): the daemon's ring page was empty for
+        // the busiest room on every citizen (2026-09-04, `catch_up_rooms`).
+        let mut events = match crate::persona::durable_history::room_rows(room, CATCH_UP_PAGE).await {
+            Ok(rows) => rows.into_iter().map(|r| event_from_row(room, r)).collect::<Vec<_>>(),
             Err(error) => {
                 // Observable, not silent: on the first build 7 of ~68 rooms paged and
                 // the rest failed unseen, so eleven citizens never saw the operator.
@@ -199,7 +247,22 @@ async fn catch_up_from_store(
             {
                 continue;
             }
-            seen.lock().unwrap_or_else(|e| e.into_inner()).note(room, event.event_id.as_uuid());
+            // A line the operator's `chat/send` persisted under its own message id
+            // arrives live under the say's EVENT id: same peer, same text, two ids.
+            // The fingerprint ring keeps it one turn.
+            let fingerprint = crate::airc::realtime_wire::room_turn_from_event(&event)
+                .ok()
+                .map(|(peer, text)| SeenRooms::fingerprint(peer, &text));
+            {
+                let mut s = seen.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(fp) = fingerprint {
+                    if s.was_seen_text(room, fp) {
+                        continue;
+                    }
+                    s.note_text(room, fp);
+                }
+                s.note(room, event.event_id.as_uuid());
+            }
             signal_if_directed(runtime.peer_id(), &event);
             if tx.send(Ok(std::sync::Arc::new(event))).await.is_err() {
                 return (paged, usize::MAX);
@@ -368,9 +431,14 @@ impl AircPersonaConversation {
                     item = stream.next() => match item {
                         Some(item) => {
                             if let Ok(ev) = &item {
-                                seen.lock()
-                                    .unwrap_or_else(|e| e.into_inner())
-                                    .note(ev.room_id.as_uuid(), ev.event_id.as_uuid());
+                                let mut s = seen.lock().unwrap_or_else(|e| e.into_inner());
+                                s.note(ev.room_id.as_uuid(), ev.event_id.as_uuid());
+                                if let Ok((peer, text)) =
+                                    crate::airc::realtime_wire::room_turn_from_event(ev)
+                                {
+                                    s.note_text(ev.room_id.as_uuid(), SeenRooms::fingerprint(peer, &text));
+                                }
+                                drop(s);
                                 if !crate::persona::airc_citizen::is_heartbeat(ev)
                                     && !crate::airc::realtime_wire::is_stream_chunk(ev)
                                 {
@@ -707,6 +775,38 @@ fn perceptual_from_event(event: &TranscriptEvent) -> Result<IncomingMessage, &'s
 mod tests {
     use super::*;
     use crate::persona::airc_citizen::StubAircCitizen;
+
+    // what this catches: the store-backed catch-up's synthesized event must
+    // decode as a room turn with the row's id, sender and text (the daemon page
+    // was empty for the run room on 2026-09-04; this path is the hearing).
+    #[test]
+    fn a_durable_chat_row_becomes_an_admissible_turn() {
+        let room = Uuid::new_v4();
+        let row = crate::persona::durable_history::RoomRow {
+            id: Uuid::new_v4(),
+            sender: Uuid::new_v4(),
+            occurred_at_ms: 1_788_513_127_000,
+            text: "Joel here — which card do you hold?".to_string(),
+        };
+        let (id, sender) = (row.id, row.sender);
+        let msg = perceptual_from_event(&event_from_row(room, row)).expect("a text row is a turn");
+        assert_eq!((msg.event_id, msg.peer_id, msg.room_id), (id, sender, room));
+        assert_eq!(msg.text, "Joel here — which card do you hold?");
+    }
+
+    // what this catches: the same line under two ids (the sender's message id
+    // and the say's event id) admitting twice.
+    #[test]
+    fn the_same_line_under_a_second_id_is_seen_by_fingerprint() {
+        let mut seen = SeenRooms::default();
+        let room = Uuid::new_v4();
+        let peer = Uuid::new_v4();
+        let fp = SeenRooms::fingerprint(peer, "one line");
+        assert!(!seen.was_seen_text(room, fp));
+        seen.note_text(room, fp);
+        assert!(seen.was_seen_text(room, fp));
+        assert!(!seen.was_seen_text(room, SeenRooms::fingerprint(peer, "another line")));
+    }
 
     /// Regression test for the slice-13.6 reviewer fix to PR #1514:
     /// `next_message` MUST refuse if `prime` wasn't called first.
