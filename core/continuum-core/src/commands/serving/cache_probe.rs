@@ -26,6 +26,13 @@ pub struct ServingCacheProbeParams {
     /// large enough to clear the server's `--cache-reuse` chunk floor.
     #[ts(optional)]
     pub words: Option<u32>,
+    /// Also round-trip the slot through `save` → `restore` and re-send: reports
+    /// whether a RESTORED prefix is reusable. Measured 2026-09-04 on
+    /// llama-server b10751 with a hybrid-cache model: in-slot reuse 11291/11295,
+    /// after restore 0/11295 (a full re-prefill) — the restore economy paid
+    /// full prefill on every turn while reporting "restore ok in 48 ms".
+    #[ts(optional)]
+    pub roundtrip: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
@@ -42,6 +49,13 @@ pub struct ServingCacheProbeResult {
     pub second_prompt_ms: f64,
     /// `reuses` | `no_reuse` — the one-word verdict a dashboard or a test reads.
     pub verdict: String,
+    /// With `roundtrip`: tokens reused by the request sent right after
+    /// `save` → `restore` (0 = a restored prefix is dead on this server/model).
+    #[ts(optional)]
+    pub after_restore_cache_n: Option<u32>,
+    /// With `roundtrip`: `reuses` | `no_reuse` for the restored prefix.
+    #[ts(optional)]
+    pub restore_verdict: Option<String>,
 }
 
 crate::action_command! {
@@ -98,7 +112,41 @@ crate::action_command! {
         let (second_n, second_cache, second_ms) = timings[1];
         let prompt_tokens = first_n.max(second_n).max(second_cache);
         let rate = if prompt_tokens == 0 { 0.0 } else { second_cache as f64 / prompt_tokens as f64 };
+        let (after_restore_cache_n, restore_verdict) = if p.roundtrip.unwrap_or(false) {
+            let slot_url = |action: &str| {
+                format!("{}/slots/{slot}?action={action}", snap.base_url.trim_end_matches("/v1"))
+            };
+            let file = format!("cache-probe-{slot}.bin");
+            for action in ["save", "restore"] {
+                client
+                    .post(slot_url(action))
+                    .json(&serde_json::json!({ "filename": file }))
+                    .send()
+                    .await
+                    .map_err(|e| CommandError::Internal(format!("cache-probe {action}: {e}")))?;
+            }
+            let v: serde_json::Value = client
+                .post(&url)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| CommandError::Internal(format!("cache-probe after-restore request: {e}")))?
+                .json()
+                .await
+                .map_err(|e| CommandError::Internal(format!("cache-probe after-restore response: {e}")))?;
+            let cached = v
+                .get("timings")
+                .and_then(|t| t.get("cache_n"))
+                .and_then(|x| x.as_f64())
+                .unwrap_or(0.0) as u32; // unwrap_or: no timings = no reuse, reported loudly as 0
+            let ok = prompt_tokens > 0 && (cached as f64 / prompt_tokens as f64) >= 0.5;
+            (Some(cached), Some(if ok { "reuses".to_string() } else { "no_reuse".to_string() }))
+        } else {
+            (None, None)
+        };
         Ok(ServingCacheProbeResult {
+            after_restore_cache_n,
+            restore_verdict,
             base_url: snap.base_url,
             slot,
             prompt_tokens,
