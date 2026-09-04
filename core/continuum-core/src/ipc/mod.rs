@@ -1278,12 +1278,7 @@ pub fn start_server(
                     "ResourceGovernor: UNIFIED memory — VRAM and RAM are ONE pool, \
                      ceiling {} MB (GPU working-set hint {} MB); both axes report one \
                      measured usage so neither can grant into the other's bytes",
-                    views
-                        .iter()
-                        .map(|v| v.ceiling_bytes())
-                        .max()
-                        .unwrap_or(0)
-                        / (1024 * 1024),
+                    views.iter().map(|v| v.ceiling_bytes()).max().unwrap_or(0) / (1024 * 1024),
                     gpu_hint / (1024 * 1024)
                 );
                 capacity_sources.extend(views);
@@ -1743,7 +1738,9 @@ pub fn start_server(
     // portraits, nothing animating — the pumps' spawn block simply never ran).
     let live_registrar_executor: std::sync::Arc<
         crate::runtime::LateBound<crate::runtime::CommandExecutor>,
-    > = std::sync::Arc::new(crate::runtime::LateBound::new("live::session-registrar executor"));
+    > = std::sync::Arc::new(crate::runtime::LateBound::new(
+        "live::session-registrar executor",
+    ));
     let call_manager = {
         let mut mgr = crate::live::transport::call_server::CallManager::new();
         let voice_for_join = voice_service.clone();
@@ -1852,7 +1849,9 @@ pub fn start_server(
             let exec_slot = live_registrar_executor.clone();
             mgr.set_transcript_sink(std::sync::Arc::new(
                 move |call_id: &str, user_id: &str, _display_name: &str, text: &str| {
-                    let Some(exec) = exec_slot.cloned() else { return };
+                    let Some(exec) = exec_slot.cloned() else {
+                        return;
+                    };
                     let (room, speaker, said) =
                         (call_id.to_string(), user_id.to_string(), text.to_string());
                     tokio::spawn(async move {
@@ -1896,10 +1895,9 @@ pub fn start_server(
         // its one hop into async land. Capacity ~2s of 20ms frames: a stalled
         // consumer drops frames (stay current) instead of building a backlog
         // of stale speech.
-        let (tx, mut rx) =
-            tokio::sync::mpsc::channel::<crate::live::transport::bridge_client::HumanAudioChunk>(
-                128,
-            );
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<
+            crate::live::transport::bridge_client::HumanAudioChunk,
+        >(128);
         crate::live::transport::bridge_client::install_human_audio_forwarder(tx);
         let manager = call_manager.clone();
         rt_handle.spawn(async move {
@@ -3277,6 +3275,35 @@ pub fn start_server(
             // event source and `message_bus()` is None — the boot-loud
             // panic the `CONTINUUM_CORE_WS` block asserts against.
             .with_message_bus(runtime.bus_arc())
+            // INSTALL THE GENERIC CROSS-GRID TRANSPORT.
+            //
+            // Every piece of command-over-airc was already built and green —
+            // the wire envelope carries an arbitrary path + params, the
+            // receiver (`CommandRequestHandler::execute_command_request`)
+            // does `CommandUri::local(path)` then `execute_with_caller` for
+            // ANY path with AuthPolicy seeing the remote caller, and
+            // `AircTransport` packages / sends / awaits / decodes any
+            // non-Local `RouteDecision`. The ONLY call to
+            // `with_remote_transport` in the whole crate lived inside
+            // `#[cfg(test)]`.
+            //
+            // So the general mechanism was dark in production while the
+            // PARALLEL one below it — `AircInterceptor`, which hard-refuses
+            // everything except `ai/generate` — was wired. That is why the
+            // substrate could only hop inference to a peer: not a missing
+            // capability, an uninstalled one. The interceptor's own error
+            // string calls generic command-over-airc "the follow-up", and
+            // the follow-up already existed one module over.
+            //
+            // Shares the interceptor's late-bind cell rather than attaching a
+            // second handle: `with_remote_transport` runs in the synchronous
+            // boot region while `Airc::attach_as` is async, which is the exact
+            // problem that cell already solves. Until it fills, dispatch fails
+            // loud — never declines, because declining would run a
+            // PEER-addressed command on this node.
+            .with_remote_transport(Arc::new(crate::routing::LateBoundAircTransport::new(
+                airc_interceptor_cell.clone(),
+            )))
             .with_interceptor(Arc::new(crate::runtime::AircInterceptor::with_airc_cell(
                 airc_interceptor_cell,
             )))
@@ -3334,7 +3361,8 @@ pub fn start_server(
         let exec = Arc::clone(&executor);
         let root = crate::modules::persona_instance_manager::resolve_continuum_root();
         rt_handle.spawn(async move {
-            crate::persona::operator_peer::ensure_operator_peer(&root, sock.clone(), exec.clone()).await;
+            crate::persona::operator_peer::ensure_operator_peer(&root, sock.clone(), exec.clone())
+                .await;
             crate::persona::operator_peer::ensure_agent_peer(&root, sock, exec).await;
         });
     }

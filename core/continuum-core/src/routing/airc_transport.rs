@@ -112,6 +112,79 @@ impl std::fmt::Debug for AircTransport {
     }
 }
 
+/// [`AircTransport`] behind the same late-bound cell the
+/// [`AircInterceptor`](crate::runtime::AircInterceptor) uses.
+///
+/// ## Why this exists
+///
+/// Generic command-over-airc was fully built and never installed. Every
+/// piece was in the tree and green:
+///
+/// | piece | state |
+/// |---|---|
+/// | wire `AircCommandRequest` — any path + params | built |
+/// | receiver `CommandRequestHandler::execute_command_request` — `CommandUri::local(path)` then `execute_with_caller` for ANY path, AuthPolicy seeing the remote caller | built |
+/// | sender [`AircTransport`] — packages any non-Local `RouteDecision`, sends, awaits, decodes | built |
+/// | [`command_request_from_route_decision`] — Peer / Room / Broadcast | built |
+/// | **`CommandExecutor::with_remote_transport(AircTransport)`** | **only inside `#[cfg(test)]`** |
+///
+/// So the general mechanism was dark in production while a PARALLEL one —
+/// `AircInterceptor`, which hard-refuses every command except `ai/generate`
+/// — was wired. That is why the substrate could only hop inference to a
+/// peer: not a missing capability, an uninstalled one. The interceptor even
+/// says so in its own error string ("generic command-over-airc is the
+/// follow-up"), describing a follow-up that already existed one module over.
+///
+/// ## Why late-bound
+///
+/// `with_remote_transport` is a builder consumed during SYNCHRONOUS executor
+/// construction, but `Airc::attach_as` is async and must not block boot. The
+/// interceptor already solved exactly this with an `Arc<OnceCell<Arc<Airc>>>`
+/// filled by a boot task. This shares THAT cell rather than introducing a
+/// second attach — one late-bind mechanism, one place it can be wrong.
+///
+/// Until the cell fills, dispatch fails LOUD naming the reason. It never
+/// silently declines: a decline would fall back to local execution, which is
+/// the one outcome that must not happen — a command addressed to a peer
+/// silently running HERE is a wrong answer wearing a success.
+#[derive(Clone)]
+pub struct LateBoundAircTransport {
+    airc: Arc<tokio::sync::OnceCell<Arc<Airc>>>,
+}
+
+impl std::fmt::Debug for LateBoundAircTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LateBoundAircTransport")
+            .field("attached", &self.airc.get().is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl LateBoundAircTransport {
+    /// Share the cell a boot task fills with the attached handle. Hand it the
+    /// SAME `Arc` given to the interceptor.
+    pub fn new(airc: Arc<tokio::sync::OnceCell<Arc<Airc>>>) -> Self {
+        Self { airc }
+    }
+}
+
+#[async_trait]
+impl Transport for LateBoundAircTransport {
+    async fn dispatch(
+        &self,
+        decision: RouteDecision,
+        params: Value,
+    ) -> Result<CommandResult, String> {
+        let airc = self.airc.get().ok_or_else(|| {
+            "airc routing requested but the airc handle hasn't attached yet — retry once              the airc daemon is reachable (Airc::attach_as fills the shared cell on boot).              Refusing rather than declining: a decline would run a PEER-addressed command              on this node instead."
+                .to_string()
+        })?;
+        AircTransport::new(airc.clone())
+            .dispatch(decision, params)
+            .await
+    }
+}
+
 impl AircTransport {
     /// Build a transport against an existing airc handle with the
     /// default deadline ([`DEFAULT_DEADLINE`]).
