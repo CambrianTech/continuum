@@ -31,6 +31,7 @@ pub mod benchmark_standing;
 pub mod benchmark_resume;
 pub mod bevy_consumer;
 pub mod card_staging;
+pub mod repo_registry;
 pub mod channel;
 pub mod chat;
 pub mod code;
