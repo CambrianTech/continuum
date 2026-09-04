@@ -52,7 +52,9 @@ pub fn command_objects(
 ) -> Vec<Arc<dyn DynCommand>> {
     let mut objects = instances::command_objects(registry.clone());
     objects.extend(wall::command_objects(registry));
-    objects.push(Arc::new(vitals::PersonaVitals));
+    // `persona/vitals` is a unit-struct command: the `action_command!` macro
+    // auto-registers it onto the ONE registry — pushing it here registered it
+    // twice and panicked boot (2026-09-04, caught as a crash loop).
     objects.push(Arc::new(PersonaReassignModel {
         continuum_root: continuum_root.clone(),
         executor,
