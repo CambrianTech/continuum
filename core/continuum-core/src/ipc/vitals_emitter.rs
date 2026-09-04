@@ -67,6 +67,58 @@ static ACT_PULSE: std::sync::LazyLock<std::sync::Mutex<HashMap<Uuid, u64>>> =
 /// Record `n` completed acts for `persona` — called by the act-observe apply
 /// path; cheap (one map bump under a short lock, no allocation on the hot path
 /// beyond the entry).
+/// FACULTY PULSES — the axes the persona HUD names (`reason`, `recall`, `focus`;
+/// see `brainRegions` in the semantic layer). Each is a timestamp (+ count) the
+/// emitter reads with a freshness window: the region lights when the faculty
+/// fires and fades as the window elapses. Recorded at the ONE seam each event
+/// already passes — lane acquired (reasoning), recall surfaced (memory), a
+/// directed turn admitted (focus). Before 2026-09-04 the emitter radiated
+/// `activity/queue/tps/pfx` while the HUD asked for `reason/recall/act/speed/
+/// focus`: four of five regions read "awaiting signal" forever.
+static FACULTY_PULSE: std::sync::LazyLock<
+    std::sync::Mutex<HashMap<(Uuid, &'static str), (u64, std::time::Instant)>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+fn record_faculty(persona: Uuid, axis: &'static str, n: u64) {
+    let mut pulse = FACULTY_PULSE.lock().unwrap_or_else(|e| e.into_inner());
+    pulse.insert((persona, axis), (n, std::time::Instant::now()));
+}
+
+/// A deliberation lane was acquired — she is reasoning now.
+pub fn record_reasoning(persona: Uuid) {
+    record_faculty(persona, "reason", 1);
+}
+
+/// `n` memories surfaced into this turn.
+pub fn record_recall(persona: Uuid, n: u64) {
+    record_faculty(persona, "recall", n);
+}
+
+/// A DIRECTED turn was admitted — someone addressed her (a human, an agent,
+/// or a peer naming her).
+pub fn record_focus(persona: Uuid) {
+    record_faculty(persona, "focus", 1);
+}
+
+/// Level for a faculty pulse: full while fresh, fading linearly to 0 over the
+/// window; `None` when nothing fired within it (an honest "awaiting").
+fn faculty_level(persona: Uuid, axis: &'static str, window: Duration, full_scale: u64) -> Option<u8> {
+    let pulse = FACULTY_PULSE.lock().unwrap_or_else(|e| e.into_inner());
+    let (n, at) = pulse.get(&(persona, axis))?;
+    let age = at.elapsed();
+    if age >= window {
+        return None;
+    }
+    let fresh = 1.0 - age.as_secs_f64() / window.as_secs_f64();
+    let base = pct_u64(*n, full_scale) as f64;
+    Some((base * fresh).round().clamp(0.0, 100.0) as u8)
+}
+
+const REASON_WINDOW: Duration = Duration::from_secs(150);
+const RECALL_WINDOW: Duration = Duration::from_secs(90);
+const FOCUS_WINDOW: Duration = Duration::from_secs(120);
+const RECALL_FULL_SCALE: u64 = 6;
+
 pub fn record_acts(persona: Uuid, n: u64) {
     let mut pulse = ACT_PULSE.lock().unwrap_or_else(|e| e.into_inner());
     *pulse.entry(persona).or_insert(0) += n;
@@ -182,8 +234,25 @@ pub(crate) fn sample_vitals(
             pct_usize(queued, QUE_FULL_SCALE_UNREAD),
         );
         if let Some((decode, prefill)) = speed {
-            vitals.insert("tps".to_string(), pct_u64(decode as u64, TPS_FULL_SCALE));
+            let tps = pct_u64(decode as u64, TPS_FULL_SCALE);
+            vitals.insert("tps".to_string(), tps);
+            // `speed` is the HUD's name for the same axis (CNS detail row).
+            vitals.insert("speed".to_string(), tps);
             vitals.insert("pfx".to_string(), pct_u64(prefill as u64, PFX_FULL_SCALE));
+        }
+        // The motor region reads `act` — the act pulse alone, not blended with
+        // the cycle tick like `activity` is.
+        if act_pulse > 0 {
+            vitals.insert("act".to_string(), pct_u64(act_pulse, ACT_PULSE_FULL_SCALE));
+        }
+        if let Some(v) = faculty_level(id, "reason", REASON_WINDOW, 1) {
+            vitals.insert("reason".to_string(), v);
+        }
+        if let Some(v) = faculty_level(id, "recall", RECALL_WINDOW, RECALL_FULL_SCALE) {
+            vitals.insert("recall".to_string(), v);
+        }
+        if let Some(v) = faculty_level(id, "focus", FOCUS_WINDOW, 1) {
+            vitals.insert("focus".to_string(), v);
         }
         // Omit genome entirely when the persona has none paged in — an
         // honest missing meter, not a 0% fabricated one.
@@ -336,6 +405,23 @@ pub fn spawn_vitals_emitter(rt: &tokio::runtime::Handle, bus: Arc<MessageBus>) {
 
 #[cfg(test)]
 mod tests {
+    // what this catches: a faculty pulse lights its axis while fresh and reads
+    // ABSENT (not zero) once the window elapses — the HUD's "awaiting signal" is
+    // an honest no-signal, never a stale full bar. Recorded at the seams the
+    // deliberation/recall/admission paths already pass.
+    #[test]
+    fn a_faculty_pulse_lights_then_goes_absent() {
+        let p = Uuid::from_u128(0x77);
+        assert!(faculty_level(p, "reason", Duration::from_secs(60), 1).is_none());
+        record_reasoning(p);
+        assert_eq!(faculty_level(p, "reason", Duration::from_secs(60), 1), Some(100));
+        record_recall(p, 3);
+        assert_eq!(faculty_level(p, "recall", Duration::from_secs(60), 6), Some(50));
+        assert!(faculty_level(p, "recall", Duration::from_millis(0), 6).is_none());
+        record_focus(p);
+        assert_eq!(faculty_level(p, "focus", Duration::from_secs(60), 1), Some(100));
+    }
+
     use super::*;
     use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
     use crate::cognition::persona_workspace::{PersonaBrainConfig, PersonaWorkspaceRegistry};

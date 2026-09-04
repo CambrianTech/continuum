@@ -1085,6 +1085,9 @@ async fn serve_persona_loop_inner(
                     ctx.identity.persona_identity().mentions(&msg.text),
                     sender_is_citizen,
                 );
+                if directed {
+                    crate::ipc::vitals_emitter::record_focus(ctx.identity.peer_id.as_uuid());
+                }
                 let framing = crate::cognition::workspace::TurnFraming::message(directed);
 
                 // ── Ambient-yield under lane saturation (#171 / #139) ───────────────
