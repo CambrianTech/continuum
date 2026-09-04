@@ -784,6 +784,10 @@ pub fn next_unworked_per_round() -> Vec<NextCard> {
     rounds
         .values()
         .filter(|r| r.stage == RoundStage::Working)
+        // Re-fire is the DETACHED driver's compensation only (plan S4): a citizen
+        // round's cards are pulled by residents through `pullable_cards`, and a
+        // watchdog pushing a detached solve onto one collides with WIP = lanes.
+        .filter(|r| r.driver == WorkDriver::DetachedSolve)
         .filter_map(|r| first_unworked(r, &live))
         .collect()
 }
