@@ -2564,6 +2564,13 @@ fn spawn_token_forwarder(
 /// caller only reaches here when she holds nothing workable, and once she holds
 /// the pulled card the held-work branch works it before this fires again.
 /// Returns true iff she pulled a card (now holds it).
+/// When each citizen last pulled a card (ms). A pull is admitted only after the
+/// previous claim has had time to land on the board: the WIP=1 read is eventually
+/// consistent, and on 2026-09-05 two citizens each took two cards in one burst.
+static LAST_PULL_MS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<Uuid, u64>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+const PULL_SETTLE_MS: u64 = 120_000;
+
 async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn PersonaConversation) -> bool {
     let Some(citizen) = conversation.stream_citizen() else {
         return false;
@@ -2585,26 +2592,10 @@ async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn PersonaConve
             return false;
         }
     }
-    // WIP = LANES (2026-09-05, Joel: "get this working"). Twelve citizens on five
-    // lanes gave each ~two model calls an hour: 23 lane grants, 19 acts, 0 writes in
-    // 55 minutes on a fully claimed round. A card only progresses when its holder
-    // can decode, so the roster holds no more cards than the server has lanes; the
-    // others stay resident, watch the board, and take review cards as they open.
-    // Organic: nobody is told what to do — the world simply has no free slot.
     {
-        let lanes = crate::cognition::resource_admission::served_lane_count();
-        let in_flight = crate::cognition::bench_round::in_flight_citizen_cards();
-        if lanes > 0 && in_flight >= lanes {
-            static DEFERRED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            if DEFERRED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 50 == 0 {
-                crate::probe!(
-                    class = "bench.round.pull_deferred_wip",
-                    persona = %ctx.identity.agent_name,
-                    in_flight = in_flight as u64,
-                    lanes = lanes as u64,
-                    "no pull: the roster already holds as many cards as there are lanes (sampled 1/50)"
-                );
-            }
+        let me = ctx.identity.peer_id.as_uuid();
+        let last = LAST_PULL_MS.lock().unwrap_or_else(|e| e.into_inner()).get(&me).copied().unwrap_or(0); // unwrap_or: never pulled = 0
+        if crate::modules::chat::now_ms().saturating_sub(last) < PULL_SETTLE_MS {
             return false;
         }
     }
@@ -2622,6 +2613,46 @@ async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn PersonaConve
             return false;
         }
     };
+    // WIP = LANES (2026-09-05, Joel: "get this working"). Twelve citizens on five
+    // lanes gave each ~two model calls an hour: 23 lane grants, 19 acts, 0 writes in
+    // 55 minutes on a fully claimed round. A card only progresses when its holder
+    // can decode, so the roster holds no more cards than the server has lanes; the
+    // others stay resident, watch the board, and take review cards as they open.
+    // BOARD-TRUE: in-flight = dispatched − settled − open-on-the-board per working
+    // citizen round (the tracker's own owner column lags the board and read zero,
+    // so the first cut of this cap never held). Organic: nobody is told what to
+    // do — the world simply has no free slot.
+    {
+        let lanes = crate::cognition::resource_admission::served_lane_count();
+        let now = crate::modules::chat::now_ms();
+        let mut in_flight = 0usize;
+        for round in crate::cognition::bench_round::live_rounds() {
+            if !round.stage.eq_ignore_ascii_case("working")
+                || !round.driver.to_ascii_lowercase().contains("citizen")
+            {
+                continue;
+            }
+            let Ok(room) = Uuid::parse_str(&round.round_id) else { continue };
+            if !resident.contains(&room) {
+                continue;
+            }
+            let open = citizen.claimable_cards_in(room, now).await.map(|o| o.len()).unwrap_or(0); // unwrap_or: an unreadable board counts every unsettled card as in flight (conservative)
+            in_flight += round.dispatched.saturating_sub(round.settled).saturating_sub(open);
+        }
+        if lanes > 0 && in_flight >= lanes {
+            static DEFERRED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            if DEFERRED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 50 == 0 {
+                crate::probe!(
+                    class = "bench.round.pull_deferred_wip",
+                    persona = %ctx.identity.agent_name,
+                    in_flight = in_flight as u64,
+                    lanes = lanes as u64,
+                    "no pull: the roster already holds as many cards as there are lanes (sampled 1/50)"
+                );
+            }
+            return false;
+        }
+    }
     let candidates =
         crate::cognition::bench_round::pullable_cards(ctx.identity.peer_id.as_uuid(), &resident);
     if candidates.is_empty() {
@@ -2661,6 +2692,10 @@ async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn PersonaConve
     let card_id = airc_work::WorkCardId::from_uuid(next.card);
     match citizen.claim_card(card_id).await {
         Ok(true) => {
+            LAST_PULL_MS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(ctx.identity.peer_id.as_uuid(), crate::modules::chat::now_ms());
             crate::probe!(
                 class = "bench.round.pulled",
                 persona = %ctx.identity.agent_name,
