@@ -796,8 +796,16 @@ impl PersonaAircRuntime {
                             .await
                         {
                             let me = hb_airc.peer_id();
-                            for card in board.snapshot().cards.iter().filter(|c| {
-                                c.owner == Some(me)
+                            let snapshot = board.snapshot();
+                            // WIP = 1 survives the recovery: if she already holds a LIVE
+                            // card, a lapsed one is left for the deck (2026-09-05: a
+                            // citizen ended up on two).
+                            let holds_live = snapshot.cards.iter().any(|c| {
+                                c.owner == Some(me) && c.claim_expires_at_ms.is_some_and(|e| e > now_ms)
+                            });
+                            for card in snapshot.cards.iter().filter(|c| {
+                                !holds_live
+                                    && c.owner == Some(me)
                                     && c.claim_expires_at_ms.is_some_and(|e| e <= now_ms)
                                     && matches!(
                                         c.state,
