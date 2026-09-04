@@ -224,8 +224,18 @@ impl WorkspaceLayoutReader for CitizenLayerWorkspaceLayoutReader {
         // exactly as the hands would (same function, same sync-forward
         // self-heal) — map and tools can never again describe different
         // worlds. A provisioning failure degrades to no block, never a lie.
-        let root = crate::modules::code_commands::ensure_citizen_layer(&self.peer)
-            .map_err(|e| format!("citizen layer unavailable: {e}"))?;
+        // THE MAP FOLLOWS HER HANDS: while a work turn roots her at a card's
+        // checkout, the map renders that root — not her workspace with the
+        // checkout under `swe/` (2026-09-05: the map said "swe/ is a top-level
+        // dir" while her shell stood inside the repo, and she oriented again).
+        let acting = uuid::Uuid::parse_str(&self.peer)
+            .ok()
+            .and_then(crate::cognition::persona_workspace::acting_root_of);
+        let root = match acting {
+            Some(r) => r,
+            None => crate::modules::code_commands::ensure_citizen_layer(&self.peer)
+                .map_err(|e| format!("citizen layer unavailable: {e}"))?,
+        };
         let security =
             PathSecurity::new(&root).map_err(|e| format!("workspace security init failed: {e}"))?;
         let engine = FileEngine::new(SOURCE_ID, security);

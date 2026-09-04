@@ -693,6 +693,8 @@ pub(crate) struct ActingHands {
     persona_id: Uuid,
     persona_name: String,
     executor: Arc<dyn crate::cognition::tool_executor::ToolExecutor>,
+    /// Her working memory: the restore clears the receipt scope the rooting set.
+    working_memory: Arc<crate::cognition::working_memory::WorkingMemory>,
 }
 
 impl ActingHands {
@@ -702,6 +704,7 @@ impl ActingHands {
             persona_id: a.persona_id,
             persona_name: a.persona_name.clone(),
             executor: a.executor.clone(),
+            working_memory: a.working_memory.clone(),
         })
     }
 }
@@ -758,6 +761,29 @@ async fn drive_create_workspace(
     Ok(())
 }
 
+/// WHERE HER HANDS STAND, process-wide: the root a live work turn rooted her
+/// file engine at (a card's checkout), or nothing when she stands in her own
+/// workspace. One truth for the hands, the workspace map she perceives, and the
+/// scope her receipts carry — set at the rooting seam, cleared on restore.
+static ACTING_ROOTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<uuid::Uuid, std::path::PathBuf>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+pub fn acting_root_of(persona_id: uuid::Uuid) -> Option<std::path::PathBuf> {
+    ACTING_ROOTS.lock().unwrap_or_else(|e| e.into_inner()).get(&persona_id).cloned()
+}
+
+fn note_acting_root(persona_id: uuid::Uuid, root: Option<std::path::PathBuf>) {
+    let mut map = ACTING_ROOTS.lock().unwrap_or_else(|e| e.into_inner());
+    match root {
+        Some(r) => {
+            map.insert(persona_id, r);
+        }
+        None => {
+            map.remove(&persona_id);
+        }
+    }
+}
+
 /// Root a forked cycle's file-engine (its `ToolExecutor`) at `root` by driving the
 /// `code/create-workspace` act through her hands — the SAME mechanism `cognition/eval`
 /// uses to point a measurement persona at a target repo, and now `agent/solve` uses to
@@ -792,6 +818,10 @@ pub(crate) async fn root_acting_workspace(
         refuse_inert_edits,
     )
     .await?;
+    note_acting_root(hands.persona_id, Some(std::path::PathBuf::from(root)));
+    if let Some(body) = cycle.acting() {
+        body.working_memory.set_scope(Some(root.to_string()));
+    }
     crate::probe!(
         class = "workspace.rooted",
         persona = %hands.persona_name,
@@ -866,6 +896,8 @@ async fn restore_acting_workspace_at(
     // Restoring her to her OWN home restores the LIVE stance too: a citizen at home writes code
     // as text whenever she means to, and only gets told when it will not execute (#317).
     drive_create_workspace(hands, home, &[], "restore-acting-workspace", false).await?;
+    note_acting_root(hands.persona_id, None);
+    hands.working_memory.set_scope(None);
     crate::probe!(
         class = "workspace.restored",
         persona = %hands.persona_name,
@@ -2036,6 +2068,7 @@ mod tests {
                 persona_id: persona,
                 persona_name: "Anwen".to_string(),
                 executor: Arc::new(CommandToolExecutor::new(Connection::new(transport))),
+                working_memory: Arc::new(crate::cognition::working_memory::WorkingMemory::new(8)),
             }
         }
 
