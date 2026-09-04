@@ -62,9 +62,9 @@ const nav = (current: string, livePurposeTab = false): NavViewState => ({
   user_id: 'joel',
   current_tab: current,
   open_tabs: [
-    { id: 'room-1', title: 'general', kind: 'room', unread: 0, purpose: 'chat', parent_ref: '', display_label: '' },
+    { id: 'room-1', title: 'general', kind: 'room', unread: 0, opened: true, purpose: 'chat', parent_ref: '', display_label: '' },
     {
-      id: 'stage', title: 'stage', kind: 'room', unread: 0,
+      id: 'stage', title: 'stage', kind: 'room', unread: 0, opened: true,
       purpose: livePurposeTab ? 'live' : 'chat',
       parent_ref: '', display_label: '',
     },
@@ -191,8 +191,8 @@ describe('live call face → pattern projections', () => {
       user_id: 'joel',
       current_tab: 'asha',
       open_tabs: [
-        { id: 'room-1', title: 'general', kind: 'room', unread: 0, purpose: 'chat', parent_ref: '', display_label: '' },
-        { id: 'asha', title: 'Asha', kind: 'persona', unread: 0, purpose: 'persona', parent_ref: '', display_label: '' },
+        { id: 'room-1', title: 'general', kind: 'room', unread: 0, opened: true, purpose: 'chat', parent_ref: '', display_label: '' },
+        { id: 'asha', title: 'Asha', kind: 'persona', unread: 0, opened: true, purpose: 'persona', parent_ref: '', display_label: '' },
       ],
       last_read: {},
       bookmarks: [],

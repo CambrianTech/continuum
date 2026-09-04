@@ -569,12 +569,20 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
   // board. Before this branch existed those rooms fell through to a chat body
   // under an unregistered purpose and painted `Interface error` — a dispatched
   // round's room was unrenderable, the scoreboard region unreachable.
+  // A RUN room is a conversation with its round on top (live 2026-09-04: the
+  // round widget REPLACED the transcript, so an operator's line into a run room
+  // — and the "heard by N" receipt on it — had nowhere to render). It takes the
+  // academy landing's shape: its own round center-stage, the chat as the
+  // secondary layer. Only a bench-family room that is NOT a round's run room
+  // (a bench index) renders the board alone.
+  const isRunRoom = live?.bench?.rounds.some((r) => r.run_room !== '' && r.run_room === vm.roomName) ?? false;
   const benchBody =
     !personaBody &&
     !liveBody &&
     !arenaBody &&
     !servingBody &&
     !gridBody &&
+    !isRunRoom &&
     contentFamilyOf(vm.purpose) === BENCH_PURPOSE
       ? benchContentBody(benchViewForRoom(live?.bench, vm.roomName))
       : undefined;
@@ -599,9 +607,9 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     !servingBody &&
     !gridBody &&
     !benchBody &&
-    vm.roomName.toLowerCase() === 'academy'
+    (vm.roomName.toLowerCase() === 'academy' || isRunRoom)
       ? {
-          bench: benchContentBody(live?.bench),
+          bench: benchContentBody(isRunRoom ? benchViewForRoom(live?.bench, vm.roomName) : live?.bench),
           chat: { messages: vm.messages, transcript: vm.transcript, isEmpty: vm.isEmpty },
           memberCount: vm.memberCount,
           activeCount: vm.activeCount,
