@@ -76,6 +76,15 @@ enum Command {
         /// selector picks a default when omitted.
         #[arg(long)]
         model: Option<String>,
+        /// Provider id to route to (e.g. `llama-server`, `docker-model-runner`,
+        /// `anthropic`). The substrate's `AdapterRegistry::select` accepts an
+        /// explicit provider with NO model and hard-refuses model-only requests
+        /// whose name matches no adapter prefix ([[no-fallbacks-ever]]) — so a
+        /// grid consumer with no local registry needs this to make the one
+        /// request a remote substrate will serve. `local` is the sentinel for
+        /// "best local GPU adapter on the target". Card 94179b72.
+        #[arg(long, env = "CONTINUUM_PROVIDER")]
+        provider: Option<String>,
 
         /// Print the raw JSON response instead of just the text field.
         #[arg(long, default_value_t = false)]
@@ -136,7 +145,12 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::Metrics => run_metrics(conn).await,
-        Command::Generate { prompt, model, json } => run_generate(conn, prompt, model, json).await,
+        Command::Generate {
+            prompt,
+            model,
+            provider,
+            json,
+        } => run_generate(conn, prompt, model, provider, json).await,
         Command::GridSmoke => grid_smoke::run(conn, peer).await,
     }
 }
@@ -155,6 +169,7 @@ async fn run_generate(
     conn: Connection<AircIpcTransport>,
     prompt: String,
     model: Option<String>,
+    provider: Option<String>,
     json: bool,
 ) -> Result<()> {
     // Construct the minimum-viable TextGenerationRequest shape. The
@@ -180,6 +195,9 @@ async fn run_generate(
     if let Some(m) = model {
         params["model"] = serde_json::Value::String(m);
     }
+    if let Some(p) = provider {
+        params["provider"] = serde_json::Value::String(p);
+    }
 
     let result: serde_json::Value = conn
         .commands()
@@ -200,20 +218,21 @@ async fn run_generate(
         // mask a substrate-side contract violation as a fake string;
         // surface a typed error instead so substrate bugs get caught
         // loudly.
-        let text = result
-            .get("text")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!(
+        let text = result.get("text").and_then(|v| v.as_str()).ok_or_else(|| {
+            anyhow!(
                 "substrate `ai/generate` response missing required `text` field — \
                  substrate-side contract violation, not a CLI presentation problem"
-            ))?;
+            )
+        })?;
         println!("{text}");
-        let model = result.get("model").and_then(|v| v.as_str()).ok_or_else(|| {
-            anyhow!("substrate response missing required `model` field")
-        })?;
-        let provider = result.get("provider").and_then(|v| v.as_str()).ok_or_else(|| {
-            anyhow!("substrate response missing required `provider` field")
-        })?;
+        let model = result
+            .get("model")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("substrate response missing required `model` field"))?;
+        let provider = result
+            .get("provider")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("substrate response missing required `provider` field"))?;
         let total = result
             .get("usage")
             .and_then(|u| u.get("totalTokens"))
@@ -230,8 +249,8 @@ async fn run_generate(
 /// airc-lib does internally so the CLI doesn't fall back to a system
 /// path the user didn't expect.
 fn default_airc_home() -> Result<PathBuf> {
-    let home = env::var_os("HOME")
-        .ok_or_else(|| anyhow!("$HOME is unset; pass --home explicitly"))?;
+    let home =
+        env::var_os("HOME").ok_or_else(|| anyhow!("$HOME is unset; pass --home explicitly"))?;
     // ctm gets its OWN scope, never the operator's `~/.airc`. Two reasons,
     // both learned the hard way (2026-08-27 grid-smoke 0/3): a shared home
     // would inherit the operator's CURRENT ROOM — request/reply frames are
@@ -240,5 +259,8 @@ fn default_airc_home() -> Result<PathBuf> {
     // deadlines; and steering the shared scope's room to fix that would
     // mutate the operator's own airc state. A fresh dedicated scope lands
     // in #general (the substrate's commons) by airc's own default.
-    Ok(PathBuf::from(home).join(".continuum").join("ctm").join("airc"))
+    Ok(PathBuf::from(home)
+        .join(".continuum")
+        .join("ctm")
+        .join("airc"))
 }
