@@ -89,6 +89,18 @@ enum Command {
         #[arg(long, env = "CONTINUUM_PROVIDER")]
         provider: Option<String>,
 
+        /// Cap on generated tokens (`maxTokens` on the request). Without it the
+        /// lane decides, and a measurement that asked for "one word" can get
+        /// 124 tokens — wall-clock then measures decode length, not the wire.
+        /// Card ddd7a7cf.
+        #[arg(long)]
+        max_tokens: Option<u32>,
+
+        /// Sampling temperature (`temperature` on the request). `0` makes
+        /// repeated measurement runs comparable.
+        #[arg(long)]
+        temperature: Option<f32>,
+
         /// Print the raw JSON response instead of just the text field.
         #[arg(long, default_value_t = false)]
         json: bool,
@@ -152,8 +164,10 @@ async fn main() -> Result<()> {
             prompt,
             model,
             provider,
+            max_tokens,
+            temperature,
             json,
-        } => run_generate(conn, prompt, model, provider, json).await,
+        } => run_generate(conn, prompt, model, provider, max_tokens, temperature, json).await,
         Command::GridSmoke => grid_smoke::run(conn, peer).await,
     }
 }
@@ -173,6 +187,8 @@ async fn run_generate(
     prompt: String,
     model: Option<String>,
     provider: Option<String>,
+    max_tokens: Option<u32>,
+    temperature: Option<f32>,
     json: bool,
 ) -> Result<()> {
     // Construct the minimum-viable TextGenerationRequest shape. The
@@ -200,6 +216,12 @@ async fn run_generate(
     }
     if let Some(p) = provider {
         params["provider"] = serde_json::Value::String(p);
+    }
+    if let Some(n) = max_tokens {
+        params["maxTokens"] = serde_json::Value::from(n);
+    }
+    if let Some(t) = temperature {
+        params["temperature"] = serde_json::Value::from(t);
     }
 
     let result: serde_json::Value = conn
