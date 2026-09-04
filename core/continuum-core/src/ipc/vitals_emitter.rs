@@ -119,6 +119,24 @@ const RECALL_WINDOW: Duration = Duration::from_secs(90);
 const FOCUS_WINDOW: Duration = Duration::from_secs(120);
 const RECALL_FULL_SCALE: u64 = 6;
 
+/// The last vitals sampled per persona — what `persona/vitals` answers, so a
+/// page opened cold (a deep link to a citizen who is not in the viewer's focused
+/// room) reads the SAME map the roster tiles draw, from the one emitter.
+static LAST_VITALS: std::sync::LazyLock<
+    std::sync::Mutex<HashMap<Uuid, (BTreeMap<String, u8>, std::time::Instant)>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// The most recent vitals map for `persona` and how long ago it was sampled.
+pub fn last_vitals(persona: Uuid) -> Option<(BTreeMap<String, u8>, Duration)> {
+    let last = LAST_VITALS.lock().unwrap_or_else(|e| e.into_inner());
+    last.get(&persona).map(|(v, at)| (v.clone(), at.elapsed()))
+}
+
+fn remember_vitals(persona: Uuid, vitals: &BTreeMap<String, u8>) {
+    let mut last = LAST_VITALS.lock().unwrap_or_else(|e| e.into_inner());
+    last.insert(persona, (vitals.clone(), std::time::Instant::now()));
+}
+
 pub fn record_acts(persona: Uuid, n: u64) {
     let mut pulse = ACT_PULSE.lock().unwrap_or_else(|e| e.into_inner());
     *pulse.entry(persona).or_insert(0) += n;
@@ -364,6 +382,7 @@ pub fn spawn_vitals_emitter(rt: &tokio::runtime::Handle, bus: Arc<MessageBus>) {
             match sampled {
                 Ok(updates) => {
                     for update in updates {
+                        remember_vitals(update.member_id, &update.vitals);
                         // Change-dedup: a stable persona radiates nothing (vitals,
                         // loadout AND genes unchanged).
                         if last_emitted.get(&update.member_id).map(|(v, l, g)| {

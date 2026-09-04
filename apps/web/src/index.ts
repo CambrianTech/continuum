@@ -31,6 +31,7 @@ import {
   onPersonaTabChange,
   setMindFeed,
   setMindSight,
+  setMindVitals,
   setRequestedPersonaTab,
 } from './persona/renderPersona';
 import {
@@ -234,6 +235,19 @@ async function main(): Promise<void> {
     } catch (err) {
       console.error('mind feed poll failed:', err);
     }
+    // Her latest vitals by id (the roster/HUD pulse) — lights the brain HUD on a
+    // cold deep link when she is not in the viewer's focused room.
+    try {
+      const raw = await transport.execute(
+        buildCommandUri('persona/vitals'),
+        JSON.stringify({ personaId }),
+      );
+      const parsed = JSON.parse(raw) as { vitals?: Record<string, number> };
+      setMindVitals({ personaId, vitals: parsed.vitals ?? {} });
+      widget.mindRevision = Date.now();
+    } catch (err) {
+      console.error('mind vitals poll failed:', err);
+    }
     // WHAT SHE SEES NOW: the exact grounding her model would get this instant.
     // `persona/rag-inspect` resolves by NAME today (an id misses the seed
     // path); the directory seed maps her id back to it.
@@ -287,6 +301,7 @@ async function main(): Promise<void> {
     if (personaId === undefined) {
       setMindFeed(undefined);
       setMindSight(undefined);
+      setMindVitals(undefined);
       return;
     }
     void pollMind(personaId);

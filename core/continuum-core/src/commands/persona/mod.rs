@@ -24,6 +24,7 @@ use crate::persona::PersonaAircRuntimeRegistry;
 use crate::runtime::{CommandExecutor, LateBound};
 use crate::sdk_codegen::DynCommand;
 
+pub mod vitals;
 pub mod allocate;
 pub mod catalog;
 pub mod identity;
@@ -51,6 +52,7 @@ pub fn command_objects(
 ) -> Vec<Arc<dyn DynCommand>> {
     let mut objects = instances::command_objects(registry.clone());
     objects.extend(wall::command_objects(registry));
+    objects.push(Arc::new(vitals::PersonaVitals));
     objects.push(Arc::new(PersonaReassignModel {
         continuum_root: continuum_root.clone(),
         executor,
