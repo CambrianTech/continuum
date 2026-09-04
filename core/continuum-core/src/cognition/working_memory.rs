@@ -1222,8 +1222,8 @@ impl Faculty for WorkingMemoryFaculty {
 
     // Perception tier (default): reacts to the raw world-state, bidding the recent
     // reasoning into phase 1 so the deliberator conditions on it in phase 2.
-    async fn contribute(&self, _ws: &Workspace) -> Option<Contribution> {
-        let entries = self.memory.recent_entries();
+    async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
+        let mut entries = self.memory.recent_entries();
         let dispatched = self.memory.dispatched_snapshot();
         if entries.is_empty() && dispatched.is_empty() {
             return None;
@@ -1245,7 +1245,39 @@ impl Faculty for WorkingMemoryFaculty {
         // single dominant mass of an 85k prompt. The full text stays in the
         // entry (the pinned path and recall read it); only the TRAIL RENDER
         // is bounded, with the collapse idiom naming what was elided.
-        let head = self.memory.budget().trail_head_chars();
+        // A WORK turn perceives its own recent past compactly: the newest few
+        // reasonings/receipts in full and the older ones as one count line —
+        // collapsed, not clipped. Measured 2026-09-05: this block was 14–23 KB of
+        // a ~22k-token prompt on every act, with zero KV reuse; a card's work turn
+        // needs what she just did, not the morning.
+        let mut collapsed_older = 0usize;
+        if ws.workspace_deliverable {
+            const WORK_TURN_RECENT_KEEP: usize = 3;
+            let non_fact: Vec<usize> = entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| !matches!(e.kind, WmKind::Fact))
+                .map(|(i, _)| i)
+                .collect();
+            if non_fact.len() > WORK_TURN_RECENT_KEEP {
+                let drop: std::collections::HashSet<usize> =
+                    non_fact[..non_fact.len() - WORK_TURN_RECENT_KEEP].iter().copied().collect();
+                collapsed_older = drop.len();
+                entries = entries
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(i, _)| !drop.contains(i))
+                    .map(|(_, e)| e)
+                    .collect();
+            }
+        }
+        // Per-entry head in a WORK turn: 1,500 chars — past that a work act's
+        // reasoning is history, not state.
+        let head = if ws.workspace_deliverable {
+            self.memory.budget().trail_head_chars().min(1_500)
+        } else {
+            self.memory.budget().trail_head_chars()
+        };
         let clip = |t: &str| -> String {
             if t.chars().count() <= head {
                 t.to_string()
@@ -1295,7 +1327,7 @@ impl Faculty for WorkingMemoryFaculty {
                 // never be phrased in another's voice.
                 "My own recent thoughts and actions (working memory — this is my \
                  interior state, not a message from anyone):\n{}",
-                render_trail(&recent)
+                format!("{}{}", render_trail(&recent), if collapsed_older > 0 { format!("\n[{collapsed_older} earlier acts this session, collapsed — their receipts are still in my memory]") } else { String::new() })
             ));
         }
         // The FULL result of the most recent act is NO LONGER emitted here. It is the
