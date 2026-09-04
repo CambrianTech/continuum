@@ -88,6 +88,18 @@ pub struct ChatModule {
     executor_slot: Arc<LateBound<CommandExecutor>>,
 }
 
+/// Which wire leg a send takes after the data row is written. ONE leg per
+/// line: the transcript is a log, and two rows for one utterance is a defect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WireLeg {
+    /// Publish the chat-transcript envelope through `airc/realtime-publish`
+    /// (the relay peer authors it; the sender rides `continuum.source_id`).
+    Envelope,
+    /// The caller speaks the line through the sender's own airc runtime
+    /// (`publish_text_in_room`) — authored by the real peer, and the ONLY row.
+    CallerSpeaks,
+}
+
 impl ChatModule {
     /// Construct a chat module. The executor is installed later by
     /// `start_server` via `ServiceModule::install_executor` (task #224).
@@ -303,6 +315,36 @@ impl ChatModule {
     /// could be the dedup id) but the design conversation is its
     /// own scope.
     pub async fn send(&self, params: ChatSendParams) -> Result<ChatSendResult, String> {
+        self.send_with_wire(params, WireLeg::Envelope).await
+    }
+
+    /// `send` with the wire leg chosen by the caller. A caller that will SPEAK
+    /// the line through the sender's own airc runtime (`chat/send` for a
+    /// citizen, the operator self-peer, the agent peer) passes
+    /// [`WireLeg::CallerSpeaks`]: the envelope leg is skipped, because both legs
+    /// land in the daemon transcript and every citizen's window then read the
+    /// operator twice (measured 2026-09-03: two rows, same sender, same
+    /// timestamp; Kira's grounding held the line as items 8 AND 9). The data row
+    /// is written either way — it is the ground truth the web's own poll reads.
+    pub async fn send_with_wire(
+        &self,
+        params: ChatSendParams,
+        wire: WireLeg,
+    ) -> Result<ChatSendResult, String> {
+        let (message_id, now_ms) = self.persist(&params).await?;
+        match wire {
+            WireLeg::Envelope => self.broadcast_envelope(message_id, &params, now_ms).await,
+            WireLeg::CallerSpeaks => Ok(ChatSendResult {
+                message_id,
+                event_id: None,
+                warning: None,
+            }),
+        }
+    }
+
+    /// Step 1 of a send: persist the message row (ground truth). Returns the
+    /// minted message id and the timestamp the row carries.
+    async fn persist(&self, params: &ChatSendParams) -> Result<(Uuid, u64), String> {
         let executor = self.executor()?;
         let message_id = Uuid::new_v4();
         let now_ms = now_ms();
@@ -359,6 +401,20 @@ impl ChatModule {
                 "chat/send: data/create returned success=false: {inner}"
             ));
         }
+        Ok((message_id, now_ms))
+    }
+
+    /// Step 2 of a send: the ENVELOPE wire leg — the chat transcript schema
+    /// published as an airc realtime envelope through `airc/realtime-publish`
+    /// (best-effort; a miss is named in `warning`, never silent). Public so
+    /// `chat/send` can fall back to it when the sender's own say fails.
+    pub async fn broadcast_envelope(
+        &self,
+        message_id: Uuid,
+        params: &ChatSendParams,
+        now_ms: u64,
+    ) -> Result<ChatSendResult, String> {
+        let executor = self.executor()?;
 
         // ── Step 2: broadcast (best-effort) ─────────────────────────
         //
@@ -640,7 +696,7 @@ pub fn spawn_persist_listener(
 // `createdAtMs` from the same `send()` call agree by construction
 // (rather than risking a tiny skew between two separate reads).
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
