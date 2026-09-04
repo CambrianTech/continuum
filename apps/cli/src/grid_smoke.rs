@@ -296,7 +296,11 @@ pub fn default_battery() -> Vec<GridSmokeSpec> {
                 let trimmed: String = text.chars().take(50).collect();
                 Ok(format!(
                     "model={model} text={trimmed:?}{}",
-                    if text.chars().count() > 50 { " (truncated)" } else { "" }
+                    if text.chars().count() > 50 {
+                        " (truncated)"
+                    } else {
+                        ""
+                    }
                 ))
             },
             expectation: ChainShape::SingleHop {
@@ -309,10 +313,7 @@ pub fn default_battery() -> Vec<GridSmokeSpec> {
 }
 
 /// Dispatch one spec, time the wall-clock, validate.
-async fn run_spec(
-    conn: &Connection<AircIpcTransport>,
-    spec: &GridSmokeSpec,
-) -> RunResult {
+async fn run_spec(conn: &Connection<AircIpcTransport>, spec: &GridSmokeSpec) -> RunResult {
     // NotYetWired rows skip dispatch entirely — the substrate would
     // error on something we already know doesn't cross the wire.
     if let ChainShape::NotYetWired { reason } = &spec.expectation {
@@ -397,12 +398,27 @@ pub fn print_report(target_peer: &str, results: &[RunResult]) {
             Outcome::Skipped(_) => String::from("    -"),
             _ => format!("{:>5}", r.elapsed.as_millis()),
         };
-        println!("  {glyph}  {:width$}  {} ms   {}", r.name, ms, body, width = name_width);
+        println!(
+            "  {glyph}  {:width$}  {} ms   {}",
+            r.name,
+            ms,
+            body,
+            width = name_width
+        );
     }
 
-    let pass = results.iter().filter(|r| matches!(r.outcome, Outcome::Ok(_))).count();
-    let fail = results.iter().filter(|r| matches!(r.outcome, Outcome::Failed(_))).count();
-    let skip = results.iter().filter(|r| matches!(r.outcome, Outcome::Skipped(_))).count();
+    let pass = results
+        .iter()
+        .filter(|r| matches!(r.outcome, Outcome::Ok(_)))
+        .count();
+    let fail = results
+        .iter()
+        .filter(|r| matches!(r.outcome, Outcome::Failed(_)))
+        .count();
+    let skip = results
+        .iter()
+        .filter(|r| matches!(r.outcome, Outcome::Skipped(_)))
+        .count();
     let total = results.len();
 
     println!("\n{pass}/{total} passed  ({fail} failed, {skip} skipped)");
@@ -412,10 +428,7 @@ pub fn print_report(target_peer: &str, results: &[RunResult]) {
 /// battery, prints the report, and returns Ok iff every spec passed.
 /// Failure -> nonzero exit so CI / scripts can gate on grid-smoke
 /// directly without parsing the report.
-pub async fn run(
-    conn: Connection<AircIpcTransport>,
-    target_peer: uuid::Uuid,
-) -> Result<()> {
+pub async fn run(conn: Connection<AircIpcTransport>, target_peer: uuid::Uuid) -> Result<()> {
     let specs = default_battery();
     let results = run_battery(conn, specs).await;
     print_report(&target_peer.to_string(), &results);
