@@ -560,19 +560,21 @@ async fn ensure_core_running(command: &str) -> Result<(), String> {
     match bind_decision().await {
         BindDecision::AlreadyServing { .. } => return Ok(()),
         BindDecision::Occupied { pids } => {
+            let socket = socket_path();
             return Err(format!(
                 "`{command}` needs a running core, and {} core process(es) are running \
                  (pid(s) {}) but NONE is answering on {}. Starting another would bind a \
                  second core on the same socket — whichever one the kernel hands a \
                  connection to would answer, so results would be non-deterministic. \
                  Either wait (a core that is still booting answers shortly), or clear it \
-                 with `continuum stop`.",
+                 with `continuum stop`.{}",
                 pids.len(),
                 pids.iter()
                     .map(|p| p.to_string())
                     .collect::<Vec<_>>()
                     .join(","),
-                socket_path()
+                socket,
+                bound_elsewhere_hint(&running_core_sockets(), &socket).unwrap_or_default()
             ));
         }
         BindDecision::Free => {}
@@ -653,8 +655,9 @@ async fn start(force: bool) -> Result<(), String> {
                      • still booting? wait — a healthy core answers shortly, then `continuum start` \
                      is a no-op\n  \
                      • wedged? `continuum stop` reaps every core, then start\n  \
-                     • sure it is dead weight? `continuum start --force` reclaims it here",
-                    pids.len()
+                     • sure it is dead weight? `continuum start --force` reclaims it here{}",
+                    pids.len(),
+                    bound_elsewhere_hint(&running_core_sockets(), &socket).unwrap_or_default()
                 ));
             }
             // Explicit reclaim. `reboot` guards destructive restarts behind live-training
@@ -1281,6 +1284,87 @@ fn processes_with_cmdline(fragment: &str) -> Vec<i32> {
 /// Node). Empty on no match or if pgrep is unavailable.
 fn running_core_pids() -> Vec<i32> {
     processes_named("continuum-core-server")
+}
+
+/// The socket path in a core server's argv, or `None` when it passed none.
+///
+/// Mirrors `main.rs`'s own resolution order — `argv[1]` (the first positional) wins,
+/// otherwise the server falls back to the shared resolver. A core that took the fallback
+/// resolved the path from ITS environment at launch, which this process cannot read after
+/// the fact, so `None` here means "unknown", never "the default". Say nothing rather than
+/// guess: a diagnostic that confidently names the wrong socket is what this whole helper
+/// exists to stop.
+fn socket_from_core_argv(argv: &[String]) -> Option<String> {
+    argv.iter()
+        .skip(1)
+        .find(|a| !a.starts_with('-'))
+        .cloned()
+}
+
+/// Every running core paired with the socket it is actually bound to.
+///
+/// Uses the same `sysinfo` command-line refresh as [`processes_with_cmdline`], so it works
+/// on every platform rather than shelling out to a Unix-only tool.
+fn running_core_sockets() -> Vec<(i32, String)> {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
+    );
+    sys.processes()
+        .values()
+        .filter(|p| {
+            p.name()
+                .to_string_lossy()
+                .contains("continuum-core-server")
+        })
+        .filter_map(|p| {
+            let argv: Vec<String> = p
+                .cmd()
+                .iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            socket_from_core_argv(&argv).map(|s| (p.pid().as_u32() as i32, s))
+        })
+        .collect()
+}
+
+/// The line to append to an "Occupied" refusal when a running core is bound to a socket
+/// this CLI is not looking at — the difference between "nothing is answering" (a wedged
+/// core) and "you are listening at the wrong door" (a healthy one).
+///
+/// `None` when nothing is provably bound elsewhere, so the caller's message is unchanged in
+/// the ordinary wedged case.
+///
+/// Why this is worth its own function: the server takes `argv[1]` over the shared resolver,
+/// so an explicitly-launched core serves where the client's default never looks — and every
+/// client-side diagnostic then reports the CLIENT's path as though it were the core's. That
+/// is TRUE and it names the one path that is not the answer. Measured on the Intel Mac
+/// 2026-09-04: pid 83712 served `~/.continuum/intelmac-core.sock` for an hour while `ping`
+/// said "NONE is answering on /tmp/continuum-core.sock" — four commands and one wrong
+/// "the core is wedged" hypothesis to find a core that was healthy the whole time. The
+/// argv was readable throughout. `start`'s own doc already names this state ("bound where
+/// this CLI cannot reach"); this makes the message say it too.
+fn bound_elsewhere_hint(bound: &[(i32, String)], socket: &str) -> Option<String> {
+    let mut elsewhere: Vec<&(i32, String)> = bound.iter().filter(|(_, s)| s != socket).collect();
+    if elsewhere.is_empty() {
+        return None;
+    }
+    elsewhere.sort_by_key(|(pid, _)| *pid);
+    let list = elsewhere
+        .iter()
+        .map(|(pid, s)| format!("pid {pid} → {s}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    // Name the remedy with the path already filled in: the operator's next keystroke.
+    let first = &elsewhere[0].1;
+    Some(format!(
+        "\n  • NOT wedged — bound elsewhere: {list}. This CLI is looking at {socket}. \
+         Reach it with `CONTINUUM_CORE_SOCKET={first} continuum <command>`, or \
+         `continuum stop` and start one on {socket}."
+    ))
 }
 
 /// PIDs of running processes whose executable name contains `fragment`.
@@ -2135,6 +2219,105 @@ mod tests {
 
     fn ptable(pairs: &[(i32, i32)]) -> std::collections::HashMap<i32, i32> {
         pairs.iter().copied().collect()
+    }
+
+    /// The socket a running core is bound to, and the refusal line that names it.
+    ///
+    /// Measured 2026-09-04 on the Intel Mac: pid 83712 served
+    /// `~/.continuum/intelmac-core.sock` for an hour while every client-side diagnostic
+    /// reported `/tmp/continuum-core.sock` — the one path that was not the answer.
+    mod bound_socket {
+        use super::*;
+
+        fn argv(parts: &[&str]) -> Vec<String> {
+            parts.iter().map(|s| s.to_string()).collect()
+        }
+
+        /// what this catches: reading the socket out of the wrong argv slot. `main.rs`
+        /// accepts `[--mode=<MODE>] <socket-path>`, so the socket is the first NON-FLAG
+        /// argument after argv[0] — indexing argv[1] blindly reports "--mode=full-citizen"
+        /// as a socket path, which is the exact species of confidently-wrong diagnostic
+        /// this helper exists to remove.
+        #[test]
+        fn socket_is_the_first_non_flag_arg_not_argv_1() {
+            assert_eq!(
+                socket_from_core_argv(&argv(&[
+                    "continuum-core-server",
+                    "--mode=full-citizen",
+                    "/Users/joel/.continuum/intelmac-core.sock",
+                ])),
+                Some("/Users/joel/.continuum/intelmac-core.sock".to_string()),
+                "a flag before the positional must not be mistaken for the socket"
+            );
+            assert_eq!(
+                socket_from_core_argv(&argv(&["continuum-core-server", "/tmp/a.sock"])),
+                Some("/tmp/a.sock".to_string())
+            );
+        }
+
+        /// what this catches: inventing a socket for a core that passed none. Such a core
+        /// resolved the path from ITS environment at launch, which this process cannot read
+        /// afterwards — so the honest answer is "unknown", and a `Some(default)` here would
+        /// make the hint assert a path the core may well not be on.
+        #[test]
+        fn a_core_with_no_positional_reports_unknown_rather_than_the_default() {
+            assert_eq!(
+                socket_from_core_argv(&argv(&["continuum-core-server", "--mode=fail-fast"])),
+                None
+            );
+        }
+
+        /// what this catches: the hint firing on the ordinary wedged core. A core bound to
+        /// the very socket the CLI is using is genuinely not answering; telling that
+        /// operator to "reach it elsewhere" would send them chasing a door that is already
+        /// open, so the existing message must go out unchanged.
+        #[test]
+        fn no_hint_when_the_running_core_is_bound_to_the_socket_we_asked_for() {
+            let bound = vec![(1, "/tmp/continuum-core.sock".to_string())];
+            assert_eq!(bound_elsewhere_hint(&bound, "/tmp/continuum-core.sock"), None);
+            assert_eq!(bound_elsewhere_hint(&[], "/tmp/continuum-core.sock"), None);
+        }
+
+        /// what this catches: a hint that reports the mismatch without the remedy. The
+        /// operator's next keystroke needs the core's ACTUAL path — naming only the
+        /// client's is what cost four commands and a wrong "wedged" hypothesis.
+        #[test]
+        fn hint_names_the_cores_path_and_the_command_that_reaches_it() {
+            let bound = vec![(83712, "/Users/joel/.continuum/intelmac-core.sock".to_string())];
+            let hint = bound_elsewhere_hint(&bound, "/tmp/continuum-core.sock")
+                .expect("a core bound elsewhere must produce a hint");
+            assert!(
+                hint.contains("pid 83712 → /Users/joel/.continuum/intelmac-core.sock"),
+                "must name which pid is where: {hint}"
+            );
+            assert!(
+                hint.contains(
+                    "CONTINUUM_CORE_SOCKET=/Users/joel/.continuum/intelmac-core.sock"
+                ),
+                "the remedy must carry the core's path, not the client's: {hint}"
+            );
+            assert!(
+                hint.contains("NOT wedged"),
+                "the hint's job is to separate this from the wedged case: {hint}"
+            );
+        }
+
+        /// what this catches: a mixed fleet hiding the outlier. With one core on the
+        /// client's socket and one elsewhere, the bind guard still refuses — and only the
+        /// core that is actually unreachable belongs in the hint.
+        #[test]
+        fn only_cores_bound_elsewhere_are_listed() {
+            let bound = vec![
+                (7, "/tmp/continuum-core.sock".to_string()),
+                (9, "/Users/joel/.continuum/intelmac-core.sock".to_string()),
+            ];
+            let hint = bound_elsewhere_hint(&bound, "/tmp/continuum-core.sock").expect("hint");
+            assert!(hint.contains("pid 9"), "the unreachable core must appear: {hint}");
+            assert!(
+                !hint.contains("pid 7"),
+                "a core on the asked-for socket is not 'elsewhere': {hint}"
+            );
+        }
     }
 
     mod launch_policy {
