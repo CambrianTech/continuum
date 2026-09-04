@@ -106,7 +106,7 @@ impl SeenRooms {
 /// the inbox is gone. Heartbeats and chunks are skipped here as at the door.
 async fn catch_up_from_store(
     runtime: &dyn AircCitizen,
-    seen: &mut SeenRooms,
+    seen: &std::sync::Mutex<SeenRooms>,
     tx: &tokio::sync::mpsc::Sender<Result<std::sync::Arc<TranscriptEvent>, airc_lib::LiveLag>>,
 ) -> (usize, usize) {
     let rooms = runtime.subscribed_rooms().await.unwrap_or_default(); // unwrap_or: an unreadable room list = nothing to catch up this tick
@@ -114,6 +114,8 @@ async fn catch_up_from_store(
     let mut paged = 0usize;
     let mut failed = 0usize;
     let mut first_error: Option<String> = None;
+    let mut sample_newest = 0u64;
+    let mut sample: Option<(Uuid, u64, u64, usize, String, String, bool)> = None;
     for room in rooms {
         let mut events = match runtime
             .page_recent_in(Some(airc_core::RoomId::from_uuid(room)), CATCH_UP_PAGE)
@@ -133,21 +135,62 @@ async fn catch_up_from_store(
         paged += 1;
         events.sort_by_key(|e| e.occurred_at_ms);
         let Some(newest_ms) = events.iter().map(|e| e.occurred_at_ms).max() else { continue };
-        let floor_ms = *seen.floor_ms.entry(room).or_insert(newest_ms);
+        let floor_ms = *seen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .floor_ms
+            .entry(room)
+            .or_insert(newest_ms);
+        // WHAT SHE SEES IN THE STORE (repeatability): the newest paged line per
+        // tick for the room with the freshest tail — floor, newest, and the
+        // line's identity — so "nothing admitted" is explainable from probes
+        // alone (zero admissions across four builds were not).
+        if newest_ms > sample_newest {
+            sample_newest = newest_ms;
+            let newest = events.iter().max_by_key(|e| e.occurred_at_ms);
+            sample = newest.map(|e| {
+                (
+                    room,
+                    floor_ms,
+                    newest_ms,
+                    events.len(),
+                    e.peer_id.as_uuid().to_string().chars().take(8).collect::<String>(),
+                    e.body
+                        .as_ref()
+                        .and_then(|b| b.as_text().map(|t| t.chars().take(60).collect::<String>()))
+                        .unwrap_or_else(|| "<non-text>".to_string()),
+                    seen.lock().unwrap_or_else(|e| e.into_inner()).was_seen(room, e.event_id.as_uuid()),
+                )
+            });
+        }
         for event in events {
             if event.occurred_at_ms <= floor_ms
-                || seen.was_seen(room, event.event_id.as_uuid())
+                || seen.lock().unwrap_or_else(|e| e.into_inner()).was_seen(room, event.event_id.as_uuid())
                 || crate::persona::airc_citizen::is_heartbeat(&event)
                 || crate::airc::realtime_wire::is_stream_chunk(&event)
             {
                 continue;
             }
-            seen.note(room, event.event_id.as_uuid());
+            seen.lock().unwrap_or_else(|e| e.into_inner()).note(room, event.event_id.as_uuid());
             if tx.send(Ok(std::sync::Arc::new(event))).await.is_err() {
                 return (paged, usize::MAX);
             }
             forwarded += 1;
         }
+    }
+    if let Some((room, floor_ms, newest_ms, count, peer, head, was_seen)) = sample {
+        crate::probe!(
+            class = "persona.inbound.catch_up_page_sample",
+            room = %room,
+            floor_ms = floor_ms,
+            newest_ms = newest_ms,
+            count = count as u64,
+            newest_peer = %peer,
+            newest_head = %head,
+            newest_was_seen = was_seen,
+            forwarded = forwarded as u64,
+            "store catch-up: the freshest paged room this tick"
+        );
     }
     if failed > 0 {
         crate::probe!(
@@ -194,6 +237,11 @@ pub struct AircPersonaConversation {
     inbox: Option<tokio::sync::mpsc::Receiver<Result<std::sync::Arc<TranscriptEvent>, airc_lib::LiveLag>>>,
     /// The drain task behind `inbox`; aborted and replaced on every re-open.
     pump: Option<tokio::task::JoinHandle<()>>,
+    /// Per-room floors and seen rings, SHARED across pump restarts. A pump
+    /// re-open (membership change) must not re-adopt floors: on the previous
+    /// build every re-open reset them to "now", so a line already in the page
+    /// read as old forever (zero admissions across four builds).
+    seen: std::sync::Arc<std::sync::Mutex<SeenRooms>>,
     /// Membership-change cue (P0 20b44763): when the citizen joins a room at
     /// RUNTIME (benchmark dispatch moving her into a fresh run room), this
     /// epoch moves and `next_message` re-opens the stream so the new room's
@@ -237,6 +285,7 @@ impl AircPersonaConversation {
             own_peer_id,
             inbox: None,
             pump: None,
+            seen: std::sync::Arc::new(std::sync::Mutex::new(SeenRooms::default())),
             membership_epoch,
             last_lamport: 0,
             quiet_windows: 0,
@@ -264,6 +313,7 @@ impl AircPersonaConversation {
         let (tx, rx) = tokio::sync::mpsc::channel(INBOX_CAPACITY);
         let persona = self.own_peer_id;
         let runtime = Arc::clone(&self.runtime);
+        let seen_shared = std::sync::Arc::clone(&self.seen);
         self.pump = Some(tokio::spawn(async move {
             use futures::StreamExt as _;
             // The pump is PERCEPTION's own task: it forwards live frames as they
@@ -272,14 +322,16 @@ impl AircPersonaConversation {
             // (minutes inside a turn) cannot starve either — measured 2026-09-04: a
             // catch-up that lived inside the loop's select ticked twice in seven
             // minutes across twelve citizens.
-            let mut seen = SeenRooms::default();
+            let seen = std::sync::Arc::clone(&seen_shared);
             let mut next_catch_up = tokio::time::Instant::now() + CATCH_UP_EVERY;
             loop {
                 tokio::select! {
                     item = stream.next() => match item {
                         Some(item) => {
                             if let Ok(ev) = &item {
-                                seen.note(ev.room_id.as_uuid(), ev.event_id.as_uuid());
+                                seen.lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .note(ev.room_id.as_uuid(), ev.event_id.as_uuid());
                             }
                             if tx.send(item).await.is_err() {
                                 return; // the conversation dropped its inbox — the pump is done
@@ -296,7 +348,7 @@ impl AircPersonaConversation {
                     },
                     _ = tokio::time::sleep_until(next_catch_up) => {
                         next_catch_up = tokio::time::Instant::now() + CATCH_UP_EVERY;
-                        let (paged, admitted) = catch_up_from_store(&*runtime, &mut seen, &tx).await;
+                        let (paged, admitted) = catch_up_from_store(&*runtime, &seen, &tx).await;
                         crate::probe!(
                             class = "persona.inbound.catch_up_tick",
                             persona = %persona,
@@ -465,30 +517,12 @@ impl PersonaConversation for AircPersonaConversation {
                 Polled::Membership => "room membership changed at runtime — re-opening the subscribe \
                      stream with the enlarged channel snapshot (P0 20b44763)",
                 Polled::Quiet => {
+                    // The pump owns the store catch-up on its own clock; the loop's
+                    // deadline is only a wake so a long idle never blocks the backlog.
+                    // No forced re-open here: a re-open resets nothing now, but it is
+                    // also not a remedy — the store catch-up is.
                     self.next_catch_up = tokio::time::Instant::now() + CATCH_UP_EVERY;
-                    self.quiet_windows += 1;
-                    // The high-water mark across EVERY room she subscribes to — her home
-                    // alone missed the run room where the operator's line landed (first
-                    // cut, 2026-09-04: watchdog never fired). After three silent windows
-                    // re-open regardless: a dead stream costs one subscribe + a 32-event
-                    // replay to heal, and a bounded recovery beats a perfect one.
-                    let hwm = self.rooms_high_water_mark().await;
-                    let moved = hwm > self.last_lamport;
-                    if !moved && self.quiet_windows < QUIET_WINDOWS_FORCE {
-                        continue; // genuinely quiet so far: no room has moved on
-                    }
-                    crate::probe!(
-                        class = "persona.inbound.resubscribed_quiet",
-                        persona = %self.own_peer_id,
-                        last_lamport = self.last_lamport,
-                        high_water = hwm,
-                        quiet_windows = self.quiet_windows,
-                        forced = !moved,
-                        "the live stream went silent — re-opening it and replaying the gap \
-                         (the daemon's lag resume never delivered)"
-                    );
-                    self.quiet_windows = 0;
-                    "quiet stream re-opened"
+                    continue;
                 }
             };
             {
