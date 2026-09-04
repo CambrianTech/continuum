@@ -98,6 +98,7 @@ pub mod seed;
 pub mod self_task_generator;
 pub mod act_question;
 pub mod service_loop;
+pub mod wake_backlog;
 pub mod staged_workspace;
 pub mod service_module;
 pub mod spawner;

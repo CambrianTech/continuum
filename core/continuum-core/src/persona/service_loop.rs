@@ -386,6 +386,8 @@ async fn serve_persona_loop_inner(
         .high_water_mark(opts.page_recent_limit)
         .await
         .map_err(|e| format!("high_water_mark failed: {e}"))?;
+    // Event-id ring for staleness at the loop head (see `wake_backlog::is_stale`).
+    let mut seen_ids = crate::persona::wake_backlog::SeenIds::new(256);
 
     // The persona's adapter (`ctx.adapter`) is reached by the
     // cognition layer through the global provider registry — slice
@@ -615,7 +617,10 @@ async fn serve_persona_loop_inner(
         let self_id = ctx.identity.peer_id.as_uuid();
         let mut qualifying: Vec<IncomingMessage> = Vec::with_capacity(backlog.len());
         for m in backlog {
-            let stale = m.lamport <= high_water;
+            // Staleness by EVENT ID (a lamport is the publisher's clock, not a
+            // room order — see `wake_backlog`); the clock rule only for id-less
+            // scripted sources.
+            let stale = crate::persona::wake_backlog::is_stale(&m, &mut seen_ids, high_water);
             high_water = m.lamport.max(high_water);
             if stale || m.peer_id == self_id {
                 outcome.turns_skipped += 1;
@@ -623,17 +628,23 @@ async fn serve_persona_loop_inner(
                 qualifying.push(m);
             }
         }
-        // Trigger = newest ADDRESSED message in the backlog (a question put to
-        // her outranks newer ambient chatter — she answers it WITH the newer
+        // Directed = a line from outside the citizenry (human, agent) or one
+        // that names her — the same addressing FACT the turn frames on.
+        let directed_line = |m: &IncomingMessage| {
+            let sender_is_citizen = crate::persona::PersonaAircRuntimeRegistry::try_global()
+                .is_some_and(|r| r.get(m.peer_id).is_some());
+            turn_is_directed(ctx.identity.persona_identity().mentions(&m.text), sender_is_citizen)
+        };
+        // Every directed line drained is HEARD (delivery receipt), whether or
+        // not it becomes the trigger.
+        for m in qualifying.iter().filter(|m| directed_line(m)) {
+            crate::persona::wake_backlog::publish_heard(self_id, m);
+        }
+        // Trigger = newest DIRECTED line in the backlog (a question put to her
+        // outranks newer ambient chatter — she answers it WITH the newer
         // context visible in the transcript), else the newest overall.
-        let coalesced = qualifying.len().saturating_sub(1);
-        let msg = match qualifying
-            .iter()
-            .rposition(|m| ctx.identity.persona_identity().mentions(&m.text))
-            .map(|i| qualifying.swap_remove(i))
-            .or_else(|| qualifying.pop())
-        {
-            Some(m) => m,
+        let (msg, coalesced) = match crate::persona::wake_backlog::pick_trigger(qualifying, directed_line) {
+            Some(picked) => picked,
             None => {
                 if stream_ended {
                     break;
@@ -1089,24 +1100,9 @@ async fn serve_persona_loop_inner(
                     sender_is_citizen,
                 );
                 if directed {
+                    // Focus = she is TAKING the turn on it; the heard receipt
+                    // already fired at the drain (`wake_backlog::publish_heard`).
                     crate::ipc::vitals_emitter::record_focus(ctx.identity.peer_id.as_uuid());
-                    // FEEDBACK FOR THE INTERFACE: this citizen HEARD the line and is
-                    // taking it as a turn — the delivery receipt the human sees as
-                    // "heard by N" on the row (Joel 2026-09-04: "more feedback events
-                    // for the interface"; the live plane had been dead for weeks and
-                    // nothing on screen said so).
-                    if !msg.event_id.is_nil() {
-                        if let Some(bus) = crate::runtime::MessageBus::global() {
-                            bus.publish_async_only(
-                                crate::ipc::positron_source::CHAT_HEARD,
-                                serde_json::json!({
-                                    "message_id": msg.event_id,
-                                    "room_id": msg.room_id,
-                                    "persona_id": ctx.identity.peer_id.as_uuid(),
-                                }),
-                            );
-                        }
-                    }
                 }
                 let framing = crate::cognition::workspace::TurnFraming::message(directed);
 
