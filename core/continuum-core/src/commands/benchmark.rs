@@ -3858,9 +3858,12 @@ impl ActionCommand for BenchmarkSweSetup {
         // so the card speaks in HER coordinates, not the operator's absolute ones.
         let rel = format!("swe/{}", instance.instance_id);
         let card_body = format!(
-            "Real bug in a real repo ({repo} @ {commit}). The checkout is ALREADY in your \
-             workspace at `{rel}/` — work there. Do not create a new workspace and do not add \
-             new top-level files; find the existing source of the fault and edit it in place.\n\n\
+            "Real bug in a real repo ({repo} @ {commit}). The checkout is ALREADY staged in your \
+             workspace at `{rel}/`, and while you hold this card your hands (files, shell) are \
+             rooted AT that repo's root: paths are repo-relative and `ls` lists the repo itself \
+             (there is no `swe/` directory from where you stand). Do not create a new workspace \
+             and do not add new top-level files; find the existing source of the fault and edit \
+             it in place.\n\n\
              ## Issue\n{statement}\n\n\
              ## Definition of done\n\
              The repo's own tests for this issue pass. Fix the bug with the smallest edit that \

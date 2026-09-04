@@ -359,9 +359,9 @@ impl AircPersonaConversation {
                             }
                         }
                         None => {
-                            tracing::warn!(
+                            crate::probe!(
+                                class = "persona.inbound.pump_ended",
                                 persona = %persona,
-                                probe_class = "persona.inbound.pump_ended",
                                 "the daemon stream ended under the pump — the next quiet window re-opens it"
                             );
                             return;
@@ -418,9 +418,9 @@ impl PersonaConversation for AircPersonaConversation {
         // this persona. Post-reboot the personas were room-deaf (0 perceptual
         // decodes) while the core-positron raw-attach path received fine — this
         // pins whether prime() even ran per persona.
-        tracing::info!(
+        crate::probe!(
+            class = "persona.inbound.subscribe_opened",
             persona = %self.own_peer_id,
-            probe_class = "persona.inbound.subscribe_opened",
             "persona chat subscribe stream opened (#146)"
         );
         self.install_stream(stream);
@@ -513,7 +513,8 @@ impl PersonaConversation for AircPersonaConversation {
                 Polled::Event(ev) => {
                     match ev {
                         None => {
-                            tracing::error!(
+                            crate::probe!(
+                    class = "persona.inbound.resubscribed",
                                 persona = %self.own_peer_id,
                                 "airc subscribe stream ended unrecoverably — airc-lib dropped \
                                  the subscription (likely wire-schema drift between continuum \
@@ -549,7 +550,6 @@ impl PersonaConversation for AircPersonaConversation {
             {
                 tracing::info!(
                     persona = %self.own_peer_id,
-                    probe_class = "persona.inbound.resubscribed",
                     reason,
                 );
                 let stream = self
@@ -591,18 +591,19 @@ impl PersonaConversation for AircPersonaConversation {
                             replayed += 1;
                             self.rejoin_backlog.push_back(message);
                         }
-                        tracing::info!(
+                        crate::probe!(
+                            class = "persona.inbound.rejoin_replayed",
                             persona = %self.own_peer_id,
                             scanned,
                             replayed,
                             watermark = self.last_lamport,
-                            probe_class = "persona.inbound.rejoin_replayed",
                             "membership-change reopen replayed the gap — room turns \
                              published between join and reopen are now perceivable \
                              instead of live-tail-lost"
                         );
                     }
-                    Err(e) => tracing::warn!(
+                    Err(e) => crate::probe!(
+            class = "persona.inbound.raw_event",
                         persona = %self.own_peer_id,
                         error = %e,
                         "rejoin replay page failed — events published between join \
@@ -953,7 +954,6 @@ impl AircPersonaConversation {
             persona = %self.own_peer_id,
             from_peer = %event.peer_id,
             body_kind,
-            probe_class = "persona.inbound.raw_event",
             "persona subscribe stream yielded a raw event (#146)"
         );
         // Card-state transitions bridge onto the internal bus HERE —
@@ -1013,25 +1013,25 @@ impl AircPersonaConversation {
                 // stay observable at debug, counted by probe_class
                 // either way.
                 if reason == "envelope_decode_error" {
-                    tracing::warn!(
+                    crate::probe!(
+                        class = "persona.inbound.filtered_non_turn",
                         persona = %self.own_peer_id,
                         from_peer = %event.peer_id,
                         body_kind,
                         event_kind,
                         body_preview,
                         reason,
-                        probe_class = "persona.inbound.filtered_non_turn",
                         "message-shaped event FAILED to decode — a peer may be structurally unheard (#177)"
                     );
                 } else {
-                    tracing::debug!(
+                    crate::probe!(
+                        class = "persona.inbound.filtered_non_turn",
                         persona = %self.own_peer_id,
                         from_peer = %event.peer_id,
                         body_kind,
                         event_kind,
                         body_preview,
                         reason,
-                        probe_class = "persona.inbound.filtered_non_turn",
                         "raw event was not a perceptual room turn — skipped (#146/#177)"
                     );
                 }
@@ -1053,11 +1053,11 @@ impl AircPersonaConversation {
         // failure reads as "the citizen chose not to work"
         // ([[an-absence-is-an-unfinished-measurement]]).
         if message.peer_id == self.own_peer_id {
-            tracing::debug!(
+            crate::probe!(
+                class = "persona.inbound.skipped_self_authored",
                 persona = %self.own_peer_id,
                 from_peer = %event.peer_id,
                 text_len = message.text.len(),
-                probe_class = "persona.inbound.skipped_self_authored",
                 "skipped a message this persona is recorded as having said — \
                  if it was ADDRESSED to her, whoever sent it authored through \
                  her identity and she cannot hear it"

@@ -452,7 +452,13 @@ async fn serve_persona_loop_inner(
         // busy room would cancel every dream (measured: 290 paged out in 20 min with
         // the stamp on the wake itself).
         crate::cognition::activity_gate::persona_idle(ctx.identity.peer_id.as_uuid());
+        // BIASED: a line already in her inbox beats a due self-tick. Without the
+        // order, a directed line that made her yield a parked lane wait could
+        // lose the next wake to the tick again (random branch choice) — a yield
+        // storm (Lorcan: 12 yields in 5 min, measured 2026-09-04) that ended only
+        // when the event arm happened to win.
         let wake = tokio::select! {
+            biased;
             ev = next_event(conversation, &mut outcome) => match ev {
                 Some(m) => Wake::Msg(m),
                 None => Wake::Stop,
@@ -656,8 +662,8 @@ async fn serve_persona_loop_inner(
         };
         if coalesced > 0 {
             outcome.turns_skipped += coalesced;
-            tracing::info!(
-                probe_class = "persona.wake.coalesced",
+            crate::probe!(
+                class = "persona.wake.coalesced",
                 persona_id = %self_id,
                 coalesced = coalesced,
                 trigger_lamport = msg.lamport,
