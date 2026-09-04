@@ -276,24 +276,7 @@ fn user_msg(text: &str) -> ChatMessage {
 fn request(prompt: &str) -> TextGenerationRequest {
     TextGenerationRequest {
         messages: vec![user_msg(prompt)],
-        system_prompt: None,
-        model: None,
-        provider: None,
-        temperature: None,
-        max_tokens: None,
-        top_p: None,
-        top_k: None,
-        repeat_penalty: None,
-        stop_sequences: None,
-        tools: None,
-        tool_choice: None,
-        response_format: None,
-        active_adapters: None,
-        request_id: None,
-        user_id: None,
-        room_id: None,
-        purpose: None,
-        persona_id: None,
+        ..Default::default()
     }
 }
 

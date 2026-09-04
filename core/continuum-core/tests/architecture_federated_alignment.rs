@@ -217,24 +217,9 @@ fn build_remote_request() -> RemoteInferenceRequest {
         }],
         system_prompt: Some("federated-alignment chaos test".to_string()),
         model: Some("benign".to_string()),
-        provider: None,
         temperature: Some(0.0),
         max_tokens: Some(16),
-        top_p: None,
-        top_k: None,
-        repeat_penalty: None,
-        frequency_penalty: None,
-        repeat_last_n: None,
-        stop_sequences: None,
-        tools: None,
-        tool_choice: None,
-        response_format: None,
-        active_adapters: None,
-        request_id: None,
-        user_id: None,
-        room_id: None,
-        purpose: None,
-        persona_id: None,
+        ..Default::default()
     })
 }
 
