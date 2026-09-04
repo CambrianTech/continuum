@@ -125,6 +125,16 @@ pub(crate) async fn ask_the_act_question(
                     )
                 })
                 .collect();
+            // ONE card per work turn — her freshest live claim (the FOCUS rule,
+            // `bench_round::room_for_card`): with two held cards the staging
+            // resolution was ambiguous, her hands stayed at home, and every act
+            // landed in her own repo copy (Lorcan, 2026-09-04). The other card
+            // stays held; its turn comes when it is the freshest.
+            let held: Vec<&airc_lib::WorkCard> = held
+                .into_iter()
+                .max_by_key(|c| c.last_heartbeat_at_ms.unwrap_or(c.updated_at_ms))  // unwrap_or: never heartbeated = its last board change
+                .into_iter()
+                .collect();
             crate::probe!(
                 class = "persona.work.gate",
                 persona = %ctx.identity.agent_name,
