@@ -410,23 +410,41 @@ pub(crate) async fn follow_card_room(
     card_id: WorkCardId,
     verb: &'static str,
 ) -> Option<String> {
-    let room = room_holding_card(airc, card_id).await?;
+    // The card's room: a subscribed room's board first; else the round tracker
+    // (node-wide — a bench card names its run room whether or not the caller has
+    // ever stood in it). Measured 2026-09-05: the operator's `work/state` on a
+    // fresh team round's cards was refused from `general` because the caller
+    // subscribed to none of that round's rooms, so the fallback never fired.
+    let (room_name, room_channel) = match room_holding_card(airc, card_id).await {
+        Some(room) => (room.name, Some(room.channel)),
+        None => {
+            let wanted = card_id.as_uuid().to_string();
+            let name = crate::cognition::bench_round::live_rounds()
+                .into_iter()
+                .find(|r| r.cards.iter().any(|c| c.card_id == wanted))
+                .map(|r| r.run_room_name)
+                .filter(|n| !n.is_empty())?;
+            (name, None)
+        }
+    };
     let current = airc.current_room().await.ok();
-    if current.as_ref().is_some_and(|c| c.channel == room.channel) {
-        return None;
+    if let Some(ch) = room_channel {
+        if current.as_ref().is_some_and(|c| c.channel == ch) {
+            return None;
+        }
     }
-    if airc.join(&room.name).await.is_err() {
+    if airc.join(&room_name).await.is_err() {
         return None;
     }
     crate::probe!(
         class = "work.followed_card_room",
         verb = verb,
         card_id = %short8(card_id.as_uuid()),
-        room = %room.name,
+        room = %room_name,
         "a by-id mutation targeted a card outside the current room — switched to \
          the card's room and retried (accept-or-redirect, never refuse-and-instruct)"
     );
-    Some(room.name)
+    Some(room_name)
 }
 
 pub(crate) async fn claim_following_card_room(
