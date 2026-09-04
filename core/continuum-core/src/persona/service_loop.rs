@@ -1909,7 +1909,14 @@ pub(crate) fn turn_is_directed(
     holding_work: bool,
     sender_is_human: bool,
 ) -> bool {
-    mentioned || if holding_work { sender_is_human } else { !sender_is_citizen }
+    // Agent (non-human, non-citizen) status traffic is never a wake on its own:
+    // the agents' coordination room is the citizens' base room, and every idle
+    // citizen answered every agent line with a 265 s "nothing names me" turn
+    // (Joaquin, ×6 in 30 min, 2026-09-04). An agent that wants a citizen @mentions
+    // her; a human's line is always directed. `holding_work` narrows nothing
+    // further today but stays the fact the gate reasons on.
+    let _ = (holding_work, sender_is_citizen);
+    mentioned || sender_is_human
 }
 
 
@@ -2910,8 +2917,9 @@ mod tests {
     // twice, nobody answered — 2026-09-03).
     #[test]
     fn a_non_citizen_line_is_directed_and_citizen_chatter_needs_a_mention() {
-        assert!(turn_is_directed(false, false, false, false), "human/agent line: directed");
-        assert!(turn_is_directed(true, false, false, false));
+        assert!(turn_is_directed(false, false, false, true), "human line: directed");
+        assert!(!turn_is_directed(false, false, false, false), "agent status line, idle citizen: ambient (2026-09-04)");
+        assert!(turn_is_directed(true, false, false, false), "an agent naming her: directed");
         assert!(turn_is_directed(true, true, false, false), "a citizen naming her: directed");
         assert!(!turn_is_directed(false, true, false, false), "citizen chatter/receipts: ambient");
     }
