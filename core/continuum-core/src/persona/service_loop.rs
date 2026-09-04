@@ -645,13 +645,18 @@ async fn serve_persona_loop_inner(
         crate::cognition::directed_pending::clear(self_id);
         // Directed = a line from outside the citizenry (human, agent) or one
         // that names her — the same addressing FACT the turn frames on.
+        // Holding work = the BOARD says she holds a card (one airc call per
+        // wake), not the acting-root registry: a holder whose hands never
+        // rooted (two held cards → ambiguous staging) still woke on every
+        // agent status line (Lorcan, 2026-09-04).
+        let holding_work = holding_work_now(conversation, self_id).await;
         let directed_line = |m: &IncomingMessage| {
             let sender_is_citizen = crate::persona::PersonaAircRuntimeRegistry::try_global()
                 .is_some_and(|r| r.get(m.peer_id).is_some());
             turn_is_directed(
                 ctx.identity.persona_identity().mentions(&m.text),
                 sender_is_citizen,
-                crate::cognition::persona_workspace::acting_root_of(self_id).is_some(),
+                holding_work,
                 crate::ipc::positron_presence::is_human_peer(m.peer_id),
             )
         };
@@ -1118,7 +1123,7 @@ async fn serve_persona_loop_inner(
                 let directed = turn_is_directed(
                     ctx.identity.persona_identity().mentions(&msg.text),
                     sender_is_citizen,
-                    crate::cognition::persona_workspace::acting_root_of(ctx.identity.peer_id.as_uuid()).is_some(),
+                    holding_work_now(conversation, ctx.identity.peer_id.as_uuid()).await,
                     crate::ipc::positron_presence::is_human_peer(msg.peer_id),
                 );
                 if directed {
@@ -1878,7 +1883,22 @@ fn push_work_board_anchor(
 /// work receipts they radiate — stay ambient, or twelve of them answer every
 /// receipt. Live 2026-09-03: the operator asked a work room a direct question
 /// twice and no citizen answered, because "directed" meant @mention only.
-/// `holding_work`: her hands are rooted at a card. Then only a HUMAN line or an
+/// Does she hold a card right now — the board's answer (`active_claims`), or
+/// the acting-root registry when the board cannot be asked (no citizen stream).
+async fn holding_work_now(
+    conversation: &dyn PersonaConversation,
+    self_id: Uuid,
+) -> bool {
+    match conversation.stream_citizen() {
+        Some(citizen) => match citizen.active_claims().await {
+            Ok(held) => !held.is_empty(),
+            Err(_) => crate::cognition::persona_workspace::acting_root_of(self_id).is_some(),
+        },
+        None => crate::cognition::persona_workspace::acting_root_of(self_id).is_some(),
+    }
+}
+
+/// `holding_work`: she holds a card. Then only a HUMAN line or an
 /// @mention is directed — agent status traffic in the base room is message
 /// plane for perception, not a wake (working ≠ speaking; a human's question
 /// still is). Measured 2026-09-04: 8 work turns an hour across ten holders
