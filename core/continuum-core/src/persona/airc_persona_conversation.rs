@@ -68,7 +68,7 @@ const QUIET_WATCHDOG: std::time::Duration = std::time::Duration::from_secs(90);
 /// How often the store-backed catch-up pages every subscribed room's tail.
 const CATCH_UP_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 /// Events paged per room per catch-up tick.
-const CATCH_UP_PAGE: usize = 8;
+const CATCH_UP_PAGE: usize = 32;
 /// Lamports remembered per room to tell "seen" from "dropped" (bounded).
 const SEEN_RING: usize = 128;
 
@@ -109,12 +109,23 @@ async fn catch_up_from_store(
     let rooms = runtime.subscribed_rooms().await.unwrap_or_default(); // unwrap_or: an unreadable room list = nothing to catch up this tick
     let mut forwarded = 0usize;
     let mut paged = 0usize;
+    let mut failed = 0usize;
+    let mut first_error: Option<String> = None;
     for room in rooms {
-        let Ok(mut events) = runtime
+        let mut events = match runtime
             .page_recent_in(Some(airc_core::RoomId::from_uuid(room)), CATCH_UP_PAGE)
             .await
-        else {
-            continue;
+        {
+            Ok(events) => events,
+            Err(error) => {
+                // Observable, not silent: on the first build 7 of ~68 rooms paged and
+                // the rest failed unseen, so eleven citizens never saw the operator.
+                failed += 1;
+                if first_error.is_none() {
+                    first_error = Some(format!("{room}: {error}"));
+                }
+                continue;
+            }
         };
         paged += 1;
         events.sort_by_key(|e| e.lamport);
@@ -134,6 +145,15 @@ async fn catch_up_from_store(
             }
             forwarded += 1;
         }
+    }
+    if failed > 0 {
+        crate::probe!(
+            class = "persona.inbound.catch_up_page_failed",
+            failed = failed as u64,
+            paged = paged as u64,
+            first_error = %first_error.unwrap_or_default(), // unwrap_or: failed>0 guarantees one was recorded
+            "store catch-up: some subscribed rooms could not be paged"
+        );
     }
     (paged, forwarded)
 }
