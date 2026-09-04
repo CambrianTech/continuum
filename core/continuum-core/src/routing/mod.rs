@@ -75,7 +75,7 @@ pub use airc_event_publisher::{
 pub use airc_event_transport::{
     AircEventTransport, EventSubscription, DEFAULT_DELIVERY_QUEUE_CAPACITY, DEFAULT_EVENT_DEADLINE,
 };
-pub use airc_transport::{AircTransport, DEFAULT_DEADLINE};
+pub use airc_transport::{AircTransport, LateBoundAircTransport, DEFAULT_DEADLINE};
 pub use auth_policy::{
     defer_path_prefix, deny_path_prefix, AllowAllPolicy, AuthPolicy, CallerIdentity, CallerSource,
     ClosurePolicy,
