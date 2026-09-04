@@ -69,7 +69,7 @@ pub(crate) fn own_recent_thoughts_about(
 ) -> Vec<String> {
     let mut mine: Vec<&crate::persona::durable_history::RoomRow> = rows
         .iter()
-        .filter(|r| r.sender == me && r.text.starts_with('💭'))
+        .filter(|r| r.sender == me && r.text.starts_with(crate::persona::presence_glyph::THOUGHT))
         .collect();
     if !about.is_empty() {
         let scoped: Vec<&crate::persona::durable_history::RoomRow> = mine

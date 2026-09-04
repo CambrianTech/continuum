@@ -590,12 +590,7 @@ pub async fn apply_act(
         let mut lines: Vec<String> = Vec::with_capacity(acts.len() + 1);
         let thought = intent.trim();
         if !thought.is_empty() {
-            let clipped: String = thought.chars().take(240).collect();
-            lines.push(format!(
-                "💭 {}{}",
-                clipped,
-                if thought.chars().count() > 240 { "…" } else { "" }
-            ));
+            lines.push(crate::persona::presence_glyph::thought_line(thought, 240));
         }
         lines.extend(acts.iter().map(|obs| {
                 let object = obs
@@ -611,12 +606,11 @@ pub async fn apply_act(
                             .map(|c| c.chars().take(80).collect::<String>())
                     })
                     .unwrap_or_default();
-                let mark = if obs.output.result.is_error == Some(true) {
-                    "✗"
-                } else {
-                    "✓"
-                };
-                format!("⚙ {} {} {}", obs.call.name, object, mark)
+                crate::persona::presence_glyph::act_line(
+                    &obs.call.name,
+                    &object,
+                    obs.output.result.is_error != Some(true),
+                )
             }));
         // The vitals ACT PULSE: executed acts are the thinking-right-now
         // signal during a held-work turn (the cycle-delta is blind inside one).

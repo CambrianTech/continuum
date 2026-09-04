@@ -443,9 +443,9 @@ impl AircRagSource {
         for text in texts {
             for line in text.lines() {
                 let line = line.trim();
-                if line.starts_with("💭") {
+                if line.starts_with(crate::persona::presence_glyph::THOUGHT) {
                     last_thought = Some(line);
-                } else if let Some(rest) = line.strip_prefix("⚙") {
+                } else if let Some(rest) = line.strip_prefix(crate::persona::presence_glyph::ACT) {
                     let mut parts = rest.split_whitespace();
                     let verb = parts.next().unwrap_or("?"); // unwrap_or: a bare marker still tallies as unknown
                     let mark = parts.last().unwrap_or("·"); // unwrap_or: a verb without a mark tallies as neutral
@@ -522,7 +522,7 @@ struct PackUnit {
 /// A radiated work receipt (`act_observe::apply`): leads with `💭` or `⚙`.
 fn is_work_receipt(text: &str) -> bool {
     let t = text.trim_start();
-    t.starts_with("💭") || t.starts_with("⚙")
+    crate::persona::presence_glyph::is_presence_line(t)
 }
 
 #[async_trait]
