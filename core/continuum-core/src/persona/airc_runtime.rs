@@ -807,6 +807,9 @@ impl PersonaAircRuntime {
                                 !holds_live
                                     && c.owner == Some(me)
                                     && c.claim_expires_at_ms.is_some_and(|e| e <= now_ms)
+                                    && crate::cognition::bench_round::card_round_is_working(
+                                        c.card_id.as_uuid(),
+                                    )
                                     && matches!(
                                         c.state,
                                         airc_work::model::CardState::Claimed

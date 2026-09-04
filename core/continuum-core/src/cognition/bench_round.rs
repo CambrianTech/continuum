@@ -1411,6 +1411,18 @@ pub fn in_flight_citizen_cards() -> usize {
         .count()
 }
 
+/// Is the round holding this card still WORKING? `true` for a card no round
+/// knows (ordinary work). A paused/done round's card must not be re-claimed by
+/// a lapsed-hold recovery: the board keeps the last owner on a reopened card,
+/// and on 2026-09-05 the recovery pulled ten citizens back onto a paused round.
+pub fn card_round_is_working(card_id: Uuid) -> bool {
+    let rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());
+    match rounds.values().find(|r| r.cards.contains_key(&card_id)) {
+        Some(r) => r.stage == RoundStage::Working,
+        None => true,
+    }
+}
+
 pub fn live_rounds() -> Vec<RoundSnapshot> {
     let rounds = ROUNDS.lock().unwrap_or_else(|e| e.into_inner());
     let mut out: Vec<RoundSnapshot> = rounds
