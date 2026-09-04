@@ -2998,6 +2998,35 @@ impl LlamaServerControl for LlamaServerProcess {
         if let Some(dir) = log_path.as_ref().and_then(|p| p.parent()) {
             let _ = std::fs::create_dir_all(dir);
         }
+        // BUILD FOR SPEED (Joel, 2026-09-04): a debug llama-server (asserts on)
+        // serves numbers that are not valid and lanes that are several times too
+        // slow — BigMama's 5090 hosted one for a day. Refuse it at the door, on
+        // every machine, with the rebuild instruction; the version line is the
+        // receipt either way.
+        let version = tokio::process::Command::new(&self.bin)
+            .arg("--version")
+            .output()
+            .await
+            .map(|o| format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)))
+            .unwrap_or_default(); // unwrap_or: a binary that cannot answer --version fails at spawn below with its own error
+        crate::probe!(
+            class = "serving.server_version",
+            bin = %self.bin,
+            version = %version.lines().next().unwrap_or("").trim(), // unwrap_or: no output = empty receipt, spawn reports the real failure
+            "the serving binary named its build"
+        );
+        if is_debug_build(&version) {
+            crate::probe!(
+                class = "serving.debug_build_refused",
+                bin = %self.bin,
+                "refused to serve from a DEBUG build — build for speed"
+            );
+            return Err(LlamaServerError::Spawn(format!(
+                "{} is a DEBUG build (asserts enabled; its speed is not valid). Rebuild llama-server in \
+                 release from the canary pin and relaunch — a debug server never hosts a lane.",
+                self.bin
+            )));
+        }
         let mut child = cmd
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -3230,8 +3259,22 @@ fn split_host_port(root: &str) -> (String, u16) {
     }
 }
 
+/// llama-server announces a debug build on its own output ("warning: DEBUG BUILD
+/// (asserts enabled) -- performance numbers from this process are not valid").
+fn is_debug_build(version_output: &str) -> bool {
+    version_output.contains("DEBUG BUILD")
+}
+
 #[cfg(test)]
 mod tests {
+    // what this catches: a debug llama-server hosting a lane silently (BigMama's
+    // 5090 served one for a day, 2026-09-04) — the door reads the server's own
+    // warning line; a release version line passes.
+    #[test]
+    fn a_debug_build_is_refused_at_the_door_and_a_release_build_passes() {
+        assert!(super::is_debug_build("warning: DEBUG BUILD (asserts enabled) -- performance numbers from this process are not valid\nversion: 10229 (a28ee566c)"));
+        assert!(!super::is_debug_build("version: 0.3.0-dev (build 10751, commit 0a637ba22)\nbuilt with AppleClang 21.0.0.21000101 for Darwin arm64"));
+    }
 
     // what this catches: the work-scaled patience rule (2026-08-23, three
     // MirrorCode-baseline kills): a lane holding a window-scale in-flight

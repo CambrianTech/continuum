@@ -101,6 +101,7 @@ pub mod service_loop;
 pub mod presence_glyph;
 pub mod wake_backlog;
 pub mod work_burst;
+pub mod work_focus;
 pub mod work_pull;
 pub mod staged_workspace;
 pub mod service_module;

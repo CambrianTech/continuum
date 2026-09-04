@@ -200,12 +200,20 @@ impl RagSource for ActiveWorkSource {
         if claims.is_empty() && items.is_empty() {
             return Self::empty();
         }
+        // ONE card is this turn's (`work_focus`); the rest are held, not worked now —
+        // said in the line itself, so two held cards never read as two jobs at once.
+        let focus = crate::persona::work_focus::focus_card(claims.iter()).map(|c| c.card_id);
         for card in &claims {
             let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
             // Human-readable line; structured parts also ride in metadata so
             // prompt-assembly / verifiers can render without re-parsing.
+            let stance = if claims.len() > 1 {
+                if focus == Some(card.card_id) { " — THIS TURN" } else { " — held, not this turn" }
+            } else {
+                ""
+            };
             let content = format!(
-                "card {id8} [{state:?}] \"{title}\" (priority {prio:?})",
+                "card {id8} [{state:?}] \"{title}\" (priority {prio:?}){stance}",
                 state = card.state,
                 title = card.title,
                 prio = card.priority,
