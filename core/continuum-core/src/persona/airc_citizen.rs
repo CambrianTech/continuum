@@ -238,41 +238,18 @@ pub trait AircCitizen:
 pub(crate) async fn subscribe_every_room(
     airc: &airc_lib::Airc,
 ) -> Result<FilteredEventStream, AircError> {
-    // #445: liveness beacons were 84% of a persona subscription's inbound
-    // (measured 2026-08-15: 149 of 177 events in the window, 100% discarded
-    // post-decode as no_continuum_body_hint). Heartbeats already stamp their
-    // class header at publish, so exclude them at the ROUTER — they never
-    // cross the socket, never cost a decode. Exclusion, never an allowlist:
-    // unstamped events keep flowing, so nothing a publisher hasn't classified
-    // yet can be silently dropped. The same filter still applies client-side
-    // on the in-process (non-daemon) fallback, which has no router.
-    let mut filter = airc_lib::EventFilter::default();
-    filter.headers_filter = airc_core::HeaderFilter::Not(Box::new(airc_core::HeaderFilter::Has {
-        key: airc_lib::HEADER_HEARTBEAT_KIND.to_string(),
-    }));
-    // #445 second cut (measured 2026-08-16, post daemon-heal): with delivery
-    // restored, EphemeralLatest projection re-publishes fanned to EVERY persona
-    // subscription (router counters: matched=68 per publish) and 100% were
-    // discarded as non_chat_schema — 1,196 decode-and-drop events in minutes.
-    // This pump's contract is PERCEPTUAL ROOM TURNS + work events (#146/#177/
-    // #450), and both of those are Durable-class by construction (a message or
-    // board mutation that didn't persist would be a worse bug than a missed
-    // fanout). So attach ROUTER-SIDE as a Durable-only consumer — the shape
-    // `subscribe_subscribed_delivery` was built for; its doc cites this exact
-    // persona measurement.
-    //
-    // FOR WHOEVER EXTENDS THIS (read before widening):
-    // - If a persona ever needs an ephemeral signal (peer stream chunks, live
-    //   presence), do NOT widen this delivery list — those belong to their own
-    //   consumer with its own narrow attach (positron/TTS taps StreamChunk,
-    //   roster taps presence). One subscription per consumer shape; widening
-    //   the perception pump re-creates the decode-everything flood this line
-    //   removes (#297 is what happens next: personas deaf under their own
-    //   fan-in).
-    // - If a NEW durable event class starts flooding, the fix is a class
-    //   header at ITS publisher + a `HeaderFilter::Not` arm here (the
-    //   heartbeat exclusion above is the template), never client-side
-    //   filtering after a paid decode.
+    // NO router-side header filter (2026-09-04). The `Not(Has(heartbeat))`
+    // filter this used to send (#445) arrived at the daemon INVERTED: every
+    // citizen received ONLY the presence heartbeats and never a message —
+    // measured in the daemon store (message rows lack the header, heartbeat
+    // rows carry it) and in the inbound probes (100% of live inbound =
+    // heartbeats, 0 messages) while an unfiltered `airc join` client on the
+    // same daemon got every message. Citizens had heard rooms only through
+    // the store page at turn time since the filter landed. Heartbeats are
+    // dropped on RECEIVE instead ([`is_heartbeat`]) — a header check per
+    // event, the same receive-side shape as the stream-chunk guard, correct
+    // regardless of how the daemon treats a negated filter.
+    let filter = airc_lib::EventFilter::default();
     airc.subscribe_subscribed_delivery(filter, Some(vec![airc_ipc::IpcDelivery::Durable]))
         .await
 }
@@ -291,6 +268,13 @@ pub(crate) async fn subscribe_every_room(
 /// answering can never silently change which rooms she belongs to, and
 /// a room she cannot address fails loud instead of the reply landing
 /// somewhere she was never spoken to.
+/// A presence heartbeat (`airc.heartbeat.kind` header) — never a room turn.
+/// The receive-side twin of the subscribe-time exclusion the daemon inverted;
+/// consumers skip these BEFORE paying for a decode.
+pub(crate) fn is_heartbeat(event: &airc_core::TranscriptEvent) -> bool {
+    event.headers.get(airc_lib::HEADER_HEARTBEAT_KIND).is_some()
+}
+
 pub(crate) fn publish_target_for(room_id: Uuid) -> airc_lib::PublishTarget {
     if room_id.is_nil() {
         airc_lib::PublishTarget::CurrentRoom
