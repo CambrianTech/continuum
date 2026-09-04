@@ -495,6 +495,11 @@ async fn serve_persona_loop_inner(
         let msg = match wake {
             Wake::Stop => break,
             Wake::Tick => {
+                // With `biased;` the inbox was polled first: a tick winning means
+                // nothing admissible was queued, so any pending directed flag is
+                // stale (raised for a line that filtered at the door). Clear it,
+                // or every self-work lane wait yields forever.
+                crate::cognition::directed_pending::clear(ctx.identity.peer_id.as_uuid());
                 // (Quiescence is handled at the top of the loop — a held lease never
                 // reaches here.) Heartbeat slice — the mind gets time with no inbound
                 // activity sets the next beat: if it found something new to work on

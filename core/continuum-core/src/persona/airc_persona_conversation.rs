@@ -112,6 +112,13 @@ fn signal_if_directed(own: uuid::Uuid, event: &airc_core::TranscriptEvent) {
     if peer == own {
         return;
     }
+    // Only a line that would ADMIT as a turn may raise the flag: the board's
+    // System events ride the same stream from the same non-citizen peers and
+    // are filtered at the door — on 8c6733c65 they kept the flag up for the
+    // whole roster (25 turns, 25 yields, 0 lanes acquired).
+    if perceptual_from_event(event).is_err() {
+        return;
+    }
     let sender_is_citizen = crate::persona::PersonaAircRuntimeRegistry::try_global()
         .is_some_and(|r| r.get(peer).is_some());
     if !sender_is_citizen {
@@ -131,6 +138,9 @@ async fn catch_up_from_store(
     let mut first_error: Option<String> = None;
     let mut sample_newest = 0u64;
     let mut sample: Option<(Uuid, u64, u64, usize, String, String, bool)> = None;
+    let short = |u: &Uuid| u.to_string().chars().take(8).collect::<String>();
+    let room_list = rooms.iter().map(short).collect::<Vec<_>>().join(",");
+    let mut empty: Vec<String> = Vec::new();
     for room in rooms {
         let mut events = match runtime
             .page_recent_in(Some(airc_core::RoomId::from_uuid(room)), CATCH_UP_PAGE)
@@ -149,7 +159,10 @@ async fn catch_up_from_store(
         };
         paged += 1;
         events.sort_by_key(|e| e.occurred_at_ms);
-        let Some(newest_ms) = events.iter().map(|e| e.occurred_at_ms).max() else { continue };
+        let Some(newest_ms) = events.iter().map(|e| e.occurred_at_ms).max() else {
+            empty.push(short(&room));
+            continue;
+        };
         let floor_ms = *seen
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -208,6 +221,16 @@ async fn catch_up_from_store(
             "store catch-up: the freshest paged room this tick"
         );
     }
+    // WHICH ROOMS SHE PAGES, and which come back empty — the run room missing
+    // from this list (or listed and empty) is the difference between "the store
+    // catch-up works" and "she cannot hear the room she is working in".
+    crate::probe!(
+        class = "persona.inbound.catch_up_rooms",
+        rooms = %room_list,
+        empty = %empty.join(","),
+        paged = paged as u64,
+        "the rooms this tick paged, and the ones whose page held no conversation"
+    );
     if failed > 0 {
         crate::probe!(
             class = "persona.inbound.catch_up_page_failed",
@@ -514,7 +537,7 @@ impl PersonaConversation for AircPersonaConversation {
                     match ev {
                         None => {
                             crate::probe!(
-                    class = "persona.inbound.resubscribed",
+                    class = "persona.inbound.stream_ended",
                                 persona = %self.own_peer_id,
                                 "airc subscribe stream ended unrecoverably — airc-lib dropped \
                                  the subscription (likely wire-schema drift between continuum \
@@ -548,9 +571,11 @@ impl PersonaConversation for AircPersonaConversation {
                 }
             };
             {
-                tracing::info!(
+                crate::probe!(
+                    class = "persona.inbound.resubscribed",
                     persona = %self.own_peer_id,
-                    reason,
+                    reason = reason,
+                    "re-opening the subscribe stream"
                 );
                 let stream = self
                     .runtime
@@ -603,7 +628,7 @@ impl PersonaConversation for AircPersonaConversation {
                         );
                     }
                     Err(e) => crate::probe!(
-            class = "persona.inbound.raw_event",
+            class = "persona.inbound.rejoin_page_failed",
                         persona = %self.own_peer_id,
                         error = %e,
                         "rejoin replay page failed — events published between join \
@@ -950,7 +975,8 @@ impl AircPersonaConversation {
             Some(b) if b.as_text().is_some() => "text",
             Some(_) => "json",
         };
-        tracing::info!(
+        crate::probe!(
+            class = "persona.inbound.raw_event",
             persona = %self.own_peer_id,
             from_peer = %event.peer_id,
             body_kind,
