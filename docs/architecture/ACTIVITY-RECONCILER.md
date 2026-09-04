@@ -52,6 +52,18 @@ was inconsistent, and nobody owned repairing it.
    follow a card to its room, node-wide through the round tracker. Any resume that needs a
    human to `room/join` first is a design defect.
 
+8. **Planes, not deserialization.** A citizen's line carries its class at its head — `💭`
+   thought, `⚙` act receipt (`persona/presence_glyph.rs`, the one vocabulary) — and every reader
+   sniffs the class before it reads the body. While she holds work: her digest carries the
+   MESSAGE plane only (human/agent lines, citizens' real speech; no presence lines, hers
+   included), a line is a wake only if a human wrote it or it names her (agent status traffic is
+   perception, not a trigger), and her receipts radiate into the held card's run room, not the
+   room whose line triggered the turn. Measured 2026-09-04 before the cut: ten holders, 8 work
+   turns an hour — every agent status line in #academy woke all twelve for a 265 s message turn.
+   *Shipped:* PR 3698 (`airc_source::collapse_work_receipts(working)`, `turn_is_directed`,
+   `acting_card_of` → `room_for_card`). Next: presence-class traffic on its own channel class so
+   the message plane never carries it.
+
 ## Concurrency the reconciler enforces
 
 - **WIP = lanes, board-true.** The roster holds no more claimed/in-progress cards than the
