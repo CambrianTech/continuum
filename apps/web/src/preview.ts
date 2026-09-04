@@ -70,11 +70,13 @@ const BENCH_FIXTURE: BenchViewState = {
   // round ever to complete) beside a working SWE round.
   rounds: [
     {
+      run_room: '',
       round_id: '2d6decb3-1beb-5ac7-9ded-ee186c7deb7f', benchmark: 'ds-1000',
       stage: 'done', dispatched: 4, settled: 4, remaining: 0, driver: 'citizen',
       verdict: 'done', cards: [],
     },
     {
+      run_room: '',
       round_id: 'bf08832d-c7e2-5bc9-a858-5447c15ccbfe', benchmark: 'swe-bench-lite',
       stage: 'working', dispatched: 4, settled: 1, remaining: 3, driver: 'citizen',
       // The 2026-09-01 sensor: two cards grinding, one never started — the

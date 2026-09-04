@@ -140,6 +140,12 @@ pub struct BenchRound {
     /// room stays presence-dark until a fresh dispatch names it.
     #[serde(default)]
     pub run_room_name: String,
+    /// When the round was opened (wall ms). Enrichment matches run facts by
+    /// instance, so without this floor a fresh card inherited an older round's
+    /// run on the same instance and read `resolved` before anyone touched it
+    /// (2026-09-05). `#[serde(default)]`: an old round file reads 0 = no floor.
+    #[serde(default)]
+    pub opened_at_ms: u64,
     round_id: Uuid,
     benchmark: String,
     /// Card uuid → the terminal state it settled with (`None` = still working).
@@ -230,6 +236,7 @@ impl BenchRound {
         Self {
             round_id,
             run_room_name: String::new(),
+            opened_at_ms: crate::modules::chat::now_ms(),
             benchmark: benchmark.to_string(),
             cards: card_ids.iter().map(|c| (*c, None)).collect(),
             stage: RoundStage::Working,
@@ -747,6 +754,12 @@ pub fn next_unworked_after(card_of_round: Uuid) -> Option<NextCard> {
     let round = rounds
         .values()
         .find(|r| r.cards.contains_key(&card_of_round))?;
+    // The settle-driven follow-on is the DETACHED driver's motion: a citizen
+    // round's next card is pulled by a resident, never pushed as a detached solve
+    // (it would collide with WIP = lanes and take the card from the deck).
+    if round.driver != WorkDriver::DetachedSolve {
+        return None;
+    }
     first_unworked(round, &live)
 }
 
@@ -784,6 +797,10 @@ pub fn next_unworked_per_round() -> Vec<NextCard> {
     rounds
         .values()
         .filter(|r| r.stage == RoundStage::Working)
+        // Re-fire is the DETACHED driver's compensation only (plan S4): a citizen
+        // round's cards are pulled by residents through `pullable_cards`, and a
+        // watchdog pushing a detached solve onto one collides with WIP = lanes.
+        .filter(|r| r.driver == WorkDriver::DetachedSolve)
         .filter_map(|r| first_unworked(r, &live))
         .collect()
 }
@@ -1136,6 +1153,14 @@ pub fn observe_card_event(payload: &Value) {
     export_to = "../../../protocol/typescript/benchmark/RoundSnapshot.ts"
 )]
 pub struct RoundSnapshot {
+    /// When the round was opened (wall ms); 0 for rounds older than the field.
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub opened_at_ms: u64,
+    /// The run room's airc name — what a navigator matches a rail tab against to
+    /// label it by what it is (`verified · working · 9/12 in hands`) instead of
+    /// its raw name (2026-09-04: 49 identical `bench-swe-bench-verified-mini-…` rows).
+    pub run_room_name: String,
     /// The round id — which IS its run room's id. A round is its room's activity; there is
     /// never a second identifier ([[killing-a-derived-id-needs-a-directory-at-every-scope-boundary]]).
     pub round_id: String,
@@ -1276,9 +1301,13 @@ pub fn enrich_rounds(rounds: &mut [RoundSnapshot], runs: &[CardRunFacts], now_ms
         let mut any_started = false;
         for card in round.cards.iter_mut() {
             let settled = !matches!(card.state.as_str(), "" | "unstarted");
+            // A run counts for this card only if it is at least as new as the
+            // round: run facts are keyed by instance and an older round on the same
+            // instance must not lend a fresh card its verdict.
             let run = runs
                 .iter()
                 .filter(|r| !card.instance.is_empty() && r.instance == card.instance)
+                .filter(|r| r.last_activity_ms >= round.opened_at_ms)
                 .max_by_key(|r| r.last_activity_ms);
             let Some(run) = run else {
                 // No detached-solve ledger entry — but a CITIZEN-driven card
@@ -1365,6 +1394,35 @@ pub fn activity_rooms() -> Vec<(Uuid, String)> {
         .collect()
 }
 
+/// Cards a citizen is actively on across every WORKING citizen-driven round —
+/// claimed or in progress on the board. A card in `review` is not counted: its
+/// owner is done and the slot it held is what lets a peer pull its review card.
+/// This is the number WIP-as-lanes compares to the served lane count.
+pub fn in_flight_citizen_cards() -> usize {
+    live_rounds()
+        .iter()
+        .filter(|r| r.stage.eq_ignore_ascii_case("working") && r.driver.to_ascii_lowercase().contains("citizen"))
+        .flat_map(|r| r.cards.iter())
+        .filter(|c| !c.owner.is_empty())
+        .filter(|c| {
+            let s = c.board_state.to_ascii_lowercase();
+            s == "claimed" || s == "in_progress"
+        })
+        .count()
+}
+
+/// Is the round holding this card still WORKING? `true` for a card no round
+/// knows (ordinary work). A paused/done round's card must not be re-claimed by
+/// a lapsed-hold recovery: the board keeps the last owner on a reopened card,
+/// and on 2026-09-05 the recovery pulled ten citizens back onto a paused round.
+pub fn card_round_is_working(card_id: Uuid) -> bool {
+    let rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());
+    match rounds.values().find(|r| r.cards.contains_key(&card_id)) {
+        Some(r) => r.stage == RoundStage::Working,
+        None => true,
+    }
+}
+
 pub fn live_rounds() -> Vec<RoundSnapshot> {
     let rounds = ROUNDS.lock().unwrap_or_else(|e| e.into_inner());
     let mut out: Vec<RoundSnapshot> = rounds
@@ -1411,7 +1469,9 @@ pub fn live_rounds() -> Vec<RoundSnapshot> {
                 .collect();
             cards.sort_by(|a, b| a.instance.cmp(&b.instance).then(a.card_id.cmp(&b.card_id)));
             RoundSnapshot {
+                opened_at_ms: r.opened_at_ms,
                 round_id: r.round_id.to_string(),
+                run_room_name: r.run_room_name.clone(),
                 benchmark: r.benchmark.clone(),
                 stage: match r.stage {
                     RoundStage::Working => "working",
@@ -1467,7 +1527,9 @@ mod tests {
             graded_at_ms: None,
         };
         let round = |cards: Vec<RoundCardSnapshot>| RoundSnapshot {
+            opened_at_ms: 0,
             round_id: Uuid::new_v4().to_string(),
+            run_room_name: String::new(),
             benchmark: "swe-bench-verified".into(),
             stage: "working".into(),
             dispatched: cards.len(),
@@ -1581,7 +1643,9 @@ mod tests {
         assert_eq!(card_last_act_ms(card_uuid), Some(now_ms - 30_000));
 
         let mut rounds = vec![RoundSnapshot {
+            opened_at_ms: 0,
             round_id: Uuid::new_v4().to_string(),
+            run_room_name: String::new(),
             benchmark: "swe-bench-verified".into(),
             stage: "working".into(),
             dispatched: 1,
@@ -1638,7 +1702,9 @@ mod tests {
     use super::{no_healthy_working_round, RoundSnapshot, STALE_ROUND_ABANDON_SECS};
     fn snap(stage: &str, idle: Option<u64>) -> RoundSnapshot {
         RoundSnapshot {
+            opened_at_ms: 0,
             round_id: Uuid::new_v4().to_string(),
+            run_room_name: String::new(),
             benchmark: "swe-bench-verified".into(),
             stage: stage.to_string(),
             dispatched: 8,
@@ -1685,6 +1751,7 @@ mod tests {
     fn the_non_settling_edge_advances_past_the_card_that_just_failed() {
         fn round_with(cards: &[(Uuid, Uuid)]) -> BenchRound {
             BenchRound {
+                opened_at_ms: 0,
                 run_room_name: String::new(),
                 round_id: Uuid::new_v4(),
                 benchmark: "swe-bench-lite".into(),

@@ -633,6 +633,7 @@ impl Faculty for RecallFaculty {
         // memories the persona truly used this tick (uplift + persistence).
         let surfaced_ids: Vec<Uuid> = scored.iter().map(|(_, e, _, _)| e.id).collect();
         self.admission_state.record_recall_hits(&surfaced_ids, now);
+        crate::ipc::vitals_emitter::record_recall(self.persona_id, surfaced_ids.len() as u64);
 
         // RTOS probe at the hippocampus seam: WHAT query conditioned recall and
         // WHAT won, with the scores the model never sees. This is how a

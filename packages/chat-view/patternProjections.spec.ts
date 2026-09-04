@@ -230,8 +230,8 @@ describe('chat → pattern projections', () => {
       user_id: 'joel',
       current_tab: 'room-2',
       open_tabs: [
-        { id: 'room-1', title: 'general', kind: 'room', unread: 0, purpose: 'chat', parent_ref: '', display_label: '' },
-        { id: 'room-2', title: 'dev-updates', kind: 'room', unread: 4, purpose: '', parent_ref: '', display_label: '' },
+        { id: 'room-1', title: 'general', kind: 'room', unread: 0, opened: true, purpose: 'chat', parent_ref: '', display_label: '' },
+        { id: 'room-2', title: 'dev-updates', kind: 'room', unread: 4, opened: true, purpose: '', parent_ref: '', display_label: '' },
       ],
       last_read: { 'room-1': 1 },
       bookmarks: [],

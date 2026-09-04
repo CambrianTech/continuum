@@ -159,6 +159,9 @@ pub struct WorkingMemory {
     /// unknown window must never be replaced with an invented one.
     served_window: AtomicU32,
     entries: Mutex<VecDeque<WmEntry>>,
+    /// The acting root her receipts are stamped with (set at the work-turn
+    /// rooting seam, cleared on restore). See [`WmEntry::scope`].
+    scope: Mutex<Option<String>>,
     /// The FULL result of the most recent act, kept whole (bounded upstream by the
     /// executor's fold cap) so the mind can work with what its hands just fetched — a
     /// file to count, a screenshot description to read, a log to scan. Only the latest is
@@ -359,6 +362,13 @@ pub struct WmEntry {
     pub text: String,
     #[serde(default)]
     pub acts: Vec<Observation>,
+    /// Where her hands stood when this was recorded (the acting root), for
+    /// receipts made while rooted at a card's checkout. `None` = her own
+    /// workspace / not a receipt. A receipt from another root is not perceived
+    /// while she stands elsewhere (2026-09-05: traces from a previous card
+    /// opened every work turn with "my context is confused").
+    #[serde(default)]
+    pub scope: Option<String>,
 }
 
 impl WorkingMemory {
@@ -369,6 +379,7 @@ impl WorkingMemory {
             capacity: capacity.max(1),
             served_window: AtomicU32::new(0),
             entries: Mutex::new(VecDeque::new()),
+            scope: Mutex::new(None),
             last_action: Mutex::new(None),
             dispatched: Mutex::new(HashMap::new()),
             next_action_seq: AtomicU64::new(1),
@@ -457,6 +468,7 @@ impl WorkingMemory {
             kind: WmKind::Thought,
             text: r.to_string(),
             acts: Vec::new(),
+            scope: None,
         });
         while e.len() > self.capacity {
             e.pop_front();
@@ -566,11 +578,13 @@ impl WorkingMemory {
             format!("[action #{seq}] {}", calls.join("; "))
         };
         self.push_receipt_head(room, archive_head);
+        let scope = self.scope.lock().clone();
         let mut e = self.entries.lock();
         e.push_back(WmEntry {
             kind: WmKind::Receipt { n: seq },
             text,
             acts,
+            scope,
         });
         while e.len() > self.capacity {
             e.pop_front();
@@ -650,6 +664,7 @@ impl WorkingMemory {
             kind: WmKind::Fact,
             text: f.to_string(),
             acts: Vec::new(),
+            scope: None,
         });
         while e.len() > self.capacity {
             e.pop_front();
@@ -830,7 +845,19 @@ impl WorkingMemory {
     /// ledger renders `Receipt`s as numbered steps and `Fact`s under
     /// [notices]; docs/architecture/PERCEPTION-FACTS.md).
     pub fn recent_entries(&self) -> Vec<WmEntry> {
-        self.entries.lock().iter().cloned().collect()
+        let scope = self.scope.lock().clone();
+        self.entries
+            .lock()
+            .iter()
+            .filter(|e| e.scope.is_none() || e.scope == scope)
+            .cloned()
+            .collect()
+    }
+
+    /// Where her hands stand now. Receipts recorded from here on carry it, and
+    /// receipts from another root leave perception until she returns there.
+    pub fn set_scope(&self, root: Option<String>) {
+        *self.scope.lock() = root;
     }
 
     /// How many acts have executed this session (survives reboots via the
@@ -1092,6 +1119,7 @@ impl WorkingMemory {
             } else {
                 format!("{WM_SETTLEMENT_PREFIX} {a}")
             },
+            scope: None,
             acts: Vec::new(),
         });
         while e.len() > self.capacity {
@@ -1194,8 +1222,8 @@ impl Faculty for WorkingMemoryFaculty {
 
     // Perception tier (default): reacts to the raw world-state, bidding the recent
     // reasoning into phase 1 so the deliberator conditions on it in phase 2.
-    async fn contribute(&self, _ws: &Workspace) -> Option<Contribution> {
-        let entries = self.memory.recent_entries();
+    async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
+        let mut entries = self.memory.recent_entries();
         let dispatched = self.memory.dispatched_snapshot();
         if entries.is_empty() && dispatched.is_empty() {
             return None;
@@ -1217,7 +1245,39 @@ impl Faculty for WorkingMemoryFaculty {
         // single dominant mass of an 85k prompt. The full text stays in the
         // entry (the pinned path and recall read it); only the TRAIL RENDER
         // is bounded, with the collapse idiom naming what was elided.
-        let head = self.memory.budget().trail_head_chars();
+        // A WORK turn perceives its own recent past compactly: the newest few
+        // reasonings/receipts in full and the older ones as one count line —
+        // collapsed, not clipped. Measured 2026-09-05: this block was 14–23 KB of
+        // a ~22k-token prompt on every act, with zero KV reuse; a card's work turn
+        // needs what she just did, not the morning.
+        let mut collapsed_older = 0usize;
+        if ws.workspace_deliverable {
+            const WORK_TURN_RECENT_KEEP: usize = 3;
+            let non_fact: Vec<usize> = entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| !matches!(e.kind, WmKind::Fact))
+                .map(|(i, _)| i)
+                .collect();
+            if non_fact.len() > WORK_TURN_RECENT_KEEP {
+                let drop: std::collections::HashSet<usize> =
+                    non_fact[..non_fact.len() - WORK_TURN_RECENT_KEEP].iter().copied().collect();
+                collapsed_older = drop.len();
+                entries = entries
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(i, _)| !drop.contains(i))
+                    .map(|(_, e)| e)
+                    .collect();
+            }
+        }
+        // Per-entry head in a WORK turn: 1,500 chars — past that a work act's
+        // reasoning is history, not state.
+        let head = if ws.workspace_deliverable {
+            self.memory.budget().trail_head_chars().min(1_500)
+        } else {
+            self.memory.budget().trail_head_chars()
+        };
         let clip = |t: &str| -> String {
             if t.chars().count() <= head {
                 t.to_string()
@@ -1267,7 +1327,7 @@ impl Faculty for WorkingMemoryFaculty {
                 // never be phrased in another's voice.
                 "My own recent thoughts and actions (working memory — this is my \
                  interior state, not a message from anyone):\n{}",
-                render_trail(&recent)
+                format!("{}{}", render_trail(&recent), if collapsed_older > 0 { format!("\n[{collapsed_older} earlier acts this session, collapsed — their receipts are still in my memory]") } else { String::new() })
             ));
         }
         // The FULL result of the most recent act is NO LONGER emitted here. It is the
@@ -1402,6 +1462,24 @@ mod rebuilt_marker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: a receipt made while rooted at one card's checkout
+    // leaking into perception while she stands at another (the 9/5 "my context
+    // is confused" opener), and coming back when she returns.
+    #[test]
+    fn a_receipt_from_another_root_is_not_perceived_while_rooted_elsewhere() {
+        let wm = WorkingMemory::new(8);
+        wm.set_scope(Some("/peers/x/workspace/swe/django-16899".into()));
+        wm.record_receipt("[action #1] ls tests/ordering");
+        wm.set_scope(Some("/peers/x/workspace/swe/django-13033".into()));
+        wm.record_receipt("[action #2] cat django/db/models/sql/compiler.py");
+        let seen: Vec<String> = wm.recent_entries().into_iter().map(|e| e.text).collect();
+        assert!(seen.iter().any(|t| t.contains("compiler.py")), "{seen:?}");
+        assert!(!seen.iter().any(|t| t.contains("tests/ordering")), "{seen:?}");
+        wm.set_scope(Some("/peers/x/workspace/swe/django-16899".into()));
+        let back: Vec<String> = wm.recent_entries().into_iter().map(|e| e.text).collect();
+        assert!(back.iter().any(|t| t.contains("tests/ordering")), "{back:?}");
+    }
 
     // what this catches: the Anwen regression (2026-08-16). Act results used to
     // live only in the K=1 `last_action` slot (any act overwrites) and the

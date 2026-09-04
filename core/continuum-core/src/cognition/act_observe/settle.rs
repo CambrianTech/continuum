@@ -55,6 +55,10 @@ use super::types::{SettleOutcome, SettleStep};
 /// citizen's identity lives. A cycle with no `ActingBody` is pure cognition (a
 /// faculty test, a replay) — it is nobody's lived experience, so there is no
 /// stream it belongs in. That is a structural absence, not a skipped write.
+/// Consecutive spoken plans a workspace-deliverable turn tolerates before it
+/// settles without a deliverable (each is re-perceived, not ended).
+pub(super) const NARRATION_BUDGET: usize = 3;
+
 pub async fn drive_to_settle(
     cycle: &WorkspaceCycle,
     burst: impl Into<Burst>,
@@ -144,6 +148,7 @@ async fn settle_to_outcome(
     // ACTED since the last nudge. A nudge that earns an act has earned another; two Speaks
     // in a row with no act between them means the nudge is not working, so she settles
     // rather than being trapped. Her own behavior is the budget — no counter, no constant.
+    let mut narrations_since_act: usize = 0;
     let mut acts_at_last_nudge: Option<usize> = None;
     // Which `acts` value the last budget fact fired at — a Speak's one-shot
     // re-perception re-enters the loop with `acts` unchanged, and the same
@@ -266,12 +271,19 @@ async fn settle_to_outcome(
                 } else if acts == 0 {
                     budget_fact_at = Some(acts);
                     probe_budget_fact("turn_start");
-                    body.working_memory.record_fact(&format!(
-                        "[act-budget] This turn grants me {max_acts} act→observe \
-                         cycles before I must settle. The task is graded on the state of \
-                         the workspace when I settle — work not yet written when the \
-                         budget ends does not exist for the grader."
-                    ));
+                    body.working_memory.record_fact(&if max_acts == usize::MAX {
+                        "[act-budget] This turn has no fixed act budget: I act until I settle. \
+                         The task is graded on the state of the workspace when I settle — \
+                         work not yet written when I settle does not exist for the grader."
+                            .to_string()
+                    } else {
+                        format!(
+                            "[act-budget] This turn grants me {max_acts} act→observe \
+                             cycles before I must settle. The task is graded on the state of \
+                             the workspace when I settle — work not yet written when the \
+                             budget ends does not exist for the grader."
+                        )
+                    });
                 } else if acts == max_acts / 2 {
                     budget_fact_at = Some(acts);
                     probe_budget_fact("midpoint");
@@ -419,18 +431,27 @@ async fn settle_to_outcome(
                 // stays entirely hers — the same shape as every other proprioception fact
                 // in `settle_step`. [[no-hardcoded-heuristics-to-steer-cognition]],
                 // [[fix-the-substrate-never-rig-the-persona-the-line-between-assist-and-scaffold]].
-                if framing.workspace_deliverable && acts_at_last_nudge != Some(acts) {
+                // NARRATION IS NOT A SETTLEMENT (2026-09-05): a workspace-deliverable
+                // turn that speaks without having changed a file is re-perceived up to
+                // NARRATION_BUDGET consecutive times, not once. Measured on the team
+                // round: each work turn was one act and a spoken plan, the second plan
+                // ended the turn, the next turn re-oriented — 29 acts, 0 writes in 70
+                // minutes on 12 held cards. The fact names the count so pacing stays
+                // hers; the stuck detector still bounds the turn.
+                if framing.workspace_deliverable && narrations_since_act < NARRATION_BUDGET {
                     if let Some(body) = cycle.acting() {
                         if !mutated_workspace(&body.working_memory.recent_entries()) {
+                            narrations_since_act += 1;
                             acts_at_last_nudge = Some(acts);
                             // Sense, not steer (2026-09-01): the receipt-absence is
                             // the fact; the "an explanation of a fix is not the fix"
                             // sermon accumulated dozens of copies in looping minds
                             // and became the content of their turns.
-                            body.working_memory.record_fact(
-                                "[no-deliverable] I settled by speaking; no act of mine \
-                                 has changed a file in this workspace yet.",
-                            );
+                            body.working_memory.record_fact(&format!(
+                                "[no-deliverable] I settled by speaking ({narrations_since_act} of \
+                                 {NARRATION_BUDGET} plans in a row); no act of mine has changed a \
+                                 file in this workspace yet."
+                            ));
                             crate::probe!(
                                 class = "persona.settle.no_deliverable",
                                 persona = %body.persona_name,
@@ -455,6 +476,7 @@ async fn settle_to_outcome(
             }
             SettleStep::Acted { calls, .. } => {
                 acts += 1;
+                narrations_since_act = 0;
                 collect_touched_paths(&mut touched, &calls);
                 // Latch the #390 discovery gate OPEN on the first workspace mutation:
                 // once she has written anything, iteration is hers for the whole

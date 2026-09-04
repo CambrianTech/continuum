@@ -19,10 +19,20 @@
 //! ([`decode_wire_event`] + the chat-transcript recovery in `realtime_wire`),
 //! so history and live rows can never disagree about what a message is.
 
-use crate::airc::realtime_wire::{chat_transcript_message, envelope_from_event, is_stream_chunk};
-use crate::airc::discover_airc_socket;
+//! ## Where the page comes from (changed 2026-09-04)
+//!
+//! It first asked the daemon for the newest `limit` events on the channel
+//! (all kinds) and kept the conversation-shaped ones. Measured live: a busy
+//! run room answered 2 rows for `limit: 40` — the daemon's window is a ring
+//! the board's System events flood, so almost nothing conversational survives
+//! the cut. Meanwhile the core's own chat store has been the projection of the
+//! wire since `airc.chat.projected` (every plain airc message — chat lines,
+//! 💭 intents, ⚙ receipts — lands in `chat_messages` under its EVENT id), so
+//! the premise above ("citizens' speech never touches chat_messages") is no
+//! longer true. History now reads that store through the same seam the
+//! citizens' store-backed catch-up uses (`durable_history::room_rows`): one
+//! durable page for humans and citizens, and the two can never disagree.
 use crate::sdk_codegen::CommandError;
-use airc_ipc::{DaemonClient, InboxRequest};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -78,68 +88,32 @@ pub struct ChatHistoryResult {
 }
 
 crate::action_command! {
-    /// Read a room's durable transcript from the airc daemon's store — chat lines AND
-    /// radiated work receipts (💭/⚙), the full story of the activity. `chat/poll` reads
-    /// only the operator message collection; THIS is how a solve room's history exists.
+    /// Read a room's durable transcript — chat lines AND radiated work receipts (💭/⚙),
+    /// the full story of the activity — from the core's chat store, the projection of
+    /// the wire (the same page the citizens' catch-up reads).
     pub struct ChatHistory;
     name: "chat/history",
     access: AiSafe,
     params: ChatHistoryParams,
     output: ChatHistoryResult,
     run(_this, _ctx, p) => {
-        let socket = discover_airc_socket()
-            .await
-            .map_err(|e| CommandError::Internal(format!(
-                "chat/history needs the airc daemon socket and discovery failed: {e}"
-            )))?;
         let limit = p.limit.unwrap_or(50).min(500) as usize; // JUSTIFIED unwrap_or: the declared wire default (param doc says 50)
-        let response = DaemonClient::new(socket)
-            .inbox(InboxRequest {
-                since: None,
-                channel: Some(airc_core::RoomId::from_uuid(p.room_id)),
-                limit: Some(limit),
-                kinds: None,
-            })
+        let mut rows = crate::persona::durable_history::room_rows(p.room_id, limit)
             .await
             .map_err(|e| CommandError::Internal(format!(
-                "airc daemon inbox read failed for room {}: {e}",
+                "chat/history: durable page failed for room {}: {e}",
                 p.room_id
             )))?;
-        let mut messages = Vec::with_capacity(response.envelopes.len());
-        for envelope_bytes in response.envelopes {
-            let Ok(event) = airc_lib::decode_wire_event(envelope_bytes) else {
-                continue; // malformed rows must not poison the read
-            };
-            // Stream chunks are typing-indicator traffic — the settled utterance
-            // arrives separately via say(). Same rule as the live decoder; without
-            // it history renders one row per token fragment (seen live 2026-08-31).
-            if is_stream_chunk(&event) {
-                continue;
-            }
-            // Same recovery seams as the live bridge: prefer the plain text
-            // body (receipts/radiations), else the chat_transcript schema
-            // (chat/send lines) — one definition of "a message".
-            let recovered = event
-                .body
-                .as_ref()
-                .and_then(|b| b.as_text())
-                .map(|t| (event.peer_id.as_uuid(), t.to_string()))
-                .or_else(|| {
-                    envelope_from_event(&event)
-                        .ok()
-                        .flatten()
-                        .and_then(|env| chat_transcript_message(&env, event.peer_id.as_uuid()))
-                });
-            let Some((sender, text)) = recovered else {
-                continue; // presence beats / cards / non-message events
-            };
-            messages.push(ChatHistoryMessage {
-                id: event.event_id.as_uuid().to_string(),
-                sender_id: sender,
-                text,
-                timestamp: event.occurred_at_ms as i64,
-            });
-        }
+        rows.sort_by_key(|r| r.occurred_at_ms);
+        let messages: Vec<ChatHistoryMessage> = rows
+            .into_iter()
+            .map(|r| ChatHistoryMessage {
+                id: r.id.to_string(),
+                sender_id: r.sender,
+                text: r.text,
+                timestamp: r.occurred_at_ms as i64,
+            })
+            .collect();
         Ok(ChatHistoryResult { count: messages.len() as u32, messages })
     }
 }

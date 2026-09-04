@@ -62,9 +62,9 @@ const nav = (current: string, livePurposeTab = false): NavViewState => ({
   user_id: 'joel',
   current_tab: current,
   open_tabs: [
-    { id: 'room-1', title: 'general', kind: 'room', unread: 0, purpose: 'chat', parent_ref: '', display_label: '' },
+    { id: 'room-1', title: 'general', kind: 'room', unread: 0, opened: true, purpose: 'chat', parent_ref: '', display_label: '' },
     {
-      id: 'stage', title: 'stage', kind: 'room', unread: 0,
+      id: 'stage', title: 'stage', kind: 'room', unread: 0, opened: true,
       purpose: livePurposeTab ? 'live' : 'chat',
       parent_ref: '', display_label: '',
     },
@@ -85,7 +85,7 @@ describe('live call face → pattern projections', () => {
     expect(ws.content.purpose).toBe(LIVE_PURPOSE);
     const body = ws.content.body as LiveContentBody;
     expect(body.roomId).toBe('room-1');
-    expect(body.participants.map((p) => p.name)).toEqual(['Asha', 'Joel', 'Tarn']);
+    expect(body.participants.map((p) => p.name)).toEqual(['Asha', 'Joel']); // Tarn is offline: not in the call grid until he joins
 
     const closed = chatWorkspace(vm, {
       call: { open: false, streams: {}, captionsOn: true },
@@ -112,11 +112,11 @@ describe('live call face → pattern projections', () => {
   // (stable tiles; the border moves, never the tile).
   it('speaking flags come from the StreamDelta rail; grid order is roster order', () => {
     const ps = liveParticipants(vm, { asha: 'reading the trace' });
-    expect(ps.map((p) => p.id)).toEqual(['asha', 'joel', 'tarn']);
+    expect(ps.map((p) => p.id)).toEqual(['asha', 'joel']); // offline members join the grid when they connect
     expect(ps.find((p) => p.id === 'asha')?.speaking).toBe(true);
     expect(ps.find((p) => p.id === 'joel')?.speaking).toBe(false);
     // Presence + avatar ride through honestly.
-    expect(ps.find((p) => p.id === 'tarn')?.active).toBe(false);
+    expect(ps.every((p) => p.active)).toBe(true);
     expect(ps.find((p) => p.id === 'asha')?.avatarUrl).toBe('/avatars/asha.png');
     expect(ps.find((p) => p.id === 'joel')?.avatarUrl).toBeUndefined();
   });
@@ -158,6 +158,7 @@ describe('live call face → pattern projections', () => {
     const body = liveContentBody(vm, { open: true, streams: {}, captionsOn: true });
     expect(body.controls).toEqual({
       micAvailable: false,
+      cameraOn: false,
       micOn: false,
       cameraAvailable: false,
       screenshareAvailable: false,
@@ -191,8 +192,8 @@ describe('live call face → pattern projections', () => {
       user_id: 'joel',
       current_tab: 'asha',
       open_tabs: [
-        { id: 'room-1', title: 'general', kind: 'room', unread: 0, purpose: 'chat', parent_ref: '', display_label: '' },
-        { id: 'asha', title: 'Asha', kind: 'persona', unread: 0, purpose: 'persona', parent_ref: '', display_label: '' },
+        { id: 'room-1', title: 'general', kind: 'room', unread: 0, opened: true, purpose: 'chat', parent_ref: '', display_label: '' },
+        { id: 'asha', title: 'Asha', kind: 'persona', unread: 0, opened: true, purpose: 'persona', parent_ref: '', display_label: '' },
       ],
       last_read: {},
       bookmarks: [],

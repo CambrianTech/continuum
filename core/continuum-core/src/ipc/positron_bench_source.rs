@@ -137,6 +137,7 @@ fn live_exam_row() -> Option<BenchRunRow> {
 /// scoreboard that lies by omission (same contract as `row_of`).
 fn round_row_of(s: RoundSnapshot) -> BenchRoundRow {
     BenchRoundRow {
+        run_room: s.run_room_name,
         round_id: s.round_id,
         benchmark: s.benchmark,
         stage: s.stage,

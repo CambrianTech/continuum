@@ -113,7 +113,7 @@ fn first_transition_sighting(card_id: &str, state: &str) -> bool {
     static SEEN: OnceLock<Mutex<VecDeque<String>>> = OnceLock::new();
     let key = format!("{card_id}\u{1}{state}");
     let seen = SEEN.get_or_init(|| Mutex::new(VecDeque::with_capacity(SEEN_CAP)));
-    let mut seen = seen.lock().unwrap_or_else(|p| p.into_inner());
+    let mut seen = seen.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every lock in this crate
     if seen.contains(&key) {
         return false;
     }
@@ -156,7 +156,7 @@ fn first_sighting(event_id: Uuid) -> bool {
     const SEEN_CAP: usize = 256;
     static SEEN: OnceLock<Mutex<VecDeque<Uuid>>> = OnceLock::new();
     let seen = SEEN.get_or_init(|| Mutex::new(VecDeque::with_capacity(SEEN_CAP)));
-    let mut seen = seen.lock().unwrap_or_else(|p| p.into_inner());
+    let mut seen = seen.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every lock in this crate
     if seen.contains(&event_id) {
         return false;
     }
@@ -400,26 +400,59 @@ pub(crate) async fn card_in_subscribed_rooms(
 /// both cases the original wrong-room refusal stands, verbatim. `Some(result)`
 /// means a room-switched claim was attempted and that result REPLACES the refusal,
 /// so a genuine contention in the card's room still reports as contention.
+/// Follow a card to the room that holds it: join that room (if it is not the
+/// current one) so a by-id mutation can be retried there. `Some(room name)`
+/// when the caller should retry; `None` when the card is placeable nowhere or
+/// the caller already stands in its room. Accept-or-redirect, never
+/// refuse-and-instruct — shared by claim, state and release.
+pub(crate) async fn follow_card_room(
+    airc: &Arc<Airc>,
+    card_id: WorkCardId,
+    verb: &'static str,
+) -> Option<String> {
+    // The card's room: a subscribed room's board first; else the round tracker
+    // (node-wide — a bench card names its run room whether or not the caller has
+    // ever stood in it). Measured 2026-09-05: the operator's `work/state` on a
+    // fresh team round's cards was refused from `general` because the caller
+    // subscribed to none of that round's rooms, so the fallback never fired.
+    let (room_name, room_channel) = match room_holding_card(airc, card_id).await {
+        Some(room) => (room.name, Some(room.channel)),
+        None => {
+            let wanted = card_id.as_uuid().to_string();
+            let name = crate::cognition::bench_round::live_rounds()
+                .into_iter()
+                .find(|r| r.cards.iter().any(|c| c.card_id == wanted))
+                .map(|r| r.run_room_name)
+                .filter(|n| !n.is_empty())?;
+            (name, None)
+        }
+    };
+    let current = airc.current_room().await.ok();
+    if let Some(ch) = room_channel {
+        if current.as_ref().is_some_and(|c| c.channel == ch) {
+            return None;
+        }
+    }
+    if airc.join(&room_name).await.is_err() {
+        return None;
+    }
+    crate::probe!(
+        class = "work.followed_card_room",
+        verb = verb,
+        card_id = %short8(card_id.as_uuid()),
+        room = %room_name,
+        "a by-id mutation targeted a card outside the current room — switched to \
+         the card's room and retried (accept-or-redirect, never refuse-and-instruct)"
+    );
+    Some(room_name)
+}
+
 pub(crate) async fn claim_following_card_room(
     airc: &Arc<Airc>,
     card_id: WorkCardId,
     ttl_ms: u64,
 ) -> Option<Result<ClaimId, airc_lib::AircError>> {
-    let room = room_holding_card(airc, card_id).await?;
-    let current = airc.current_room().await.ok();
-    if current.as_ref().is_some_and(|c| c.channel == room.channel) {
-        return None;
-    }
-    if airc.join(&room.name).await.is_err() {
-        return None;
-    }
-    crate::probe!(
-        class = "work.claim.followed_card_room",
-        card_id = %short8(card_id.as_uuid()),
-        room = %room.name,
-        "claim-by-id targeted a card outside the current room — switched to \
-         the card's room and retried (accept-or-redirect, never refuse-and-instruct)"
-    );
+    follow_card_room(airc, card_id, "work/claim").await?;
     Some(
         airc.claim_work_card(ClaimWorkCard { card_id, ttl_ms })
             .await,
@@ -1507,13 +1540,17 @@ impl ActionCommand for WorkRelease {
         let airc = persona_airc(&self.registry, ctx, "work commands")?;
         let card_id = resolve_card_id(&airc, &p.card_id).await?;
         let claim_id = resolve_claim_id(&airc, &p.claim_id).await?;
-        airc.release_work_claim(ReleaseWorkClaim {
-            card_id,
-            claim_id,
-            reason: p.reason,
-        })
-        .await
-        .map_err(|e| CommandError::Internal(e.to_string()))?;
+        let mut attempt = airc
+            .release_work_claim(ReleaseWorkClaim { card_id, claim_id, reason: p.reason.clone() })
+            .await;
+        if matches!(attempt, Err(airc_lib::AircError::WorkCardNotInCurrentRoom { .. }))
+            && follow_card_room(&airc, card_id, "work/release").await.is_some()
+        {
+            attempt = airc
+                .release_work_claim(ReleaseWorkClaim { card_id, claim_id, reason: p.reason })
+                .await;
+        }
+        attempt.map_err(|e| CommandError::Internal(e.to_string()))?;
         Ok(WorkReleaseResult { released: true })
     }
 }
@@ -1705,9 +1742,17 @@ async fn raw_advance(
     state: CardState,
     via: &'static str,
 ) -> Result<(), String> {
-    airc.change_work_card_state(ChangeWorkCardState { card_id, state })
-        .await
-        .map_err(|e| e.to_string())?;
+    let mut attempt = airc
+        .change_work_card_state(ChangeWorkCardState { card_id, state })
+        .await;
+    if matches!(attempt, Err(airc_lib::AircError::WorkCardNotInCurrentRoom { .. }))
+        && follow_card_room(airc, card_id, "work/state").await.is_some()
+    {
+        attempt = airc
+            .change_work_card_state(ChangeWorkCardState { card_id, state })
+            .await;
+    }
+    attempt.map_err(|e| e.to_string())?;
     // The CARD's room, never `current_room()` — boards are per-room and the grade
     // subscriber refuses an event with no room.
     let room_id = room_holding_card(airc, card_id)

@@ -23,6 +23,7 @@ import type {
   PersonaContentBody,
   PersonaPathwayVM,
 } from '@continuum/patterns';
+import { brainRegions } from '@continuum/chat-view';
 import { agoLabel, cognitionDiamond, loadoutStrip } from '../render/parts';
 // The REAL mesh brain — recovered from the original HUD (docs/images/
 // persona-brain-hud.png crop): LLM-drawn SVG anatomy is banned; the 3D-rendered
@@ -92,6 +93,21 @@ export interface MindSight {
   readonly sources: readonly MindSightSource[];
 }
 let currentMindSight: MindSight | undefined;
+
+/** The citizen's latest vitals from `persona/vitals` — the same emitter pulse the
+ *  roster tiles draw, fetched by id so a cold deep link lights the HUD even when
+ *  she is not in the viewer's focused room. Used only when the projected body
+ *  carries no vitals (roster first, verb second — never a second truth). */
+let currentMindVitals: { personaId: string; vitals: Record<string, number> } | undefined;
+export function setMindVitals(v: { personaId: string; vitals: Record<string, number> } | undefined): void {
+  currentMindVitals = v;
+}
+function bodyWithVitals(body: PersonaContentBody): PersonaContentBody {
+  if (Object.keys(body.vitals).length > 0) return body;
+  const live = currentMindVitals?.personaId === body.personaId ? currentMindVitals.vitals : undefined;
+  if (!live || Object.keys(live).length === 0) return body;
+  return { ...body, vitals: live, regions: brainRegions(live) };
+}
 export function setMindSight(sight: MindSight | undefined): void {
   currentMindSight = sight;
 }
@@ -552,7 +568,7 @@ export class PersonaPageElement extends LitElement {
   }
 
   override render(): TemplateResult {
-    const body = this.body;
+    const body = this.body ? bodyWithVitals(this.body) : this.body;
     if (!body) return html``;
     const content: Record<PersonaTab, TemplateResult> = {
       overview: html`${aboutSection(body)}${homeSection(body)}${workSection(body, 3)}${recordSection(body)}`,
