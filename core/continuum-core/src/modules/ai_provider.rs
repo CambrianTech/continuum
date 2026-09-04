@@ -264,10 +264,31 @@ pub(crate) fn select_failure_message(
             available
         );
     }
-    format!(
-        "Requested provider/model not available (provider={:?}, model={:?}). Available: {:?}",
-        requested_provider, requested_model, available
-    )
+    // A refusal the caller can ACT on. `available` is provider ids; a caller
+    // who named a model (or nothing) needs the model ids the lanes actually
+    // serve, or they are stuck guessing — the weak-node consumer case, where
+    // the caller has no local registry at all (card a466fdd4).
+    let served: Vec<String> = registry
+        .served_models()
+        .into_iter()
+        .map(|(provider, model)| format!("{provider}={model}"))
+        .collect();
+    match (requested_provider, requested_model) {
+        (Some(provider), _) => format!(
+            "Provider {provider:?} is not available (model={requested_model:?}). \
+             Available providers: {available:?}; served models (provider=model): {served:?}."
+        ),
+        (None, Some(model)) => format!(
+            "Model {model:?} is not served by any available provider. \
+             Served models (provider=model): {served:?}. \
+             Pass `model` as one of those, or `provider` as one of {available:?}."
+        ),
+        (None, None) => format!(
+            "No provider or model specified — the substrate never picks one for you. \
+             Pass `provider` as one of {available:?}, or `model` as one of the served \
+             models (provider=model): {served:?}."
+        ),
+    }
 }
 
 /// Build + initialize the llama-server gateway adapter pointed at a ready
@@ -1224,4 +1245,35 @@ pub async fn generate_text(
     });
 
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
+
+    // what this catches: the refusal for an unknown/omitted model must name the
+    // model ids the registry actually serves, not just provider ids — a grid
+    // consumer with no local registry was refused with a list it could not act
+    // on (card a466fdd4, IntelMac → 5090, 2026-09-04).
+    #[test]
+    fn select_failure_message_names_served_models_for_model_and_no_specifier() {
+        let heuristic = HeuristicInferenceAdapter::new();
+        let provider = heuristic.provider_id().to_string();
+        let model = heuristic.default_model().to_string();
+        let mut registry = AdapterRegistry::new();
+        registry.register(Arc::new(heuristic), 0);
+
+        let by_model = select_failure_message(&registry, None, Some("no-such-model"));
+        assert!(by_model.contains("no-such-model"), "{by_model}");
+        assert!(by_model.contains(&format!("{provider}={model}")), "{by_model}");
+
+        let unspecified = select_failure_message(&registry, None, None);
+        assert!(unspecified.contains("never picks one"), "{unspecified}");
+        assert!(unspecified.contains(&format!("{provider}={model}")), "{unspecified}");
+
+        let bad_provider = select_failure_message(&registry, Some("ghost"), None);
+        assert!(bad_provider.contains("\"ghost\""), "{bad_provider}");
+        assert!(bad_provider.contains(&provider), "{bad_provider}");
+    }
 }

@@ -897,6 +897,22 @@ impl AdapterRegistry {
             .collect()
     }
 
+    /// What each available adapter actually serves: `(provider_id, default_model)`
+    /// in priority order. This is the list a refusal must show a caller who named
+    /// a model the registry can't route — `available()` is provider ids, which a
+    /// grid consumer with no local registry cannot turn into a valid `model`
+    /// (card a466fdd4: IntelMac → 5090 was refused with a list it couldn't act on).
+    pub fn served_models(&self) -> Vec<(&str, &str)> {
+        self.priority_order
+            .iter()
+            .filter_map(|id| {
+                self.adapters
+                    .get(id)
+                    .map(|adapter| (id.as_str(), adapter.default_model()))
+            })
+            .collect()
+    }
+
     /// Select best adapter based on request.
     ///
     /// Per [[no-fallbacks-ever]] (Joel, 2026-06-01: "No fallbacks ever
