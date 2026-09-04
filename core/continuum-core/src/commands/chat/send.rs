@@ -80,26 +80,9 @@ crate::action_command! {
                 "no sender: pass senderId, or wait for the operator self-peer to come \
                  online this boot (it starts beside the citizens)".into(),
             ))?;
-        let mut result = ChatModule::from_slot(this.executor_slot.clone())
-            .send(ChatSendParams {
-                room_id: p.room_id,
-                sender_id,
-                text: p.text.clone(),
-                reply_to_id: p.reply_to_id,
-            })
-            .await
-            .map_err(CommandError::Internal)?;
-        // ── The DAEMON half of the voice (found live 2026-08-31) ──
-        // ChatModule::send dual-writes data + the realtime ENVELOPE store — the
-        // web's live feed — but citizens hear rooms through the airc DAEMON
-        // transcript (`say`), and `chat/history` reads the same store. Without
-        // this leg, a chat/send message rendered on screens while every citizen
-        // in the room stayed deaf to it, and history showed nothing: the
-        // operator asked a question into a void. Speak it through the SENDER'S
-        // own runtime (persona from the registry; the operator self-peer only
-        // for its own id — never misattributed). Best-effort like the envelope
-        // leg: the stored message is ground truth either way, and a miss is
-        // named in `warning`, never silent.
+        // ONE row per line (2026-09-03): resolve the sender's own runtime FIRST.
+        // With a runtime, the say below is the wire leg and the envelope leg is
+        // skipped; both used to run and every window read the operator twice.
         let runtime = crate::persona::PersonaAircRuntimeRegistry::try_global()
             .and_then(|r| r.get(sender_id))
             .or_else(|| {
@@ -110,6 +93,29 @@ crate::action_command! {
                 crate::persona::operator_peer::agent_runtime()
                     .filter(|rt| rt.airc().peer_id().as_uuid() == sender_id)
             });
+        let chat = ChatModule::from_slot(this.executor_slot.clone());
+        let params = ChatSendParams {
+            room_id: p.room_id,
+            sender_id,
+            text: p.text.clone(),
+            reply_to_id: p.reply_to_id,
+        };
+        let wire = if runtime.is_some() {
+            crate::modules::chat::WireLeg::CallerSpeaks
+        } else {
+            crate::modules::chat::WireLeg::Envelope
+        };
+        let mut result = chat
+            .send_with_wire(params.clone(), wire)
+            .await
+            .map_err(CommandError::Internal)?;
+        // ── The DAEMON half of the voice (found live 2026-08-31) ──
+        // Citizens hear rooms through the airc DAEMON transcript (`say`), and
+        // `chat/history` reads the same store. Speak it through the SENDER'S
+        // own runtime (persona from the registry; the operator self-peer only
+        // for its own id — never misattributed). If the say fails, the
+        // envelope leg runs as the fallback so the line still reaches the wire
+        // — and the miss is named in `warning`, never silent.
         match runtime {
             Some(rt) => {
                 let mut publish_err = crate::persona::airc_citizen::publish_text_in_room(
@@ -119,18 +125,6 @@ crate::action_command! {
                 )
                 .await
                 .err();
-                // JOIN-ON-SEND heal, SELF-PEERS ONLY (operator/agent). Their
-                // scopes lose room subscriptions across reboots (found live
-                // 2026-09-01: after ~12 restarts even `general` refused, and
-                // every CLI send stored + live-fed while citizens stayed deaf
-                // — questions into a void). For a human/agent DELIBERATELY
-                // addressing a room, sending IS the intent to be in it, so the
-                // heal subscribes (membership without moving focus) and
-                // retries once. Citizens keep the documented no-auto-join
-                // safety untouched — answering must never silently change
-                // which rooms a persona belongs to; this guard is scoped to
-                // exactly the two self-peers
-                // ([[a-design-fork-is-usually-a-guard-scoped-too-broadly]]).
                 let is_self_peer = crate::persona::operator_peer::operator_runtime()
                     .map(|o| o.airc().peer_id().as_uuid() == sender_id)
                     .unwrap_or(false) // unwrap_or: self-peer not up this boot = the sender simply isn't it
@@ -161,9 +155,24 @@ crate::action_command! {
                     }
                 }
                 if let Some(e) = publish_err {
+                    // The say missed: fall back to the envelope leg so the line
+                    // still reaches the wire, and say why.
+                    let fallback = chat
+                        .broadcast_envelope(
+                            result.message_id,
+                            &params,
+                            crate::modules::chat::now_ms(),
+                        )
+                        .await
+                        .map_err(CommandError::Internal)?;
+                    result.event_id = fallback.event_id;
                     result.warning = Some(format!(
-                        "message stored + live-fed, but the daemon-room say failed — \
-                         citizens in the room did not hear it: {e}"
+                        "the daemon-room say failed ({e}); the line went out as an \
+                         envelope instead{}",
+                        fallback
+                            .warning
+                            .map(|w| format!(" — and that missed too: {w}"))
+                            .unwrap_or_default() // unwrap_or: no second miss = nothing to append
                     ));
                 }
             }
