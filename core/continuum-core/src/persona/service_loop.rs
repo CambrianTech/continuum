@@ -2585,6 +2585,29 @@ async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn PersonaConve
             return false;
         }
     }
+    // WIP = LANES (2026-09-05, Joel: "get this working"). Twelve citizens on five
+    // lanes gave each ~two model calls an hour: 23 lane grants, 19 acts, 0 writes in
+    // 55 minutes on a fully claimed round. A card only progresses when its holder
+    // can decode, so the roster holds no more cards than the server has lanes; the
+    // others stay resident, watch the board, and take review cards as they open.
+    // Organic: nobody is told what to do — the world simply has no free slot.
+    {
+        let lanes = crate::cognition::resource_admission::served_lane_count();
+        let in_flight = crate::cognition::bench_round::in_flight_citizen_cards();
+        if lanes > 0 && in_flight >= lanes {
+            static DEFERRED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            if DEFERRED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 50 == 0 {
+                crate::probe!(
+                    class = "bench.round.pull_deferred_wip",
+                    persona = %ctx.identity.agent_name,
+                    in_flight = in_flight as u64,
+                    lanes = lanes as u64,
+                    "no pull: the roster already holds as many cards as there are lanes (sampled 1/50)"
+                );
+            }
+            return false;
+        }
+    }
     // ELIGIBILITY IS RESIDENCY: she pulls from the run rooms she is standing in. A
     // card is content of its room; any resident may work it.
     let resident: std::collections::HashSet<Uuid> = match citizen.subscribed_rooms().await {

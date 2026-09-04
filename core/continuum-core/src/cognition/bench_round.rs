@@ -1369,6 +1369,23 @@ pub fn activity_rooms() -> Vec<(Uuid, String)> {
         .collect()
 }
 
+/// Cards a citizen is actively on across every WORKING citizen-driven round —
+/// claimed or in progress on the board. A card in `review` is not counted: its
+/// owner is done and the slot it held is what lets a peer pull its review card.
+/// This is the number WIP-as-lanes compares to the served lane count.
+pub fn in_flight_citizen_cards() -> usize {
+    live_rounds()
+        .iter()
+        .filter(|r| r.stage.eq_ignore_ascii_case("working") && r.driver.to_ascii_lowercase().contains("citizen"))
+        .flat_map(|r| r.cards.iter())
+        .filter(|c| !c.owner.is_empty())
+        .filter(|c| {
+            let s = c.board_state.to_ascii_lowercase();
+            s == "claimed" || s == "in_progress"
+        })
+        .count()
+}
+
 pub fn live_rounds() -> Vec<RoundSnapshot> {
     let rounds = ROUNDS.lock().unwrap_or_else(|e| e.into_inner());
     let mut out: Vec<RoundSnapshot> = rounds
