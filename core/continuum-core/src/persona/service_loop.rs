@@ -2403,6 +2403,12 @@ async fn run_self_cycle(
     last_burst_fp: &mut u64,
 ) -> bool {
     let now_ms = (opts.now_ms)();
+    // A self-cycle IS cognition: the claim-renewal pump reads this pulse, and it
+    // was stamped only on message turns — a holder working her card for thirty
+    // minutes without a room message read as idle, her renewals were denied, her
+    // hold lapsed, she looked free and pulled a second card (2026-09-05: 32 pulls
+    // and 32 re-stagings for 12 cards in 15 minutes).
+    crate::persona::cognition_pulse::touch(ctx.identity.peer_id.as_uuid(), now_ms);
     // FOCUS (2026-08-22): a self-cycle with no triggering message binds to the
     // room of her FRESHEST LIVE CLAIM when she holds one, else her home room.
     // Home-room-always was the self-clobber engine measured tonight: a citizen

@@ -641,7 +641,7 @@ impl PersonaAircRuntime {
                 // (exactly the old cadence) until clean — degraded mode is the old
                 // behavior, never a wider gap.
                 let renewal_period = std::time::Duration::from_millis(
-                    crate::modules::work::DEFAULT_CLAIM_TTL_MS / 3,
+                    crate::modules::work::DEFAULT_CLAIM_TTL_MS / 6,
                 );
                 let mut last_clean_renewal: Option<std::time::Instant> = None;
                 // Emit-on-transition for the renewal-denied probe: denial is a
@@ -779,6 +779,54 @@ impl PersonaAircRuntime {
                                 agent_name = %hb_name,
                                 "cognition resumed — claim renewals earned again"
                             );
+                        }
+                    }
+                    // RECOVER MY OWN LAPSED HOLDS. The roster lists only live claims,
+                    // so a hold that lapsed (a missed renewal, a reboot) was never
+                    // renewed again: the board kept her as owner, she read as free,
+                    // and the card was re-pulled by someone else — or by her, twice.
+                    // A lapsed hold nobody else has taken is re-claimed here.
+                    {
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as u64)
+                            .unwrap_or_default();
+                        if let Ok(board) = hb_airc
+                            .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
+                            .await
+                        {
+                            let me = hb_airc.peer_id();
+                            for card in board.snapshot().cards.iter().filter(|c| {
+                                c.owner == Some(me)
+                                    && c.claim_expires_at_ms.is_some_and(|e| e <= now_ms)
+                                    && matches!(
+                                        c.state,
+                                        airc_work::model::CardState::Claimed
+                                            | airc_work::model::CardState::InProgress
+                                    )
+                            }) {
+                                match hb_airc
+                                    .claim_work_card(airc_lib::ClaimWorkCard {
+                                        card_id: card.card_id,
+                                        ttl_ms: crate::modules::work::DEFAULT_CLAIM_TTL_MS,
+                                    })
+                                    .await
+                                {
+                                    Ok(_) => crate::probe!(
+                                        class = "persona.claim.recovered",
+                                        agent_name = %hb_name,
+                                        card_id = %card.card_id.as_uuid(),
+                                        "my own lapsed hold re-claimed before anyone else took it"
+                                    ),
+                                    Err(error) => crate::probe!(
+                                        class = "persona.claim.recover_failed",
+                                        agent_name = %hb_name,
+                                        card_id = %card.card_id.as_uuid(),
+                                        error = %error,
+                                        "my lapsed hold could not be re-claimed (someone else may hold it now)"
+                                    ),
+                                }
+                            }
                         }
                     }
                     match hb_airc
