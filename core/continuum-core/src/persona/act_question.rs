@@ -130,11 +130,8 @@ pub(crate) async fn ask_the_act_question(
             // resolution was ambiguous, her hands stayed at home, and every act
             // landed in her own repo copy (Lorcan, 2026-09-04). The other card
             // stays held; its turn comes when it is the freshest.
-            let held: Vec<&airc_lib::WorkCard> = held
-                .into_iter()
-                .max_by_key(|c| c.last_heartbeat_at_ms.unwrap_or(c.updated_at_ms))  // unwrap_or: never heartbeated = its last board change
-                .into_iter()
-                .collect();
+            let held: Vec<&airc_lib::WorkCard> =
+                crate::persona::work_focus::focus_card(held).into_iter().collect();
             crate::probe!(
                 class = "persona.work.gate",
                 persona = %ctx.identity.agent_name,
