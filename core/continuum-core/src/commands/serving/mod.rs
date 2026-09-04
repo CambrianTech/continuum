@@ -37,6 +37,7 @@ use crate::model_registry::live::ModelCatalog;
 use crate::modules::serving_daemon::PinFitChecker;
 use crate::sdk_codegen::DynCommand;
 
+pub mod cache_probe;
 pub mod load;
 pub mod pin;
 pub mod plan;
@@ -47,6 +48,7 @@ pub mod unpin;
 use load::ServingLoad;
 use pin::ServingPin;
 use plan::ServingPlanQuery;
+use cache_probe::ServingCacheProbe;
 use status::ServingStatus;
 use unload::ServingUnload;
 use unpin::ServingUnpin;
@@ -96,6 +98,7 @@ pub fn command_objects(
             serving: serving.clone(),
         }),
         Arc::new(ServingUnpin { pin }),
+        Arc::new(ServingCacheProbe { serving: serving.clone() }),
         Arc::new(ServingStatus { serving }),
         Arc::new(ServingPlanQuery { plan }),
     ]

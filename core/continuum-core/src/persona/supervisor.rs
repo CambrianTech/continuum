@@ -713,6 +713,10 @@ pub async fn materialize_adapters(
                         bus,
                         dirty.downgrade(),
                     );
+                    crate::persona::grounding_invalidation::register_workspace_map_dirty(
+                        identity.peer_id.as_uuid(),
+                        dirty.downgrade(),
+                    );
                     cached
                 }
                 None => raw_workspace_map,

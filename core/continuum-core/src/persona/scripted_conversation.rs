@@ -233,6 +233,7 @@ mod tests {
 
     fn one_msg() -> IncomingMessage {
         IncomingMessage {
+            event_id: uuid::Uuid::nil(),
             lamport: 1,
             peer_id: Uuid::new_v4(),
             text: "hello".into(),

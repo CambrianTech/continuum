@@ -119,6 +119,14 @@ pub struct ChatMessageView {
     /// Unix-ms substrate-local time of arrival.
     #[ts(type = "number")]
     pub timestamp: u64,
+    /// Citizens whose inbound stream ADMITTED this line as a turn — the
+    /// delivery receipt a human can see ("heard by 8"). Empty = nobody yet;
+    /// `#[serde(default)]` so a row serialized before this field folds as
+    /// empty, never dropped. (2026-09-04: the live plane was dead for weeks
+    /// and nothing on screen said so.)
+    #[serde(default)]
+    #[ts(optional, type = "Array<string>")]
+    pub heard_by: Vec<Uuid>,
 }
 
 /// What kind of citizen authored a message. Tagged enum on the wire
@@ -627,6 +635,7 @@ mod tests {
             },
             content: "hi".into(),
             timestamp: 1_700_000_000_000,
+            heard_by: Vec::new(),
         };
         let back: ChatMessageView =
             serde_json::from_str(&serde_json::to_string(&msg).unwrap()).unwrap();
@@ -728,6 +737,7 @@ mod tests {
                 },
                 content: "hi".into(),
                 timestamp: 1_700_000_000_000,
+                heard_by: Vec::new(),
             }],
             roster: vec![RosterSlotView {
             pronouns: None,

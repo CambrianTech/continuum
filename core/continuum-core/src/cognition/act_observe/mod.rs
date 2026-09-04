@@ -599,11 +599,12 @@ mod tests {
     // 2026-08-04 on sympy-21379: one `code/tree`, then a prose explanation of the bug —
     // 0 patch bytes, 29 of 30 acts unspent, run over). When the CALLER declared the
     // deliverable to be the workspace, a Speak that changed no file must not end the
-    // turn on the first pass: she gets exactly ONE more perception, carrying the
-    // structural fact that her working memory holds no mutation. Bounded — she speaks
-    // again and it settles, so a determined Speak is never trapped in a loop.
+    // turn: she gets up to NARRATION_BUDGET more perceptions, each carrying the
+    // structural fact that her working memory holds no mutation (2026-09-05: one was
+    // too few — a plan, one act, a second plan ended every work turn). Bounded — the
+    // budget spends and it settles, so a determined Speak is never trapped in a loop.
     #[tokio::test]
-    async fn a_zero_change_speak_reperceives_once_when_the_workspace_is_the_deliverable() {
+    async fn a_zero_change_speak_reperceives_up_to_the_narration_budget_when_the_workspace_is_the_deliverable() {
         let speaker = CountingSpeaker::new();
         let wm = Arc::new(WorkingMemory::new(8));
         let exec = Arc::new(RecordingExecutor {
@@ -629,8 +630,8 @@ mod tests {
 
         assert_eq!(
             speaker.generations(),
-            2,
-            "the zero-deliverable Speak bought exactly one more perception — not zero, not a loop"
+            super::settle::NARRATION_BUDGET + 1,
+            "the zero-deliverable Speaks bought exactly the narration budget of perceptions — not zero, not a loop"
         );
         assert!(
             wm.recent().iter().any(|l| l.contains("[no-deliverable]")),
@@ -639,7 +640,7 @@ mod tests {
         );
         assert!(
             matches!(outcome.decision, Decision::Speak { .. }),
-            "she settles on her second Speak — the decision stays hers"
+            "she settles on the Speak after the budget — the decision stays hers"
         );
     }
 

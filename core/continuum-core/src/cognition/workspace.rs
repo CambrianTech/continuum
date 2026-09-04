@@ -941,6 +941,11 @@ pub struct Workspace {
     /// the conversation turns stay clean). `false` (the default) = message/eval
     /// driven.
     pub self_initiated: bool,
+    /// This turn's deliverable is a change in the workspace (a held card's work
+    /// turn). The deliberation faculty narrows the tool surface to her HANDS for
+    /// such a turn: 37 tool schemas were 8.5k of a ~22k-token prefill per act
+    /// with zero KV reuse (measured 2026-09-05), and a work turn needs a dozen.
+    pub workspace_deliverable: bool,
     /// The persona's NOW at burst assembly (see [`Burst::now_ms`]) — rendered as a
     /// [now …] line in the system prompt so time is a fact she can perceive (#125).
     pub now_ms: Option<u64>,
@@ -993,6 +998,7 @@ impl Workspace {
             broadcast: Vec::new(),
             directed_at_self: false,
             self_initiated: false,
+            workspace_deliverable: false,
             now_ms: burst_now,
             token_sink: None,
         }
@@ -1034,6 +1040,11 @@ impl Workspace {
     /// framing in the system prompt.
     pub fn self_initiated(mut self, self_initiated: bool) -> Self {
         self.self_initiated = self_initiated;
+        self
+    }
+
+    pub fn workspace_deliverable(mut self, workspace_deliverable: bool) -> Self {
+        self.workspace_deliverable = workspace_deliverable;
         self
     }
 
@@ -2039,6 +2050,7 @@ impl WorkspaceCycle {
             .with_cycle(cycle)
             .directed(framing.directed)
             .self_initiated(framing.self_initiated)
+            .workspace_deliverable(framing.workspace_deliverable)
             // #169: hand this turn the live streaming sink if the caller set one
             // (service_loop, just before a streamed Speak); `None` otherwise.
             .with_token_sink(self.current_token_sink());

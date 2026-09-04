@@ -25,6 +25,7 @@ import type { GaugeView, ServingPanelView } from '@continuum/patterns';
 import type {
   BenchViewState,
   KanbanViewState,
+  NavTab,
   NavViewState,
   ServingViewState,
   SystemMetricsViewState,
@@ -145,16 +146,60 @@ export function roomsListing(vm: ChatViewModel): ListingView {
  *  rides the neutral `count` (a badge pill on web, `(3 new)` in RAG), and the
  *  tab's target kind is the `group` facet — the All/Rooms/DMs filter is a facet
  *  over groups, not a new widget. */
-export function roomsListingFromNav(nav: NavViewState, focusedRoomId: string): ListingView {
+/** A run room's rail label from the bench view — what the round IS, not its
+ *  raw name: `verified · working · 9/12 in hands`, `mini · paused · 1/4 settled`.
+ *  Matched by the round's run room name; a tab without a round keeps its name. */
+/** A RUN room shows its OWN round; the academy (or any bench-purpose room that
+ *  is not a round's run room) shows the whole board. Live 2026-09-04: every run
+ *  room rendered the global rounds index — a citizen's room looked like the
+ *  academy and the round she was working was one row among thirty. */
+export function benchViewForRoom(
+  bench: BenchViewState | undefined,
+  roomName: string,
+): BenchViewState | undefined {
+  if (!bench) return bench;
+  const mine = bench.rounds.filter((r) => r.run_room !== '' && r.run_room === roomName);
+  return mine.length > 0 ? { ...bench, rounds: mine } : bench;
+}
+
+export function benchRoomLabel(
+  tab: { readonly title: string },
+  bench: BenchViewState | undefined,
+): { readonly title: string; readonly subtitle: string } | undefined {
+  const round = bench?.rounds.find((r) => r.run_room !== '' && r.run_room === tab.title);
+  if (round === undefined) return undefined;
+  const suite = round.benchmark.replace(/^swe-bench-/, '').replace(/-/g, ' ');
+  const held = round.cards.filter((c) => c.owner !== '' && c.board_state !== 'closed').length;
+  const stage = round.stage.toLowerCase();
+  const progress =
+    stage === 'working' ? `${held}/${round.dispatched} in hands` : `${round.settled}/${round.dispatched} settled`;
+  return { title: `${suite} · ${stage}`, subtitle: progress };
+}
+
+export function roomsListingFromNav(
+  nav: NavViewState,
+  focusedRoomId: string,
+  bench?: BenchViewState,
+): ListingView {
+  // Working rounds lead, finished/paused ones trail; everything else keeps the
+  // nav's own order. A view choice over one truth — never a hidden row.
+  const rank = (tab: NavTab): number => {
+    const label = benchRoomLabel(tab, bench);
+    if (label === undefined) return 1;
+    return label.title.endsWith('working') ? 0 : 2;
+  };
+  const ordered = [...nav.open_tabs].sort((a, b) => rank(a) - rank(b));
   return {
     id: 'rooms',
     title: 'Activities',
-    cells: nav.open_tabs.map((tab): ListingCell => {
+    cells: ordered.map((tab): ListingCell => {
+      const bl = benchRoomLabel(tab, bench);
       const cell: ListingCell = {
         id: tab.id,
         // A child activity draws its LINEAGE label (`<instance> · <card>`), not
-        // the raw room name — the rail-tree IA (#2632 slice b).
-        title: tab.display_label !== '' ? tab.display_label : tab.title,
+        // the raw room name — the rail-tree IA (#2632 slice b); a bench run room
+        // draws what the round is.
+        title: bl ? bl.title : tab.display_label !== '' ? tab.display_label : tab.title,
         status: tab.id === focusedRoomId ? 'active' : 'idle',
         group: tab.kind,
         // The strip's membership: opened by the citizen (nav truth), never
@@ -164,7 +209,7 @@ export function roomsListingFromNav(nav: NavViewState, focusedRoomId: string): L
         // The room's recipe-defined activity purpose, carried verbatim as the
         // description line ([[room-purpose-is-per-recipe-not-an-enum]]).
         // Empty = unresolved — no subtitle drawn, never a fabricated blurb.
-        ...(tab.purpose ? { subtitle: tab.purpose } : {}),
+        ...(bl ? { subtitle: bl.subtitle } : tab.purpose ? { subtitle: tab.purpose } : {}),
       };
       return tab.unread > 0 ? { ...cell, count: tab.unread } : cell;
     }),
@@ -395,6 +440,11 @@ export function roomInfoListing(vm: ChatViewModel): ListingView {
  *  fabricated placeholder). One options object, not a growing positional list
  *  ([[structs-by-reference-not-massive-param-lists]]). */
 export interface WorkspaceLive {
+  /** Every member the surface has ever seen, node-wide (each room's roster
+   *  folded in as it arrives) — so a persona page opened from a room she is
+   *  NOT in still finds her presence and vitals. The focused room's roster is
+   *  tried first; this is the fallback, never a second truth. */
+  readonly directory?: readonly RosterMemberVM[];
   /** The citizen's `kind="nav"` view — upgrades the rooms rail to the room set. */
   readonly nav?: NavViewState;
   /** The node's `kind="system-metrics"` view — adds the SYS gauge widget. */
@@ -442,8 +492,14 @@ export interface WorkspaceLive {
  *  as a disclosure. Counts feed the hero strip. */
 export const ACADEMY_PURPOSE = 'academy';
 export interface AcademyContentBody {
+  /** The landing's name: `Academy` for the campus, the round's humanized
+   *  label (`verified · working · 12/12 in hands`) for a run room. */
+  readonly title: string;
   readonly bench: BenchContentBody;
   readonly chat: ChatContentBody;
+  /** A run room's conversation is open by default — operator lines land
+   *  there; the campus keeps chat folded under the board. */
+  readonly chatOpen: boolean;
   readonly memberCount: number;
   readonly activeCount: number;
 }
@@ -483,7 +539,9 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
       }
     : undefined;
   const persona = focusedPersonaTab(live?.nav);
-  const personaBody = persona ? personaContentBody(vm, persona, live?.board) : undefined;
+  const personaBody = persona
+    ? personaContentBody(vm, persona, live?.board, live?.directory)
+    : undefined;
   // The LIVE face ([[LIVE_PURPOSE]]): a room's call grid, dispatched through the
   // SAME registry when the room's recipe purpose is "live", a live-purpose tab
   // is focused, or the reader opened the Go-live face — honest entries only.
@@ -517,14 +575,22 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
   // board. Before this branch existed those rooms fell through to a chat body
   // under an unregistered purpose and painted `Interface error` — a dispatched
   // round's room was unrenderable, the scoreboard region unreachable.
+  // A RUN room is a conversation with its round on top (live 2026-09-04: the
+  // round widget REPLACED the transcript, so an operator's line into a run room
+  // — and the "heard by N" receipt on it — had nowhere to render). It takes the
+  // academy landing's shape: its own round center-stage, the chat as the
+  // secondary layer. Only a bench-family room that is NOT a round's run room
+  // (a bench index) renders the board alone.
+  const isRunRoom = live?.bench?.rounds.some((r) => r.run_room !== '' && r.run_room === vm.roomName) ?? false;
   const benchBody =
     !personaBody &&
     !liveBody &&
     !arenaBody &&
     !servingBody &&
     !gridBody &&
+    !isRunRoom &&
     contentFamilyOf(vm.purpose) === BENCH_PURPOSE
-      ? benchContentBody(live?.bench)
+      ? benchContentBody(benchViewForRoom(live?.bench, vm.roomName))
       : undefined;
   // The persona home carries HER live benchmark runs — profile = identity +
   // cognition + the work itself (Joel: "all the cognitive and profile pages").
@@ -547,10 +613,17 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     !servingBody &&
     !gridBody &&
     !benchBody &&
-    vm.roomName.toLowerCase() === 'academy'
+    (vm.roomName.toLowerCase() === 'academy' || isRunRoom)
       ? {
-          bench: benchContentBody(live?.bench),
+          title: isRunRoom
+            ? (() => {
+                const label = benchRoomLabel({ title: vm.roomName }, live?.bench);
+                return label ? `${label.title} · ${label.subtitle}` : vm.roomName;
+              })()
+            : 'Academy',
+          bench: benchContentBody(isRunRoom ? benchViewForRoom(live?.bench, vm.roomName) : live?.bench),
           chat: { messages: vm.messages, transcript: vm.transcript, isEmpty: vm.isEmpty },
+          chatOpen: isRunRoom,
           memberCount: vm.memberCount,
           activeCount: vm.activeCount,
         }
@@ -604,7 +677,7 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
   // The ACTIVE nav cell follows the citizen's current tab: the persona tab
   // when a persona home is focused, else the chat room on screen.
   const roomsBase = live?.nav
-    ? roomsListingFromNav(live.nav, persona?.id ?? vm.roomId)
+    ? roomsListingFromNav(live.nav, persona?.id ?? vm.roomId, live?.bench)
     : roomsListing(vm);
   // AMBIENT PULSE (Joel, 2026-08-31: "see live benchmarks, events, etc
   // everywhere as this dynamic system operates"): the academy's rail cell

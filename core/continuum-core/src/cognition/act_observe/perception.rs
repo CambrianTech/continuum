@@ -304,6 +304,7 @@ mod tests {
             kind: WmKind::Receipt { n: 1 },
             text: String::new(),
             acts,
+            scope: None,
         }
     }
     fn settle() -> WmEntry {
@@ -311,6 +312,7 @@ mod tests {
             kind: WmKind::Settlement,
             text: crate::cognition::working_memory::WM_SETTLEMENT_PREFIX.to_string(),
             acts: Vec::new(),
+            scope: None,
         }
     }
 
@@ -430,6 +432,7 @@ mod tests {
             kind: WmKind::Fact,
             text: "[unfulfilled] real executions leave [action #n] receipts".to_string(),
             acts: Vec::new(),
+            scope: None,
         };
         assert!(
             !any_real_receipt(&[facty]),

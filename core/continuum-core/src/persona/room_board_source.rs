@@ -423,22 +423,30 @@ impl RagSource for RoomBoardSource {
         // AVAILABLE-WORK SALIENCE (#122): unclaimed cards are work waiting for
         // someone to pick up. Computed here, before anything is rendered, because the
         // HEADLINE below needs both counts — see its comment for why that matters.
-        let open: Vec<&airc_work::WorkCard> = board
-            .cards
-            .iter()
-            // Unclaimed-and-Open, OR a non-terminal card whose claim LAPSED — an
-            // expired lease is genuinely available work (claim-contention allows
-            // takeover), and before 2026-08-03 lapsed cards appeared in NEITHER
-            // "available" nor honestly-held: invisible as work, sticky as an
-            // attractor.
-            //
-            // The predicate itself lives in `card_holder` and is shared with
-            // `work/list` — this filter used to re-derive it here and excluded only
-            // Merged|Closed, so `Review` cards (which `work/claim` refuses) were
-            // advertised as available: 11 of the 58 offered on the live board
-            // 2026-08-07. One claimability decision, one place.
-            .filter(|c| crate::persona::card_holder::claimable_now(c, now_ms))
-            .collect();
+        // WHILE HER HANDS ARE ROOTED AT A CARD (a work turn), the board she perceives is
+        // her own cards only: the open deck is for pulling, and a holder does not pull
+        // (WIP = 1). Measured 2026-09-05: the 12-card kanban was 3.7k tokens of every act.
+        let working = crate::cognition::persona_workspace::acting_root_of(self.persona_id).is_some();
+        let open: Vec<&airc_work::WorkCard> = if working {
+            Vec::new()
+        } else {
+            board
+                .cards
+                .iter()
+                // Unclaimed-and-Open, OR a non-terminal card whose claim LAPSED — an
+                // expired lease is genuinely available work (claim-contention allows
+                // takeover), and before 2026-08-03 lapsed cards appeared in NEITHER
+                // "available" nor honestly-held: invisible as work, sticky as an
+                // attractor.
+                //
+                // The predicate itself lives in `card_holder` and is shared with
+                // `work/list` — this filter used to re-derive it here and excluded only
+                // Merged|Closed, so `Review` cards (which `work/claim` refuses) were
+                // advertised as available: 11 of the 58 offered on the live board
+                // 2026-08-07. One claimability decision, one place.
+                .filter(|c| crate::persona::card_holder::claimable_now(c, now_ms))
+                .collect()
+        };
 
         // HEADLINE — the cheapest COMPLETE statement of this board's two facts, first,
         // so a prefix-take can never deliver half of them.

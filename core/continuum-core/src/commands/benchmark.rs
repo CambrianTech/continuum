@@ -1055,11 +1055,12 @@ pub(crate) fn dispatch_swe_card_body(
     };
     format!(
         "benchmark: {bench}\ninstance: {}\nrepo: {} @ {}\n\n{}\n\n\
-         This is a REAL open-source issue. When you CLAIM this card, the repo is already \
-         staged in your workspace at `swe/{}/` (checked out at the buggy commit) and your \
-         scored solve starts automatically — fix the bug IN PLACE in that checkout. Definition \
-         of done: these tests pass — {}. Your DIFF is graded against the repo's held-out test \
-         suite; do not edit the tests.",
+         This is a REAL open-source issue. When you CLAIM this card, the repo is staged in \
+         your workspace at `swe/{}/` (checked out at the buggy commit), and while you hold the \
+         card your hands (files, shell) are rooted AT that repo's root: paths are repo-relative \
+         and `ls` lists the repo itself. Nothing starts by itself — you fix the bug IN PLACE with \
+         your tools, then run the tests. Definition of done: these tests pass — {}. Your DIFF is \
+         graded against the repo's held-out test suite; do not edit the tests.",
         i.instance_id,
         i.repo,
         i.base_commit,
@@ -3858,9 +3859,12 @@ impl ActionCommand for BenchmarkSweSetup {
         // so the card speaks in HER coordinates, not the operator's absolute ones.
         let rel = format!("swe/{}", instance.instance_id);
         let card_body = format!(
-            "Real bug in a real repo ({repo} @ {commit}). The checkout is ALREADY in your \
-             workspace at `{rel}/` — work there. Do not create a new workspace and do not add \
-             new top-level files; find the existing source of the fault and edit it in place.\n\n\
+            "Real bug in a real repo ({repo} @ {commit}). The checkout is ALREADY staged in your \
+             workspace at `{rel}/`, and while you hold this card your hands (files, shell) are \
+             rooted AT that repo's root: paths are repo-relative and `ls` lists the repo itself \
+             (there is no `swe/` directory from where you stand). Do not create a new workspace \
+             and do not add new top-level files; find the existing source of the fault and edit \
+             it in place.\n\n\
              ## Issue\n{statement}\n\n\
              ## Definition of done\n\
              The repo's own tests for this issue pass. Fix the bug with the smallest edit that \
@@ -5348,6 +5352,12 @@ pub(crate) async fn enrich_rounds_from_board_and_verdicts(
                         .unwrap_or_else(|| o.as_uuid().to_string()[..8].to_string())  // unwrap_or: no live runtime for the owner = her short id, still addressable
                 })
                 .unwrap_or_default();  // unwrap_or: unreadable = empty, the report shows the tracker's view
+            // An owner is a CLAIM attribute: the board keeps the last holder's id on a
+            // card set back to open (2026-09-05: seven reopened cards read as "owned" and
+            // the academy board — and the operator — counted 12 in hands with 5 held).
+            if matches!(card.board_state.as_str(), "open" | "closed" | "merged") {
+                card.owner.clear();
+            }
             card.created_at_ms = Some(bc.created_at_ms);
             card.updated_at_ms = Some(bc.updated_at_ms);
         }

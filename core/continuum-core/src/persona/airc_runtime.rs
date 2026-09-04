@@ -641,7 +641,7 @@ impl PersonaAircRuntime {
                 // (exactly the old cadence) until clean — degraded mode is the old
                 // behavior, never a wider gap.
                 let renewal_period = std::time::Duration::from_millis(
-                    crate::modules::work::DEFAULT_CLAIM_TTL_MS / 3,
+                    crate::modules::work::DEFAULT_CLAIM_TTL_MS / 6,
                 );
                 let mut last_clean_renewal: Option<std::time::Instant> = None;
                 // Emit-on-transition for the renewal-denied probe: denial is a
@@ -742,7 +742,7 @@ impl PersonaAircRuntime {
                         let now_ms = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|d| d.as_millis() as u64)
-                            .unwrap_or_default();
+                            .unwrap_or_default();  // unwrap_or: nothing recorded / a pre-epoch clock = 0, never a guess
                         let idle = crate::persona::cognition_pulse::idle_ms(hb_persona, now_ms);
                         if !crate::persona::cognition_pulse::renewal_earned(
                             idle,
@@ -781,6 +781,65 @@ impl PersonaAircRuntime {
                             );
                         }
                     }
+                    // RECOVER MY OWN LAPSED HOLDS. The roster lists only live claims,
+                    // so a hold that lapsed (a missed renewal, a reboot) was never
+                    // renewed again: the board kept her as owner, she read as free,
+                    // and the card was re-pulled by someone else — or by her, twice.
+                    // A lapsed hold nobody else has taken is re-claimed here.
+                    {
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as u64)
+                            .unwrap_or_default();  // unwrap_or: nothing recorded / a pre-epoch clock = 0, never a guess
+                        if let Ok(board) = hb_airc
+                            .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
+                            .await
+                        {
+                            let me = hb_airc.peer_id();
+                            let snapshot = board.snapshot();
+                            // WIP = 1 survives the recovery: if she already holds a LIVE
+                            // card, a lapsed one is left for the deck (2026-09-05: a
+                            // citizen ended up on two).
+                            let holds_live = snapshot.cards.iter().any(|c| {
+                                c.owner == Some(me) && c.claim_expires_at_ms.is_some_and(|e| e > now_ms)
+                            });
+                            for card in snapshot.cards.iter().filter(|c| {
+                                !holds_live
+                                    && c.owner == Some(me)
+                                    && c.claim_expires_at_ms.is_some_and(|e| e <= now_ms)
+                                    && crate::cognition::bench_round::card_round_is_working(
+                                        c.card_id.as_uuid(),
+                                    )
+                                    && matches!(
+                                        c.state,
+                                        airc_work::model::CardState::Claimed
+                                            | airc_work::model::CardState::InProgress
+                                    )
+                            }) {
+                                match hb_airc
+                                    .claim_work_card(airc_lib::ClaimWorkCard {
+                                        card_id: card.card_id,
+                                        ttl_ms: crate::modules::work::DEFAULT_CLAIM_TTL_MS,
+                                    })
+                                    .await
+                                {
+                                    Ok(_) => crate::probe!(
+                                        class = "persona.claim.recovered",
+                                        agent_name = %hb_name,
+                                        card_id = %card.card_id.as_uuid(),
+                                        "my own lapsed hold re-claimed before anyone else took it"
+                                    ),
+                                    Err(error) => crate::probe!(
+                                        class = "persona.claim.recover_failed",
+                                        agent_name = %hb_name,
+                                        card_id = %card.card_id.as_uuid(),
+                                        error = %error,
+                                        "my lapsed hold could not be re-claimed (someone else may hold it now)"
+                                    ),
+                                }
+                            }
+                        }
+                    }
                     match hb_airc
                         .work_roster_status(airc_lib::WorkRosterQuery::default())
                         .await
@@ -792,7 +851,7 @@ impl PersonaAircRuntime {
                                 .into_iter()
                                 .find(|r| r.peer == me)
                                 .map(|r| r.active_claims)
-                                .unwrap_or_default();
+                                .unwrap_or_default();  // unwrap_or: a pre-epoch clock reads 0, as every other now_ms here
                             let mut renewed = 0usize;
                             let mut failed = 0usize;
                             for card in &mine {
@@ -911,7 +970,7 @@ impl PersonaAircRuntime {
                     .into_iter()
                     .find(|r| r.peer == me)
                     .map(|r| r.active_claims)
-                    .unwrap_or_default();
+                    .unwrap_or_default();  // unwrap_or: nothing recorded = empty, the probe says so
                 let mut repos: Vec<airc_lib::RepoId> =
                     claims.iter().map(|c| c.repo.clone()).collect();
                 repos.sort();

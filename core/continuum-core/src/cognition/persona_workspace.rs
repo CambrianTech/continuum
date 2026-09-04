@@ -693,6 +693,8 @@ pub(crate) struct ActingHands {
     persona_id: Uuid,
     persona_name: String,
     executor: Arc<dyn crate::cognition::tool_executor::ToolExecutor>,
+    /// Her working memory: the restore clears the receipt scope the rooting set.
+    working_memory: Arc<crate::cognition::working_memory::WorkingMemory>,
 }
 
 impl ActingHands {
@@ -702,6 +704,7 @@ impl ActingHands {
             persona_id: a.persona_id,
             persona_name: a.persona_name.clone(),
             executor: a.executor.clone(),
+            working_memory: a.working_memory.clone(),
         })
     }
 }
@@ -758,6 +761,73 @@ async fn drive_create_workspace(
     Ok(())
 }
 
+/// WHERE HER HANDS STAND, process-wide: the root a live work turn rooted her
+/// file engine at (a card's checkout), or nothing when she stands in her own
+/// workspace. One truth for the hands, the workspace map she perceives, and the
+/// scope her receipts carry — set at the rooting seam, cleared on restore.
+static ACTING_ROOTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<uuid::Uuid, std::path::PathBuf>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+pub fn acting_root_of(persona_id: uuid::Uuid) -> Option<std::path::PathBuf> {
+    ACTING_ROOTS.lock().unwrap_or_else(|e| e.into_inner()).get(&persona_id).cloned()  // poisoned lock = read the last state, same policy as every lock in this crate
+}
+
+fn note_acting_root(persona_id: uuid::Uuid, root: Option<std::path::PathBuf>) {
+    {
+        let mut map = ACTING_ROOTS.lock().unwrap_or_else(|e| e.into_inner());  // poisoned lock = read the last state, same policy as every lock in this crate
+        match root {
+            Some(r) => {
+                map.insert(persona_id, r);
+            }
+            None => {
+                map.remove(&persona_id);
+            }
+        }
+    }
+    // The map she perceives re-renders from the new root on her next grounding.
+    let marked = crate::persona::grounding_invalidation::mark_workspace_map_dirty(persona_id);
+    crate::probe!(
+        class = "workspace.acting_root",
+        persona_id = %persona_id,
+        root = %acting_root_of(persona_id).map(|p| p.display().to_string()).unwrap_or_default(),  // unwrap_or: nothing recorded / a pre-epoch clock = 0, never a guess
+        map_marked_dirty = marked,
+        "where her hands stand now; the map is marked to re-render"
+    );
+}
+
+/// Root her hands at her held card's staged checkout for THIS turn — any turn,
+/// not only the work turn. Freya (2026-09-05) edited a file during a room turn
+/// with her hands at home: her home is a copy of the continuum repo, and the
+/// edit landed there, not in her card's checkout. While a citizen holds a card
+/// she lives at that repo. Returns the hands to restore after the turn.
+pub(crate) async fn root_at_held_card(
+    cycle: &WorkspaceCycle,
+    peer_id: uuid::Uuid,
+    conversation: &dyn crate::persona::service_loop::PersonaConversation,
+) -> Option<ActingHands> {
+    let citizen = conversation.stream_citizen()?;
+    let held = citizen.active_claims().await.ok()?;
+    if held.is_empty() {
+        return None;
+    }
+    let ws = crate::persona::staged_workspace::workspace_for_held_cards(
+        &peer_id,
+        held.iter().map(|c| c.title.as_str()),
+    )?;
+    // Never trust the registry over the engine: a failed restore could leave a
+    // stale root recorded while her engine stood at home (Freya, 2026-09-05: a
+    // correct repo-relative edit answered "File not found … did you mean swe/…").
+    // Rooting is idempotent; do it every turn she holds a card.
+    let hands = ActingHands::of(cycle)?;
+    match root_acting_workspace(cycle, &ws.to_string_lossy(), &[], false).await {
+        Ok(()) => Some(hands),
+        Err(e) => {
+            tracing::warn!(error = %e, "could not root her hands at the held card for this turn");
+            None
+        }
+    }
+}
+
 /// Root a forked cycle's file-engine (its `ToolExecutor`) at `root` by driving the
 /// `code/create-workspace` act through her hands — the SAME mechanism `cognition/eval`
 /// uses to point a measurement persona at a target repo, and now `agent/solve` uses to
@@ -792,6 +862,10 @@ pub(crate) async fn root_acting_workspace(
         refuse_inert_edits,
     )
     .await?;
+    note_acting_root(hands.persona_id, Some(std::path::PathBuf::from(root)));
+    if let Some(body) = cycle.acting() {
+        body.working_memory.set_scope(Some(root.to_string()));
+    }
     crate::probe!(
         class = "workspace.rooted",
         persona = %hands.persona_name,
@@ -865,7 +939,11 @@ async fn restore_acting_workspace_at(
 ) -> Result<(), crate::sdk_codegen::CommandError> {
     // Restoring her to her OWN home restores the LIVE stance too: a citizen at home writes code
     // as text whenever she means to, and only gets told when it will not execute (#317).
+    // Forget the acting root BEFORE the move: if the restore fails, the registry
+    // must not keep saying she stands at a checkout her engine has left.
+    note_acting_root(hands.persona_id, None);
     drive_create_workspace(hands, home, &[], "restore-acting-workspace", false).await?;
+    hands.working_memory.set_scope(None);
     crate::probe!(
         class = "workspace.restored",
         persona = %hands.persona_name,
@@ -2036,6 +2114,7 @@ mod tests {
                 persona_id: persona,
                 persona_name: "Anwen".to_string(),
                 executor: Arc::new(CommandToolExecutor::new(Connection::new(transport))),
+                working_memory: Arc::new(crate::cognition::working_memory::WorkingMemory::new(8)),
             }
         }
 

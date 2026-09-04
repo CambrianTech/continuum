@@ -249,9 +249,14 @@ pub(crate) async fn subscribe_every_room(
     // dropped on RECEIVE instead ([`is_heartbeat`]) — a header check per
     // event, the same receive-side shape as the stream-chunk guard, correct
     // regardless of how the daemon treats a negated filter.
+    // NO delivery filter either (2026-09-04, second cut): with `Some([Durable])`
+    // citizens received `event`-kind frames live but never a `message` — while an
+    // `airc join` client on the same daemon (no delivery filter) received every
+    // message. Subscribe exactly as the CLI does; stream chunks and heartbeats
+    // are dropped on receive (`is_stream_chunk`, `is_heartbeat`), where the
+    // guard is correct regardless of what the daemon does with a filter.
     let filter = airc_lib::EventFilter::default();
-    airc.subscribe_subscribed_delivery(filter, Some(vec![airc_ipc::IpcDelivery::Durable]))
-        .await
+    airc.subscribe_subscribed_delivery(filter, None).await
 }
 
 /// Where a reply for `room_id` should be published — the ONE place

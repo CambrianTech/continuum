@@ -4547,7 +4547,8 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "serving/load",
+                "serving/cache-probe",
+            "serving/load",
                 "serving/pin",
                 "serving/plan",
                 "serving/status",

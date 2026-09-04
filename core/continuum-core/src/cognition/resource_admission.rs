@@ -101,6 +101,11 @@ impl InflightModelCall {
 }
 
 /// Deliberative model calls outstanding against the shared serving target right now.
+/// The served lane count the admission gate is sized to (0 before the first plan).
+pub fn served_lane_count() -> usize {
+    LANES.lane_count()
+}
+
 pub fn inflight_model_calls() -> usize {
     INFLIGHT_MODEL_CALLS.inflight()
 }
