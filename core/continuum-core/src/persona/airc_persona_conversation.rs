@@ -47,7 +47,6 @@ use crate::persona::service_loop::{IncomingMessage, PersonaConversation};
 use airc_core::TranscriptEvent;
 use airc_lib::FilteredEventStream;
 use async_trait::async_trait;
-use futures::StreamExt;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -66,6 +65,10 @@ enum Polled {
 /// How long a live stream may stay silent before the durable store is asked
 /// whether the room moved on without us (see `next_message`).
 const QUIET_WATCHDOG: std::time::Duration = std::time::Duration::from_secs(90);
+/// How often the store-backed catch-up pages every subscribed room's tail.
+const CATCH_UP_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+/// Events paged per room per catch-up tick.
+const CATCH_UP_PAGE: usize = 8;
 /// Quiet windows after which the stream is re-opened even if no room appears
 /// to have moved (bounded recovery: ~4.5 min worst case).
 const QUIET_WINDOWS_FORCE: u32 = 3;
@@ -116,6 +119,9 @@ pub struct AircPersonaConversation {
     last_lamport: u64,
     /// Consecutive quiet-watchdog windows with no event (see `next_message`).
     quiet_windows: u32,
+    /// Newest lamport ADMITTED per room — what the store-backed catch-up compares
+    /// the durable tail against (see `catch_up_from_store`).
+    room_watermark: std::collections::HashMap<Uuid, u64>,
     /// Room-turns recovered by the rejoin replay, yielded ahead of the live
     /// stream. See the epoch-reopen branch in `next_message`.
     rejoin_backlog: std::collections::VecDeque<IncomingMessage>,
@@ -135,6 +141,7 @@ impl AircPersonaConversation {
             membership_epoch,
             last_lamport: 0,
             quiet_windows: 0,
+            room_watermark: std::collections::HashMap::new(),
             rejoin_backlog: std::collections::VecDeque::new(),
         }
     }
@@ -292,7 +299,7 @@ impl PersonaConversation for AircPersonaConversation {
                     // delivers. So: when nothing has arrived for a window, ask the durable
                     // store whether the room moved on; if it did, the stream is dead —
                     // re-open it and replay the gap, exactly as a membership change does.
-                    _ = tokio::time::sleep(QUIET_WATCHDOG) => Polled::Quiet,
+                    _ = tokio::time::sleep(CATCH_UP_EVERY) => Polled::Quiet,
                 }
             };
             let reason: &'static str = match polled {
@@ -324,6 +331,22 @@ impl PersonaConversation for AircPersonaConversation {
                 Polled::Membership => "room membership changed at runtime — re-opening the subscribe \
                      stream with the enlarged channel snapshot (P0 20b44763)",
                 Polled::Quiet => {
+                    // STORE-BACKED CATCH-UP (2026-09-04, the fifth cut): the live stream
+                    // keeps delivering `event`s yet drops `message`s once the daemon marks
+                    // this subscriber lagged (~2 min after every boot; the pump did not
+                    // change it). The store is the truth: page every subscribed room's
+                    // durable tail and admit what the live stream never delivered. The
+                    // live stream is an accelerator from here on, never the only ear.
+                    let caught = self.catch_up_from_store().await;
+                    if caught > 0 {
+                        crate::probe!(
+                            class = "persona.inbound.caught_up_from_store",
+                            persona = %self.own_peer_id,
+                            admitted = caught as u64,
+                            "the durable tail held room turns the live stream never delivered — admitted"
+                        );
+                        continue; // the backlog is served first at the top of the loop
+                    }
                     self.quiet_windows += 1;
                     // The high-water mark across EVERY room she subscribes to — her home
                     // alone missed the run room where the operator's line landed (first
@@ -687,6 +710,50 @@ mod tests {
 }
 
 impl AircPersonaConversation {
+    /// Page every subscribed room's durable tail and admit the turns the live
+    /// stream never delivered (lamport above that room's watermark). Returns
+    /// how many were admitted into the backlog. Heartbeats, chunks and her own
+    /// lines are skipped at the same door as live events.
+    async fn catch_up_from_store(&mut self) -> usize {
+        let rooms = self.runtime.subscribed_rooms().await.unwrap_or_default(); // unwrap_or: an unreadable room list = nothing to catch up this tick
+        let mut admitted = 0usize;
+        for room in rooms {
+            let Ok(mut events) = self
+                .runtime
+                .page_recent_in(Some(airc_core::RoomId::from_uuid(room)), CATCH_UP_PAGE)
+                .await
+            else {
+                continue;
+            };
+            events.sort_by_key(|e| e.lamport);
+            let newest = events.iter().map(|e| e.lamport).max();
+            let mark = self.room_watermark.get(&room).copied();
+            if let Some(mark) = mark {
+                for event in &events {
+                    if event.lamport <= mark
+                        || crate::persona::airc_citizen::is_heartbeat(event)
+                        || crate::airc::realtime_wire::is_stream_chunk(event)
+                    {
+                        continue;
+                    }
+                    if let Ok(message) = perceptual_from_event(event) {
+                        if message.peer_id != self.own_peer_id {
+                            self.rejoin_backlog.push_back(message);
+                            admitted += 1;
+                        }
+                    }
+                    self.last_lamport = self.last_lamport.max(event.lamport);
+                }
+            }
+            // Adopt (first sight: the tail is read, never replayed) or advance.
+            if let Some(newest) = newest {
+                let entry = self.room_watermark.entry(room).or_insert(newest);
+                *entry = (*entry).max(newest);
+            }
+        }
+        admitted
+    }
+
     /// The newest lamport across every room she subscribes to (two events per
     /// room — a tip read, not a page). Falls back to the home room when the
     /// runtime lists none. A failed read counts as "not moved".
@@ -747,6 +814,11 @@ impl AircPersonaConversation {
         // gap. If it fires but perceptual/self drops it, the gap is
         // continuum-side (decode/self-filter). One line per event,
         // greppable by probe_class, cheap enough for a live stream.
+        {
+            let room = event.room_id.as_uuid();
+            let entry = self.room_watermark.entry(room).or_insert(event.lamport);
+            *entry = (*entry).max(event.lamport);
+        }
         let body_kind = match event.body.as_ref() {
             None => "none",
             Some(b) if b.as_text().is_some() => "text",
