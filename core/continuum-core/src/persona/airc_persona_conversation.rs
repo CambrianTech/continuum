@@ -333,6 +333,12 @@ impl PersonaConversation for AircPersonaConversation {
                     return Err(format!("live stream lag: {lag}"));
                 }
                 Some(Ok(event)) => {
+                    // Presence heartbeats are dropped HERE, not at subscribe time — the
+                    // daemon inverted the subscribe-time filter (see `subscribe_every_room`),
+                    // and a receive-side check is correct either way. Before any decode/probe.
+                    if crate::persona::airc_citizen::is_heartbeat(&event) {
+                        continue;
+                    }
                     // A stream chunk is NEVER a room turn — skip it at the door, before the
                     // decode and before the raw-event line. Every persona's subscribe stream
                     // receives every OTHER persona's token fragments: measured live during a
@@ -637,6 +643,22 @@ mod tests {
             // room-scoped RAG source abstained (no board, no kanban, no
             // roster) and the reply had no room to land in.
             assert_eq!(msg.room_id, RoomId::from_u128(2).as_uuid());
+        }
+
+        // what this catches: a presence heartbeat (`airc.heartbeat.kind` header) is
+        // dropped at the door by the RECEIVE-side guard, and a plain say is not. The
+        // subscribe-time `Not(Has(heartbeat))` filter arrived at the daemon inverted
+        // (CambrianTech/airc#1368, 2026-09-04): citizens received ONLY heartbeats and
+        // never a message, so every room was heard through the store page alone.
+        #[test]
+        fn heartbeat_is_dropped_at_the_door_and_a_say_is_not() {
+            let peer = PeerId::from_u128(42);
+            let mut headers = Headers::new();
+            headers.insert(airc_lib::HEADER_HEARTBEAT_KIND.to_string(), "alive".to_string());
+            let beat = event(peer, Some(Body::text("{\"kind\":\"alive\"}")), headers);
+            assert!(crate::persona::airc_citizen::is_heartbeat(&beat));
+            let say = event(peer, Some(Body::text("hello from a peer")), Headers::new());
+            assert!(!crate::persona::airc_citizen::is_heartbeat(&say));
         }
 
         // what this catches: a live streaming token chunk (airc.stream.* headers,
