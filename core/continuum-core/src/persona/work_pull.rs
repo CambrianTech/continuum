@@ -161,7 +161,7 @@ pub(crate) async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn P
         Ok(true) => {
             LAST_PULL_MS
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(|e| e.into_inner())  // poisoned lock = read the last state, same policy as every lock in this crate
                 .insert(ctx.identity.peer_id.as_uuid(), crate::modules::chat::now_ms());
             crate::probe!(
                 class = "bench.round.pulled",

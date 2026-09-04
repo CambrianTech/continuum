@@ -139,7 +139,7 @@ pub(crate) fn work_board_anchor(deliveries: &[crate::persona::rag_budget::RagDel
         i.metadata
             .get("claim_live")
             .and_then(|v| v.as_bool())
-            .unwrap_or(true)
+            .unwrap_or(true)  // unwrap_or: no card named = keep every thought
     }
     // AVAILABLE work is not just `Open` — it is anything nobody currently holds. A card
     // stuck in `Claimed` with a LAPSED lease is free to take, and treating it as taken is

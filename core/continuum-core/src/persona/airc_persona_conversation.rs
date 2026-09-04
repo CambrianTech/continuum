@@ -213,7 +213,7 @@ async fn catch_up_from_store(
         };
         let floor_ms = *seen
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|e| e.into_inner())  // poisoned lock = read the last state, same policy as every lock in this crate
             .floor_ms
             .entry(room)
             .or_insert(newest_ms);
@@ -234,14 +234,14 @@ async fn catch_up_from_store(
                     e.body
                         .as_ref()
                         .and_then(|b| b.as_text().map(|t| t.chars().take(60).collect::<String>()))
-                        .unwrap_or_else(|| "<non-text>".to_string()),
-                    seen.lock().unwrap_or_else(|e| e.into_inner()).was_seen(room, e.event_id.as_uuid()),
+                        .unwrap_or_else(|| "<non-text>".to_string()),  // unwrap_or: a non-text body renders as a marker, never dropped
+                    seen.lock().unwrap_or_else(|e| e.into_inner()).was_seen(room, e.event_id.as_uuid()),  // poisoned lock = read the last state, same policy as every lock in this crate
                 )
             });
         }
         for event in events {
             if event.occurred_at_ms <= floor_ms
-                || seen.lock().unwrap_or_else(|e| e.into_inner()).was_seen(room, event.event_id.as_uuid())
+                || seen.lock().unwrap_or_else(|e| e.into_inner()).was_seen(room, event.event_id.as_uuid())  // poisoned lock = read the last state, same policy as every lock in this crate
                 || crate::persona::airc_citizen::is_heartbeat(&event)
                 || crate::airc::realtime_wire::is_stream_chunk(&event)
             {
@@ -254,7 +254,7 @@ async fn catch_up_from_store(
                 .ok()
                 .map(|(peer, text)| SeenRooms::fingerprint(peer, &text));
             {
-                let mut s = seen.lock().unwrap_or_else(|e| e.into_inner());
+                let mut s = seen.lock().unwrap_or_else(|e| e.into_inner());  // poisoned lock = read the last state, same policy as every lock in this crate
                 if let Some(fp) = fingerprint {
                     if s.was_seen_text(room, fp) {
                         continue;
@@ -305,9 +305,6 @@ async fn catch_up_from_store(
     }
     (paged, forwarded)
 }
-/// Quiet windows after which the stream is re-opened even if no room appears
-/// to have moved (bounded recovery: ~4.5 min worst case).
-const QUIET_WINDOWS_FORCE: u32 = 3;
 
 pub struct AircPersonaConversation {
     runtime: Arc<dyn AircCitizen>,
@@ -358,8 +355,6 @@ pub struct AircPersonaConversation {
     /// The rejoin replay's dedupe watermark: only events strictly newer are ever
     /// replayed, so a reopen can never re-feed history as fresh perception.
     last_lamport: u64,
-    /// Consecutive quiet-watchdog windows with no event (see `next_message`).
-    quiet_windows: u32,
     /// Per room: the lamport FLOOR adopted at first sight (nothing older is ever
     /// replayed) and the ring of lamports actually SEEN since. A newest-seen mark
     /// cannot stand in for this: live `event` frames keep arriving after the
@@ -390,7 +385,6 @@ impl AircPersonaConversation {
             seen: std::sync::Arc::new(std::sync::Mutex::new(SeenRooms::default())),
             membership_epoch,
             last_lamport: 0,
-            quiet_windows: 0,
             next_catch_up: tokio::time::Instant::now() + CATCH_UP_EVERY,
             rejoin_backlog: std::collections::VecDeque::new(),
         }
@@ -431,7 +425,7 @@ impl AircPersonaConversation {
                     item = stream.next() => match item {
                         Some(item) => {
                             if let Ok(ev) = &item {
-                                let mut s = seen.lock().unwrap_or_else(|e| e.into_inner());
+                                let mut s = seen.lock().unwrap_or_else(|e| e.into_inner());  // poisoned lock = read the last state, same policy as every lock in this crate
                                 s.note(ev.room_id.as_uuid(), ev.event_id.as_uuid());
                                 if let Ok((peer, text)) =
                                     crate::airc::realtime_wire::room_turn_from_event(ev)
@@ -518,7 +512,7 @@ impl PersonaConversation for AircPersonaConversation {
         // Seed the rejoin-replay watermark at the CURRENT transcript head, so the
         // first runtime room-join can never replay pre-subscribe history as fresh
         // perception (the #131 "room starts at join" rule, preserved under replay).
-        self.last_lamport = self.high_water_mark(64).await.unwrap_or(0);
+        self.last_lamport = self.high_water_mark(64).await.unwrap_or(0);  // unwrap_or: an unreadable watermark = 0 (never read), the documented floor
         Ok(())
     }
 
@@ -528,7 +522,7 @@ impl PersonaConversation for AircPersonaConversation {
             .page_recent(limit)
             .await
             .map_err(|e| format!("page_recent failed: {e}"))?;
-        Ok(events.iter().map(|e| e.lamport).max().unwrap_or(0))
+        Ok(events.iter().map(|e| e.lamport).max().unwrap_or(0))  // unwrap_or: an empty page has no lamport; 0 = never read
     }
 
     async fn next_message(&mut self) -> Result<Option<IncomingMessage>, String> {
@@ -619,7 +613,6 @@ impl PersonaConversation for AircPersonaConversation {
                             return Err(format!("live stream lag: {lag}"));
                         }
                         Some(Ok(event)) => {
-                            self.quiet_windows = 0;
                             if let Some(msg) = self.admit_event(event).await {
                                 return Ok(Some(msg));
                             }

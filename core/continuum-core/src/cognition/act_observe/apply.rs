@@ -815,9 +815,12 @@ pub async fn apply_act(
     // `wrote` is the question we actually keep asking, precomputed so it is a filter and
     // not a substring guess at query time: did anything in this batch reach DISK?
     let verbs: Vec<&str> = calls.iter().map(|c| c.name.as_str()).collect();
-    let wrote = verbs.iter().any(|n| {
-        let n = n.replace('_', "/");
-        n.contains("write") || n.contains("edit") || n.contains("apply") || n.contains("commit")
+    // Honest: a mutating verb that ERRORED reached no disk. Freya (2026-09-05)
+    // had a correct `code/edit` answer "File not found" and still read as a write.
+    let wrote = acts.iter().any(|a| {
+        let n = a.call.name.replace('_', "/");
+        matches!(a.status, crate::cognition::act_observe::ActStatus::Executed)
+            && (n.contains("write") || n.contains("edit") || n.contains("apply") || n.contains("commit"))
     });
     crate::probe!(
         class = "persona.act.observed",

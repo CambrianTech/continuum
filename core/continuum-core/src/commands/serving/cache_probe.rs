@@ -73,11 +73,11 @@ crate::action_command! {
                 "serving/cache-probe: no model is being served (serving.ready=false)".into(),
             ));
         }
-        let slot = p.slot.unwrap_or(0);
-        let words = p.words.unwrap_or(600).clamp(50, 5_000) as usize;
+        let slot = p.slot.unwrap_or(0);  // unwrap_or: slot 0 is the documented default
+        let words = p.words.unwrap_or(600).clamp(50, 5_000) as usize;  // unwrap_or: 600 words is the documented default, clamped
         let filler = "lorem ipsum dolor sit amet ".repeat(words / 5);
         let body = serde_json::json!({
-            "model": snap.active_model.clone().unwrap_or_else(|| "served".to_string()),
+            "model": snap.active_model.clone().unwrap_or_else(|| "served".to_string()),  // unwrap_or: no active model name = the served alias
             "id_slot": slot,
             "cache_prompt": true,
             "max_tokens": 4,
@@ -104,7 +104,7 @@ crate::action_command! {
                 .json()
                 .await
                 .map_err(|e| CommandError::Internal(format!("cache-probe response: {e}")))?;
-            let t = v.get("timings").cloned().unwrap_or(serde_json::Value::Null);
+            let t = v.get("timings").cloned().unwrap_or(serde_json::Value::Null);  // unwrap_or: a reply without timings folds as null, reported as such
             let n = |k: &str| t.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0); // unwrap_or: a server without timings reports 0 — the verdict then reads no_reuse, loudly
             timings.push((n("prompt_n") as u32, n("cache_n") as u32, n("prompt_ms")));
         }
@@ -112,7 +112,7 @@ crate::action_command! {
         let (second_n, second_cache, second_ms) = timings[1];
         let prompt_tokens = first_n.max(second_n).max(second_cache);
         let rate = if prompt_tokens == 0 { 0.0 } else { second_cache as f64 / prompt_tokens as f64 };
-        let (after_restore_cache_n, restore_verdict) = if p.roundtrip.unwrap_or(false) {
+        let (after_restore_cache_n, restore_verdict) = if p.roundtrip.unwrap_or(false) {  // unwrap_or: roundtrip is opt-in; absent = false
             let slot_url = |action: &str| {
                 format!("{}/slots/{slot}?action={action}", snap.base_url.trim_end_matches("/v1"))
             };

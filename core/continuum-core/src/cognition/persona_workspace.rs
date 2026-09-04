@@ -769,12 +769,12 @@ static ACTING_ROOTS: std::sync::LazyLock<std::sync::Mutex<std::collections::Hash
     std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 pub fn acting_root_of(persona_id: uuid::Uuid) -> Option<std::path::PathBuf> {
-    ACTING_ROOTS.lock().unwrap_or_else(|e| e.into_inner()).get(&persona_id).cloned()
+    ACTING_ROOTS.lock().unwrap_or_else(|e| e.into_inner()).get(&persona_id).cloned()  // poisoned lock = read the last state, same policy as every lock in this crate
 }
 
 fn note_acting_root(persona_id: uuid::Uuid, root: Option<std::path::PathBuf>) {
     {
-        let mut map = ACTING_ROOTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = ACTING_ROOTS.lock().unwrap_or_else(|e| e.into_inner());  // poisoned lock = read the last state, same policy as every lock in this crate
         match root {
             Some(r) => {
                 map.insert(persona_id, r);
@@ -789,7 +789,7 @@ fn note_acting_root(persona_id: uuid::Uuid, root: Option<std::path::PathBuf>) {
     crate::probe!(
         class = "workspace.acting_root",
         persona_id = %persona_id,
-        root = %acting_root_of(persona_id).map(|p| p.display().to_string()).unwrap_or_default(),
+        root = %acting_root_of(persona_id).map(|p| p.display().to_string()).unwrap_or_default(),  // unwrap_or: nothing recorded / a pre-epoch clock = 0, never a guess
         map_marked_dirty = marked,
         "where her hands stand now; the map is marked to re-render"
     );
@@ -814,9 +814,10 @@ pub(crate) async fn root_at_held_card(
         &peer_id,
         held.iter().map(|c| c.title.as_str()),
     )?;
-    if acting_root_of(peer_id).as_deref() == Some(ws.as_path()) {
-        return None; // already there (a work turn rooted her)
-    }
+    // Never trust the registry over the engine: a failed restore could leave a
+    // stale root recorded while her engine stood at home (Freya, 2026-09-05: a
+    // correct repo-relative edit answered "File not found … did you mean swe/…").
+    // Rooting is idempotent; do it every turn she holds a card.
     let hands = ActingHands::of(cycle)?;
     match root_acting_workspace(cycle, &ws.to_string_lossy(), &[], false).await {
         Ok(()) => Some(hands),
@@ -938,8 +939,10 @@ async fn restore_acting_workspace_at(
 ) -> Result<(), crate::sdk_codegen::CommandError> {
     // Restoring her to her OWN home restores the LIVE stance too: a citizen at home writes code
     // as text whenever she means to, and only gets told when it will not execute (#317).
-    drive_create_workspace(hands, home, &[], "restore-acting-workspace", false).await?;
+    // Forget the acting root BEFORE the move: if the restore fails, the registry
+    // must not keep saying she stands at a checkout her engine has left.
     note_acting_root(hands.persona_id, None);
+    drive_create_workspace(hands, home, &[], "restore-acting-workspace", false).await?;
     hands.working_memory.set_scope(None);
     crate::probe!(
         class = "workspace.restored",

@@ -72,13 +72,13 @@ static WORKSPACE_MAP_DIRTY: std::sync::LazyLock<std::sync::Mutex<std::collection
     std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 pub fn register_workspace_map_dirty(persona_id: uuid::Uuid, dirty: WeakDirtyHandle) {
-    WORKSPACE_MAP_DIRTY.lock().unwrap_or_else(|e| e.into_inner()).insert(persona_id, dirty);
+    WORKSPACE_MAP_DIRTY.lock().unwrap_or_else(|e| e.into_inner()).insert(persona_id, dirty);  // poisoned lock = read the last state, same policy as every lock in this crate
 }
 
 pub fn mark_workspace_map_dirty(persona_id: uuid::Uuid) -> bool {
     WORKSPACE_MAP_DIRTY
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(|e| e.into_inner())  // poisoned lock = read the last state, same policy as every lock in this crate
         .get(&persona_id)
         .is_some_and(|d| d.mark())
 }

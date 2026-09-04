@@ -742,7 +742,7 @@ impl PersonaAircRuntime {
                         let now_ms = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|d| d.as_millis() as u64)
-                            .unwrap_or_default();
+                            .unwrap_or_default();  // unwrap_or: nothing recorded / a pre-epoch clock = 0, never a guess
                         let idle = crate::persona::cognition_pulse::idle_ms(hb_persona, now_ms);
                         if !crate::persona::cognition_pulse::renewal_earned(
                             idle,
@@ -790,7 +790,7 @@ impl PersonaAircRuntime {
                         let now_ms = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|d| d.as_millis() as u64)
-                            .unwrap_or_default();
+                            .unwrap_or_default();  // unwrap_or: nothing recorded / a pre-epoch clock = 0, never a guess
                         if let Ok(board) = hb_airc
                             .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
                             .await
@@ -851,7 +851,7 @@ impl PersonaAircRuntime {
                                 .into_iter()
                                 .find(|r| r.peer == me)
                                 .map(|r| r.active_claims)
-                                .unwrap_or_default();
+                                .unwrap_or_default();  // unwrap_or: a pre-epoch clock reads 0, as every other now_ms here
                             let mut renewed = 0usize;
                             let mut failed = 0usize;
                             for card in &mine {
@@ -970,7 +970,7 @@ impl PersonaAircRuntime {
                     .into_iter()
                     .find(|r| r.peer == me)
                     .map(|r| r.active_claims)
-                    .unwrap_or_default();
+                    .unwrap_or_default();  // unwrap_or: nothing recorded = empty, the probe says so
                 let mut repos: Vec<airc_lib::RepoId> =
                     claims.iter().map(|c| c.repo.clone()).collect();
                 repos.sort();

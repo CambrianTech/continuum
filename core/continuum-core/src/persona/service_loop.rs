@@ -782,7 +782,7 @@ async fn serve_persona_loop_inner(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64)
-                .unwrap_or_default(),
+                .unwrap_or_default(),  // unwrap_or: a pre-epoch clock reads 0, as every other now_ms here
         );
         crate::probe!(
             class = "persona.turn.start",
@@ -2622,7 +2622,7 @@ async fn run_self_cycle(
                 .get("peer_id")
                 .and_then(|v| v.as_str())
                 .map(|p| p != own_peer)
-                .unwrap_or(true)
+                .unwrap_or(true)  // unwrap_or: an unreadable board counts as claimable so the pull tries, never silently skips
         })
         .any(|item| identity.mentions(&item.content));
     crate::probe!(

@@ -29,7 +29,7 @@ static PENDING: LazyLock<Mutex<HashMap<Uuid, Arc<Pending>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn cell(persona: Uuid) -> Arc<Pending> {
-    let mut map = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+    let mut map = PENDING.lock().unwrap_or_else(|e| e.into_inner());  // poisoned lock = read the last state, same policy as every lock in this crate
     Arc::clone(map.entry(persona).or_insert_with(|| {
         Arc::new(Pending { flag: AtomicBool::new(false), notify: Notify::new() })
     }))

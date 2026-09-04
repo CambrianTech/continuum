@@ -167,7 +167,7 @@ pub(crate) async fn ask_the_act_question(
                                     let id8: String = c.card_id.as_uuid().to_string().chars().take(8).collect();
                                     let inst = crate::commands::benchmark::parse_card_title(&c.title)
                                         .map(|(_, i)| i)
-                                        .unwrap_or_default();
+                                        .unwrap_or_default();  // unwrap_or: a non-bench title has no instance to scope on
                                     [id8, inst]
                                 })
                                 .collect();

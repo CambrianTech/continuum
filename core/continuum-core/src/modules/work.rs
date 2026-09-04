@@ -113,7 +113,7 @@ fn first_transition_sighting(card_id: &str, state: &str) -> bool {
     static SEEN: OnceLock<Mutex<VecDeque<String>>> = OnceLock::new();
     let key = format!("{card_id}\u{1}{state}");
     let seen = SEEN.get_or_init(|| Mutex::new(VecDeque::with_capacity(SEEN_CAP)));
-    let mut seen = seen.lock().unwrap_or_else(|p| p.into_inner());
+    let mut seen = seen.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every lock in this crate
     if seen.contains(&key) {
         return false;
     }
@@ -156,7 +156,7 @@ fn first_sighting(event_id: Uuid) -> bool {
     const SEEN_CAP: usize = 256;
     static SEEN: OnceLock<Mutex<VecDeque<Uuid>>> = OnceLock::new();
     let seen = SEEN.get_or_init(|| Mutex::new(VecDeque::with_capacity(SEEN_CAP)));
-    let mut seen = seen.lock().unwrap_or_else(|p| p.into_inner());
+    let mut seen = seen.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every lock in this crate
     if seen.contains(&event_id) {
         return false;
     }
