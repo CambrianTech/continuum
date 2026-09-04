@@ -5351,6 +5351,12 @@ pub(crate) async fn enrich_rounds_from_board_and_verdicts(
                         .unwrap_or_else(|| o.as_uuid().to_string()[..8].to_string())  // unwrap_or: no live runtime for the owner = her short id, still addressable
                 })
                 .unwrap_or_default();  // unwrap_or: unreadable = empty, the report shows the tracker's view
+            // An owner is a CLAIM attribute: the board keeps the last holder's id on a
+            // card set back to open (2026-09-05: seven reopened cards read as "owned" and
+            // the academy board — and the operator — counted 12 in hands with 5 held).
+            if matches!(card.board_state.as_str(), "open" | "closed" | "merged") {
+                card.owner.clear();
+            }
             card.created_at_ms = Some(bc.created_at_ms);
             card.updated_at_ms = Some(bc.updated_at_ms);
         }
