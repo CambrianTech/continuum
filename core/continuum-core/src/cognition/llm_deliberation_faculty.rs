@@ -185,6 +185,12 @@ pub struct LlmDeliberationFaculty {
     /// schemas instead of the whole ~150-tool registry. Computed in
     /// [`Self::rebuild_tool_surface`].
     native_specs: Vec<NativeToolSpec>,
+    /// Her HANDS for a work turn: the subset of `native_specs` whose COMMAND
+    /// name (before the wire dialect renames it) is a file/work/git/cargo/tool
+    /// verb, plus the discovery pair. Chosen at rebuild on the raw names —
+    /// filtering the wire names by `code/` prefixes matched nothing and every
+    /// work turn went out with ZERO tools (2026-09-04, 13 turns, all passed).
+    hands_specs: Vec<NativeToolSpec>,
     /// Token cost of serializing `native_specs` into the request — memoized at
     /// [`Self::rebuild_tool_surface`] time because the specs are static between
     /// rebuilds while [`Self::describe_tool_tokens`] is consulted on EVERY
@@ -252,6 +258,7 @@ impl LlmDeliberationFaculty {
             temperature: DEFAULT_TEMPERATURE,
             tools: Vec::new(),
             native_specs: Vec::new(),
+            hands_specs: Vec::new(),
             tool_surface_tokens: 0,
             working_memory: None,
             prompt_capture: None,
@@ -359,6 +366,7 @@ impl LlmDeliberationFaculty {
     fn rebuild_tool_surface(&mut self) {
         if self.tools.is_empty() {
             self.native_specs.clear();
+            self.hands_specs.clear();
             self.tool_surface_tokens = 0;
             return;
         }
@@ -392,7 +400,12 @@ impl LlmDeliberationFaculty {
         // brittleness and tanks benchmark hygiene. So it is gone; the budget owns the fit.
         // [[filter-once-centrally-multiple-adhoc-filters-are-clamps-that-tank-benchmarks]]
         // [[budget-at-assembly-never-clamp-the-prompt]]
-        self.native_specs = persona_tools::native_tool_specs()
+        let raw = persona_tools::native_tool_specs();
+        self.hands_specs = hands_surface(&raw)
+            .into_iter()
+            .map(|s| crate::cognition::tool_dialect::to_wire_spec_with(s, style))
+            .collect();
+        self.native_specs = raw
             .into_iter()
             .map(|s| crate::cognition::tool_dialect::to_wire_spec_with(s, style))
             .collect();
@@ -2330,25 +2343,13 @@ impl Faculty for LlmDeliberationFaculty {
         // the ~150-schema dump that overflowed `n_ctx` and muted her.
         let tools = if self.native_specs.is_empty() {
             None
-        } else if ws.workspace_deliverable {
+        } else if ws.workspace_deliverable && !self.hands_specs.is_empty() {
             // A WORK turn offers her HANDS, not the whole registry: 37 schemas were
             // 8.5k of a ~22k-token prefill per act (2026-09-05, KV reuse 0.0). The
-            // discovery pair stays so anything else remains one call away.
-            Some(
-                self.native_specs
-                    .iter()
-                    .filter(|s| {
-                        let n = s.name.as_str();
-                        n.starts_with("code/")
-                            || n.starts_with("work/")
-                            || n.starts_with("git/")
-                            || n.starts_with("cargo/")
-                            || n.starts_with("tool/")
-                            || n.starts_with("commands/")
-                    })
-                    .cloned()
-                    .collect(),
-            )
+            // discovery pair stays so anything else remains one call away. Chosen on
+            // the raw command names at rebuild (`hands_surface`); never an empty
+            // surface — that mutes her hands entirely.
+            Some(self.hands_specs.clone())
         } else {
             Some(self.native_specs.clone())
         };
@@ -2974,9 +2975,44 @@ fn metrics_from(persona: &str, resp: &TextGenerationResponse) -> crate::cognitio
     m
 }
 
+/// Her HANDS: the file / work / git / cargo / tool verbs plus the discovery pair,
+/// selected on the COMMAND names (`code/read`, `work/state`, …) before the wire
+/// dialect renames them (`edit_file`, `list_recipes`, …).
+fn hands_surface(raw: &[NativeToolSpec]) -> Vec<NativeToolSpec> {
+    raw.iter()
+        .filter(|s| {
+            let n = s.name.as_str();
+            n.starts_with("code/")
+                || n.starts_with("work/")
+                || n.starts_with("git/")
+                || n.starts_with("cargo/")
+                || n.starts_with("tool/")
+                || n.starts_with("commands/")
+        })
+        .cloned()
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the hands surface chosen on WIRE names — `code/` prefixes
+    // matched nothing after the dialect renamed them and every work turn went out
+    // with zero tools (2026-09-04). The filter runs on the raw command names.
+    #[test]
+    fn hands_surface_is_chosen_on_command_names_and_keeps_the_discovery_pair() {
+        let raw: Vec<NativeToolSpec> = ["code/read", "work/state", "chat/send", "commands/list", "room/join", "code/git/status"]
+            .iter()
+            .map(|n| NativeToolSpec {
+                name: (*n).to_string(),
+                description: String::new(),
+                input_schema: crate::ai::types::ToolInputSchema { schema_type: "object".to_string(), properties: serde_json::json!({}), required: None, definitions: None },
+            })
+            .collect();
+        let hands: Vec<String> = hands_surface(&raw).into_iter().map(|s| s.name).collect();
+        assert_eq!(hands, ["code/read", "work/state", "commands/list", "code/git/status"]);
+    }
     use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
     use crate::ai::types::{ToolCall, ToolInputSchema, UsageMetrics};
     use crate::cognition::workspace::BurstTurn;
