@@ -72,8 +72,11 @@ enum Command {
         #[arg(long)]
         prompt: String,
 
-        /// Model name to dispatch to. Optional; the substrate's adapter
-        /// selector picks a default when omitted.
+        /// Model name to dispatch to. Optional — but the substrate's
+        /// selector refuses a request with NEITHER model NOR provider
+        /// ([[no-fallbacks-ever]]: no silent default), so pass this or
+        /// `--provider`. A model-only request must match an adapter's
+        /// registered model prefix on the target.
         #[arg(long)]
         model: Option<String>,
         /// Provider id to route to (e.g. `llama-server`, `docker-model-runner`,
