@@ -754,6 +754,12 @@ pub fn next_unworked_after(card_of_round: Uuid) -> Option<NextCard> {
     let round = rounds
         .values()
         .find(|r| r.cards.contains_key(&card_of_round))?;
+    // The settle-driven follow-on is the DETACHED driver's motion: a citizen
+    // round's next card is pulled by a resident, never pushed as a detached solve
+    // (it would collide with WIP = lanes and take the card from the deck).
+    if round.driver != WorkDriver::DetachedSolve {
+        return None;
+    }
     first_unworked(round, &live)
 }
 
