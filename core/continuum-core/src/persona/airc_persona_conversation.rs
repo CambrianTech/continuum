@@ -122,6 +122,12 @@ pub struct AircPersonaConversation {
     /// Newest lamport ADMITTED per room — what the store-backed catch-up compares
     /// the durable tail against (see `catch_up_from_store`).
     room_watermark: std::collections::HashMap<Uuid, u64>,
+    /// The catch-up tick's deadline. PERSISTENT across `next_message` calls:
+    /// the loop's wake `select!` drops and re-creates the `next_message` future
+    /// on every self-tick (3–10 s), so a `sleep(60 s)` inside it restarted
+    /// forever and neither the watchdog nor the catch-up ever fired (measured
+    /// 2026-09-04: zero ticks in 7 minutes). A deadline held on `self` survives.
+    next_catch_up: tokio::time::Instant,
     /// Room-turns recovered by the rejoin replay, yielded ahead of the live
     /// stream. See the epoch-reopen branch in `next_message`.
     rejoin_backlog: std::collections::VecDeque<IncomingMessage>,
@@ -142,6 +148,7 @@ impl AircPersonaConversation {
             last_lamport: 0,
             quiet_windows: 0,
             room_watermark: std::collections::HashMap::new(),
+            next_catch_up: tokio::time::Instant::now() + CATCH_UP_EVERY,
             rejoin_backlog: std::collections::VecDeque::new(),
         }
     }
@@ -299,7 +306,7 @@ impl PersonaConversation for AircPersonaConversation {
                     // delivers. So: when nothing has arrived for a window, ask the durable
                     // store whether the room moved on; if it did, the stream is dead —
                     // re-open it and replay the gap, exactly as a membership change does.
-                    _ = tokio::time::sleep(CATCH_UP_EVERY) => Polled::Quiet,
+                    _ = tokio::time::sleep_until(self.next_catch_up) => Polled::Quiet,
                 }
             };
             let reason: &'static str = match polled {
@@ -331,6 +338,7 @@ impl PersonaConversation for AircPersonaConversation {
                 Polled::Membership => "room membership changed at runtime — re-opening the subscribe \
                      stream with the enlarged channel snapshot (P0 20b44763)",
                 Polled::Quiet => {
+                    self.next_catch_up = tokio::time::Instant::now() + CATCH_UP_EVERY;
                     // STORE-BACKED CATCH-UP (2026-09-04, the fifth cut): the live stream
                     // keeps delivering `event`s yet drops `message`s once the daemon marks
                     // this subscriber lagged (~2 min after every boot; the pump did not
