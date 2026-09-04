@@ -91,7 +91,15 @@ pub struct AircPersonaConversation {
     /// when airc-lib DELIBERATELY ends the subscription (a decode /
     /// wire-schema fault it surfaces loud, card 807193ab), which we
     /// re-surface rather than mask.
-    stream: Option<FilteredEventStream>,
+    /// The in-process inbox the PUMP fills — never the daemon stream itself.
+    /// The loop polls this only between turns; the pump drains the daemon
+    /// continuously, so the daemon never sees a slow subscriber (2026-09-04:
+    /// every boot, 12 citizens heard for ~2 min, then the first turns started,
+    /// nobody polled for minutes, the daemon's queue filled, the subscriber was
+    /// marked lagged and never recovered — the live plane looked dead).
+    inbox: Option<tokio::sync::mpsc::Receiver<Result<std::sync::Arc<TranscriptEvent>, airc_lib::LiveLag>>>,
+    /// The drain task behind `inbox`; aborted and replaced on every re-open.
+    pump: Option<tokio::task::JoinHandle<()>>,
     /// Membership-change cue (P0 20b44763): when the citizen joins a room at
     /// RUNTIME (benchmark dispatch moving her into a fresh run room), this
     /// epoch moves and `next_message` re-opens the stream so the new room's
@@ -122,7 +130,8 @@ impl AircPersonaConversation {
         Self {
             runtime,
             own_peer_id,
-            stream: None,
+            inbox: None,
+            pump: None,
             membership_epoch,
             last_lamport: 0,
             quiet_windows: 0,
@@ -137,7 +146,37 @@ impl AircPersonaConversation {
     pub fn runtime(&self) -> &Arc<dyn AircCitizen> {
         &self.runtime
     }
+
+    /// Install a fresh daemon stream behind the PUMP: a task that drains it
+    /// continuously into a bounded in-process inbox. Backpressure, if any, lands
+    /// here (in-process, where a turn in progress is the only slow consumer) and
+    /// never at the daemon, whose lag policy drops live pushes for good.
+    fn install_stream(&mut self, mut stream: FilteredEventStream) {
+        if let Some(old) = self.pump.take() {
+            old.abort();
+        }
+        let (tx, rx) = tokio::sync::mpsc::channel(INBOX_CAPACITY);
+        let persona = self.own_peer_id;
+        self.pump = Some(tokio::spawn(async move {
+            use futures::StreamExt as _;
+            while let Some(item) = stream.next().await {
+                if tx.send(item).await.is_err() {
+                    return; // the conversation dropped its inbox — the pump is done
+                }
+            }
+            tracing::warn!(
+                persona = %persona,
+                probe_class = "persona.inbound.pump_ended",
+                "the daemon stream ended under the pump — the next quiet window re-opens it"
+            );
+        }));
+        self.inbox = Some(rx);
+    }
 }
+
+/// In-process inbox depth between the pump and the loop. A turn in progress
+/// can leave the loop away for minutes; 8k events is hours of a busy room.
+const INBOX_CAPACITY: usize = 8_192;
 
 #[async_trait]
 impl PersonaConversation for AircPersonaConversation {
@@ -153,7 +192,7 @@ impl PersonaConversation for AircPersonaConversation {
     /// has identical semantics — it's not a degraded path, it's a
     /// later-binding path.
     async fn prime(&mut self) -> Result<(), String> {
-        if self.stream.is_some() {
+        if self.inbox.is_some() {
             return Ok(());
         }
         let stream = self
@@ -170,7 +209,7 @@ impl PersonaConversation for AircPersonaConversation {
             probe_class = "persona.inbound.subscribe_opened",
             "persona chat subscribe stream opened (#146)"
         );
-        self.stream = Some(stream);
+        self.install_stream(stream);
         // Seed the rejoin-replay watermark at the CURRENT transcript head, so the
         // first runtime room-join can never replay pre-subscribe history as fresh
         // perception (the #131 "room starts at join" rule, preserved under replay).
@@ -203,7 +242,7 @@ impl PersonaConversation for AircPersonaConversation {
         // visibly — never silently lazy-subscribes (PR #1514 reviewer
         // fix: the soft-language lazy fallback was a silent-degradation
         // shape we refuse).
-        if self.stream.is_none() {
+        if self.inbox.is_none() {
             return Err(
                 "AircPersonaConversation::next_message called before prime() — caller must \
                  invoke prime() before iterating (serve_persona_loop does this automatically \
@@ -233,13 +272,13 @@ impl PersonaConversation for AircPersonaConversation {
             // `pending()` — closed means "membership never changes", never
             // an event, or stubs would busy-loop on `changed() == Err`.
             let polled = {
-                let stream = self
-                    .stream
+                let inbox = self
+                    .inbox
                     .as_mut()
-                    .expect("stream checked Some at next_message entry");
+                    .expect("inbox checked Some at next_message entry");
                 let epoch = &mut self.membership_epoch;
                 tokio::select! {
-                    ev = stream.next() => Polled::Event(ev),
+                    ev = inbox.recv() => Polled::Event(ev),
                     _ = async {
                         if epoch.changed().await.is_err() {
                             std::future::pending::<()>().await;
@@ -321,7 +360,7 @@ impl PersonaConversation for AircPersonaConversation {
                     .subscribe_all_rooms()
                     .await
                     .map_err(|e| format!("resubscribe after membership change failed: {e}"))?;
-                self.stream = Some(stream);
+                self.install_stream(stream);
                 // REPLAY THE GAP (2026-08-21, the FOURTH deaf-kickoff variant). The
                 // reopened stream is live-tail: anything published between the
                 // membership change and this reopen was delivered to nobody — and
