@@ -833,9 +833,14 @@ pub(crate) async fn root_at_held_card(
     if held.is_empty() {
         return None;
     }
+    // ONE card per turn here too (`work_focus`): rooting on every held title
+    // was ambiguous for a two-card holder, so her message turns kept her hands
+    // at home while her work turns rooted (`persona.work.staged_ambiguous` ×2
+    // after the focus cut, 2026-09-04).
+    let focus = crate::persona::work_focus::focus_card(held.iter())?;
     let ws = crate::persona::staged_workspace::workspace_for_held_cards(
         &peer_id,
-        held.iter().map(|c| c.title.as_str()),
+        std::iter::once(focus.title.as_str()),
     )?;
     // Never trust the registry over the engine: a failed restore could leave a
     // stale root recorded while her engine stood at home (Freya, 2026-09-05: a
@@ -844,9 +849,7 @@ pub(crate) async fn root_at_held_card(
     let hands = ActingHands::of(cycle)?;
     match root_acting_workspace(cycle, &ws.to_string_lossy(), &[], false).await {
         Ok(()) => {
-            if let Some(card) = held.first() {
-                note_acting_card(hands.persona_id, card.card_id.as_uuid());
-            }
+            note_acting_card(hands.persona_id, focus.card_id.as_uuid());
             Some(hands)
         }
         Err(e) => {
