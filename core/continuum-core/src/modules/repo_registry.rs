@@ -39,8 +39,28 @@ pub fn record(repo: &str, path: &Path) {
 }
 
 /// The local checkout for `repo`, if this node ever ran the CLI inside one.
+/// "Never recorded" and "recorded, then the checkout vanished" are different
+/// facts: the second is said in a probe (the breadcrumb a citizen otherwise
+/// never gets — IntelMac's review of #3706), never a silent `None`.
 pub fn path_for(repo: &str) -> Option<PathBuf> {
-    load().get(repo).cloned().filter(|p| p.join(".git").exists())
+    let recorded = load().get(repo).cloned()?;
+    if recorded.join(".git").is_dir() {
+        return Some(recorded);
+    }
+    crate::probe!(
+        class = "repo_registry.stale",
+        repo = %repo,
+        path = %recorded.display(),
+        "recorded checkout is gone (or is a linked worktree, not a clone) — re-run the CLI from the clone to re-record"
+    );
+    None
+}
+
+/// The clone root from `git rev-parse --path-format=absolute --git-common-dir`:
+/// `<clone>/.git` → `<clone>`, from the main clone AND from a linked worktree.
+pub fn clone_root_from_common_dir(common_dir: &str) -> Option<PathBuf> {
+    let p = Path::new(common_dir.trim());
+    (p.file_name()? == ".git").then(|| p.parent().map(Path::to_path_buf)).flatten()
 }
 
 /// `owner/name` from a git remote URL (https or ssh), the key work cards carry.
@@ -65,5 +85,15 @@ mod tests {
         assert_eq!(repo_id_from_remote("git@github.com:CambrianTech/airc.git").as_deref(), Some("CambrianTech/airc"));
         assert_eq!(repo_id_from_remote("https://github.com/CambrianTech/continuum/").as_deref(), Some("CambrianTech/continuum"));
         assert!(repo_id_from_remote("nonsense").is_none());
+    }
+
+    // what this catches: recording a card WORKTREE as the clone (deleted on merge,
+    // so every later citizen claim stages nothing) — the clone root comes from
+    // the git common dir, which is `<clone>/.git` from inside a worktree too.
+    #[test]
+    fn the_clone_root_is_the_parent_of_the_git_common_dir() {
+        assert_eq!(clone_root_from_common_dir("/home/u/src/continuum/.git").as_deref(), Some(Path::new("/home/u/src/continuum")));
+        assert_eq!(clone_root_from_common_dir("/home/u/src/continuum/.git\n").as_deref(), Some(Path::new("/home/u/src/continuum")));
+        assert!(clone_root_from_common_dir("/home/u/.airc/worktrees/44529769").is_none(), "a worktree path is not a common dir");
     }
 }
