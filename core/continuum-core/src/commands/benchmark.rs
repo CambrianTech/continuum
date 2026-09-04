@@ -1055,11 +1055,12 @@ pub(crate) fn dispatch_swe_card_body(
     };
     format!(
         "benchmark: {bench}\ninstance: {}\nrepo: {} @ {}\n\n{}\n\n\
-         This is a REAL open-source issue. When you CLAIM this card, the repo is already \
-         staged in your workspace at `swe/{}/` (checked out at the buggy commit) and your \
-         scored solve starts automatically — fix the bug IN PLACE in that checkout. Definition \
-         of done: these tests pass — {}. Your DIFF is graded against the repo's held-out test \
-         suite; do not edit the tests.",
+         This is a REAL open-source issue. When you CLAIM this card, the repo is staged in \
+         your workspace at `swe/{}/` (checked out at the buggy commit), and while you hold the \
+         card your hands (files, shell) are rooted AT that repo's root: paths are repo-relative \
+         and `ls` lists the repo itself. Nothing starts by itself — you fix the bug IN PLACE with \
+         your tools, then run the tests. Definition of done: these tests pass — {}. Your DIFF is \
+         graded against the repo's held-out test suite; do not edit the tests.",
         i.instance_id,
         i.repo,
         i.base_commit,
