@@ -66,6 +66,9 @@ enum Polled {
 /// How long a live stream may stay silent before the durable store is asked
 /// whether the room moved on without us (see `next_message`).
 const QUIET_WATCHDOG: std::time::Duration = std::time::Duration::from_secs(90);
+/// Quiet windows after which the stream is re-opened even if no room appears
+/// to have moved (bounded recovery: ~4.5 min worst case).
+const QUIET_WINDOWS_FORCE: u32 = 3;
 
 pub struct AircPersonaConversation {
     runtime: Arc<dyn AircCitizen>,
@@ -103,6 +106,8 @@ pub struct AircPersonaConversation {
     /// The rejoin replay's dedupe watermark: only events strictly newer are ever
     /// replayed, so a reopen can never re-feed history as fresh perception.
     last_lamport: u64,
+    /// Consecutive quiet-watchdog windows with no event (see `next_message`).
+    quiet_windows: u32,
     /// Room-turns recovered by the rejoin replay, yielded ahead of the live
     /// stream. See the epoch-reopen branch in `next_message`.
     rejoin_backlog: std::collections::VecDeque<IncomingMessage>,
@@ -120,6 +125,7 @@ impl AircPersonaConversation {
             stream: None,
             membership_epoch,
             last_lamport: 0,
+            quiet_windows: 0,
             rejoin_backlog: std::collections::VecDeque::new(),
         }
     }
@@ -268,6 +274,7 @@ impl PersonaConversation for AircPersonaConversation {
                             return Err(format!("live stream lag: {lag}"));
                         }
                         Some(Ok(event)) => {
+                            self.quiet_windows = 0;
                             if let Some(msg) = self.admit_event(event).await {
                                 return Ok(Some(msg));
                             }
@@ -278,19 +285,29 @@ impl PersonaConversation for AircPersonaConversation {
                 Polled::Membership => "room membership changed at runtime — re-opening the subscribe \
                      stream with the enlarged channel snapshot (P0 20b44763)",
                 Polled::Quiet => {
-                    let hwm = self.high_water_mark(32).await.unwrap_or(self.last_lamport); // unwrap_or: a failed page reads as "nothing new" — the next tick asks again
-                    if hwm <= self.last_lamport {
-                        continue; // genuinely quiet: the room has not moved on
+                    self.quiet_windows += 1;
+                    // The high-water mark across EVERY room she subscribes to — her home
+                    // alone missed the run room where the operator's line landed (first
+                    // cut, 2026-09-04: watchdog never fired). After three silent windows
+                    // re-open regardless: a dead stream costs one subscribe + a 32-event
+                    // replay to heal, and a bounded recovery beats a perfect one.
+                    let hwm = self.rooms_high_water_mark().await;
+                    let moved = hwm > self.last_lamport;
+                    if !moved && self.quiet_windows < QUIET_WINDOWS_FORCE {
+                        continue; // genuinely quiet so far: no room has moved on
                     }
                     crate::probe!(
                         class = "persona.inbound.resubscribed_quiet",
                         persona = %self.own_peer_id,
                         last_lamport = self.last_lamport,
                         high_water = hwm,
-                        "the live stream went silent while the room moved on — re-opening it \
-                         and replaying the gap (the daemon's lag resume never delivered)"
+                        quiet_windows = self.quiet_windows,
+                        forced = !moved,
+                        "the live stream went silent — re-opening it and replaying the gap \
+                         (the daemon's lag resume never delivered)"
                     );
-                    "quiet stream behind the durable high-water mark — re-opened"
+                    self.quiet_windows = 0;
+                    "quiet stream re-opened"
                 }
             };
             {
@@ -631,6 +648,27 @@ mod tests {
 }
 
 impl AircPersonaConversation {
+    /// The newest lamport across every room she subscribes to (two events per
+    /// room — a tip read, not a page). Falls back to the home room when the
+    /// runtime lists none. A failed read counts as "not moved".
+    async fn rooms_high_water_mark(&self) -> u64 {
+        let rooms = self.runtime.subscribed_rooms().await.unwrap_or_default(); // unwrap_or: an unreadable room list falls back to the home read below
+        if rooms.is_empty() {
+            return self.high_water_mark(32).await.unwrap_or(self.last_lamport); // unwrap_or: a failed page reads as not moved
+        }
+        let mut hwm = 0u64;
+        for room in rooms {
+            if let Ok(events) = self
+                .runtime
+                .page_recent_in(Some(airc_core::RoomId::from_uuid(room)), 2)
+                .await
+            {
+                hwm = hwm.max(events.iter().map(|e| e.lamport).max().unwrap_or(0)); // unwrap_or: an empty room has no tip
+            }
+        }
+        hwm
+    }
+
     /// One live event through the door: heartbeat/chunk guards, the raw probe,
     /// the work-bridge, the decoder, the self-filter, the lamport advance.
     /// `Some(msg)` = a room turn to serve; `None` = consumed, keep polling.
