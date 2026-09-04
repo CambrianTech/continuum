@@ -149,6 +149,19 @@ export function roomsListing(vm: ChatViewModel): ListingView {
 /** A run room's rail label from the bench view — what the round IS, not its
  *  raw name: `verified · working · 9/12 in hands`, `mini · paused · 1/4 settled`.
  *  Matched by the round's run room name; a tab without a round keeps its name. */
+/** A RUN room shows its OWN round; the academy (or any bench-purpose room that
+ *  is not a round's run room) shows the whole board. Live 2026-09-04: every run
+ *  room rendered the global rounds index — a citizen's room looked like the
+ *  academy and the round she was working was one row among thirty. */
+export function benchViewForRoom(
+  bench: BenchViewState | undefined,
+  roomName: string,
+): BenchViewState | undefined {
+  if (!bench) return bench;
+  const mine = bench.rounds.filter((r) => r.run_room !== '' && r.run_room === roomName);
+  return mine.length > 0 ? { ...bench, rounds: mine } : bench;
+}
+
 export function benchRoomLabel(
   tab: { readonly title: string },
   bench: BenchViewState | undefined,
@@ -563,7 +576,7 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     !servingBody &&
     !gridBody &&
     contentFamilyOf(vm.purpose) === BENCH_PURPOSE
-      ? benchContentBody(live?.bench)
+      ? benchContentBody(benchViewForRoom(live?.bench, vm.roomName))
       : undefined;
   // The persona home carries HER live benchmark runs — profile = identity +
   // cognition + the work itself (Joel: "all the cognitive and profile pages").

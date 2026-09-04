@@ -56,6 +56,17 @@ use uuid::Uuid;
 /// across calls so successive `next_message` invocations are a
 /// continuation (not a fresh resubscription that would drop in-flight
 /// events).
+/// What a poll of the inbound stream produced.
+enum Polled {
+    Event(Option<Result<std::sync::Arc<TranscriptEvent>, airc_lib::LiveLag>>),
+    Membership,
+    Quiet,
+}
+
+/// How long a live stream may stay silent before the durable store is asked
+/// whether the room moved on without us (see `next_message`).
+const QUIET_WATCHDOG: std::time::Duration = std::time::Duration::from_secs(90);
+
 pub struct AircPersonaConversation {
     runtime: Arc<dyn AircCitizen>,
     /// The persona's own peer_id, captured at construction. Used by
@@ -222,20 +233,71 @@ impl PersonaConversation for AircPersonaConversation {
                     .expect("stream checked Some at next_message entry");
                 let epoch = &mut self.membership_epoch;
                 tokio::select! {
-                    ev = stream.next() => Some(ev),
+                    ev = stream.next() => Polled::Event(ev),
                     _ = async {
                         if epoch.changed().await.is_err() {
                             std::future::pending::<()>().await;
                         }
-                    } => None,
+                    } => Polled::Membership,
+                    // QUIET WATCHDOG (2026-09-04): live streams went silent ~2 min after
+                    // prime — 12 citizens received 172 events in the first two minutes,
+                    // 2 citizens 5 events in the next two, and an operator line at +12 min
+                    // reached nobody — with no lag error ever surfacing here. The daemon
+                    // marks a slow subscriber lagged and its "resume from the sink" never
+                    // delivers. So: when nothing has arrived for a window, ask the durable
+                    // store whether the room moved on; if it did, the stream is dead —
+                    // re-open it and replay the gap, exactly as a membership change does.
+                    _ = tokio::time::sleep(QUIET_WATCHDOG) => Polled::Quiet,
                 }
             };
-            let Some(polled) = polled else {
+            let reason: &'static str = match polled {
+                Polled::Event(ev) => {
+                    match ev {
+                        None => {
+                            tracing::error!(
+                                persona = %self.own_peer_id,
+                                "airc subscribe stream ended unrecoverably — airc-lib dropped \
+                                 the subscription (likely wire-schema drift between continuum \
+                                 and airc builds, or the EventStream was released). NOT \
+                                 auto-resubscribing: airc-lib owns transient reconnection, so \
+                                 a terminal end here is a real fault to fix, not a hiccup to heal."
+                            );
+                            return Ok(None);
+                        }
+                        Some(Err(lag)) => {
+                            return Err(format!("live stream lag: {lag}"));
+                        }
+                        Some(Ok(event)) => {
+                            if let Some(msg) = self.admit_event(event).await {
+                                return Ok(Some(msg));
+                            }
+                            continue;
+                        }
+                    }
+                }
+                Polled::Membership => "room membership changed at runtime — re-opening the subscribe \
+                     stream with the enlarged channel snapshot (P0 20b44763)",
+                Polled::Quiet => {
+                    let hwm = self.high_water_mark(32).await.unwrap_or(self.last_lamport); // unwrap_or: a failed page reads as "nothing new" — the next tick asks again
+                    if hwm <= self.last_lamport {
+                        continue; // genuinely quiet: the room has not moved on
+                    }
+                    crate::probe!(
+                        class = "persona.inbound.resubscribed_quiet",
+                        persona = %self.own_peer_id,
+                        last_lamport = self.last_lamport,
+                        high_water = hwm,
+                        "the live stream went silent while the room moved on — re-opening it \
+                         and replaying the gap (the daemon's lag resume never delivered)"
+                    );
+                    "quiet stream behind the durable high-water mark — re-opened"
+                }
+            };
+            {
                 tracing::info!(
                     persona = %self.own_peer_id,
                     probe_class = "persona.inbound.resubscribed",
-                    "room membership changed at runtime — re-opening the subscribe \
-                     stream with the enlarged channel snapshot (P0 20b44763)"
+                    reason,
                 );
                 let stream = self
                     .runtime
@@ -296,200 +358,6 @@ impl PersonaConversation for AircPersonaConversation {
                 }
                 continue;
             };
-            match polled {
-                None => {
-                    // Transient transport loss (daemon restart, socket
-                    // drop) is NOT seen here — airc-lib's `subscribe()`
-                    // drain task heals those internally with a resume
-                    // cursor + capped backoff (airc-lib/src/daemon.rs),
-                    // so the persona stays live across daemon bounces
-                    // (verified by a live kill+restart of the daemon).
-                    //
-                    // A terminal `None` therefore means airc-lib
-                    // DELIBERATELY ended the subscription — a decode /
-                    // wire-schema fault it surfaces loud rather than
-                    // mask (card 807193ab), or the consumer was
-                    // released. Resubscribing here would silently paper
-                    // over that wire-drift signal — exactly the
-                    // [[fallbacks-are-illegal-fail-loud]] violation. We
-                    // re-surface it loud and let the loop stop; a human
-                    // realigns the continuum/airc builds.
-                    tracing::error!(
-                        persona = %self.own_peer_id,
-                        "airc subscribe stream ended unrecoverably — airc-lib dropped \
-                         the subscription (likely wire-schema drift between continuum \
-                         and airc builds, or the EventStream was released). NOT \
-                         auto-resubscribing: airc-lib owns transient reconnection, so \
-                         a terminal end here is a real fault to fix, not a hiccup to heal."
-                    );
-                    return Ok(None);
-                }
-                Some(Err(lag)) => {
-                    // Lag is a transient — surface as Err so the loop
-                    // increments turns_errored and continues. The typed
-                    // Err shape lets the loop log + resume per
-                    // `[[no-fallbacks-ever]]` without silently masking
-                    // the gap.
-                    return Err(format!("live stream lag: {lag}"));
-                }
-                Some(Ok(event)) => {
-                    // Presence heartbeats are dropped HERE, not at subscribe time — the
-                    // daemon inverted the subscribe-time filter (see `subscribe_every_room`),
-                    // and a receive-side check is correct either way. Before any decode/probe.
-                    if crate::persona::airc_citizen::is_heartbeat(&event) {
-                        continue;
-                    }
-                    // A stream chunk is NEVER a room turn — skip it at the door, before the
-                    // decode and before the raw-event line. Every persona's subscribe stream
-                    // receives every OTHER persona's token fragments: measured live during a
-                    // SWE solve, 2644 of 4776 filtered inbound events (55%) were chunks, fanned
-                    // out identically to all four personas (1195 each) and decoded-then-discarded
-                    // by each independently — O(personas x tokens) of work in the attention path
-                    // of a persona who is trying to concentrate, plus 65% of the probe stream.
-                    //
-                    // Deliberately NOT probed: routine traffic taking its expected path is not an
-                    // anomaly, and a probe here would rebuild the exact flood this removes. The
-                    // decoder still classifies chunks as `stream_chunk` for any caller that
-                    // reaches it by another route, so nothing goes dark — the reason string
-                    // remains the single source of truth.
-                    //
-                    // This is the receive-side half. The events still cross the wire; not sending
-                    // a peer's fragments to peers at all is airc-side (#275) and stays open.
-                    if crate::airc::realtime_wire::is_stream_chunk(&event) {
-                        continue;
-                    }
-                    // Every non-chunk event advances the rejoin-replay watermark, so a
-                    // later reopen replays only what this stream genuinely never saw.
-                    self.last_lamport = self.last_lamport.max(event.lamport);
-                    // #146 diagnostic: EVERY raw event this persona's subscribe
-                    // stream yields, before any filter. If this probe never fires
-                    // under a room burst, the stream is empty → airc-lib delivery
-                    // gap. If it fires but perceptual/self drops it, the gap is
-                    // continuum-side (decode/self-filter). One line per event,
-                    // greppable by probe_class, cheap enough for a live stream.
-                    let body_kind = match event.body.as_ref() {
-                        None => "none",
-                        Some(b) if b.as_text().is_some() => "text",
-                        Some(_) => "json",
-                    };
-                    tracing::info!(
-                        persona = %self.own_peer_id,
-                        from_peer = %event.peer_id,
-                        body_kind,
-                        probe_class = "persona.inbound.raw_event",
-                        "persona subscribe stream yielded a raw event (#146)"
-                    );
-                    // Card-state transitions bridge onto the internal bus HERE —
-                    // the persona subscribe streams are the only channel-complete
-                    // receiver this core has (the daemon attach covers ONE room),
-                    // and this runs BEFORE the perceptual filter and the self-skip
-                    // so a citizen's own `work/state` echo counts. Once per wire
-                    // event process-wide (the bridge dedups by event id); this is
-                    // the single emitter the grade-on-done subscriber hears.
-                    crate::modules::work::bridge_wire_work_event(&event).await;
-                    // Recover a perceptual room turn. Two on-wire shapes
-                    // reach a persona's subscribe stream and both are
-                    // messages it must hear: a peer's plain-text `say()`
-                    // (`Body::Text`) and a `chat/send` from a human / the
-                    // web client / any non-`say` caller (the continuum
-                    // realtime envelope as `Body::Json`, `chat_transcript`
-                    // schema). `perceptual_from_event` decodes both; a
-                    // `None` means the event is not a room turn (presence,
-                    // event-bridge, media-control, binary) — skip it.
-                    // WHAT the rejected event actually was. `reason` names the branch
-                    // that refused it; these two name the SHAPE, which is what a fix has
-                    // to be written against.
-                    //
-                    // Measured 2026-08-13 (#410): every `airc msg` a human sends reaches
-                    // every citizen and is dropped as `no_continuum_body_hint`, because
-                    // `envelope_from_event` gates on HEADER_FORGE_BODY_HINT — a stamp only
-                    // continuum's own clients apply. Teaching the decoder the CLI's shape
-                    // needs that shape, and the reason string alone cannot supply it; a
-                    // decoder arm written against a GUESSED body is how presence frames
-                    // become fabricated perception. So: capture the kind and a bounded
-                    // preview, and let the next fix be written against a fact.
-                    //
-                    // Bounded to 160 chars and emitted only on the ALREADY-firing filtered
-                    // line — no new event, no new flood ([[the stream-chunk skip stays
-                    // deliberately unprobed]]).
-                    let event_kind = format!("{:?}", event.kind);
-                    let body_preview = match event.body.as_ref() {
-                        None => "<none>".to_string(),
-                        Some(b) => match b.as_text() {
-                            Some(t) => t.chars().take(160).collect(),
-                            None => serde_json::to_string(b)
-                                .unwrap_or_else(|e| format!("<unserializable: {e}>"))
-                                .chars()
-                                .take(160)
-                                .collect(),
-                        },
-                    };
-                    let message = match perceptual_from_event(&event) {
-                        Ok(message) => message,
-                        Err(reason) => {
-                            // A decode ERROR is loud — a message-shaped body we
-                            // failed to read is exactly the #177 blindness this
-                            // named-reason contract exists for. The two LEGIT
-                            // non-turn shapes (event-bridge frames, presence,
-                            // work-board events) flooded 38k INFO lines/day
-                            // across the roster and drowned real signal — they
-                            // stay observable at debug, counted by probe_class
-                            // either way.
-                            if reason == "envelope_decode_error" {
-                                tracing::warn!(
-                                    persona = %self.own_peer_id,
-                                    from_peer = %event.peer_id,
-                                    body_kind,
-                                    event_kind,
-                                    body_preview,
-                                    reason,
-                                    probe_class = "persona.inbound.filtered_non_turn",
-                                    "message-shaped event FAILED to decode — a peer may be structurally unheard (#177)"
-                                );
-                            } else {
-                                tracing::debug!(
-                                    persona = %self.own_peer_id,
-                                    from_peer = %event.peer_id,
-                                    body_kind,
-                                    event_kind,
-                                    body_preview,
-                                    reason,
-                                    probe_class = "persona.inbound.filtered_non_turn",
-                                    "raw event was not a perceptual room turn — skipped (#146/#177)"
-                                );
-                            }
-                            continue;
-                        }
-                    };
-                    // Skip our own turn, matched on the RESOLVED sender so a
-                    // self-authored chat_transcript is caught too — not just
-                    // a self `say()` (whose transport peer is us).
-                    //
-                    // PROBED, because this drop was SILENT and that cost a whole round
-                    // (2026-08-17). `benchmark/dispatch` authored `@Atlas (to you)`
-                    // kickoffs THROUGH Atlas (the operator has no self-peer, so
-                    // `curator_airc` borrows the lexicographically-first live citizen —
-                    // her). Every kickoff died right here: no error, no probe, no turn,
-                    // `kickoff_errors: []`, and hours spent looking at the grader, the
-                    // roster and the model. The skip is CORRECT — nobody answers their own
-                    // speech — but a message vanishing without a trace is how a structural
-                    // failure reads as "the citizen chose not to work"
-                    // ([[an-absence-is-an-unfinished-measurement]]).
-                    if message.peer_id == self.own_peer_id {
-                        tracing::debug!(
-                            persona = %self.own_peer_id,
-                            from_peer = %event.peer_id,
-                            text_len = message.text.len(),
-                            probe_class = "persona.inbound.skipped_self_authored",
-                            "skipped a message this persona is recorded as having said — \
-                             if it was ADDRESSED to her, whoever sent it authored through \
-                             her identity and she cannot hear it"
-                        );
-                        continue;
-                    }
-                    return Ok(Some(message));
-                }
-            }
         }
     }
 
@@ -759,5 +627,169 @@ mod tests {
                  distinguishable from a decode error or a lost body-hint header (#177)"
             );
         }
+    }
+}
+
+impl AircPersonaConversation {
+    /// One live event through the door: heartbeat/chunk guards, the raw probe,
+    /// the work-bridge, the decoder, the self-filter, the lamport advance.
+    /// `Some(msg)` = a room turn to serve; `None` = consumed, keep polling.
+    async fn admit_event(&mut self, event: std::sync::Arc<TranscriptEvent>) -> Option<IncomingMessage> {
+
+        // Presence heartbeats are dropped HERE, not at subscribe time — the
+        // daemon inverted the subscribe-time filter (see `subscribe_every_room`),
+        // and a receive-side check is correct either way. Before any decode/probe.
+        if crate::persona::airc_citizen::is_heartbeat(&event) {
+            return None;
+        }
+        // A stream chunk is NEVER a room turn — skip it at the door, before the
+        // decode and before the raw-event line. Every persona's subscribe stream
+        // receives every OTHER persona's token fragments: measured live during a
+        // SWE solve, 2644 of 4776 filtered inbound events (55%) were chunks, fanned
+        // out identically to all four personas (1195 each) and decoded-then-discarded
+        // by each independently — O(personas x tokens) of work in the attention path
+        // of a persona who is trying to concentrate, plus 65% of the probe stream.
+        //
+        // Deliberately NOT probed: routine traffic taking its expected path is not an
+        // anomaly, and a probe here would rebuild the exact flood this removes. The
+        // decoder still classifies chunks as `stream_chunk` for any caller that
+        // reaches it by another route, so nothing goes dark — the reason string
+        // remains the single source of truth.
+        //
+        // This is the receive-side half. The events still cross the wire; not sending
+        // a peer's fragments to peers at all is airc-side (#275) and stays open.
+        if crate::airc::realtime_wire::is_stream_chunk(&event) {
+            return None;
+        }
+        // Every non-chunk event advances the rejoin-replay watermark, so a
+        // later reopen replays only what this stream genuinely never saw.
+        self.last_lamport = self.last_lamport.max(event.lamport);
+        // #146 diagnostic: EVERY raw event this persona's subscribe
+        // stream yields, before any filter. If this probe never fires
+        // under a room burst, the stream is empty → airc-lib delivery
+        // gap. If it fires but perceptual/self drops it, the gap is
+        // continuum-side (decode/self-filter). One line per event,
+        // greppable by probe_class, cheap enough for a live stream.
+        let body_kind = match event.body.as_ref() {
+            None => "none",
+            Some(b) if b.as_text().is_some() => "text",
+            Some(_) => "json",
+        };
+        tracing::info!(
+            persona = %self.own_peer_id,
+            from_peer = %event.peer_id,
+            body_kind,
+            probe_class = "persona.inbound.raw_event",
+            "persona subscribe stream yielded a raw event (#146)"
+        );
+        // Card-state transitions bridge onto the internal bus HERE —
+        // the persona subscribe streams are the only channel-complete
+        // receiver this core has (the daemon attach covers ONE room),
+        // and this runs BEFORE the perceptual filter and the self-skip
+        // so a citizen's own `work/state` echo counts. Once per wire
+        // event process-wide (the bridge dedups by event id); this is
+        // the single emitter the grade-on-done subscriber hears.
+        crate::modules::work::bridge_wire_work_event(&event).await;
+        // Recover a perceptual room turn. Two on-wire shapes
+        // reach a persona's subscribe stream and both are
+        // messages it must hear: a peer's plain-text `say()`
+        // (`Body::Text`) and a `chat/send` from a human / the
+        // web client / any non-`say` caller (the continuum
+        // realtime envelope as `Body::Json`, `chat_transcript`
+        // schema). `perceptual_from_event` decodes both; a
+        // `None` means the event is not a room turn (presence,
+        // event-bridge, media-control, binary) — skip it.
+        // WHAT the rejected event actually was. `reason` names the branch
+        // that refused it; these two name the SHAPE, which is what a fix has
+        // to be written against.
+        //
+        // Measured 2026-08-13 (#410): every `airc msg` a human sends reaches
+        // every citizen and is dropped as `no_continuum_body_hint`, because
+        // `envelope_from_event` gates on HEADER_FORGE_BODY_HINT — a stamp only
+        // continuum's own clients apply. Teaching the decoder the CLI's shape
+        // needs that shape, and the reason string alone cannot supply it; a
+        // decoder arm written against a GUESSED body is how presence frames
+        // become fabricated perception. So: capture the kind and a bounded
+        // preview, and let the next fix be written against a fact.
+        //
+        // Bounded to 160 chars and emitted only on the ALREADY-firing filtered
+        // line — no new event, no new flood ([[the stream-chunk skip stays
+        // deliberately unprobed]]).
+        let event_kind = format!("{:?}", event.kind);
+        let body_preview = match event.body.as_ref() {
+            None => "<none>".to_string(),
+            Some(b) => match b.as_text() {
+                Some(t) => t.chars().take(160).collect(),
+                None => serde_json::to_string(b)
+                    .unwrap_or_else(|e| format!("<unserializable: {e}>"))
+                    .chars()
+                    .take(160)
+                    .collect(),
+            },
+        };
+        let message = match perceptual_from_event(&event) {
+            Ok(message) => message,
+            Err(reason) => {
+                // A decode ERROR is loud — a message-shaped body we
+                // failed to read is exactly the #177 blindness this
+                // named-reason contract exists for. The two LEGIT
+                // non-turn shapes (event-bridge frames, presence,
+                // work-board events) flooded 38k INFO lines/day
+                // across the roster and drowned real signal — they
+                // stay observable at debug, counted by probe_class
+                // either way.
+                if reason == "envelope_decode_error" {
+                    tracing::warn!(
+                        persona = %self.own_peer_id,
+                        from_peer = %event.peer_id,
+                        body_kind,
+                        event_kind,
+                        body_preview,
+                        reason,
+                        probe_class = "persona.inbound.filtered_non_turn",
+                        "message-shaped event FAILED to decode — a peer may be structurally unheard (#177)"
+                    );
+                } else {
+                    tracing::debug!(
+                        persona = %self.own_peer_id,
+                        from_peer = %event.peer_id,
+                        body_kind,
+                        event_kind,
+                        body_preview,
+                        reason,
+                        probe_class = "persona.inbound.filtered_non_turn",
+                        "raw event was not a perceptual room turn — skipped (#146/#177)"
+                    );
+                }
+                return None;
+            }
+        };
+        // Skip our own turn, matched on the RESOLVED sender so a
+        // self-authored chat_transcript is caught too — not just
+        // a self `say()` (whose transport peer is us).
+        //
+        // PROBED, because this drop was SILENT and that cost a whole round
+        // (2026-08-17). `benchmark/dispatch` authored `@Atlas (to you)`
+        // kickoffs THROUGH Atlas (the operator has no self-peer, so
+        // `curator_airc` borrows the lexicographically-first live citizen —
+        // her). Every kickoff died right here: no error, no probe, no turn,
+        // `kickoff_errors: []`, and hours spent looking at the grader, the
+        // roster and the model. The skip is CORRECT — nobody answers their own
+        // speech — but a message vanishing without a trace is how a structural
+        // failure reads as "the citizen chose not to work"
+        // ([[an-absence-is-an-unfinished-measurement]]).
+        if message.peer_id == self.own_peer_id {
+            tracing::debug!(
+                persona = %self.own_peer_id,
+                from_peer = %event.peer_id,
+                text_len = message.text.len(),
+                probe_class = "persona.inbound.skipped_self_authored",
+                "skipped a message this persona is recorded as having said — \
+                 if it was ADDRESSED to her, whoever sent it authored through \
+                 her identity and she cannot hear it"
+            );
+            return None;
+        }
+        Some(message)
     }
 }
