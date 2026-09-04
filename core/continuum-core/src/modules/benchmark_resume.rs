@@ -208,6 +208,7 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
             // held nothing and pulled nothing. Idempotent: a citizen already in
             // the room is left alone (no epoch bump, no stream re-open).
             reseat_working_rounds(&registry).await;
+            unseat_finished_rounds(&registry).await;
             if attempt == 1 {
                 crate::modules::work::spawn_env_prewarm_for_working_rounds();
             }
@@ -380,6 +381,64 @@ async fn board_state_of(
         Some(BoardCardState::Terminal(state))
     } else {
         Some(BoardCardState::Workable)
+    }
+}
+
+/// The other half of seating: residents LEAVE the run rooms of paused and done
+/// rounds. Subscriptions were never pruned, so every citizen stayed in ~68 dead
+/// run rooms and the per-minute store catch-up paged all 68 for each of twelve
+/// personas (`persona.inbound.catch_up_tick rooms_paged=68`, 2026-09-04) — 800
+/// store pages a minute for rooms nobody will speak in again. A room a citizen
+/// re-enters later resumes unread-first like any other; leaving loses nothing.
+async fn unseat_finished_rounds(registry: &crate::persona::PersonaAircRuntimeRegistry) {
+    use crate::persona::airc_citizen::AircCitizen as _;
+    for round in crate::cognition::bench_round::live_rounds() {
+        let working = round.stage.eq_ignore_ascii_case("working");
+        if working || round.run_room_name.is_empty() {
+            continue;
+        }
+        // INVARIANT (shared with `reseat_working_rounds`): a run room's channel uuid IS
+        // the round id — membership is checked by that id, the leave goes by the
+        // run room's NAME. Room name and room id are independent on the grid in
+        // general; for run rooms the tracker minted both, so they agree.
+        // Deliberately asymmetric with reseat: leaving a dead room is safe whoever
+        // drove the round, so no `citizen_driven` filter here.
+        let Ok(round_id) = uuid::Uuid::parse_str(&round.round_id) else { continue };
+        let mut left = 0u64;
+        let mut failed = 0u64;
+        let mut unknown = 0u64;
+        for rt in registry.iter() {
+            // "Unsure" must NOT read as "nothing to leave": in `reseat` an unreadable
+            // room list degrades toward a harmless idempotent join; here it would
+            // degrade toward silently never leaving — the very bug this repairs. Count
+            // it, say it in the probe, and never let the did-nothing path be silent.
+            let member = match rt.subscribed_rooms().await {
+                Ok(rooms) => rooms.contains(&round_id),
+                Err(_) => {
+                    unknown += 1;
+                    continue;
+                }
+            };
+            if !member {
+                continue;
+            }
+            match rt.airc().part_channel(Some(round.run_room_name.as_str())).await {
+                Ok(_) => left += 1,
+                Err(_) => failed += 1,
+            }
+        }
+        // Fires for EVERY round considered, so "ran, left 0, 12 unreadable" is
+        // distinguishable from "ran, nothing to do" (IntelMac's review of #3711).
+        crate::probe!(
+            class = "bench.round.unseated",
+            round = %round.round_id.chars().take(8).collect::<String>(),
+            room = %round.run_room_name,
+            stage = %round.stage,
+            left,
+            failed,
+            unknown,
+            "a paused/done round's run room, considered for unseating"
+        );
     }
 }
 
