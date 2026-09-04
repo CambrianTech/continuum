@@ -2982,6 +2982,14 @@ fn hands_surface(raw: &[NativeToolSpec]) -> Vec<NativeToolSpec> {
     raw.iter()
         .filter(|s| {
             let n = s.name.as_str();
+            // `code/git/apply` takes a PEER's unified diff; offered among her
+            // hands it reads as "apply my fix" and four citizens called it
+            // with an empty patch inside twenty minutes (2026-09-04) — the
+            // offered-tool-is-must-use reflex. It stays one `commands/list`
+            // away for a reviewer who actually holds a peer's diff.
+            if n == "code/git/apply" {
+                return false;
+            }
             n.starts_with("code/")
                 || n.starts_with("work/")
                 || n.starts_with("git/")
@@ -3002,7 +3010,7 @@ mod tests {
     // with zero tools (2026-09-04). The filter runs on the raw command names.
     #[test]
     fn hands_surface_is_chosen_on_command_names_and_keeps_the_discovery_pair() {
-        let raw: Vec<NativeToolSpec> = ["code/read", "work/state", "chat/send", "commands/list", "room/join", "code/git/status"]
+        let raw: Vec<NativeToolSpec> = ["code/read", "work/state", "chat/send", "commands/list", "room/join", "code/git/status", "code/git/apply"]
             .iter()
             .map(|n| NativeToolSpec {
                 name: (*n).to_string(),
@@ -3011,7 +3019,7 @@ mod tests {
             })
             .collect();
         let hands: Vec<String> = hands_surface(&raw).into_iter().map(|s| s.name).collect();
-        assert_eq!(hands, ["code/read", "work/state", "commands/list", "code/git/status"]);
+        assert_eq!(hands, ["code/read", "work/state", "commands/list", "code/git/status"], "git/apply is a reviewer verb, not a hand");
     }
 
     // what this catches: the live registry's command names drifting away from the
