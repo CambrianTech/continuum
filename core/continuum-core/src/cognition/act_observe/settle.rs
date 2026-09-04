@@ -57,7 +57,7 @@ use super::types::{SettleOutcome, SettleStep};
 /// stream it belongs in. That is a structural absence, not a skipped write.
 /// Consecutive spoken plans a workspace-deliverable turn tolerates before it
 /// settles without a deliverable (each is re-perceived, not ended).
-const NARRATION_BUDGET: usize = 3;
+pub(super) const NARRATION_BUDGET: usize = 3;
 
 pub async fn drive_to_settle(
     cycle: &WorkspaceCycle,
