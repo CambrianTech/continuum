@@ -1079,7 +1079,12 @@ async fn serve_persona_loop_inner(
                 // self-set attention weight — never a hard mute except self-chosen or
                 // flooding) is substrate-blocked on the airc per-(persona,room) state
                 // store (#89); this is the addressing half, unblocked today.
-                let directed = ctx.identity.persona_identity().mentions(&msg.text);
+                let sender_is_citizen = crate::persona::PersonaAircRuntimeRegistry::try_global()
+                    .is_some_and(|r| r.get(msg.peer_id).is_some());
+                let directed = turn_is_directed(
+                    ctx.identity.persona_identity().mentions(&msg.text),
+                    sender_is_citizen,
+                );
                 let framing = crate::cognition::workspace::TurnFraming::message(directed);
 
                 // ── Ambient-yield under lane saturation (#171 / #139) ───────────────
@@ -1810,6 +1815,18 @@ fn push_work_board_anchor(
 /// passing remains hers. Deliberately NOT the room transcript — the subject of
 /// this turn is the work, and the card details/workspace root arrive through
 /// her own grounding exactly as on any turn.
+/// Whether an inbound room message is DIRECTED at this citizen — the framing
+/// that withholds the silent-PASS hatch and reserves a lane. Two roads in:
+/// she is named, or the speaker is NOT a fellow citizen. A human at the desk or
+/// an agent asking the room is addressing the citizens by construction (being
+/// heard is the scarce thing); citizens talking among themselves — and the
+/// work receipts they radiate — stay ambient, or twelve of them answer every
+/// receipt. Live 2026-09-03: the operator asked a work room a direct question
+/// twice and no citizen answered, because "directed" meant @mention only.
+pub(crate) fn turn_is_directed(mentioned: bool, sender_is_citizen: bool) -> bool {
+    mentioned || !sender_is_citizen
+}
+
 pub(crate) fn held_work_burst(held: &[&airc_lib::WorkCard]) -> String {
     use std::fmt::Write as _;
     let mut s = String::from(
@@ -3015,6 +3032,18 @@ mod tests {
     // explicitly hers, because this text IS the second gate of a claim-holder's quiet
     // turn (BigMama's gate-conflation fix, 2026-08-08). A burst that loses the card
     // names starves the question; one that loses the pass-clause becomes a command.
+    #[test]
+    // what this catches: a human's (or agent's) room line is a DIRECTED turn without
+    // an @mention; citizen chatter stays ambient unless she is named (operator asked
+    // twice, nobody answered — 2026-09-03).
+    #[test]
+    fn a_non_citizen_line_is_directed_and_citizen_chatter_needs_a_mention() {
+        assert!(turn_is_directed(false, false), "human/agent line: directed");
+        assert!(turn_is_directed(true, false));
+        assert!(turn_is_directed(true, true), "a citizen naming her: directed");
+        assert!(!turn_is_directed(false, true), "citizen chatter/receipts: ambient");
+    }
+
     #[test]
     fn held_work_burst_names_cards_and_keeps_the_choice_hers() {
         use airc_work::{CardState, Priority, RepoId, WorkCardId};
