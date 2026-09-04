@@ -384,9 +384,6 @@ async fn board_state_of(
     }
 }
 
-/// Seat every live citizen into each working citizen-driven round's run room.
-/// Repairs the WORLD (membership) and nothing about the mind: a seated citizen
-/// perceives the room's board and doctrine and pulls or not as she chooses.
 /// The other half of seating: residents LEAVE the run rooms of paused and done
 /// rounds. Subscriptions were never pruned, so every citizen stayed in ~68 dead
 /// run rooms and the per-minute store catch-up paged all 68 for each of twelve
@@ -400,15 +397,28 @@ async fn unseat_finished_rounds(registry: &crate::persona::PersonaAircRuntimeReg
         if working || round.run_room_name.is_empty() {
             continue;
         }
+        // INVARIANT (shared with `reseat_working_rounds`): a run room's channel uuid IS
+        // the round id — membership is checked by that id, the leave goes by the
+        // run room's NAME. Room name and room id are independent on the grid in
+        // general; for run rooms the tracker minted both, so they agree.
+        // Deliberately asymmetric with reseat: leaving a dead room is safe whoever
+        // drove the round, so no `citizen_driven` filter here.
         let Ok(round_id) = uuid::Uuid::parse_str(&round.round_id) else { continue };
         let mut left = 0u64;
         let mut failed = 0u64;
+        let mut unknown = 0u64;
         for rt in registry.iter() {
-            let member = rt
-                .subscribed_rooms()
-                .await
-                .map(|rooms| rooms.contains(&round_id))
-                .unwrap_or(false); // unwrap_or: an unreadable room list reads as "not a member" — nothing to leave
+            // "Unsure" must NOT read as "nothing to leave": in `reseat` an unreadable
+            // room list degrades toward a harmless idempotent join; here it would
+            // degrade toward silently never leaving — the very bug this repairs. Count
+            // it, say it in the probe, and never let the did-nothing path be silent.
+            let member = match rt.subscribed_rooms().await {
+                Ok(rooms) => rooms.contains(&round_id),
+                Err(_) => {
+                    unknown += 1;
+                    continue;
+                }
+            };
             if !member {
                 continue;
             }
@@ -417,20 +427,24 @@ async fn unseat_finished_rounds(registry: &crate::persona::PersonaAircRuntimeReg
                 Err(_) => failed += 1,
             }
         }
-        if left > 0 || failed > 0 {
-            crate::probe!(
-                class = "bench.round.unseated",
-                round = %round.round_id.chars().take(8).collect::<String>(),
-                room = %round.run_room_name,
-                stage = %round.stage,
-                left,
-                failed,
-                "residents left a paused/done round's run room (the seating repair's other half)"
-            );
-        }
+        // Fires for EVERY round considered, so "ran, left 0, 12 unreadable" is
+        // distinguishable from "ran, nothing to do" (IntelMac's review of #3711).
+        crate::probe!(
+            class = "bench.round.unseated",
+            round = %round.round_id.chars().take(8).collect::<String>(),
+            room = %round.run_room_name,
+            stage = %round.stage,
+            left,
+            failed,
+            unknown,
+            "a paused/done round's run room, considered for unseating"
+        );
     }
 }
 
+/// Seat every live citizen into each working citizen-driven round's run room.
+/// Repairs the WORLD (membership) and nothing about the mind: a seated citizen
+/// perceives the room's board and doctrine and pulls or not as she chooses.
 async fn reseat_working_rounds(registry: &crate::persona::PersonaAircRuntimeRegistry) {
     use crate::persona::airc_citizen::AircCitizen as _;
     for round in crate::cognition::bench_round::live_rounds() {
