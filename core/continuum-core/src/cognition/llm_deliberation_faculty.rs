@@ -2330,6 +2330,25 @@ impl Faculty for LlmDeliberationFaculty {
         // the ~150-schema dump that overflowed `n_ctx` and muted her.
         let tools = if self.native_specs.is_empty() {
             None
+        } else if ws.workspace_deliverable {
+            // A WORK turn offers her HANDS, not the whole registry: 37 schemas were
+            // 8.5k of a ~22k-token prefill per act (2026-09-05, KV reuse 0.0). The
+            // discovery pair stays so anything else remains one call away.
+            Some(
+                self.native_specs
+                    .iter()
+                    .filter(|s| {
+                        let n = s.name.as_str();
+                        n.starts_with("code/")
+                            || n.starts_with("work/")
+                            || n.starts_with("git/")
+                            || n.starts_with("cargo/")
+                            || n.starts_with("tool/")
+                            || n.starts_with("commands/")
+                    })
+                    .cloned()
+                    .collect(),
+            )
         } else {
             Some(self.native_specs.clone())
         };
