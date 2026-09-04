@@ -1187,11 +1187,21 @@ fn record_repo_checkout() {
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
             .filter(|s| !s.is_empty())
     };
-    let (Some(url), Some(root)) = (out(&["remote", "get-url", "origin"]), out(&["rev-parse", "--show-toplevel"])) else {
+    // `--show-toplevel` is the WORKTREE when run inside one (a card worktree,
+    // deleted on merge — IntelMac's review of #3706); `--git-common-dir` is the
+    // clone's .git in both cases, and absolute so the main clone does not
+    // answer a relative `.git`.
+    let (Some(url), Some(common)) = (
+        out(&["remote", "get-url", "origin"]),
+        out(&["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+    ) else {
+        return;
+    };
+    let Some(root) = continuum_core::modules::repo_registry::clone_root_from_common_dir(&common) else {
         return;
     };
     if let Some(repo) = continuum_core::modules::repo_registry::repo_id_from_remote(&url) {
-        continuum_core::modules::repo_registry::record(&repo, std::path::Path::new(&root));
+        continuum_core::modules::repo_registry::record(&repo, &root);
     }
 }
 
