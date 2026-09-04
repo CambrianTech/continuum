@@ -190,8 +190,21 @@ impl Runtime {
         let mut failures: Vec<String> = Vec::new();
         for name in &modules {
             if let Some(module) = self.registry.get_by_name(name) {
-                match tokio::time::timeout(PER_MODULE_INIT_DEADLINE, module.initialize(&ctx)).await
-                {
+                // BOOT IS LEGIBLE OR IT IS A WEDGE: one probe per module init with
+                // its outcome and wall time — the only way to read "core did not
+                // bind its IPC socket within 300s" (BigMama's host, 2026-09-04: a
+                // cold-disk init on the pre-bind path) without a stopwatch.
+                let started = std::time::Instant::now();
+                let attempt =
+                    tokio::time::timeout(PER_MODULE_INIT_DEADLINE, module.initialize(&ctx)).await;
+                crate::probe!(
+                    class = "boot.module_init",
+                    module = %name,
+                    outcome = match &attempt { Ok(Ok(_)) => "ok", Ok(Err(_)) => "error", Err(_) => "timeout" },
+                    ms = started.elapsed().as_millis() as u64,
+                    "module initialize"
+                );
+                match attempt {
                     Ok(Ok(_)) => {
                         info!("  {} initialized", name);
                     }
