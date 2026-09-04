@@ -58,6 +58,7 @@ async fn run() -> Result<(), String> {
             Ok(())
         }
         "start" => {
+            record_repo_checkout();
             // Collect once: `args.any(..)` consumes the iterator, so reading a
             // second flag off it afterwards would silently always be false.
             let flags: Vec<String> = args.collect();
@@ -71,6 +72,7 @@ async fn run() -> Result<(), String> {
             start(flags.iter().any(|a| a == "--force")).await
         }
         "reboot" | "restart" => {
+            record_repo_checkout();
             let force = args.any(|a| a == "--force");
             reboot(force).await
         }
@@ -1172,6 +1174,37 @@ fn binary_build_sha(artifact: &Path) -> Result<String, String> {
 
 /// Short git HEAD SHA of the current checkout (matches what `build.rs` embeds), or `None`
 /// when not in a git tree.
+/// Record the cwd's repo checkout for the core (`modules::repo_registry`): the
+/// claim-edge staging of a REPO card needs `owner/name → path`, and the core has
+/// no cwd. Idempotent, silent outside a repo.
+fn record_repo_checkout() {
+    let out = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    // `--show-toplevel` is the WORKTREE when run inside one (a card worktree,
+    // deleted on merge — IntelMac's review of #3706); `--git-common-dir` is the
+    // clone's .git in both cases, and absolute so the main clone does not
+    // answer a relative `.git`.
+    let (Some(url), Some(common)) = (
+        out(&["remote", "get-url", "origin"]),
+        out(&["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+    ) else {
+        return;
+    };
+    let Some(root) = continuum_core::modules::repo_registry::clone_root_from_common_dir(&common) else {
+        return;
+    };
+    if let Some(repo) = continuum_core::modules::repo_registry::repo_id_from_remote(&url) {
+        continuum_core::modules::repo_registry::record(&repo, &root);
+    }
+}
+
 fn git_head_short_sha() -> Option<String> {
     std::process::Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])

@@ -1021,7 +1021,15 @@ pub fn start_server(
     // is fatal: the registry is the single source of truth for model ids
     // and a missing config is a boot-order / packaging bug, not a runtime
     // condition we can recover from.
-    match crate::model_registry::init_global() {
+    let registry_started = std::time::Instant::now();
+    let registry_init = crate::model_registry::init_global();
+    crate::probe!(
+        class = "boot.registry_init",
+        outcome = if registry_init.is_ok() { "ok" } else { "error" },
+        ms = registry_started.elapsed().as_millis() as u64,
+        "model registry scan (pre-bind; header reads + size walk)"
+    );
+    match registry_init {
         Ok(reg) => {
             log_info!(
                 "ipc",

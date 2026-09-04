@@ -141,12 +141,23 @@ fn signal_if_directed(own: uuid::Uuid, event: &airc_core::TranscriptEvent) {
     // System events ride the same stream from the same non-citizen peers and
     // are filtered at the door — on 8c6733c65 they kept the flag up for the
     // whole roster (25 turns, 25 yields, 0 lanes acquired).
-    if perceptual_from_event(event).is_err() {
+    let Ok(message) = perceptual_from_event(event) else {
         return;
-    }
-    let sender_is_citizen = crate::persona::PersonaAircRuntimeRegistry::try_global()
-        .is_some_and(|r| r.get(peer).is_some());
-    if !sender_is_citizen {
+    };
+    // The SAME predicate the loop head admits with (`turn_is_directed`): a
+    // human line or a line naming her. On 9e8320b60 this site still raised the
+    // flag for every non-citizen line, so a holder parked in a lane wait yielded
+    // to an agent status line that the loop head then declined — 13 work turns
+    // abandoned in 9 ms in half an hour (`delib.gate.yielded_to_directed`).
+    let registry = crate::persona::PersonaAircRuntimeRegistry::try_global();
+    let sender_is_citizen = registry.as_ref().is_some_and(|r| r.get(peer).is_some());
+    let mentioned = registry
+        .as_ref()
+        .and_then(|r| r.get(own))
+        .map(|rt| crate::persona::persona_identity::PersonaIdentity::new(own, rt.agent_name().to_string()))
+        .is_some_and(|me| me.mentions(&message.text));
+    let sender_is_human = crate::ipc::positron_presence::is_human_peer(peer);
+    if crate::persona::service_loop::turn_is_directed(mentioned, sender_is_citizen, false, sender_is_human) {
         crate::cognition::directed_pending::signal(own);
     }
 }

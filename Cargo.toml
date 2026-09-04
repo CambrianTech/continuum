@@ -185,18 +185,18 @@ members = [
 # room is still its default under either verb. This is what continuum's
 # room/join needs (task #65, Joel: a persona is first-class and can subscribe to
 # many rooms). Also fixes `RoomJoinedBody.is_default`, previously hardcoded true.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "2b5bdac" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "2b5bdac" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "2b5bdac" }
-airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "2b5bdac" }
-airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "2b5bdac" }
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "e31a1305f" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "e31a1305f" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "e31a1305f" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "e31a1305f" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "e31a1305f" }
 # airc-work: the work-board domain (cards/lanes/PRs). `Airc::work_board`
 # returns a `WorkBoardProjection` whose types (`WorkCard`, `LaneRecord`,
 # `CardState`, …) the positron kanban projector maps → `KanbanViewState`
 # at the seam. Only continuum-core (the projector) depends on it; the
 # neutral `continuum-positron` contract crate MIRRORS these enums and
 # must NOT depend on airc-work.
-airc-work = { git = "https://github.com/CambrianTech/airc", rev = "2b5bdac" }
+airc-work = { git = "https://github.com/CambrianTech/airc", rev = "e31a1305f" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)

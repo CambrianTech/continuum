@@ -319,6 +319,19 @@ impl Daemon for DiskUsageScanner {
     }
 
     async fn tick(&self) {
+        // NEVER ON THE BOOT PATH: the first walk waits for the IPC bind. On
+        // BigMama's GPU host (2026-09-04, card 7c956bb4) the recursive stat of
+        // `citizens` (97k files on a cold HDD) ran during module init, saturated
+        // the disk the registry and every module were reading, and the 300 s
+        // boot watchdog killed a working core. "first scan pending" is the
+        // honest report until then; the walk is worth nothing before the
+        // socket answers.
+        let mut ready = crate::ipc::subscribe_ready();
+        while !*ready.borrow_and_update() {
+            if ready.changed().await.is_err() {
+                return; // IPC thread gone — the process is exiting
+            }
+        }
         for dir in &self.dirs {
             let path = dir.path.clone();
             // Walk on the blocking pool — a deep tree must never stall
@@ -327,6 +340,8 @@ impl Daemon for DiskUsageScanner {
                 .await
                 .unwrap_or(0);
             dir.set_bytes(bytes);
+            // A breath between directories so one deep tree does not own the disk.
+            tokio::task::yield_now().await;
         }
         let n = self.ticks.fetch_add(1, Ordering::Relaxed) + 1;
         self.channel.publish(n);
