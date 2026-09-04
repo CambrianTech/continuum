@@ -3013,6 +3013,22 @@ mod tests {
         let hands: Vec<String> = hands_surface(&raw).into_iter().map(|s| s.name).collect();
         assert_eq!(hands, ["code/read", "work/state", "commands/list", "code/git/status"]);
     }
+
+    // what this catches: the live registry's command names drifting away from the
+    // hands prefixes (a rename to `files/*` would mute every work turn again) — a
+    // self-running check that the REAL registry yields a hands surface that is
+    // non-empty and smaller than the whole surface.
+    #[test]
+    fn the_real_registry_yields_a_non_empty_hands_surface() {
+        let raw = persona_tools::native_tool_specs();
+        if raw.is_empty() {
+            return; // no registry in this test build — nothing to assert against
+        }
+        let hands = hands_surface(&raw);
+        assert!(!hands.is_empty(), "hands surface is empty against the live registry");
+        assert!(hands.len() < raw.len(), "hands surface should be a strict subset");
+        assert!(hands.iter().any(|s| s.name == "commands/list"), "the discovery pair must survive");
+    }
     use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
     use crate::ai::types::{ToolCall, ToolInputSchema, UsageMetrics};
     use crate::cognition::workspace::BurstTurn;
