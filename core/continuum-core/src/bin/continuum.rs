@@ -117,7 +117,9 @@ async fn run() -> Result<(), String> {
                 .and_then(|v| v.parse::<u16>().ok())
                 .unwrap_or(8975); // unwrap_or: the display manager's documented default
             let url = format!("http://127.0.0.1:{port}/");
-            let up = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok();
+            let up = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .is_ok();
             if !up {
                 eprintln!(
                     "✗ the desktop display manager is not answering on :{port}.\n                       Is the core running? `continuum ping` — and `continuum start` \n                       builds the web client and serves it automatically. \n                       (Probe classes desktop.dm.* in the server log say why it stayed off.)"
@@ -562,7 +564,10 @@ async fn ensure_core_running(command: &str) -> Result<(), String> {
                  Either wait (a core that is still booting answers shortly), or clear it \
                  with `continuum stop`.",
                 pids.len(),
-                pids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(","),
+                pids.iter()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
                 socket_path()
             ));
         }
@@ -580,9 +585,11 @@ async fn ensure_core_running(command: &str) -> Result<(), String> {
         ));
     }
     eprintln!("▶ no core running — starting one for `{command}` (continuum start)");
-    let secs = launch_core(&[], LaunchSource::Installed).await.map_err(|e| {
-        format!("`{command}` needs a running core and one could not be started: {e}")
-    })?;
+    let secs = launch_core(&[], LaunchSource::Installed)
+        .await
+        .map_err(|e| {
+            format!("`{command}` needs a running core and one could not be started: {e}")
+        })?;
     eprintln!("✅ core ready after ~{secs}s — dispatching `{command}`");
     Ok(())
 }
@@ -596,7 +603,10 @@ async fn ensure_core_running(command: &str) -> Result<(), String> {
 /// the split brain existed because each launch path had its own ad-hoc guard.
 async fn bind_decision() -> BindDecision {
     let ping_ok = core_is_up().await;
-    let running: Vec<i32> = running_core_pids().into_iter().filter(|p| pid_alive(*p)).collect();
+    let running: Vec<i32> = running_core_pids()
+        .into_iter()
+        .filter(|p| pid_alive(*p))
+        .collect();
     continuum_core::runtime::core_bind_guard::decide(ping_ok, &running)
 }
 
@@ -625,7 +635,11 @@ async fn start(force: bool) -> Result<(), String> {
             }
         }
         BindDecision::Occupied { pids } => {
-            let list = pids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",");
+            let list = pids
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
             if !force {
                 return Err(format!(
                     "{} core process(es) are running (pid(s) {list}) but NONE is answering on \
@@ -784,9 +798,8 @@ async fn reboot(force: bool) -> Result<(), String> {
     // Publish the claim for the WHOLE build+swap. Held until this function returns, so a
     // concurrent `continuum <verb>` refuses instead of autostarting the pre-swap installed
     // image and stealing the socket (the DEPLOY MISMATCH measured 2026-08-17).
-    let _deploy_claim = DeployClaimGuard::take(
-        git_head_short_sha().as_deref().unwrap_or("unknown"),
-    );
+    let _deploy_claim =
+        DeployClaimGuard::take(git_head_short_sha().as_deref().unwrap_or("unknown"));
     let secs = launch_core(&old, LaunchSource::FromSource).await?;
     // Deploy-verification (#194): a new core is up — but is it the FRESHLY-BUILT one? If
     // start-server.sh's build was a stale cache no-op or silently failed, an OLD binary would
@@ -961,6 +974,72 @@ fn core_artifact_candidates(home: &str, cargo_target_dir: Option<&str>) -> Vec<P
     out
 }
 
+/// The manifest-declared runtime library dirs that actually EXIST under
+/// `root`. Pure over the filesystem so the selection rule is testable without
+/// spawning anything.
+///
+/// Mirrors the manifest's `runtime_path` entries: fixed-name tool dirs
+/// (`tools/<tool>/bin`) and versioned CUDA trees (`cuda-*/Library/bin`). The
+/// CUDA sweep reads the directory rather than shelling a glob, so it behaves
+/// identically on every platform and never depends on a shell being present.
+fn runtime_library_dirs(root: &std::path::Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for tool in ["cmake", "llvm"] {
+        let bin = root.join("tools").join(tool).join("bin");
+        if bin.is_dir() {
+            dirs.push(bin);
+        }
+    }
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if !name.starts_with("cuda-") {
+                continue;
+            }
+            let bin = entry.path().join("Library").join("bin");
+            if bin.is_dir() {
+                dirs.push(bin);
+            }
+        }
+    }
+    dirs
+}
+
+/// Prepend the manifest-declared runtime library dirs to the child's PATH.
+///
+/// Only dirs that EXIST are added, so a node without CUDA is unaffected and a
+/// node with several CUDA majors contributes each real one. Prepended (not
+/// appended) so a provisioned toolchain wins over a stray system copy — the
+/// same precedence `windows-build-env.sh` applies for the scripted path.
+///
+/// Non-fatal by construction: if the home dir cannot be resolved there is
+/// nothing to add and the child launches exactly as before. This can only add
+/// paths that are already on disk under the operator's own continuum root.
+fn apply_runtime_library_path(cmd: &mut std::process::Command) {
+    let Ok(root) = continuum_root() else {
+        return;
+    };
+    let dirs = runtime_library_dirs(&root);
+    if dirs.is_empty() {
+        return;
+    }
+    let existing = std::env::var_os("PATH").unwrap_or_default();
+    let joined = std::env::join_paths(dirs.into_iter().chain(std::env::split_paths(&existing)));
+    match joined {
+        Ok(path) => {
+            cmd.env("PATH", path);
+        }
+        // A PATH entry containing the separator cannot be joined. Leaving PATH
+        // untouched is the honest outcome: the child still launches, and on a
+        // CUDA node it fails the same loud way it did before this fix rather
+        // than silently inheriting a half-built PATH.
+        Err(_) => {}
+    }
+}
+
 /// The continuum root (`~/.continuum`) — where the deploy claim lives.
 fn continuum_root() -> Result<PathBuf, String> {
     Ok(PathBuf::from(home_dir()?).join(".continuum"))
@@ -1000,7 +1079,11 @@ fn deploy_gate(verb: &str) -> Result<(), String> {
             let _ = deploy_claim::clear(&root);
             Ok(())
         }
-        DeployGate::InProgress { pid, age_ms, target_sha } => Err(format!(
+        DeployGate::InProgress {
+            pid,
+            age_ms,
+            target_sha,
+        } => Err(format!(
             "a deploy is in flight (pid {pid} shipping build {target_sha}, {}s in) and no core \
              is answering yet. Starting one now would launch the PRE-SWAP installed binary, \
              which would then hold the socket and make the deploy report the OLD build — \
@@ -1546,6 +1629,29 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource) -> Result<u64
     for (k, v) in continuum_core::config_env::read_all() {
         cmd.env(k, v);
     }
+    // …and so do the manifest's RUNTIME LIBRARY DIRS, for the same reason and
+    // the same class of bug one layer down.
+    //
+    // The install manifest declares `runtime_path` per module precisely
+    // because some artifacts need their DLLs found at RUN time — cuda's entry
+    // is `~/.continuum/cuda-*/Library/bin`. `windows-build-env.sh` applies
+    // them, so a core launched through start-server.sh inherits them. The
+    // direct-exec path did not, and on a CUDA Windows node that is fatal
+    // BEFORE main(): the loader fails, the process dies with
+    // STATUS_DLL_NOT_FOUND (0xC0000135), and it produces NO output at all —
+    // so the operator sees an empty start log and a core that "just doesn't
+    // come up".
+    //
+    // Measured on the 5090 node 2026-09-04, positive control both ways:
+    // launching the freshly built server with the CUDA bin dir absent from
+    // PATH exits 0xC0000135 silently; prepending it makes the SAME binary
+    // print its version and run. Nothing about the build was wrong.
+    //
+    // Resolved from `~/.continuum` rather than by reading the manifest file,
+    // because a binary-only install has no repo to read — and that layout is
+    // not an independent guess: it is the manifest's own `extract`
+    // destination, the same contract expressed at the other end.
+    apply_runtime_library_path(&mut cmd);
     // We ARE the continuum binary — may this deploy rebuild our own image?
     //
     // The guard below used to be unconditional, and that is the whole of #422: a
@@ -1812,7 +1918,9 @@ async fn stop_with(keep_lanes: bool) -> Result<(), String> {
                 println!("  reaping serving lane (pid {pid}, port {port}) — live lane, this core is stopping")
             }
             S::ReapedEphemeral { pid, port } => {
-                println!("  reaping serving lane (pid {pid}, port {port}) — ephemeral lane, owner gone")
+                println!(
+                    "  reaping serving lane (pid {pid}, port {port}) — ephemeral lane, owner gone"
+                )
             }
             // A record whose pid is dead / recycled / unparseable is bookkeeping,
             // not an event: garbage-collected silently so the loud lines above
@@ -1945,6 +2053,48 @@ fn tail(path: &str, n: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    // what this catches: the direct-exec launch path losing the manifest's
+    // runtime library dirs. On a CUDA Windows node that loss is fatal BEFORE
+    // main() — STATUS_DLL_NOT_FOUND (0xC0000135), no output, empty start log,
+    // a core that "just doesn't come up" with nothing to read. Measured on the
+    // 5090 2026-09-04 with a positive control both ways: the same freshly
+    // built binary exits 0xC0000135 without the CUDA bin dir on PATH and runs
+    // with it.
+    //
+    // Asserts the SELECTION RULE rather than spawning a process: only
+    // existing dirs are contributed (a node without CUDA is unaffected), each
+    // real cuda-* major contributes its own Library/bin, and unrelated
+    // directories are never picked up.
+    #[test]
+    fn runtime_library_dirs_take_only_real_toolchain_paths() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("tools/cmake/bin")).expect("cmake bin");
+        std::fs::create_dir_all(root.join("cuda-13.2/Library/bin")).expect("cuda bin");
+        // Present but NOT a runtime dir: must never be contributed.
+        std::fs::create_dir_all(root.join("cuda-12.1/Library/lib")).expect("cuda lib only");
+        std::fs::create_dir_all(root.join("models")).expect("models");
+
+        let dirs = super::runtime_library_dirs(root);
+
+        assert!(
+            dirs.contains(&root.join("tools/cmake/bin")),
+            "a provisioned tool's bin/ must be contributed: {dirs:?}"
+        );
+        assert!(
+            dirs.contains(&root.join("cuda-13.2/Library/bin")),
+            "a real CUDA tree's Library/bin is the dir whose absence kills the loader: {dirs:?}"
+        );
+        assert!(
+            !dirs.iter().any(|d| d.starts_with(root.join("cuda-12.1"))),
+            "a cuda-* tree with no Library/bin contributes nothing: {dirs:?}"
+        );
+        assert!(
+            !dirs.iter().any(|d| d.ends_with("models")),
+            "unrelated continuum-root dirs are never runtime library paths: {dirs:?}"
+        );
+    }
+
     use super::*;
     use serde_json::json;
 
@@ -2231,7 +2381,6 @@ mod tests {
         assert!(help.contains("--round-trip-ms"), "camel→kebab flag: {help}");
         assert!(help.contains("<integer>"), "type label: {help}");
     }
-
 
     // what this catches (#194): the artifact resolution ORDER is a shared contract with
     // tools/scripts/install-service.sh::resolve_core_bin — installed locations before the
