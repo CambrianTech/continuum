@@ -345,9 +345,14 @@ impl RagRenderable for continuum_positron::RosterViewState {
                 if let Some(role) = slot.role_label.as_deref().filter(|r| !r.is_empty()) {
                     line.push_str(&format!(" — {role}"));
                 }
-                if let Some(avail) = slot.availability.as_deref() {
-                    line.push_str(&format!(" [{avail}]"));
-                }
+                // NO liveness flag in the mind's copy (2026-09-04): `[ready]`/`[busy]`
+                // flips with every heartbeat, and this block sits inside the STABLE
+                // system prefix — consecutive prompts of one citizen diverged at char
+                // ~9.7k of a 10.1k system on exactly this flag, forfeiting the whole
+                // prefix (hit_rate 0.0 on 57/57 turns). Who is here, their kind and
+                // role, are the stable facts; whether a peer is busy this second is
+                // presence — the live view carries it, and it belongs in the volatile
+                // tail if a turn ever needs it ([[a-mutating-system-prompt-destroys-kv-reuse]]).
                 line
             })
             .collect()
@@ -460,6 +465,25 @@ mod tests {
     /// stamping is what a live turn does).
     fn ctx() -> RagContext {
         RagContext::for_persona_in_room(Uuid::from_u128(0x9), 0, Uuid::from_u128(0xaa))
+    }
+
+    // what this catches: the mind's roster line carries NO liveness flag — `[ready]`/
+    // `[busy]` flips per heartbeat inside the STABLE system prefix and forfeited the
+    // whole prefix (hit_rate 0.0 on 57/57 turns, prompts diverging at the flag,
+    // 2026-09-04). Name, kind and role stay; presence is the live view's job.
+    #[test]
+    fn the_roster_line_carries_no_liveness_flag() {
+        let mut slot = crate::ipc::positron_source::test_roster_slot(
+            Uuid::from_u128(7),
+            "Anwen",
+            SenderKind::Agent,
+        );
+        slot.availability = Some("busy".to_string());
+        let view = RosterViewState { room_id: Uuid::from_u128(0xaa), roster: vec![slot] };
+        let units = RagRenderable::units(&view);
+        assert_eq!(units.len(), 1);
+        assert!(units[0].starts_with("Anwen"), "{units:?}");
+        assert!(!units[0].contains("[busy]") && !units[0].contains('['), "{units:?}");
     }
 
     /// what this catches: THE defect. A peer present in the room must reach the
