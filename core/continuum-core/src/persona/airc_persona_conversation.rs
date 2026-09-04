@@ -69,31 +69,34 @@ const QUIET_WATCHDOG: std::time::Duration = std::time::Duration::from_secs(90);
 const CATCH_UP_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 /// Events paged per room per catch-up tick.
 const CATCH_UP_PAGE: usize = 32;
-/// Lamports remembered per room to tell "seen" from "dropped" (bounded).
+/// Event ids remembered per room to tell "seen" from "dropped" (bounded).
 const SEEN_RING: usize = 128;
 
-/// Per room: the lamport FLOOR adopted at first sight (nothing older is ever
-/// replayed) and a bounded ring of lamports actually forwarded (live or paged).
-/// "Max lamport seen" cannot stand in for this: live `event` frames keep
-/// arriving after the daemon drops a `message`, so the mark leaps past the line.
+/// Per room: the WALL-TIME floor adopted at first sight (nothing older is ever
+/// replayed) and a bounded ring of EVENT IDS actually forwarded (live or paged).
+/// Neither lamport nor "max seen" can stand in for this: a lamport is the
+/// publisher's logical clock, so a quiet human's line carries a smaller lamport
+/// than the busy citizens' receipts around it and read as "old" (2026-09-04:
+/// zero admissions across three builds); and live `event` frames keep arriving
+/// after the daemon drops a `message`, so a max-seen mark leaps past the line.
 #[derive(Default)]
 struct SeenRooms {
-    floor: std::collections::HashMap<Uuid, u64>,
-    seen: std::collections::HashMap<Uuid, std::collections::VecDeque<u64>>,
+    floor_ms: std::collections::HashMap<Uuid, u64>,
+    seen: std::collections::HashMap<Uuid, std::collections::VecDeque<Uuid>>,
 }
 
 impl SeenRooms {
-    fn note(&mut self, room: Uuid, lamport: u64) {
+    fn note(&mut self, room: Uuid, event_id: Uuid) {
         let ring = self.seen.entry(room).or_default();
-        if !ring.contains(&lamport) {
-            ring.push_back(lamport);
+        if !ring.contains(&event_id) {
+            ring.push_back(event_id);
             while ring.len() > SEEN_RING {
                 ring.pop_front();
             }
         }
     }
-    fn was_seen(&self, room: Uuid, lamport: u64) -> bool {
-        self.seen.get(&room).is_some_and(|r| r.contains(&lamport))
+    fn was_seen(&self, room: Uuid, event_id: Uuid) -> bool {
+        self.seen.get(&room).is_some_and(|r| r.contains(&event_id))
     }
 }
 
@@ -128,18 +131,18 @@ async fn catch_up_from_store(
             }
         };
         paged += 1;
-        events.sort_by_key(|e| e.lamport);
-        let Some(newest) = events.iter().map(|e| e.lamport).max() else { continue };
-        let floor = *seen.floor.entry(room).or_insert(newest);
+        events.sort_by_key(|e| e.occurred_at_ms);
+        let Some(newest_ms) = events.iter().map(|e| e.occurred_at_ms).max() else { continue };
+        let floor_ms = *seen.floor_ms.entry(room).or_insert(newest_ms);
         for event in events {
-            if event.lamport <= floor
-                || seen.was_seen(room, event.lamport)
+            if event.occurred_at_ms <= floor_ms
+                || seen.was_seen(room, event.event_id.as_uuid())
                 || crate::persona::airc_citizen::is_heartbeat(&event)
                 || crate::airc::realtime_wire::is_stream_chunk(&event)
             {
                 continue;
             }
-            seen.note(room, event.lamport);
+            seen.note(room, event.event_id.as_uuid());
             if tx.send(Ok(std::sync::Arc::new(event))).await.is_err() {
                 return (paged, usize::MAX);
             }
@@ -276,7 +279,7 @@ impl AircPersonaConversation {
                     item = stream.next() => match item {
                         Some(item) => {
                             if let Ok(ev) = &item {
-                                seen.note(ev.room_id.as_uuid(), ev.lamport);
+                                seen.note(ev.room_id.as_uuid(), ev.event_id.as_uuid());
                             }
                             if tx.send(item).await.is_err() {
                                 return; // the conversation dropped its inbox — the pump is done
