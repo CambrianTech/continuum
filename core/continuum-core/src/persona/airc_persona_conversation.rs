@@ -104,6 +104,21 @@ impl SeenRooms {
 /// events the live stream never delivered (above the room's floor, not in the
 /// seen ring). Returns `(rooms paged, forwarded)`; `usize::MAX` forwarded means
 /// the inbox is gone. Heartbeats and chunks are skipped here as at the door.
+/// A forwarded line from outside the citizenry (or one naming nobody in
+/// particular — the turn decides mentions) raises the citizen's directed-pending
+/// flag so a parked self-work lane wait yields to it.
+fn signal_if_directed(own: uuid::Uuid, event: &airc_core::TranscriptEvent) {
+    let peer = event.peer_id.as_uuid();
+    if peer == own {
+        return;
+    }
+    let sender_is_citizen = crate::persona::PersonaAircRuntimeRegistry::try_global()
+        .is_some_and(|r| r.get(peer).is_some());
+    if !sender_is_citizen {
+        crate::cognition::directed_pending::signal(own);
+    }
+}
+
 async fn catch_up_from_store(
     runtime: &dyn AircCitizen,
     seen: &std::sync::Mutex<SeenRooms>,
@@ -172,6 +187,7 @@ async fn catch_up_from_store(
                 continue;
             }
             seen.lock().unwrap_or_else(|e| e.into_inner()).note(room, event.event_id.as_uuid());
+            signal_if_directed(runtime.peer_id(), &event);
             if tx.send(Ok(std::sync::Arc::new(event))).await.is_err() {
                 return (paged, usize::MAX);
             }
@@ -332,6 +348,11 @@ impl AircPersonaConversation {
                                 seen.lock()
                                     .unwrap_or_else(|e| e.into_inner())
                                     .note(ev.room_id.as_uuid(), ev.event_id.as_uuid());
+                                if !crate::persona::airc_citizen::is_heartbeat(ev)
+                                    && !crate::airc::realtime_wire::is_stream_chunk(ev)
+                                {
+                                    signal_if_directed(persona, ev);
+                                }
                             }
                             if tx.send(item).await.is_err() {
                                 return; // the conversation dropped its inbox — the pump is done

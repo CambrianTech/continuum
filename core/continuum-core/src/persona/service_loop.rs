@@ -628,6 +628,8 @@ async fn serve_persona_loop_inner(
                 qualifying.push(m);
             }
         }
+        // Whatever was pending is now in hand (the yield signal is consumed here).
+        crate::cognition::directed_pending::clear(self_id);
         // Directed = a line from outside the citizenry (human, agent) or one
         // that names her — the same addressing FACT the turn frames on.
         let directed_line = |m: &IncomingMessage| {

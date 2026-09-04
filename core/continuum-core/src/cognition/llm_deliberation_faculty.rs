@@ -2445,9 +2445,25 @@ impl Faculty for LlmDeliberationFaculty {
                 lanes_available = crate::cognition::resource_admission::serving_lane_permits_available() as u64,
                 "at the serving-lane admission gate"
             );
-            let _lane =
-                crate::cognition::resource_admission::acquire_serving_lane(ws.directed_at_self)
-                    .await;
+            // A NON-directed wait yields to a directed line pending in her inbox:
+            // the park held no lane, so abandoning it costs nothing, and the loop
+            // head drains the line next (`cognition::directed_pending`). A `None`
+            // here is her CHOICE to answer first, named by the probe — not a fault.
+            let _lane = if ws.directed_at_self {
+                crate::cognition::resource_admission::acquire_serving_lane(true).await
+            } else {
+                tokio::select! {
+                    lane = crate::cognition::resource_admission::acquire_serving_lane(false) => lane,
+                    _ = crate::cognition::directed_pending::wait(self.persona_id) => {
+                        crate::probe!(
+                            class = "delib.gate.yielded_to_directed",
+                            persona = %self.persona_name,
+                            "parked self-work lane wait yielded: a directed line is pending"
+                        );
+                        return None;
+                    }
+                }
+            };
             // HER task-positive system is engaged from here: the per-citizen boredom gate
             // (dreams) reads this stamp, never a room wake.
             crate::cognition::activity_gate::persona_engaged(self.persona_id);
