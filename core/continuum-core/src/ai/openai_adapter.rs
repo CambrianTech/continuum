@@ -1077,6 +1077,23 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         &self.config.provider_id
     }
 
+    /// The live set the daemon's reconcile / `/v1/models` refresh verified
+    /// (`runtime_models`), sorted for stable output; the catalog default only
+    /// when nothing has been verified yet. `config.default_model` is a
+    /// derived catalog value and can misname the lane (5090 2026-07-24), so
+    /// a refusal must not point callers at it when the truth is known.
+    fn served_model_ids(&self) -> Vec<String> {
+        let guard = self.runtime_models.read().unwrap();
+        match guard.as_ref().filter(|set| !set.is_empty()) {
+            Some(set) => {
+                let mut ids: Vec<String> = set.iter().cloned().collect();
+                ids.sort();
+                ids
+            }
+            None => vec![self.config.default_model.clone()],
+        }
+    }
+
     fn name(&self) -> &str {
         &self.config.name
     }
