@@ -3424,12 +3424,22 @@ pub fn start_server(
     // entirely — the server's primary IPC is the TCP loopback listener in the
     // accept section below (Windows has no Unix-domain sockets).
     #[cfg(unix)]
+    // Everything between init's end and the bind call: signal handlers and every
+    // module's periodic loop start (IntelMac's review of #3714 — the row is named
+    // for what it measures, and the bind itself gets its own instant).
+    crate::probe!(
+        class = "boot.phase",
+        phase = "post_init_to_bind",
+        ms = phase_started.elapsed().as_millis() as u64,
+        "pre-bind phase"
+    );
+    let bind_started = std::time::Instant::now();
     let listener = UnixListener::bind(socket_path)?;
     crate::probe!(
         class = "boot.phase",
         phase = "bind",
-        ms = phase_started.elapsed().as_millis() as u64,
-        "pre-bind phase — the socket exists after this"
+        ms = bind_started.elapsed().as_millis() as u64,
+        "the bind call itself — the socket exists after this"
     );
     // Make the socket world-rw so callers running under a different UID
     // than the server can connect. Concrete failure (#1008): on Windows
