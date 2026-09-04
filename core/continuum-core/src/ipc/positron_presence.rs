@@ -127,6 +127,28 @@ pub fn scope_directory_slots() -> Vec<RosterSlotView> {
     slots
 }
 
+/// Is this peer a HUMAN on this node — a directory slot whose runtime is the
+/// interactive client (`SenderKind::from_runtime`)? The ONE directory
+/// (`scope_directory_slots`), memoised for a minute: the persona loop head
+/// asks it per drained line, and a work-holding citizen wakes for a human
+/// line or an @mention, never for agent status traffic (2026-09-04: every
+/// agent line in #academy woke all twelve holders — 8 work turns an hour).
+pub fn is_human_peer(peer: Uuid) -> bool {
+    static HUMANS: std::sync::LazyLock<std::sync::Mutex<(Option<std::time::Instant>, std::collections::HashSet<Uuid>)>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new((None, std::collections::HashSet::new())));
+    let mut memo = HUMANS.lock().unwrap_or_else(|e| e.into_inner()); // poisoned lock = read the last state, same policy as every lock in this crate
+    let stale = memo.0.is_none_or(|at| at.elapsed() > Duration::from_secs(60));
+    if stale {
+        memo.1 = scope_directory_slots()
+            .into_iter()
+            .filter(|s| matches!(s.kind, continuum_positron::SenderKind::Human))
+            .map(|s| s.member_id)
+            .collect();
+        memo.0 = Some(std::time::Instant::now());
+    }
+    memo.1.contains(&peer)
+}
+
 fn load_directory(room_id: &Uuid) -> HashMap<Uuid, RosterSlotView> {
     let Some(path) = directory_path(room_id) else {
         return HashMap::new();

@@ -648,7 +648,12 @@ async fn serve_persona_loop_inner(
         let directed_line = |m: &IncomingMessage| {
             let sender_is_citizen = crate::persona::PersonaAircRuntimeRegistry::try_global()
                 .is_some_and(|r| r.get(m.peer_id).is_some());
-            turn_is_directed(ctx.identity.persona_identity().mentions(&m.text), sender_is_citizen)
+            turn_is_directed(
+                ctx.identity.persona_identity().mentions(&m.text),
+                sender_is_citizen,
+                crate::cognition::persona_workspace::acting_root_of(self_id).is_some(),
+                crate::ipc::positron_presence::is_human_peer(m.peer_id),
+            )
         };
         // Every directed line drained is HEARD (delivery receipt), whether or
         // not it becomes the trigger.
@@ -1113,6 +1118,8 @@ async fn serve_persona_loop_inner(
                 let directed = turn_is_directed(
                     ctx.identity.persona_identity().mentions(&msg.text),
                     sender_is_citizen,
+                    crate::cognition::persona_workspace::acting_root_of(ctx.identity.peer_id.as_uuid()).is_some(),
+                    crate::ipc::positron_presence::is_human_peer(msg.peer_id),
                 );
                 if directed {
                     // Focus = she is TAKING the turn on it; the heard receipt
@@ -1871,8 +1878,18 @@ fn push_work_board_anchor(
 /// work receipts they radiate — stay ambient, or twelve of them answer every
 /// receipt. Live 2026-09-03: the operator asked a work room a direct question
 /// twice and no citizen answered, because "directed" meant @mention only.
-pub(crate) fn turn_is_directed(mentioned: bool, sender_is_citizen: bool) -> bool {
-    mentioned || !sender_is_citizen
+/// `holding_work`: her hands are rooted at a card. Then only a HUMAN line or an
+/// @mention is directed — agent status traffic in the base room is message
+/// plane for perception, not a wake (working ≠ speaking; a human's question
+/// still is). Measured 2026-09-04: 8 work turns an hour across ten holders
+/// while every agent line in #academy woke all twelve for a message turn.
+pub(crate) fn turn_is_directed(
+    mentioned: bool,
+    sender_is_citizen: bool,
+    holding_work: bool,
+    sender_is_human: bool,
+) -> bool {
+    mentioned || if holding_work { sender_is_human } else { !sender_is_citizen }
 }
 
 
@@ -2873,10 +2890,22 @@ mod tests {
     // twice, nobody answered — 2026-09-03).
     #[test]
     fn a_non_citizen_line_is_directed_and_citizen_chatter_needs_a_mention() {
-        assert!(turn_is_directed(false, false), "human/agent line: directed");
-        assert!(turn_is_directed(true, false));
-        assert!(turn_is_directed(true, true), "a citizen naming her: directed");
-        assert!(!turn_is_directed(false, true), "citizen chatter/receipts: ambient");
+        assert!(turn_is_directed(false, false, false, false), "human/agent line: directed");
+        assert!(turn_is_directed(true, false, false, false));
+        assert!(turn_is_directed(true, true, false, false), "a citizen naming her: directed");
+        assert!(!turn_is_directed(false, true, false, false), "citizen chatter/receipts: ambient");
+    }
+
+    // what this catches: a citizen HOLDING WORK waking for agent status traffic —
+    // every agent line in #academy woke all twelve holders (8 work turns an hour,
+    // 2026-09-04). Holding work: a human line or a mention is directed; an
+    // agent's line is message plane only.
+    #[test]
+    fn holding_work_only_a_human_line_or_a_mention_is_directed() {
+        assert!(!turn_is_directed(false, false, true, false), "agent line while holding work: ambient");
+        assert!(turn_is_directed(false, false, true, true), "human line while holding work: directed");
+        assert!(turn_is_directed(true, false, true, false), "an agent naming her: directed");
+        assert!(!turn_is_directed(false, true, true, false), "citizen receipts: ambient");
     }
 
     // what this catches: the resume block carries HER newest thoughts only, oldest
