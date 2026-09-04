@@ -1047,6 +1047,11 @@ export function messageRow(msg: MessageRowVM): TemplateResult {
           >
           ${runtimeBadge(msg.runtime)}
           <span class="time">${msg.time}</span>
+          ${(msg.heardBy ?? 0) > 0
+            ? html`<span class="heard" title="citizens whose live stream admitted this line as a turn"
+                >heard by ${msg.heardBy}</span
+              >`
+            : nothing}
         </div>
         ${messageBody(msg)}
       </div>

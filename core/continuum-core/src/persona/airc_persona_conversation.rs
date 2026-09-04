@@ -545,6 +545,7 @@ fn perceptual_from_event(event: &TranscriptEvent) -> Result<IncomingMessage, &'s
     // projection. This wrapper only adds the transcript's lamport.
     let (peer_id, text) = crate::airc::realtime_wire::room_turn_from_event(event)?;
     Ok(IncomingMessage {
+        event_id: event.event_id.as_uuid(),
         lamport: event.lamport,
         peer_id,
         text,

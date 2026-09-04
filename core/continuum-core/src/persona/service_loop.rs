@@ -55,6 +55,9 @@ use uuid::Uuid;
 /// every airc type into the test.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IncomingMessage {
+    /// The transcript event this turn came from — the row a `chat:heard`
+    /// receipt points back at. Nil for scripted/synthetic turns.
+    pub event_id: Uuid,
     /// Monotonic lamport clock — used for pre-attach high-water-mark
     /// filtering.
     pub lamport: u64,
@@ -1087,6 +1090,23 @@ async fn serve_persona_loop_inner(
                 );
                 if directed {
                     crate::ipc::vitals_emitter::record_focus(ctx.identity.peer_id.as_uuid());
+                    // FEEDBACK FOR THE INTERFACE: this citizen HEARD the line and is
+                    // taking it as a turn — the delivery receipt the human sees as
+                    // "heard by N" on the row (Joel 2026-09-04: "more feedback events
+                    // for the interface"; the live plane had been dead for weeks and
+                    // nothing on screen said so).
+                    if !msg.event_id.is_nil() {
+                        if let Some(bus) = crate::runtime::MessageBus::global() {
+                            bus.publish_async_only(
+                                crate::ipc::positron_source::CHAT_HEARD,
+                                serde_json::json!({
+                                    "message_id": msg.event_id,
+                                    "room_id": msg.room_id,
+                                    "persona_id": ctx.identity.peer_id.as_uuid(),
+                                }),
+                            );
+                        }
+                    }
                 }
                 let framing = crate::cognition::workspace::TurnFraming::message(directed);
 
@@ -4316,6 +4336,7 @@ mod tests {
 
         let mut conversation = ScriptedConversation::new().with_events(vec![
             Ok(Some(IncomingMessage {
+                event_id: uuid::Uuid::nil(),
                 lamport: 1,
                 peer_id: other_peer,
                 text: "hello?".to_string(),
@@ -4409,6 +4430,7 @@ mod tests {
 
         let mut conversation = ScriptedConversation::new().with_events(vec![
             Ok(Some(IncomingMessage {
+                event_id: uuid::Uuid::nil(),
                 lamport: 1,
                 peer_id: other_peer,
                 text: "ping?".to_string(),
@@ -4723,6 +4745,7 @@ mod tests {
         // UnprimedConversation per [[test-fixtures-are-system-primitives]].
         let mut conversation = ScriptedConversation::new()
             .with_events(vec![Ok(Some(IncomingMessage {
+                event_id: uuid::Uuid::nil(),
                 lamport: 1,
                 peer_id: other_peer,
                 text: "would-be-message".to_string(),
@@ -4763,6 +4786,7 @@ mod tests {
 
         let mut conversation = ScriptedConversation::new().with_events(vec![
             Ok(Some(IncomingMessage {
+                event_id: uuid::Uuid::nil(),
                 lamport: 1,
                 peer_id: persona_peer, // SELF
                 text: "my own echo".to_string(),
@@ -4806,18 +4830,21 @@ mod tests {
             .with_high_water(100) // pre-attach history was up to lamport=100
             .with_events(vec![
                 Ok(Some(IncomingMessage {
+                    event_id: uuid::Uuid::nil(),
                     lamport: 50, // BEFORE attach
                     peer_id: other_peer,
                     text: "ancient".to_string(),
                     room_id: Uuid::nil(),
                 })),
                 Ok(Some(IncomingMessage {
+                    event_id: uuid::Uuid::nil(),
                     lamport: 100, // exactly at the mark — also skipped
                     peer_id: other_peer,
                     text: "boundary".to_string(),
                     room_id: Uuid::nil(),
                 })),
                 Ok(Some(IncomingMessage {
+                    event_id: uuid::Uuid::nil(),
                     lamport: 101, // FRESH
                     peer_id: other_peer,
                     text: "new".to_string(),
@@ -4867,6 +4894,7 @@ mod tests {
         let mut conversation = ScriptedConversation::new().with_events(vec![
             Err("stream lag".to_string()),
             Ok(Some(IncomingMessage {
+                event_id: uuid::Uuid::nil(),
                 lamport: 1,
                 peer_id: other_peer,
                 text: "after lag".to_string(),

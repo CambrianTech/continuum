@@ -98,6 +98,9 @@ use crate::runtime::MessageBus;
 /// (compression principle). The emitter imports this const rather than
 /// re-typing the literal.
 pub(crate) const CHAT_POSTED: &str = "chat:posted";
+/// A citizen's inbound stream ADMITTED a posted line as a turn — the delivery
+/// receipt folded onto the row as `heard_by` ("heard by 8").
+pub(crate) const CHAT_HEARD: &str = "chat:heard";
 /// Bus event carrying a room roster/presence delta.
 ///
 /// `pub(crate)` for the same reason as [`CHAT_POSTED`]: the presence
@@ -141,6 +144,14 @@ const MAX_ACTS_PER_SNAPSHOT: usize = 60;
 pub(crate) fn provisional_sender_name(sender_id: Uuid) -> String {
     let simple = sender_id.simple().to_string();
     format!("peer-{}", &simple[..8])
+}
+
+/// The `chat:heard` payload (see [`CHAT_HEARD`]).
+#[derive(Debug, Clone, Deserialize)]
+struct AircChatHeard {
+    message_id: Uuid,
+    room_id: Uuid,
+    persona_id: Uuid,
 }
 
 /// Typed `chat:posted` payload — **thin by design**. It carries only the
@@ -763,6 +774,7 @@ impl ChatProjection {
             provenance: resolved.provenance,
             content: msg.content,
             timestamp: msg.timestamp,
+            heard_by: Vec::new(),
         });
         while accum.messages.len() > MAX_MESSAGES_PER_SNAPSHOT {
             accum.messages.pop_front();
@@ -816,6 +828,24 @@ impl ChatProjection {
     /// (unlike a message) adopts the resolved name. It also **upgrades**
     /// any message whose sender was provisional (posted before its card
     /// arrived) now that the card is known.
+    /// Fold a `chat:heard` receipt onto its row: the citizen joins `heard_by`
+    /// once. A row not (yet, or any more) in the window is a no-op — the
+    /// receipt decorates a line that exists, never a line of its own.
+    fn apply_heard(&mut self, heard: AircChatHeard) {
+        if heard.room_id.is_nil() {
+            return;
+        }
+        let Some(accum) = self.accums.get_mut(&heard.room_id) else { return };
+        let Some(row) = accum.messages.iter_mut().find(|m| m.id == heard.message_id) else {
+            return;
+        };
+        if row.heard_by.contains(&heard.persona_id) {
+            return;
+        }
+        row.heard_by.push(heard.persona_id);
+        self.store_for(heard.room_id);
+    }
+
     fn apply_presence(&mut self, update: AircPresenceUpdate) {
         // Per-room fold: presence lands in ITS room's accumulator — with
         // per-room emitters (#2606) every room's roster stays current and
@@ -982,6 +1012,7 @@ impl ChatProjection {
 /// substrate side effect — so it's unit-testable without a live bus.
 enum ProjectionInput {
     Message(AircChatPosted),
+    Heard(AircChatHeard),
     Presence(AircPresenceUpdate),
     Vitals(PersonaVitalsUpdate),
     /// One executed tool act (`persona:act` — the receipt stream, #243).
@@ -996,6 +1027,9 @@ fn classify(name: &str, payload: &serde_json::Value) -> Option<ProjectionInput> 
     // object, else the top-level value.
     let body = payload.get("payload").unwrap_or(payload);
     match name {
+        CHAT_HEARD => serde_json::from_value::<AircChatHeard>(body.clone())
+            .ok()
+            .map(ProjectionInput::Heard),
         CHAT_POSTED => serde_json::from_value::<AircChatPosted>(body.clone())
             .ok()
             .map(ProjectionInput::Message),
@@ -1158,6 +1192,7 @@ pub fn spawn(
                             ProjectionInput::Presence(p) => projection.apply_presence(p),
                             ProjectionInput::Vitals(v) => projection.apply_vitals(v),
                             ProjectionInput::Act(a) => projection.apply_act(a),
+                            ProjectionInput::Heard(h) => projection.apply_heard(h),
                             ProjectionInput::Focus(f) => projection.apply_focus(f.room_id),
                         }
                     }
@@ -1243,6 +1278,34 @@ mod tests {
         let view = current_chat(&substrate);
         assert_eq!(view.acts.len(), 1);
         assert_eq!(view.acts[0].tool, "code/shell");
+    }
+
+    // what this catches: a `chat:heard` receipt decorates the row it names — the
+    // citizen joins `heard_by` exactly once, a repeat is a no-op, and a receipt for a
+    // row the window does not hold is dropped (never a row of its own). The delivery
+    // receipt the human reads as "heard by N" (2026-09-04).
+    #[test]
+    fn a_heard_receipt_joins_the_row_once_and_never_mints_a_row() {
+        let substrate = Substrate::new();
+        let mut p = ChatProjection::new(substrate.clone());
+        let room = Uuid::from_u128(0x1);
+        let msg = Uuid::from_u128(0xa);
+        if let Some(ProjectionInput::Message(m)) = classify(CHAT_POSTED, &posted(room, msg, "hi all")) {
+            p.apply_message(m);
+        }
+        let heard = |persona: u128, message: Uuid| {
+            json!({ "message_id": message, "room_id": room, "persona_id": Uuid::from_u128(persona) })
+        };
+        for payload in [heard(0x7, msg), heard(0x7, msg), heard(0x8, msg), heard(0x9, Uuid::from_u128(0xdead))] {
+            if let Some(ProjectionInput::Heard(h)) = classify(CHAT_HEARD, &payload) {
+                p.apply_heard(h);
+            } else {
+                panic!("chat:heard must classify: {payload}");
+            }
+        }
+        let chat = current_chat(&substrate);
+        assert_eq!(chat.messages.len(), 1, "a receipt never mints a row");
+        assert_eq!(chat.messages[0].heard_by.len(), 2, "two citizens heard it, one of them twice");
     }
 
     #[test]

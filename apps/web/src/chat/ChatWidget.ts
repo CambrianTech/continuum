@@ -3053,6 +3053,17 @@ export class ChatWidget extends LitElement {
       font-weight: 600;
       color: var(--content-accent);
     }
+    .heard {
+      margin-left: 6px;
+      padding: 0 6px;
+      border: 1px solid var(--status-online);
+      border-radius: var(--radius-sm);
+      font-family: var(--font-mono);
+      font-size: 9px;
+      letter-spacing: 0.06em;
+      color: var(--status-online);
+      opacity: 0.85;
+    }
     .time {
       color: var(--content-secondary);
       font-size: 11px;
