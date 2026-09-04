@@ -227,6 +227,21 @@ pub(crate) async fn ask_the_act_question(
                             .await
                             {
                                 Ok(()) => {
+                                    // WHERE SHE STANDS, as a FACT in working memory (the
+                                    // same channel as the act-budget facts). Live
+                                    // 2026-09-04: the card said `swe/<instance>/`
+                                    // (workspace-relative) while her tools stood INSIDE
+                                    // that repo — every citizen burned acts on `ls swe/`
+                                    // → "No such file" and reported the checkout missing.
+                                    if let Some(body) = cycle.acting() {
+                                        body.working_memory.record_fact(&format!(
+                                            "[hands] For this turn my files and shell are \
+                                             rooted AT the repo root `{}` — paths are \
+                                             repo-relative; `ls` lists the repo itself \
+                                             (there is no `swe/` directory from here).",
+                                            ws.display()
+                                        ));
+                                    }
                                     crate::probe!(
                                         class = "persona.work.hands_rooted",
                                         persona = %ctx.identity.agent_name,
