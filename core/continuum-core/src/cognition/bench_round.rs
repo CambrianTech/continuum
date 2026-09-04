@@ -140,6 +140,12 @@ pub struct BenchRound {
     /// room stays presence-dark until a fresh dispatch names it.
     #[serde(default)]
     pub run_room_name: String,
+    /// When the round was opened (wall ms). Enrichment matches run facts by
+    /// instance, so without this floor a fresh card inherited an older round's
+    /// run on the same instance and read `resolved` before anyone touched it
+    /// (2026-09-05). `#[serde(default)]`: an old round file reads 0 = no floor.
+    #[serde(default)]
+    pub opened_at_ms: u64,
     round_id: Uuid,
     benchmark: String,
     /// Card uuid → the terminal state it settled with (`None` = still working).
@@ -230,6 +236,7 @@ impl BenchRound {
         Self {
             round_id,
             run_room_name: String::new(),
+            opened_at_ms: crate::modules::chat::now_ms(),
             benchmark: benchmark.to_string(),
             cards: card_ids.iter().map(|c| (*c, None)).collect(),
             stage: RoundStage::Working,
@@ -1140,6 +1147,10 @@ pub fn observe_card_event(payload: &Value) {
     export_to = "../../../protocol/typescript/benchmark/RoundSnapshot.ts"
 )]
 pub struct RoundSnapshot {
+    /// When the round was opened (wall ms); 0 for rounds older than the field.
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub opened_at_ms: u64,
     /// The run room's airc name — what a navigator matches a rail tab against to
     /// label it by what it is (`verified · working · 9/12 in hands`) instead of
     /// its raw name (2026-09-04: 49 identical `bench-swe-bench-verified-mini-…` rows).
@@ -1284,9 +1295,13 @@ pub fn enrich_rounds(rounds: &mut [RoundSnapshot], runs: &[CardRunFacts], now_ms
         let mut any_started = false;
         for card in round.cards.iter_mut() {
             let settled = !matches!(card.state.as_str(), "" | "unstarted");
+            // A run counts for this card only if it is at least as new as the
+            // round: run facts are keyed by instance and an older round on the same
+            // instance must not lend a fresh card its verdict.
             let run = runs
                 .iter()
                 .filter(|r| !card.instance.is_empty() && r.instance == card.instance)
+                .filter(|r| r.last_activity_ms >= round.opened_at_ms)
                 .max_by_key(|r| r.last_activity_ms);
             let Some(run) = run else {
                 // No detached-solve ledger entry — but a CITIZEN-driven card
@@ -1436,6 +1451,7 @@ pub fn live_rounds() -> Vec<RoundSnapshot> {
                 .collect();
             cards.sort_by(|a, b| a.instance.cmp(&b.instance).then(a.card_id.cmp(&b.card_id)));
             RoundSnapshot {
+                opened_at_ms: r.opened_at_ms,
                 round_id: r.round_id.to_string(),
                 run_room_name: r.run_room_name.clone(),
                 benchmark: r.benchmark.clone(),
@@ -1493,6 +1509,7 @@ mod tests {
             graded_at_ms: None,
         };
         let round = |cards: Vec<RoundCardSnapshot>| RoundSnapshot {
+            opened_at_ms: 0,
             round_id: Uuid::new_v4().to_string(),
             run_room_name: String::new(),
             benchmark: "swe-bench-verified".into(),
@@ -1608,6 +1625,7 @@ mod tests {
         assert_eq!(card_last_act_ms(card_uuid), Some(now_ms - 30_000));
 
         let mut rounds = vec![RoundSnapshot {
+            opened_at_ms: 0,
             round_id: Uuid::new_v4().to_string(),
             run_room_name: String::new(),
             benchmark: "swe-bench-verified".into(),
@@ -1666,6 +1684,7 @@ mod tests {
     use super::{no_healthy_working_round, RoundSnapshot, STALE_ROUND_ABANDON_SECS};
     fn snap(stage: &str, idle: Option<u64>) -> RoundSnapshot {
         RoundSnapshot {
+            opened_at_ms: 0,
             round_id: Uuid::new_v4().to_string(),
             run_room_name: String::new(),
             benchmark: "swe-bench-verified".into(),
