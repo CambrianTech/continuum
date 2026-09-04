@@ -765,11 +765,34 @@ async fn drive_create_workspace(
 /// file engine at (a card's checkout), or nothing when she stands in her own
 /// workspace. One truth for the hands, the workspace map she perceives, and the
 /// scope her receipts carry — set at the rooting seam, cleared on restore.
-static ACTING_ROOTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<uuid::Uuid, std::path::PathBuf>>> =
+static ACTING_ROOTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<uuid::Uuid, ActingPlace>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
+/// Where she stands: the checkout root, and the card whose checkout it is when
+/// a held card rooted her (None for a plain workspace_root).
+#[derive(Clone, Debug)]
+struct ActingPlace {
+    root: std::path::PathBuf,
+    card: Option<uuid::Uuid>,
+}
+
 pub fn acting_root_of(persona_id: uuid::Uuid) -> Option<std::path::PathBuf> {
-    ACTING_ROOTS.lock().unwrap_or_else(|e| e.into_inner()).get(&persona_id).cloned()  // poisoned lock = read the last state, same policy as every lock in this crate
+    ACTING_ROOTS.lock().unwrap_or_else(|e| e.into_inner()).get(&persona_id).map(|p| p.root.clone())  // poisoned lock = read the last state, same policy as every lock in this crate
+}
+
+/// The card her hands are rooted at, if a held card rooted them. Her work
+/// receipts radiate into THAT card's activity room, not the room whose line
+/// happened to trigger the turn (2026-09-04: every holder's 💭/⚙ lines landed
+/// in #academy — the base room and the agents' coordination room — because the
+/// trigger arrived there; the run room stayed empty for its reviewer).
+pub fn acting_card_of(persona_id: uuid::Uuid) -> Option<uuid::Uuid> {
+    ACTING_ROOTS.lock().unwrap_or_else(|e| e.into_inner()).get(&persona_id).and_then(|p| p.card)  // poisoned lock = read the last state, same policy as every lock in this crate
+}
+
+fn note_acting_card(persona_id: uuid::Uuid, card: uuid::Uuid) {
+    if let Some(place) = ACTING_ROOTS.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&persona_id) {  // poisoned lock = read the last state, same policy as every lock in this crate
+        place.card = Some(card);
+    }
 }
 
 fn note_acting_root(persona_id: uuid::Uuid, root: Option<std::path::PathBuf>) {
@@ -777,7 +800,7 @@ fn note_acting_root(persona_id: uuid::Uuid, root: Option<std::path::PathBuf>) {
         let mut map = ACTING_ROOTS.lock().unwrap_or_else(|e| e.into_inner());  // poisoned lock = read the last state, same policy as every lock in this crate
         match root {
             Some(r) => {
-                map.insert(persona_id, r);
+                map.insert(persona_id, ActingPlace { root: r, card: None });
             }
             None => {
                 map.remove(&persona_id);
@@ -820,7 +843,12 @@ pub(crate) async fn root_at_held_card(
     // Rooting is idempotent; do it every turn she holds a card.
     let hands = ActingHands::of(cycle)?;
     match root_acting_workspace(cycle, &ws.to_string_lossy(), &[], false).await {
-        Ok(()) => Some(hands),
+        Ok(()) => {
+            if let Some(card) = held.first() {
+                note_acting_card(hands.persona_id, card.card_id.as_uuid());
+            }
+            Some(hands)
+        }
         Err(e) => {
             tracing::warn!(error = %e, "could not root her hands at the held card for this turn");
             None
