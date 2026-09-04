@@ -69,6 +69,8 @@ const QUIET_WATCHDOG: std::time::Duration = std::time::Duration::from_secs(90);
 const CATCH_UP_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 /// Events paged per room per catch-up tick.
 const CATCH_UP_PAGE: usize = 8;
+/// Lamports remembered per room to tell "seen" from "dropped" (bounded).
+const SEEN_RING: usize = 128;
 /// Quiet windows after which the stream is re-opened even if no room appears
 /// to have moved (bounded recovery: ~4.5 min worst case).
 const QUIET_WINDOWS_FORCE: u32 = 3;
@@ -119,9 +121,13 @@ pub struct AircPersonaConversation {
     last_lamport: u64,
     /// Consecutive quiet-watchdog windows with no event (see `next_message`).
     quiet_windows: u32,
-    /// Newest lamport ADMITTED per room — what the store-backed catch-up compares
-    /// the durable tail against (see `catch_up_from_store`).
-    room_watermark: std::collections::HashMap<Uuid, u64>,
+    /// Per room: the lamport FLOOR adopted at first sight (nothing older is ever
+    /// replayed) and the ring of lamports actually SEEN since. A newest-seen mark
+    /// cannot stand in for this: live `event` frames keep arriving after the
+    /// daemon drops a `message`, so "max seen" leaps past the dropped line and the
+    /// catch-up reads it as old (measured 2026-09-04: zero admissions).
+    room_floor: std::collections::HashMap<Uuid, u64>,
+    room_seen: std::collections::HashMap<Uuid, std::collections::VecDeque<u64>>,
     /// The catch-up tick's deadline. PERSISTENT across `next_message` calls:
     /// the loop's wake `select!` drops and re-creates the `next_message` future
     /// on every self-tick (3–10 s), so a `sleep(60 s)` inside it restarted
@@ -147,7 +153,8 @@ impl AircPersonaConversation {
             membership_epoch,
             last_lamport: 0,
             quiet_windows: 0,
-            room_watermark: std::collections::HashMap::new(),
+            room_floor: std::collections::HashMap::new(),
+            room_seen: std::collections::HashMap::new(),
             next_catch_up: tokio::time::Instant::now() + CATCH_UP_EVERY,
             rejoin_backlog: std::collections::VecDeque::new(),
         }
@@ -345,7 +352,16 @@ impl PersonaConversation for AircPersonaConversation {
                     // change it). The store is the truth: page every subscribed room's
                     // durable tail and admit what the live stream never delivered. The
                     // live stream is an accelerator from here on, never the only ear.
-                    let caught = self.catch_up_from_store().await;
+                    let (paged, caught) = self.catch_up_from_store().await;
+                    // Every tick is observable (Joel: repeatability) — "did it run" must
+                    // never be inferred from the absence of a hit.
+                    crate::probe!(
+                        class = "persona.inbound.catch_up_tick",
+                        persona = %self.own_peer_id,
+                        rooms_paged = paged as u64,
+                        admitted = caught as u64,
+                        "store-backed catch-up tick"
+                    );
                     if caught > 0 {
                         crate::probe!(
                             class = "persona.inbound.caught_up_from_store",
@@ -722,9 +738,10 @@ impl AircPersonaConversation {
     /// stream never delivered (lamport above that room's watermark). Returns
     /// how many were admitted into the backlog. Heartbeats, chunks and her own
     /// lines are skipped at the same door as live events.
-    async fn catch_up_from_store(&mut self) -> usize {
+    async fn catch_up_from_store(&mut self) -> (usize, usize) {
         let rooms = self.runtime.subscribed_rooms().await.unwrap_or_default(); // unwrap_or: an unreadable room list = nothing to catch up this tick
         let mut admitted = 0usize;
+        let mut paged = 0usize;
         for room in rooms {
             let Ok(mut events) = self
                 .runtime
@@ -733,33 +750,46 @@ impl AircPersonaConversation {
             else {
                 continue;
             };
+            paged += 1;
             events.sort_by_key(|e| e.lamport);
-            let newest = events.iter().map(|e| e.lamport).max();
-            let mark = self.room_watermark.get(&room).copied();
-            if let Some(mark) = mark {
-                for event in &events {
-                    if event.lamport <= mark
-                        || crate::persona::airc_citizen::is_heartbeat(event)
-                        || crate::airc::realtime_wire::is_stream_chunk(event)
-                    {
-                        continue;
+            let Some(newest) = events.iter().map(|e| e.lamport).max() else { continue };
+            // First sight of a room: adopt its tail as the floor — read, never replayed.
+            let floor = *self.room_floor.entry(room).or_insert(newest);
+            for event in &events {
+                if event.lamport <= floor
+                    || self.was_seen(room, event.lamport)
+                    || crate::persona::airc_citizen::is_heartbeat(event)
+                    || crate::airc::realtime_wire::is_stream_chunk(event)
+                {
+                    continue;
+                }
+                self.note_seen(room, event.lamport);
+                self.last_lamport = self.last_lamport.max(event.lamport);
+                if let Ok(message) = perceptual_from_event(event) {
+                    if message.peer_id != self.own_peer_id {
+                        self.rejoin_backlog.push_back(message);
+                        admitted += 1;
                     }
-                    if let Ok(message) = perceptual_from_event(event) {
-                        if message.peer_id != self.own_peer_id {
-                            self.rejoin_backlog.push_back(message);
-                            admitted += 1;
-                        }
-                    }
-                    self.last_lamport = self.last_lamport.max(event.lamport);
                 }
             }
-            // Adopt (first sight: the tail is read, never replayed) or advance.
-            if let Some(newest) = newest {
-                let entry = self.room_watermark.entry(room).or_insert(newest);
-                *entry = (*entry).max(newest);
+        }
+        (paged, admitted)
+    }
+
+    fn was_seen(&self, room: Uuid, lamport: u64) -> bool {
+        self.room_seen
+            .get(&room)
+            .is_some_and(|ring| ring.contains(&lamport))
+    }
+
+    fn note_seen(&mut self, room: Uuid, lamport: u64) {
+        let ring = self.room_seen.entry(room).or_default();
+        if !ring.contains(&lamport) {
+            ring.push_back(lamport);
+            while ring.len() > SEEN_RING {
+                ring.pop_front();
             }
         }
-        admitted
     }
 
     /// The newest lamport across every room she subscribes to (two events per
@@ -822,11 +852,7 @@ impl AircPersonaConversation {
         // gap. If it fires but perceptual/self drops it, the gap is
         // continuum-side (decode/self-filter). One line per event,
         // greppable by probe_class, cheap enough for a live stream.
-        {
-            let room = event.room_id.as_uuid();
-            let entry = self.room_watermark.entry(room).or_insert(event.lamport);
-            *entry = (*entry).max(event.lamport);
-        }
+        self.note_seen(event.room_id.as_uuid(), event.lamport);
         let body_kind = match event.body.as_ref() {
             None => "none",
             Some(b) if b.as_text().is_some() => "text",
