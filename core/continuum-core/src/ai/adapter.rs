@@ -459,6 +459,16 @@ pub trait AIProviderAdapter: Send + Sync {
     /// Get default model for this provider
     fn default_model(&self) -> &str;
 
+    /// The model ids this adapter will ACTUALLY serve right now — what a
+    /// refusal may tell a caller to pass. Default: just `default_model()`.
+    /// Gateway adapters whose catalog default can drift from the live lane
+    /// (llama-server / DMR after a relaunch — the 5090 2026-07-24 misname)
+    /// override this with their verified runtime set. Never a guess: an
+    /// adapter that cannot know returns its declared default only.
+    fn served_model_ids(&self) -> Vec<String> {
+        vec![self.default_model().to_string()]
+    }
+
     /// Initialize the adapter (verify API key, load the model file
     /// off disk). Pays the model-load wall-clock once at boot so
     /// downstream consumers see the model's real capabilities from
@@ -895,6 +905,30 @@ impl AdapterRegistry {
             .iter()
             .filter_map(|id| self.adapters.get(id).map(|_| id.as_str()))
             .collect()
+    }
+
+    /// What each available adapter actually serves: `(provider_id, model_id)`
+    /// pairs in priority order, deduplicated, from each adapter's
+    /// [`AIProviderAdapter::served_model_ids`] (live runtime set where the
+    /// adapter has one, declared default otherwise). This is the list a refusal
+    /// must show a caller who named a model the registry can't route —
+    /// `available()` is provider ids, which a grid consumer with no local
+    /// registry cannot turn into a valid `model` (card a466fdd4: IntelMac → 5090
+    /// was refused with a list it couldn't act on).
+    pub fn served_models(&self) -> Vec<(&str, String)> {
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for id in &self.priority_order {
+            let Some(adapter) = self.adapters.get(id) else {
+                continue;
+            };
+            for model in adapter.served_model_ids() {
+                if seen.insert((id.as_str(), model.clone())) {
+                    out.push((id.as_str(), model));
+                }
+            }
+        }
+        out
     }
 
     /// Select best adapter based on request.
