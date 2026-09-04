@@ -54,6 +54,10 @@ preflight_detect_pkg_manager() {
   elif command -v apt-get &>/dev/null; then echo "apt"
   elif command -v dnf &>/dev/null; then echo "dnf"
   elif command -v yum &>/dev/null; then echo "yum"
+  # Last, not first: WSL2 has apt AND can see winget via interop, and apt is
+  # the right answer there. Only a NATIVE Windows shell (Git Bash) falls
+  # through to winget.
+  elif command -v winget.exe &>/dev/null || command -v winget &>/dev/null; then echo "winget"
   else echo ""
   fi
 }
@@ -86,6 +90,30 @@ preflight_pkg_install() {
     apt)  sudo apt-get update -qq && sudo apt-get install -y "$pkg" ;;
     dnf)  sudo dnf install -y "$pkg" ;;
     yum)  sudo yum install -y "$pkg" ;;
+    winget)
+      # Native Windows (Git Bash). winget is Microsoft's stock manager on
+      # Win10 21H2+/Win11 — present on exactly the boxes that hit this arm.
+      # --id with the canonical package id, not a fuzzy name: fuzzy matching
+      # prompts interactively, and there is no operator at an install.
+      # Measured 2026-09-04: `npm run setup:rust` on a native Windows box died
+      # right here ("No supported package manager found. Install 'jq'
+      # manually.") — an install script telling the USER to install things is
+      # the failure mode this repo exists to remove.
+      local winget_id
+      case "$pkg" in
+        jq)    winget_id="jqlang.jq" ;;
+        cmake) winget_id="Kitware.CMake" ;;
+        *)     winget_id="$pkg" ;;
+      esac
+      winget install --id "$winget_id" --exact --silent         --accept-package-agreements --accept-source-agreements
+      # winget installs land in a PATH the CURRENT Git Bash session may not
+      # see (User PATH updates apply to new shells). Re-probe and say so
+      # rather than letting the caller's next `command -v` fail mysteriously.
+      hash -r 2>/dev/null || true
+      if ! command -v "$pkg" &>/dev/null; then
+        echo -e "${YELLOW}'$pkg' installed via winget but not on THIS shell's PATH yet — open a new terminal (or re-run) to pick it up.${NC}"
+      fi
+      ;;
     *)
       echo -e "${RED}No supported package manager found. Install '$pkg' manually.${NC}"
       return 1

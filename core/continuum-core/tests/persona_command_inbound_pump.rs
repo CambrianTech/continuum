@@ -96,6 +96,12 @@ impl ServiceModule for TestInferenceModule {
     }
 }
 
+/// A minimal request: one user message, every knob at its default.
+/// `..Default::default()` (the struct derives `Default`) instead of an
+/// explicit `None` per field — #1952 added `frequency_penalty` +
+/// `repeat_last_n` and this initializer silently stopped compiling
+/// because it enumerated every field. Struct-update syntax makes the
+/// fixture immune to the next sampling knob.
 fn request(prompt: &str) -> TextGenerationRequest {
     TextGenerationRequest {
         messages: vec![ChatMessage {
@@ -103,24 +109,7 @@ fn request(prompt: &str) -> TextGenerationRequest {
             content: MessageContent::Text(prompt.to_string()),
             name: None,
         }],
-        system_prompt: None,
-        model: None,
-        provider: None,
-        temperature: None,
-        max_tokens: None,
-        top_p: None,
-        top_k: None,
-        repeat_penalty: None,
-        stop_sequences: None,
-        tools: None,
-        tool_choice: None,
-        response_format: None,
-        active_adapters: None,
-        request_id: None,
-        user_id: None,
-        room_id: None,
-        purpose: None,
-        persona_id: None,
+        ..Default::default()
     }
 }
 

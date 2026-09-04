@@ -247,19 +247,51 @@ function Set-CMakeEnv {
     if ($env:PATH -notlike "*$Bin*") { $env:PATH = "$Bin;$env:PATH" }  # also on PATH for direct CLI this session
 }
 
+function Get-CMakeVersion([string]$Exe) {
+    # Parse `cmake --version` -> [version], or $null when unparsable. Out-String
+    # because the native call yields a string ARRAY (same trap as the nvcc probe).
+    $out = (& $Exe --version 2>$null | Out-String)
+    if ($out -match 'cmake version (\d+)\.(\d+)\.(\d+)') {
+        return [version]("{0}.{1}.{2}" -f $Matches[1], $Matches[2], $Matches[3])
+    }
+    return $null
+}
+
 function Mod-CMake {
     # Standalone Kitware CMake (knows every VS generator string, unlike the
     # VS-bundled one). Downloaded + extracted per-user -- NO admin.
-    if (Get-Command cmake -ErrorAction SilentlyContinue) { Module-Skip 'CMake' 'on PATH'; return }
-    $dir = Join-Path $env:USERPROFILE '.continuum\tools\cmake'
-    $bin = Join-Path $dir 'bin'
-    if (Test-Path (Join-Path $bin 'cmake.exe')) {
-        Set-CMakeEnv $bin
-        Module-Skip 'CMake' "present at $dir"; return
-    }
-    Module-Start 'CMake' 'downloading Kitware CMake (no admin)'
+    #
+    # Skip requires VERSION SUFFICIENCY, not presence. This module used to skip
+    # on 'cmake is on PATH' / 'cmake.exe exists at the install dir', so a box
+    # carrying an older pin could NEVER upgrade by re-running the installer --
+    # the re-run-is-update contract broken exactly where it mattered. Measured
+    # on BigMama 2026-09-04: pinned 3.30.5 was present, VS 2026 was the box's
+    # toolchain, 3.30.5 predates the 'Visual Studio 18 2026' generator (CMake
+    # 4.2+), so every cargo build of the llama crate died at generator
+    # selection while this module reported 'present'. Presence probes pass on
+    # precisely the artifact that needs replacing.
     $src = (Get-ManifestModule 'cmake').source   # archive: url + version + sha256 + extract
     $ver = $src.version
+    $pin = [version]$ver
+    $onPath = Get-Command cmake -ErrorAction SilentlyContinue
+    if ($onPath) {
+        $have = Get-CMakeVersion $onPath.Source
+        if ($have -and $have -ge $pin) { Module-Skip 'CMake' "on PATH ($have >= pinned $ver)"; return }
+    }
+    $dir = Join-Path $env:USERPROFILE '.continuum\tools\cmake'
+    $bin = Join-Path $dir 'bin'
+    $installedExe = Join-Path $bin 'cmake.exe'
+    if (Test-Path $installedExe) {
+        $have = Get-CMakeVersion $installedExe
+        if ($have -and $have -ge $pin) {
+            Set-CMakeEnv $bin
+            Module-Skip 'CMake' "present at $dir ($have >= pinned $ver)"; return
+        }
+        Module-Start 'CMake' "upgrading $have -> $ver (older pin cannot know this box's VS generator)"
+    }
+    else {
+        Module-Start 'CMake' 'downloading Kitware CMake (no admin)'
+    }
     $url = $src.url
     $zip = Join-Path $env:TEMP "cmake-$ver.zip"
     Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
