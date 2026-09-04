@@ -27,6 +27,10 @@ import type { RoundCardSnapshot } from "./RoundCardSnapshot";
  */
 export type RoundSnapshot = { 
 /**
+ * When the round was opened (wall ms); 0 for rounds older than the field.
+ */
+opened_at_ms: number, 
+/**
  * The run room's airc name — what a navigator matches a rail tab against to
  * label it by what it is (`verified · working · 9/12 in hands`) instead of
  * its raw name (2026-09-04: 49 identical `bench-swe-bench-verified-mini-…` rows).
