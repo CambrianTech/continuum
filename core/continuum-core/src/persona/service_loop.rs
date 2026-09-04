@@ -1214,6 +1214,13 @@ async fn serve_persona_loop_inner(
                     Some(turn_room.to_string()),
                     Some(ctx.identity.peer_id.to_string()),
                 );
+                // A citizen holding a card lives at that repo — in a ROOM turn too.
+                let held_hands = crate::cognition::persona_workspace::root_at_held_card(
+                    &cycle,
+                    ctx.identity.peer_id.as_uuid(),
+                    conversation,
+                )
+                .await;
                 let (step, turn_metrics) = {
                     let outcome = crate::cognition::act_observe::drive_to_settle(
                         &cycle,
@@ -1233,6 +1240,13 @@ async fn serve_persona_loop_inner(
                 // Turn done: drop the cycle's sink so the forwarder's channel closes,
                 // then join it (all `tok_tx` clones are gone once the turn's Workspaces
                 // dropped inside `drive_to_settle`).
+                if let Some(hands) = &held_hands {
+                    if let Err(e) =
+                        crate::cognition::persona_workspace::restore_acting_workspace(hands).await
+                    {
+                        tracing::error!(error = %e, "room turn could NOT return her hands home");
+                    }
+                }
                 cycle.set_token_sink(None);
                 let _ = forwarder.await;
                 phase_timings.respond_ms = respond_started.elapsed().as_millis() as u64;

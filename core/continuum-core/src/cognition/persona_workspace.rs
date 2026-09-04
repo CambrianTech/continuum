@@ -773,13 +773,49 @@ pub fn acting_root_of(persona_id: uuid::Uuid) -> Option<std::path::PathBuf> {
 }
 
 fn note_acting_root(persona_id: uuid::Uuid, root: Option<std::path::PathBuf>) {
-    let mut map = ACTING_ROOTS.lock().unwrap_or_else(|e| e.into_inner());
-    match root {
-        Some(r) => {
-            map.insert(persona_id, r);
+    {
+        let mut map = ACTING_ROOTS.lock().unwrap_or_else(|e| e.into_inner());
+        match root {
+            Some(r) => {
+                map.insert(persona_id, r);
+            }
+            None => {
+                map.remove(&persona_id);
+            }
         }
-        None => {
-            map.remove(&persona_id);
+    }
+    // The map she perceives re-renders from the new root on her next grounding.
+    crate::persona::grounding_invalidation::mark_workspace_map_dirty(persona_id);
+}
+
+/// Root her hands at her held card's staged checkout for THIS turn — any turn,
+/// not only the work turn. Freya (2026-09-05) edited a file during a room turn
+/// with her hands at home: her home is a copy of the continuum repo, and the
+/// edit landed there, not in her card's checkout. While a citizen holds a card
+/// she lives at that repo. Returns the hands to restore after the turn.
+pub(crate) async fn root_at_held_card(
+    cycle: &WorkspaceCycle,
+    peer_id: uuid::Uuid,
+    conversation: &dyn crate::persona::service_loop::PersonaConversation,
+) -> Option<ActingHands> {
+    let citizen = conversation.stream_citizen()?;
+    let held = citizen.active_claims().await.ok()?;
+    if held.is_empty() {
+        return None;
+    }
+    let ws = crate::persona::staged_workspace::workspace_for_held_cards(
+        &peer_id,
+        held.iter().map(|c| c.title.as_str()),
+    )?;
+    if acting_root_of(peer_id).as_deref() == Some(ws.as_path()) {
+        return None; // already there (a work turn rooted her)
+    }
+    let hands = ActingHands::of(cycle)?;
+    match root_acting_workspace(cycle, &ws.to_string_lossy(), &[], false).await {
+        Ok(()) => Some(hands),
+        Err(e) => {
+            tracing::warn!(error = %e, "could not root her hands at the held card for this turn");
+            None
         }
     }
 }

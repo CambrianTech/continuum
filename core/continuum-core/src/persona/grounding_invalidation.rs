@@ -64,6 +64,25 @@ pub fn mutates_workspace(command: &str) -> bool {
 /// exits instead of parking forever. Success is NOT required to mark: a
 /// failed `code/shell` may have mutated before it failed (mkdir-then-die),
 /// so failures dirty too.
+/// The workspace map's dirty handle per persona, so a ROOT change (her hands
+/// moved to a card's checkout, or back home) re-renders the map even though no
+/// command mutated the workspace. Without it the map kept rendering her home
+/// while her shell stood inside the checkout (2026-09-05).
+static WORKSPACE_MAP_DIRTY: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<uuid::Uuid, WeakDirtyHandle>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+pub fn register_workspace_map_dirty(persona_id: uuid::Uuid, dirty: WeakDirtyHandle) {
+    WORKSPACE_MAP_DIRTY.lock().unwrap_or_else(|e| e.into_inner()).insert(persona_id, dirty);
+}
+
+pub fn mark_workspace_map_dirty(persona_id: uuid::Uuid) -> bool {
+    WORKSPACE_MAP_DIRTY
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&persona_id)
+        .is_some_and(|d| d.mark())
+}
+
 pub fn spawn_workspace_invalidator(bus: Arc<MessageBus>, dirty: WeakDirtyHandle) {
     let mut rx = bus.receiver();
     tokio::spawn(async move {
