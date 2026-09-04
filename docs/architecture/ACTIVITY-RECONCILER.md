@@ -81,4 +81,9 @@ was inconsistent, and nobody owned repairing it.
 - A round resumes with zero hands after a reboot: `bench.round.reseated` (or silence when
   everyone is already seated), no `bench.round.pulled` storm, no `persona.claim.recovered`
   storm.
+- A work turn's request offers her HANDS: `ai.request.tool_surface` reads `tools_n` ≈ a dozen on
+  work turns (37 = the whole registry, 0 = her hands are muted — the 2026-09-04 regression, where
+  13/13 work turns "passed" in 45 min because the filter matched wire-dialect names).
+- Work turns per holder per hour ≫ 1, and `persona.turn.work` decisions are `spoke`/acted, not
+  all `passed`.
 - Diffs per checkout over time — the only number that is a solve.
