@@ -1136,6 +1136,10 @@ pub fn observe_card_event(payload: &Value) {
     export_to = "../../../protocol/typescript/benchmark/RoundSnapshot.ts"
 )]
 pub struct RoundSnapshot {
+    /// The run room's airc name — what a navigator matches a rail tab against to
+    /// label it by what it is (`verified · working · 9/12 in hands`) instead of
+    /// its raw name (2026-09-04: 49 identical `bench-swe-bench-verified-mini-…` rows).
+    pub run_room_name: String,
     /// The round id — which IS its run room's id. A round is its room's activity; there is
     /// never a second identifier ([[killing-a-derived-id-needs-a-directory-at-every-scope-boundary]]).
     pub round_id: String,
@@ -1412,6 +1416,7 @@ pub fn live_rounds() -> Vec<RoundSnapshot> {
             cards.sort_by(|a, b| a.instance.cmp(&b.instance).then(a.card_id.cmp(&b.card_id)));
             RoundSnapshot {
                 round_id: r.round_id.to_string(),
+                run_room_name: r.run_room_name.clone(),
                 benchmark: r.benchmark.clone(),
                 stage: match r.stage {
                     RoundStage::Working => "working",
@@ -1468,6 +1473,7 @@ mod tests {
         };
         let round = |cards: Vec<RoundCardSnapshot>| RoundSnapshot {
             round_id: Uuid::new_v4().to_string(),
+            run_room_name: String::new(),
             benchmark: "swe-bench-verified".into(),
             stage: "working".into(),
             dispatched: cards.len(),
@@ -1582,6 +1588,7 @@ mod tests {
 
         let mut rounds = vec![RoundSnapshot {
             round_id: Uuid::new_v4().to_string(),
+            run_room_name: String::new(),
             benchmark: "swe-bench-verified".into(),
             stage: "working".into(),
             dispatched: 1,
@@ -1639,6 +1646,7 @@ mod tests {
     fn snap(stage: &str, idle: Option<u64>) -> RoundSnapshot {
         RoundSnapshot {
             round_id: Uuid::new_v4().to_string(),
+            run_room_name: String::new(),
             benchmark: "swe-bench-verified".into(),
             stage: stage.to_string(),
             dispatched: 8,

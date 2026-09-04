@@ -94,6 +94,11 @@ pub struct BenchRunRow {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../protocol/typescript/positron/BenchRoundRow.ts")]
 pub struct BenchRoundRow {
+    /// The run room's airc name — lets a navigator label the rail tab for this
+    /// round by what it is (`verified · working · 9/12 in hands`) instead of
+    /// its raw name. `#[serde(default)]` so an older core folds as empty.
+    #[serde(default)]
+    pub run_room: String,
     /// The round id — which IS its run room's id (a round is its room's activity).
     pub round_id: String,
     /// Suite name as catalogued ("swe-bench-lite", "ds-1000").

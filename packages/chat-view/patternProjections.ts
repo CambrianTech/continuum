@@ -25,6 +25,7 @@ import type { GaugeView, ServingPanelView } from '@continuum/patterns';
 import type {
   BenchViewState,
   KanbanViewState,
+  NavTab,
   NavViewState,
   ServingViewState,
   SystemMetricsViewState,
@@ -145,16 +146,47 @@ export function roomsListing(vm: ChatViewModel): ListingView {
  *  rides the neutral `count` (a badge pill on web, `(3 new)` in RAG), and the
  *  tab's target kind is the `group` facet — the All/Rooms/DMs filter is a facet
  *  over groups, not a new widget. */
-export function roomsListingFromNav(nav: NavViewState, focusedRoomId: string): ListingView {
+/** A run room's rail label from the bench view — what the round IS, not its
+ *  raw name: `verified · working · 9/12 in hands`, `mini · paused · 1/4 settled`.
+ *  Matched by the round's run room name; a tab without a round keeps its name. */
+export function benchRoomLabel(
+  tab: { readonly title: string },
+  bench: BenchViewState | undefined,
+): { readonly title: string; readonly subtitle: string } | undefined {
+  const round = bench?.rounds.find((r) => r.run_room !== '' && r.run_room === tab.title);
+  if (round === undefined) return undefined;
+  const suite = round.benchmark.replace(/^swe-bench-/, '').replace(/-/g, ' ');
+  const held = round.cards.filter((c) => c.owner !== '' && c.board_state !== 'closed').length;
+  const stage = round.stage.toLowerCase();
+  const progress =
+    stage === 'working' ? `${held}/${round.dispatched} in hands` : `${round.settled}/${round.dispatched} settled`;
+  return { title: `${suite} · ${stage}`, subtitle: progress };
+}
+
+export function roomsListingFromNav(
+  nav: NavViewState,
+  focusedRoomId: string,
+  bench?: BenchViewState,
+): ListingView {
+  // Working rounds lead, finished/paused ones trail; everything else keeps the
+  // nav's own order. A view choice over one truth — never a hidden row.
+  const rank = (tab: NavTab): number => {
+    const label = benchRoomLabel(tab, bench);
+    if (label === undefined) return 1;
+    return label.title.endsWith('working') ? 0 : 2;
+  };
+  const ordered = [...nav.open_tabs].sort((a, b) => rank(a) - rank(b));
   return {
     id: 'rooms',
     title: 'Activities',
-    cells: nav.open_tabs.map((tab): ListingCell => {
+    cells: ordered.map((tab): ListingCell => {
+      const bl = benchRoomLabel(tab, bench);
       const cell: ListingCell = {
         id: tab.id,
         // A child activity draws its LINEAGE label (`<instance> · <card>`), not
-        // the raw room name — the rail-tree IA (#2632 slice b).
-        title: tab.display_label !== '' ? tab.display_label : tab.title,
+        // the raw room name — the rail-tree IA (#2632 slice b); a bench run room
+        // draws what the round is.
+        title: bl ? bl.title : tab.display_label !== '' ? tab.display_label : tab.title,
         status: tab.id === focusedRoomId ? 'active' : 'idle',
         group: tab.kind,
         // The strip's membership: opened by the citizen (nav truth), never
@@ -164,7 +196,7 @@ export function roomsListingFromNav(nav: NavViewState, focusedRoomId: string): L
         // The room's recipe-defined activity purpose, carried verbatim as the
         // description line ([[room-purpose-is-per-recipe-not-an-enum]]).
         // Empty = unresolved — no subtitle drawn, never a fabricated blurb.
-        ...(tab.purpose ? { subtitle: tab.purpose } : {}),
+        ...(bl ? { subtitle: bl.subtitle } : tab.purpose ? { subtitle: tab.purpose } : {}),
       };
       return tab.unread > 0 ? { ...cell, count: tab.unread } : cell;
     }),
@@ -611,7 +643,7 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
   // The ACTIVE nav cell follows the citizen's current tab: the persona tab
   // when a persona home is focused, else the chat room on screen.
   const roomsBase = live?.nav
-    ? roomsListingFromNav(live.nav, persona?.id ?? vm.roomId)
+    ? roomsListingFromNav(live.nav, persona?.id ?? vm.roomId, live?.bench)
     : roomsListing(vm);
   // AMBIENT PULSE (Joel, 2026-08-31: "see live benchmarks, events, etc
   // everywhere as this dynamic system operates"): the academy's rail cell

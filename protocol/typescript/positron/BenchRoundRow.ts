@@ -10,6 +10,12 @@ import type { BenchRoundCardRow } from "./BenchRoundCardRow";
  */
 export type BenchRoundRow = { 
 /**
+ * The run room's airc name — lets a navigator label the rail tab for this
+ * round by what it is (`verified · working · 9/12 in hands`) instead of
+ * its raw name. `#[serde(default)]` so an older core folds as empty.
+ */
+run_room: string, 
+/**
  * The round id — which IS its run room's id (a round is its room's activity).
  */
 round_id: string, 
