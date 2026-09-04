@@ -10,7 +10,6 @@
 //! OUTSIDER replicate our numbers against their own `/v1` without our stack. Operational
 //! benchmarking is Rust; the replication convenience is the lone edge script.
 
-use crate::cognition::learning_policy::LearningPolicy;
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

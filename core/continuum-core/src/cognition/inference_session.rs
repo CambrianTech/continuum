@@ -25,7 +25,7 @@ use uuid::Uuid;
 
 use crate::ai::types::ChatMessage;
 use crate::modules::ai_provider::{generate_text, global_registry};
-use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand};
+use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
 /// A live inference lease: a handle bound to a concrete model. Held in the global
 /// registry so it survives across turns (keep-alive) and can be re-found if a caller

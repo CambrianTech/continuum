@@ -38,7 +38,6 @@ use std::sync::Arc;
 
 use airc_core::TranscriptEvent;
 use airc_lib::AircError;
-use dashmap::DashMap;
 use uuid::Uuid;
 
 use crate::cognition::channel_element::{ChannelElement, ChannelElementCache};

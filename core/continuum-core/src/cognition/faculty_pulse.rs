@@ -19,7 +19,7 @@
 //! radiator. The lock is held only for a cheap read/write, never across an await.
 
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use super::workspace::FacultyId;
 
@@ -172,6 +172,7 @@ impl FacultyPulse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     // what this catches: the accumulator must (a) light an axis on a fire, (b) map
     // each faculty to its compass axis, and (c) decay toward dark over wall-clock —
