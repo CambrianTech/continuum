@@ -231,11 +231,19 @@ impl WorkspaceLayoutReader for CitizenLayerWorkspaceLayoutReader {
         let acting = uuid::Uuid::parse_str(&self.peer)
             .ok()
             .and_then(crate::cognition::persona_workspace::acting_root_of);
+        let acting_root_present = acting.is_some();
         let root = match acting {
             Some(r) => r,
             None => crate::modules::code_commands::ensure_citizen_layer(&self.peer)
                 .map_err(|e| format!("citizen layer unavailable: {e}"))?,
         };
+        crate::probe!(
+            class = "workspace.map.rendered",
+            peer = %self.peer,
+            root = %root.display(),
+            acting = acting_root_present,
+            "the workspace map rendered from this root (acting = her hands are at a card's checkout)"
+        );
         let security =
             PathSecurity::new(&root).map_err(|e| format!("workspace security init failed: {e}"))?;
         let engine = FileEngine::new(SOURCE_ID, security);

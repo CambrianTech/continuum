@@ -785,7 +785,14 @@ fn note_acting_root(persona_id: uuid::Uuid, root: Option<std::path::PathBuf>) {
         }
     }
     // The map she perceives re-renders from the new root on her next grounding.
-    crate::persona::grounding_invalidation::mark_workspace_map_dirty(persona_id);
+    let marked = crate::persona::grounding_invalidation::mark_workspace_map_dirty(persona_id);
+    crate::probe!(
+        class = "workspace.acting_root",
+        persona_id = %persona_id,
+        root = %acting_root_of(persona_id).map(|p| p.display().to_string()).unwrap_or_default(),
+        map_marked_dirty = marked,
+        "where her hands stand now; the map is marked to re-render"
+    );
 }
 
 /// Root her hands at her held card's staged checkout for THIS turn — any turn,
