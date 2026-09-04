@@ -395,6 +395,11 @@ export function roomInfoListing(vm: ChatViewModel): ListingView {
  *  fabricated placeholder). One options object, not a growing positional list
  *  ([[structs-by-reference-not-massive-param-lists]]). */
 export interface WorkspaceLive {
+  /** Every member the surface has ever seen, node-wide (each room's roster
+   *  folded in as it arrives) — so a persona page opened from a room she is
+   *  NOT in still finds her presence and vitals. The focused room's roster is
+   *  tried first; this is the fallback, never a second truth. */
+  readonly directory?: readonly RosterMemberVM[];
   /** The citizen's `kind="nav"` view — upgrades the rooms rail to the room set. */
   readonly nav?: NavViewState;
   /** The node's `kind="system-metrics"` view — adds the SYS gauge widget. */
@@ -483,7 +488,9 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
       }
     : undefined;
   const persona = focusedPersonaTab(live?.nav);
-  const personaBody = persona ? personaContentBody(vm, persona, live?.board) : undefined;
+  const personaBody = persona
+    ? personaContentBody(vm, persona, live?.board, live?.directory)
+    : undefined;
   // The LIVE face ([[LIVE_PURPOSE]]): a room's call grid, dispatched through the
   // SAME registry when the room's recipe purpose is "live", a live-purpose tab
   // is focused, or the reader opened the Go-live face — honest entries only.

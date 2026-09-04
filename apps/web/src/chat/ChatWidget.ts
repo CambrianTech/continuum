@@ -5623,6 +5623,7 @@ export class ChatWidget extends LitElement {
     try {
       surface = renderChat(vm, {
         nav: this.nav,
+        directory: [...this._directory.values()],
         sys: this.sys,
         serving: this.serving,
         bench: this.bench,

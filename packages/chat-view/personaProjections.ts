@@ -161,8 +161,14 @@ export function personaContentBody(
   vm: ChatViewModel,
   persona: { id: string; title: string },
   board?: KanbanViewState,
+  directory?: readonly RosterMemberVM[],
 ): PersonaContentBody {
-  const member: RosterMemberVM | undefined = vm.members.find((m) => m.id === persona.id);
+  // The focused room's roster first; else the node-wide directory the surface
+  // has folded from every room it has seen. Without the fallback her page read
+  // "no vitals radiating" whenever it was opened from a room she is not in
+  // (every deep link, 2026-09-04) — a blank brain for a citizen mid-turn.
+  const member: RosterMemberVM | undefined =
+    vm.members.find((m) => m.id === persona.id) ?? directory?.find((m) => m.id === persona.id);
   const name = member?.name ?? persona.title;
   const vitals = member?.vitals ?? {};
   return {
