@@ -194,24 +194,9 @@ fn build_text_request() -> TextGenerationRequest {
         }],
         system_prompt: Some("chaos test — silent peer".to_string()),
         model: Some("nonexistent-but-routable".to_string()),
-        provider: None,
         temperature: Some(0.7),
         max_tokens: Some(16),
-        top_p: None,
-        top_k: None,
-        repeat_penalty: None,
-        frequency_penalty: None,
-        repeat_last_n: None,
-        stop_sequences: None,
-        tools: None,
-        tool_choice: None,
-        response_format: None,
-        active_adapters: None,
-        request_id: None,
-        user_id: None,
-        room_id: None,
-        purpose: None,
-        persona_id: None,
+        ..Default::default()
     }
 }
 
