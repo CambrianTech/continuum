@@ -31,7 +31,8 @@
 //!   the decision and its inputs whether or not a work turn follows. A gate whose
 //!   refusal is invisible is a gate nobody can debug.
 
-use crate::persona::service_loop::{held_work_burst, PersonaConversation, LIVE_MAX_ACTS, own_recent_thoughts};
+use crate::persona::service_loop::{PersonaConversation, LIVE_MAX_ACTS};
+use crate::persona::work_burst::{held_work_burst, own_recent_thoughts};
 use crate::persona::supervisor::HostedPersona;
 
 /// Ask the act-question for a citizen who may be holding work.
