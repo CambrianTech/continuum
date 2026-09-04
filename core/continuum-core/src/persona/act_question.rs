@@ -31,7 +31,7 @@
 //!   the decision and its inputs whether or not a work turn follows. A gate whose
 //!   refusal is invisible is a gate nobody can debug.
 
-use crate::persona::service_loop::{held_work_burst, PersonaConversation, LIVE_MAX_ACTS};
+use crate::persona::service_loop::{held_work_burst, PersonaConversation, LIVE_MAX_ACTS, own_recent_thoughts};
 use crate::persona::supervisor::HostedPersona;
 
 /// Ask the act-question for a citizen who may be holding work.
@@ -154,7 +154,24 @@ pub(crate) async fn ask_the_act_question(
                             worked_at,
                         );
                     }
-                    let burst_text = held_work_burst(&held);
+                    // Her own newest thoughts on this work lead the turn (see
+                    // `held_work_burst`); paged from the durable store, the
+                    // same page the catch-up reads. A failed page is a missing
+                    // block, never a failed turn.
+                    let last_state = match crate::persona::durable_history::room_rows(turn_room, 80).await {
+                        Ok(rows) => own_recent_thoughts(&rows, ctx.identity.peer_id.as_uuid(), 4, 400),
+                        Err(e) => {
+                            tracing::warn!(error = %e, "work turn: last-state page failed; opening without it");
+                            Vec::new()
+                        }
+                    };
+                    crate::probe!(
+                        class = "persona.work.last_state",
+                        persona = %ctx.identity.agent_name,
+                        thoughts = last_state.len() as u64,
+                        "her own newest thoughts lead the work turn"
+                    );
+                    let burst_text = held_work_burst(&held, &last_state);
                     // The producer's CONTEXT half, kept before the burst is
                     // moved into the driver — one construction, so the
                     // training example records the prompt she was actually

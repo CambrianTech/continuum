@@ -1859,7 +1859,7 @@ pub(crate) fn turn_is_directed(mentioned: bool, sender_is_citizen: bool) -> bool
     mentioned || !sender_is_citizen
 }
 
-pub(crate) fn held_work_burst(held: &[&airc_lib::WorkCard]) -> String {
+pub(crate) fn held_work_burst(held: &[&airc_lib::WorkCard], last_state: &[String]) -> String {
     use std::fmt::Write as _;
     let mut s = String::from(
         "[work turn] The room is quiet and your speak-turn is settled. This \
@@ -1868,6 +1868,21 @@ pub(crate) fn held_work_burst(held: &[&airc_lib::WorkCard]) -> String {
     for card in held {
         let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
         let _ = writeln!(s, "- card {id8} \"{}\"", card.title);
+    }
+    // HER LAST STATE LEADS (2026-09-04, measured on Freya: at 11:01 she had the
+    // bug located — "lines 107-152, I can see it clearly" — and at 11:16 the
+    // next work turn opened with "let me recall what I know"; twelve checkouts,
+    // zero diffs after fourteen hours). The turn resumes from her own newest
+    // thoughts on this work, oldest first, instead of re-orienting from the
+    // room. Her words, unedited: state, not steering.
+    if !last_state.is_empty() {
+        s.push_str(
+            "Your own last thoughts on this work, oldest first — resume from them; \
+             do not re-orient:\n",
+        );
+        for line in last_state {
+            let _ = writeln!(s, "  · {line}");
+        }
     }
     s.push_str(
         "Your workspace holds the staged checkout (see [workspace-map] and \
@@ -1880,6 +1895,35 @@ pub(crate) fn held_work_burst(held: &[&airc_lib::WorkCard]) -> String {
          to report a result or blocker to the room.",
     );
     s
+}
+
+/// Her own newest thoughts in the room (💭 lines), oldest first, each clipped —
+/// the raw material of the resume block in [`held_work_burst`]. Pure: the
+/// caller pages the durable store.
+pub(crate) fn own_recent_thoughts(
+    rows: &[crate::persona::durable_history::RoomRow],
+    me: Uuid,
+    keep: usize,
+    max_chars: usize,
+) -> Vec<String> {
+    let mut mine: Vec<&crate::persona::durable_history::RoomRow> = rows
+        .iter()
+        .filter(|r| r.sender == me && r.text.starts_with('💭'))
+        .collect();
+    mine.sort_by_key(|r| r.occurred_at_ms);
+    let start = mine.len().saturating_sub(keep);
+    mine[start..]
+        .iter()
+        .map(|r| {
+            let one_line = r.text.split_whitespace().collect::<Vec<_>>().join(" ");
+            if one_line.chars().count() > max_chars {
+                let cut: String = one_line.chars().take(max_chars).collect();
+                format!("{cut}…")
+            } else {
+                one_line
+            }
+        })
+        .collect()
 }
 
 fn work_board_anchor(deliveries: &[crate::persona::rag_budget::RagDelivery]) -> String {
@@ -3076,6 +3120,30 @@ mod tests {
         assert!(!turn_is_directed(false, true), "citizen chatter/receipts: ambient");
     }
 
+    // what this catches: the resume block carries HER newest thoughts only, oldest
+    // first, clipped — never another citizen's line, never a receipt.
+    #[test]
+    fn her_last_thoughts_lead_the_work_turn_oldest_first() {
+        use crate::persona::durable_history::RoomRow;
+        let me = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        let row = |sender, ms, text: &str| RoomRow { id: Uuid::new_v4(), sender, occurred_at_ms: ms, text: text.to_string() };
+        let rows = vec![
+            row(me, 3, "💭 lines 107-152: the bug is the total_degree branch"),
+            row(other, 4, "💭 not hers"),
+            row(me, 1, "💭 let me look at itermonomials"),
+            row(me, 2, "⚙ code/read ✓"),
+            row(me, 5, "💭 let me refocus and actually do work on this card now, really"),
+        ];
+        let state = own_recent_thoughts(&rows, me, 2, 40);
+        assert_eq!(state.len(), 2);
+        assert!(state[0].starts_with("💭 lines 107-152"), "{state:?}");
+        assert!(state[1].ends_with('…'), "clipped: {state:?}");
+        let text = held_work_burst(&[], &state);
+        assert!(text.contains("resume from them"));
+        assert!(text.contains("lines 107-152"));
+    }
+
     #[test]
     fn held_work_burst_names_cards_and_keeps_the_choice_hers() {
         use airc_work::{CardState, Priority, RepoId, WorkCardId};
@@ -3098,7 +3166,7 @@ mod tests {
             reviews: None,
         };
         let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
-        let burst = held_work_burst(&[&card]);
+        let burst = held_work_burst(&[&card], &[]);
         assert!(burst.contains(&id8), "short id must appear: {burst}");
         assert!(
             burst.contains("psf__requests-2148"),
