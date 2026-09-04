@@ -200,6 +200,14 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
             // walls one burned solve attempt at a time (2026-08-27: the
             // operator hand-worked around it with idempotent re-dispatches).
             // Once per task lifetime; cheap when everything is already warm.
+            // THE FIRST RECONCILER RULE (2026-09-04): every live citizen is a member
+            // of every working citizen-driven round's run room. Dispatch seated the
+            // roster once; a reboot dropped the runtime joins, the residency park
+            // saw "residents exist" and moved on, and a freshly dispatched team
+            // round sat with one member for thirty minutes while ten citizens
+            // held nothing and pulled nothing. Idempotent: a citizen already in
+            // the room is left alone (no epoch bump, no stream re-open).
+            reseat_working_rounds(&registry).await;
             if attempt == 1 {
                 crate::modules::work::spawn_env_prewarm_for_working_rounds();
             }
@@ -372,5 +380,49 @@ async fn board_state_of(
         Some(BoardCardState::Terminal(state))
     } else {
         Some(BoardCardState::Workable)
+    }
+}
+
+/// Seat every live citizen into each working citizen-driven round's run room.
+/// Repairs the WORLD (membership) and nothing about the mind: a seated citizen
+/// perceives the room's board and doctrine and pulls or not as she chooses.
+async fn reseat_working_rounds(registry: &crate::persona::PersonaAircRuntimeRegistry) {
+    use crate::persona::airc_citizen::AircCitizen as _;
+    for round in crate::cognition::bench_round::live_rounds() {
+        let working = round.stage.eq_ignore_ascii_case("working");
+        let citizen_driven = round.driver.to_ascii_lowercase().contains("citizen");
+        if !working || !citizen_driven || round.run_room_name.is_empty() {
+            continue;
+        }
+        let Ok(round_id) = uuid::Uuid::parse_str(&round.round_id) else { continue };
+        let mut joined = 0u64;
+        let mut already = 0u64;
+        let mut failed = 0u64;
+        for rt in registry.iter() {
+            let member = rt
+                .subscribed_rooms()
+                .await
+                .map(|rooms| rooms.contains(&round_id))
+                .unwrap_or(false); // unwrap_or: an unreadable room list reads as "not seated" — a join is idempotent on the daemon
+            if member {
+                already += 1;
+                continue;
+            }
+            match rt.join_room(&round.run_room_name).await {
+                Ok(()) => joined += 1,
+                Err(_) => failed += 1,
+            }
+        }
+        if joined > 0 || failed > 0 {
+            crate::probe!(
+                class = "bench.round.reseated",
+                round = %round.round_id.chars().take(8).collect::<String>(),
+                room = %round.run_room_name,
+                joined,
+                already,
+                failed,
+                "live citizens seated into a working round's run room (the standing repair)"
+            );
+        }
     }
 }
