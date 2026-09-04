@@ -1733,6 +1733,7 @@ mod tests {
     fn the_non_settling_edge_advances_past_the_card_that_just_failed() {
         fn round_with(cards: &[(Uuid, Uuid)]) -> BenchRound {
             BenchRound {
+                opened_at_ms: 0,
                 run_room_name: String::new(),
                 round_id: Uuid::new_v4(),
                 benchmark: "swe-bench-lite".into(),
