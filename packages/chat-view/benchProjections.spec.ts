@@ -133,6 +133,8 @@ describe('a run room is a conversation with its round on top', () => {
     const body = ws.content.body as AcademyContentBody;
     expect(body.chat.messages.map((m) => m.content)).toEqual(['which card do you hold?']);
     expect(body.bench.rounds).toHaveLength(1);
+    expect(body.chatOpen).toBe(true);
+    expect(body.title).toBe('verified · working · 0/12 in hands');
   });
 
   // what this catches: a bench-family room that is NOT a round's run room (an

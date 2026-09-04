@@ -53,7 +53,7 @@ function academyContent(body: AcademyContentBody): TemplateResult {
   ).length;
   return html`<div class="academy-landing">
     <div class="academy-hero">
-      <div class="academy-title">Academy</div>
+      <div class="academy-title">${body.title}</div>
       <div class="academy-strip">
         <span class="academy-stat">${body.activeCount} <i>active</i></span>
         <span class="academy-stat">${body.memberCount} <i>citizens</i></span>
@@ -63,7 +63,7 @@ function academyContent(body: AcademyContentBody): TemplateResult {
       </div>
     </div>
     ${renderBench(body.bench, { history: 'digest' })}
-    <details class="academy-chat">
+    <details class="academy-chat" ?open=${body.chatOpen}>
       <summary>Room chat${body.chat.isEmpty ? ' — quiet' : ''}</summary>
       ${chatContent(body.chat)}
     </details>

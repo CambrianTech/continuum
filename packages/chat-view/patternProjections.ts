@@ -492,8 +492,14 @@ export interface WorkspaceLive {
  *  as a disclosure. Counts feed the hero strip. */
 export const ACADEMY_PURPOSE = 'academy';
 export interface AcademyContentBody {
+  /** The landing's name: `Academy` for the campus, the round's humanized
+   *  label (`verified · working · 12/12 in hands`) for a run room. */
+  readonly title: string;
   readonly bench: BenchContentBody;
   readonly chat: ChatContentBody;
+  /** A run room's conversation is open by default — operator lines land
+   *  there; the campus keeps chat folded under the board. */
+  readonly chatOpen: boolean;
   readonly memberCount: number;
   readonly activeCount: number;
 }
@@ -609,8 +615,15 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     !benchBody &&
     (vm.roomName.toLowerCase() === 'academy' || isRunRoom)
       ? {
+          title: isRunRoom
+            ? (() => {
+                const label = benchRoomLabel({ title: vm.roomName }, live?.bench);
+                return label ? `${label.title} · ${label.subtitle}` : vm.roomName;
+              })()
+            : 'Academy',
           bench: benchContentBody(isRunRoom ? benchViewForRoom(live?.bench, vm.roomName) : live?.bench),
           chat: { messages: vm.messages, transcript: vm.transcript, isEmpty: vm.isEmpty },
+          chatOpen: isRunRoom,
           memberCount: vm.memberCount,
           activeCount: vm.activeCount,
         }
