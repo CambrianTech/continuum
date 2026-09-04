@@ -214,12 +214,22 @@ impl Observation {
     /// call, shared by every act in the batch), so it is passed rather than
     /// stored per-`Observation`.
     pub fn render_recency(&self, intent: &str, budget: &ContextBudget) -> String {
+        Self::render_recency_impl(self, intent, budget)
+    }
+
+    fn render_recency_impl(&self, intent: &str, budget: &ContextBudget) -> String {
         let fold = Some(budget.echoed_arg_chars());
         let args = summarize_args_for_recency(&self.call.input, fold);
+        // The intent rides the result as a ONE-LINE reason, clipped to the same
+        // window-relative echo budget the args get — never the whole monologue.
+        // Measured 2026-09-04: one result header carried 2,902 chars of intent
+        // ("Let me get oriented…") ahead of 790 chars of actual output; across a
+        // turn, 6.1k of 20.6k result chars were intent echo. The output is what
+        // she must read; the reason is a label.
         let because = if intent.trim().is_empty() {
             String::new()
         } else {
-            format!(" because {}", intent.trim())
+            format!(" because {}", clip_intent(intent, budget.echoed_arg_chars()))
         };
         format!(
             "{}({}){}\nResult:\n{}\n\n",
@@ -269,8 +279,35 @@ pub fn extract_paths(input: &serde_json::Value) -> Vec<PathBuf> {
     out
 }
 
+
+/// Clip an act's intent to a one-line reason of at most `max_chars` characters
+/// (first line, head-trimmed with an ellipsis). Pure; used by the recency render.
+pub(super) fn clip_intent(intent: &str, max_chars: usize) -> String {
+    let first = intent.trim().lines().next().unwrap_or("").trim(); // unwrap_or: an empty intent clips to nothing
+    let max = max_chars.max(24);
+    if first.chars().count() <= max {
+        first.to_string()
+    } else {
+        let head: String = first.chars().take(max.saturating_sub(1)).collect();
+        format!("{}…", head.trim_end())
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    // what this catches: the intent rides a tool result as a ONE-LINE label clipped to
+    // the echo budget — never the monologue (2,902 chars ahead of 790 chars of output,
+    // measured 2026-09-04). A short intent passes through untouched.
+    #[test]
+    fn intent_on_a_result_is_a_clipped_one_liner() {
+        let long = "Let me get oriented properly this time. I've been confusing myself with stale context and the board says otherwise.\nSecond line never rides.";
+        let clipped = super::clip_intent(long, 40);
+        assert!(clipped.chars().count() <= 40, "{clipped:?}");
+        assert!(clipped.ends_with('…') && !clipped.contains("Second line"), "{clipped:?}");
+        assert_eq!(super::clip_intent("read the card", 40), "read the card");
+        assert_eq!(super::clip_intent("   ", 40), "");
+    }
+
     use super::*;
 
     // what this catches: the verb→class mapping is the ONE home the `wrote` bool,
