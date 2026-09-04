@@ -160,7 +160,25 @@ pub(crate) async fn ask_the_act_question(
                     // same page the catch-up reads. A failed page is a missing
                     // block, never a failed turn.
                     let last_state = match crate::persona::durable_history::room_rows(turn_room, 80).await {
-                        Ok(rows) => own_recent_thoughts(&rows, ctx.identity.peer_id.as_uuid(), 4, 400),
+                        Ok(rows) => {
+                            let about: Vec<String> = held
+                                .iter()
+                                .flat_map(|c| {
+                                    let id8: String = c.card_id.as_uuid().to_string().chars().take(8).collect();
+                                    let inst = crate::commands::benchmark::parse_card_title(&c.title)
+                                        .map(|(_, i)| i)
+                                        .unwrap_or_default();
+                                    [id8, inst]
+                                })
+                                .collect();
+                            crate::persona::work_burst::own_recent_thoughts_about(
+                                &rows,
+                                ctx.identity.peer_id.as_uuid(),
+                                4,
+                                400,
+                                &about,
+                            )
+                        }
                         Err(e) => {
                             tracing::warn!(error = %e, "work turn: last-state page failed; opening without it");
                             Vec::new()

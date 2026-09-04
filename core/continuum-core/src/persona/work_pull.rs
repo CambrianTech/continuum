@@ -25,16 +25,29 @@ static LAST_PULL_MS: std::sync::LazyLock<std::sync::Mutex<std::collections::Hash
     std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 const PULL_SETTLE_MS: u64 = 120_000;
 
-pub(crate) async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn PersonaConversation) -> bool {
+/// What the pull decided this tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PullOutcome {
+    /// She took a card; the held-work loop works it next tick.
+    Pulled,
+    /// The roster already holds as many cards as there are lanes: no slot for her.
+    /// The self-cycle treats this as "watch the board" — no ambient deliberation,
+    /// so the lanes stay with the holders.
+    DeferredWip,
+    /// Nothing to pull (she holds a card, nothing claimable, or a read failed).
+    Nothing,
+}
+
+pub(crate) async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn PersonaConversation) -> PullOutcome {
     let Some(citizen) = conversation.stream_citizen() else {
-        return false;
+        return PullOutcome::Nothing;
     };
     // WIP = 1, enforced HERE and not by call order: a citizen who already holds a
     // card never pulls a second, even on a tick where the held-work gate deferred
     // (lane busy, env building). Also what keeps the board reads below to the idle.
     match citizen.active_claims().await {
         Ok(held) if held.is_empty() => {}
-        Ok(_) => return false,
+        Ok(_) => return PullOutcome::Nothing,
         Err(e) => {
             crate::probe!(
                 class = "bench.round.pull_failed",
@@ -43,14 +56,14 @@ pub(crate) async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn P
                 "her claims are unreadable — no pull this tick (a second card on a \
                  misread would break WIP=1)"
             );
-            return false;
+            return PullOutcome::Nothing;
         }
     }
     {
         let me = ctx.identity.peer_id.as_uuid();
         let last = LAST_PULL_MS.lock().unwrap_or_else(|e| e.into_inner()).get(&me).copied().unwrap_or(0); // unwrap_or: never pulled = 0
         if crate::modules::chat::now_ms().saturating_sub(last) < PULL_SETTLE_MS {
-            return false;
+            return PullOutcome::Nothing;
         }
     }
     // ELIGIBILITY IS RESIDENCY: she pulls from the run rooms she is standing in. A
@@ -64,7 +77,7 @@ pub(crate) async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn P
                 error = %e.to_string(),
                 "her subscription set is unreadable — no pull this tick"
             );
-            return false;
+            return PullOutcome::Nothing;
         }
     };
     // WIP = LANES (2026-09-05, Joel: "get this working"). Twelve citizens on five
@@ -104,13 +117,13 @@ pub(crate) async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn P
                     "no pull: the roster already holds as many cards as there are lanes (sampled 1/50)"
                 );
             }
-            return false;
+            return PullOutcome::DeferredWip;
         }
     }
     let candidates =
         crate::cognition::bench_round::pullable_cards(ctx.identity.peer_id.as_uuid(), &resident);
     if candidates.is_empty() {
-        return false;
+        return PullOutcome::Nothing;
     }
     // BOARD TRUTH decides what is takeable: the round tracker knows the deck, the
     // board knows who holds what. One board read per run room per self-tick.
@@ -141,7 +154,7 @@ pub(crate) async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn P
         }
     }
     let Some(next) = next else {
-        return false;
+        return PullOutcome::Nothing;
     };
     let card_id = airc_work::WorkCardId::from_uuid(next.card);
     match citizen.claim_card(card_id).await {
@@ -158,11 +171,11 @@ pub(crate) async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn P
                 "pulled the next Open card off the shared team deck — kanban pull; \
                  the held-work loop works it next tick"
             );
-            true
+            PullOutcome::Pulled
         }
         // A teammate pulled it first — a lost race on a shared deck is normal, not
         // a fault; she simply tries the next card on a later tick.
-        Ok(false) => false,
+        Ok(false) => PullOutcome::Nothing,
         Err(e) => {
             crate::probe!(
                 class = "bench.round.pull_failed",
@@ -171,7 +184,7 @@ pub(crate) async fn try_pull_next_card(ctx: &HostedPersona, conversation: &dyn P
                 error = %e,
                 "pull (claim) failed — will retry next tick"
             );
-            false
+            PullOutcome::Nothing
         }
     }
 }

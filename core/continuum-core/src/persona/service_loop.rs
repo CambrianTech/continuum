@@ -45,7 +45,7 @@ use crate::ai::adapter::AIProviderAdapter;
 use crate::persona::airc_source::AircTranscriptReader;
 use crate::persona::supervisor::HostedPersona;
 use crate::persona::work_burst::{held_work_burst, own_recent_thoughts, work_board_anchor};
-use crate::persona::work_pull::try_pull_next_card;
+use crate::persona::work_pull::{try_pull_next_card, PullOutcome};
 use async_trait::async_trait;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -2490,9 +2490,19 @@ async fn run_self_cycle(
     // not an LLM claim tool), WIP-limited to one by construction: once she holds
     // the pulled card the held-work branch above works it and this branch won't
     // fire again until it settles. Pulling IS engagement → hold the fast beat.
-    if try_pull_next_card(ctx, conversation).await {
-        *last_burst_fp = last_burst_fp.wrapping_add(1);
-        return false;
+    match try_pull_next_card(ctx, conversation).await {
+        PullOutcome::Pulled => {
+            return true;
+        }
+        // No slot on the roster (WIP = lanes): she watches the board this tick and
+        // takes no lane for ambient deliberation — the lanes stay with the holders
+        // (2026-09-05: with 8 holders on 5 lanes, idle self-ticks were taking
+        // nondirected lane permits while holders waited; a holder saw two work
+        // turns in forty minutes).
+        PullOutcome::DeferredWip => {
+            return false;
+        }
+        PullOutcome::Nothing => {}
     }
     // Only the MUSING tail below is ambient inference: it pays for an ambient permit
     // (lanes-1 pool, keeps the GPU for live speakers and held work). Nothing above
@@ -4963,7 +4973,7 @@ mod tests {
             Arc::new(held_elsewhere) as Arc<dyn crate::persona::airc_citizen::AircCitizen>,
         );
         assert!(
-            !try_pull_next_card(&hosted, &conversation).await,
+            try_pull_next_card(&hosted, &conversation).await != PullOutcome::Pulled,
             "a card the board says is held is not pulled"
         );
 
@@ -4976,7 +4986,7 @@ mod tests {
         let conversation = ScriptedConversation::new()
             .with_citizen(Arc::new(busy) as Arc<dyn crate::persona::airc_citizen::AircCitizen>);
         assert!(
-            !try_pull_next_card(&hosted, &conversation).await,
+            try_pull_next_card(&hosted, &conversation).await != PullOutcome::Pulled,
             "a citizen holding a card never pulls a second one"
         );
 
@@ -4989,7 +4999,7 @@ mod tests {
             .with_citizen(Arc::new(stub) as Arc<dyn crate::persona::airc_citizen::AircCitizen>);
 
         let pulled = try_pull_next_card(&hosted, &conversation).await;
-        assert!(pulled, "an idle member pulls the next Open card off the deck");
+        assert_eq!(pulled, PullOutcome::Pulled, "an idle member pulls the next Open card off the deck");
         let claimed = recorder.lock().unwrap_or_else(|p| p.into_inner()).clone();
         assert_eq!(claimed.len(), 1, "exactly one pull, got {claimed:?}");
         assert_eq!(

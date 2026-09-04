@@ -52,10 +52,35 @@ pub(crate) fn own_recent_thoughts(
     keep: usize,
     max_chars: usize,
 ) -> Vec<String> {
+    own_recent_thoughts_about(rows, me, keep, max_chars, &[])
+}
+
+/// Like [`own_recent_thoughts`], but when `about` names the held card (its short
+/// id, its instance), her thoughts that mention it win; only if none do does the
+/// unscoped set apply. Measured 2026-09-05: after a reopen churn a holder's newest
+/// thoughts were about ANOTHER card, and every turn opened with "my context is
+/// confused".
+pub(crate) fn own_recent_thoughts_about(
+    rows: &[crate::persona::durable_history::RoomRow],
+    me: Uuid,
+    keep: usize,
+    max_chars: usize,
+    about: &[String],
+) -> Vec<String> {
     let mut mine: Vec<&crate::persona::durable_history::RoomRow> = rows
         .iter()
         .filter(|r| r.sender == me && r.text.starts_with('💭'))
         .collect();
+    if !about.is_empty() {
+        let scoped: Vec<&crate::persona::durable_history::RoomRow> = mine
+            .iter()
+            .copied()
+            .filter(|r| about.iter().any(|a| !a.is_empty() && r.text.contains(a.as_str())))
+            .collect();
+        if !scoped.is_empty() {
+            mine = scoped;
+        }
+    }
     mine.sort_by_key(|r| r.occurred_at_ms);
     let start = mine.len().saturating_sub(keep);
     mine[start..]
