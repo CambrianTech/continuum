@@ -63,7 +63,6 @@ function participantTile(p: LiveParticipantVM): TemplateResult {
       : p.hasVideo
         ? html`<canvas class="lt-video" data-sender=${p.id}></canvas>`
         : nothing}
-    <span class="lt-status" data-on=${p.active ? '' : nothing} title=${p.active ? 'online' : 'offline'}></span>
     <span class="lt-name">
       ${p.name}${p.speaking ? html`<span class="lt-wave" aria-label="speaking">🔊</span>` : nothing}
     </span>
@@ -118,10 +117,15 @@ function renderComposition(body: LiveContentBody): TemplateResult {
   // room of peers): stage engages when the reader PINNED a tile (click), else
   // while someone is actively SPEAKING (real tokens flowing). Never merely
   // because video exists — a quiet call is a grid.
+  // Stage ONLY on an explicit pin (a click). Auto-staging whoever is flagged
+  // `speaking` was Zoom's speaker view by accident — the flag is the roster's
+  // activity HUD, so one persona's head filled the whole call while the human
+  // heard nothing (Joel, 2026-09-05: "like Slack and Teams do it ... only on
+  // click"). Speaking highlights IN PLACE via the tile's data-speaking attribute.
   const focused =
-    (body.pinnedId !== undefined
+    body.pinnedId !== undefined
       ? body.participants.find((p) => p.id === body.pinnedId)
-      : undefined) ?? body.participants.find((p) => p.speaking);
+      : undefined;
   if (focused) {
     const rail = body.participants.filter((p) => p.id !== focused.id);
     return html`<div class="live-panel" data-composition="panel">
