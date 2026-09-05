@@ -24,6 +24,13 @@ pub struct ModuleRegistry {
     /// Metrics per module
     metrics: DashMap<String, Arc<ModuleMetrics>>,
 
+    /// When the previous module was registered. Boot registers modules SERIALLY
+    /// right after constructing each, so the gap between two registrations is
+    /// the later module's construction cost — which is how a 14 s
+    /// `construct_modules` phase (M5, 2026-09-05, boot.phase) gets attributed to
+    /// the constructors that own it without touching every `X::new()` site.
+    last_registered_at: parking_lot::Mutex<Option<std::time::Instant>>,
+
     /// Command prefix -> module name routing table.
     /// Sorted by prefix length descending for longest-match-first routing.
     /// RwLock because registration mutates (rare), routing reads (frequent).
@@ -53,6 +60,7 @@ impl ModuleRegistry {
             modules: DashMap::new(),
             configs: DashMap::new(),
             metrics: DashMap::new(),
+            last_registered_at: parking_lot::Mutex::new(None),
             command_routes: RwLock::new(Vec::new()),
             type_routes: DashMap::new(),
             command_objects: DashMap::new(),
@@ -80,6 +88,24 @@ impl ModuleRegistry {
     pub fn register(&self, module: Arc<dyn ServiceModule>) {
         let config = module.config();
         let name = config.name;
+
+        // Attribute construction time: the gap since the previous registration is
+        // this module's constructor (boot constructs and registers serially). The
+        // first registration has no predecessor and reports 0.
+        {
+            let now = std::time::Instant::now();
+            let mut last = self.last_registered_at.lock();
+            let since_prev_ms = last
+                .map(|t| now.duration_since(t).as_millis() as u64)
+                .unwrap_or(0); // unwrap_or: no predecessor = nothing to attribute, 0 by definition
+            *last = Some(now);
+            crate::probe!(
+                class = "boot.construct",
+                module = %name,
+                since_prev_ms = since_prev_ms,
+                "module constructed and registered"
+            );
+        }
 
         // Register by name
         self.modules.insert(name, module.clone());
