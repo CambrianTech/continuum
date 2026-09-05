@@ -1,5 +1,4 @@
 # ==============================================================================
-set -o pipefail  # a failing command in a pipeline must not read as success (card aad30dee)
 # GENERATED FILE - DO NOT EDIT.
 # Rendered by `tools/manifest-gen` (cargo run -p manifest-gen) from `tools/scripts/install-manifest.toml`.
 # The manifest is the ONE source of truth; this is a mechanical projection.

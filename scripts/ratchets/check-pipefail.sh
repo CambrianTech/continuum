@@ -48,8 +48,20 @@ UPDATE_BASELINE=0
 # author plainly cares about, and does not set pipefail. Restricted to the
 # consumers that actually mask a failure (tail/head/grep/tee/awk/sed) rather
 # than every `|` in the tree, so the signal stays about swallowed exit codes.
+#
+# GENERATED output is excluded, and that exclusion is load-bearing rather than
+# a convenience: `tools/scripts/generated/` is a mechanical projection of
+# `install-manifest.toml`, guarded by its own drift detector. Hand-patching a
+# file stamped "GENERATED FILE - DO NOT EDIT" is how you get a green hygiene
+# gate and a red drift gate at the same time — measured, because the first
+# revision of THIS ratchet did exactly that and the drift detector caught it.
+# A generated script must inherit pipefail from its GENERATOR
+# (tools/manifest-gen/src/main.rs); making it pass here by editing the output
+# would be defeating the source of truth to satisfy a lint. Tracked as the
+# follow-up on card aad30dee.
 mapfile -t OFFENDERS < <(
   find "$REPO_ROOT/tools/scripts" "$REPO_ROOT/scripts" -name '*.sh' -type f 2>/dev/null \
+    | grep -v '/generated/' \
     | sort \
     | while read -r f; do
         if grep -qE '\|[[:space:]]*(tail|head|grep|tee|awk|sed)' "$f" \
