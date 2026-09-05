@@ -147,12 +147,26 @@ export class DomSurface implements Surface<DomViewSpec, DomAction> {
 
   /** Launch, navigate, and settle. The page is ready to render/probe/act on return. */
   static async open(opts: DomSurfaceOptions): Promise<DomSurface> {
+    // PERCEPTION_CHROMIUM_ARGS: extra Chromium flags, space-separated — the seam
+    // that lets the node's own self-exercise SPEAK into a live call with no human:
+    //   --use-fake-device-for-media-stream --use-file-for-fake-audio-capture=<wav>
+    //   --autoplay-policy=no-user-gesture-required
+    // (a real microphone is the one sense a headless eye cannot otherwise drive;
+    // Joel 2026-09-05: "you have to figure out how to test on your own").
+    const extraArgs = (process.env.PERCEPTION_CHROMIUM_ARGS ?? '')
+      .split(/\s+/)
+      .filter((a) => a.length > 0);
     const browser = await chromium.launch({
       headless: opts.headless ?? true,
       ...resolveLaunch(opts),
+      ...(extraArgs.length > 0 ? { args: extraArgs } : {}),
     });
+    // PERCEPTION_GRANT_MEDIA=1 pre-grants microphone + camera to the page so the
+    // fake device publishes without a permission prompt nobody can click.
+    const grantMedia = process.env.PERCEPTION_GRANT_MEDIA === '1';
     const page = await browser.newPage({
       viewport: opts.viewport ?? { width: 1440, height: 900 },
+      ...(grantMedia ? { permissions: ['microphone', 'camera'] } : {}),
       // 1 by default (2026-08-23 pixel audit): the hardcoded 2 quadrupled every
       // screenshot's pixels for consumers that render thumbnails — retina
       // capture is an OPT-IN for tasks that grade fine detail, never a tax on
