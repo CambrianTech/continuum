@@ -9,6 +9,7 @@
 use super::boot_mode::BootMode;
 use super::message_bus::MessageBus;
 use super::module_context::ModuleContext;
+use super::command_interceptor::{CommandInterceptor, InterceptorOutcome};
 use super::registry::ModuleRegistry;
 use super::service_module::{CommandResult, ServiceModule};
 use super::shared_compute::SharedCompute;
@@ -40,6 +41,15 @@ pub struct Runtime {
     /// `perception/observe` reaches the connected eye-node on either path. The IPC
     /// layer takes `provider_registry()` to bind an eye-node's provider on connect.
     provider_registry: Arc<super::ProviderRegistry>,
+    /// THE interceptor chain — one list, consulted by every dispatcher. The
+    /// socket route (`route_command`: uu / IPC / MCP / the desktop) and the
+    /// in-process `CommandExecutor` used to each carry half the contract: the
+    /// executor had the interceptors (airc peer hop, grid dispatch) and the
+    /// socket route had permits + metrics + provided routing. So a CLI
+    /// `ai/generate {aircPeer}` ran LOCALLY on the wrong box with nothing
+    /// saying the address was dropped (card 506a388c, 2026-09-05). One chain,
+    /// owned here, shared by both.
+    interceptors: Arc<std::sync::RwLock<Vec<Arc<dyn CommandInterceptor>>>>,
 }
 
 impl Default for Runtime {
@@ -62,6 +72,7 @@ impl Runtime {
             // correct ([[media-is-compute-once-zero-copy-hardware-grade]]).
             compute: super::shared_compute::global(),
             concurrency_limits: Arc::new(DashMap::new()),
+            interceptors: Arc::new(std::sync::RwLock::new(Vec::new())),
             provider_registry: Arc::new(super::ProviderRegistry::new()),
         }
     }
@@ -396,6 +407,26 @@ impl Runtime {
         // connection (the IPC server stamps it + ACL-gates the top-level command at
         // the boundary). Threading it means a command composing another over TCP
         // composes as the REMOTE caller, not silently as owner — no escalation.
+        // Interceptors first, same contract as the executor: Handled wins,
+        // Decline passes, an error is LOUD (never a silent local fallback —
+        // that is exactly what a peer-addressed call running locally was).
+        let chain: Vec<Arc<dyn CommandInterceptor>> = self
+            .interceptors
+            .read()
+            .unwrap_or_else(|e| e.into_inner()) // unwrap_or_else: a poisoned lock still holds the list; read it
+            .clone();
+        for interceptor in chain {
+            match interceptor.try_route(command, &params, caller.as_ref()).await {
+                Ok(InterceptorOutcome::Handled(result)) => return Some(Ok(result)),
+                Ok(InterceptorOutcome::Decline) => continue,
+                Err(e) => {
+                    return Some(Err(format!(
+                        "interceptor '{}' refused '{command}': {e}",
+                        interceptor.name()
+                    )))
+                }
+            }
+        }
         if let Some(cmd) = self.registry.route_object(command) {
             // NOTE (adversarial review 2026-06-21): the typed object path does NOT
             // pass through the per-MODULE concurrency limiter or ModuleMetrics below
@@ -567,6 +598,13 @@ impl Runtime {
     }
 
     /// Get the Arc<ModuleRegistry> for sharing across threads.
+    /// The shared interceptor chain (see the field doc). Hand this to every
+    /// `CommandExecutor` so an interceptor registered once applies on every
+    /// route into the node.
+    pub fn interceptor_chain(&self) -> Arc<std::sync::RwLock<Vec<Arc<dyn CommandInterceptor>>>> {
+        self.interceptors.clone()
+    }
+
     pub fn registry_arc(&self) -> Arc<ModuleRegistry> {
         self.registry.clone()
     }
@@ -1363,6 +1401,115 @@ pub async fn run_signal_shutdown() {
 #[cfg(test)]
 mod conditional_modules_tests {
     use super::*;
+
+    /// Card 506a388c: the socket route (uu / IPC / MCP / desktop) dispatched
+    /// typed and legacy commands directly and never consulted the interceptor
+    /// chain, so a peer-addressed `ai/generate {aircPeer}` from the CLI ran
+    /// LOCALLY on the wrong box with nothing saying the address was dropped.
+    mod socket_route_runs_the_interceptor_chain {
+        use super::*;
+        use crate::runtime::command_interceptor::{CommandInterceptor, InterceptorOutcome};
+        use async_trait::async_trait;
+
+        struct Handles;
+        #[async_trait]
+        impl CommandInterceptor for Handles {
+            fn name(&self) -> &'static str {
+                "handles"
+            }
+            async fn try_route(
+                &self,
+                _command: &str,
+                _params: &serde_json::Value,
+                _caller: Option<&crate::routing::CallerIdentity>,
+            ) -> Result<InterceptorOutcome, String> {
+                Ok(InterceptorOutcome::Handled(CommandResult::Json(
+                    serde_json::json!({"via": "interceptor"}),
+                )))
+            }
+        }
+
+        struct Refuses;
+        #[async_trait]
+        impl CommandInterceptor for Refuses {
+            fn name(&self) -> &'static str {
+                "refuses"
+            }
+            async fn try_route(
+                &self,
+                _command: &str,
+                _params: &serde_json::Value,
+                _caller: Option<&crate::routing::CallerIdentity>,
+            ) -> Result<InterceptorOutcome, String> {
+                Err("the address was bad".to_string())
+            }
+        }
+
+        // what this catches: the socket route bypassing the chain — a Handled
+        // interceptor must be the answer, before any typed or legacy dispatch.
+        #[tokio::test]
+        async fn a_handling_interceptor_answers_the_socket_route() {
+            let runtime = Runtime::new();
+            runtime
+                .interceptor_chain()
+                .write()
+                .unwrap_or_else(|e| e.into_inner()) // unwrap_or_else: test lock
+                .push(Arc::new(Handles));
+            let out = runtime
+                .route_command("nothing/registered", serde_json::json!({}), None)
+                .await
+                .expect("the chain answers even when no module handles the command");
+            match out {
+                Ok(CommandResult::Json(v)) => assert_eq!(v["via"], "interceptor"),
+                other => panic!("expected the interceptor's result, got {other:?}"),
+            }
+        }
+
+        // what this catches: an interceptor error laundered into a silent local
+        // run — the exact shape of card 506a388c. It must be loud and name the
+        // interceptor.
+        #[tokio::test]
+        async fn an_interceptor_error_is_loud_never_a_local_fallback() {
+            let runtime = Runtime::new();
+            runtime
+                .interceptor_chain()
+                .write()
+                .unwrap_or_else(|e| e.into_inner()) // unwrap_or_else: test lock
+                .push(Arc::new(Refuses));
+            let out = runtime
+                .route_command("nothing/registered", serde_json::json!({}), None)
+                .await
+                .expect("an error is an answer, not None");
+            let err = out.expect_err("the refusal must surface");
+            assert!(err.contains("refuses") && err.contains("the address was bad"), "{err}");
+        }
+
+        // what this catches: the card itself — the real airc interceptor on the
+        // socket route refuses a peer-addressed generate by NAME instead of
+        // letting it run locally.
+        #[tokio::test]
+        async fn a_peer_addressed_generate_on_the_socket_route_never_runs_locally() {
+            let runtime = Runtime::new();
+            runtime
+                .interceptor_chain()
+                .write()
+                .unwrap_or_else(|e| e.into_inner()) // unwrap_or_else: test lock
+                .push(Arc::new(crate::runtime::AircInterceptor::new()));
+            let out = runtime
+                .route_command(
+                    "ai/generate",
+                    serde_json::json!({"aircPeer": "not-a-uuid", "prompt": "hi"}),
+                    None,
+                )
+                .await
+                .expect("the airc interceptor answers a peer-addressed call");
+            let err = out.expect_err("a peer-addressed generate must not run locally");
+            assert!(
+                err.contains("airc") && (err.contains("attached") || err.contains("aircPeer")),
+                "the refusal names the seam: {err}"
+            );
+        }
+    }
     use crate::airc::{AircDiscovery, DiscoveryFailure, PartialDiscovery};
     use airc_core::RoomId;
     use std::path::PathBuf;
