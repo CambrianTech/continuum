@@ -580,7 +580,9 @@ pub fn models() -> Vec<Model> {
             chat_template: None,
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             stop_sequences: &["<|im_end|>"],
-            ..ModelSpec::default()
+                        // AA Intelligence Index v4.2 (2026-09-05 chart): 42.
+            serving: ModelServingPrefs { measured_capability: Some(42), ..ModelServingPrefs::default() },
+..ModelSpec::default()
         }),
         // ORNITH-1.5-35B-A3B — the WORK-TIER lane (Joel, 2026-08-22: "Swap it for
         // sure"), adopted on a same-day tier battery against the incumbent at
@@ -684,6 +686,8 @@ pub fn models() -> Vec<Model> {
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             stop_sequences: &["<|im_end|>"],
             serving: ModelServingPrefs {
+                // AA Intelligence Index v4.2 (2026-09-05 chart): 46.
+                measured_capability: Some(46),
                 mmproj_on_main_lane: false,
                 // Hybrid GDN/QSA attention — shift capability unverified on this arch.
                 kv_shiftable: None,
@@ -696,7 +700,13 @@ pub fn models() -> Vec<Model> {
                 reasoning_budget: Some(8192),
                 verified_ctx_ceiling: Some(32_768),
             },
-            ..ModelSpec::default()
+                        // NOT persona_serving_eligible: EXPERIMENTAL — 32k verified, 46848 OOM'd all
+            // night (2026-08-29), depth worse at 31k. Its measured score above is a FACT
+            // about the model; candidacy is a separate decision (IntelMac's review of
+            // #3772), and Joel's call (2026-09-05) is the stock 27B as the high tier.
+            // Flips to true the day it clears the depth bar at the target window.
+            persona_serving_eligible: false,
+..ModelSpec::default()
         }),
         // Hermes-3-Llama-3.1-8B — the OPPONENT, made first-class. A general (non-coder) model we
         // benchmark AGAINST; giving it a real catalog row lets it flow through OURS (base_model_id)

@@ -408,6 +408,17 @@ pub struct ModelServingPrefs {
     /// planner's 46848 Metal-OOM'd every deep prefill for six hours, 8/29).
     #[serde(default)]
     pub verified_ctx_ceiling: Option<u32>,
+    /// MEASURED capability on one scale (the Artificial Analysis Intelligence
+    /// Index v4.2 today; our own depth bar when it lands), `None` = unmeasured.
+    ///
+    /// The planner's "most capable model that fits" ranked by WEIGHT BYTES —
+    /// bigger ≈ smarter within a family — which can never prefer a 19 GB
+    /// Qwen3.8-27B (AA 42) over a 22 GB Ornith, and is exactly the scaling
+    /// misread Joel called out (2026-09-05: "You guys aren't understanding how
+    /// scaling works"). A measured score outranks any weight proxy; an
+    /// unmeasured model keeps the proxy, capped below every measured frontier
+    /// score (see `serving_daemon::UNMEASURED_RANK_CAP`).
+    pub measured_capability: Option<u8>,
 }
 
 impl Default for ModelServingPrefs {
@@ -421,6 +432,7 @@ impl Default for ModelServingPrefs {
             max_ubatch: None,
             reasoning_budget: None,
             verified_ctx_ceiling: None,
+            measured_capability: None,
         }
     }
 }
