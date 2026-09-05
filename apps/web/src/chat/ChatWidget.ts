@@ -121,6 +121,13 @@ export class ChatWidget extends LitElement {
     settingsHandler: { attribute: false },
     selectRoomHandler: { attribute: false },
     liveFace: { attribute: false },
+    // Deep-link intents are set by index.ts BEFORE the element upgrades; only a
+    // declared property survives Lit's upgrade (a plain class field's initializer
+    // clobbers a pre-upgrade set — the intent silently never fired, 2026-09-05).
+    autoMic: { attribute: false },
+    autoCam: { attribute: false },
+    micMode: { attribute: false },
+    liveRoom: { attribute: false },
     callUrl: { attribute: false },
     _mediaConnected: { state: true },
     _micOn: { state: true },
