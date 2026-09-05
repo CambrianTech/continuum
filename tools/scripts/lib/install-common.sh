@@ -215,7 +215,13 @@ mod_cold_storage() {
   local config_env="$HOME/.continuum/config.env"
   # Already routed to a present path? re-export + skip (idempotent).
   if [ -f "$config_env" ]; then
-    local existing; existing="$(grep -E '^[[:space:]]*CONTINUUM_STORAGE_PATH[[:space:]]*=' "$config_env" 2>/dev/null | head -1 | cut -d= -f2- | xargs)"
+    # `|| true`: `grep` exits 1 when the key is simply not there yet, which is the
+    # ordinary state of a config.env an earlier install step wrote. Under
+    # install.sh's `set -eo pipefail` (since 2026-07-05) that aborts the install
+    # one line before the `[ -n "$existing" ]` test written for exactly this
+    # empty case. Reproduced 2026-09-05 (BigMama): exit 1 on a config.env with
+    # no storage-path line.
+    local existing; existing="$(grep -E '^[[:space:]]*CONTINUUM_STORAGE_PATH[[:space:]]*=' "$config_env" 2>/dev/null | head -1 | cut -d= -f2- | xargs || true)"
     if [ -n "$existing" ] && [ -d "$(dirname "$existing")" ]; then
       _cold_export "$existing"
       module_skip "cold-storage" "already routed to $existing (edit ~/.continuum/config.env to change)"
@@ -285,7 +291,13 @@ mod_docker_wsl_integration() {
 
   local distro="${WSL_DISTRO_NAME:-$(grep '^NAME=' /etc/os-release | cut -d\" -f2 | head -1)}"
   local settings
-  settings=$(ls /mnt/c/Users/*/AppData/Roaming/Docker/settings-store.json 2>/dev/null | head -1)
+  # `|| true`: FINDING NOTHING IS THE NORMAL OUTCOME when Docker Desktop is not
+  # installed for the Windows user, and `ls` exits non-zero then. install.sh has
+  # run `set -eo pipefail` since d9cd95967 (2026-07-05), so without this guard
+  # the script dies HERE — one line before the `[ -z "$settings" ]` test below,
+  # which exists precisely to explain that case to the user. Reproduced
+  # 2026-09-05 (BigMama): exit 2, and the module_fail message never printed.
+  settings=$(ls /mnt/c/Users/*/AppData/Roaming/Docker/settings-store.json 2>/dev/null | head -1 || true)
   if [ -z "$settings" ] || [ ! -w "$settings" ]; then
     module_fail "docker-wsl-integration" "Cannot locate writable Docker Desktop settings-store.json. Is Docker Desktop installed for the Windows user?"
   fi
@@ -572,13 +584,32 @@ ic_detect_hardware() {
       # Git Bash inherits PowerShell's wmic / Get-CimInstance. wmic is the
       # most portable across Windows versions (Win10 + Win11). Total physical
       # memory in bytes → MiB.
+      # WMIC WAS REMOVED IN WINDOWS 11 24H2, so `command -v wmic` is ABSENT on a
+      # current Windows box and the old else-branch reported IC_RAM_MIB=0 on a
+      # machine with 64914 MiB (measured on 26200, BigMama 2026-09-05). Every
+      # RAM-based tier decision downstream was then made on that zero. wmic
+      # stays first because it is still present and fast on Win10 and on Win11
+      # before 24H2; PowerShell CIM is the fallback, not the replacement.
+      local total_bytes=""
       if command -v wmic >/dev/null 2>&1; then
-        local total_bytes
         total_bytes="$(wmic computersystem get TotalPhysicalMemory /value 2>/dev/null | tr -d '\r' | awk -F= '/TotalPhysicalMemory=/{print $2}')"
-        IC_RAM_MIB=$(( ${total_bytes:-0} / 1048576 ))
-      else
-        IC_RAM_MIB=0
+      elif command -v powershell.exe >/dev/null 2>&1; then
+        # `|| true`: a PowerShell that is absent or refuses leaves us without a
+        # reading, which is not a reason to abort the install — install.sh runs
+        # `set -eo pipefail`, so an unguarded failing pipeline would do exactly
+        # that. The case below is what handles the missing reading.
+        total_bytes="$(powershell.exe -NoProfile -Command '(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory' 2>/dev/null | tr -d '[:space:]' || true)"
       fi
+      # Empty or non-numeric means WE COULD NOT LOOK, which is a different fact
+      # from "this machine has no RAM". IC_RAM_MIB has one representation for
+      # both, so the difference has to be said out loud here or it is lost.
+      case "$total_bytes" in
+        ''|*[!0-9]*)
+          warn "could not read total physical memory on this Windows build — RAM-based tiering will be conservative"
+          IC_RAM_MIB=0
+          ;;
+        *) IC_RAM_MIB=$(( total_bytes / 1048576 )) ;;
+      esac
       ;;
     *)
       IC_RAM_MIB=0
