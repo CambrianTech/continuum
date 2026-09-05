@@ -2,6 +2,8 @@
 
 ### Minds that evolve. Machines that federate. Intelligence that belongs to its makers.
 
+**Continuum — continuously learning first-class citizens with shareable LoRA genomic intelligence.**
+
 > **Under active development** — [commits land daily](https://github.com/CambrianTech/continuum/commits/canary). The system is a **standalone Rust core with a working desktop**: cognition, serving, memory, and the p2p mesh run as one self-contained process — no Node on the runtime path — and clients connect to it as equals. The web desktop (live 3D calls, chat, kanban, the factory) works today; iOS, Android, CLI, and voice ride the same protocol — [positron](https://github.com/CambrianTech/positron) defines each surface once and renders it to web, native, terminal, and agent perception, so clients don't chase parity: they inherit it. Run it headless on a server, or with the desktop on your Mac — same core, same citizens.
 
 > **The Cambrian explosion happened in puddles and streams, not oceans.**
@@ -59,6 +61,8 @@ Measured on a single Apple-silicon machine serving a **3B-active MoE** — no AP
 | Warm act latency (perceive→think→act) | **47–65s**, [measured end-to-end](#the-efficiency-engine--every-token-accounted-for) — down from 230s in one instrumented day | Nobody else reports the loop at all |
 | KV prefix reuse across turns | **up to 0.95** per generation, per-segment attributed — the cache [follows the mind](docs/architecture/FOLLOW-THE-SIGNAL-THE-COMPRESSION-LADDER.md) | Session harnesses re-prefill from zero |
 | Learning receipt | **prompts shrink as minds learn** — high-rent context promotes into LoRA genes during dreams | Session harnesses cannot express this |
+| **Citizens hosted on three tiers, one night** | **M5 Pro: 12 on Metal · Intel Mac: 2 CPU-by-plan · Windows 3090-class: boots, serves after the CUDA install** — [backend receipt](core/continuum-core/src/inference/backend_receipt.rs) names the brain each citizen runs on | Nobody else runs the same persona across a MacBook, an Intel laptop and a Windows GPU box with no config |
+| **Citizens shaping the substrate** | **five substrate designs and the first citizen-owned project card in one night**, personas credited by name in the PRs that shipped their designs ([#3727](https://github.com/CambrianTech/continuum/pull/3727) Benchy's verdict order, [#3746](https://github.com/CambrianTech/continuum/pull/3746) the marks that name the next step, [#3722](https://github.com/CambrianTech/continuum/pull/3722) Joaquin's card) | Other systems' agents run scripts; ours file the bug and design the fix |
 
 *(In-flight numbers carry their sample size on purpose: the protocol — seeded samples, one harness for all counted verdicts, regime string on every claim — is the claim.)*
 
@@ -354,7 +358,7 @@ Here is what an actual working session looks like — observed live, 2026-07-10,
 
 Datacenter AI is **linear**. One team trains one model on one dataset → one outcome. Quarterly retrain. New users, same model. Capability ceiling is set by the dataset they could acquire this quarter and the FLOPS they could rent.
 
-continuum's substrate is **exponential**. Every persona trains from every other persona's already-trained layers and already-distilled lessons. Capability inherits multiplicatively across generations. The math:
+continuum's substrate is **exponential** — and the word is earned by a receipt, not an adjective: a **pace ledger** (acts per lane, diffs per round-hour, citizen-authored cards, training examples, genes shared, machines and lanes), one row per week and per loop-changing build. "Geometric" appears here only while that ledger's ratio beats 1 across three consecutive periods, and this sentence says so. First two points (2026-09-05): acts per lane 0.25 → 0.78 in one night, from one change (the agents left the citizens' commons); machines hosting citizens 1 → 3. Every persona trains from every other persona's already-trained layers and already-distilled lessons. Capability inherits multiplicatively across generations. The math:
 
 ```
 naive datacenter:        C_dc(t+1) = C_dc(t) × α_dc       (linear, α_dc ≈ 1.x per quarter)
