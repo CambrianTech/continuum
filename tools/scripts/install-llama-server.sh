@@ -139,6 +139,29 @@ mkdir -p "$BUILD_DIR" "$INSTALL_DIR"
 # models by URL, so the libcurl dependency is dead weight + a portability snag.
 declare -a CMAKE_ARGS=(
   -DCMAKE_BUILD_TYPE=Release
+  # Backends must be DYNAMICALLY LOADABLE, and that is not the ggml default.
+  # ggml/CMakeLists.txt:86 defaults GGML_BACKEND_DL=OFF; ggml-backend-impl.h:241
+  # only defines the exported `ggml_backend_init` under `#ifdef GGML_BACKEND_DL`.
+  # With it OFF the loader in ggml-backend-reg.cpp:237 dlopens each ggml-*.dll,
+  # finds no such symbol, and registers NOTHING — measured on BigMama 2026-09-05:
+  #   load_backend: failed to find ggml_backend_init in ...\ggml-cuda.dll
+  #   load_backend: failed to find ggml_backend_init in ...\ggml-cpu.dll
+  #   Available devices: (none)
+  # on a host with a working 5090. The serving receipt then correctly refuses the
+  # lane, and the node hosts nobody. DL requires BUILD_SHARED_LIBS (enforced at
+  # ggml/src/CMakeLists.txt:188), so both are set together and explicitly rather
+  # than inherited from upstream defaults that our fork can change under us.
+  # DL mode requires PORTABLE backends, so it is incompatible with GGML_NATIVE
+  # (on by default): ggml-cpu/CMakeLists.txt:374 fails the configure outright with
+  # "GGML_NATIVE is not compatible with GGML_BACKEND_DL, consider using
+  # GGML_CPU_ALL_VARIANTS". Taking that suggestion rather than GGML_NATIVE=OFF:
+  # OFF would build ONE lowest-common-denominator CPU backend for the whole fleet,
+  # which silently degrades exactly the CPU-only tier (an Intel Mac serving its
+  # citizens on Accelerate). ALL_VARIANTS builds each variant and picks the best
+  # at runtime, so a portable build costs no CPU performance.
+  -DBUILD_SHARED_LIBS=ON
+  -DGGML_BACKEND_DL=ON
+  -DGGML_CPU_ALL_VARIANTS=ON
   -DLLAMA_BUILD_SERVER=ON
   -DLLAMA_BUILD_TOOLS=ON
   -DLLAMA_BUILD_COMMON=ON
@@ -251,7 +274,36 @@ chmod +x "$INSTALL_BIN"
 # it can't start. (The CUDA RUNTIME dlls — cublas etc. — are NOT copied here; they come
 # from the manifest runtime_path on PATH at serve time, one owner for that concern.)
 if [ -n "$EXE" ]; then
-  cp -f "$BUILD_DIR/bin/"*.dll "$INSTALL_DIR/" 2>/dev/null || true
+  # The exe above is copied atomically and verified FATAL. These DLLs are the
+  # artifacts it CANNOT RUN WITHOUT, and they used to be copied with
+  # `2>/dev/null || true` — the loud failure guarded, the silent one not. That is
+  # inverted: a missing exe fails at once, a STALE or unreplaced DLL produces a
+  # server that starts and has no backend. On Windows the copy fails routinely,
+  # because a running llama-server holds these open. Measured 2026-09-05: a
+  # month-old ggml-cuda.dll survived every reinstall this way while the install
+  # reported success, and the node hosted nobody. Fail loud instead.
+  for _dll in "$BUILD_DIR/bin/"*.dll; do
+    [ -e "$_dll" ] || continue
+    cp -f "$_dll" "$INSTALL_DIR/" || {
+      echo "✗ FATAL: could not install $(basename "$_dll") into $INSTALL_DIR." >&2
+      echo "  On Windows this usually means a running llama-server holds it open." >&2
+      echo "  Stop the core (\`continuum stop\`) and rerun; do NOT ship a partial set." >&2
+      exit 1
+    }
+  done
+
+  # The CUDA backend links cudart/cublas, which live in the toolkit rather than
+  # beside the server. Windows searches the LOADING MODULE'S directory, so without
+  # these ggml-cuda.dll fails to load at all — the empty-reason
+  # "load_backend: failed to load ...ggml-cuda.dll" that hid a 5090 for weeks.
+  if [ "$BACKEND" = "cuda" ]; then
+    _cuda_bin="$(dirname "$nvcc_exe")"
+    for _rt in cudart64_*.dll cublas64_*.dll cublasLt64_*.dll; do
+      for _src in "$_cuda_bin"/$_rt; do
+        [ -e "$_src" ] && cp -f "$_src" "$INSTALL_DIR/" 2>/dev/null || true
+      done
+    done
+  fi
 fi
 
 # The verify below runs the binary standalone. On Windows+CUDA it dynamically loads the
@@ -286,6 +338,30 @@ if [ "$verify_ok" -ne 1 ]; then
   echo "✗ FATAL: built llama-server does not run (--version failed after retry)." >&2
   exit 1
 fi
+# ── POSTCONDITION: ASK THE BINARY WHAT IT CAN ACTUALLY DO ────────────
+# Everything above verifies that FILES EXIST. None of it verifies the engine
+# WORKS, and that gap is what cost this project a GPU node for weeks: the build
+# succeeded, the files were all present, the install said ✓, and llama-server
+# reported `Available devices: (none)` on a host with an RTX 5090 because the
+# ggml backends could not be loaded. A precondition cannot catch that; only
+# running the thing can. One command, one second.
+#
+# We only REFUSE when the build selected a GPU backend and the engine reports no
+# GPU — the case where the two disagree. A cpu backend reporting no GPU device is
+# correct and must stay silent (an Intel Mac deliberately builds CPU-only, #3729).
+if [ "$BACKEND" != "cpu" ]; then
+  _devices="$("$INSTALL_BIN" --list-devices 2>&1 || true)"
+  if ! printf '%s' "$_devices" | grep -qE '^[[:space:]]*(CUDA|Metal|Vulkan|ROCm|SYCL)[0-9]*:'; then
+    echo "✗ FATAL: built for '$BACKEND' but the installed server reports no $BACKEND device." >&2
+    echo "  This install would serve every citizen on the CPU while a GPU sits idle," >&2
+    echo "  and the serving receipt would refuse the lane outright. Its own words:" >&2
+    printf '%s\n' "$_devices" | sed 's/^/      /' >&2
+    echo "  NOT stamping — a broken engine must not be blessed as current." >&2
+    exit 1
+  fi
+  echo "→ engine reports: $(printf '%s' "$_devices" | grep -E '^[[:space:]]*(CUDA|Metal|Vulkan|ROCm|SYCL)[0-9]*:' | head -1 | sed 's/^[[:space:]]*//')" >&2
+fi
+
 echo "$STAMP_WANT" > "$STAMP_FILE"   # stamp LAST — only a verified-good binary is blessed
 
 echo "✓ llama-server installed: $INSTALL_BIN ($STAMP_WANT)" >&2
