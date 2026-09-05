@@ -99,6 +99,17 @@ const REHOME_MIN_GAIN_PCT: u32 = 15;
 /// re-running that measurement against fresher receipts.
 const REHOME_SUSTAINED_TICKS: u32 = 3;
 
+/// One line per 5 s tick makes the decline probe the defect at the other end, so
+/// it speaks on ENTRY and roughly once a minute thereafter.
+///
+/// `ticks` MUST be a counter that advances for each consecutive declined tick.
+/// Returning false for 0 is deliberate: it makes "the clock never advanced" mean
+/// SILENCE rather than "log forever", which is the exact failure #3751 shipped.
+const DECLINE_LOG_EVERY_TICKS: u32 = 12; // 5 s ticks -> ~1/min
+fn decline_should_log(ticks: u32) -> bool {
+    ticks == 1 || (ticks > 0 && ticks % DECLINE_LOG_EVERY_TICKS == 0)
+}
+
 /// Re-home evidence: `(live_space, plan_space, gain, worth_it)` in TOTAL
 /// token-space (window × lanes) — never the per-slot window alone.
 ///
@@ -481,6 +492,19 @@ pub struct ServingDaemonModule {
     /// what separates a real capacity change from memory jitter — see
     /// [`REHOME_SUSTAINED_TICKS`].
     rehome_streak: Arc<std::sync::atomic::AtomicU32>,
+
+    /// How many CONSECUTIVE ticks the lane has been below plan while declining to
+    /// re-home — a clock for the decline probe's cadence and nothing else.
+    ///
+    /// It exists because #3751 tried to throttle that probe off `rehome_streak`
+    /// and silently did not throttle at all. `rehome_streak` counts consecutive
+    /// ticks of a QUALIFYING GAIN; the declined state is precisely the state where
+    /// no gain qualifies, so it is pinned at 0 for the whole episode and
+    /// `streak <= 1` stayed true forever. Measured after that "fix" merged: 411
+    /// identical lines, one per 5 s tick. A domain counter is not a logging clock —
+    /// its reset rule belongs to the domain, and here the domain resets it exactly
+    /// when we wanted it to count.
+    decline_log_ticks: Arc<std::sync::atomic::AtomicU32>,
     /// The previous tick's plan window — "sustained" requires the PLAN itself
     /// to have stopped moving (see the streak computation for the 16-relaunch
     /// boot staircase this kills).
@@ -653,6 +677,7 @@ impl ServingDaemonModule {
             pinned,
             lane_demand: Arc::new(std::sync::atomic::AtomicU32::new(1)),
             rehome_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            decline_log_ticks: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             rehome_last_plan: Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX)), // MAX = first observation reads FLAT: unknown is not growth
             model_change_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             pending_model_change: Arc::new(std::sync::Mutex::new(None)),
@@ -1913,14 +1938,23 @@ impl ServingDaemonModule {
                     //
                     // So: every ENTRY into the declined state is logged (streak == 1),
                     // and it keeps saying so once a minute after that. Nothing is
-                    // suppressed that a reader needs — `streak` already carries the
+                    // suppressed that a reader needs — `decline_ticks` carries the
                     // duration, so the 47th copy adds no information the 1st lacked.
+                    // (The first version of this comment claimed `streak` carried it.
+                    // It does not: `streak` is pinned at 0 throughout the declined
+                    // state, which is also why that version did not throttle.)
                     // The 2x rule and this decision are untouched; only how often the
                     // same unchanged verdict repeats itself.
-                    const DECLINE_LOG_EVERY_TICKS: u32 = 12; // 5 s ticks -> ~1/min
-                    let first_or_periodic =
-                        streak <= 1 || streak % DECLINE_LOG_EVERY_TICKS == 0;
-                    if live_space < plan_space && first_or_periodic {
+                    let declined = live_space < plan_space;
+                    let decline_ticks = if declined {
+                        self.decline_log_ticks
+                            .fetch_add(1, Ordering::Relaxed)
+                            .saturating_add(1)
+                    } else {
+                        self.decline_log_ticks.store(0, Ordering::Relaxed);
+                        0
+                    };
+                    if declined && decline_should_log(decline_ticks) {
                         crate::probe!(
                             class = "serving.reconcile.window",
                             decision = "declined",
@@ -1930,6 +1964,7 @@ impl ServingDaemonModule {
                             plan_lanes = lanes,
                             shortfall = gain,
                             streak,
+                            decline_ticks,
                             needs_streak = REHOME_SUSTAINED_TICKS,
                             min_gain_pct = REHOME_MIN_GAIN_PCT,
                             cooling,
@@ -4097,6 +4132,39 @@ impl ServiceModule for ServingDaemonModule {
 
 #[cfg(test)]
 mod tests {
+    // what this catches: #3751 threw this throttle at `rehome_streak` — the
+    // RE-HOME GAIN counter — which is stored to 0 for exactly as long as the lane
+    // is below plan with no qualifying gain. `streak <= 1` was therefore true on
+    // every tick of the declined episode and the probe throttled NOTHING: 411
+    // identical lines at one per 5 s measured on BigMama 2026-09-05, burying a
+    // persona's first_token underneath them. The clock a cadence uses must be
+    // owned by the cadence; a domain counter's reset rule belongs to the domain.
+    #[test]
+    fn decline_probe_speaks_on_entry_then_about_once_a_minute() {
+        assert!(
+            super::decline_should_log(1),
+            "entry into the declined state must always speak — the silence was the original defect"
+        );
+        for quiet in [2, 3, 7, 11, 13, 23] {
+            assert!(!super::decline_should_log(quiet), "tick {quiet} adds nothing the 1st line lacked");
+        }
+        for loud in [12, 24, 120] {
+            assert!(super::decline_should_log(loud), "tick {loud} is the ~1/min heartbeat");
+        }
+
+        // A ten-minute episode is 120 ticks: entry plus one per minute, not 120.
+        let spoken = (1..=120u32).filter(|&t| super::decline_should_log(t)).count();
+        assert_eq!(spoken, 11, "entry + 10 minutes of heartbeat over 120 ticks");
+
+        // The defect itself, stated as a property: a clock that never advances
+        // must be SILENT, not infinitely chatty. `0 % 12 == 0` would make the
+        // naive form log forever, which is how the first fix passed review.
+        assert!(
+            !super::decline_should_log(0),
+            "a counter that never advanced means we have not entered the state, not that we should shout"
+        );
+    }
+
 
     // what this catches: a self-heal that renders as a dead node. `declare_lane_wedged`
     // TAKES the reason as a parameter, logged it, then published `ServingSnapshot::empty()`
