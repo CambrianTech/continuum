@@ -408,12 +408,10 @@ export class ChatWidget extends LitElement {
         this._callParticipants = next;
         this.requestUpdate();
       },
-      // Tile "speaking" = LiveKit's audio-level active speakers, never the
-      // token rail (`onAvatar.speaking` lit every tile while a persona merely
-      // generated text; Joel 2026-09-05: "they say they're talking … no output").
-      onActiveSpeakers: (ids) => {
-        const next = new Map<string, boolean>();
-        for (const id of ids) next.set(id, true);
+      onAvatar: (a) => {
+        const next = new Map(this._callSpeaking);
+        if (a.speaking) next.set(a.personaId, true);
+        else next.delete(a.personaId);
         this._callSpeaking = next;
         this.requestUpdate();
       },
@@ -569,10 +567,6 @@ export class ChatWidget extends LitElement {
       else this._mediaAsk = { kind, denied: state === 'denied' };
     });
   }
-
-  private onLiveKeydown = (e: KeyboardEvent): void => {
-    if (e.key === 'Escape' && this._pinnedTile !== undefined) this._pinnedTile = undefined;
-  };
 
   /** Tile click: pin it to the stage; clicking the pinned tile unpins. */
   private onLiveTilePin = (e: Event): void => {
@@ -794,9 +788,6 @@ export class ChatWidget extends LitElement {
     this.addEventListener(LIVE_CAMERA_TOGGLE, this.onLiveCameraToggle);
     this.addEventListener(LIVE_MEDIA_ASK, this.onLiveMediaAsk);
     this.addEventListener(LIVE_TILE_PIN, this.onLiveTilePin);
-    // Escape unpins the stage (legacy LiveWidget behaviour): the grid is the
-    // resting state; a pin is a gesture the same key undoes.
-    this.addEventListener('keydown', this.onLiveKeydown);
     this.addEventListener(LIVE_CAPTIONS_TOGGLE, this.onLiveCaptionsToggle);
   }
 
@@ -808,6 +799,8 @@ export class ChatWidget extends LitElement {
     this.removeEventListener(NAV_TAB_CLOSE, this.onNavTabClose);
     this.removeEventListener(LIVE_FACE_TOGGLE, this.onLiveFaceToggle);
     this.removeEventListener(LIVE_CAPTIONS_TOGGLE, this.onLiveCaptionsToggle);
+    this.removeEventListener(LIVE_TILE_PIN, this.onLiveTilePin);
+    this.removeEventListener('keydown', this.onLiveKeydown);
     super.disconnectedCallback();
   }
 
@@ -4811,12 +4804,23 @@ export class ChatWidget extends LitElement {
       border-color: var(--border-accent, rgba(0, 212, 255, 0.4));
       box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
     }
-    /* SPEAKING — a plain 2px border on the tile whose AUDIO is active (LiveKit
-       ActiveSpeakersChanged), the way Slack/Teams mark a speaker. No glow, no
-       pulse, no dimming of quiet tiles: presence IS the tile (Joel, 2026-09-05). */
+    .live-tile:not([data-active]) {
+      opacity: 0.55;
+      filter: saturate(0.6);
+    }
+    /* SPEAKING — the reference's green active-speaker border, breathing while
+       REAL tokens flow on the live rail (never a timer animation). */
+    @keyframes live-speaking-pulse {
+      0%, 100% {
+        box-shadow: 0 0 10px rgba(63, 185, 80, 0.55), inset 0 0 14px rgba(63, 185, 80, 0.12);
+      }
+      50% {
+        box-shadow: 0 0 24px rgba(63, 185, 80, 0.95), inset 0 0 22px rgba(63, 185, 80, 0.2);
+      }
+    }
     .live-tile[data-speaking] {
       border-color: var(--status-online, #3fb950);
-      box-shadow: 0 0 0 1px var(--status-online, #3fb950);
+      animation: live-speaking-pulse 1.6s ease-in-out infinite;
     }
     .lt-glyph {
       font-size: 52px;
@@ -4831,6 +4835,21 @@ export class ChatWidget extends LitElement {
       /* Legacy tile spec: VRM portraits carry the face at the top of the
          frame — a centered crop lands on the collar. */
       object-position: center top;
+    }
+    .lt-status {
+      position: absolute;
+      top: 8px;
+      left: 8px;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--status-offline, #555);
+      border: 2px solid rgba(0, 0, 0, 0.5);
+      z-index: 2;
+    }
+    .lt-status[data-on] {
+      background: var(--status-online, #3fb950);
+      box-shadow: 0 0 6px var(--status-online, #3fb950);
     }
     .lt-name {
       position: absolute;
@@ -4942,7 +4961,8 @@ export class ChatWidget extends LitElement {
       font-variant-numeric: tabular-nums;
     }
     @media (prefers-reduced-motion: reduce) {
-      .live-title-dot {
+      .live-title-dot,
+      .live-tile[data-speaking] {
         animation: none;
       }
       .live-tile:hover {
