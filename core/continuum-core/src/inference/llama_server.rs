@@ -3003,12 +3003,29 @@ impl LlamaServerControl for LlamaServerProcess {
         // slow — BigMama's 5090 hosted one for a day. Refuse it at the door, on
         // every machine, with the rebuild instruction; the version line is the
         // receipt either way.
-        let version = tokio::process::Command::new(&self.bin)
-            .arg("--version")
-            .output()
-            .await
-            .map(|o| format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)))
-            .unwrap_or_default(); // unwrap_or: a binary that cannot answer --version fails at spawn below with its own error
+        // BOUNDED: on IntelMac's box `llama-server --version` printed nothing,
+        // went to state U and survived kill -9 (2026-09-05) — an unbounded await
+        // here would have blocked every lane launch on that node forever. A
+        // probe that times out neither verifies nor refuses; it says so and the
+        // launch proceeds (the spawn below has its own failure shape).
+        let version = match tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            tokio::process::Command::new(&self.bin).arg("--version").output(),
+        )
+        .await
+        {
+            Ok(out) => out
+                .map(|o| format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)))
+                .unwrap_or_default(), // unwrap_or: a binary that cannot answer --version fails at spawn below with its own error
+            Err(_) => {
+                crate::probe!(
+                    class = "serving.version_probe_timeout",
+                    bin = %self.bin,
+                    "`--version` did not answer in 10 s — neither verified nor refused; launching anyway"
+                );
+                String::new()
+            }
+        };
         crate::probe!(
             class = "serving.server_version",
             bin = %self.bin,
@@ -3032,6 +3049,7 @@ impl LlamaServerControl for LlamaServerProcess {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| LlamaServerError::Spawn(format!("{}: {e}", self.bin)))?;
+        let child_pid = child.id();
         // Hand stderr to the capped sink. If either the handle or the path is missing the
         // child still serves — unlogged, and the pipe drains to close so it cannot block.
         // The sink reads every line to keep the file capped, so it is also the cheapest
@@ -3045,6 +3063,7 @@ impl LlamaServerControl for LlamaServerProcess {
         let offload_watch = Box::new(super::placement_watch::OffloadWatch::new(
             self.offload.clone(),
         ));
+        let debug_flag = super::debug_build_watch::DebugBuildFlag::default();
         let watch: Box<dyn super::child_log::LineWatch> = match self.wedge.clone() {
             Some(flag) => Box::new(super::placement_watch::ChainWatch(
                 Box::new(super::wedge::WedgeWatch::new(flag)),
@@ -3052,7 +3071,12 @@ impl LlamaServerControl for LlamaServerProcess {
             )),
             None => offload_watch,
         };
-        match (child.stderr.take(), log_path) {
+        
+        let watch: Box<dyn super::child_log::LineWatch> = Box::new(super::placement_watch::ChainWatch(
+            Box::new(super::debug_build_watch::DebugBuildWatch::new(debug_flag.clone())),
+            watch,
+        ));
+match (child.stderr.take(), log_path) {
             (Some(stderr), Some(path)) => super::child_log::drain_capped(stderr, path, watch),
             (Some(_), None) => tracing::warn!(
                 probe_class = "serving.llama.stderr_unlogged",
@@ -3131,6 +3155,23 @@ impl LlamaServerControl for LlamaServerProcess {
         *self.served_adapters.lock().unwrap() = target.adapter_paths();
 
         self.wait_ready().await?;
+        // Second half of the debug-build gate (see debug_build_watch): the server
+        // said so on its own stderr while coming up — refuse the lane, loudly.
+        if debug_flag.is_set() {
+            if let Some(pid) = child_pid {
+                crate::inference::lane_process::kill9(pid);
+            }
+            crate::probe!(
+                class = "serving.debug_build_refused",
+                bin = %self.bin,
+                "refused to serve from a DEBUG build (startup stderr) — build for speed"
+            );
+            return Err(LlamaServerError::Spawn(format!(
+                "{} announced itself a DEBUG build on startup (asserts enabled; its speed is not valid). \
+                 Rebuild llama-server in release from the canary pin and relaunch.",
+                self.bin
+            )));
+        }
         // PLACEMENT CONTRACT READBACK (#441, Joel 2026-08-15: "models that got fucked by
         // serving and are on cpu. You never catch it and we are waiting an eternity").
         // The governor planned a placement; the engine's own load banner says what it
