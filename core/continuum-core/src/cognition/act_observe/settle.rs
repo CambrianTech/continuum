@@ -665,12 +665,44 @@ pub async fn settle_step(
         .filter(|t| !t.is_self && !t.author.trim().is_empty())
         .cloned()
         .collect();
+    // THE SECOND LEDGER SPLIT. `persona.act.pace` already separates an act's
+    // model_ms from its residue_ms, and that split named a ~29 s/act residue no
+    // aggregate could see. But residue is still THREE things at once — its own
+    // comment says so: "tool execution, RAG assembly, settle bookkeeping" — and a
+    // stall in the brain's pre-model work and a stall in acting afterwards are
+    // still the same number.
+    //
+    // `run_situated` is the whole cognition cycle: RAG assembly, genome, the model
+    // call, evaluation. Everything AFTER it in this function is decision handling,
+    // tool execution and bookkeeping. Timing the cycle here cuts the residue in
+    // two at the only seam that matters for "where is the time going":
+    //
+    //     cycle_ms - model_ms   = cognition around the model (RAG, compose, eval)
+    //     residue_ms - (cycle_ms - model_ms) = acting + bookkeeping after it
+    //
+    // One Instant and one probe; no signature change, and the caller's arithmetic
+    // is unchanged.
+    let cycle_started = std::time::Instant::now();
     let ws = cycle.run_situated(burst, framing, situation).await;
+    let cycle_ms = cycle_started.elapsed().as_millis() as u64;
     // The cost of THIS tick's deliberation generation — latency + tokens of the
     // model call behind the verdict. Carried out alongside the step so the caller
     // (the eval driver, or the live heartbeat) can accumulate per-turn speed and
     // latency without re-timing the brain. `None` when no verdict carried metrics.
     let metrics = ws.metrics();
+    crate::probe!(
+        class = "cognition.cycle.cost",
+        room = %room_id,
+        cycle_ms,
+        model_ms = metrics.as_ref().map(|m| m.latency_ms).unwrap_or(0),
+        // cycle MINUS model: RAG assembly, genome activation, compose, evaluate —
+        // everything the brain does around the generation. Subtract this from the
+        // act's residue_ms and what remains is tool execution plus bookkeeping.
+        around_model_ms = cycle_ms
+            .saturating_sub(metrics.as_ref().map(|m| m.latency_ms).unwrap_or(0)),
+        had_metrics = metrics.is_some(),
+        "cognition cycle cost, split from the model call it contains — the second half of the act's residue ledger"
+    );
     // #266 Fold this generation's prefill accounting into the persona's lifetime KV
     // totals BEFORE any early return below — an inference FAULT still consumed real
     // prefill on the lane, and a measurement that only counts successful turns would
