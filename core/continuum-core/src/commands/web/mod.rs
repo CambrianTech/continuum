@@ -165,16 +165,51 @@ fn select_provider(adapter: Option<&str>) -> Result<Box<dyn WebSearchProvider>, 
             }
             Ok(p)
         }
-        None => providers
-            .into_iter()
-            .find(|p| p.available())
-            .ok_or_else(|| {
-                CommandError::Internal(
-                    "no web-search provider is available (this should not happen — \
-                     the keyless adapter is always available)"
-                        .to_string(),
-                )
-            }),
+        None => {
+            // NAME WHY, do not assert. The previous message said "this should not
+            // happen — the keyless adapter is always available", which is false:
+            // the keyless adapter drives a real Chromium, so it is unavailable on
+            // any host without one. Measured on BigMama 2026-09-05 — Windows, no
+            // browser installed, four candidate paths and PATH all empty — where
+            // `web/search` is advertised to every citizen as ai-safe and fails
+            // 100% of the time. Two citizens spent turns reasoning about an error
+            // that told them their situation was impossible.
+            //
+            // An assertion is not a diagnosis. This function already knows which
+            // adapters exist and which are usable; report that instead, and make
+            // it Invalid (the caller's environment) rather than Internal (a bug in
+            // us) — the distinction is what tells an operator whether to file or
+            // to install something.
+            let diagnosis: Vec<String> = providers
+                .iter()
+                .map(|p| {
+                    let why = if p.available() {
+                        "available"
+                    } else if p.requires_key() {
+                        "no API key configured"
+                    } else {
+                        "unavailable here — this adapter drives a browser; is \
+                         Chrome/Chromium installed?"
+                    };
+                    format!("{} = {}", p.id(), why)
+                })
+                .collect();
+            providers
+                .into_iter()
+                .find(|p| p.available())
+                .ok_or_else(|| {
+                    CommandError::Invalid(format!(
+                        "no web-search provider is usable on this host. Adapters: {}. \
+                         A Chromium-based browser is EXPECTED on every machine — if one \
+                         is installed somewhere non-standard (Brave, Edge, Vivaldi, \
+                         Opera), point CONTINUUM_BROWSER_BIN at its binary; otherwise \
+                         install Chromium or Google Chrome. A keyed fallback also works: \
+                         BRAVE_API_KEY=<key> in ~/.continuum/config.env (free key at \
+                         https://brave.com/search/api/).",
+                        diagnosis.join("; ")
+                    ))
+                })
+        }
     }
 }
 
