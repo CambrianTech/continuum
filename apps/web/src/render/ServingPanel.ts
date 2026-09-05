@@ -275,3 +275,21 @@ import { renderGaugeBody } from './parts';
 
 /** The serving body's full inner render — header line + sparklines + arm
  *  chips + event cards. Shared by `<serving …[14 more chars — my full thought, collapsed]
+
+// Handle serving.glassbox event
+connectedCallback() {
+  super.connectedCallback();
+  this.addEventListener('serving.glassbox', this.handleGlassboxDigest);
+}
+
+disconnectedCallback() {
+  super.disconnectedCallback();
+  this.removeEventListener('serving.glassbox', this.handleGlassboxDigest);
+}
+
+handleGlassboxDigest(event) {
+  if (event.type === 'serving.glassbox') {
+    this.body = event.payload;
+    this.requestUpdate();
+  }
+}
