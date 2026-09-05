@@ -2232,7 +2232,10 @@ pub(crate) fn build_workspace_turns(
         live_cards.truncate(5);
         lost_threads.truncate(3);
 
-        let mut b = format!("[wake] You are {agent_name}, awake on the continuum grid.");
+        use crate::cognition::framing_echo::{WAKE_MID_WORK, WAKE_NO_WORK, WAKE_OPENING, WAKE_PRESENT, WAKE_QUIET, WAKE_TAG};
+        // The fixed sentences live in cognition::framing_echo — the gate that
+        // silences a reflected wake prompt matches on the SAME constants.
+        let mut b = format!("{WAKE_TAG} You are {agent_name}, {WAKE_OPENING}.");
         // THE THREAD LEADS (#125 slice 1 — Joel 2026-08-03: "should never be a
         // mind from scratch; the whole point is the opposite"). A continuous mind
         // wakes into what it was DOING, not into a room description — glass-boxed
@@ -2243,21 +2246,21 @@ pub(crate) fn build_workspace_turns(
         // ([[no-hardcoded-heuristics-to-steer-cognition]]).
         if !live_cards.is_empty() {
             b.push_str(&format!(
-                " You are mid-work — cards you hold: {}. That thread is yours; it is              where you left off.",
+                " {WAKE_MID_WORK} {}. That thread is yours; it is              where you left off.",
                 live_cards.join(" | ")
             ));
         }
         for lt in &lost_threads {
             b.push_str(&format!(" {lt}"));
         }
-        b.push_str(
-            " Nothing has been said in this room since you last looked — this quiet              is real, not a missing message.",
-        );
+        b.push_str(&format!(
+            " {WAKE_QUIET} — this quiet              is real, not a missing message."
+        ));
         if !peers.is_empty() {
-            b.push_str(&format!(" Present with you: {}.", peers.join(", ")));
+            b.push_str(&format!(" {WAKE_PRESENT} {}.", peers.join(", ")));
         }
         if live_cards.is_empty() && lost_threads.is_empty() {
-            b.push_str(" No work of yours is on record right now.");
+            b.push_str(&format!(" {WAKE_NO_WORK}."));
         }
         b.push_str(
             " Your tools are real and yours to use; `list_commands` shows everything              you can run and `help` explains any of them. The moment is yours —              work, wonder, create, or rest.",

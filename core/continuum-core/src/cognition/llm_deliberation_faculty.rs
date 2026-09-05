@@ -870,7 +870,7 @@ impl LlmDeliberationFaculty {
     /// derived signal (logprob / uncertainty), NOT a caste weight; it's how sure
     /// THIS mind is, which the arbiter integrates.
     fn verdict(&self, resp: &TextGenerationResponse, ws: &Workspace) -> Contribution {
-        let decision = self.silence_a_parroted_draft(decision_from_response(&resp.text), ws);
+        let decision = self.silence_a_parroted_draft(decision_from_response(&resp.text, Some(&self.persona_name)), ws);
         let (salience, reasoning) = match &decision {
             Decision::Pass { reason } => (
                 0.5,
