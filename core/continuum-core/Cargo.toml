@@ -429,3 +429,6 @@ futures = "0.3"
 # Voice processing dependencies
 [features]
 voice = ["pocket-tts"]
+# Voice processing dependencies
+[features]
+voice = ["pocket-tts"]
