@@ -118,3 +118,36 @@ declare global {
     'serving-panel': ServingPanel;
   }
 }
+import { renderServingBody } from '../serving/renderServing';
+
+class ServingPanel extends HTMLElement {
+  constructor() {
+    super();
+    this.heading = 'Serving Status';
+  }
+
+  connectedCallback() {
+    const shadow = this.attachShadow({ mode: 'open' });
+    shadow.innerHTML = `<style>
+      .rail-widget { border: 1px solid #ccc; padding: 10px; margin: 5px; }
+      .who-head { font-weight: bold; }
+      .who-title { color: #333; }
+    </style>`;
+    this.render();
+  }
+
+  render() {
+    const body = this.body;
+    if (!body) return html``;
+    return html`
+      <section class="rail-widget" data-widget="serving" data-id="serving">
+        <div class="who-head">
+          <span class="who-title">${this.heading}</span>
+        </div>
+        ${renderServingBody(body)}
+      </section>
+    `;
+  }
+}
+
+customElements.define('serving-panel', ServingPanel);
