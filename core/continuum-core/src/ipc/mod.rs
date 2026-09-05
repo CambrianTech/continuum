@@ -2325,18 +2325,20 @@ pub fn start_server(
     // between). Step marks name which part of the persona-host setup owns it.
     let mut stretch_mark = {
         let mut last = std::time::Instant::now();
-        move |step: &'static str| {
+        move |step: &'static str, next: &'static str| {
             let now = std::time::Instant::now();
             crate::probe!(
                 class = "boot.stretch",
                 stretch = "persona_host_setup",
                 step = step,
+                next = next,
                 ms = now.duration_since(last).as_millis() as u64,
-                "pre-bind stretch step"
+                "pre-bind stretch step done; the named next step starts now"
             );
             last = now;
         }
     };
+    stretch_mark("enter", "resident_roles_and_overlay");
     if let Some(daemon_socket) = persona_bootstrap_deps {
         // Grid capacity gossip (#56 step 4): this node offers its live capacity to
         // the grid on the module tick and hears every peer's offers (its own echo
@@ -2689,8 +2691,8 @@ pub fn start_server(
                 }
             }
         };
-        stretch_mark("resident_roles_and_overlay");
-        stretch_mark("before_supervisor");
+        stretch_mark("resident_roles_and_overlay", "supervisor_construct");
+        stretch_mark("supervisor_construct", "resume_task_spawn_and_rest_of_block");
         let supervisor = crate::persona::host::PersonaSpawnSupervisor::new(
             crate::persona::spawner_module::PersonaSpawnerModule::new(hw_cap, tier_cat)
                 .with_citizens(resident_roles)
@@ -3117,7 +3119,7 @@ pub fn start_server(
                 bound = Some(active);
             }
         });
-        stretch_mark("end_of_persona_host_block");
+        stretch_mark("end_of_persona_host_block", "ai_provider_register");
     }
 
     // AIProviderModule: Unified AI provider for cloud and local inference
