@@ -110,6 +110,8 @@ try {
     # serving daemon has no binary to spawn -> no local inference -> no persona can
     # speak. Needs CUDA + MSVC env (already provisioned above).
     Mod-LlamaServer -RepoRoot $RepoRoot
+# Add supervised service path and uu.cmd shim
+    Mod-ServicePath -RepoRoot $RepoRoot
 
     Mod-Run
 }
