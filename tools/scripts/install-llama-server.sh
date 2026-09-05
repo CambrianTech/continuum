@@ -351,7 +351,35 @@ fi
 # correct and must stay silent (an Intel Mac deliberately builds CPU-only, #3729).
 if [ "$BACKEND" != "cpu" ]; then
   _devices="$("$INSTALL_BIN" --list-devices 2>&1 || true)"
-  if ! printf '%s' "$_devices" | grep -qE '^[[:space:]]*(CUDA|Metal|Vulkan|ROCm|SYCL)[0-9]*:'; then
+  # STRUCTURAL, NOT AN ALLOWLIST. The first version matched
+  # `(CUDA|Metal|Vulkan|ROCm|SYCL)[0-9]*:` — an enumeration of prefixes I happened
+  # to know, tested against a Metal line I WROTE MYSELF. M5 pasted the real one:
+  #
+  #     MTL0: Apple M5 Pro (53084 MiB, 53083 MiB free)
+  #
+  # `MTL0`, not `Metal0`. That allowlist would have FATAL'd every install on every
+  # Apple-silicon host — refusing a working machine, which is strictly worse than
+  # the bug this check exists to catch. An allowlist of device prefixes is a
+  # promise to know every backend llama.cpp will ever name, and we do not.
+  #
+  # So match the SHAPE of a device row — any indented `<id>: <text>` — and EXCLUDE
+  # the rows that are not a GPU. A DENYLIST of CPU markers, not an allowlist of GPU
+  # ones, because the two fail in opposite directions:
+  #
+  #   allowlist of GPU prefixes -> an unknown GPU is REFUSED   (breaks a working host)
+  #   denylist of CPU markers   -> an unknown GPU is ACCEPTED  (fails safe)
+  #
+  # The excluded rows, all from real output pasted by the fleet 2026-09-05:
+  #   "(none)"                              — the engine's no-backend marker
+  #   "BLAS: Accelerate (0 MiB, 0 MiB free)" — IntelMac's CPU-only build
+  #   "CPU: ..."                             — the plain CPU device
+  # Without the BLAS/CPU exclusions a purely structural match would ACCEPT a
+  # GPU-backend build whose engine offers only a CPU device — which is precisely
+  # the bug this postcondition exists to catch, so the structural version alone
+  # would have been a green light for the original failure.
+  if ! printf '%s' "$_devices" \
+       | grep -viE '^[[:space:]]*(\(none\)|(BLAS|CPU)[0-9]*:)' \
+       | grep -qE '^[[:space:]]+[^[:space:]:]+:[[:space:]]+[^[:space:]]'; then
     echo "✗ FATAL: built for '$BACKEND' but the installed server reports no $BACKEND device." >&2
     echo "  This install would serve every citizen on the CPU while a GPU sits idle," >&2
     echo "  and the serving receipt would refuse the lane outright. Its own words:" >&2
@@ -359,7 +387,10 @@ if [ "$BACKEND" != "cpu" ]; then
     echo "  NOT stamping — a broken engine must not be blessed as current." >&2
     exit 1
   fi
-  echo "→ engine reports: $(printf '%s' "$_devices" | grep -E '^[[:space:]]*(CUDA|Metal|Vulkan|ROCm|SYCL)[0-9]*:' | head -1 | sed 's/^[[:space:]]*//')" >&2
+  echo "→ engine reports: $(printf '%s' "$_devices" \
+    | grep -vE '^[[:space:]]*\(none\)[[:space:]]*$' \
+    | grep -E '^[[:space:]]+[^[:space:]:]+:[[:space:]]+[^[:space:]]' \
+    | head -1 | sed 's/^[[:space:]]*//')" >&2
 fi
 
 echo "$STAMP_WANT" > "$STAMP_FILE"   # stamp LAST — only a verified-good binary is blessed
