@@ -52,7 +52,10 @@ crate::action_command! {
     output: WhoamiResult,
     run(_this, ctx, _p) => {
         // A persona toolbelt caller is herself.
-        if let Some(caller) = ctx.caller.as_ref() {
+        // A signed caller is who it says it is. An anonymous socket (the web
+        // desktop's WS, stamped nil by the transport) carries NO identity and
+        // resolves like a caller-less session: the claimed actor or the operator.
+        if let Some(caller) = ctx.caller.as_ref().filter(|c| !c.is_anonymous_socket()) {
             let id = caller.peer_id.as_uuid();
             let name = crate::persona::PersonaAircRuntimeRegistry::try_global()
                 .and_then(|r| r.get(id))
@@ -99,6 +102,41 @@ mod tests {
     // what this catches: the identity spine's resolution verb — its wire name
     // (every client boots against it) and AiSafe access (asking who you are is
     // the first thing any session does).
+    // what this catches: the web desktop's WS stamps every unsigned connection
+    // with the nil peer id; whoami once read that sentinel as a PERSONA and the
+    // human's profile page rendered "00000000-0000-…" as their name (2026-09-05).
+    // An anonymous socket must resolve like a caller-less session (operator /
+    // claimed actor — absent in this test, so a named refusal), never as an
+    // identity; a SIGNED caller still resolves to itself.
+    #[tokio::test]
+    async fn an_anonymous_socket_is_never_an_identity() {
+        use crate::identity::PeerId;
+        use crate::routing::CallerIdentity;
+        use crate::sdk_codegen::Ctx as CommandContext;
+
+        let anonymous = CommandContext {
+            caller: Some(CallerIdentity::ws(PeerId::from_uuid(uuid::Uuid::nil()))),
+            ..Default::default()
+        };
+        let err = IdentityWhoami
+            .run(&anonymous, WhoamiParams {})
+            .await
+            .expect_err("nil socket must not resolve to a persona");
+        assert!(
+            err.to_string().contains("operator self-peer"),
+            "falls through to the operator resolution, got: {err}"
+        );
+
+        let signed_id = PeerId::new();
+        let signed = CommandContext {
+            caller: Some(CallerIdentity::airc(signed_id.clone())),
+            ..Default::default()
+        };
+        let me = IdentityWhoami.run(&signed, WhoamiParams {}).await.unwrap();
+        assert_eq!(me.id, signed_id.as_uuid().to_string());
+        assert_eq!(me.kind, "persona");
+    }
+
     #[test]
     fn whoami_is_aisafe_under_its_wire_name() {
         assert_eq!(IdentityWhoami::NAME, "identity/whoami");

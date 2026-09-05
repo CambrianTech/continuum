@@ -253,6 +253,18 @@ impl CallerIdentity {
         }
     }
 
+    /// An UNAUTHENTICATED socket: a `Ws`/`Tcp` caller the transport stamped
+    /// with the nil peer id because nobody signed the connection. It is not
+    /// an identity — it is the absence of one — so anything resolving "who is
+    /// this" must fall through to the session's claimed actor (agent) or the
+    /// operator, never render the nil uuid as a person. (The web desktop
+    /// called the human "00000000-0000-…" for a day because `identity/whoami`
+    /// read this sentinel as a persona — Joel, 2026-09-05.)
+    pub fn is_anonymous_socket(&self) -> bool {
+        self.peer_id.as_uuid().is_nil()
+            && matches!(self.source, CallerSource::Ws | CallerSource::Tcp)
+    }
+
     /// Construct a POSITRON-OBSERVER caller identity — an AI observer acting
     /// through a positron session over an unauthenticated socket. `peer_id` is
     /// the socket's peer (nil today, same as the human's `ws` connection);
