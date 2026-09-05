@@ -43,6 +43,11 @@ export async function observe(params: ObserveParams): Promise<ObserveResult> {
 
     // Clip the render to a selector when asked (SEE just that region); the probe
     // still returns the surface structure to REASON over.
+    // PERCEPTION_DWELL_MS: keep the page alive this long before observing — a
+    // live call needs seconds for the media plane to connect and the fake
+    // microphone to be heard (the self-exercise); a static page needs none.
+    const dwell = Number(process.env.PERCEPTION_DWELL_MS ?? '0');
+    if (Number.isFinite(dwell) && dwell > 0) await new Promise((r) => setTimeout(r, dwell));
     const obs = await session.observe(params.selector ? { selector: params.selector } : undefined);
 
     return {

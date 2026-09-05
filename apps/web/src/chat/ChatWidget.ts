@@ -278,6 +278,9 @@ export class ChatWidget extends LitElement {
   /** Deep-link intents (`?mic`, `?cam`): publish as soon as the call connects. */
   autoMic = false;
   autoCam = false;
+  /** The room a `?live` deep link named — the call connects only once the
+   *  focused state IS that room (by name or id), never the daemon's prior focus. */
+  liveRoom?: string;
 
   /** ws:// URL of the core's call server (config: CONTINUUM_CALL_WS, default
    *  8790). Absent = no media plane; the live face stays avatar-presence with
@@ -5851,7 +5854,11 @@ export class ChatWidget extends LitElement {
     // handler was the only caller of connectCall, so a deep link — and the
     // node's own self-test through the eye-node — showed the face with no
     // session, no media plane, every live probe at zero; 2026-09-05).
-    if (this.liveFace && !this._call && this.state && this.callUrl) void this.connectCall();
+    const routedRoomIsFocused =
+      this.liveRoom === undefined ||
+      this.state?.room_name === this.liveRoom ||
+      this.state?.room_id === this.liveRoom;
+    if (this.liveFace && !this._call && this.state && this.callUrl && routedRoomIsFocused) void this.connectCall();
     // Deep-link media intents fire once the call is connected and only while
     // that media is off — idempotent across renders (startMedia flips _micOn/_camOn).
     if (this.liveFace && this._call && this._mediaConnected) {
