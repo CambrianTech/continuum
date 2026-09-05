@@ -90,23 +90,17 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          cp tools/scripts/lib/install-common.sh /tmp/ic.bak
-          # Force the silent-zero shape on EVERY arm, by line rather than by
-          # each platform's expression. The first cut matched the macOS
-          # `$(( $(sysctl …) ))` and Linux `$(awk …)` shapes only, so on
-          # Windows — whose arm is a `case` over a captured variable since
-          # #3739 — it patched nothing, the assertions passed unchanged, and
-          # this step correctly reported "the gate is dead". The mutation step
-          # caught a hole in the mutation step, which is the argument for
-          # having one.
-          perl -pi -e 's/^(\s*)IC_RAM_MIB=.*/${1}IC_RAM_MIB=0  # MUTATION/' tools/scripts/lib/install-common.sh
-          grep -c 'MUTATION' tools/scripts/lib/install-common.sh
-          if bash scripts/ci/host-detect-assert.sh > /tmp/mutation.log 2>&1; then
+          # The defect is injected AFTER detection via a hook in the assert
+          # script, not by patching install-common.sh. Two earlier cuts sed'd
+          # "the RAM line" and each missed Windows, whose arm is a `case` over a
+          # captured variable since #3739 — a mutation that mutates nothing
+          # reports the gate dead, correctly, but the dead thing was the regex.
+          # One injection point every platform converges on cannot miss an arm.
+          if HOST_DETECT_MUTATE_RAM=1 bash scripts/ci/host-detect-assert.sh > /tmp/mutation.log 2>&1; then
             echo "::error::host-detect-assert did NOT fail with RAM forced to 0 — the gate is dead."
             cat /tmp/mutation.log
-            cp /tmp/ic.bak tools/scripts/lib/install-common.sh
             exit 1
           fi
-          cp /tmp/ic.bak tools/scripts/lib/install-common.sh
-          echo "Mutation proof passed: a silent-zero RAM figure turns this leg red."
+          grep -E 'MUTATION|FAIL ram' /tmp/mutation.log || true
+          echo "Mutation proof passed: a zero RAM figure turns this leg red."
           bash scripts/ci/host-detect-assert.sh

@@ -51,6 +51,27 @@ check() {
 echo "host-detect-assert on $(uname -s) $(uname -m)"
 ic_detect_hardware
 
+# MUTATION HOOK — test scaffolding, and it lives HERE rather than in a sed over
+# install-common.sh on purpose.
+#
+# The CI job must prove this gate can fail, and the obvious way (patch the RAM
+# assignment in the source) is platform-shaped: macOS assigns from a `$(( $(…) ))`,
+# Linux from `$(awk …)`, and Windows from a `case` over a captured variable
+# since #3739. Two successive attempts to patch "the RAM line" from a Mac each
+# missed Windows and produced a green mutation — a mutation step that mutates
+# nothing reports the gate dead, which is right, but it was MY regex that was
+# dead, twice.
+#
+# Injecting the defect at the one place every platform converges — after
+# detection, before the checks — is shape-independent and cannot silently miss
+# an arm. Nothing in production reads this variable; it exists only so CI can
+# watch the assertions go red on demand.
+if [ -n "${HOST_DETECT_MUTATE_RAM:-}" ]; then
+  echo "MUTATION: forcing IC_RAM_MIB=0 (was ${IC_RAM_MIB:-<unset>})"
+  IC_RAM_MIB=0
+  IC_RAM_GB=0
+fi
+
 echo ""
 echo "detected:"
 note "IC_PLATFORM = ${IC_PLATFORM:-<unset>}"
