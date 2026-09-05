@@ -91,9 +91,16 @@ jobs:
         run: |
           set -o pipefail
           cp tools/scripts/lib/install-common.sh /tmp/ic.bak
-          # Force the silent-zero shape on whichever arm this platform uses.
-          perl -0pi -e 's/IC_RAM_MIB=\$\(\([^\n]*\n/IC_RAM_MIB=0  # MUTATION\n/' tools/scripts/lib/install-common.sh
-          perl -0pi -e 's/IC_RAM_MIB=\$\(awk[^\n]*\n/IC_RAM_MIB=0  # MUTATION\n/' tools/scripts/lib/install-common.sh
+          # Force the silent-zero shape on EVERY arm, by line rather than by
+          # each platform's expression. The first cut matched the macOS
+          # `$(( $(sysctl …) ))` and Linux `$(awk …)` shapes only, so on
+          # Windows — whose arm is a `case` over a captured variable since
+          # #3739 — it patched nothing, the assertions passed unchanged, and
+          # this step correctly reported "the gate is dead". The mutation step
+          # caught a hole in the mutation step, which is the argument for
+          # having one.
+          perl -pi -e 's/^(\s*)IC_RAM_MIB=.*/${1}IC_RAM_MIB=0  # MUTATION/' tools/scripts/lib/install-common.sh
+          grep -c 'MUTATION' tools/scripts/lib/install-common.sh
           if bash scripts/ci/host-detect-assert.sh > /tmp/mutation.log 2>&1; then
             echo "::error::host-detect-assert did NOT fail with RAM forced to 0 — the gate is dead."
             cat /tmp/mutation.log
