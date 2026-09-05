@@ -3423,18 +3423,24 @@ pub fn start_server(
     // Unix: bind the primary Unix-domain socket. On Windows this is skipped
     // entirely — the server's primary IPC is the TCP loopback listener in the
     // accept section below (Windows has no Unix-domain sockets).
-    #[cfg(unix)]
     // Everything between init's end and the bind call: signal handlers and every
     // module's periodic loop start (IntelMac's review of #3714 — the row is named
-    // for what it measures, and the bind itself gets its own instant).
+    // for what it measures, and the bind itself gets its own instant). The
+    // `#[cfg(unix)]` sits on the BIND, not on the probe before it: an attribute
+    // gates exactly one statement, and gating the probe left the Unix bind
+    // compiling on Windows (the windows-msvc check caught it on the rebase).
+    #[cfg(unix)]
     crate::probe!(
         class = "boot.phase",
         phase = "post_init_to_bind",
         ms = phase_started.elapsed().as_millis() as u64,
         "pre-bind phase"
     );
+    #[cfg(unix)]
     let bind_started = std::time::Instant::now();
+    #[cfg(unix)]
     let listener = UnixListener::bind(socket_path)?;
+    #[cfg(unix)]
     crate::probe!(
         class = "boot.phase",
         phase = "bind",
