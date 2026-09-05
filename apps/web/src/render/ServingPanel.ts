@@ -151,3 +151,60 @@ class ServingPanel extends HTMLElement {
 }
 
 customElements.define('serving-panel', ServingPanel);
+import { LitElement, html, nothing, type TemplateResult } from 'lit';
+import type { ServingPanelView } from '@continuum/patterns';
+import { renderGaugeBody } from './parts';
+
+/** The serving body's full inner render — header line + sparklines + arm
+ * chips + event cards. Shared by `<serving-panel>` and `<sys-panel>`. */
+export function renderServingBody(body: ServingPanelView): TemplateResult {
+  return html`
+    <section class="serving-body">
+      ${renderGaugeBody(body)}
+      ${body.events.map(event => (
+        <div class="event-card">
+          <p>${event.type}: ${event.message}</p>
+          <small>${new Date(event.timestamp).toLocaleString()}</small>
+        </div>
+      ))}
+    </section>
+  `;
+}
+
+/** The serving rail section: node's live inference serving. */
+export class ServingPanel extends LitElement {
+  heading = 'Serving';
+  body?: ServingPanelView;
+
+  static properties = {
+    heading: { type: String },
+    body: { type: Object },
+  };
+
+  connectedCallback() {
+    super.connectedCallback();
+    this.style.setProperty('--serving-panel-bg', '#f0f0f0');
+    const style = document.createElement('style');
+    style.textContent = `
+      section { border: 1px solid #ccc; padding: 10px; margin: 5px; }
+      .who-head { font-weight: bold; }
+      .who-title { color: #333; }
+    `;
+    this.render();
+  }
+
+  render() {
+    const body = this.body;
+    if (!body) return html``;
+    return html`
+      <section class="rail-widget" data-widget="serving" data-id="serving">
+        <div class="who-head">
+          <span class="who-title">${this.heading}</span>
+        </div>
+        ${renderServingBody(body)}
+      </section>
+    `;
+  }
+}
+
+customElements.define('serving-panel', ServingPanel);
