@@ -39,17 +39,34 @@ pub struct BackendReceipt {
 /// GPU device-line prefixes llama.cpp's backends register under.
 const GPU_DEVICE_PREFIXES: &[&str] = &["MTL", "CUDA", "ROCm", "HIP", "Vulkan", "SYCL", "OpenCL", "CANN"];
 
+/// Drop llama.cpp's log timestamp (`0.00.020.970 `: digits and dots, then a space) so
+/// device and error lines parse the same whether they came through the logger or not.
+fn strip_log_timestamp(line: &str) -> &str {
+    match line.split_once(' ') {
+        Some((head, rest))
+            if !head.is_empty()
+                && head.chars().all(|c| c.is_ascii_digit() || c == '.')
+                && head.contains('.') =>
+        {
+            rest.trim_start()
+        }
+        _ => line,
+    }
+}
+
 /// Parse a `--list-devices` transcript. Pure; the shapes are pinned from real runs
 /// (M5: `  MTL0: Apple M5 Pro (53084 MiB, 53083 MiB free)`; BigMama: `E load_backend: …`).
 pub fn parse_list_devices(out: &str) -> BackendReceipt {
     let mut r = BackendReceipt::default();
     for raw in out.lines() {
-        let line = raw.trim();
+        let line = strip_log_timestamp(raw.trim());
         if line.is_empty() {
             continue;
         }
-        if let Some(err) = line.strip_prefix("E load_backend:") {
-            r.load_errors.push(err.trim().to_string());
+        // The server's log lines carry a leading timestamp (`0.00.020.970 E load_backend: …`,
+        // BigMama's exact bytes, review of #3730); the error marker is found, not anchored.
+        if let Some(i) = line.find("E load_backend:") {
+            r.load_errors.push(line[i + "E load_backend:".len()..].trim().to_string());
             continue;
         }
         if let Some((name, _rest)) = line.split_once(':') {
@@ -131,7 +148,8 @@ mod tests {
         assert!(matches!(v, BackendVerdict::Gpu { ref device } if device.starts_with("MTL0")));
         assert_eq!(v.backend_label(), "metal");
 
-        let bigmama = "E load_backend: failed to load ggml-cuda.dll: The specified module could not be found\nE load_backend: failed to find ggml_backend_init in ggml-cpu.dll\nAvailable devices:\n";
+        // Her exact bytes: the logger prefixes a timestamp, so the marker is found, not anchored.
+        let bigmama = "0.00.020.970 E load_backend: failed to load ggml-cuda.dll: The specified module could not be found\n0.00.021.104 E load_backend: failed to find ggml_backend_init in ggml-cpu.dll\nAvailable devices:\n";
         let r = parse_list_devices(bigmama);
         assert!(r.gpu_devices.is_empty());
         assert_eq!(r.load_errors.len(), 2);
@@ -153,6 +171,13 @@ mod tests {
         let hung = backend_verdict("x", None);
         assert_eq!(hung, BackendVerdict::ProbeHung);
         assert_eq!(hung.backend_label(), "cpu");
+    }
+
+    // what this catches: a timestamped device line still reads as a device.
+    #[test]
+    fn a_timestamped_device_line_is_still_a_device() {
+        let r = parse_list_devices("0.00.010.000 Available devices:\n0.00.011.000   MTL0: Apple M5 Pro (53084 MiB, 53083 MiB free)\n");
+        assert_eq!(r.gpu_devices.len(), 1, "{r:?}");
     }
 
     // what this catches: an answered transcript with no devices and no errors (a
