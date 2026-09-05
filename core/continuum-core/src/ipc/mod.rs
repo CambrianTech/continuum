@@ -1190,8 +1190,15 @@ pub fn start_server(
     // daemon (which plans off its snapshot) and the `models/*` command surface
     // (which mutates it). One owner, one live universe: a `models/pull` that
     // flips a model Ready is seen by the very next serving tick — no reboot.
-    let model_catalog = Arc::new(crate::model_registry::live::ModelCatalog::from_registry(
-        crate::model_registry::global(),
+    // Timed: this sits inside the 164-line stretch between the `system` and `serving`
+    // registrations, which `boot.construct` bills entirely to `serving` because
+    // attribution happens on the NEXT registration. On BigMama that stretch is
+    // 209,170 ms of a 232,429 ms construct_modules phase (M5: 14,270 ms total), and it
+    // emits nothing — the row is an upper bound on a SPAN, not a constructor cost.
+    // These three `time_sync!` seams exist to give the span real owners.
+    let model_catalog = Arc::new(crate::time_sync!(
+        "boot.model_catalog",
+        crate::model_registry::live::ModelCatalog::from_registry(crate::model_registry::global())
     ));
 
     // The ONE per-machine resource authority (#56). Its VRAM ceiling comes from
@@ -1218,7 +1225,10 @@ pub fn start_server(
         // Some(gpu working-set hint) when the detected GPU shares the host's memory — the
         // signal that memory must be governed as ONE pool rather than two ledgers.
         let mut unified_gpu_hint: Option<u64> = None;
-        match crate::gpu::monitor::detect() {
+        // Timed: a live device scan on the boot path (see the span note above).
+        // `#3733` bounded `GpuMemoryManager::detect()`; this is a DIFFERENT probe
+        // (MetalMonitor/NvidiaMonitor construction) and nothing has ever measured it.
+        match crate::time_sync!("boot.gpu_monitor_detect", crate::gpu::monitor::detect()) {
             Some(monitor) => {
                 log_info!(
                     "ipc",
@@ -1320,11 +1330,18 @@ pub fn start_server(
         )
     };
 
-    let serving_daemon = Arc::new(crate::modules::serving_daemon::ServingDaemonModule::new(
-        gpu_manager.clone(),
-        system_monitor.clone(),
-        resource_daemon.clone(),
-        model_catalog.clone(),
+    // Timed: `boot.construct` bills the whole preceding span to `serving`, so this is the
+    // ONLY way to tell how much of that number is actually this constructor (see the span
+    // note above). If this reads small while the `serving` row stays huge, the cost is a
+    // neighbour's and the row was never about the serving daemon.
+    let serving_daemon = Arc::new(crate::time_sync!(
+        "boot.serving_daemon_new",
+        crate::modules::serving_daemon::ServingDaemonModule::new(
+            gpu_manager.clone(),
+            system_monitor.clone(),
+            resource_daemon.clone(),
+            model_catalog.clone(),
+        )
     ));
     // DECLARE OURSELVES TO THE AUTHORITY BEFORE THE PLANNER CAN TICK (#438). The authority
     // budgets serving via `budget_for_replacing` — available PLUS serving's own residency —
