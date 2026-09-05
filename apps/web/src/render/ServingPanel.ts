@@ -263,3 +263,9 @@ class ServingPanel extends LitElement {
 }
 
 customElements.define('serving-panel', ServingPanel);
+import { LitElement, html, css } from 'lit';
+import type { ServingPanelView } from '@continuum/patterns';
+import { renderGaugeBody } from './parts';
+
+/** The serving body's full inner render — header line + sparklines + arm
+ *  chips + event cards. Shared by `<serving …[14 more chars — my full thought, collapsed]
