@@ -66,7 +66,7 @@ pub fn clean_and_validate(
     let cleaned = clean_response(raw_response);
     // Gate 0 — the turn's own framing reflected back is a PASS, not a post
     // (cognition::framing_echo; the wake-prompt echo of 2026-09-05).
-    if let Some(marker) = crate::cognition::framing_echo::echoes_turn_framing(&cleaned.text) {
+    if let Some(marker) = crate::cognition::framing_echo::echoes_turn_framing(&cleaned.text, None) {
         crate::probe!(
             class = "cognition.framing_echo",
             persona = %persona_id,
