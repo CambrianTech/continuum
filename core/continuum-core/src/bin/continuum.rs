@@ -1367,9 +1367,16 @@ fn cputime_to_secs(field: &str) -> u64 {
     let mut secs = 0u64;
     for (i, part) in field.trim().rsplit(':').enumerate() {
         let (days, value) = match part.split_once('-') {
+            // unwrap_or(0): an unreadable DAY field contributes no days rather than a guess —
+            // this total only ever RESETS a stall clock, so under-counting costs at worst one
+            // extra tick of patience while over-counting would mask a real stall.
             Some((d, v)) => (d.trim().parse::<u64>().unwrap_or(0), v),
             None => (0, part),
         };
+        // unwrap_or(0): same direction, and it is the tested contract
+        // (`unparseable_cputime_contributes_nothing_rather_than_guessing`). A field we cannot
+        // read must not invent CPU that was never burned: inventing it would reset the clock on
+        // a genuinely hung build and turn this watchdog back into the thing it replaced.
         secs += value.trim().parse::<u64>().unwrap_or(0) * 60u64.pow(i.min(2) as u32);
         secs += days * 86_400;
     }
@@ -1992,6 +1999,10 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource) -> Result<u64
     // The script is spawned detached into its own process group, so its pid IS the pgid — the
     // same fact `stop` relies on to reap the tree.
     let build_pgid = child.id();
+    // unwrap_or(0): "cannot read CPU yet" starts the baseline at zero, so the FIRST real reading
+    // looks like advancement and resets the clock — the generous direction. Starting high would
+    // make a hung build's flat CPU appear to be a drop and never reset, which is the failure that
+    // matters; starting low can only cost one extra tick of patience.
     let mut last_cpu_secs = build_group_cpu_secs(build_pgid).unwrap_or(0);
     for i in 0..(MAX_WAIT_SECS / TICK_SECS) {
         tokio::time::sleep(Duration::from_secs(TICK_SECS)).await;
