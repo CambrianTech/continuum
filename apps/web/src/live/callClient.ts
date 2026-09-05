@@ -243,7 +243,9 @@ export class CallClient {
     console.warn(`[live-mic] start mode=${mode} lkRoom=${this.lkRoom !== undefined} lkLive=${this.lkLive} ws=${this.ws?.readyState}`);
     if (mode !== 'ws' && this.lkRoom !== undefined && this.lkLive) {
       try {
+        console.warn('[live-mic] creating local audio track');
         this.lkMic = await createLocalAudioTrack();
+        console.warn('[live-mic] track created; publishing');
         await this.lkRoom.localParticipant.publishTrack(this.lkMic);
         this.micLive = true;
         console.warn('[live-mic] livekit track published');
