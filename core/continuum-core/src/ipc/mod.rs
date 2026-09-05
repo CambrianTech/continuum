@@ -1190,9 +1190,28 @@ pub fn start_server(
     // daemon (which plans off its snapshot) and the `models/*` command surface
     // (which mutates it). One owner, one live universe: a `models/pull` that
     // flips a model Ready is seen by the very next serving tick — no reboot.
+    // Timed: this sits inside the 164-line stretch between the `system` and `serving`
+    // registrations, which `boot.construct` bills entirely to `serving` because
+    // attribution happens on the NEXT registration. On BigMama that stretch is
+    // 209,170 ms of a 232,429 ms construct_modules phase (M5: 14,270 ms total), and it
+    // emits nothing — the row is an upper bound on a SPAN, not a constructor cost.
+    // These three `time_sync!` seams exist to give the span real owners.
+    // `probe!` (an EVENT), not `time_sync!` (a SPAN): span durations need a
+    // span-aware subscriber, and nothing records them pre-bind — a first cut of this
+    // used time_sync! and produced ZERO rows on a live boot while every
+    // `boot.construct` event landed. Same class/field shape as #3742's marks so one
+    // query covers both stretches.
+    let t_catalog = std::time::Instant::now();
     let model_catalog = Arc::new(crate::model_registry::live::ModelCatalog::from_registry(
         crate::model_registry::global(),
     ));
+    crate::probe!(
+        class = "boot.stretch",
+        stretch = "serving_span",
+        step = "model_catalog",
+        ms = t_catalog.elapsed().as_millis() as u64,
+        "pre-bind stretch step"
+    );
 
     // The ONE per-machine resource authority (#56). Its VRAM ceiling comes from
     // the LIVE GpuMonitor (`gpu::monitor::detect()` — Metal + every NVIDIA host),
@@ -1218,7 +1237,25 @@ pub fn start_server(
         // Some(gpu working-set hint) when the detected GPU shares the host's memory — the
         // signal that memory must be governed as ONE pool rather than two ledgers.
         let mut unified_gpu_hint: Option<u64> = None;
-        match crate::gpu::monitor::detect() {
+        // Timed: a live device scan on the boot path (see the span note above).
+        // `#3733` bounded `GpuMemoryManager::detect()`; this is a DIFFERENT probe
+        // (MetalMonitor/NvidiaMonitor construction) and nothing has ever measured it.
+        // The load-bearing seam. #3733 bounded nvidia-smi in
+        // gpu/memory_manager.rs::detect_cuda only; NvidiaMonitor::new ->
+        // NvidiaProbe::detect() reaches four more unbounded `.output()` calls in
+        // gpu/backends/nvidia.rs (:215 :228 :243 :257). Boot cost on this host swings
+        // 18 s to >300 s between runs, which is what an unbounded device probe under
+        // contention looks like.
+        let t_gpu = std::time::Instant::now();
+        let detected_monitor = crate::gpu::monitor::detect();
+        crate::probe!(
+            class = "boot.stretch",
+            stretch = "serving_span",
+            step = "gpu_monitor_detect",
+            ms = t_gpu.elapsed().as_millis() as u64,
+            "pre-bind stretch step"
+        );
+        match detected_monitor {
             Some(monitor) => {
                 log_info!(
                     "ipc",
@@ -1320,12 +1357,24 @@ pub fn start_server(
         )
     };
 
+    // Timed: `boot.construct` bills the whole preceding span to `serving`, so this is the
+    // ONLY way to tell how much of that number is actually this constructor (see the span
+    // note above). If this reads small while the `serving` row stays huge, the cost is a
+    // neighbour's and the row was never about the serving daemon.
+    let t_serving = std::time::Instant::now();
     let serving_daemon = Arc::new(crate::modules::serving_daemon::ServingDaemonModule::new(
         gpu_manager.clone(),
         system_monitor.clone(),
         resource_daemon.clone(),
         model_catalog.clone(),
     ));
+    crate::probe!(
+        class = "boot.stretch",
+        stretch = "serving_span",
+        step = "serving_daemon_new",
+        ms = t_serving.elapsed().as_millis() as u64,
+        "pre-bind stretch step"
+    );
     // DECLARE OURSELVES TO THE AUTHORITY BEFORE THE PLANNER CAN TICK (#438). The authority
     // budgets serving via `budget_for_replacing` — available PLUS serving's own residency —
     // and that add-back is keyed on serving being a registered consumer. Attaching the planner
