@@ -280,6 +280,8 @@ export class ChatWidget extends LitElement {
   autoCam = false;
   /** Which capture path `?mic=` asked for (self-exercise isolation); 'auto' for humans. */
   micMode: 'auto' | 'lk' | 'ws' = 'auto';
+  private _intentBusy = false;
+  private _intentTries = 0;
   /** The room a `?live` deep link named — the call connects only once the
    *  focused state IS that room (by name or id), never the daemon's prior focus. */
   liveRoom?: string;
@@ -5863,14 +5865,37 @@ export class ChatWidget extends LitElement {
     if (this.liveFace && !this._call && this.state && this.callUrl && routedRoomIsFocused) void this.connectCall();
     // Deep-link media intents fire once the call is connected and only while
     // that media is off — idempotent across renders (startMedia flips _micOn/_camOn).
-    if (this.liveFace && this._call && this._mediaConnected) {
-      if (this.autoMic && !this._micOn && this._mediaAsk === undefined) {
-        this.autoMic = false;
-        this.startMedia('mic');
+    // An INTENT retries until the media plane can carry it (LiveKit connects
+    // after the core socket, and a LiveKit-only start returns false until then);
+    // it never opens the permission card and never marks "denied" — a human's
+    // click still goes through startMedia/mediaPermission. Bounded: 40 renders.
+    if (this.liveFace && this._call && this._mediaConnected && (this.autoMic || this.autoCam)) {
+      const call = this._call;
+      if (this.autoMic && !this._micOn && !this._intentBusy && this._intentTries < 40) {
+        this._intentBusy = true;
+        this._intentTries += 1;
+        void call.startMic(this.micMode).then((ok) => {
+          this._intentBusy = false;
+          if (ok) {
+            this._micOn = true;
+            this.autoMic = false;
+          } else {
+            setTimeout(() => this.requestUpdate(), 500); // the plane may be live on the next render
+          }
+        });
       }
-      if (this.autoCam && !this._camOn && this._mediaAsk === undefined) {
-        this.autoCam = false;
-        this.startMedia('camera');
+      if (this.autoCam && !this._camOn && !this._intentBusy && this._intentTries < 40) {
+        this._intentBusy = true;
+        this._intentTries += 1;
+        void call.startCamera(this.viewerId).then((ok) => {
+          this._intentBusy = false;
+          if (ok) {
+            this._camOn = true;
+            this.autoCam = false;
+          } else {
+            setTimeout(() => this.requestUpdate(), 500);
+          }
+        });
       }
     }
     const persona = focusedPersonaTab(this.nav);
