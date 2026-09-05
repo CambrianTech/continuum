@@ -323,8 +323,15 @@ pub fn base_invocation(
 }
 
 /// "Every layer on the device": llama-server clamps `--n-gpu-layers` to the model's
-/// layer count, so one large value means ALL on every backend. The placement planner
-/// may lower it for a partial fit; it may never omit it.
+/// layer count, so one large value means ALL on every backend.
+///
+/// HONEST LIMIT (BigMama's review of #3728): nothing at launch time guarantees a DENSE
+/// artifact fits VRAM — main lanes are always `LanePlacement::Gpu`, and fit is the tier
+/// policy's quant choice plus expert `-ot` for MoE. So a dense model over VRAM on CUDA
+/// now fails at spawn LOUDLY (serving.lane.failed) where the old zero-default ran it
+/// silently on the CPU. Loud is the right side of that trade; the right answer is a
+/// partial count computed from the footprint and the VRAM budget — that is a card, not
+/// this constant. It may be lowered; it may never be omitted.
 pub const ALL_GPU_LAYERS: &str = "999";
 
 /// The per-lane CONDITIONAL surface — flags that depend on the model's artifacts, the
