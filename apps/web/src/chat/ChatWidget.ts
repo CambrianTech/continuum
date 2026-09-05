@@ -568,6 +568,12 @@ export class ChatWidget extends LitElement {
     });
   }
 
+  /** Escape unpins the stage (legacy LiveWidget behaviour): the grid is the
+   *  resting state; a pin is a gesture the same key undoes. */
+  private onLiveKeydown = (e: KeyboardEvent): void => {
+    if (e.key === 'Escape' && this._pinnedTile !== undefined) this._pinnedTile = undefined;
+  };
+
   /** Tile click: pin it to the stage; clicking the pinned tile unpins. */
   private onLiveTilePin = (e: Event): void => {
     const id = (e as CustomEvent<{ id?: string }>).detail?.id;
@@ -788,6 +794,7 @@ export class ChatWidget extends LitElement {
     this.addEventListener(LIVE_CAMERA_TOGGLE, this.onLiveCameraToggle);
     this.addEventListener(LIVE_MEDIA_ASK, this.onLiveMediaAsk);
     this.addEventListener(LIVE_TILE_PIN, this.onLiveTilePin);
+    this.addEventListener('keydown', this.onLiveKeydown);
     this.addEventListener(LIVE_CAPTIONS_TOGGLE, this.onLiveCaptionsToggle);
   }
 
@@ -5836,6 +5843,12 @@ export class ChatWidget extends LitElement {
    *  and OPENING one resets the pane to the top (the transcript underneath was
    *  pinned to its bottom; a profile that opens mid-scroll reads broken). */
   protected override updated(changed: PropertyValues): void {
+    // A live face that is OPEN and has no call yet connects one — whether it was
+    // opened by the Go-live toggle or by a `?live` deep link at boot (the toggle
+    // handler was the only caller of connectCall, so a deep link — and the
+    // node's own self-test through the eye-node — showed the face with no
+    // session, no media plane, every live probe at zero; 2026-09-05).
+    if (this.liveFace && !this._call && this.state && this.callUrl) void this.connectCall();
     const persona = focusedPersonaTab(this.nav);
     // Scroll-back trigger: keep the transcript's scroll listener attached to
     // the CURRENT `.what` (Lit keeps the element stable across renders; the

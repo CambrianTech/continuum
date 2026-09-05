@@ -68,6 +68,7 @@ pub mod serving_guard;
 pub mod throughput_expectation;
 pub mod turn_admission;
 pub mod placement_watch;
+pub mod weight_residency;
 pub mod vendored;
 pub mod vision_sidecar;
 pub mod wedge;

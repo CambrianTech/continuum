@@ -2111,6 +2111,40 @@ pub struct LlamaServerProcess {
 }
 
 impl LlamaServerProcess {
+    /// ONE fetch of the root-level `/props` (beside `/health`) — the server's own
+    /// metadata channel: served window, slot count, modalities, and (fork
+    /// 3ca60da3c) measured weight residency. A connection error means nothing is
+    /// up (normal pre-spawn) → Unreachable.
+    async fn props_json(&self) -> Result<serde_json::Value, LlamaServerError> {
+        let url = format!("{}/props", self.root);
+        let resp = self
+            .client
+            .get(&url)
+            .timeout(PROBE_TIMEOUT)
+            .send()
+            .await
+            .map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(LlamaServerError::Unreachable(format!(
+                "status {}",
+                resp.status()
+            )));
+        }
+        resp.json()
+            .await
+            .map_err(|e| LlamaServerError::Unreachable(e.to_string()))
+    }
+
+    /// Where the weights were ALLOCATED, from `/props` (`model_weight_buffers`).
+    /// `Ok(None)` = the engine predates the field: channel unavailable, which is
+    /// not a placement.
+    pub async fn weight_residency(
+        &self,
+    ) -> Result<Option<super::weight_residency::WeightResidency>, LlamaServerError> {
+        let body = self.props_json().await?;
+        Ok(super::weight_residency::WeightResidency::from_props(&body))
+    }
+
     pub fn new() -> Self {
         Self::with_client(reqwest::Client::new())
     }
@@ -2500,29 +2534,10 @@ impl LlamaServerControl for LlamaServerProcess {
     }
 
     async fn served_context_window(&self) -> Result<u32, LlamaServerError> {
-        // `/props` lives at the root (not under `/v1`), alongside `/health`. The
-        // per-slot window the server actually serves is
+        // The per-slot window the server actually serves is
         // `default_generation_settings.n_ctx` — the launch `-c / --parallel`
-        // per-slot value AFTER llama.cpp's internal 256-multiple padding. A
-        // connection error means nothing is up (normal pre-spawn) → Unreachable.
-        let url = format!("{}/props", self.root);
-        let resp = self
-            .client
-            .get(&url)
-            .timeout(PROBE_TIMEOUT)
-            .send()
-            .await
-            .map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
-        if !resp.status().is_success() {
-            return Err(LlamaServerError::Unreachable(format!(
-                "status {}",
-                resp.status()
-            )));
-        }
-        let body: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
+        // per-slot value AFTER llama.cpp's internal 256-multiple padding.
+        let body = self.props_json().await?;
         // Fail loud if the shape is missing the field — never guess a window. The
         // daemon turns this into "publish the gap" (no ready snapshot), so a
         // malformed /props degrades to not-ready and self-heals next tick rather
@@ -3282,13 +3297,48 @@ match (child.stderr.take(), log_path) {
             // shape as the debug-build gate above: kill it, name the evidence, and
             // let the daemon's relaunch/degrade path own what happens next.
             // Joaquin's card 0c4317e1 (serve-time pin-match gap), finder credit.
+            // THE CHANNEL FIRST (card 44ddb6fc, Joel: "stdout is never a transport"):
+            // the engine's own `/props` says where the weights were ALLOCATED. An
+            // older engine has no field — channel unavailable, said so once, and
+            // the stderr arms below stay as the compensation until every tier
+            // serves the fork.
+            let residency = match self.weight_residency().await {
+                Ok(Some(r)) => Some(r),
+                Ok(None) => {
+                    tracing::info!(
+                        probe_class = "serving.placement.channel_unavailable",
+                        port = port,
+                        "engine reports no model_weight_buffers on /props — placement read \
+                         from stderr only (fork 3ca60da3c carries the channel)"
+                    );
+                    None
+                }
+                Err(e) => {
+                    tracing::info!(
+                        probe_class = "serving.placement.channel_unreadable",
+                        port = port,
+                        error = %e,
+                        "/props unreadable at readiness — placement read from stderr only"
+                    );
+                    None
+                }
+            };
+            let channel_says_cpu = residency
+                .as_ref()
+                .is_some_and(|r| r.total_bytes() > 0 && r.accelerator_bytes() == 0);
             let declined = self.offload.gpu_declined();
             let zero_offload = matches!(self.offload.get(), Some((0, total)) if total > 0);
-            if declined || zero_offload {
+            if channel_says_cpu || declined || zero_offload {
                 if let Some(pid) = child_pid {
                     crate::inference::lane_process::kill9(pid);
                 }
-                let evidence = if declined {
+                let residency_line = residency
+                    .as_ref()
+                    .map(|r| r.summary())
+                    .unwrap_or_else(|| "channel unavailable".to_string()); // unwrap_or_else: no field = the channel could not be read; the label says so, never a placement
+                let evidence = if channel_says_cpu {
+                    "/props model_weight_buffers: 0 accelerator bytes"
+                } else if declined {
                     "engine stderr: \"no usable GPU found\""
                 } else {
                     "offload banner: 0 layers on the GPU"
@@ -3298,18 +3348,30 @@ match (child.stderr.take(), log_path) {
                     port = port,
                     model = target.model_id(),
                     evidence = evidence,
+                    residency = residency_line.as_str(),
                     total_layers = self.offload.get().map(|(_, t)| t).unwrap_or(0), // unwrap_or: no banner = 0 layers KNOWN; the evidence field carries the declined line
                     "PLACEMENT VIOLATION: a GPU-placement lane came up ON CPU — refused, not served \
                      (ready must be a verified observation, #441 / card 0c4317e1)"
                 );
                 return Err(LlamaServerError::Spawn(format!(
-                    "{} was planned on the GPU and came up on the CPU ({evidence}); refused rather \
+                    "{} was planned on the GPU and came up on the CPU ({evidence}; residency {residency_line}); refused rather \
                      than serve every citizen from system RAM behind a green /health. Check the \
                      backend build (a DL-backend build can list CUDA0 from a shell and still fail \
                      to load it under the core) — last stderr:\n{}",
                     self.bin,
                     self.stderr_log_tail()
                 )));
+            }
+            if let Some(r) = residency.as_ref() {
+                crate::probe!(
+                    class = "serving.placement.measured",
+                    port = port,
+                    model = target.model_id(),
+                    accelerator_bytes = r.accelerator_bytes(),
+                    total_bytes = r.total_bytes(),
+                    residency = r.summary().as_str(),
+                    "placement read from the engine's own channel — weights allocated as planned"
+                );
             }
             match self.offload.get() {
                 Some((0, _)) => unreachable!("zero offload on a GPU lane is refused above"),

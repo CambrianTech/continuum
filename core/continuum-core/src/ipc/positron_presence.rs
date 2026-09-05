@@ -321,7 +321,7 @@ pub(crate) fn scan_avatar_store_for_directory() -> HashMap<Uuid, String> {
         .unwrap_or_default()
 }
 
-fn avatar_store_dir() -> Option<PathBuf> {
+pub(crate) fn avatar_store_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".continuum").join("avatars"))
 }
 
