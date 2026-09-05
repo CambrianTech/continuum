@@ -1078,29 +1078,64 @@ impl CallManager {
             Self::note_remote_audio_dropped(call_id, user_id, "no_mixer_handle");
             return;
         };
+        Self::note_human_audio_level("livekit", user_id, &samples);
         self.push_audio(&handle, samples).await;
     }
 
-    /// One `live.stt.audio_dropped` probe per (call, speaker, reason) — the
-    /// forwarder delivers ~100 chunks/s, so a per-chunk probe would blind the
-    /// ledger the way the video pump did (pump_tally.rs).
+    /// `live.stt.audio_dropped` once per second per (call, speaker, reason) WHILE
+    /// dropping — the earlier once-ever dedupe reported a pre-join drop forever
+    /// and hid the recovery (2026-09-05 15:2xZ: the row read as an ongoing drop
+    /// an hour after the join). A summary that stops when the drop stops.
     fn note_remote_audio_dropped(call_id: &str, user_id: &str, reason: &'static str) {
-        use std::collections::HashSet;
+        use std::collections::HashMap;
         use std::sync::{Mutex, OnceLock};
-        static SEEN: OnceLock<Mutex<HashSet<(String, String, &'static str)>>> = OnceLock::new();
-        let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
-        let fresh = seen
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) // unwrap_or_else: a poisoned dedupe set still dedupes; the probe must fire once, never never
-            .insert((call_id.to_string(), user_id.to_string(), reason));
-        if fresh {
+        static TALLY: OnceLock<Mutex<HashMap<(String, String, &'static str), super::pump_tally::PumpTally>>> =
+            OnceLock::new();
+        let tally = TALLY.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut map = tally.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned tally map still tallies; the probe must keep speaking
+        let t = map
+            .entry((call_id.to_string(), user_id.to_string(), reason))
+            .or_insert_with(|| super::pump_tally::PumpTally::new(std::time::Duration::from_secs(1)));
+        if let Some(sum) = t.record(1, 0) {
             crate::probe!(
                 class = "live.stt.audio_dropped",
                 module = "live",
                 call_id = call_id,
                 speaker = user_id,
                 reason = reason,
-                "remote human audio dropped before VAD — captions cannot happen for this speaker"
+                chunks = sum.frames,
+                span_ms = sum.span_ms,
+                "remote human audio dropped before VAD — captions cannot happen for this speaker while this repeats"
+            );
+        }
+    }
+
+    /// `live.stt.level` once per second per (source, speaker): the PEAK sample
+    /// amplitude the VAD is about to see, by ingest path. The one number that
+    /// says whether a silent transcript is a mute microphone, a dead path, or a
+    /// detector threshold (2026-09-05: VAD read max_amp 26–77 of 32767 while
+    /// Joel spoke, and nothing said which of the two ingest paths carried it).
+    pub(crate) fn note_human_audio_level(source: &'static str, user_id: &str, samples: &[i16]) {
+        use std::collections::HashMap;
+        use std::sync::{Mutex, OnceLock};
+        static TALLY: OnceLock<Mutex<HashMap<(&'static str, String), super::pump_tally::PumpTally>>> = OnceLock::new();
+        let peak = samples.iter().map(|s| (*s as i32).unsigned_abs()).max().unwrap_or(0) as u64; // unwrap_or: an empty chunk has no peak; 0 is the honest reading
+        let tally = TALLY.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut map = tally.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: same policy — keep speaking through a poisoned map
+        let t = map
+            .entry((source, user_id.to_string()))
+            .or_insert_with(|| super::pump_tally::PumpTally::new(std::time::Duration::from_secs(1)));
+        if let Some(sum) = t.record(samples.len() as u64, peak) {
+            crate::probe!(
+                class = "live.stt.level",
+                module = "live",
+                source = source,
+                speaker = user_id,
+                peak = sum.max_us,
+                samples = sum.bytes,
+                chunks = sum.frames,
+                span_ms = sum.span_ms,
+                "peak amplitude of a human's audio by ingest path (i16 full scale 32767; speech peaks in the thousands)"
             );
         }
     }
@@ -1666,6 +1701,7 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, manager: Arc<Cal
                                 }
                                 if let Some(handle) = &participant_handle {
                                     if let Some(samples) = base64_decode_i16(&data) {
+                                        CallManager::note_human_audio_level("ws_json", &handle.short(), &samples);
                                         manager.push_audio(handle, samples).await;
                                     }
                                 }
