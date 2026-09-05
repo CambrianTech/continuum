@@ -590,6 +590,13 @@ use std::time::Duration;
 use tokio::time::timeout;
 use uuid::Uuid;
 
+use std::process::{Command, Output};
+use tokio::process::Command as TokioCommand;
+use uuid::Uuid;
+use std::time::Duration;
+
+const DISCOVERY_SUBPROCESS_DEADLINE: Duration = Duration::from_secs(5);
+
 pub async fn discover_default_channel() -> Result<Uuid, DiscoveryError> {
     if let Some(room_name_raw) = std::env::var_os("AIRC_DEFAULT_ROOM_NAME") {
         let room_name = room_name_raw.to_string_lossy().trim().to_string();
