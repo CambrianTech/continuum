@@ -5876,6 +5876,14 @@ export class ChatWidget extends LitElement {
     // after the core socket, and a LiveKit-only start returns false until then);
     // it never opens the permission card and never marks "denied" — a human's
     // click still goes through startMedia/mediaPermission. Bounded: 40 renders.
+    // GLASS BOX for the eye: the intent's state as a host attribute, so a
+    // structure walk (perception/observe) reads it without a console.
+    if (this.liveFace) {
+      this.setAttribute(
+        'data-live-intent',
+        `mic=${this.autoMic ? this.micMode : 'off'} cam=${this.autoCam} call=${this._call !== undefined} conn=${this._mediaConnected} micOn=${this._micOn} tries=${this._intentTries} busy=${this._intentBusy}`,
+      );
+    }
     if (this.liveFace && this._call && this._mediaConnected && (this.autoMic || this.autoCam)) {
       const call = this._call;
       if (this.autoMic && !this._micOn && !this._intentBusy && this._intentTries < 40) {
