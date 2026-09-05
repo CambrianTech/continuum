@@ -208,6 +208,26 @@ pub const PRESSURE_CRITICAL: f32 = 0.95;
 /// Number of priority levels (Realtime, Interactive, Background, Batch).
 const PRIORITY_LEVELS: usize = 4;
 
+/// Upper bound on any GPU-detection subprocess (#3732).
+///
+/// These run PRE-BIND — before the IPC socket exists and before the first
+/// module is registered — so the cost of an unbounded one is the whole boot,
+/// not a degraded subsystem. 10 s matches the bound #3719 put on the serving
+/// `--version` probe: long enough that a cold driver query on a loaded host
+/// still answers, short enough that a wedged one does not look like a hang.
+///
+/// NOTE what this does NOT cover: `detect_metal()` is a direct metal-rs call,
+/// not a subprocess, so no timeout can be wrapped around it from here. That
+/// same Metal initialisation is what wedged an Intel Mac uninterruptibly on
+/// 2026-09-05 (card cd8f0bc7) — inside `llama-server`, where the fix was to
+/// stop linking Metal on that hardware. If it ever wedges in-process here, the
+/// bound has to come from the platform gate, not from this constant.
+#[cfg_attr(
+    not(any(feature = "cuda", feature = "vulkan")),
+    allow(dead_code) // only the subprocess backends consume it; macOS exits at detect_metal
+)]
+const GPU_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 pub struct GpuMemoryManager {
     total_vram_bytes: u64,
     gpu_name: String,
@@ -829,17 +849,31 @@ fn detect_cuda() -> Option<(u64, String)> {
     // candle_core doesn't expose device memory directly.
     // Use cudarc if available, otherwise estimate from device properties.
     // For now, we'll try to read from nvidia-smi output.
-    use std::process::Command;
-
-    let output = Command::new("nvidia-smi")
-        .args([
+    //
+    // BOUNDED (#3732): this runs PRE-BIND, six lines after boot.registry_init
+    // and before the first runtime.register, so an unbounded wait here does not
+    // hang a subsystem — it hangs the whole boot, silently, until the watchdog
+    // kills it. A hung `nvidia-smi` is ordinary on Windows (driver mid-recovery,
+    // a WDDM/TCC transition, another process holding the driver, an ECC query on
+    // a busy card). macOS never reaches this branch — detect_metal() answers
+    // from a direct metal-rs call with no subprocess — which is why both Macs on
+    // the grid were structurally unable to reproduce it.
+    let probed = crate::system_resources::bounded_command::probe(
+        "nvidia-smi",
+        &[
             "--query-gpu=memory.total,name",
             "--format=csv,noheader,nounits",
-        ])
-        .output()
-        .ok()?;
+        ],
+        GPU_PROBE_TIMEOUT,
+    );
+    crate::probe!(
+        class = "boot.gpu_detect",
+        backend = "cuda",
+        outcome = probed.outcome(),
+        "pre-bind GPU probe (bounded; an unbounded one hangs the boot)"
+    );
 
-    let stdout = String::from_utf8(output.stdout).ok()?;
+    let stdout = probed.stdout_if_ok()?;
     let line = stdout.lines().next()?;
     let parts: Vec<&str> = line.split(", ").collect();
     if parts.len() < 2 {
@@ -870,15 +904,19 @@ fn detect_cuda() -> Option<(u64, String)> {
 /// anyway, so this number is only used for the budget estimator.
 #[cfg(feature = "vulkan")]
 fn detect_vulkan() -> Option<(u64, String)> {
-    use std::process::Command;
+    // BOUNDED (#3732): same pre-bind path as detect_cuda above, and reached
+    // precisely when nvidia-smi already declined — so on a host whose GPU stack
+    // is unwell this is the SECOND unbounded wait in a row on the boot thread.
+    let probed =
+        crate::system_resources::bounded_command::probe("vulkaninfo", &["--summary"], GPU_PROBE_TIMEOUT);
+    crate::probe!(
+        class = "boot.gpu_detect",
+        backend = "vulkan",
+        outcome = probed.outcome(),
+        "pre-bind GPU probe (bounded; an unbounded one hangs the boot)"
+    );
 
-    let output = Command::new("vulkaninfo").arg("--summary").output().ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let stdout = String::from_utf8(output.stdout).ok()?;
+    let stdout = probed.stdout_if_ok()?;
 
     // vulkaninfo --summary format (excerpt):
     //   Devices:
