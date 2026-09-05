@@ -422,6 +422,9 @@ continuum-client = { path = "../../client/continuum-client", features = ["test-f
 # `continuum_client::Transport` in production code, not just tests.
 airc-test-fixtures = { path = "../airc-test-fixtures" }
 airc-protocol = { workspace = true }
+# Voice processing dependencies
+[features]
+voice = ["pocket-tts"]
 futures = "0.3"
 # Voice processing dependencies
 [features]
