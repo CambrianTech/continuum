@@ -1,4 +1,5 @@
 #!/bin/bash
+set -o pipefail  # a failing command in a pipeline must not read as success (card aad30dee)
 # System Stop — Nuclear process cleanup
 # Kills ALL JTAG-related processes and cleans up sockets/signals.
 # This is the ONLY stop script. Keep it simple and brutal.

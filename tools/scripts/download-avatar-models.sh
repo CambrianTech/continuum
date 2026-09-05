@@ -19,6 +19,7 @@
 # count, but the script returns 0 so the model-init container is healthy.
 
 set -eu  # NOTE: no pipefail and no -e on the per-VRM curl/extract calls
+set -o pipefail  # a failing command in a pipeline must not read as success (card aad30dee)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/shared/preflight.sh"

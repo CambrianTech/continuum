@@ -1,4 +1,5 @@
 #!/bin/bash
+set -o pipefail  # a failing command in a pipeline must not read as success (card aad30dee)
 # Test TTS Audio Generation
 # Captures synthesized audio and saves to WAV for playback verification
 

@@ -1,4 +1,5 @@
 #!/bin/bash
+set -o pipefail  # a failing command in a pipeline must not read as success (card aad30dee)
 # Detect platform GPU and return appropriate cargo feature flags.
 # Source this file to get CARGO_GPU_FEATURES variable.
 #
