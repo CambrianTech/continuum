@@ -476,3 +476,87 @@ channel: 11c1a7ac-cb85-5ca0-a5b4-2847280ea3fa
         assert!(matches!(err, DiscoveryError::UnparseableChannel(_)));
     }
 }
+pub async fn discover_default_channel() -> Result<uuid::Uuid, DiscoveryError> {
+    const AIRC_DEFAULT_CHANNEL_ENV: &str = "AIRC_DEFAULT_CHANNEL";
+    const AIRC_DEFAULT_ROOM_NAME_ENV: &str = "AIRC_DEFAULT_ROOM_NAME";
+
+    if let Some(raw) = std::env::var_os(AIRC_DEFAULT_CHANNEL_ENV) {
+        let raw = raw.to_string_lossy().trim().to_string();
+        return raw.parse::<uuid::Uuid>().map_err(|e| {
+            DiscoveryError::UnparseableChannel(format!(
+                "{AIRC_DEFAULT_CHANNEL_ENV}={raw:?} is not a valid UUID: {e}"
+            ))
+        });
+    }
+
+    if let Some(room_name_raw) = std::env::var_os(AIRC_DEFAULT_ROOM_NAME_ENV) {
+        let room_name = room_name_raw.to_string_lossy().trim().to_string();
+        if !room_name.is_empty() {
+            // Resolve the room name to a channel UUID
+            let call = TokioCommand::new("airc").arg("room").output();
+            let out = timeout(DISCOVERY_SUBPROCESS_DEADLINE, call)
+                .await
+                .map_err(|_| {
+                    DiscoveryError::RoomCommandFailed(format!(
+                        "`airc room` did not exit within {DISCOVERY_SUBPROCESS_DEADLINE:?} \
+                         — substrate is unresponsive, refusing to wait",
+                    ))
+                })?
+                .map_err(|e| DiscoveryError::RoomCommandFailed(e.to_string()))?;
+            if !out.status.success() {
+                return Err(DiscoveryError::RoomCommandFailed(format!(
+                    "exit {}: {}",
+                    out.status,
+                    String::from_utf8_lossy(&out.stderr).trim()
+                )));
+            }
+
+            let stdout = String::from_utf8_lossy(&out.stdout); 
+            for line in stdout.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("room:") || trimmed.starts_with("Room:") || trimmed.starts_with("ROOM:") || trimmed.starts_with("current:") {
+                    let parts: Vec<&str> = trimmed.splitn(2, ':').collect();
+                    if parts.len() == 2 && parts[1].trim().eq_ignore_ascii_case(&room_name) {
+                        // Found the room name; now find the channel UUID
+                        for channel_line in stdout.lines() {
+                            let trimmed_channel = channel_line.trim();
+                            if trimmed_channel.starts_with("channel:") || trimmed_channel.starts_with("Channel:") || trimmed_channel.starts_with("CHANNEL:") {
+                                let parts: Vec<&str> = trimmed_channel.splitn(2, ':').collect();
+                                if parts.len() == 2 {
+                                    let uuid_str = parts[1].trim();
+                                    return uuid_str.parse::<uuid::Uuid>().map_err(|e| {
+                                        DiscoveryError::UnparseableChannel(format!(
+                                            "channel: {} is not a valid UUID: {}",
+                                            uuid_str, e
+                                        ))
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Fall back to the original behavior if no room name or channel was found
+    let call = TokioCommand::new("airc").arg("room").output();
+    let out = timeout(DISCOVERY_SUBPROCESS_DEADLINE, call)
+        .await
+        .map_err(|_| {
+            DiscoveryError::RoomCommandFailed(format!(
+                "`airc room` did not exit within {DISCOVERY_SUBPROCESS_DEADLINE:?} \
+                 — substrate is unresponsive, refusing to wait",
+            ))
+        })?
+        .map_err(|e| DiscoveryError::RoomCommandFailed(e.to_string()))?;
+    if !out.status.success() {
+        return Err(DiscoveryError::RoomCommandFailed(format!(
+            "exit {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+
+    parse_channel_from_room_output(&String::from_utf8_lossy(&out.stdout))
+}
