@@ -322,6 +322,11 @@ pub fn base_invocation(
     }
 }
 
+/// "Every layer on the device": llama-server clamps `--n-gpu-layers` to the model's
+/// layer count, so one large value means ALL on every backend. The placement planner
+/// may lower it for a partial fit; it may never omit it.
+pub const ALL_GPU_LAYERS: &str = "999";
+
 /// The per-lane CONDITIONAL surface — flags that depend on the model's artifacts, the
 /// governor's plan, or an operator opt-in. Slice 2 of the extraction.
 ///
@@ -468,10 +473,15 @@ impl LaneInvocation {
         // VRAM a living lane already holds (the Metal decode-time OOM that muted the
         // eval). GPU lanes omit the flag — llama-server offloads all it can by default.
         // [[ServingTarget::placement]] / #59 / #56.
-        if opts.cpu_only {
-            push("--n-gpu-layers".into());
-            push("0".into());
-        }
+        // GPU offload is ALWAYS explicit. Leaving `--n-gpu-layers` to the backend's
+        // default was a Metal-only truth: Metal offloads every layer by default,
+        // CUDA offloads NONE. Measured 2026-09-05 on BigMama's Windows 5090 host
+        // (card 2c33f3f0): a 24B Devstral ran on CPU at 674 MiB of VRAM used while
+        // the GPU sat idle, prefill could not advance, and the wedge self-heal
+        // relaunched the same flags 13 times in 106 minutes. A placement decision
+        // is a number the server is told, never a default it is left to guess.
+        push("--n-gpu-layers".into());
+        push(if opts.cpu_only { "0" } else { ALL_GPU_LAYERS }.into());
         // Device-fit resident-override (#29): source the RESIDENT (non-expert) tensors
         // from the precision-shrunk fit GGUF so the whole resident tier fits VRAM
         // offloaded to GPU, while the primary GGUF streams the experts. The loader hook
@@ -721,10 +731,26 @@ mod tests {
     #[test]
     fn no_options_means_no_conditional_flags() {
         let i = inv(2, 8192).with_options(&LaneOptions::default());
-        for f in ["--cache-type-k", "--flash-attn", "--mmproj", "--spec-type", "--n-gpu-layers"] {
+        for f in ["--cache-type-k", "--flash-attn", "--mmproj", "--spec-type"] {
             assert!(!i.has(f), "{f} must be absent with default options\n{:?}", i.args);
         }
         assert!(i.envs.is_empty(), "no options must mean no environment");
+    }
+
+    // what this catches: GPU offload left to the backend's default. Metal defaults to
+    // every layer, CUDA to none — so "absent" meant "all" on the Macs and "CPU" on
+    // every CUDA host (2026-09-05, BigMama's 5090 idle at 674 MiB while a 24B model
+    // ran on CPU and the lane wedged 13 times). The flag is present on every launch
+    // and its value is the placement decision: all layers for GPU, 0 for CPU.
+    #[test]
+    fn gpu_offload_is_always_explicit_all_for_gpu_zero_for_cpu() {
+        let gpu = inv(2, 8192).with_options(&LaneOptions::default());
+        assert_eq!(gpu.value_of("--n-gpu-layers"), Some(ALL_GPU_LAYERS));
+        let cpu = inv(2, 8192).with_options(&LaneOptions {
+            cpu_only: true,
+            ..LaneOptions::default()
+        });
+        assert_eq!(cpu.value_of("--n-gpu-layers"), Some("0"));
     }
 
     // what this catches: THE 2026-08-20 SPAWN FAILURE, as a test instead of an outage.
