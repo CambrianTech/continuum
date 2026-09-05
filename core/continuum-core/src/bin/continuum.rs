@@ -2023,25 +2023,31 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource) -> Result<u64
                 last_progress_at = std::time::Instant::now();
             }
         }
-        let stalled_for = last_progress_at.elapsed().as_secs();
-        if matches!(wait_verdict(stalled_for, STALL_SECS), WaitVerdict::Stalled) {
+        // A DEAD CHILD IS NOT A SILENT ONE — ask waitpid BEFORE consulting any timer (Benchy, via
+        // M5, 2026-09-05). This check used to sit BELOW the stall check, so on the one tick where
+        // a quiet build finally died, the stall arm won the race: it reported "emitted nothing for
+        // 300s (STILL RUNNING)" about a corpse — a lie in the message, and the exit status thrown
+        // away in favour of the strictly less informative verdict. A process that has exited has a
+        // certain, authored answer and no elapsed time can improve on it, so it is asked first.
+        //
+        // Not checking for exit AT ALL was the original defect: a script that died in 200ms was
+        // indistinguishable from one still doing a multi-minute cargo build, so every startup
+        // failure cost the full wait and then reported a log tail. Observed shape: long wait,
+        // empty log, no cause — which is how "the core never starts on this box" stayed invisible
+        // long enough to make hand-rolled downloads feel like the only option.
+        if let Ok(Some(status)) = child.try_wait() {
             return Err(format!(
-                "the start script has emitted nothing for {stalled_for}s (still running, {}s \
-                 elapsed) — it is stalled, not slow.\n{}",
+                "the start script exited ({status}) after ~{}s without the core coming up.\n{}",
                 (i + 1) * TICK_SECS,
                 start_log_report(&logfile)
             ));
         }
-        // The start script EXITING is the fast, certain answer, and not checking for it was the
-        // defect: a script that died in 200ms was indistinguishable from one still doing a
-        // multi-minute cargo build, so every startup failure cost the full 300s and then reported
-        // a log tail. Observed shape: 300s wait, empty log, no cause -- which is how "the core
-        // never starts on this box" stayed invisible long enough to make hand-rolled downloads
-        // feel like the only option.
-        if let Ok(Some(status)) = child.try_wait() {
+        let stalled_for = last_progress_at.elapsed().as_secs();
+        if matches!(wait_verdict(stalled_for, STALL_SECS), WaitVerdict::Stalled) {
             return Err(format!(
-                "the start script exited ({status}) after ~{}s without the core coming up.\n{}",
-                (i + 1) * 2,
+                "the start script has emitted nothing and burned no CPU for {stalled_for}s \
+                 (alive, {}s elapsed) — it is stalled, not slow.\n{}",
+                (i + 1) * TICK_SECS,
                 start_log_report(&logfile)
             ));
         }
