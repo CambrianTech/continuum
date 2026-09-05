@@ -722,10 +722,18 @@ pub fn spawn_node_presence_emitter(
             // never bridged: subscribed, joined, streamed, and still 0 rows of
             // history and no rail entry (card 3d4b3d9c, 2026-09-05).
             fresh.extend(crate::experience::spawned_rooms::spawned_rooms());
-            if let Ok(set) = airc.subscription_set().await {
-                for sub in set.all() {
-                    let room = sub.as_room();
-                    fresh.push((room.channel.as_uuid(), room.name));
+            // The durable half is the OPERATOR's subscription set — the rooms the
+            // human is in are exactly the rooms the desktop must project — never
+            // this reader's own set: the reader joins every room it ever adopted
+            // (finished solve rooms included), so folding its own subscriptions
+            // resurrected 20 dead `swe--…` rooms as top-level rail entries the
+            // minute #3776 deployed (measured 2026-09-05 21:44Z: 50 → 70 titles).
+            if let Some(operator) = crate::persona::operator_peer::operator_runtime() {
+                if let Ok(set) = operator.airc().subscription_set().await {
+                    for sub in set.all() {
+                        let room = sub.as_room();
+                        fresh.push((room.channel.as_uuid(), room.name));
+                    }
                 }
             }
             if let Ok(response) =
