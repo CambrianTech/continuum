@@ -364,7 +364,6 @@ handleGlassboxDigest(event) {
 connectedCallback() {
   super.connectedCallback();
   this.addEventListener('serving.glassbox', this.handleGlassboxDigest);
-}
 // Handle serving.glassbox event
 connectedCallback() {
   super.connectedCallback();
@@ -380,4 +379,5 @@ handleGlassboxDigest(event) {
     const event = new CustomEvent('publish-serving-glassbox', { detail: this.body }); 
     dispatchEvent(event);
   }
+}
 }
