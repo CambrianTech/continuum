@@ -227,24 +227,10 @@ pub async fn discover_default_channel() -> Result<uuid::Uuid, DiscoveryError> {
             for line in stdout.lines() {
                 let trimmed = line.trim();
                 if trimmed.starts_with("room:") || trimmed.starts_with("Room:") || trimmed.starts_with("ROOM:") || trimmed.starts_with("current:") {
-                    let parts: Vec<&str> = trimmed.splitn(2, ':').collect();
-                    if parts.len() == 2 && parts[1].trim().eq_ignore_ascii_case(&room_name) {
-                        // Found the room name; now find the channel UUID
-                        for channel_line in stdout.lines() {
-                            let trimmed_channel = channel_line.trim();
-                            if trimmed_channel.starts_with("channel:") || trimmed_channel.starts_with("Channel:") || trimmed_channel.starts_with("CHANNEL:") {
-                                let parts: Vec<&str> = trimmed_channel.splitn(2, ':').collect();
-                                if parts.len() == 2 {
-                                    let uuid_str = parts[1].trim();
-                                    return uuid_str.parse::<uuid::Uuid>().map_err(|e| {
-                                        DiscoveryError::UnparseableChannel(format!(
-                                            "channel: {} is not a valid UUID: {}",
-                                            uuid_str, e
-                                        ))
-                                    });
-                                }
-                            }
-                        }
+                    let parts: Vec<&str> = trimmed.split(':').collect();
+                    if parts.len() == 2 {
+                        let channel_id = parts[1].trim().to_string();
+                        return Ok(channel_id);
                     }
                 }
             }
