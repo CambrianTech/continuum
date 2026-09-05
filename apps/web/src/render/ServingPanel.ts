@@ -347,3 +347,9 @@ handleGlassboxDigest(event) {
     dispatchEvent(event);
   }
 }
+
+// Handle serving.glassbox event
+connectedCallback() {
+  super.connectedCallback();
+  this.addEventListener('serving.glassbox', this.handleGlassboxDigest);
+}
