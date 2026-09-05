@@ -139,29 +139,30 @@ mkdir -p "$BUILD_DIR" "$INSTALL_DIR"
 # models by URL, so the libcurl dependency is dead weight + a portability snag.
 declare -a CMAKE_ARGS=(
   -DCMAKE_BUILD_TYPE=Release
-  # Backends must be DYNAMICALLY LOADABLE, and that is not the ggml default.
-  # ggml/CMakeLists.txt:86 defaults GGML_BACKEND_DL=OFF; ggml-backend-impl.h:241
-  # only defines the exported `ggml_backend_init` under `#ifdef GGML_BACKEND_DL`.
-  # With it OFF the loader in ggml-backend-reg.cpp:237 dlopens each ggml-*.dll,
-  # finds no such symbol, and registers NOTHING — measured on BigMama 2026-09-05:
-  #   load_backend: failed to find ggml_backend_init in ...\ggml-cuda.dll
-  #   load_backend: failed to find ggml_backend_init in ...\ggml-cpu.dll
-  #   Available devices: (none)
-  # on a host with a working 5090. The serving receipt then correctly refuses the
-  # lane, and the node hosts nobody. DL requires BUILD_SHARED_LIBS (enforced at
-  # ggml/src/CMakeLists.txt:188), so both are set together and explicitly rather
-  # than inherited from upstream defaults that our fork can change under us.
-  # DL mode requires PORTABLE backends, so it is incompatible with GGML_NATIVE
-  # (on by default): ggml-cpu/CMakeLists.txt:374 fails the configure outright with
-  # "GGML_NATIVE is not compatible with GGML_BACKEND_DL, consider using
-  # GGML_CPU_ALL_VARIANTS". Taking that suggestion rather than GGML_NATIVE=OFF:
-  # OFF would build ONE lowest-common-denominator CPU backend for the whole fleet,
-  # which silently degrades exactly the CPU-only tier (an Intel Mac serving its
-  # citizens on Accelerate). ALL_VARIANTS builds each variant and picks the best
-  # at runtime, so a portable build costs no CPU performance.
-  -DBUILD_SHARED_LIBS=ON
-  -DGGML_BACKEND_DL=ON
-  -DGGML_CPU_ALL_VARIANTS=ON
+  # Backends are LINKED IN STATICALLY. They must NOT be dynamically loadable.
+  #
+  # History, because this flipped twice in one day and the second flip is the
+  # one that serves. #3749 set BUILD_SHARED_LIBS+GGML_BACKEND_DL+CPU_ALL_VARIANTS
+  # to fix `Available devices: (none)`: the loader dlopened each ggml-*.dll and
+  # found no `ggml_backend_init`, which ggml-backend-impl.h:241 only exports under
+  # `#ifdef GGML_BACKEND_DL`. That DID fix device ENUMERATION — and left the
+  # SERVER dark. Measured on BigMama 2026-09-05, same binary, seconds apart:
+  #   llama-server --list-devices        -> CUDA0: NVIDIA GeForce RTX 5090 (32606 MiB)
+  #   llama-server -m MODEL -ngl 999     -> warning: no usable GPU found
+  # The serving lane came up on CPU with 15.8 GB in host RAM and 500 MiB of a
+  # 32 GB card in use, while serving/status reported ready:true lanes:3. In DL
+  # mode the server's startup asks `llama_supports_gpu_offload()` before the
+  # backends have been dlopened; --list-devices loads them first. Setting
+  # GGML_BACKEND_PATH did not help.
+  #
+  # Static linking removes the failure mode rather than timing around it: with no
+  # dlopen there is no unexported symbol, no load order, and no silent
+  # partial registry — a backend either compiled in or it did not.
+  # GGML_CPU_ALL_VARIANTS goes with it (it exists to pick a CPU variant at
+  # runtime, which is a DL-mode concern) and GGML_NATIVE returns to its default
+  # ON, which is what we want: we compile per machine from source, so tuning for
+  # the host CPU is free and costs no portability.
+  -DBUILD_SHARED_LIBS=OFF
   -DLLAMA_BUILD_SERVER=ON
   -DLLAMA_BUILD_TOOLS=ON
   -DLLAMA_BUILD_COMMON=ON
@@ -391,6 +392,30 @@ if [ "$BACKEND" != "cpu" ]; then
     | grep -vE '^[[:space:]]*\(none\)[[:space:]]*$' \
     | grep -E '^[[:space:]]+[^[:space:]:]+:[[:space:]]+[^[:space:]]' \
     | head -1 | sed 's/^[[:space:]]*//')" >&2
+
+  # SECOND GATE — probe the SERVING code path, not just enumeration.
+  #
+  # The first gate above asks `--list-devices`, and on 2026-09-05 that gate PASSED
+  # on a host whose serving lane was running entirely on CPU. Same binary, seconds
+  # apart: --list-devices printed CUDA0 while `-m MODEL --n-gpu-layers 999` printed
+  # "no usable GPU found". A postcondition that exercises a different code path
+  # than the product does is not a postcondition; it is a second opinion from
+  # someone who was not there.
+  #
+  # llama.cpp prints that warning during argument handling, BEFORE it opens the
+  # model, so a deliberately absent path reaches the verdict without needing a
+  # multi-GB GGUF at install time. We ignore the model-load errors that follow.
+  _offload="$("$INSTALL_BIN" -m /nonexistent/postcondition-probe.gguf                 --n-gpu-layers 999 2>&1 || true)"
+  if printf '%s' "$_offload" | grep -qF 'no usable GPU found'; then
+    echo "✗ FATAL: built for '$BACKEND' and the device list looks right, but the" >&2
+    echo "  SERVER path reports 'no usable GPU found' — offload would be silently" >&2
+    echo "  ignored and this node would serve its citizens on the CPU while" >&2
+    echo "  reporting itself ready. This is the #3749 dynamic-backend regression." >&2
+    echo "  NOT stamping — an engine that enumerates a GPU it cannot use is worse" >&2
+    echo "  than one that admits it has none." >&2
+    exit 1
+  fi
+  echo "→ engine offloads on the serving path (no 'no usable GPU' warning)" >&2
 fi
 
 echo "$STAMP_WANT" > "$STAMP_FILE"   # stamp LAST — only a verified-good binary is blessed
