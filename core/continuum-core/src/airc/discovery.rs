@@ -1,4 +1,5 @@
 #![allow(unused_variables)]
+use uuid::Uuid;
 use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::HashMap;
