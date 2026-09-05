@@ -112,6 +112,9 @@ pub mod shipped {
     pub const PROFILE: RecipeId = RecipeId::from_u128(0x089ac0da_d65a_4922_8cdc_36e7f589c465);
     /// Real-time voice/video (`video-chat`) — `6bc4fc12-a1c3-4482-ab2c-eb48505d52d3`.
     pub const VIDEO_CHAT: RecipeId = RecipeId::from_u128(0x6bc4fc12_a1c3_4482_ab2c_eb48505d52d3);
+    /// A project — one repo's work: a board, a room per card under it (`project`) —
+    /// `2f6b1c0e-4c7a-4d0b-9a7e-5a1c3e9f7b21`.
+    pub const PROJECT: RecipeId = RecipeId::from_u128(0x2f6b1c0e_4c7a_4d0b_9a7e_5a1c3e9f7b21);
 
     /// Every shipped id, for tests and for enumerating the prod-critical floor.
     pub const ALL: &[RecipeId] = &[BENCHMARK_HARD_RS, CHAT, PROFILE, VIDEO_CHAT];
@@ -394,7 +397,7 @@ mod tests {
     fn shipped_ids_are_unique_and_match_their_purposes() {
         let source = RecipeExperienceSource::builtins(Arc::new(FixedPurpose("chat")));
         let ids: std::collections::HashSet<_> = source.ids().collect();
-        assert_eq!(ids.len(), 4, "four distinct ids, none colliding");
+        assert_eq!(ids.len(), 5, "five distinct ids, none colliding");
 
         // The id→purpose pairing is the contract core code relies on when it says
         // `shipped::BENCHMARK_HARD_RS` and means the Rust gym.
@@ -407,6 +410,13 @@ mod tests {
                 .by_recipe_id(shipped::CHAT)
                 .map(|r| r.purpose.as_str()),
             Some("chat")
+        );
+        assert_eq!(
+            source
+                .by_recipe_id(shipped::PROJECT)
+                .map(|r| r.purpose.as_str()),
+            Some("project"),
+            "a project is a shipped activity type: org room → project room → a room per card"
         );
     }
 
