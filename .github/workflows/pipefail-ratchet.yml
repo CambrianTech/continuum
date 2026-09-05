@@ -1,0 +1,69 @@
+# Card aad30dee — shell pipefail ratchet.
+#
+# A build reported itself green while cargo had FAILED, because the command
+# was `cargo build ... 2>&1 | tail -12` and the exit code belonged to `tail`.
+# The same shape was then found inside the shared validation gate:
+# git-prepush.sh counted ESLint errors by grepping the linter's merged output,
+# so a linter that CRASHED matched nothing, compared `0 -le baseline`, and
+# printed a green checkmark. A broken check read as a passing check.
+#
+# `set -e` does not cover this: without `pipefail` a pipeline's status is its
+# LAST command's, so the script looks defended while swallowing the failure of
+# the command that mattered.
+#
+# Scope note: this gate requires `pipefail` ONLY, never `-u`. See the header of
+# check-pipefail.sh — start-server.sh alone has 193 bare variable references,
+# and nounset there is a behaviour change to the deploy path, not hygiene.
+#
+# Fast: pure shell, no toolchain. Independent of the Rust and TS gates.
+
+name: pipefail-ratchet
+
+on:
+  pull_request:
+    branches: [canary, main]
+    paths:
+      - 'tools/scripts/**/*.sh'
+      - 'scripts/**/*.sh'
+      - 'scripts/ratchets/pipefail-baseline.txt'
+      - '.github/workflows/pipefail-ratchet.yml'
+  push:
+    branches: [canary, main]
+    # The SAME paths filter is on both triggers deliberately. A push trigger
+    # without one fires on every commit and fails on unrelated changes, which
+    # is how a sibling ratchet went 100/100 red until everyone learned to
+    # ignore its X. A gate people ignore is worse than no gate.
+    paths:
+      - 'tools/scripts/**/*.sh'
+      - 'scripts/**/*.sh'
+      - 'scripts/ratchets/pipefail-baseline.txt'
+      - '.github/workflows/pipefail-ratchet.yml'
+
+jobs:
+  pipefail:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Every piping shell script sets pipefail
+        run: bash scripts/ratchets/check-pipefail.sh
+
+      # The ratchet must be able to FAIL, or it is decoration. This removes
+      # pipefail from a real script and asserts the gate goes red, then
+      # restores it — the same mutation proof run by hand when the ratchet was
+      # written. Without this, a regex that silently stops matching would keep
+      # reporting green forever.
+      - name: Prove the ratchet can fail (mutation)
+        run: |
+          set -o pipefail
+          cp tools/scripts/start-server.sh /tmp/ss.bak
+          grep -v '^set -o pipefail' /tmp/ss.bak > tools/scripts/start-server.sh
+          if bash scripts/ratchets/check-pipefail.sh > /tmp/mutation.log 2>&1; then
+            echo "::error::pipefail ratchet did NOT fail on a script with pipefail removed — the gate is dead."
+            cat /tmp/mutation.log
+            cp /tmp/ss.bak tools/scripts/start-server.sh
+            exit 1
+          fi
+          cp /tmp/ss.bak tools/scripts/start-server.sh
+          echo "Mutation proof passed: removing pipefail turns the ratchet red."
+          bash scripts/ratchets/check-pipefail.sh

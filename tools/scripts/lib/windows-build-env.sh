@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -o pipefail  # a failing command in a pipeline must not read as success (card aad30dee)
 # Windows MSVC/CUDA build-environment import — the ONE place it is decided.
 #
 # Source this before ANY cargo invocation on Windows (build, check, test,

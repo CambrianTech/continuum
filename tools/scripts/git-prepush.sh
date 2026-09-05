@@ -3,6 +3,7 @@
 # Runs before code reaches the remote. Fast enough to not block workflow,
 # thorough enough to catch real problems.
 set -e
+set -o pipefail  # a failing command in a pipeline must not read as success (card aad30dee)
 
 START_TIME=$(date +%s)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -118,7 +119,37 @@ elif [ -x "$ESLINT_RATCHET" ]; then
     fi
 else
     BASELINE=$(cat "$BASELINE_FILE" | tr -d '[:space:]')
-    CURRENT=$(cd "$SRC_DIR" && npx eslint './**/*.ts' --max-warnings 0 --quiet 2>&1 | grep -cE "error\s+" || true)
+    # Card aad30dee: COUNT the errors, but only after establishing that eslint
+    # actually RAN. The previous form piped eslint's merged stdout+stderr into
+    # `grep -cE "error\s+" || true` and used the count directly — so a linter
+    # that CRASHED (missing module, bad config, wrong cwd) emitted diagnostics
+    # the regex does not match ("Error: Cannot find module" has a capital E and
+    # no trailing whitespace class), yielding 0. Zero is `-le` any baseline, so
+    # a linter that never ran printed a green checkmark and let the push
+    # through. `|| true` guaranteed the pipeline could not fail on its own, and
+    # `set -e` cannot see through a pipe — the script LOOKED defended.
+    #
+    # eslint's exit codes: 0 = clean, 1 = lint errors found, 2 = eslint itself
+    # failed. Only 0 and 1 mean "the linter ran and has an opinion"; anything
+    # else is a broken checker and must be loud, never a silent zero.
+    # `|| LINT_RC=$?` is load-bearing, not defensive noise: `set -e` (line 5)
+    # aborts on a failing command substitution, and eslint exits 1 for the
+    # ORDINARY case of "found lint errors". Without this the script would die
+    # on the exact path it exists to report. The old `|| true` was doing this
+    # job too — it just discarded the code we now need.
+    LINT_RC=0
+    LINT_RAW=$(cd "$SRC_DIR" && npx eslint './**/*.ts' --max-warnings 0 --quiet 2>&1) || LINT_RC=$?
+    if [ "$LINT_RC" -gt 1 ]; then
+        echo "❌ ESLint FAILED TO RUN (exit $LINT_RC) — this is a broken checker, not a clean tree."
+        echo "   Refusing to report a lint result. Its output:"
+        echo "$LINT_RAW" | tail -20 | sed 's/^/      /'
+        FAILED=1
+        CURRENT=""
+    else
+        CURRENT=$(printf '%s\n' "$LINT_RAW" | grep -cE "error\s+" || true)
+    fi
+fi
+if [ -n "${CURRENT:-}" ]; then
     LINT_DUR=$(( $(date +%s) - LINT_START ))
     if [ "$CURRENT" -le "$BASELINE" ]; then
         if [ "$CURRENT" -lt "$BASELINE" ]; then

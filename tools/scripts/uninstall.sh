@@ -10,6 +10,7 @@
 # Safe to run multiple times (idempotent)
 
 set -e
+set -o pipefail  # a failing command in a pipeline must not read as success (card aad30dee)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
