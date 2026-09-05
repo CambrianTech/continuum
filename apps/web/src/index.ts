@@ -109,6 +109,22 @@ async function main(): Promise<void> {
   // presentation state only ([[navigation-is-airc-state-one-semantics-many-idioms]]
   // — the URL is the web idiom; recipe-declared live rooms are the substrate path).
   if (new URLSearchParams(location.search).has('live')) widget.liveFace = true;
+  // `?mic` / `?cam` — a deep-link INTENT to publish the microphone / camera as
+  // soon as the call connects (the node's own self-exercise speaks into the
+  // call through the eye-node's fake media device; a human still gets the
+  // browser's permission prompt once, then it is remembered).
+  const intents = new URLSearchParams(location.search);
+  if (intents.has('mic')) {
+    widget.autoMic = true;
+    const mode = intents.get('mic');
+    if (mode === 'lk' || mode === 'ws') widget.micMode = mode;
+  }
+  if (intents.has('cam')) widget.autoCam = true;
+  // The call binds to the URL's room, never to whatever room the daemon happened
+  // to focus first: `/room/academy?live` joined #general once because the face
+  // connected on the first render, before the route's focus landed (2026-09-05).
+  const routedRoom = /^\/room\/([^/]+)/.exec(location.pathname)?.[1];
+  if (routedRoom !== undefined && intents.has('live')) widget.liveRoom = decodeURIComponent(routedRoom);
   // The viewer's call identity: the same uuid the session is scoped by. The
   // name upgrades to the directory's real one when the seed resolves it.
   widget.viewerId = senderId;

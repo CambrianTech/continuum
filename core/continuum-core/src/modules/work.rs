@@ -1477,6 +1477,12 @@ pub struct WorkCreate {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 pub struct WorkCreateParams {
+    /// The activity room whose board receives the card — its id or its name.
+    /// Omitted = the caller's current room (the lobby on a fresh node, which is
+    /// how project cards ended up in #general). Name the room.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub room: Option<String>,
     /// Repository key, e.g. `CambrianTech/continuum`.
     pub repo: String,
     /// Human-readable card title.
@@ -1514,8 +1520,9 @@ impl ActionCommand for WorkCreate {
             parse_priority(p.priority.as_deref().unwrap_or("p2")),
         );
         req.body = p.body;
+        let room = crate::modules::room_resolve::resolve_room(&airc, p.room.as_deref()).await?;
         let card_id = airc
-            .create_work_card(req)
+            .create_work_card_in(&room, req)
             .await
             .map_err(|e| CommandError::Internal(e.to_string()))?;
         Ok(WorkCreateResult {

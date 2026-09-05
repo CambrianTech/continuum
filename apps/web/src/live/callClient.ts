@@ -25,12 +25,20 @@ import {
   Room,
   RoomEvent,
   Track,
-  createLocalAudioTrack,
   createLocalVideoTrack,
   type LocalAudioTrack,
   type LocalVideoTrack,
   type RemoteTrack,
 } from 'livekit-client';
+
+/** A capture or publish that never answers is a wedge; this turns it into a named failure. */
+const MIC_CAPTURE_TIMEOUT_MS = 10_000; // context-budget-exempt: a device wait, not a token budget
+function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`${what} did not answer within ${ms} ms`)), ms);
+    p.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
+  });
+}
 
 /** One remote participant's live media state, as the face consumes it. */
 export interface CallAvatarState {
@@ -234,19 +242,48 @@ export class CallClient {
 
   /** Start mic capture (AudioWorklet) and publish 16k PCM16 frames. Returns
    *  false with no side effects when the user denies the mic. */
-  async startMic(): Promise<boolean> {
+  /** `mode` isolates the two capture paths for the node's self-exercise:
+   *  'auto' (default) = LiveKit track when the media plane is live, else the
+   *  worklet over the call socket; 'lk' / 'ws' force one path. */
+  async startMic(mode: 'auto' | 'lk' | 'ws' = 'auto'): Promise<boolean> {
     // REAL plane first: the bridge's STT listener sits in the LiveKit room, so
     // a published mic track reaches citizens' ears with no WS PCM leg.
-    if (this.lkRoom !== undefined && this.lkLive) {
+    console.warn(`[live-mic] start mode=${mode} lkRoom=${this.lkRoom !== undefined} lkLive=${this.lkLive} ws=${this.ws?.readyState}`);
+    if (mode !== 'ws' && this.lkRoom !== undefined && this.lkLive) {
       try {
-        this.lkMic = await createLocalAudioTrack();
-        await this.lkRoom.localParticipant.publishTrack(this.lkMic);
+        // A PLAIN getUserMedia track, published as-is. `createLocalAudioTrack()`
+        // wraps the same call in LiveKit's audio-processing setup and hung
+        // without a verdict on the node's own eye (fake device, headless) —
+        // measured 2026-09-05: "[live-mic] creating local audio track" was the
+        // last line, every try. The plain track is what the bridge's STT listener
+        // needs; processing is the browser's business. Bounded: a capture that
+        // never answers is a named failure, never a wedge (every probe on a
+        // launch path gets a bound and a named outcome).
+        console.warn('[live-mic] requesting a plain audio track');
+        const stream = await withTimeout(
+          navigator.mediaDevices.getUserMedia({ audio: true }),
+          MIC_CAPTURE_TIMEOUT_MS,
+          'getUserMedia(audio)',
+        );
+        const track = stream.getAudioTracks()[0];
+        if (!track) throw new Error('getUserMedia returned a stream with no audio track');
+        console.warn('[live-mic] track captured; publishing');
+        const published = await withTimeout(
+          this.lkRoom.localParticipant.publishTrack(track, { source: Track.Source.Microphone }),
+          MIC_CAPTURE_TIMEOUT_MS,
+          'publishTrack(microphone)',
+        );
+        this.lkMic = published.track as LocalAudioTrack | undefined;
+        this.micStream = stream;
         this.micLive = true;
+        console.warn('[live-mic] livekit track published');
         return true;
-      } catch {
+      } catch (err) {
+        console.warn('[live-mic] livekit publish failed:', err);
         return false;
       }
     }
+    if (mode === 'lk') return false; // LiveKit-only was asked for and the plane is not live
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
     try {
       this.micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
