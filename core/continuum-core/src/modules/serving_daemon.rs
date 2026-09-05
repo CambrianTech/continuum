@@ -3578,7 +3578,7 @@ fn moe_host_cache_lease_inputs(
     prompt_cache_mib: u32,
 ) -> Option<crate::capacity::host_cache_lease::HostCacheLeaseInputs> {
     let weights_host_bytes = file_weights_bytes.saturating_sub(expert_bytes_total);
-    let fp = footprint_from_parts(model_id, weights_host_bytes, model_context_window, false)?;
+    let fp = footprint_from_parts(model_id, weights_host_bytes, model_context_window, false, None)?;
     let lanes = lanes.max(1);
     Some(crate::capacity::host_cache_lease::HostCacheLeaseInputs {
         physical_bytes,
@@ -3628,6 +3628,7 @@ pub fn footprint_for(model: &Model) -> Option<ModelFootprint> {
         weights_bytes,
         ctx_ceiling,
         model.has(Capability::ToolUse),
+        model.serving.measured_capability,
     )?;
     // THE ARTIFACT'S OWN KV GEOMETRY beats the weights-scaled guess. Measured
     // 2026-09-01: the heuristic read a 35B fine-grained MoE at ~244 KB/token
@@ -3713,11 +3714,18 @@ fn kv_divisor_for(cache_type: Option<&str>) -> u64 {
 /// Pure footprint estimate from the fields that drive it — split out from the
 /// fs/registry IO so the (coarse, tunable) heuristics are unit-testable.
 /// `None` when there are no weights to serve.
+/// An UNMEASURED model's weight-proxy rank never reaches a measured frontier
+/// score: the proxy says "bigger ≈ smarter within a family", nothing across
+/// families, so it must lose to any model someone actually measured.
+// context-budget-exempt: a rank ceiling on a 0–255 capability scale, not a window or token budget
+const UNMEASURED_RANK_CAP: u8 = 40;
+
 fn footprint_from_parts(
     id: &str,
     weights_bytes: u64,
     context_window: u32,
     tool_capable: bool,
+    measured_capability: Option<u8>,
 ) -> Option<ModelFootprint> {
     if weights_bytes == 0 {
         return None;
@@ -3739,7 +3747,11 @@ fn footprint_from_parts(
     // family), +bonus for tool/code capability. Saturates into u8.
     let gb = (weights_bytes / 1_000_000_000).min(250) as u16;
     let tool_bonus = if tool_capable { 2 } else { 0 };
-    let capability_rank = gb.saturating_add(tool_bonus).min(255) as u8;
+    // Measured beats proxy: a catalog score (one scale) IS the rank; the weight
+    // proxy is only for models nobody measured, and it caps below any measured
+    // frontier so the planner's "most capable that fits" means capable, not big.
+    let proxy_rank = gb.saturating_add(tool_bonus).min(u16::from(UNMEASURED_RANK_CAP)) as u8;
+    let capability_rank = measured_capability.unwrap_or(proxy_rank);
 
     Some(ModelFootprint {
         model_id: id.to_string(),
@@ -4597,7 +4609,7 @@ mod tests {
 
     #[test]
     fn footprint_from_parts_is_footprint_aware() {
-        let fp = footprint_from_parts("present", 3 * GB, 8192, true).unwrap();
+        let fp = footprint_from_parts("present", 3 * GB, 8192, true, None).unwrap();
         assert_eq!(fp.model_id, "present");
         assert_eq!(fp.weights_bytes, 3 * GB);
         assert!(fp.kv_per_token > 0);
@@ -4612,13 +4624,37 @@ mod tests {
         );
 
         // A leaner non-tool model ranks below the bigger tool-capable one.
-        let small = footprint_from_parts("small", 1 * GB, 4096, false).unwrap();
+        let small = footprint_from_parts("small", 1 * GB, 4096, false, None).unwrap();
         assert!(small.capability_rank < fp.capability_rank);
 
         assert!(
-            footprint_from_parts("empty", 0, 8192, false).is_none(),
+            footprint_from_parts("empty", 0, 8192, false, None).is_none(),
             "no weights → not servable"
         );
+    }
+
+    // what this catches: the planner's "most capable that fits" meaning BIG again.
+    // A measured score is the rank; an unmeasured model keeps the weight proxy,
+    // capped below any measured frontier — so a 19 GB model someone measured at
+    // 42 outranks a 22 GB model nobody measured, and a 200 GB unmeasured model
+    // still cannot outrank it. (Joel 2026-09-05: "You guys aren't understanding
+    // how scaling works.")
+    #[test]
+    fn a_measured_capability_outranks_any_weight_proxy() {
+        let measured = footprint_from_parts("qwen3.8-27b", 19 * GB, 8192, true, Some(42)).unwrap();
+        let bigger_unmeasured = footprint_from_parts("ornith-35b", 22 * GB, 8192, true, None).unwrap();
+        let huge_unmeasured = footprint_from_parts("huge", 200 * GB, 8192, true, None).unwrap();
+        assert_eq!(measured.capability_rank, 42, "a measured score is the rank");
+        assert!(
+            measured.capability_rank > bigger_unmeasured.capability_rank,
+            "measured 42 beats the 22 GB proxy ({})",
+            bigger_unmeasured.capability_rank
+        );
+        assert_eq!(
+            huge_unmeasured.capability_rank, UNMEASURED_RANK_CAP,
+            "an unmeasured model caps at the proxy ceiling"
+        );
+        assert!(measured.capability_rank > huge_unmeasured.capability_rank);
     }
 
     // what this catches: an M5 Pro (or any capable silicon) must NOT classify
@@ -4652,8 +4688,8 @@ mod tests {
             perf_cores: 6,
         };
         let candidates = vec![
-            footprint_from_parts("small", GB, 4096, false).unwrap(),
-            footprint_from_parts("coder-14b", 9 * GB, 8192, true).unwrap(),
+            footprint_from_parts("small", GB, 4096, false, None).unwrap(),
+            footprint_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap(),
         ];
         daemon.publish_plan(budget, &candidates);
         let plan = rx.borrow().clone().expect("plan published");
@@ -5222,8 +5258,8 @@ mod tests {
                 perf_cores: 6,
             },
             vec![
-                footprint_from_parts("qwen3-27b", 19 * GB, 8192, true).unwrap(),
-                footprint_from_parts("coder-4b", 3 * GB, 8192, true).unwrap(),
+                footprint_from_parts("qwen3-27b", 19 * GB, 8192, true, None).unwrap(),
+                footprint_from_parts("coder-4b", 3 * GB, 8192, true, None).unwrap(),
             ],
         )
     }
@@ -5317,7 +5353,7 @@ mod tests {
             usable_bytes: 45 * GB,
             perf_cores: 6,
         };
-        let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true).unwrap()];
+        let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap()];
         daemon.publish_plan(budget, &candidates);
 
         let handle = daemon
@@ -5359,7 +5395,7 @@ mod tests {
             usable_bytes: 45 * GB,
             perf_cores: 6,
         };
-        let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true).unwrap()];
+        let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap()];
         daemon.publish_plan(budget, &candidates);
 
         assert!(
@@ -5398,7 +5434,7 @@ mod tests {
             perf_cores: 6,
         };
         let candidates =
-            vec![footprint_from_parts("coder-14b", 9 * GB, plan_model_ctx, true).unwrap()];
+            vec![footprint_from_parts("coder-14b", 9 * GB, plan_model_ctx, true, None).unwrap()];
         daemon.publish_plan(budget, &candidates);
         let (plan_window, plan_lanes) = {
             let plan = daemon.plan_tx.borrow();
@@ -5489,11 +5525,11 @@ mod tests {
                 "wanting: still below streak"
             );
             // A dip: the plan momentarily affords no more than the lane already has.
-            let small = vec![footprint_from_parts("coder-14b", 9 * GB, live_window, true).unwrap()];
+            let small = vec![footprint_from_parts("coder-14b", 9 * GB, live_window, true, None).unwrap()];
             daemon.publish_plan(budget, &small);
             assert!(daemon.reconcile_to_plan().is_none(), "dip: nothing to gain");
             // …and back up.
-            let big = vec![footprint_from_parts("coder-14b", 9 * GB, plan_window, true).unwrap()];
+            let big = vec![footprint_from_parts("coder-14b", 9 * GB, plan_window, true, None).unwrap()];
             daemon.publish_plan(budget, &big);
         }
         assert_eq!(
@@ -5960,7 +5996,7 @@ mod tests {
             usable_bytes: 45 * GB,
             perf_cores: 6,
         };
-        let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true).unwrap()];
+        let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap()];
         daemon.publish_plan(budget, &candidates);
         let (plan_window, plan_lanes) = {
             let plan = daemon.plan_tx.borrow();
@@ -6075,7 +6111,7 @@ mod tests {
             usable_bytes: 45 * GB,
             perf_cores: 6,
         };
-        let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true).unwrap()];
+        let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap()];
         daemon.publish_plan(budget, &candidates);
 
         daemon.reconcile_to_plan().expect("spawned").await.unwrap();
@@ -6112,7 +6148,7 @@ mod tests {
             usable_bytes: 45 * GB,
             perf_cores: 6,
         };
-        let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true).unwrap()];
+        let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap()];
         daemon.publish_plan(budget, &candidates);
         daemon.reconcile_to_plan().expect("spawned").await.unwrap();
 
@@ -6180,7 +6216,7 @@ mod tests {
         // rate halves on BOTH sides. Before this the expectation assumed f16 and the
         // test failed on any box actually serving quantized KV while CI stayed green.
         let fp = apply_kv_quantization(
-            footprint_from_parts(id, 4096, 8192, false).expect("footprint"),
+            footprint_from_parts(id, 4096, 8192, false, None).expect("footprint"),
         );
         let kv_per_token = fp.kv_per_token; // 20_000 raw, ÷ live quant divisor
         let expect = 4096 + 2 * kv_per_token * 8192 + fp.prefill_compute_reserve(8192, 2);

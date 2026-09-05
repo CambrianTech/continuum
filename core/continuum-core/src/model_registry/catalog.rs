@@ -580,7 +580,9 @@ pub fn models() -> Vec<Model> {
             chat_template: None,
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             stop_sequences: &["<|im_end|>"],
-            ..ModelSpec::default()
+                        // AA Intelligence Index v4.2 (2026-09-05 chart): 42.
+            serving: ModelServingPrefs { measured_capability: Some(42), ..ModelServingPrefs::default() },
+..ModelSpec::default()
         }),
         // ORNITH-1.5-35B-A3B — the WORK-TIER lane (Joel, 2026-08-22: "Swap it for
         // sure"), adopted on a same-day tier battery against the incumbent at
@@ -684,6 +686,8 @@ pub fn models() -> Vec<Model> {
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             stop_sequences: &["<|im_end|>"],
             serving: ModelServingPrefs {
+                // AA Intelligence Index v4.2 (2026-09-05 chart): 46.
+                measured_capability: Some(46),
                 mmproj_on_main_lane: false,
                 // Hybrid GDN/QSA attention — shift capability unverified on this arch.
                 kv_shiftable: None,
