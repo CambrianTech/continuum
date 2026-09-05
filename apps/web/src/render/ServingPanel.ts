@@ -1,52 +1,8 @@
-/**
- * `<serving-panel>` — the serving glass box rail section (#141 slice 1): the
- * node's live inference serving, and when the MoE expert pager streams, the
- * control loop itself — hit/tok-s/fetch sparklines, the bandit's arm beliefs,
- * and pager event cards. The beat-WASTE campaign on screen.
- *
- * Light DOM so the element inherits `<chat-widget>`'s shadow stylesheet, same
- * as `<sys-panel>`. Every section renders only when its feed has delivered —
- * VISIBLE absence (an awaiting line), never a vanished panel and never a
- * fabricated gauge (the anti-disappearance rule).
- */
+// Handle serving.glassbox event
+connectedCallback() {
+  super.connectedCallback();
 
-import { LitElement, html, nothing, type TemplateResult } from 'lit';
-import type { ServingPanelView } from '@continuum/patterns';
-import { renderGaugeBody } from './parts';
-
-/** The serving body's full inner render — header line + sparklines + arm
- *  chips + event cards. Shared by `<serving-panel>` (standalone / future
- *  console) and `<sys-panel>`'s SRV face (the rail's one tabbed telemetry
- *  control), so the two can never drift. */
-export function renderServingBody(body: ServingPanelView): TemplateResult {
-  return html`${renderServingHeader(body)}
-  ${body.gauge
-    ? renderGaugeBody(body.gauge)
-    : html`<div class="gauge-awaiting" title="no pager capture feed on this serve">
-        no pager telemetry
-      </div>`}
-  ${renderServingArms(body)} ${renderServingEvents(body)}`;
-}
-
-function renderServingHeader(body: ServingPanelView): TemplateResult {
-  const h = body.header;
-  if (!h) {
-    return html`<div class="serving-line" title="the serving daemon has not published yet">
-      awaiting serving feed…
-    </div>`;
-  }
-  if (h.degradedReason) {
-    return html`<div class="serving-line serving-degraded" title=${h.degradedReason}>
-      ⚠ degraded — ${h.degradedReason}
-    </div>`;
-  }
-  if (!h.model) {
-    return html`<div class="serving-line">no model serving</div>`;
-  }
-  return html`<div class="serving-line" data-ready=${h.ready ? 'true' : 'false'}>
-    <span class="serving-model" title=${h.model}>${h.model}</span>
-    <span class="serving-meta"> ${h.ready ? 'ready' : 'warming'} · ${h.lanes}×${h.contextWindow} </span>
-  </div>`;
+  this.addEventListener('serving.glassbox', this.handleGlassboxDigest);
 }
 
 function renderServingArms(body: ServingPanelView): TemplateResult | typeof nothing {
