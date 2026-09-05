@@ -29,7 +29,7 @@ pub struct ValidationOutcome {
     /// thinking blocks regardless of whether the visible response was posted.
     pub thinking: Option<String>,
     /// If `posted_text` is None, which gate caused the failure. Values:
-    /// "garbage" | "response_loop" | "truncated_tool_call" | "semantic_loop".
+    /// "framing_echo" | "garbage" | "response_loop" | "truncated_tool_call" | "semantic_loop".
     pub failure_gate: Option<String>,
     /// Microseconds spent in the validation gates (for perf telemetry).
     pub validation_micros: u64,
@@ -64,6 +64,24 @@ pub fn clean_and_validate(
     loop_detector: &LoopDetector,
 ) -> ValidationOutcome {
     let cleaned = clean_response(raw_response);
+    // Gate 0 — the turn's own framing reflected back is a PASS, not a post
+    // (cognition::framing_echo; the wake-prompt echo of 2026-09-05).
+    if let Some(marker) = crate::cognition::framing_echo::echoes_turn_framing(&cleaned.text) {
+        crate::probe!(
+            class = "cognition.framing_echo",
+            persona = %persona_id,
+            marker = marker,
+            chars = cleaned.text.chars().count() as u64,
+            "response reflected the turn's own framing — silenced (pass), never posted"
+        );
+        return ValidationOutcome {
+            posted_text: None,
+            thinking: cleaned.thinking,
+            failure_gate: Some("framing_echo".to_string()),
+            validation_micros: 0,
+            reason: format!("Framing echo ({marker}): the response reflects the turn's own prompt — a pass, not speech"),
+        };
+    }
     let validation = validate_response(
         &cleaned.text,
         persona_id,
@@ -260,6 +278,32 @@ mod tests {
     /// Validated 2026-04-21: changed truncated_tool_call to soft,
     /// test fails because user-facing error condition becomes silent;
     /// reverted.
+    // what this catches: a reflected wake prompt is silenced by the framing gate
+    // (soft: not a hard failure) while an ordinary line still posts — the
+    // 2026-09-05 echo loop where three citizens posted the prompt back.
+    #[test]
+    fn a_reflected_wake_prompt_is_a_silent_pass_and_speech_still_posts() {
+        let detector = LoopDetector::new();
+        let echo = clean_and_validate(
+            "[wake] You are Paige, awake on the continuum grid. Nothing has been said in this room since you last looked.",
+            Uuid::new_v4(),
+            false,
+            &[],
+            &detector,
+        );
+        assert!(!echo.should_post());
+        assert_eq!(echo.failure_gate.as_deref(), Some("framing_echo"));
+        assert!(!is_hard_failure("framing_echo"));
+        let speech = clean_and_validate(
+            "Reading django-14631 now; the FK ordering is the bug, test to follow.",
+            Uuid::new_v4(),
+            false,
+            &[],
+            &detector,
+        );
+        assert!(speech.should_post());
+    }
+
     #[test]
     fn is_hard_failure_classifies_gates_correctly() {
         assert!(is_hard_failure("garbage"));
