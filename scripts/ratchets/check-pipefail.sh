@@ -64,8 +64,17 @@ mapfile -t OFFENDERS < <(
     | grep -v '/generated/' \
     | sort \
     | while read -r f; do
+        # The pipefail test is ANCHORED to the start of a line (after optional
+        # indentation) so it matches a `set` STATEMENT and not a comment that
+        # merely says "set -o pipefail". Unanchored, a file whose comments
+        # discuss the flag reads as compliant with the flag absent — measured
+        # 2026-09-05, when this ratchet's own mutation step caught it: the fix
+        # for #3736 added explanatory comments containing the words `set -o
+        # pipefail`, and start-server.sh with the real flag STRIPPED still
+        # reported 0 offenders. A checker that cannot tell "the flag is set"
+        # from "the word appears" is the exact defect this gate exists to stop.
         if grep -qE '\|[[:space:]]*(tail|head|grep|tee|awk|sed)' "$f" \
-           && ! grep -qE 'set -[a-zA-Z]*o[a-zA-Z]* +pipefail|set -o +pipefail' "$f"; then
+           && ! grep -qE '^[[:space:]]*set +-[a-zA-Z]*o[a-zA-Z]* +pipefail|^[[:space:]]*set +-o +pipefail' "$f"; then
           printf '%s\n' "${f#"$REPO_ROOT"/}"
         fi
       done
