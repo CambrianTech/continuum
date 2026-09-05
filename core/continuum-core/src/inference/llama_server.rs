@@ -3274,18 +3274,45 @@ match (child.stderr.take(), log_path) {
         // GPU-intent lane is unambiguous.) The watcher only REPORTS; lifecycle stays
         // with the daemon, same doctrine as the wedge flag.
         if target.placement != LanePlacement::Cpu {
-            match self.offload.get() {
-                Some((0, total)) => {
-                    crate::probe!(
-                        class = "serving.placement.cpu_fallback",
-                        port = port,
-                        model = target.model_id(),
-                        total_layers = total,
-                        "PLACEMENT VIOLATION: GPU-placement lane offloaded 0/{total} layers \
-                         — the model is running ON CPU. Throughput will be an order of \
-                         magnitude below plan; every consumer of this lane is degraded (#441).",
-                    );
+            // A GPU-intent lane that came up on the CPU is REFUSED, not reported.
+            // Before 2026-09-05 this arm only probed; BigMama's 5090 then served
+            // Devstral from system RAM behind `ready:true lanes:3` (the engine
+            // said "no usable GPU found" on its own stderr, the pre-spawn device
+            // probe had said CUDA0). "Ready" must be a verified observation — same
+            // shape as the debug-build gate above: kill it, name the evidence, and
+            // let the daemon's relaunch/degrade path own what happens next.
+            // Joaquin's card 0c4317e1 (serve-time pin-match gap), finder credit.
+            let declined = self.offload.gpu_declined();
+            let zero_offload = matches!(self.offload.get(), Some((0, total)) if total > 0);
+            if declined || zero_offload {
+                if let Some(pid) = child_pid {
+                    crate::inference::lane_process::kill9(pid);
                 }
+                let evidence = if declined {
+                    "engine stderr: \"no usable GPU found\""
+                } else {
+                    "offload banner: 0 layers on the GPU"
+                };
+                crate::probe!(
+                    class = "serving.placement.refused",
+                    port = port,
+                    model = target.model_id(),
+                    evidence = evidence,
+                    total_layers = self.offload.get().map(|(_, t)| t).unwrap_or(0), // unwrap_or: no banner = 0 layers KNOWN; the evidence field carries the declined line
+                    "PLACEMENT VIOLATION: a GPU-placement lane came up ON CPU — refused, not served \
+                     (ready must be a verified observation, #441 / card 0c4317e1)"
+                );
+                return Err(LlamaServerError::Spawn(format!(
+                    "{} was planned on the GPU and came up on the CPU ({evidence}); refused rather \
+                     than serve every citizen from system RAM behind a green /health. Check the \
+                     backend build (a DL-backend build can list CUDA0 from a shell and still fail \
+                     to load it under the core) — last stderr:\n{}",
+                    self.bin,
+                    self.stderr_log_tail()
+                )));
+            }
+            match self.offload.get() {
+                Some((0, _)) => unreachable!("zero offload on a GPU lane is refused above"),
                 Some(_) => {}
                 None => {
                     // No banner observed is a different fact from "reported 0" — an

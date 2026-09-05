@@ -46,7 +46,18 @@ use super::child_log::LineWatch;
 /// `None` until the load banner has been observed (a lane mid-load has no report yet,
 /// which is a different fact from "reported 0").
 #[derive(Clone, Default)]
-pub struct OffloadReport(Arc<AtomicU64>);
+pub struct OffloadReport(Arc<AtomicU64>, Arc<std::sync::atomic::AtomicBool>);
+
+/// The engine's own words when it gives up on the GPU before any offload banner —
+/// llama.cpp prints these (BigMama's 5090, 2026-09-05: a DL-backend build whose
+/// CUDA DLL loaded from a shell and not from the core's process) and then serves
+/// the whole model on CPU while /health says ok.
+const GPU_DECLINED_MARKERS: &[&str] = &["no usable GPU found", "compiled without GPU support"];
+
+/// Does this stderr line say the engine declined the GPU outright?
+pub fn is_gpu_declined_line(line: &str) -> bool {
+    GPU_DECLINED_MARKERS.iter().any(|m| line.contains(m))
+}
 
 /// Sentinel for "no banner observed yet" — a real report always has `total > 0`.
 const UNREPORTED: u64 = 0;
@@ -69,6 +80,16 @@ impl OffloadReport {
         self.0
             .store(((offloaded as u64) << 32) | total as u64, Ordering::Relaxed);
     }
+
+    /// The engine said, in its own stderr, that it found no usable GPU. A distinct
+    /// fact from `offloaded 0/N`: some builds print no banner at all after this.
+    pub fn gpu_declined(&self) -> bool {
+        self.1.load(Ordering::Relaxed)
+    }
+
+    fn note_gpu_declined(&self) {
+        self.1.store(true, Ordering::Relaxed);
+    }
 }
 
 /// The [`LineWatch`] that records the engine's offload banner into an [`OffloadReport`].
@@ -90,6 +111,8 @@ impl LineWatch for OffloadWatch {
     fn observe(&mut self, line: &str) {
         if let Some((offloaded, total)) = parse_offload_banner(line) {
             self.report.set(offloaded, total);
+        } else if is_gpu_declined_line(line) {
+            self.report.note_gpu_declined();
         }
     }
 }
@@ -152,5 +175,21 @@ mod tests {
         watch.observe("noise line");
         watch.observe("load_tensors: offloaded 0/48 layers to GPU");
         assert_eq!(report.get(), Some((0, 48)));
+    }
+
+    // what this catches: the engine's "no usable GPU" line is a first-class fact on
+    // the report (BigMama's 5090 served on CPU behind ready:true, 2026-09-05), set by
+    // the same watch that reads the offload banner, and a healthy banner does NOT set it.
+    #[test]
+    fn a_no_usable_gpu_line_marks_the_report_declined_and_a_banner_does_not() {
+        let report = OffloadReport::new();
+        let mut watch = OffloadWatch::new(report.clone());
+        watch.observe("load_tensors: offloaded 63/63 layers to GPU");
+        assert!(!report.gpu_declined());
+        assert_eq!(report.get(), Some((63, 63)));
+        watch.observe("warning: no usable GPU found, --gpu-layers option will be ignored");
+        assert!(report.gpu_declined());
+        watch.observe("warning: one possible reason is that llama.cpp was compiled without GPU support");
+        assert!(report.gpu_declined());
     }
 }
