@@ -51,23 +51,32 @@ impl TokioCommand {
     }
 }
 
-struct StubAircCitizen;
-
-#[async_trait]
-impl StubAircCitizen {
-    async fn subscribe_all_rooms(&self) -> Result<()> {
-        // Attempt to parse the channel as a UUID
-    let trimmed_channel = "room: 123e4567-e89b-12d3-a456-426614174000".trim();
-    if !trimmed_channel.is_empty() {
-        let parts: Vec<&str> = trimmed_channel.split(':').collect();
-        if parts.len() == 2 {
-            let uuid_str = parts[1].trim();
-            match uuid_str.parse::<uuid::Uuid>() {
-                Ok(uuid) => println!("Parsed UUID: {}", uuid),
-                Err(e) => println!("Error parsing UUID: {}", e),
-            }
-        } else {
-            println!("Channel format is incorrect.");
+/// Extract the `channel: <uuid>` line from `airc room` stdout.
+///
+/// Output today (from airc rust-rewrite branch, as of this PR):
+/// ```text
+/// room:    continuum
+/// wire:    ~/.airc/wires/<room>
+/// channel: 11c1a7ac-cb85-5ca0-a5b4-2847280ea3fa
+/// ```
+///
+/// We match the literal `channel:` label (case-insensitive) followed by
+/// whitespace and a UUID — robust to alignment changes but coupled to
+/// the label name. If airc renames this field, the parser fails loudly
+/// (UnparseableChannel error) rather than silently misreading.
+fn parse_channel_from_room_output(stdout: &str) -> Result<uuid::Uuid, DiscoveryError> {
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        let Some(rest) = trimmed
+            .strip_prefix("channel:")
+            .or_else(|| trimmed.strip_prefix("Channel:"))
+            .or_else(|| trimmed.strip_prefix("CHANNEL:"))
+        else {
+            continue;
+        };
+        let candidate = rest.trim();
+        if let Ok(uuid) = candidate.parse::<uuid::Uuid>() {
+            return Ok(uuid);
         }
     } else {
         println!("Channel is empty.");
@@ -100,5 +109,48 @@ impl StubAircCitizen {
         }
         // Fall back to the original behavior if the environment variable is not set.
         Err(DiscoveryError::NoChannelFound.into())
+    }
+
+    #[test]
+    fn parses_channel_from_typical_airc_room_output() {
+        let stdout = "\
+room:    continuum
+wire:    ~/.airc/wires/<room>
+channel: 11c1a7ac-cb85-5ca0-a5b4-2847280ea3fa
+";
+        let uuid = parse_channel_from_room_output(stdout).expect("parse channel");
+        assert_eq!(
+            uuid,
+            "11c1a7ac-cb85-5ca0-a5b4-2847280ea3fa"
+                .parse::<uuid::Uuid>()
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn parses_channel_with_alternate_capitalization_and_whitespace() {
+        let stdout = "  Channel:    11c1a7ac-cb85-5ca0-a5b4-2847280ea3fa\n";
+        let uuid = parse_channel_from_room_output(stdout).expect("parse channel");
+        assert_eq!(
+            uuid,
+            "11c1a7ac-cb85-5ca0-a5b4-2847280ea3fa"
+                .parse::<uuid::Uuid>()
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn parser_fails_loud_when_channel_line_absent() {
+        let stdout = "room:    continuum\nwire:    /tmp/x\n";
+        let err = parse_channel_from_room_output(stdout).expect_err("must fail");
+        assert!(matches!(err, DiscoveryError::UnparseableChannel(_)));
+        assert!(err.to_string().contains("no `channel:"));
+    }
+
+    #[test]
+    fn parser_fails_loud_on_non_uuid_after_label() {
+        let stdout = "channel: not-a-uuid\n";
+        let err = parse_channel_from_room_output(stdout).expect_err("must fail");
+        assert!(matches!(err, DiscoveryError::UnparseableChannel(_)));
     }
 }

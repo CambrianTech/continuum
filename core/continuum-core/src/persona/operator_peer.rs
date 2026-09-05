@@ -114,6 +114,52 @@ pub async fn ensure_operator_peer(
                     "operator self-peer could not subscribe the airc lobby — the human cannot be heard in #general until room/join"
                 );
             }
+            // THE PROJECT TREE (Joel, 2026-09-05: "You never work in rooms… you were
+            // building continuum in its academy"): the org room airc derives from the
+            // checkout's git remote (the repo OWNER's channel, whoever that is) is the base of the project
+            // tree — project rooms nest under it, card rooms under those. The human's
+            // desktop lists the rooms the operator peer is SUBSCRIBED to, so until the
+            // operator subscribes the org room the whole project tree is invisible and
+            // every project line lands in the lobby or the commons. Subscribe without
+            // promoting (Keep): the commons join below still decides the focus.
+            // The org channel is inferred from the git checkout the core runs IN
+            // (the process cwd — `start-server.sh` launches from the repo root), the
+            // same rule `airc join` applies. NOT the continuum home: `~/.continuum`
+            // is no checkout, so the first cut (#3770) walked its ancestors, found no
+            // remote, subscribed nothing and said nothing — an absence read as fine.
+            // An installed product with no checkout gets the named absence below;
+            // its project rooms then carry their own repo owner (follow-up: derive
+            // the org room from each `project` activity's `repo` param).
+            let cwd = std::env::current_dir().unwrap_or_else(|_| {
+                crate::modules::persona_instance_manager::resolve_continuum_root()
+            }); // unwrap_or_else: no cwd = fall back to the home; the absence probe below still fires
+            let project_bases: Vec<airc_lib::ChannelName> = airc_lib::JoinContext::from_cwd(&cwd)
+                .channels
+                .into_iter()
+                .filter(|c| c.as_str() != airc_lib::GENERAL_CHANNEL)
+                .collect();
+            if project_bases.is_empty() {
+                crate::probe!(
+                    class = "operator.peer.project_base_none",
+                    cwd = %cwd.display(),
+                    "no git remote owner under the core's cwd — no org room to subscribe; project rooms root top-level until one is spawned with a parent"
+                );
+            }
+            for channel in project_bases.iter() {
+                match rt.subscribe_room(channel.as_str()).await {
+                    Ok(()) => crate::probe!(
+                        class = "operator.peer.project_base_subscribed",
+                        room = %channel.as_str(),
+                        "operator self-peer subscribed the project base room (the org room from the git remote)"
+                    ),
+                    Err(e) => crate::probe!(
+                        class = "operator.peer.project_base_subscribe_failed",
+                        room = %channel.as_str(),
+                        error = %e.to_string(),
+                        "operator self-peer could not subscribe the project base room — the project tree stays invisible on this desktop until room/join"
+                    ),
+                }
+            }
             if let Err(e) = rt
                 .join_room(crate::persona::airc_runtime::CITIZEN_COMMONS_ROOM)
                 .await

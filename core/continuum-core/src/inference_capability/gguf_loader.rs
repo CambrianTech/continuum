@@ -92,7 +92,7 @@ fn parse_qwen_metadata_from_content(
         crate::inference_capability::gguf_keys::architecture(content).ok_or_else(|| {
             format!(
                 "GGUF {} is missing required 'general.architecture' — refuse rather than \
-                 guess. Same rule as backends::read_gguf_metadata (Joel 2026-04-23).",
+                 guess. Same rule as backends::read_gguf_metadata (2026-04-23).",
                 path.display()
             )
         })?;

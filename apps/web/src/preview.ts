@@ -584,7 +584,7 @@ function main(): void {
         '    continuity of the beings whose experience these genes encode.',
         ' 5. OPT-OUT ANYTIME. Revoking consent stops future sharing immediately.',
       ].join('\n'),
-      hfAccount: 'CambrianTech',
+      hfAccount: 'your-org',
       genes: [
         { gene: 'code', baseModel: 'ornith-ai/Ornith-1.5-35B-A3B-GGUF', signed: true, trials: 7, decayedLift: 0.062 },
         { gene: 'coder-4b-curriculum-mlp', baseModel: 'qwen3.5-4b', signed: true, trials: 2, decayedLift: 0.031 },

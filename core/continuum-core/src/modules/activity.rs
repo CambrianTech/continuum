@@ -53,6 +53,7 @@ use airc_core::RoomId;
 use airc_lib::Airc;
 
 use crate::experience::standing::{project_standing, RoomStanding, STANDING_WALL_CATEGORY};
+use crate::modules::room_resolve::resolve_room;
 use crate::persona::PersonaAircRuntimeRegistry;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand};
@@ -592,35 +593,48 @@ pub async fn spawn_activity_room(
 
 // ─────────────────────────── standing ───────────────────────────
 
-/// Read the current standing of the caller's current room, or the default
-/// (live, unprotected) when nobody has ever declared one.
+
+/// The standing of ONE room the caller named — never "whatever room the
+/// scope's pointer happens to be on".
 ///
-/// The type, the wall category, and the rule for turning posts into a standing
-/// all live in [`crate::experience::standing`] — this is only the "fetch the
-/// current room's posts" half. They were born here as a private `async fn` over
-/// `&Airc`, which meant the only code that could read a standing was the command
-/// that wrote it, and `archived` shipped as a declaration nothing consumed.
-async fn current_standing(airc: &Airc) -> Result<RoomStanding, CommandError> {
+/// Joel, 2026-09-05: "You never work in rooms. You just use whatever one of
+/// you reuses." Every activity verb that means a specific room must be able
+/// to say so; the pointer default silently archives a plausible wrong room and
+/// nothing in the receipt says which. Same split airc makes for
+/// `wall_posts` / `wall_posts_in` and `work_board` / `work_board_in`.
+async fn standing_in(airc: &Airc, room: &airc_lib::Room) -> Result<RoomStanding, CommandError> {
     let posts = airc
-        .wall_posts(Some(STANDING_WALL_CATEGORY))
+        .wall_posts_in(room, Some(STANDING_WALL_CATEGORY))
         .await
         .map_err(|source| {
-            CommandError::Internal(format!("could not read room standing: {source}"))
+            CommandError::Internal(format!(
+                "could not read room standing for #{}: {source}",
+                room.name
+            ))
         })?;
     project_standing(&posts).map_err(|source| CommandError::Internal(source.to_string()))
 }
 
-/// Publish a merged standing, preserving every field the caller did not set.
-async fn publish_standing(airc: &Airc, next: &RoomStanding) -> Result<String, CommandError> {
+/// Publish a merged standing on ONE room, preserving every field the caller
+/// did not set.
+async fn publish_standing_in(
+    airc: &Airc,
+    room: &airc_lib::Room,
+    next: &RoomStanding,
+) -> Result<String, CommandError> {
     let body = serde_json::to_string(next)
         .map_err(|source| CommandError::Internal(format!("encode standing: {source}")))?;
-    airc.publish_wall_post(STANDING_WALL_CATEGORY.to_string(), body, None)
+    airc.publish_wall_post_in(room, STANDING_WALL_CATEGORY.to_string(), body, None)
         .await
         .map(|id| id.to_string())
         .map_err(|source| {
-            CommandError::Internal(format!("could not publish room standing: {source}"))
+            CommandError::Internal(format!(
+                "could not publish room standing on #{}: {source}",
+                room.name
+            ))
         })
 }
+
 
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct StandingResult {
@@ -640,6 +654,12 @@ pub struct ActivityArchive {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 pub struct ActivityArchiveParams {
+    /// The room whose activity this concludes — its id or its name. Omitted =
+    /// the caller's current room. Name it: a verb that means a specific room
+    /// must never depend on where the scope's pointer happens to stand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub room: Option<String>,
     /// `true` concludes the activity, `false` reopens it. Reversible on purpose —
     /// concluding is a judgement, and judgements get revised.
     #[serde(default = "default_true")]
@@ -674,12 +694,13 @@ impl ActionCommand for ActivityArchive {
         p: ActivityArchiveParams,
     ) -> Result<StandingResult, CommandError> {
         let airc = caller_airc(&self.registry, ctx)?;
-        let mut standing = current_standing(&airc).await?;
+        let room = resolve_room(&airc, p.room.as_deref()).await?;
+        let mut standing = standing_in(&airc, &room).await?;
         standing.archived = p.archived;
         if p.note.is_some() {
             standing.note = p.note;
         }
-        let post_id = publish_standing(&airc, &standing).await?;
+        let post_id = publish_standing_in(&airc, &room, &standing).await?;
         Ok(StandingResult {
             archived: standing.archived,
             protected: standing.protected,
@@ -697,6 +718,11 @@ pub struct ActivityProtect {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 pub struct ActivityProtectParams {
+    /// The room to protect (or release) — its id or its name. Omitted = the
+    /// caller's current room.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub room: Option<String>,
     /// `true` protects, `false` releases protection.
     #[serde(default = "default_true")]
     pub protected: bool,
@@ -725,12 +751,13 @@ impl ActionCommand for ActivityProtect {
         p: ActivityProtectParams,
     ) -> Result<StandingResult, CommandError> {
         let airc = caller_airc(&self.registry, ctx)?;
-        let mut standing = current_standing(&airc).await?;
+        let room = resolve_room(&airc, p.room.as_deref()).await?;
+        let mut standing = standing_in(&airc, &room).await?;
         standing.protected = p.protected;
         if p.note.is_some() {
             standing.note = p.note;
         }
-        let post_id = publish_standing(&airc, &standing).await?;
+        let post_id = publish_standing_in(&airc, &room, &standing).await?;
         Ok(StandingResult {
             archived: standing.archived,
             protected: standing.protected,

@@ -46,16 +46,35 @@ pub(crate) fn did_you_mean<'a>(query: &str, authorized: &[&'a str]) -> Vec<&'a s
     let q = query.to_lowercase();
     let q_prefix = q.split('/').next().unwrap_or(&q);
     let q_segs: HashSet<&str> = q.split('/').filter(|s| !s.is_empty()).collect();
+    // Tokens across EVERY separator a caller might reach for, not just `/`. A mind
+    // told its tools live behind `list_commands` forms `list_cards` by analogy — an
+    // underscored bare name that shares no category prefix and no whole path segment
+    // with anything, so the two tiers below discarded every candidate and the refusal
+    // named nothing. Measured 2026-09-05: a citizen issued `list_cards` 31 times, the
+    // loop-breaker told her so on 30 of them, and neither channel ever mentioned
+    // `commands/list`. The perception side declines to say what to do next ON PURPOSE
+    // (apply.rs: "It never says what to do instead (that would be steering)") — which
+    // assumes THIS function carries the routing. Naming commands that exist is not
+    // steering; it is the same class of fact as "you have called this 31 times".
+    let q_tokens: HashSet<&str> = q
+        .split(|c| c == '/' || c == '_' || c == '-')
+        .filter(|s| !s.is_empty())
+        .collect();
     let mut scored: Vec<(u8, &str)> = authorized
         .iter()
         .filter_map(|name| {
             let n = name.to_lowercase();
             let n_prefix = n.split('/').next().unwrap_or(&n);
             let shares_seg = n.split('/').any(|s| !s.is_empty() && q_segs.contains(s));
+            let shares_token = n
+                .split(|c| c == '/' || c == '_' || c == '-')
+                .any(|s| !s.is_empty() && q_tokens.contains(s));
             let score = if n_prefix == q_prefix {
                 2 // same category — strongest signal
             } else if shares_seg {
                 1
+            } else if shares_token {
+                0 // a shared word — weakest, but never nothing
             } else {
                 return None;
             };
@@ -410,6 +429,40 @@ crate::register_stateless_command!(CommandsHelp);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: an underscored bare guess getting NO suggestion at all, which
+    // is what let a citizen re-issue `list_cards` 31 times (2026-09-05). Neither
+    // `commands/list` nor `work/list` shares the category prefix `list_cards` or a whole
+    // `/`-segment with it, so before the token tier every candidate was discarded and the
+    // refusal named nothing to try. The perception-side loop notice deliberately withholds
+    // what to do next, so this function is the only channel that can carry a route.
+    #[test]
+    fn an_underscored_guess_still_reaches_the_commands_that_share_its_words() {
+        let names = ["commands/list", "work/list", "work/claim", "code/read"];
+        let hits = did_you_mean("list_cards", &names);
+        assert!(
+            hits.contains(&"commands/list") && hits.contains(&"work/list"),
+            "`list_cards` must reach the /list commands; got {hits:?}"
+        );
+        assert!(
+            !hits.contains(&"code/read"),
+            "a candidate sharing no word must not be suggested; got {hits:?}"
+        );
+    }
+
+    // what this catches: the token tier out-ranking the exact-category tier. A same-prefix
+    // match is the strongest signal and must stay first, or the useful suggestion drowns in
+    // every command that merely shares a common word like `list` or `get`.
+    #[test]
+    fn same_category_still_outranks_a_merely_shared_word() {
+        let names = ["work/list", "work/claim", "commands/list"];
+        let hits = did_you_mean("work/lst", &names);
+        assert_eq!(
+            hits.first(),
+            Some(&"work/claim"),
+            "same-prefix candidates rank ahead of a shared-word match; got {hits:?}"
+        );
+    }
 
     // what this catches: the manual renders the CANONICAL tool-call envelope with
     // the command name + schema-typed argument placeholders — i.e. a persona gets a
