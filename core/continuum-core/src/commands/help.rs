@@ -81,8 +81,42 @@ pub(crate) fn did_you_mean<'a>(query: &str, authorized: &[&'a str]) -> Vec<&'a s
             Some((score, *name))
         })
         .collect();
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
+    // Rank: score, then DEPTH, then name.
+    //
+    // Alphabetical alone was the tie-break when #3769 landed, and on the very failure
+    // that motivated it the right answers lost the race. Measured live 2026-09-05:
+    //
+    //   list_cards -> agent/list, ai/lora/list, ai/models/list, ai/providers/list,
+    //                 benchmark/list, code/list
+    //
+    // Eight commands share the word `list`, all tie at score 0, and `take(6)` cut at
+    // `code/` — dropping exactly `commands/list` and `work/list`, the two the citizen
+    // wanted. Suggestions appeared where there had been silence, which was the fix,
+    // and none of them was the route, which was the claim.
+    //
+    // Depth is the discriminator the data actually carries: a two-segment command is
+    // a top-level verb, a three-segment one is a specialisation inside a family. When
+    // nothing else separates candidates, the shallower command is the likelier answer
+    // — `work/list` over `ai/providers/list`. It is only a tie-break, so the score
+    // tiers above are untouched.
+    //
+    // Edit distance was the first thing I tried and it does not work here: every
+    // candidate ENDS in `list`, so last-segment distance ties them all, and the
+    // query's own last token is `cards`, which is near none of them. A discriminator
+    // has to discriminate on the case that motivated it.
+    scored.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then(depth(a.1).cmp(&depth(b.1)))
+            .then(a.1.cmp(b.1))
+    });
     scored.into_iter().take(6).map(|(_, n)| n).collect()
+}
+
+/// Path segments in a command name — `work/list` is 2, `ai/providers/list` is 3.
+/// Shallower is more central, and that is the only structural signal left once two
+/// candidates share a word and nothing else.
+fn depth(name: &str) -> usize {
+    name.split('/').filter(|s| !s.is_empty()).count()
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -447,6 +481,32 @@ mod tests {
         assert!(
             !hits.contains(&"code/read"),
             "a candidate sharing no word must not be suggested; got {hits:?}"
+        );
+    }
+
+    // what this catches: the RIGHT command losing the alphabetical coin-flip. #3769
+    // added the token tier so an invented verb gets suggestions instead of silence,
+    // and then — measured live on the box that produced the original 31-call loop —
+    // `list_cards` returned agent/list, ai/lora/list, ai/models/list,
+    // ai/providers/list, benchmark/list, code/list: six names, none of them the two
+    // she needed, because twenty commands tie at score 0 and take(6) cuts at `code/`.
+    // Suggestions are not a route unless the route survives the window.
+    #[test]
+    fn the_closest_command_survives_the_window_when_many_share_a_word() {
+        let names = [
+            "agent/list",
+            "ai/lora/list",
+            "ai/models/list",
+            "ai/providers/list",
+            "benchmark/list",
+            "code/list",
+            "commands/list",
+            "work/list",
+        ];
+        let hits = did_you_mean("list_cards", &names);
+        assert!(
+            hits.contains(&"commands/list") && hits.contains(&"work/list"),
+            "the commands whose own last word IS `list` must not be sorted out of the window; got {hits:?}"
         );
     }
 
