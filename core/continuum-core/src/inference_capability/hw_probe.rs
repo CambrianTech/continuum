@@ -172,15 +172,28 @@ fn try_detect_metal() -> Option<(u64, String)> {
 fn try_detect_cuda() -> Option<(u64, String)> {
     #[cfg(feature = "cuda")]
     {
-        use std::process::Command;
-        let output = Command::new("nvidia-smi")
-            .args([
+        // BOUNDED (#3733's class, third site). Reached from
+        // `probe_hardware_profile`, which the inference coordinator and the
+        // capacity profile both call — so an unbounded wait here stalls
+        // whichever of those runs first, and on a boot path that is the whole
+        // startup. Same 10 s ceiling as the other driver queries: one number
+        // for "how long may nvidia-smi take", not three.
+        let probed = crate::system_resources::bounded_command::probe(
+            "nvidia-smi",
+            &[
                 "--query-gpu=memory.total,name",
                 "--format=csv,noheader,nounits",
-            ])
-            .output()
-            .ok()?;
-        let stdout = String::from_utf8(output.stdout).ok()?;
+            ],
+            std::time::Duration::from_secs(10),
+        );
+        crate::probe!(
+            class = "boot.gpu_detect",
+            backend = "cuda",
+            stage = "hw_profile",
+            outcome = probed.outcome(),
+            "hardware-profile CUDA probe (bounded)"
+        );
+        let stdout = probed.stdout_if_ok()?;
         let line = stdout.lines().next()?;
         let parts: Vec<&str> = line.split(", ").collect();
         if parts.len() < 2 {
@@ -203,12 +216,23 @@ fn try_detect_cuda() -> Option<(u64, String)> {
 fn try_detect_vulkan() -> Option<(u64, String)> {
     #[cfg(feature = "vulkan")]
     {
-        use std::process::Command;
-        let output = Command::new("vulkaninfo").arg("--summary").output().ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let stdout = String::from_utf8(output.stdout).ok()?;
+        // BOUNDED (#3733's class, fourth site). Same path as the CUDA probe
+        // above and reached when it declines, so on a host whose GPU stack is
+        // unwell this is the SECOND unbounded wait in a row — the identical
+        // shape #3733 fixed in `detect_gpu`, in a different file.
+        let probed = crate::system_resources::bounded_command::probe(
+            "vulkaninfo",
+            &["--summary"],
+            std::time::Duration::from_secs(10),
+        );
+        crate::probe!(
+            class = "boot.gpu_detect",
+            backend = "vulkan",
+            stage = "hw_profile",
+            outcome = probed.outcome(),
+            "hardware-profile Vulkan probe (bounded)"
+        );
+        let stdout = probed.stdout_if_ok()?;
         // Look for a line like "deviceName    = Some GPU Name"
         let name = stdout
             .lines()
