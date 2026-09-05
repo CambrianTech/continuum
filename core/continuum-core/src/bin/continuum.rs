@@ -1320,6 +1320,62 @@ fn wait_verdict(silent_for_secs: u64, stall_limit_secs: u64) -> WaitVerdict {
     }
 }
 
+/// Cumulative CPU seconds burned by the build's whole process group.
+///
+/// LOG OUTPUT IS NOT THE ONLY PROGRESS SIGNAL, and treating it as one was a regression I
+/// shipped in the commit that introduced `wait_verdict`: cargo compiling a single large crate
+/// is SILENT for minutes, so a stall clock reset only by new log lines fires on exactly the
+/// cold low-end build the change was written to protect. M5 caught it on canary within the
+/// hour — the dd71a114 symptom moved from 30 minutes to 5, which is worse, not better.
+///
+/// CPU time separates the two states the watchdog actually cares about. A build working
+/// quietly BURNS CPU; a hung exec does not — the `llama-server --version` hang that started
+/// this whole thread sits in uninterruptible wait at 0.0%. One `ps` on the process GROUP covers
+/// the entire tree (cargo, rustc, cc, cmake) without enumerating it, and the start script is
+/// already spawned into its own group so `stop` can find it.
+///
+/// `None` when the group is gone or `ps` is unavailable, so the caller falls back to the log
+/// signal rather than reading "cannot tell" as "stalled" — the same refusal-to-guess the socket
+/// and VRAM fixes landed on tonight.
+#[cfg(unix)]
+fn build_group_cpu_secs(pgid: u32) -> Option<u64> {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "cputime=", "-g", &pgid.to_string()])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut total = 0u64;
+    let mut saw_any = false;
+    for line in text.lines() {
+        total += cputime_to_secs(line);
+        if !line.trim().is_empty() {
+            saw_any = true;
+        }
+    }
+    saw_any.then_some(total)
+}
+
+#[cfg(not(unix))]
+fn build_group_cpu_secs(_pgid: u32) -> Option<u64> {
+    None
+}
+
+/// `ps -o cputime=` renders `[[dd-]hh:]mm:ss`. Sum right-to-left so every shape parses without
+/// branching on which one it is; a day field arrives glued as `dd-hh`, so split it off.
+fn cputime_to_secs(field: &str) -> u64 {
+    let mut secs = 0u64;
+    for (i, part) in field.trim().rsplit(':').enumerate() {
+        let (days, value) = match part.split_once('-') {
+            Some((d, v)) => (d.trim().parse::<u64>().unwrap_or(0), v),
+            None => (0, part),
+        };
+        secs += value.trim().parse::<u64>().unwrap_or(0) * 60u64.pow(i.min(2) as u32);
+        secs += days * 86_400;
+    }
+    secs
+}
+
 /// PIDs of every running `continuum-core-server`, via `pgrep` (pure unix, no
 /// Node). Empty on no match or if pgrep is unavailable.
 fn running_core_pids() -> Vec<i32> {
@@ -1933,6 +1989,10 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource) -> Result<u64
     const STALL_SECS: u64 = 5 * 60;
     let mut last_progress = String::new();
     let mut last_progress_at = std::time::Instant::now();
+    // The script is spawned detached into its own process group, so its pid IS the pgid — the
+    // same fact `stop` relies on to reap the tree.
+    let build_pgid = child.id();
+    let mut last_cpu_secs = build_group_cpu_secs(build_pgid).unwrap_or(0);
     for i in 0..(MAX_WAIT_SECS / TICK_SECS) {
         tokio::time::sleep(Duration::from_secs(TICK_SECS)).await;
         let old_still_alive = wait_for_death.iter().any(|p| pid_alive(*p));
@@ -1951,6 +2011,16 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource) -> Result<u64
             // hand-worked around.
             if (i + 1) % 15 == 0 {
                 eprintln!("  … {line}");
+            }
+        }
+        // A QUIET build is not a stopped one. Cargo compiling one large crate prints nothing for
+        // minutes, so the log signal alone condemns exactly the cold low-end build this watchdog
+        // exists to protect. CPU burned by the process group is the second signal, and it is the
+        // one that distinguishes working-silently from hung: a stuck exec sits at 0.0%.
+        if let Some(cpu) = build_group_cpu_secs(build_pgid) {
+            if cpu > last_cpu_secs {
+                last_cpu_secs = cpu;
+                last_progress_at = std::time::Instant::now();
             }
         }
         let stalled_for = last_progress_at.elapsed().as_secs();
@@ -2507,6 +2577,36 @@ mod tests {
             let stall = 5 * 60;
             assert_eq!(wait_verdict(stall, stall), WaitVerdict::Stalled);
             assert_eq!(wait_verdict(stall + 1, stall), WaitVerdict::Stalled);
+        }
+
+        /// what this catches: misreading `ps -o cputime=`, which is the second progress signal
+        /// and the fix for a regression I shipped — a stall clock reset ONLY by log lines
+        /// condemns cargo compiling one large crate quietly, which is exactly the cold low-end
+        /// build the watchdog protects. Every shape `ps` emits must parse, because a field this
+        /// function silently reads as 0 turns a working build back into a false stall.
+        #[test]
+        fn every_ps_cputime_shape_parses() {
+            assert_eq!(cputime_to_secs("0:05"), 5, "mm:ss");
+            assert_eq!(cputime_to_secs("12:34"), 12 * 60 + 34);
+            assert_eq!(cputime_to_secs("1:02:03"), 3600 + 2 * 60 + 3, "hh:mm:ss");
+            assert_eq!(
+                cputime_to_secs("2-03:04:05"),
+                2 * 86_400 + 3 * 3600 + 4 * 60 + 5,
+                "dd-hh:mm:ss — the day field arrives glued to the hour"
+            );
+            assert_eq!(cputime_to_secs("   7:08  "), 7 * 60 + 8, "ps pads its column");
+        }
+
+        /// what this catches: a garbage field silently reading as a huge or negative number and
+        /// either freezing the stall clock forever or resetting it every tick. Unparseable means
+        /// ZERO contribution — the caller then falls back to the log signal, which is the
+        /// refuse-to-guess posture the rest of tonight's fixes landed on.
+        #[test]
+        fn unparseable_cputime_contributes_nothing_rather_than_guessing() {
+            assert_eq!(cputime_to_secs(""), 0);
+            assert_eq!(cputime_to_secs("   "), 0);
+            assert_eq!(cputime_to_secs("?"), 0);
+            assert_eq!(cputime_to_secs("not:a:time"), 0);
         }
     }
 
