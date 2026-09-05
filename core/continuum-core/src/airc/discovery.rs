@@ -585,6 +585,11 @@ pub enum DiscoveryError {
     UnparseableRoomName(String),
 }
 
+use std::process::{Command, Output};
+use std::time::Duration;
+use tokio::time::timeout;
+use uuid::Uuid;
+
 pub async fn discover_default_channel() -> Result<Uuid, DiscoveryError> {
     if let Some(room_name_raw) = std::env::var_os("AIRC_DEFAULT_ROOM_NAME") {
         let room_name = room_name_raw.to_string_lossy().trim().to_string();
@@ -654,4 +659,17 @@ fn parse_channel_from_room_output(output: &str) -> Result<Uuid, DiscoveryError> 
         }
     }
     Err(DiscoveryError::ChannelNotFound)
+}
+
+fn parse_channel_from_room_output(output: &str, room_name: &str) -> Option<Uuid> {
+    for line in output.lines() {
+        if let Some((room, channel)) = line.split_once(':') {
+            let room = room.trim();
+            let channel = channel.trim();
+            if room.eq_ignore_ascii_case(room_name) {
+                return Some(Uuid::parse_str(channel).ok()?);
+            }
+        }
+    }
+    None
 }
