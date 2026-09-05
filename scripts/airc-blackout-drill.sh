@@ -13,6 +13,7 @@
 #
 # Usage: scripts/airc-blackout-drill.sh [label]
 set -u
+set -o pipefail  # a failing command in a pipeline must not read as success (card aad30dee)
 LABEL="${1:-drill}"
 OUT="${TMPDIR:-/tmp}/airc-blackout-drill-${LABEL}-$(date +%s).log"
 

@@ -263,6 +263,20 @@ impl NavFocus {
 /// The shared process-global [`NavFocus`] — same singleton pattern as
 /// `global_channel_bookmarks()`: one focus row per citizen, read by the nav
 /// reader and written by `nav/select`.
+/// The room a session with NO stored focus opens on. The academy base when the node has
+/// one, else the first room. Before this the fallback was `rooms.keys().next()` — the
+/// first key of a map keyed by room id, i.e. an arbitrary room: the desktop opened on a
+/// paused ten-hour-old `bench-…-mini` run (observed through the eye-node, 2026-09-03 and
+/// again 2026-09-05). A stored focus on a paused activity is the other half of the
+/// landing defect and needs STANDING in the nav (planned); this half needs only a name.
+fn landing_room(rooms: &RoomSet) -> Option<String> {
+    rooms
+        .iter()
+        .find(|(_, title)| title.as_str() == crate::persona::airc_runtime::CITIZEN_COMMONS_ROOM)
+        .map(|(room, _)| room.to_string())
+        .or_else(|| rooms.keys().next().map(|r| r.to_string()))
+}
+
 pub fn global_nav_focus() -> Arc<NavFocus> {
     use std::sync::OnceLock;
     static G: OnceLock<Arc<NavFocus>> = OnceLock::new();
@@ -505,7 +519,7 @@ impl NavReader for ChannelBookmarksNavReader {
         let current = focus
             .as_ref()
             .map(|(target, _)| target.clone())
-            .or_else(|| rooms.keys().next().map(|r| r.to_string()));
+            .or_else(|| landing_room(&rooms));
         let activities = rooms
             .iter()
             .map(|(room, title)| {
@@ -1077,5 +1091,19 @@ mod tests {
             seen,
             "the citizen's nav view materialized in their per-user substrate"
         );
+    }
+    // what this catches: a fresh session must open on the academy base, never on whichever
+    // room happens to sort first by id (the paused mini round the desktop landed on twice).
+    #[test]
+    fn a_session_with_no_focus_lands_on_the_academy_when_the_node_has_one() {
+        let mut rooms = RoomSet::new();
+        let mini = Uuid::new_v4();
+        let academy = Uuid::new_v4();
+        rooms.insert(mini, "bench-swe-bench-verified-mini-1788398099".to_string());
+        rooms.insert(academy, crate::persona::airc_runtime::CITIZEN_COMMONS_ROOM.to_string());
+        assert_eq!(landing_room(&rooms), Some(academy.to_string()));
+        rooms.remove(&academy);
+        assert_eq!(landing_room(&rooms), Some(mini.to_string()), "no academy → the first room, never None");
+        assert_eq!(landing_room(&RoomSet::new()), None);
     }
 }

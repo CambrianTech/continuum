@@ -1,4 +1,5 @@
 #!/bin/bash
+set -o pipefail  # a failing command in a pipeline must not read as success (card aad30dee)
 
 # Modular Categorized Test Runner
 # Can be used by any test command to get consistent categorized output

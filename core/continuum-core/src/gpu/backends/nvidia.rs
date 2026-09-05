@@ -202,6 +202,15 @@ fn sum_process_bytes_for_pid(stdout: &str, our_pid: u32) -> u64 {
 
 // ─── subprocess shells (the only impure surface) ───────────────────────
 
+/// Upper bound on any `nvidia-smi` invocation from this monitor (#3733's class).
+///
+/// Matches `gpu::memory_manager::GPU_PROBE_TIMEOUT` and #3719's serving probe
+/// deliberately: one number for "how long may a driver query take before we
+/// stop waiting on it", so a host that is slow in one place is not judged by
+/// three different clocks. Long enough for a cold driver query on a loaded box,
+/// short enough that a wedged one does not look like a hang.
+const NVIDIA_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 const QUERY_GPU_ARGS: [&str; 2] = [
     "--query-gpu=memory.free,memory.total,utilization.gpu,temperature.gpu,power.draw",
     "--format=csv,noheader,nounits",
@@ -211,28 +220,46 @@ const QUERY_GPU_ARGS: [&str; 2] = [
 /// `detect_cuda()`'s blocking `std::process::Command` shape so `new()` can
 /// decide "is this an NVIDIA host" before committing a daemon task.
 fn probe_blocking() -> Option<(String, SmiReading)> {
-    use std::process::Command;
-    let out = Command::new("nvidia-smi")
-        .args(QUERY_GPU_ARGS)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8(out.stdout).ok()?;
+    // BOUNDED (#3733's class, second pass). This runs from `NvidiaMonitor::new`
+    // → `gpu::monitor::detect()`, which the module CONSTRUCTION path reaches —
+    // so an unbounded wait here does not degrade GPU telemetry, it stalls boot
+    // before the IPC socket exists, exactly as the unbounded `detect_cuda`
+    // probe did. #3733 bounded that one call and left these; a hung nvidia-smi
+    // is ordinary on Windows (driver mid-recovery, a WDDM/TCC transition,
+    // another process holding the driver, an ECC query on a busy card), and
+    // BigMama measured a 209 s serving constructor on a CUDA host.
+    //
+    // A probe that cannot answer is NOT a host without a GPU — but at this seam
+    // both mean "do not commit a daemon task", so both return None. The probe!
+    // is what keeps them distinguishable to a reader of the boot log.
+    let probed = crate::system_resources::bounded_command::probe(
+        "nvidia-smi",
+        &QUERY_GPU_ARGS,
+        NVIDIA_PROBE_TIMEOUT,
+    );
+    crate::probe!(
+        class = "boot.gpu_detect",
+        backend = "nvidia",
+        stage = "monitor_probe",
+        outcome = probed.outcome(),
+        "NvidiaMonitor construction probe (bounded; an unbounded one stalls boot)"
+    );
+    let stdout = probed.stdout_if_ok()?;
     let line = stdout.lines().next()?;
     let sample = parse_gpu_csv_line(line)?;
 
     // Device name via a separate column query (kept out of the numeric
     // line so a name with a comma can't shift the CSV columns).
-    let name = Command::new("nvidia-smi")
-        .args(["--query-gpu=name", "--format=csv,noheader"])
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
+    let named = crate::system_resources::bounded_command::probe(
+        "nvidia-smi",
+        &["--query-gpu=name", "--format=csv,noheader"],
+        NVIDIA_PROBE_TIMEOUT,
+    );
+    let name = named
+        .stdout_if_ok()
         .and_then(|s| s.lines().next().map(|l| l.trim().to_string()))
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "NVIDIA GPU".to_string());
+        .unwrap_or_else(|| "NVIDIA GPU".to_string()); // unwrap_or_else: the card answered numbers but not its name — a nameless GPU still serves
 
     Some((name, sample))
 }
@@ -240,11 +267,22 @@ fn probe_blocking() -> Option<(String, SmiReading)> {
 /// Async per-tick GPU query (off the reactor — never blocks a runtime
 /// thread). `None` on any failure so the tick keeps the last-good atomics.
 async fn query_gpu() -> Option<SmiReading> {
-    let out = tokio::process::Command::new("nvidia-smi")
-        .args(QUERY_GPU_ARGS)
-        .output()
-        .await
-        .ok()?;
+    // BOUNDED: this is a per-TICK query, so an unbounded await does not stall
+    // boot — it parks the monitor task forever on the first hang and the
+    // atomics silently freeze at their last-good values. Stale telemetry that
+    // reports itself as current is the more expensive failure here, because the
+    // scheduler keeps placing lanes against numbers that stopped moving.
+    // `tokio::time::timeout` is the right tool INSIDE the runtime; the
+    // construction probe above is blocking and uses the sync helper instead.
+    let out = tokio::time::timeout(
+        NVIDIA_PROBE_TIMEOUT,
+        tokio::process::Command::new("nvidia-smi")
+            .args(QUERY_GPU_ARGS)
+            .output(),
+    )
+    .await
+    .ok()? // timeout elapsed: keep the last-good atomics, same contract as any other failure
+    .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -254,14 +292,20 @@ async fn query_gpu() -> Option<SmiReading> {
 
 /// Async per-tick process-VRAM query. Sums compute-apps owned by our PID.
 async fn query_process_bytes() -> Option<u64> {
-    let out = tokio::process::Command::new("nvidia-smi")
-        .args([
-            "--query-compute-apps=pid,used_memory",
-            "--format=csv,noheader,nounits",
-        ])
-        .output()
-        .await
-        .ok()?;
+    // BOUNDED for the same reason as `query_gpu` above: a per-tick await with
+    // no ceiling parks the task on the first hang and freezes the reading.
+    let out = tokio::time::timeout(
+        NVIDIA_PROBE_TIMEOUT,
+        tokio::process::Command::new("nvidia-smi")
+            .args([
+                "--query-compute-apps=pid,used_memory",
+                "--format=csv,noheader,nounits",
+            ])
+            .output(),
+    )
+    .await
+    .ok()? // timeout elapsed: no reading this tick, last-good stands
+    .ok()?;
     if !out.status.success() {
         return None;
     }

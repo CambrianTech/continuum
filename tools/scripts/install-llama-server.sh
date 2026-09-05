@@ -94,6 +94,33 @@ fi
 # idempotency check and every downstream use.
 INSTALL_BIN="${INSTALL_BIN}${EXE}"
 
+# RECORD THE PLACEMENT DECISION WHERE THE CORE READS IT. The core's main lanes read
+# CONTINUUM_SERVING_PLACEMENT from ~/.continuum/config.env (#3740): "cpu" pins every lane
+# to the CPU and the backend receipt accepts a GPU-less server BY PLAN; anything else is
+# the GPU and the receipt refuses a server that loads no GPU backend. The decision is
+# made HERE, once, next to the build that implements it — an Intel Mac (Metal OFF, #3729)
+# is the case: BigMama's review of #3740 — "a fix that needs a human to edit a file is
+# not a fix"; IntelMac had written the key by hand an hour earlier and could not see it.
+# Replace-or-append so re-running install is idempotent and other keys survive.
+config_env_upsert() {
+  local key="$1" value="$2" file="$HOME/.continuum/config.env"
+  mkdir -p "$HOME/.continuum"
+  touch "$file"
+  if grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$file"; then
+    local tmp; tmp="$(mktemp)"
+    sed -E "s|^[[:space:]]*${key}[[:space:]]*=.*|${key}=${value}|" "$file" > "$tmp" && mv "$tmp" "$file"
+  else
+    printf '%s=%s\n' "$key" "$value" >> "$file"
+  fi
+}
+if [ "$BACKEND" = "cpu" ]; then
+  config_env_upsert CONTINUUM_SERVING_PLACEMENT cpu
+  echo "serving placement: cpu (backend=$BACKEND) — recorded in ~/.continuum/config.env"
+else
+  config_env_upsert CONTINUUM_SERVING_PLACEMENT gpu
+  echo "serving placement: gpu (backend=$BACKEND) — recorded in ~/.continuum/config.env"
+fi
+
 STAMP_WANT="$SUBMODULE_HEAD:$BACKEND"
 
 # ── idempotency ──────────────────────────────────────────────────────

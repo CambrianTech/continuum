@@ -15,6 +15,7 @@
 # (docs/infrastructure/PR891-E2E-VALIDATION.md).
 
 set -u  # unset vars are errors; deliberately NOT set -e (we want failures
+set -o pipefail  # a failing command in a pipeline must not read as success (card aad30dee)
         # to be caught + reported, not abort the whole run)
 
 # Resolve script dir so we can source the library regardless of cwd.

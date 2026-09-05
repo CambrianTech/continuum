@@ -365,6 +365,16 @@ pub(crate) async fn consume_sse_stream(
                     if started {
                         // Started-then-stopped is per-slot evidence about OUR
                         // generation — always counts toward the relaunch threshold.
+                        // Every count gets a row: 2026-09-05 four of these relaunched
+                        // a lane (12 citizens re-prefilled cold) with nothing naming
+                        // which generation or why (absence-read-as-a-value class).
+                        crate::probe!(
+                            class = "inference.decode.failed",
+                            kind = "started_then_stopped",
+                            name = %cfg.name,
+                            idle_secs = idle.as_secs(),
+                            "generation started then stopped past the idle budget — counted toward relaunch"
+                        );
                         crate::inference::llama_server::note_real_decode_failure();
                     } else {
                         // Never-started is ambiguous: dead backend vs oversubscribed
@@ -380,6 +390,14 @@ pub(crate) async fn consume_sse_stream(
                             idle.as_millis() as u64,
                         ) {
                             NeverStartedClass::WedgeEvidence => {
+                                crate::probe!(
+                                    class = "inference.decode.failed",
+                                    kind = "never_started_wedge_evidence",
+                                    name = %cfg.name,
+                                    idle_secs = idle.as_secs(),
+                                    ms_since_real_work = crate::inference::llama_server::ms_since_real_work(),
+                                    "generation never started and the lane delivered nothing to anyone meanwhile — counted toward relaunch"
+                                );
                                 crate::inference::llama_server::note_real_decode_failure();
                             }
                             NeverStartedClass::Starved => {
@@ -414,6 +432,13 @@ pub(crate) async fn consume_sse_stream(
             })?;
         if last_progress.elapsed() >= idle {
             if local_lane {
+                crate::probe!(
+                    class = "inference.decode.failed",
+                    kind = "keepalive_masked_no_progress",
+                    name = %cfg.name,
+                    idle_secs = idle.as_secs(),
+                    "stream carried bytes but neither prefill nor decode advanced — counted toward relaunch"
+                );
                 crate::inference::llama_server::note_real_decode_failure();
             }
             return Err(format!(
@@ -429,6 +454,13 @@ pub(crate) async fn consume_sse_stream(
         };
         let bytes = chunk.map_err(|e| {
             if local_lane {
+                crate::probe!(
+                    class = "inference.decode.failed",
+                    kind = "stream_read_error",
+                    name = %cfg.name,
+                    error = %e,
+                    "stream read error mid-generation — counted toward relaunch"
+                );
                 crate::inference::llama_server::note_real_decode_failure();
             }
             format!("{}: stream read error: {e}", cfg.name)

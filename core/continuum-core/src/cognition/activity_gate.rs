@@ -138,6 +138,17 @@ fn gate() -> &'static Gate {
 
 /// Subscribe to the gate — the ONE way background work learns what the
 /// organism is doing. Parks cheaply; no consumer ever polls.
+/// Publish a snapshot to every subscriber AND store it for late-comers. `send` would
+/// return Err and DROP the value when no receiver is alive (the constructor's own
+/// receiver is dropped on purpose), which left the stored state at boot's `Active`
+/// forever: `prev` read Active every tick, `next` computed Bored, and the "state
+/// changed" probe fired once a second for a change that never happened (BigMama,
+/// 2026-09-05, 120 identical lines in 2 minutes). `send_replace` stores regardless —
+/// the same shape the serving snapshot watch uses.
+fn publish(snapshot: ActivitySnapshot) {
+    gate().tx.send_replace(snapshot);
+}
+
 pub fn subscribe() -> watch::Receiver<ActivitySnapshot> {
     gate().tx.subscribe()
 }
@@ -231,7 +242,7 @@ pub fn spawn_activity_gate() {
             // Publish on change only (held_ms updates ride the next real change;
             // consumers park on transitions, not on a clock).
             if next != prev {
-                let _ = gate().tx.send(ActivitySnapshot {
+                publish(ActivitySnapshot {
                     state: next,
                     held_ms: now.saturating_sub(state_since),
                 });
@@ -289,7 +300,10 @@ fn set_persona(peer: Uuid, engaged: bool) {
     let tx = persona_tx(peer);
     let cur = *tx.borrow();
     if cur.engaged != engaged {
-        let _ = tx.send(PersonaActivity { engaged, since_ms: now_ms() });
+        // send_replace, never send: the per-persona receiver is not guaranteed alive, and a
+        // `send` with no receiver drops the value — persona_activity() would then read the
+        // boot state forever (the gate-wide channel had exactly this bug, see `publish`).
+        tx.send_replace(PersonaActivity { engaged, since_ms: now_ms() });
     }
 }
 
@@ -413,5 +427,33 @@ mod tests {
             compute_state(false, 1, 0, t0, Some(t0 - long)),
             ActivityState::Active
         );
+    }
+    // what this catches: a published state that nobody is subscribed to must still be
+    // the stored state — otherwise the gate reads Active forever and reports the same
+    // transition every tick (2026-09-05, BigMama's 120 identical activity.gate.state lines).
+    #[test]
+    fn a_publish_with_no_subscriber_is_still_the_current_state() {
+        publish(ActivitySnapshot {
+            state: ActivityState::Bored,
+            held_ms: 7,
+        });
+        assert_eq!(current().state, ActivityState::Bored);
+        assert_eq!(current().held_ms, 7);
+        publish(ActivitySnapshot {
+            state: ActivityState::Active,
+            held_ms: 0,
+        });
+        assert_eq!(current().state, ActivityState::Active);
+    }
+    // what this catches: the per-persona channel has the same dropped-receiver shape as
+    // the gate-wide one — an engaged/idle flip with no subscriber must still be readable.
+    #[test]
+    fn a_persona_flip_with_no_subscriber_is_still_readable() {
+        let peer = Uuid::new_v4();
+        assert!(!persona_activity(peer).engaged);
+        persona_engaged(peer);
+        assert!(persona_activity(peer).engaged);
+        persona_idle(peer);
+        assert!(!persona_activity(peer).engaged);
     }
 }

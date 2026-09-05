@@ -93,6 +93,12 @@ pub enum BackendVerdict {
     /// The device probe did not answer within its bound (backend init hangs): serve on
     /// the CPU and say why — never block the launch, never pretend it is on the GPU.
     ProbeHung,
+    /// The host's serving plan places lanes on the CPU on purpose (an Intel-GPU Mac whose
+    /// server is built with Metal OFF, #3729; Joel's ruling in persona/response.rs: CPU-only
+    /// adapters serve their own personas). A GPU-less server is CORRECT here, never a
+    /// mis-install. The first #3730 refused IntelMac's node because the receipt carried no
+    /// host fact at all (BigMama's read, 2026-09-05).
+    CpuByPlan,
 }
 
 impl BackendVerdict {
@@ -104,12 +110,22 @@ impl BackendVerdict {
             BackendVerdict::Gpu { .. } => "gpu",
             BackendVerdict::Refused { .. } => "refused",
             BackendVerdict::ProbeHung => "cpu",
+            BackendVerdict::CpuByPlan => "cpu",
         }
     }
 }
 
-/// `None` = the probe timed out (no transcript to read).
-pub fn backend_verdict(bin: &str, receipt: Option<&BackendReceipt>) -> BackendVerdict {
+/// `None` = the probe timed out (no transcript to read). `cpu_by_plan` is the lane's
+/// placement decision: when the plan puts this lane on the CPU, the receipt records the
+/// backend and never refuses — the decision was made upstream, by the host's config.
+pub fn backend_verdict(
+    bin: &str,
+    receipt: Option<&BackendReceipt>,
+    cpu_by_plan: bool,
+) -> BackendVerdict {
+    if cpu_by_plan {
+        return BackendVerdict::CpuByPlan;
+    }
     let Some(r) = receipt else {
         return BackendVerdict::ProbeHung;
     };
@@ -144,7 +160,7 @@ mod tests {
         let r = parse_list_devices(m5);
         assert_eq!(r.gpu_devices.len(), 1, "BLAS is not a device: {r:?}");
         assert!(r.load_errors.is_empty());
-        let v = backend_verdict("llama-server", Some(&r));
+        let v = backend_verdict("llama-server", Some(&r), false);
         assert!(matches!(v, BackendVerdict::Gpu { ref device } if device.starts_with("MTL0")));
         assert_eq!(v.backend_label(), "metal");
 
@@ -153,7 +169,7 @@ mod tests {
         let r = parse_list_devices(bigmama);
         assert!(r.gpu_devices.is_empty());
         assert_eq!(r.load_errors.len(), 2);
-        match backend_verdict("llama-server.exe", Some(&r)) {
+        match backend_verdict("llama-server.exe", Some(&r), false) {
             BackendVerdict::Refused { reason } => {
                 assert!(reason.contains("ggml-cuda.dll"), "the refusal quotes the server's own error: {reason}");
                 assert!(reason.contains("GGML_CUDA=ON"));
@@ -167,8 +183,8 @@ mod tests {
     #[test]
     fn cuda_line_is_cuda_and_a_hung_probe_degrades_to_cpu() {
         let r = parse_list_devices("Available devices:\n  CUDA0: NVIDIA GeForce RTX 5090 (32607 MiB, 31900 MiB free)\n");
-        assert_eq!(backend_verdict("x", Some(&r)).backend_label(), "cuda");
-        let hung = backend_verdict("x", None);
+        assert_eq!(backend_verdict("x", Some(&r), false).backend_label(), "cuda");
+        let hung = backend_verdict("x", None, false);
         assert_eq!(hung, BackendVerdict::ProbeHung);
         assert_eq!(hung.backend_label(), "cpu");
     }
@@ -185,6 +201,16 @@ mod tests {
     #[test]
     fn a_silent_cpu_only_build_is_refused_too() {
         let r = parse_list_devices("Available devices:\n  CPU: (0 MiB, 0 MiB free)\n");
-        assert!(matches!(backend_verdict("x", Some(&r)), BackendVerdict::Refused { .. }));
+        assert!(matches!(backend_verdict("x", Some(&r), false), BackendVerdict::Refused { .. }));
+    }
+    // what this catches: a host whose plan places lanes on the CPU (Metal OFF on an
+    // Intel-GPU Mac, #3729) must never be refused for a GPU-less server — the first
+    // #3730 refused IntelMac's node on exactly this transcript.
+    #[test]
+    fn a_cpu_placement_accepts_a_gpu_less_server_by_plan() {
+        let r = parse_list_devices("Available devices:\n  CPU: (0 MiB, 0 MiB free)\n  BLAS: Accelerate (0 MiB, 0 MiB free)\n");
+        assert_eq!(backend_verdict("llama-server", Some(&r), true), BackendVerdict::CpuByPlan);
+        assert_eq!(backend_verdict("llama-server", None, true), BackendVerdict::CpuByPlan);
+        assert_eq!(backend_verdict("llama-server", Some(&r), true).backend_label(), "cpu");
     }
 }
