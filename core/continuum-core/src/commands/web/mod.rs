@@ -203,8 +203,11 @@ fn select_provider(adapter: Option<&str>) -> Result<Box<dyn WebSearchProvider>, 
                          A Chromium-based browser is EXPECTED on every machine — if one \
                          is installed somewhere non-standard (Brave, Edge, Vivaldi, \
                          Opera), point CONTINUUM_BROWSER_BIN at its binary; otherwise \
-                         install Chromium or Google Chrome. A keyed fallback also works: \
-                         BRAVE_API_KEY=<key> in ~/.continuum/config.env (free key at \
+                         install Chromium or Google Chrome. The keyed ADAPTER is the \
+                         other option — not a fallback, which this system forbids: it \
+                         runs only when explicitly configured, never as a silent \
+                         substitution. Set BRAVE_API_KEY=<key> in \
+                         ~/.continuum/config.env (free key at \
                          https://brave.com/search/api/).",
                         diagnosis.join("; ")
                     ))
