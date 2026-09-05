@@ -733,6 +733,37 @@ fn is_local_node(state: &Arc<GridState>, node_id: &str) -> bool {
 
 // ── Helper functions for job management ─────────────────────────────────
 
+/// `system_profiler`'s VRAM string ("1536 MB", "8 GB") in MEGABYTES.
+///
+/// READS the unit rather than assuming it. The previous code took the leading
+/// number and multiplied by 1024 unconditionally — correct for Apple Silicon,
+/// which reports GB, and wrong by exactly 1024x on an Intel Mac, which reports
+/// MB. Measured 2026-09-05: `spdisplays_vram_shared` = "1536 MB" on an Intel
+/// UHD 630 became `memoryTotalMb: 1572864`, so the weakest node on the grid
+/// advertised 1.5 TB of VRAM.
+///
+/// Direction of the error is why this is worth a named function: a capability
+/// report that OVERSTATES makes a node claim work it cannot do, and the failure
+/// lands far from the cause — a lane dying on a box that "had plenty of memory".
+/// Understating only costs throughput. So an unrecognised unit returns `None`
+/// (surfacing as 0 / unknown) rather than guessing a multiplier
+/// (`[[no-fallbacks-ever]]`): silence is honest, a guess is a confident lie.
+///
+/// Deliberately NOT `#[cfg(target_os = "macos")]` even though only the macOS
+/// arm calls it: the parsing is platform-independent, so leaving it compiled
+/// everywhere lets the Linux and Windows CI runners execute its tests too. A
+/// macOS-only unit would be verified by exactly one runner.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn vram_string_to_mb(s: &str) -> Option<u32> {
+    let mut parts = s.split_whitespace();
+    let value: u32 = parts.next()?.parse().ok()?;
+    match parts.next()?.to_ascii_uppercase().as_str() {
+        u if u.starts_with("GB") => value.checked_mul(1024),
+        u if u.starts_with("MB") => Some(value),
+        _ => None,
+    }
+}
+
 fn query_gpu_info() -> Value {
     // NVIDIA: Try WSL2 path first, then standard
     let nvidia_smi = if std::path::Path::new("/usr/lib/wsl/lib/nvidia-smi").exists() {
@@ -792,9 +823,7 @@ fn query_gpu_info() -> Value {
                             .get("spdisplays_vram_shared")
                             .or_else(|| gpu.get("spdisplays_vram"))
                             .and_then(|v| v.as_str())
-                            .and_then(|s| s.split_whitespace().next())
-                            .and_then(|s| s.parse::<u32>().ok())
-                            .map(|gb| gb * 1024)
+                            .and_then(vram_string_to_mb)
                             .unwrap_or(0);
                         return json!({
                             "name": name,
@@ -1397,5 +1426,50 @@ pub async fn handle_route(state: &Arc<GridState>, params: Value) -> Result<Comma
             "nodeName": node.node_name,
             "reason": reason,
         }))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// what this catches: a capability report that OVERSTATES what this node has.
+    ///
+    /// The producer took `system_profiler`'s leading number and multiplied by 1024
+    /// unconditionally — right for Apple Silicon (which reports GB), wrong by exactly
+    /// 1024x on an Intel Mac (which reports MB). Measured 2026-09-05: "1536 MB" on an
+    /// Intel UHD 630 was published as `memoryTotalMb: 1572864`, so the weakest node on
+    /// the grid advertised 1.5 TB of VRAM — more than every other GPU combined, from a
+    /// box that could not run a decode lane at all.
+    ///
+    /// Both units are asserted because fixing only the MB case by flipping the
+    /// multiplier would silently break every Apple Silicon node instead.
+    #[test]
+    fn vram_units_are_read_not_assumed() {
+        assert_eq!(
+            vram_string_to_mb("1536 MB"),
+            Some(1536),
+            "the Intel Mac case: MB must stay MB, not become 1572864"
+        );
+        assert_eq!(
+            vram_string_to_mb("8 GB"),
+            Some(8192),
+            "the Apple Silicon case: GB must still convert"
+        );
+    }
+
+    /// what this catches: guessing a multiplier for a unit we do not recognise.
+    ///
+    /// `None` surfaces as 0 / unknown, which UNDERSTATES. That asymmetry is the whole
+    /// point: understating costs throughput, overstating makes a node claim work it
+    /// cannot do and the failure lands far from the cause, on a box that "had plenty
+    /// of memory". Per `[[no-fallbacks-ever]]` — silence is honest, a guess is a
+    /// confident lie.
+    #[test]
+    fn an_unknown_unit_reports_nothing_rather_than_guessing() {
+        assert_eq!(vram_string_to_mb("1536"), None, "no unit is not an implied unit");
+        assert_eq!(vram_string_to_mb("4 TB"), None, "an unhandled unit must not be assumed");
+        assert_eq!(vram_string_to_mb(""), None);
+        assert_eq!(vram_string_to_mb("lots MB"), None, "a non-numeric value is not a size");
     }
 }

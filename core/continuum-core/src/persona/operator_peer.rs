@@ -123,22 +123,47 @@ pub async fn ensure_operator_peer(
             // invisible precisely because nothing ever stated the resolved room;
             // it had to be reconstructed from card_created room ids across two
             // thousand events on another machine. One probe closes that.
-            match rt
-                .airc()
-                .current_room_landing_in(crate::persona::airc_runtime::CITIZEN_COMMONS_ROOM)
-                .await
-            {
-                Ok(room) => crate::probe!(
+            //
+            // `peek_default_room`, NEVER `current_room_landing_in`. That is not
+            // a style preference — the landing variant MUTATES when no default
+            // exists yet (airc.rs: it subscribes, `set_default`s, saves,
+            // publishes presence, and emits an identity card). Used here it
+            // would fire on exactly the path where the joins above FAILED, and
+            // would then quietly perform the very subscribe that failed and
+            // report a healthy room — a probe manufacturing the state it claims
+            // to observe, which is the worst possible reading for the one line
+            // whose whole job is to be trustworthy about where cards go.
+            //
+            // airc already names this distinction and built the read-only door:
+            // `peek_default_room` exists as the #1217 regression fix, after
+            // `airc network` was caught silently subscribing to #general via
+            // `current_room` while claiming to be an inspection command. Same
+            // trap, same module, one caller later. (Found in review by IntelMac
+            // on the merged #3716 — the mutation was mine.)
+            //
+            // Three outcomes, three DIFFERENT facts, none collapsed: a room, no
+            // default at all, or an unreadable subscription set.
+            match rt.airc().peek_default_room().await {
+                Ok(Some(room)) => crate::probe!(
                     class = "operator.peer.room",
                     room = %room.name,
                     channel = %room.channel,
                     commons = %crate::persona::airc_runtime::CITIZEN_COMMONS_ROOM,
                     "operator self-peer default room — operator cards and room-scoped verbs land HERE"
                 ),
+                // No default AFTER both joins ran means both failed. Loud, and
+                // specifically NOT the same row as a successful academy landing:
+                // the human has no room, so operator cards have nowhere
+                // predictable to go and the probes above say why.
+                Ok(None) => crate::probe!(
+                    class = "operator.peer.room_unset",
+                    commons = %crate::persona::airc_runtime::CITIZEN_COMMONS_ROOM,
+                    "operator self-peer has NO default room after subscribe+join — both joins failed; operator cards have no predictable board"
+                ),
                 Err(e) => crate::probe!(
                     class = "operator.peer.room_unresolved",
                     error = %e.to_string(),
-                    "operator self-peer default room could not be read — where operator cards land is UNKNOWN, not general"
+                    "operator self-peer default room could not be READ — where operator cards land is UNKNOWN, which is not the same as unset"
                 ),
             }
             let _ = OPERATOR.set(rt);
