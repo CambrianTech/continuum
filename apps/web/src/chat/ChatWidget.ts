@@ -799,6 +799,8 @@ export class ChatWidget extends LitElement {
     this.removeEventListener(NAV_TAB_CLOSE, this.onNavTabClose);
     this.removeEventListener(LIVE_FACE_TOGGLE, this.onLiveFaceToggle);
     this.removeEventListener(LIVE_CAPTIONS_TOGGLE, this.onLiveCaptionsToggle);
+    this.removeEventListener(LIVE_TILE_PIN, this.onLiveTilePin);
+    this.removeEventListener('keydown', this.onLiveKeydown);
     super.disconnectedCallback();
   }
 

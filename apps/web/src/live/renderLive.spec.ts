@@ -19,8 +19,24 @@ interface LitTemplateLike {
 function isTemplateLike(node: object): node is LitTemplateLike {
   return 'strings' in node && 'values' in node;
 }
+/** Lit's `repeat(items, key, template)` returns a DirectiveResult whose
+ *  `values` are [items, keyFn, template]; the grid renders every tile through
+ *  it (keyed tiles keep <video> elements attached across reorders), so the
+ *  DOM-free walk expands it the way the directive would. */
+interface DirectiveResultLike {
+  readonly values: readonly unknown[];
+}
+function isRepeatLike(node: object): node is DirectiveResultLike {
+  return '_$litDirective$' in node && 'values' in node;
+}
 function flatten(node: unknown, out: string[] = []): string[] {
   if (typeof node === 'string') out.push(node);
+  else if (typeof node === 'object' && node !== null && isRepeatLike(node)) {
+    const [items, keyOrTemplate, template] = node.values;
+    const tpl = (template ?? keyOrTemplate) as (item: unknown, i: number) => unknown;
+    if (Array.isArray(items) && typeof tpl === 'function')
+      items.forEach((item, i) => flatten(tpl(item, i), out));
+  }
   else if (typeof node === 'number') out.push(String(node));
   else if (Array.isArray(node)) for (const child of node as readonly unknown[]) flatten(child, out);
   else if (typeof node === 'object' && node !== null && isTemplateLike(node)) {
@@ -87,15 +103,19 @@ describe('renderLive (Lit)', () => {
   });
 });
 
-// what this catches: the composition rule — TikTok's two canonical layouts
-// driven by the REAL token rail: someone speaking ⇒ PANEL (speaker takes the
-// stage, everyone else in the rail), nobody speaking ⇒ GRID of equals.
-// Regression here = the stage stops following actual speech.
-it('composes panel when someone speaks, grid when nobody does', () => {
+// what this catches: the composition rule as Slack/Teams/Discord do it — GRID of
+// equals by default, speaking highlighted IN PLACE (data-speaking on the tile),
+// PANEL (stage + rail) ONLY when the reader pinned a tile by clicking. Staging on
+// the speaking flag was Zoom's speaker view by accident: one persona's head
+// filled the call while the human heard nothing (2026-09-05).
+it('composes grid while someone speaks (highlight in place) and panel only on a pin', () => {
   const speaking = flatten(renderLive(body())).join('');
-  expect(speaking).toContain('data-composition="panel"');
-  expect(speaking).toContain('live-stage');
-  expect(speaking).toContain('live-rail');
+  expect(speaking).toContain('data-composition="grid"');
+  expect(speaking).not.toContain('live-stage');
+  const pinned = flatten(renderLive(body({ pinnedId: 'asha' }))).join('');
+  expect(pinned).toContain('data-composition="panel"');
+  expect(pinned).toContain('live-stage');
+  expect(pinned).toContain('live-rail');
   const idle = flatten(
     renderLive(
       body({
