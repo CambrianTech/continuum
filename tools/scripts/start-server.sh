@@ -24,7 +24,6 @@
 #                           `airc room`.
 
 set -e
-set -o pipefail  # a failing command in a pipeline must not read as success (card aad30dee)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Repo root is two up from tools/scripts/. (Was `dirname SCRIPT_DIR`, which
 # resolved to tools/ — stale since this script moved under tools/scripts/.)

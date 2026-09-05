@@ -3,7 +3,6 @@
 # Run independently: bash scripts/install-tailscale.sh
 # Called by install.sh but testable on its own.
 set -e
-set -o pipefail  # a failing command in a pipeline must not read as success (card aad30dee)
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'

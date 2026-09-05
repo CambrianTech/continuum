@@ -3,7 +3,6 @@
 # Run this once to enable JTAG tools in Claude Code
 
 set -e
-set -o pipefail  # a failing command in a pipeline must not read as success (card aad30dee)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JTAG_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"

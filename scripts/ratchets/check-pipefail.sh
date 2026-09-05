@@ -26,9 +26,33 @@
 # instantly on a machine nobody can reproduce. If nounset is wanted it is a
 # per-file audit with its own ratchet.
 #
-# Ratchet semantics: the count of offenders may never RISE. It is currently
-# zero and should stay there; the baseline exists so a legitimate exception
-# can be recorded deliberately rather than by accident.
+# Ratchet semantics: the count of offenders may never RISE. It is NOT zero, and
+# the reason is the most important thing in this file.
+#
+# The first version of this gate swept `set -o pipefail` into 21 scripts at
+# once and baselined at 0. That sweep BROKE THE DEPLOY PATH. In a script that
+# already runs `set -e`, pipefail turns an expected-empty pipeline into a fatal
+# error, and `start-server.sh` has several: the airc-socket derivation returns
+# nothing when no daemon is running (a FRESH INSTALL), and the lane-adopt probe
+# fails when a pid dies mid-race. Both were followed by `if [ -n "$X" ]` — the
+# empty case was already handled, and pipefail killed the script before it got
+# there. Measured 2026-09-05; a fleet deploy was stopped minutes before it ran.
+#
+# A static pass then found ~28 more command substitutions containing pipes
+# across the `set -e` scripts, each now a potential silent exit. Two patches
+# would not have covered them.
+#
+# So pipefail has been REVERTED from every script that already sets `-e`, and
+# this ratchet is baselined at the resulting real count. Those scripts are the
+# debt. The flag goes back one script at a time, with each pipe's empty case
+# actually EXERCISED — not parsed, not eyeballed — and the baseline drops by
+# one. Ratcheting down deliberately is the whole point; a green 0 bought by a
+# sweep was a lie that cost a deploy.
+#
+# The general lesson, paid for twice in one night: a mechanical sweep of a
+# behaviour-changing flag is not hygiene. It is a behaviour change to every
+# file it touches, and `bash -n` cannot see it because parsing is syntax and
+# this is runtime.
 
 set -euo pipefail
 
