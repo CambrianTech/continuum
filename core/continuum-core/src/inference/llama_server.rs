@@ -3003,12 +3003,29 @@ impl LlamaServerControl for LlamaServerProcess {
         // slow — BigMama's 5090 hosted one for a day. Refuse it at the door, on
         // every machine, with the rebuild instruction; the version line is the
         // receipt either way.
-        let version = tokio::process::Command::new(&self.bin)
-            .arg("--version")
-            .output()
-            .await
-            .map(|o| format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)))
-            .unwrap_or_default(); // unwrap_or: a binary that cannot answer --version fails at spawn below with its own error
+        // BOUNDED: on IntelMac's box `llama-server --version` printed nothing,
+        // went to state U and survived kill -9 (2026-09-05) — an unbounded await
+        // here would have blocked every lane launch on that node forever. A
+        // probe that times out neither verifies nor refuses; it says so and the
+        // launch proceeds (the spawn below has its own failure shape).
+        let version = match tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            tokio::process::Command::new(&self.bin).arg("--version").output(),
+        )
+        .await
+        {
+            Ok(out) => out
+                .map(|o| format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)))
+                .unwrap_or_default(), // unwrap_or: a binary that cannot answer --version fails at spawn below with its own error
+            Err(_) => {
+                crate::probe!(
+                    class = "serving.version_probe_timeout",
+                    bin = %self.bin,
+                    "`--version` did not answer in 10 s — neither verified nor refused; launching anyway"
+                );
+                String::new()
+            }
+        };
         crate::probe!(
             class = "serving.server_version",
             bin = %self.bin,
