@@ -423,3 +423,6 @@ continuum-client = { path = "../../client/continuum-client", features = ["test-f
 airc-test-fixtures = { path = "../airc-test-fixtures" }
 airc-protocol = { workspace = true }
 futures = "0.3"
+# Voice processing dependencies
+[features]
+voice = ["pocket-tts"]
