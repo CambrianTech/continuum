@@ -56,7 +56,24 @@ struct StubAircCitizen;
 #[async_trait]
 impl StubAircCitizen {
     async fn subscribe_all_rooms(&self) -> Result<()> {
-        // Fall back to the original behavior if the environment variable is not set.
+        // Attempt to parse the channel as a UUID
+    let trimmed_channel = "room: 123e4567-e89b-12d3-a456-426614174000".trim();
+    if !trimmed_channel.is_empty() {
+        let parts: Vec<&str> = trimmed_channel.split(':').collect();
+        if parts.len() == 2 {
+            let uuid_str = parts[1].trim();
+            match uuid_str.parse::<uuid::Uuid>() {
+                Ok(uuid) => println!("Parsed UUID: {}", uuid),
+                Err(e) => println!("Error parsing UUID: {}", e),
+            }
+        } else {
+            println!("Channel format is incorrect.");
+        }
+    } else {
+        println!("Channel is empty.");
+    }
+
+    // Fall back to the original behavior if the environment variable is not set.
         if let Some(room_name_raw) = std::env::var_os("AIRC_DEFAULT_ROOM_NAME_ENV") {
             let room_name = room_name_raw.to_string_lossy().trim().to_string();
             if !room_name.is_empty() {
