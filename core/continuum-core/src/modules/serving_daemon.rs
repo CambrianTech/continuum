@@ -1902,7 +1902,25 @@ impl ServingDaemonModule {
                     // a design call on a guard written from an incident, so it is
                     // surfaced for the humans who own that history rather than
                     // quietly re-tuned by me (#332/#333).
-                    if live_space < plan_space {
+                    // CADENCE, not content. This probe exists because the SILENCE was
+                    // the defect, so it must keep speaking — but at one line per 5 s
+                    // tick it becomes the defect at the other end: measured on BigMama
+                    // 2026-09-05, 192 consecutive identical copies, and a persona's
+                    // `first_token` had to be dug out from underneath them. A chatty
+                    // floor evicts the signal from every bounded view exactly when the
+                    // lane is interesting — the same class that buried a wedge
+                    // declaration and produced a false retraction the same night.
+                    //
+                    // So: every ENTRY into the declined state is logged (streak == 1),
+                    // and it keeps saying so once a minute after that. Nothing is
+                    // suppressed that a reader needs — `streak` already carries the
+                    // duration, so the 47th copy adds no information the 1st lacked.
+                    // The 2x rule and this decision are untouched; only how often the
+                    // same unchanged verdict repeats itself.
+                    const DECLINE_LOG_EVERY_TICKS: u32 = 12; // 5 s ticks -> ~1/min
+                    let first_or_periodic =
+                        streak <= 1 || streak % DECLINE_LOG_EVERY_TICKS == 0;
+                    if live_space < plan_space && first_or_periodic {
                         crate::probe!(
                             class = "serving.reconcile.window",
                             decision = "declined",
