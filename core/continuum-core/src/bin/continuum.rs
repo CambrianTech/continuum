@@ -1346,10 +1346,17 @@ fn socket_from_core_argv(argv: &[String]) -> Option<String> {
 /// Uses the same `sysinfo` command-line refresh as [`processes_with_cmdline`], so it works
 /// on every platform rather than shelling out to a Unix-only tool.
 fn running_core_sockets_for(pids: &[i32]) -> Vec<(i32, String)> {
-    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    // `Some(&pids)`, never `All`: reading a command line costs a syscall PER PROCESS
+    // (`KERN_PROCARGS2` / `/proc/<pid>/cmdline`), and `describe_running_core` runs on
+    // `deploy-verify`'s SUCCESS path — where the string it builds is then discarded.
+    // Refreshing the whole table to keep a handful of pids we were already handed is
+    // backwards; the same idiom is used elsewhere in this file. It also makes the
+    // membership filter unnecessary: the refresh IS the filter.
+    let wanted: Vec<Pid> = pids.iter().map(|p| Pid::from(*p as usize)).collect();
     let mut sys = System::new();
     sys.refresh_processes_specifics(
-        ProcessesToUpdate::All,
+        ProcessesToUpdate::Some(&wanted),
         true,
         ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
     );
@@ -2328,6 +2335,26 @@ mod tests {
                 socket_from_core_argv(&argv(&["continuum-core-server", "--mode", "fail-fast"])),
                 None,
                 "the space form's value is a boot mode, not an unknown socket"
+            );
+        }
+
+        /// what this catches: reporting a socket for a core that never bound one. A
+        /// malformed `--mode` makes `main.rs` print its error and `exit(2)` BEFORE any
+        /// socket is resolved, so such a process provably bound nothing — "unknown" is
+        /// the literally correct answer, not a swallowed error. The pid is never hidden
+        /// by this: the refusal lists it from `running_core_pids` either way. Only the
+        /// unprovable socket claim is withheld, which is this helper's whole contract.
+        #[test]
+        fn a_malformed_mode_reports_unknown_because_that_core_bound_nothing() {
+            assert_eq!(
+                socket_from_core_argv(&argv(&[
+                    "continuum-core-server",
+                    "--mode",
+                    "not-a-real-mode",
+                    "/tmp/a.sock",
+                ])),
+                None,
+                "a core that exits on a bad --mode never reached socket resolution"
             );
         }
 
