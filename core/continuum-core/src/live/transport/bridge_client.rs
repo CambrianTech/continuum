@@ -73,6 +73,8 @@ pub struct LiveKitAgentManager {
     media_dropped: Arc<AtomicU64>,
     /// Enqueue-side per-second tally (probe summary, never a row per frame).
     enqueue_tally: Mutex<super::pump_tally::PumpTally>,
+    /// Drop-side per-second tally (same rule: a summary, never a row per frame).
+    drop_tally: Mutex<super::pump_tally::PumpTally>,
     /// Bridge socket path.
     bridge_socket_path: String,
     /// LiveKit URL (for logging only — bridge has the actual connection).
@@ -169,6 +171,7 @@ impl LiveKitAgentManager {
             next_out_channel: AtomicU64::new(1),
             media_dropped: Arc::new(AtomicU64::new(0)),
             enqueue_tally: Mutex::new(super::pump_tally::PumpTally::new(std::time::Duration::from_secs(1))),
+            drop_tally: Mutex::new(super::pump_tally::PumpTally::new(std::time::Duration::from_secs(1))),
             bridge_socket_path,
             livekit_url,
             next_request_id: AtomicU64::new(1),
@@ -305,12 +308,19 @@ impl LiveKitAgentManager {
             }
             Err(std::sync::mpsc::TrySendError::Full(_)) => {
                 let n = self.media_dropped.fetch_add(1, Ordering::Relaxed) + 1;
-                crate::probe!(
-                    class = "media.pump.drop",
-                    module = "livekit-bridge",
-                    kind = kind,
-                    dropped_total = n
-                );
+                // One summary row per second, like enqueue/write — a saturated
+                // pump dropped 12,327 frames in eight minutes on 2026-09-05 and
+                // the per-frame rows rotated the voice receipt out of the ledger.
+                if let Some(s) = self.drop_tally.lock().unwrap().record(frame_bytes as u64, 0) { // unwrap: three counters behind the lock; a poisoned tally loses one summary row, never a frame
+                    crate::probe!(
+                        class = "media.pump.drop",
+                        module = "livekit-bridge",
+                        kind = kind,
+                        dropped = s.frames,
+                        dropped_total = n,
+                        span_ms = s.span_ms
+                    );
+                }
                 if n == 1 || n % 32 == 0 {
                     clog_warn!(
                         "🌉 media pump full — {} frames dropped so far (latest: {})",
