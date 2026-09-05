@@ -1,3 +1,4 @@
+//! K3 headroom: 512 MiB for expert placement + 10% for model drift.
 //! ServingDaemonModule — the ever-present ServiceModule that decides, and
 //! continuously re-decides, how THIS host serves persona inference.
 //!
