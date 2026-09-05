@@ -1,0 +1,106 @@
+# Card b2e4a0bb — host detection, on every platform we ship to.
+#
+# THE GAP THIS CLOSES: `carl-install-smoke` is our only install check and it is
+# `runs-on: ubuntu-latest` with no matrix. So the install path is verified on
+# exactly one platform — and in one night (2026-09-05) every detect_host bug
+# found on the other two was invisible to it:
+#
+#   - Windows 11 24H2 REMOVED `wmic`, so the RAM arm fell through and recorded
+#     IC_RAM_MIB=0 on a machine with 64914 MiB. Every downstream tier decision
+#     ran on that zero, silently (#3739).
+#   - The Intel-Mac arm builds llama-server CPU-only because a Metal build hangs
+#     that hardware uninterruptibly — and nothing recorded that as the host's
+#     serving PLAN, so the backend receipt refused a healthy node and advised
+#     reinstalling with Metal, which would have hung it again (#3729 → #3740).
+#   - The Linux/WSL RAM arm still turns an unreadable /proc/meminfo into 0 with
+#     no warning — the same defect as the Windows one, on the platform CI does
+#     run, unnoticed because nothing asserted the value.
+#
+# Each was a detect_host fact being WRONG rather than missing, on a platform its
+# author could not run. Three operators, three boxes, and the shared CI checked
+# the tier none of them installs on.
+#
+# WHY THIS IS NOT A MATRIX ON carl-install-smoke: that job is Docker-based and
+# ~30 minutes. `install-common.sh` is sourceable and `ic_detect_hardware` is a
+# pure probe of the machine it runs on, so the per-platform leg needs no Docker,
+# no images, and no registry auth — seconds, not half an hour. The Docker smoke
+# stays the Linux end-to-end check; this is the cross-platform truth check.
+#
+# The assertions are about SHAPE, not hardware. A CI runner is none of our
+# boxes, and a test expecting an M5 or a 5090 fails for the wrong reason. What
+# must hold everywhere is that the detector produced a determinate answer rather
+# than a silent placeholder — 0 MiB of RAM, an empty GPU kind, an unrecognised
+# platform.
+
+name: host-detect-matrix
+
+on:
+  pull_request:
+    branches: [canary, main]
+    paths:
+      - 'tools/scripts/lib/install-common.sh'
+      - 'tools/scripts/install*.sh'
+      - 'scripts/ci/host-detect-assert.sh'
+      - '.github/workflows/host-detect-matrix.yml'
+  push:
+    branches: [canary, main]
+    # The SAME paths filter on both triggers, deliberately. A push trigger with
+    # no filter fires on every commit and fails on unrelated changes, which is
+    # how ts-persona-forbidden-strings-ratchet went 100/100 red until everyone
+    # learned to ignore its X. A gate people ignore is worse than no gate.
+    paths:
+      - 'tools/scripts/lib/install-common.sh'
+      - 'tools/scripts/install*.sh'
+      - 'scripts/ci/host-detect-assert.sh'
+      - '.github/workflows/host-detect-matrix.yml'
+  workflow_dispatch:
+
+jobs:
+  detect:
+    name: host-detect (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      # Every leg runs even when one fails: the point is to learn what ALL
+      # three platforms report, and fail-fast would hide the second bug behind
+      # the first — which is exactly how these stayed hidden.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # Windows runners have Git Bash, which is the shell `install.sh` actually
+      # runs under on that platform (uname -s reports MINGW64_NT-...). Using it
+      # here means the leg exercises the same branch a real Windows install
+      # takes, not a WSL or PowerShell approximation.
+      - name: Assert host detection
+        shell: bash
+        run: bash scripts/ci/host-detect-assert.sh
+
+      # The gate must be able to FAIL, or it is decoration. This injects the
+      # exact defect that shipped on 24H2 — a RAM arm that records 0 instead of
+      # refusing — and asserts the leg goes red, then restores. Written after
+      # discovering, twice in one night, that a green check can mean the checker
+      # never ran (a crashed linter counted as zero errors; a pipe returned
+      # tail's exit status instead of cargo's).
+      - name: Prove the assertion can fail (mutation)
+        shell: bash
+        run: |
+          set -o pipefail
+          # The defect is injected AFTER detection via a hook in the assert
+          # script, not by patching install-common.sh. Two earlier cuts sed'd
+          # "the RAM line" and each missed Windows, whose arm is a `case` over a
+          # captured variable since #3739 — a mutation that mutates nothing
+          # reports the gate dead, correctly, but the dead thing was the regex.
+          # One injection point every platform converges on cannot miss an arm.
+          if HOST_DETECT_MUTATE_RAM=1 bash scripts/ci/host-detect-assert.sh > /tmp/mutation.log 2>&1; then
+            echo "::error::host-detect-assert did NOT fail with RAM forced to 0 — the gate is dead."
+            cat /tmp/mutation.log
+            exit 1
+          fi
+          grep -E 'MUTATION|FAIL ram' /tmp/mutation.log || true
+          echo "Mutation proof passed: a zero RAM figure turns this leg red."
+          bash scripts/ci/host-detect-assert.sh
