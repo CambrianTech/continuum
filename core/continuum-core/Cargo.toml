@@ -424,5 +424,4 @@ airc-test-fixtures = { path = "../airc-test-fixtures" }
 airc-protocol = { workspace = true }
 futures = "0.3"
 # Voice processing dependencies
-[features]
-voice = ["dep:pocket-tts"]
+features = ["voice"]
