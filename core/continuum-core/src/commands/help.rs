@@ -197,7 +197,24 @@ fn param_shape(spec: &Value, root: &Value) -> (String, Value) {
                 );
             }
         }
-        return (ty.to_string(), json!(format!("<{ty}>")));
+        // A placeholder must be VALID FOR ITS OWN TYPE. `<boolean>` is a string, so a
+        // caller that copies the example verbatim — which is exactly what the manual
+        // says to do, and exactly what a small model does — gets
+        // `invalid type: string "<boolean>", expected a boolean` and cannot recover by
+        // trying harder: the example it was handed is unsatisfiable. Observed three
+        // times on 2026-09-05 (`code/edit <string>`, `code/edit … "<any>" expected a
+        // boolean`). A typed placeholder still reads as fill-me-in, and a literal copy
+        // now fails on MEANING (wrong path, missing field) instead of on SHAPE — an
+        // error the caller can act on.
+        let placeholder = match ty {
+            "boolean" => json!(true),
+            "integer" | "number" => json!(0),
+            "array" => json!([]),
+            "object" => json!({}),
+            // A string placeholder IS a valid string: it parses, then fails on content.
+            _ => json!(format!("<{ty}>")),
+        };
+        return (ty.to_string(), placeholder);
     }
     for tag in ["oneOf", "anyOf"] {
         if let Some(variants) = spec.get(tag).and_then(Value::as_array) {
@@ -344,6 +361,44 @@ mod param_shape_tests {
         let schema = json!({"type":"object","required":["p"],"properties":{"p":{"type":"string"}}});
         let out = render_ai_help("x", "y", &schema);
         assert!(out.contains("p (string, required)"), "{out}");
+    }
+
+    // what this catches: a placeholder that is invalid for its OWN type, so a caller
+    // copying the example verbatim — which the manual instructs — cannot possibly
+    // succeed. Observed 2026-09-05: `code/edit` refused with
+    // `invalid type: string "<any>", expected a boolean`, the citizen having pasted the
+    // placeholder it was shown. The example must at least DESERIALIZE; being wrong
+    // about the value is recoverable, being wrong about the shape is not.
+    #[test]
+    fn every_placeholder_deserializes_as_its_own_type() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "flag":  {"type": "boolean"},
+                "count": {"type": "integer"},
+                "items": {"type": "array"},
+                "opts":  {"type": "object"},
+                "name":  {"type": "string"},
+            }
+        });
+        for (field, ty) in [
+            ("flag", "boolean"),
+            ("count", "integer"),
+            ("items", "array"),
+            ("opts", "object"),
+            ("name", "string"),
+        ] {
+            let spec = &schema["properties"][field];
+            let (_, placeholder) = param_shape(spec, &schema);
+            let ok = match ty {
+                "boolean" => placeholder.is_boolean(),
+                "integer" => placeholder.is_number(),
+                "array" => placeholder.is_array(),
+                "object" => placeholder.is_object(),
+                _ => placeholder.is_string(),
+            };
+            assert!(ok, "{field} ({ty}) placeholder is not a {ty}: {placeholder}");
+        }
     }
 }
 
