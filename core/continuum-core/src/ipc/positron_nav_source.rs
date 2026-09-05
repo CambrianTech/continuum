@@ -272,7 +272,7 @@ impl NavFocus {
 fn landing_room(rooms: &RoomSet) -> Option<String> {
     rooms
         .iter()
-        .find(|(_, title)| title.as_str() == "academy")
+        .find(|(_, title)| title.as_str() == crate::persona::airc_runtime::CITIZEN_COMMONS_ROOM)
         .map(|(room, _)| room.to_string())
         .or_else(|| rooms.keys().next().map(|r| r.to_string()))
 }
@@ -1100,7 +1100,7 @@ mod tests {
         let mini = Uuid::new_v4();
         let academy = Uuid::new_v4();
         rooms.insert(mini, "bench-swe-bench-verified-mini-1788398099".to_string());
-        rooms.insert(academy, "academy".to_string());
+        rooms.insert(academy, crate::persona::airc_runtime::CITIZEN_COMMONS_ROOM.to_string());
         assert_eq!(landing_room(&rooms), Some(academy.to_string()));
         rooms.remove(&academy);
         assert_eq!(landing_room(&rooms), Some(mini.to_string()), "no academy → the first room, never None");
