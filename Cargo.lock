@@ -81,7 +81,7 @@ dependencies = [
 [[package]]
 name = "airc-bus"
 version = "0.1.0"
-source = "git+https://github.com/CambrianTech/airc?rev=e31a1305f#e31a1305fda42015d3a900dbc1d882cfdbedf1c8"
+source = "git+https://github.com/CambrianTech/airc?rev=f68e48c07#f68e48c07c118899b366e23178f46ad2adb66a91"
 dependencies = [
  "airc-core",
  "async-stream",
@@ -98,7 +98,7 @@ dependencies = [
 [[package]]
 name = "airc-core"
 version = "0.1.0"
-source = "git+https://github.com/CambrianTech/airc?rev=e31a1305f#e31a1305fda42015d3a900dbc1d882cfdbedf1c8"
+source = "git+https://github.com/CambrianTech/airc?rev=f68e48c07#f68e48c07c118899b366e23178f46ad2adb66a91"
 dependencies = [
  "serde",
  "serde_json",
@@ -108,7 +108,7 @@ dependencies = [
 [[package]]
 name = "airc-diagnostics"
 version = "0.1.0"
-source = "git+https://github.com/CambrianTech/airc?rev=e31a1305f#e31a1305fda42015d3a900dbc1d882cfdbedf1c8"
+source = "git+https://github.com/CambrianTech/airc?rev=f68e48c07#f68e48c07c118899b366e23178f46ad2adb66a91"
 dependencies = [
  "serde",
  "serde_json",
@@ -118,7 +118,7 @@ dependencies = [
 [[package]]
 name = "airc-identity"
 version = "0.1.0"
-source = "git+https://github.com/CambrianTech/airc?rev=e31a1305f#e31a1305fda42015d3a900dbc1d882cfdbedf1c8"
+source = "git+https://github.com/CambrianTech/airc?rev=f68e48c07#f68e48c07c118899b366e23178f46ad2adb66a91"
 dependencies = [
  "airc-core",
  "airc-protocol",
@@ -130,7 +130,7 @@ dependencies = [
 [[package]]
 name = "airc-ipc"
 version = "0.1.0"
-source = "git+https://github.com/CambrianTech/airc?rev=e31a1305f#e31a1305fda42015d3a900dbc1d882cfdbedf1c8"
+source = "git+https://github.com/CambrianTech/airc?rev=f68e48c07#f68e48c07c118899b366e23178f46ad2adb66a91"
 dependencies = [
  "airc-core",
  "airc-protocol",
@@ -144,7 +144,7 @@ dependencies = [
 [[package]]
 name = "airc-lib"
 version = "0.1.0"
-source = "git+https://github.com/CambrianTech/airc?rev=e31a1305f#e31a1305fda42015d3a900dbc1d882cfdbedf1c8"
+source = "git+https://github.com/CambrianTech/airc?rev=f68e48c07#f68e48c07c118899b366e23178f46ad2adb66a91"
 dependencies = [
  "airc-bus",
  "airc-core",
@@ -180,7 +180,7 @@ dependencies = [
 [[package]]
 name = "airc-protocol"
 version = "0.1.0"
-source = "git+https://github.com/CambrianTech/airc?rev=e31a1305f#e31a1305fda42015d3a900dbc1d882cfdbedf1c8"
+source = "git+https://github.com/CambrianTech/airc?rev=f68e48c07#f68e48c07c118899b366e23178f46ad2adb66a91"
 dependencies = [
  "airc-core",
  "chacha20poly1305",
@@ -198,7 +198,7 @@ dependencies = [
 [[package]]
 name = "airc-relay"
 version = "0.1.0"
-source = "git+https://github.com/CambrianTech/airc?rev=e31a1305f#e31a1305fda42015d3a900dbc1d882cfdbedf1c8"
+source = "git+https://github.com/CambrianTech/airc?rev=f68e48c07#f68e48c07c118899b366e23178f46ad2adb66a91"
 dependencies = [
  "airc-core",
  "airc-protocol",
@@ -215,7 +215,7 @@ dependencies = [
 [[package]]
 name = "airc-store"
 version = "0.1.0"
-source = "git+https://github.com/CambrianTech/airc?rev=e31a1305f#e31a1305fda42015d3a900dbc1d882cfdbedf1c8"
+source = "git+https://github.com/CambrianTech/airc?rev=f68e48c07#f68e48c07c118899b366e23178f46ad2adb66a91"
 dependencies = [
  "airc-bus",
  "airc-core",
@@ -251,7 +251,7 @@ dependencies = [
 [[package]]
 name = "airc-transport"
 version = "0.1.0"
-source = "git+https://github.com/CambrianTech/airc?rev=e31a1305f#e31a1305fda42015d3a900dbc1d882cfdbedf1c8"
+source = "git+https://github.com/CambrianTech/airc?rev=f68e48c07#f68e48c07c118899b366e23178f46ad2adb66a91"
 dependencies = [
  "airc-core",
  "airc-diagnostics",
@@ -276,7 +276,7 @@ dependencies = [
 [[package]]
 name = "airc-trust"
 version = "0.1.0"
-source = "git+https://github.com/CambrianTech/airc?rev=e31a1305f#e31a1305fda42015d3a900dbc1d882cfdbedf1c8"
+source = "git+https://github.com/CambrianTech/airc?rev=f68e48c07#f68e48c07c118899b366e23178f46ad2adb66a91"
 dependencies = [
  "airc-core",
  "airc-protocol",
@@ -287,7 +287,7 @@ dependencies = [
 [[package]]
 name = "airc-wire"
 version = "0.1.0"
-source = "git+https://github.com/CambrianTech/airc?rev=e31a1305f#e31a1305fda42015d3a900dbc1d882cfdbedf1c8"
+source = "git+https://github.com/CambrianTech/airc?rev=f68e48c07#f68e48c07c118899b366e23178f46ad2adb66a91"
 dependencies = [
  "airc-bus",
  "airc-core",
@@ -301,7 +301,7 @@ dependencies = [
 [[package]]
 name = "airc-work"
 version = "0.1.0"
-source = "git+https://github.com/CambrianTech/airc?rev=e31a1305f#e31a1305fda42015d3a900dbc1d882cfdbedf1c8"
+source = "git+https://github.com/CambrianTech/airc?rev=f68e48c07#f68e48c07c118899b366e23178f46ad2adb66a91"
 dependencies = [
  "airc-core",
  "airc-protocol",
@@ -314,7 +314,7 @@ dependencies = [
 [[package]]
 name = "airc-work-store"
 version = "0.1.0"
-source = "git+https://github.com/CambrianTech/airc?rev=e31a1305f#e31a1305fda42015d3a900dbc1d882cfdbedf1c8"
+source = "git+https://github.com/CambrianTech/airc?rev=f68e48c07#f68e48c07c118899b366e23178f46ad2adb66a91"
 dependencies = [
  "airc-core",
  "airc-store",
