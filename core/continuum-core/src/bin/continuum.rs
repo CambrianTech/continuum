@@ -116,14 +116,9 @@ async fn run() -> Result<(), String> {
         // (http::desktop, always-current, browsers attach/detach freely) —
         // this verb just verifies the greeter answers and opens the browser.
         "desktop" | "ui" => {
-            let port = std::env::var("CONTINUUM_UI_PORT")
-                .ok()
-                .and_then(|v| v.parse::<u16>().ok())
-                .unwrap_or(8975); // unwrap_or: the display manager's documented default
-            let url = format!("http://127.0.0.1:{port}/");
-            let up = tokio::net::TcpStream::connect(("127.0.0.1", port))
-                .await
-                .is_ok();
+            let port = desktop_port();
+            let url = desktop_url();
+            let up = desktop_answering().await;
             if !up {
                 eprintln!(
                     "✗ the desktop display manager is not answering on :{port}.\n                       Is the core running? `continuum ping` — and `continuum start` \n                       builds the web client and serves it automatically. \n                       (Probe classes desktop.dm.* in the server log say why it stayed off.)"
@@ -908,6 +903,8 @@ async fn verify_deployed_build(rebuilt_cli: bool) -> Result<(), String> {
             if let Some(note) = cli_note {
                 println!("{note}");
             }
+            // The last line of a verified deploy is WHERE to look.
+            println!("{}", desktop_receipt_line().await);
             Ok(())
         }
         Err(e) => Err(match cli_note {
@@ -2844,8 +2841,50 @@ mod tests {
     }
 }
 
+/// The desktop display manager's port — `CONTINUUM_UI_PORT`, else the
+/// documented default beside WS 8974 (http::desktop). ONE place; the
+/// `desktop` verb and the start/reboot receipt both read it.
+fn desktop_port() -> u16 {
+    std::env::var("CONTINUUM_UI_PORT")
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(8975) // unwrap_or: the display manager's documented default
+}
+
+fn desktop_url() -> String {
+    format!("http://127.0.0.1:{}/", desktop_port())
+}
+
+/// Bounded (1 s) "is the greeter answering" probe — on a deploy path, so it
+/// has a bound and a named outcome, never a hang.
+async fn desktop_answering() -> bool {
+    matches!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            tokio::net::TcpStream::connect(("127.0.0.1", desktop_port())),
+        )
+        .await,
+        Ok(Ok(_))
+    )
+}
+
+/// The line a verified start/reboot ends with: WHERE the desktop is. A user
+/// must never have to know a port (Joel, 2026-09-05: "remembering port is
+/// bush league") — the CLI says the address, and `uu desktop` opens it.
+async fn desktop_receipt_line() -> String {
+    if desktop_answering().await {
+        format!("🖥  desktop: {}   (`uu desktop` opens it)", desktop_url())
+    } else {
+        format!(
+            "🖥  desktop: not serving yet on :{} — the web build lands in the background; \
+             `uu desktop` opens it once it does",
+            desktop_port()
+        )
+    }
+}
+
 fn usage() -> String {
-    "usage: continuum <start|reboot|stop|command> [json | --key value ...]\n\
+    "usage: continuum <start|reboot|stop|desktop|command> [json | --key value ...]  (uu = continuum)\n\
      \n\
      Lifecycle:\n  \
        continuum start                 build + run the headless Rust core (detached), wait until ready;\n                                       refuses if a core is running but not answering (a second core on\n                                       one socket makes results non-deterministic)\n  \
@@ -2853,6 +2892,9 @@ fn usage() -> String {
        continuum reboot                rebuild + relaunch, replacing any running core (~0 downtime);\n                                       verifies the RUNNING core's build SHA before reporting success\n  \
        continuum stop                  stop the running core\n  \
        continuum deploy-verify         prove the running core's build SHA matches the deployed source\n\
+     \n\
+     Desktop (the core serves it; no port to remember):\n  \
+       continuum desktop               open the desktop in your browser (alias: uu desktop)\n\
      \n\
      Commands (dispatch to the running core):\n  \
        continuum ping\n  \

@@ -65,6 +65,11 @@ pub async fn ensure_operator_peer(
                 peer_id = %rt.airc().peer_id(),
                 "operator self-peer online — room-scoped verbs now act as the human, not a denial (#27)"
             );
+            // Default profile picture from the OS account picture — off the
+            // boot path, bounded, named outcome (operator_avatar_seed.rs).
+            crate::persona::operator_avatar_seed::spawn_seed_default_avatar(
+                rt.airc().peer_id().as_uuid(),
+            );
             // The human belongs in the CITIZENS' commons by default, and stays
             // reachable in airc's lobby.
             //
