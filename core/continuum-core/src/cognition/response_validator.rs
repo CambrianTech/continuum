@@ -82,6 +82,32 @@ pub fn clean_and_validate(
             reason: format!("Framing echo ({marker}): the response reflects the turn's own prompt — a pass, not speech"),
         };
     }
+    // Gate 0b — a reply that is not SPEECH: a raw tool envelope, or another peer's
+    // transcript line worn as this citizen's own voice. supervisor.rs asks for both
+    // in prose ("never narrate another peer's voice, and never emit a raw tool-call
+    // envelope as your spoken reply") and on 2026-09-05 a 0.5b tier broke both halves
+    // of that one sentence in a single evening — the same citizen that recited the
+    // rule to the room was one of the two that broke it. A constraint that must hold
+    // cannot live only in the prompt; these two are decidable without the model's
+    // cooperation, so they are decided here.
+    if let Some(marker) = crate::cognition::not_speech::is_not_speech(&cleaned.text) {
+        crate::probe!(
+            class = "cognition.not_speech",
+            persona = %persona_id,
+            marker = marker,
+            chars = cleaned.text.chars().count() as u64,
+            "response was not first-person prose addressed to the room — silenced (pass), never posted"
+        );
+        return ValidationOutcome {
+            posted_text: None,
+            thinking: cleaned.thinking,
+            failure_gate: Some("not_speech".to_string()),
+            validation_micros: 0,
+            reason: format!(
+                "Not speech ({marker}): the reply is a tool envelope or another peer's voice — a pass, not speech"
+            ),
+        };
+    }
     let validation = validate_response(
         &cleaned.text,
         persona_id,
@@ -302,6 +328,30 @@ mod tests {
             &detector,
         );
         assert!(speech.should_post());
+    }
+
+    #[test]
+    // what this catches: the not_speech gate existing but never being consulted — the
+    // wiring, not the predicate (that is covered in cognition::not_speech). Fixtured on
+    // the exact reply two citizens posted to the room on 2026-09-05. It must be a PASS,
+    // like framing_echo: silenced, not a hard failure, and the thinking still returned.
+    #[test]
+    fn a_tool_envelope_spoken_as_prose_is_a_pass_not_a_post() {
+        let observed =
+            r#"[code/read,{"file_path":"src/main.rs"}] — exact args for any tool: commands/help(name)"#;
+        let outcome = clean_and_validate(
+            observed,
+            Uuid::new_v4(),
+            false,
+            &empty_history(),
+            &LoopDetector::default(),
+        );
+        assert_eq!(outcome.posted_text, None, "an envelope must never reach the room");
+        assert_eq!(outcome.failure_gate.as_deref(), Some("not_speech"));
+        assert!(
+            !is_hard_failure("not_speech"),
+            "not_speech is a pass, not a hard failure — the turn is fine, the reply was not speech"
+        );
     }
 
     #[test]
