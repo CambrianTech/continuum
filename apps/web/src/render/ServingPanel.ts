@@ -208,3 +208,58 @@ export class ServingPanel extends LitElement {
 }
 
 customElements.define('serving-panel', ServingPanel);
+import { LitElement, html, nothing, type TemplateResult } from 'lit';
+import type { ServingPanelView } from '@continuum/patterns';
+import { renderGaugeBody } from './parts';
+
+interface GlassBoxEvent {
+  type: string;
+  payload: any; // Adjust this based on actual structure
+}
+
+declare global {
+  interface Window {
+    servingGlassboxDigest: (event: GlassBoxEvent) => void;
+  }
+}
+
+class ServingPanel extends LitElement {
+  static properties = {
+    heading: { type: String },
+    body: { type: Object },
+  };
+
+  heading = 'Serving Panel';
+  body: any;
+
+  constructor() {
+    super();
+    this.body = null;
+    this.render();
+  }
+
+  connectedCallback() {
+    super.connectedCallback();
+    window.servingGlassboxDigest = (event) => {
+      if (event.type === 'serving.glassbox') {
+        this.body = event.payload;
+        this.requestUpdate();
+      }
+    };
+  }
+
+  render() {
+    const body = this.body;
+    if (!body) return html``;
+    return html`
+      <section class="rail-widget" data-widget="serving" data-id="serving">
+        <div class="who-head">
+          <span class="who-title">${this.heading}</span>
+        </div>
+        ${renderServingBody(body)}
+      </section>
+    `;
+  }
+}
+
+customElements.define('serving-panel', ServingPanel);
