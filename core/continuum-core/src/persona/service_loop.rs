@@ -665,6 +665,26 @@ async fn serve_persona_loop_inner(
         for m in qualifying.iter().filter(|m| directed_line(m)) {
             crate::persona::wake_backlog::publish_heard(self_id, m);
         }
+        // An undirected AGENT line (neither human nor citizen, not naming her)
+        // is perceived — it is in the transcript she reads — but it is never
+        // the trigger of a turn: no lane for a peer's status wall
+        // (wake_backlog::triggers_a_turn; Joaquin's 34/60, 2026-09-05).
+        let before = qualifying.len();
+        qualifying.retain(|m| {
+            let sender_is_citizen = crate::persona::PersonaAircRuntimeRegistry::try_global()
+                .is_some_and(|r| r.get(m.peer_id).is_some());
+            crate::persona::wake_backlog::triggers_a_turn(directed_line(m), sender_is_citizen)
+        });
+        let perceived_only = before - qualifying.len();
+        if perceived_only > 0 {
+            outcome.turns_skipped += perceived_only;
+            crate::probe!(
+                class = "persona.wake.agent_lines_perceived_only",
+                persona_id = %self_id,
+                lines = perceived_only as u64,
+                "undirected agent lines drained into perception without a turn — no lane for a status wall"
+            );
+        }
         // Trigger = newest DIRECTED line in the backlog (a question put to her
         // outranks newer ambient chatter — she answers it WITH the newer
         // context visible in the transcript), else the newest overall.
